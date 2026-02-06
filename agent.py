@@ -7,7 +7,7 @@ Single central agent with dual-mode OODA loop:
 - Reactive: Responds to alerts with LLM-driven investigations
 - Proactive: Periodic deep sweeps to catch issues before they alert
 
-Version: 1.0.4
+Version: 1.0.5
 """
 
 import os
@@ -116,8 +116,8 @@ class CFOperator:
         # Initialize tool registry
         self.tools = ToolRegistry(self)
 
-        # TODO: Load skills from skills/ directory
-        # self.skills = load_skills()
+        # Load skills from skills/ directory
+        self.skills = self._load_skills()
 
         # OODA state
         self.current_investigation = None
@@ -140,7 +140,7 @@ class CFOperator:
         TOOLS_REGISTERED.set(len(self.tools.tools))
         MONITORED_HOSTS.set(len(self.config.get('infrastructure', {}).get('hosts', {})))
         AGENT_INFO.info({
-            'version': '1.0.4',
+            'version': '1.0.5',
             'host_id': 'cfoperator',
             'mode': 'dual_ooda'
         })
@@ -200,6 +200,61 @@ class CFOperator:
                 }
             }
         }
+
+    def _load_skills(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Load skills from skills/ directory.
+
+        Each skill is in its own subdirectory with a SKILL.md file containing:
+        - YAML frontmatter (name, description)
+        - Markdown instructions for the LLM
+
+        Returns:
+            Dict mapping skill name to {name, description, instructions}
+        """
+        skills = {}
+        skills_dir = Path('skills')
+
+        if not skills_dir.exists():
+            logger.warning("Skills directory not found - skills disabled")
+            return skills
+
+        for skill_path in skills_dir.iterdir():
+            if not skill_path.is_dir():
+                continue
+
+            skill_file = skill_path / 'SKILL.md'
+            if not skill_file.exists():
+                logger.warning(f"Skipping {skill_path.name} - no SKILL.md file")
+                continue
+
+            try:
+                content = skill_file.read_text()
+
+                # Parse YAML frontmatter
+                if content.startswith('---'):
+                    parts = content.split('---', 2)
+                    if len(parts) >= 3:
+                        frontmatter = yaml.safe_load(parts[1])
+                        instructions = parts[2].strip()
+
+                        skill_name = frontmatter.get('name')
+                        if skill_name:
+                            skills[skill_name] = {
+                                'name': skill_name,
+                                'description': frontmatter.get('description', ''),
+                                'instructions': instructions
+                            }
+                            logger.info(f"Loaded skill: {skill_name}")
+                        else:
+                            logger.warning(f"Skipping {skill_path.name} - no 'name' in frontmatter")
+                else:
+                    logger.warning(f"Skipping {skill_path.name} - missing YAML frontmatter")
+            except Exception as e:
+                logger.error(f"Failed to load skill from {skill_path.name}: {e}")
+
+        logger.info(f"Loaded {len(skills)} skills: {list(skills.keys())}")
+        return skills
 
     def _init_observability_backends(self):
         """Initialize pluggable observability backends based on config."""
@@ -824,18 +879,126 @@ Be concise and infrastructure-focused.
             }
 
     def _execute_skill(self, message: str) -> Dict[str, Any]:
-        """Execute a skill command (e.g., /investigate-container immich-ml)."""
-        # TODO: Implement skill execution
+        """
+        Execute a skill command (e.g., /investigate-container immich-ml).
+
+        Skills are structured LLM prompts with:
+        - Clear instructions for what to do
+        - Tool calling sequence
+        - Expected output format
+
+        The skill instructions are injected into the system context,
+        and the LLM executes the skill using available tools.
+        """
         parts = message.split(maxsplit=1)
         skill_name = parts[0][1:]  # Remove leading /
-        args = parts[1] if len(parts) > 1 else ''
+        skill_args = parts[1] if len(parts) > 1 else ''
 
-        return {
-            'response': f"Skill execution not yet implemented: {skill_name}",
-            'backend': 'N/A',
-            'model': 'N/A',
-            'tool_calls': 0
-        }
+        # Check if skill exists
+        if skill_name not in self.skills:
+            available = ', '.join(self.skills.keys())
+            return {
+                'response': f"Unknown skill: {skill_name}\n\nAvailable skills: {available}",
+                'backend': 'N/A',
+                'model': 'N/A',
+                'tool_calls': 0
+            }
+
+        skill = self.skills[skill_name]
+        logger.info(f"Executing skill: {skill_name} with args: {skill_args}")
+
+        # Build system context with skill instructions
+        system_context = f"""You are CFOperator executing the "{skill['name']}" skill.
+
+SKILL DESCRIPTION:
+{skill['description']}
+
+SKILL INSTRUCTIONS:
+{skill['instructions']}
+
+USER REQUEST:
+{message}
+
+IMPORTANT:
+- Follow the skill instructions exactly as written
+- Use the tools in the suggested sequence
+- Provide structured output as described in the skill
+- Be thorough but concise
+"""
+
+        # Build user message
+        if skill_args:
+            user_message = f"Execute {skill_name} for: {skill_args}"
+        else:
+            user_message = f"Execute {skill_name}"
+
+        # Execute with LLM + tools
+        start_time = time.time()
+
+        try:
+            # Get next available provider
+            provider_info = self.llm.get_next_provider()
+            if not provider_info:
+                return {
+                    'response': 'All LLM providers are currently unavailable. Please try again later.',
+                    'backend': 'none',
+                    'model': 'none',
+                    'tool_calls': 0
+                }
+
+            provider_type, url, model = provider_info
+
+            # Call LLM with tools
+            result = self._chat_with_tools(
+                provider_type=provider_type,
+                url=url,
+                model=model,
+                messages=[{'role': 'user', 'content': user_message}],
+                system_context=system_context,
+                max_iterations=20  # Skills may need more iterations
+            )
+
+            # Track metrics
+            duration = time.time() - start_time
+            LLM_REQUEST_DURATION.labels(
+                provider=provider_type,
+                model=model,
+                request_type='skill'
+            ).observe(duration)
+
+            LLM_REQUESTS_TOTAL.labels(
+                provider=provider_type,
+                model=model,
+                result='success'
+            ).inc()
+
+            LLM_TOKENS_TOTAL.labels(
+                provider=provider_type,
+                model=model,
+                token_type='input'
+            ).inc(result.get('input_tokens', 0))
+
+            LLM_TOKENS_TOTAL.labels(
+                provider=provider_type,
+                model=model,
+                token_type='output'
+            ).inc(result.get('output_tokens', 0))
+
+            return {
+                'response': result.get('response', ''),
+                'backend': provider_type,
+                'model': model,
+                'tool_calls': result.get('tool_calls', 0)
+            }
+
+        except Exception as e:
+            logger.error(f"Skill execution failed: {e}", exc_info=True)
+            return {
+                'response': f"Skill execution failed: {str(e)}",
+                'backend': 'error',
+                'model': 'N/A',
+                'tool_calls': 0
+            }
 
     def answer_question(self, question_id: int, answer: str):
         """
