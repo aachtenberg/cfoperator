@@ -7,11 +7,11 @@ services:
     ports:
       - "8083:8083"  # HTTP/WebSocket
     environment:
-      # Database connection
-      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
-      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
-      - POSTGRES_DB=${POSTGRES_DB:-cfoperator}
-      - POSTGRES_USER=${POSTGRES_USER:-cfoperator}
+      # Database connection (reuse existing SRE Sentinel DB)
+      - POSTGRES_HOST=${POSTGRES_HOST:-192.168.0.167}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5434}
+      - POSTGRES_DB=${POSTGRES_DB:-sre_knowledge}
+      - POSTGRES_USER=${POSTGRES_USER:-sre_agent}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 
       # LLM API keys
@@ -21,9 +21,9 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 
       # Observability backends
-      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://prometheus:9090}
-      - LOKI_URL=${LOKI_URL:-http://loki:3100}
-      - ALERTMANAGER_URL=${ALERTMANAGER_URL:-http://alertmanager:9093}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://192.168.0.167:9090}
+      - LOKI_URL=${LOKI_URL:-http://192.168.0.167:3100}
+      - ALERTMANAGER_URL=${ALERTMANAGER_URL:-http://192.168.0.167:9093}
 
       # Notifications
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
@@ -35,27 +35,7 @@ services:
       - ./skills:/app/skills:ro
       - /var/run/docker.sock:/var/run/docker.sock  # Docker access
     restart: unless-stopped
-    networks:
-      - monitoring
+    network_mode: host  # Use host network to access Prometheus/Loki/PostgreSQL
 
-  # PostgreSQL (optional - can use existing database)
-  postgres:
-    image: pgvector/pgvector:pg16
-    container_name: cfoperator-postgres
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-cfoperator}
-      - POSTGRES_USER=${POSTGRES_USER:-cfoperator}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    networks:
-      - monitoring
-
-networks:
-  monitoring:
-    external: true  # Assumes you have a monitoring network already
-
-volumes:
-  postgres_data:
+# Note: We reuse the existing sre-sentinel-postgres database
+# No need to create a new PostgreSQL instance

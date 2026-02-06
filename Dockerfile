@@ -14,10 +14,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY *.py ./
 COPY observability/ ./observability/
+COPY tools/ ./tools/
+COPY skills/ ./skills/
+COPY ui/ ./ui/
 COPY config.yaml.example ./config.yaml.example
-
-# Create directories for plugins and skills
-RUN mkdir -p tools skills ui
 
 # Expose port for HTTP/WebSocket
 EXPOSE 8083
