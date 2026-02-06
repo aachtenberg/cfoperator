@@ -14,6 +14,8 @@ Tools from SRE Sentinel, adapted for single-agent architecture.
 
 from typing import Dict, Any, List, Optional
 import logging
+from .ssh import SSHTools
+from .discovery import DiscoveryTools
 
 logger = logging.getLogger("cfoperator.tools")
 
@@ -34,6 +36,17 @@ class ToolRegistry:
         """
         self.operator = operator
         self.tools = {}
+
+        # Initialize SSH and discovery tools for fleet-wide access
+        hosts_config = operator.config.get('infrastructure', {}).get('hosts', {})
+        if hosts_config:
+            self.ssh_tools = SSHTools(hosts_config)
+            self.discovery_tools = DiscoveryTools(hosts_config)
+            logger.info(f"SSH and discovery tools initialized for {len(hosts_config)} hosts")
+        else:
+            self.ssh_tools = None
+            self.discovery_tools = None
+            logger.warning("No infrastructure hosts configured - SSH/discovery tools disabled")
 
         # Register all tools
         self._register_tools()
@@ -133,6 +146,24 @@ class ToolRegistry:
             }
         }
 
+        # SSH tools for fleet-wide operations
+        if self.ssh_tools:
+            for schema in self.ssh_tools.get_schemas():
+                tool_name = schema['name']
+                self.tools[tool_name] = {
+                    'function': self._make_ssh_tool_wrapper(tool_name),
+                    'schema': schema
+                }
+
+        # Discovery tools for infrastructure verification
+        if self.discovery_tools:
+            for schema in self.discovery_tools.get_schemas():
+                tool_name = schema['name']
+                self.tools[tool_name] = {
+                    'function': self._make_discovery_tool_wrapper(tool_name),
+                    'schema': schema
+                }
+
     def execute(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a tool by name with given arguments.
@@ -229,5 +260,57 @@ class ToolRegistry:
             }
         except Exception as e:
             return {'error': str(e)}
+
+    def _make_ssh_tool_wrapper(self, tool_name: str):
+        """Create wrapper function for SSH tools."""
+        # Map tool names to SSHTools methods
+        method_map = {
+            'ssh_execute': 'execute',
+            'ssh_check_service': 'check_service_status',
+            'ssh_restart_service': 'restart_service',
+            'ssh_get_logs': 'get_logs',
+            'ssh_docker_list': 'list_docker_containers',
+            'ssh_docker_restart': 'docker_restart',
+            'ssh_get_system_info': 'get_system_info',
+            'ssh_check_port': 'check_port'
+        }
+
+        method_name = method_map.get(tool_name)
+        if not method_name:
+            return lambda **kwargs: {'error': f'Unknown SSH tool: {tool_name}'}
+
+        method = getattr(self.ssh_tools, method_name)
+
+        def wrapper(**kwargs):
+            try:
+                return method(**kwargs)
+            except Exception as e:
+                return {'error': str(e), 'tool': tool_name}
+
+        return wrapper
+
+    def _make_discovery_tool_wrapper(self, tool_name: str):
+        """Create wrapper function for discovery tools."""
+        # Map tool names to DiscoveryTools methods
+        method_map = {
+            'ping_host': 'ping_host',
+            'verify_ssh': 'verify_ssh',
+            'verify_sudo': 'verify_sudo',
+            'discover_all_hosts': 'discover_all_hosts'
+        }
+
+        method_name = method_map.get(tool_name)
+        if not method_name:
+            return lambda **kwargs: {'error': f'Unknown discovery tool: {tool_name}'}
+
+        method = getattr(self.discovery_tools, method_name)
+
+        def wrapper(**kwargs):
+            try:
+                return method(**kwargs)
+            except Exception as e:
+                return {'error': str(e), 'tool': tool_name}
+
+        return wrapper
 
 __all__ = ['ToolRegistry']
