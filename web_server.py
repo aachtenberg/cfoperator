@@ -254,13 +254,15 @@ class WebServer:
         })
 
     def run(self):
-        """Start the Flask web server (blocking)."""
-        logger.info(f"Starting web server on {self.host}:{self.port}")
-        self.app.run(host=self.host, port=self.port, debug=False)
+        """Start the web server using Waitress (blocking, production-ready)."""
+        from waitress import serve
+        logger.info(f"Starting Waitress web server on {self.host}:{self.port}")
+        # Waitress is production-ready, multi-threaded, and works great with Flask
+        serve(self.app, host=self.host, port=self.port, threads=8)
 
     def run_threaded(self):
         """Start the web server in a separate thread."""
         thread = threading.Thread(target=self.run, daemon=True)
         thread.start()
-        logger.info("Web server thread started")
+        logger.info("Web server thread started (Waitress)")
         return thread

@@ -7,7 +7,7 @@ Single central agent with dual-mode OODA loop:
 - Reactive: Responds to alerts with LLM-driven investigations
 - Proactive: Periodic deep sweeps to catch issues before they alert
 
-Version: 1.0.3
+Version: 1.0.4
 """
 
 import os
@@ -137,7 +137,7 @@ class CFOperator:
         TOOLS_REGISTERED.set(len(self.tools.tools))
         MONITORED_HOSTS.set(len(self.config.get('infrastructure', {}).get('hosts', {})))
         AGENT_INFO.info({
-            'version': '1.0.3',
+            'version': '1.0.4',
             'host_id': 'cfoperator',
             'mode': 'dual_ooda'
         })
