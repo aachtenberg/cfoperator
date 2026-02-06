@@ -470,7 +470,7 @@
             const input = document.getElementById('message-input');
             const message = input.value.trim();
 
-            if (!message || !ws || ws.readyState !== WebSocket.OPEN) return;
+            if (!message) return;
 
             const backend = document.getElementById('llm-backend').value;
 
@@ -478,22 +478,46 @@
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
 
-            // Send to agent
-            ws.send(JSON.stringify({
-                type: 'chat',
-                message: message,
-                history: chatHistory,
-                backend: backend
-            }));
-
             input.value = '';
             input.rows = 1;
 
             // Disable send button while waiting
             document.getElementById('send-button').disabled = true;
-            setTimeout(() => {
-                document.getElementById('send-button').disabled = false;
-            }, 1000);
+
+            // Use WebSocket if available, otherwise fall back to HTTP
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'chat',
+                    message: message,
+                    history: chatHistory,
+                    backend: backend
+                }));
+                setTimeout(() => {
+                    document.getElementById('send-button').disabled = false;
+                }, 1000);
+            } else {
+                // Fallback to HTTP API
+                fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        message: message,
+                        history: chatHistory,
+                        backend: backend
+                    })
+                })
+                .then(r => r.json())
+                .then(data => {
+                    addMessage('agent', data.response, data.backend, data.model);
+                    chatHistory.push({role: 'assistant', content: data.response});
+                    document.getElementById('send-button').disabled = false;
+                })
+                .catch(err => {
+                    console.error('Error:', err);
+                    addMessage('agent', `Error: ${err.message}`, 'error', 'none');
+                    document.getElementById('send-button').disabled = false;
+                });
+            }
         }
 
         function escapeHtml(text) {

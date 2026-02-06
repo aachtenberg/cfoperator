@@ -264,6 +264,28 @@ class InvestigationEvent(Base):
     )
 
 
+class PendingQuestion(Base):
+    """Questions from investigations awaiting human response."""
+    __tablename__ = 'pending_questions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    investigation_id = Column(Integer, nullable=False)  # References investigations(id)
+    host_id = Column(String(64), nullable=False, default='default')
+    question = Column(Text, nullable=False)
+    context = Column(Text)
+    answer = Column(Text)
+    asked_at = Column(TIMESTAMP, nullable=False, default=lambda: datetime.now(timezone.utc))
+    answered_at = Column(TIMESTAMP)
+    status = Column(String(20), nullable=False, default='pending')
+
+    __table_args__ = (
+        CheckConstraint("status IN ('pending', 'answered', 'cancelled')", name='valid_question_status'),
+        Index('idx_pending_questions_status', 'status'),
+        Index('idx_pending_questions_investigation', 'investigation_id'),
+        Index('idx_pending_questions_asked', 'asked_at', postgresql_using='btree', postgresql_ops={'asked_at': 'DESC'}),
+    )
+
+
 class AgentSettings(Base):
     """Agent runtime settings - configurable via dashboard."""
     __tablename__ = 'agent_settings'
@@ -1303,6 +1325,68 @@ class KnowledgeBase:
                 }
                 for e in events
             ]
+
+    # ========================= Pending Questions (Q&A) =========================
+
+    def store_question(self, investigation_id: int, question: str, context: str = "") -> int:
+        """Store a question from an investigation awaiting human response."""
+        with self.session_scope() as session:
+            pending_q = PendingQuestion(
+                investigation_id=investigation_id,
+                host_id=self.host_id,
+                question=question,
+                context=context,
+                status='pending'
+            )
+            session.add(pending_q)
+            session.flush()
+            q_id = pending_q.id
+            _log("info", "Question stored", question_id=q_id, investigation_id=investigation_id)
+            return q_id
+
+    def get_pending_questions(self, host_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all pending questions, optionally filtered by host."""
+        with self.session_scope() as session:
+            query = session.query(PendingQuestion).filter(
+                PendingQuestion.status == 'pending'
+            )
+
+            if host_id:
+                query = query.filter(PendingQuestion.host_id == host_id)
+
+            questions = query.order_by(PendingQuestion.asked_at.desc()).all()
+
+            return [
+                {
+                    'id': q.id,
+                    'investigation_id': q.investigation_id,
+                    'host_id': q.host_id,
+                    'question': q.question,
+                    'context': q.context,
+                    'asked_at': q.asked_at.isoformat() if q.asked_at else None
+                }
+                for q in questions
+            ]
+
+    def answer_question(self, question_id: int, answer: str) -> Optional[int]:
+        """Mark a question as answered and return the investigation_id."""
+        with self.session_scope() as session:
+            question = session.query(PendingQuestion).filter(
+                PendingQuestion.id == question_id
+            ).first()
+
+            if question:
+                question.answer = answer
+                question.answered_at = datetime.now(timezone.utc)
+                question.status = 'answered'
+                inv_id = question.investigation_id
+                _log("info", "Question answered", question_id=question_id, investigation_id=inv_id)
+                return inv_id
+            else:
+                _log("warn", "Question not found", question_id=question_id)
+                return None
+
+    # ========================= Investigation Search & Similarity =========================
 
     def query_similar_investigations(self, search_text: str, limit: int = 10) -> List[Dict[str, Any]]:
         """Full-text search for similar investigations."""

@@ -16,8 +16,15 @@ import logging
 import threading
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify, send_from_directory
-from flask_sock import Sock
 import time
+
+# WebSocket support (optional - doesn't work with Waitress)
+try:
+    from flask_sock import Sock
+    WEBSOCKET_AVAILABLE = True
+except ImportError:
+    WEBSOCKET_AVAILABLE = False
+    logger.warning("flask-sock not available - WebSocket disabled")
 
 logger = logging.getLogger("cfoperator.web")
 
@@ -38,10 +45,15 @@ class WebServer:
 
         # Flask app
         self.app = Flask(__name__, static_folder='ui', static_url_path='')
-        self.sock = Sock(self.app)
 
-        # WebSocket clients
-        self.ws_clients = []
+        # WebSocket support (only if flask-sock available and not using Waitress)
+        if WEBSOCKET_AVAILABLE:
+            self.sock = Sock(self.app)
+            self.ws_clients = []
+        else:
+            self.sock = None
+            self.ws_clients = []
+            logger.warning("WebSocket disabled - use HTTP /api/chat endpoint instead")
 
         # Setup routes
         self._setup_routes()
@@ -143,42 +155,43 @@ class WebServer:
                     logger.error(f"Error answering question: {e}")
                     return jsonify({'error': str(e)}), 500
 
-        # WebSocket endpoint
-        @self.sock.route('/ws')
-        def websocket(ws):
-            """
-            WebSocket handler for real-time chat.
+        # WebSocket endpoint (only if available)
+        if self.sock:
+            @self.sock.route('/ws')
+            def websocket(ws):
+                """
+                WebSocket handler for real-time chat.
 
-            Messages from client:
-                {"type": "chat", "message": "...", "history": [...], "backend": "auto"}
-                {"type": "answer", "question_id": 123, "answer": "..."}
+                Messages from client:
+                    {"type": "chat", "message": "...", "history": [...], "backend": "auto"}
+                    {"type": "answer", "question_id": 123, "answer": "..."}
 
-            Messages to client:
-                {"type": "chat", "text": "...", "backend": "ollama", "model": "qwen3:14b"}
-                {"type": "question", "id": 123, "question": "...", "context": "..."}
-                {"type": "tool_call", "tool_name": "prometheus_query", "input": {...}}
-                {"type": "tool_result", "tool_name": "prometheus_query", "result": {...}}
-            """
-            logger.info("WebSocket client connected")
-            self.ws_clients.append(ws)
+                Messages to client:
+                    {"type": "chat", "text": "...", "backend": "ollama", "model": "qwen3:14b"}
+                    {"type": "question", "id": 123, "question": "...", "context": "..."}
+                    {"type": "tool_call", "tool_name": "prometheus_query", "input": {...}}
+                    {"type": "tool_result", "tool_name": "prometheus_query", "result": {...}}
+                """
+                logger.info("WebSocket client connected")
+                self.ws_clients.append(ws)
 
-            try:
-                while True:
-                    message = ws.receive()
-                    if message is None:
-                        break
+                try:
+                    while True:
+                        message = ws.receive()
+                        if message is None:
+                            break
 
-                    try:
-                        data = json.loads(message)
-                        self._handle_ws_message(ws, data)
-                    except json.JSONDecodeError:
-                        ws.send(json.dumps({'error': 'Invalid JSON'}))
-                    except Exception as e:
-                        logger.error(f"Error handling WS message: {e}", exc_info=True)
-                        ws.send(json.dumps({'error': str(e)}))
-            finally:
-                logger.info("WebSocket client disconnected")
-                self.ws_clients.remove(ws)
+                        try:
+                            data = json.loads(message)
+                            self._handle_ws_message(ws, data)
+                        except json.JSONDecodeError:
+                            ws.send(json.dumps({'error': 'Invalid JSON'}))
+                        except Exception as e:
+                            logger.error(f"Error handling WS message: {e}", exc_info=True)
+                            ws.send(json.dumps({'error': str(e)}))
+                finally:
+                    logger.info("WebSocket client disconnected")
+                    self.ws_clients.remove(ws)
 
     def _handle_ws_message(self, ws, data: Dict[str, Any]):
         """Handle incoming WebSocket message."""

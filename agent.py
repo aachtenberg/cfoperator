@@ -95,6 +95,9 @@ class CFOperator:
             host_id='cfoperator'  # Single central agent
         )
 
+        # Initialize database schema (creates tables if they don't exist)
+        self.kb.initialize_schema()
+
         # Initialize LLM fallback chain (reuses SRE Sentinel's proven architecture)
         self.llm = LLMFallback(
             db_session_factory=self.kb.session_scope,
@@ -308,7 +311,10 @@ class CFOperator:
         try:
             return self.alerts.get_firing_alerts()
         except Exception as e:
-            logger.error(f"Error checking alerts: {e}")
+            # Only log alert errors once per minute to avoid spam
+            if not hasattr(self, '_last_alert_error') or time.time() - self._last_alert_error > 60:
+                logger.warning(f"Alertmanager unavailable: {type(e).__name__} - reactive mode disabled")
+                self._last_alert_error = time.time()
             return []
 
     def _handle_alert_reactive(self, alert: Dict[str, Any]):
