@@ -193,9 +193,16 @@ class ToolRegistry:
         Get tool schemas for LLM function calling.
 
         Returns:
-            List of tool schemas in format expected by LLM
+            List of tool schemas in OpenAI function calling format
         """
-        return [tool['schema'] for tool in self.tools.values()]
+        # Wrap each schema in OpenAI format (required by Ollama)
+        return [
+            {
+                'type': 'function',
+                'function': tool['schema']
+            }
+            for tool in self.tools.values()
+        ]
 
     # Tool implementations
     # ====================
