@@ -13,10 +13,9 @@ from .base import (
 )
 
 # Import implementations
-from .prometheus import PrometheusMetrics
+from .prometheus import PrometheusMetrics, AlertmanagerAlerts
 from .loki import LokiLogs
 from .docker import DockerContainers
-from .alertmanager import AlertmanagerAlerts
 from .slack import SlackNotifications
 
 __all__ = [

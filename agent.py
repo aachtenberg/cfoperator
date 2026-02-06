@@ -22,7 +22,7 @@ from pathlib import Path
 
 # Import proven components from SRE Sentinel
 from knowledge_base import ResilientKnowledgeBase
-from llm_fallback import LLMFallback
+from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService
 
 # Import pluggable observability backends
@@ -36,6 +36,9 @@ from observability import (
 
 # Import web server
 from web_server import WebServer
+
+# Import tool registry
+from tools import ToolRegistry
 
 # Configure logging
 logging.basicConfig(
@@ -74,8 +77,8 @@ class CFOperator:
         # Initialize pluggable observability backends
         self._init_observability_backends()
 
-        # TODO: Load tools from tools/ directory
-        # self.tools = ToolRegistry()
+        # Initialize tool registry
+        self.tools = ToolRegistry(self)
 
         # TODO: Load skills from skills/ directory
         # self.skills = load_skills()
