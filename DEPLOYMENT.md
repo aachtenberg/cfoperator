@@ -2,7 +2,7 @@
 
 **Date**: 2026-02-06
 **Version**: 1.0.2
-**Status**: ✅ **DEPLOYED AND RUNNING - FLEET-WIDE MONITORING ACTIVE**
+**Status**: ✅ **DEPLOYED AND RUNNING - FLEET-WIDE MONITORING + LLM OBSERVABILITY ACTIVE**
 
 ## Deployment Location
 
@@ -10,6 +10,8 @@
 - **Container**: cfoperator
 - **Web UI**: http://192.168.0.167:8083
 - **Health API**: http://192.168.0.167:8083/api/health
+- **Metrics**: http://192.168.0.167:8083/metrics
+- **Grafana Dashboard**: https://aachten.grafana.net/d/cfoperator-fleet/cfoperator-fleet-monitoring
 
 ## What's Running
 
@@ -24,14 +26,17 @@
 | Tool Registry | ✅ Loaded | 16 tools (4 core + 8 SSH + 4 discovery) |
 | Fleet Monitoring | ✅ Active | 4 hosts configured (raspberrypi, pi2, pi3, pi4) |
 | SSH Access | ✅ Verified | Passwordless SSH to all worker hosts |
-| Docker Backend | ✅ Monitoring | 16 containers on primary host |
+| Docker Backend | ✅ Monitoring | Local Docker (unix socket) |
+| Prometheus Metrics | ✅ Exposed | /metrics endpoint with 20+ metrics |
+| LLM Observability | ✅ Instrumented | Request, token, latency, error tracking |
 
 ### ✅ Observability Backends
 
-- **Prometheus**: http://192.168.0.167:9090 (metrics)
-- **Loki**: http://192.168.0.167:3100 (logs)
-- **Alertmanager**: alertmanager:9093 (alerts - needs DNS fix)
-- **Docker**: unix:///var/run/docker.sock (local containers)
+- **Prometheus**: http://192.168.0.167:9090 (metrics collection)
+- **Loki**: http://192.168.0.167:3100 (logs aggregation)
+- **Alertmanager**: http://192.168.0.167:9093 (alerts - port not responding, non-critical)
+- **Docker**: unix:///var/run/docker.sock (local containers only)
+- **Metrics Endpoint**: http://192.168.0.167:8083/metrics (CFOperator metrics)
 - **Slack**: Configured but not tested
 
 ### 🔧 Partially Implemented

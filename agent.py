@@ -7,7 +7,7 @@ Single central agent with dual-mode OODA loop:
 - Reactive: Responds to alerts with LLM-driven investigations
 - Proactive: Periodic deep sweeps to catch issues before they alert
 
-Version: 1.0.0
+Version: 1.0.3
 """
 
 import os
@@ -19,6 +19,9 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from pathlib import Path
+
+# Prometheus metrics
+from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import proven components from SRE Sentinel
 from knowledge_base import ResilientKnowledgeBase
@@ -46,6 +49,28 @@ logging.basicConfig(
     format='{"ts": "%(asctime)s", "level": "%(levelname)s", "component": "%(name)s", "msg": "%(message)s"}'
 )
 logger = logging.getLogger("cfoperator")
+
+# Prometheus metrics
+OODA_CYCLES = Counter('cfoperator_ooda_cycles_total', 'Total OODA cycles executed')
+SWEEPS = Counter('cfoperator_sweeps_total', 'Total sweeps executed', ['mode'])  # reactive/proactive
+TOOL_CALLS = Counter('cfoperator_tool_calls_total', 'Tool executions', ['tool_name', 'result'])
+TOOLS_REGISTERED = Gauge('cfoperator_tools_registered', 'Number of registered tools')
+INVESTIGATIONS = Counter('cfoperator_investigations_total', 'Total investigations', ['outcome'])
+LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'component'])
+AGENT_INFO = Info('cfoperator_agent', 'CFOperator agent information')
+AGENT_UPTIME = Gauge('cfoperator_uptime_seconds', 'Agent uptime in seconds')
+MONITORED_HOSTS = Gauge('cfoperator_monitored_hosts', 'Number of monitored hosts')
+RUNNING_CONTAINERS = Gauge('cfoperator_running_containers', 'Number of running containers across fleet')
+ERROR_RATE = Counter('cfoperator_errors_total', 'Total errors')
+
+# LLM Observability metrics
+LLM_REQUESTS = Counter('cfoperator_llm_requests_total', 'Total LLM requests', ['provider', 'model', 'result'])
+LLM_TOKENS = Counter('cfoperator_llm_tokens_total', 'Total tokens used', ['provider', 'model', 'type'])  # type: prompt/completion
+LLM_LATENCY = Histogram('cfoperator_llm_latency_seconds', 'LLM request latency', ['provider', 'model'])
+LLM_ERRORS = Counter('cfoperator_llm_errors_total', 'LLM errors by provider', ['provider', 'error_type'])
+LLM_FALLBACKS = Counter('cfoperator_llm_fallbacks_total', 'LLM fallback chain activations', ['from_provider', 'to_provider'])
+EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding generation requests', ['result'])
+EMBEDDING_CACHE_HITS = Counter('cfoperator_embedding_cache_hits_total', 'Embedding cache hits vs misses', ['result'])
 
 class CFOperator:
     """
@@ -107,6 +132,15 @@ class CFOperator:
             )
         else:
             self.web_server = None
+
+        # Update Prometheus metrics
+        TOOLS_REGISTERED.set(len(self.tools.tools))
+        MONITORED_HOSTS.set(len(self.config.get('infrastructure', {}).get('hosts', {})))
+        AGENT_INFO.info({
+            'version': '1.0.3',
+            'host_id': 'cfoperator',
+            'mode': 'dual_ooda'
+        })
 
         logger.info("CFOperator initialized successfully")
 
@@ -233,11 +267,16 @@ class CFOperator:
 
         while True:
             try:
+                # Update uptime metric
+                AGENT_UPTIME.set(time.time() - self.start_time)
+                OODA_CYCLES.inc()
+
                 # MODE 1: Reactive - handle alerts immediately
                 if self.alerts:
                     alerts = self._check_alerts()
                     if alerts:
                         logger.info(f"Alerts detected: {len(alerts)}")
+                        SWEEPS.labels(mode='reactive').inc()
                         for alert in alerts:
                             self._handle_alert_reactive(alert)
 
@@ -246,6 +285,7 @@ class CFOperator:
                     logger.info("="*60)
                     logger.info("PROACTIVE MODE: Starting deep system sweep")
                     logger.info("="*60)
+                    SWEEPS.labels(mode='proactive').inc()
                     self._deep_system_sweep()
                     self.last_sweep = time.time()
 
@@ -259,6 +299,8 @@ class CFOperator:
                 break
             except Exception as e:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
+                ERROR_RATE.inc()
+                LOG_MESSAGES.labels(level='ERROR', component='cfoperator').inc()
                 time.sleep(30)  # Back off on errors
 
     def _check_alerts(self) -> List[Dict[str, Any]]:
@@ -451,6 +493,10 @@ class CFOperator:
             containers = self.containers.list_containers()
             logger.info(f"Found {len(containers)} containers across all hosts")
 
+            # Update running containers metric
+            running_count = sum(1 for c in containers if c.get('status') == 'running')
+            RUNNING_CONTAINERS.set(running_count)
+
             for container in containers:
                 # Check for unhealthy status
                 if container.get('status') != 'running':
@@ -461,6 +507,7 @@ class CFOperator:
 
         except Exception as e:
             logger.error(f"Error sweeping containers: {e}")
+            ERROR_RATE.inc()
 
         return findings
 
@@ -500,6 +547,130 @@ class CFOperator:
                 notif.send(report['summary'], severity=report['severity'])
             except Exception as e:
                 logger.error(f"Error sending notification: {e}")
+
+    def _chat_with_tools(self, provider_type: str, url: str, model: str,
+                         messages: List[Dict[str, str]], system_context: str,
+                         max_iterations: int = 10) -> Dict[str, Any]:
+        """
+        Execute LLM chat with tool calling support.
+
+        Args:
+            provider_type: 'ollama', 'groq', 'gemini', 'anthropic', etc.
+            url: API endpoint URL
+            model: Model name
+            messages: Chat history
+            system_context: System prompt
+            max_iterations: Max tool call iterations
+
+        Returns:
+            {
+                'response': '...',
+                'tool_calls': 2,
+                'input_tokens': 1234,
+                'output_tokens': 567
+            }
+        """
+        import requests
+
+        tool_calls_count = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
+
+        # Get tool schemas
+        tools = self.tools.get_schemas()
+
+        # Build initial messages with system context
+        full_messages = [{'role': 'system', 'content': system_context}] + messages
+
+        for iteration in range(max_iterations):
+            try:
+                # Build payload for Ollama (OpenAI-compatible format)
+                if provider_type == 'ollama':
+                    payload = {
+                        'model': model,
+                        'messages': full_messages,
+                        'stream': False,
+                        'tools': tools,
+                        'temperature': 0.7
+                    }
+                    headers = {'Content-Type': 'application/json'}
+                    response = requests.post(
+                        f"{url}/api/chat",
+                        json=payload,
+                        headers=headers,
+                        timeout=120
+                    )
+                    data = response.json()
+
+                    # Extract tokens
+                    if 'prompt_eval_count' in data:
+                        total_input_tokens += data.get('prompt_eval_count', 0)
+                    if 'eval_count' in data:
+                        total_output_tokens += data.get('eval_count', 0)
+
+                    # Check for tool calls
+                    message = data.get('message', {})
+                    tool_calls = message.get('tool_calls', [])
+
+                    if tool_calls:
+                        # Execute tool
+                        tool_call = tool_calls[0]
+                        tool_name = tool_call['function']['name']
+                        tool_args = tool_call['function']['arguments']
+
+                        logger.info(f"Executing tool: {tool_name}")
+                        result = self.tools.execute(tool_name, tool_args)
+                        tool_calls_count += 1
+
+                        # Track tool execution
+                        TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
+
+                        # Append assistant message with tool call
+                        full_messages.append(message)
+
+                        # Append tool result
+                        full_messages.append({
+                            'role': 'tool',
+                            'content': json.dumps(result)
+                        })
+
+                        # Continue loop for next iteration
+                        continue
+
+                    # No tool calls, extract text response
+                    text = message.get('content', '')
+                    return {
+                        'response': text,
+                        'tool_calls': tool_calls_count,
+                        'input_tokens': total_input_tokens,
+                        'output_tokens': total_output_tokens
+                    }
+
+                else:
+                    # For other providers (groq, gemini, anthropic) - simplified for now
+                    # TODO: Implement full support for other providers
+                    raise NotImplementedError(f"Provider {provider_type} not yet implemented for chat")
+
+            except Exception as e:
+                logger.error(f"Chat iteration {iteration} failed: {e}", exc_info=True)
+                if iteration == 0:
+                    # First failure, raise immediately
+                    raise
+                # Subsequent failure during tool loop, return what we have
+                return {
+                    'response': f"Error during tool execution: {str(e)}",
+                    'tool_calls': tool_calls_count,
+                    'input_tokens': total_input_tokens,
+                    'output_tokens': total_output_tokens
+                }
+
+        # Hit max iterations
+        return {
+            'response': "Maximum tool iterations reached. Please simplify your request.",
+            'tool_calls': tool_calls_count,
+            'input_tokens': total_input_tokens,
+            'output_tokens': total_output_tokens
+        }
 
     def handle_chat_message(self, message: str, history: List[Dict[str, str]], backend: str = 'auto') -> Dict[str, Any]:
         """
@@ -565,16 +736,86 @@ Be concise and infrastructure-focused.
                 'tool_calls': 0
             }
 
-        # TODO: Call LLM with tools
-        # For now, placeholder response
-        response_text = f"Chat handling not yet fully implemented. Message received: {message}"
+        # Call LLM with tools + metrics tracking
+        start_time = time.time()
+        tool_calls_count = 0
 
-        return {
-            'response': response_text,
-            'backend': backend,
-            'model': 'placeholder',
-            'tool_calls': 0
-        }
+        try:
+            # Get next available provider
+            provider_info = self.llm.get_next_provider()
+            if not provider_info:
+                return {
+                    'response': 'All LLM providers are currently unavailable. Please try again later.',
+                    'backend': 'none',
+                    'model': 'none',
+                    'tool_calls': 0
+                }
+
+            provider_type, url, model = provider_info
+
+            # Build messages
+            messages = []
+            for msg in history:
+                messages.append(msg)
+            messages.append({'role': 'user', 'content': message})
+
+            # Call LLM with tools
+            result = self._chat_with_tools(
+                provider_type=provider_type,
+                url=url,
+                model=model,
+                messages=messages,
+                system_context=system_context
+            )
+
+            tool_calls_count = result.get('tool_calls', 0)
+            response_text = result.get('response', '')
+
+            # Track successful LLM request
+            latency = time.time() - start_time
+            LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
+            LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
+
+            # Track tokens if available
+            if result.get('input_tokens'):
+                LLM_TOKENS.labels(provider=provider_type, model=model, type='input').inc(result['input_tokens'])
+            if result.get('output_tokens'):
+                LLM_TOKENS.labels(provider=provider_type, model=model, type='output').inc(result['output_tokens'])
+
+            # Record success in fallback manager
+            provider_key = f"{provider_type}/{url}/{model}" if url else f"{provider_type}/{model}"
+            self.llm.record_success(provider_key)
+
+            return {
+                'response': response_text,
+                'backend': provider_type,
+                'model': model,
+                'tool_calls': tool_calls_count
+            }
+
+        except Exception as e:
+            # Track failed LLM request
+            latency = time.time() - start_time
+            provider = provider_type if 'provider_type' in locals() else 'unknown'
+            model_name = model if 'model' in locals() else 'unknown'
+
+            LLM_REQUESTS.labels(provider=provider, model=model_name, result='error').inc()
+            LLM_ERRORS.labels(provider=provider, error_type=type(e).__name__).inc()
+            LLM_LATENCY.labels(provider=provider, model=model_name).observe(latency)
+
+            # Record failure in fallback manager
+            if 'provider_key' in locals():
+                error_type = self.llm.classify_error(e)
+                self.llm.record_failure(provider_key, error_type)
+
+            logger.error(f"Chat failed: {e}", exc_info=True)
+
+            return {
+                'response': f"Error processing request: {str(e)}",
+                'backend': provider,
+                'model': model_name,
+                'tool_calls': tool_calls_count
+            }
 
     def _execute_skill(self, message: str) -> Dict[str, Any]:
         """Execute a skill command (e.g., /investigate-container immich-ml)."""

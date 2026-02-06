@@ -61,10 +61,17 @@ class WebServer:
         def health():
             return jsonify({
                 'status': 'ok',
-                'version': '1.0.0',
+                'version': '1.0.2',
                 'current_investigation': self.operator.current_investigation is not None,
                 'uptime_seconds': time.time() - self.operator.start_time if hasattr(self.operator, 'start_time') else 0
             })
+
+        # Prometheus metrics endpoint
+        @self.app.route('/metrics')
+        def metrics():
+            """Expose Prometheus metrics for Grafana dashboard."""
+            from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+            return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
         # Chat API (HTTP)
         @self.app.route('/api/chat', methods=['POST'])
