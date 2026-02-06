@@ -63,12 +63,11 @@ class CFOperator:
         self.config = self._load_config(config_path)
 
         # Initialize core components (from SRE Sentinel)
+        # Build database URL for ResilientKnowledgeBase
+        db_url = f"postgresql://{self.config['database']['user']}:{self.config['database']['password']}@{self.config['database']['host']}:{self.config['database']['port']}/{self.config['database']['database']}"
         self.kb = ResilientKnowledgeBase(
-            host=self.config['database']['host'],
-            port=self.config['database']['port'],
-            database=self.config['database']['database'],
-            user=self.config['database']['user'],
-            password=self.config['database']['password']
+            db_url=db_url,
+            host_id='cfoperator'  # Single central agent
         )
 
         self.llm = LLMFallback(kb=self.kb)
