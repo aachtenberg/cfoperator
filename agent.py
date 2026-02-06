@@ -34,6 +34,9 @@ from observability import (
     SlackNotifications
 )
 
+# Import web server
+from web_server import WebServer
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -81,6 +84,18 @@ class CFOperator:
         self.current_investigation = None
         self.last_sweep = 0
         self.sweep_interval = self.config['ooda']['sweep_interval']
+        self.start_time = time.time()
+
+        # Initialize web server
+        chat_config = self.config.get('chat', {})
+        if chat_config.get('enabled', True):
+            self.web_server = WebServer(
+                operator=self,
+                host='0.0.0.0',
+                port=chat_config.get('port', 8083)
+            )
+        else:
+            self.web_server = None
 
         logger.info("CFOperator initialized successfully")
 
@@ -200,6 +215,11 @@ class CFOperator:
         logger.info(f"Proactive: deep sweep every {self.sweep_interval}s ({self.sweep_interval//60} minutes)")
         logger.info("="*60)
 
+        # Start web server in background thread
+        if self.web_server:
+            self.web_server.run_threaded()
+            logger.info(f"Web UI available at http://0.0.0.0:{self.config.get('chat', {}).get('port', 8083)}")
+
         while True:
             try:
                 # MODE 1: Reactive - handle alerts immediately
@@ -218,11 +238,8 @@ class CFOperator:
                     self._deep_system_sweep()
                     self.last_sweep = time.time()
 
-                # TODO: Handle chat messages (if any pending)
-                # self._process_chat_queue()
-
-                # TODO: Check for answered questions
-                # self._check_question_answers()
+                # MODE 3: Morning summary (TPS report style)
+                self._check_morning_summary()
 
                 time.sleep(self.config['ooda']['alert_check_interval'])
 
@@ -472,6 +489,261 @@ class CFOperator:
                 notif.send(report['summary'], severity=report['severity'])
             except Exception as e:
                 logger.error(f"Error sending notification: {e}")
+
+    def handle_chat_message(self, message: str, history: List[Dict[str, str]], backend: str = 'auto') -> Dict[str, Any]:
+        """
+        Handle chat message from user (via web UI).
+
+        This is for infrastructure-specific questions like:
+        - "Why did immich restart?"
+        - "Show me Pi2 container status"
+        - "What's using memory on Pi3?"
+        - "/investigate-container immich-ml"
+
+        NOT for general system administration (that's Claude Code CLI).
+
+        Args:
+            message: User's message
+            history: Chat history
+            backend: LLM backend to use (auto, ollama, groq, gemini, anthropic)
+
+        Returns:
+            {
+                'response': '...',
+                'backend': 'ollama',
+                'model': 'qwen3:14b',
+                'tool_calls': 2
+            }
+        """
+        logger.info(f"Handling chat message: {message[:100]}")
+
+        # Build system context with current infrastructure state
+        system_context = f"""You are CFOperator, an autonomous infrastructure monitoring agent.
+
+Current System State:
+- Active investigation: {self.current_investigation is not None}
+- Last sweep: {int(time.time() - self.last_sweep)}s ago
+- Monitoring: 4 Raspberry Pi hosts (raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4)
+
+You have access to:
+- Prometheus metrics (all hosts)
+- Loki logs (all hosts)
+- Docker containers (all hosts via remote API)
+- Investigation history and learnings (vector DB)
+
+Your role:
+- Answer infrastructure-specific questions
+- Investigate issues using available tools
+- Execute skills when requested (e.g., /investigate-container)
+- NOT general system administration (user has Claude Code CLI for that)
+
+Be concise and infrastructure-focused.
+"""
+
+        # Check for skill/command invocation
+        if message.startswith('/'):
+            return self._execute_skill(message)
+
+        # Check for summary request (special command)
+        if any(keyword in message.lower() for keyword in ['summary', 'report', 'status', 'tps']):
+            summary = self._generate_morning_summary()
+            return {
+                'response': summary['text'],
+                'backend': 'N/A',
+                'model': 'N/A',
+                'tool_calls': 0
+            }
+
+        # TODO: Call LLM with tools
+        # For now, placeholder response
+        response_text = f"Chat handling not yet fully implemented. Message received: {message}"
+
+        return {
+            'response': response_text,
+            'backend': backend,
+            'model': 'placeholder',
+            'tool_calls': 0
+        }
+
+    def _execute_skill(self, message: str) -> Dict[str, Any]:
+        """Execute a skill command (e.g., /investigate-container immich-ml)."""
+        # TODO: Implement skill execution
+        parts = message.split(maxsplit=1)
+        skill_name = parts[0][1:]  # Remove leading /
+        args = parts[1] if len(parts) > 1 else ''
+
+        return {
+            'response': f"Skill execution not yet implemented: {skill_name}",
+            'backend': 'N/A',
+            'model': 'N/A',
+            'tool_calls': 0
+        }
+
+    def answer_question(self, question_id: int, answer: str):
+        """
+        User answered a pending question.
+
+        This unblocks an investigation that was waiting for input.
+        """
+        logger.info(f"Received answer for question {question_id}: {answer[:100]}")
+
+        # TODO: Store answer in DB
+        # TODO: Signal waiting investigation to continue
+
+        # For now, just log
+        logger.info(f"Answer handling not yet fully implemented")
+
+    def _check_morning_summary(self):
+        """
+        Generate morning summary (TPS report style).
+
+        Checks if it's morning (e.g., 7-9 AM) and we haven't sent today's report yet.
+        If yes, generates summary of overnight events and patterns.
+
+        Summary includes:
+        - Investigations resolved overnight
+        - Alerts that fired (and auto-resolved)
+        - Container restarts
+        - Notable metric trends
+        - Log patterns detected
+        - Learnings extracted
+        - Recommendations for the day
+
+        Sent to:
+        - Chat UI (broadcast to any connected clients)
+        - Slack (if configured)
+        - Stored in DB as sweep_report type
+        """
+        from datetime import datetime as dt
+
+        # Check if morning summary is enabled
+        summary_config = self.config.get('ooda', {}).get('morning_summary', {})
+        if not summary_config.get('enabled', True):
+            return
+
+        # Check if it's morning time
+        now = dt.now()
+        summary_hour_start = summary_config.get('hour_start', 7)
+        summary_hour_end = summary_config.get('hour_end', 9)
+
+        if not (summary_hour_start <= now.hour < summary_hour_end):
+            return
+
+        # Check if we already sent today's summary
+        last_summary_date = getattr(self, 'last_summary_date', None)
+        if last_summary_date == now.date():
+            return
+
+        logger.info("="*60)
+        logger.info("MORNING SUMMARY: Generating overnight report")
+        logger.info("="*60)
+
+        # Generate the summary
+        summary = self._generate_morning_summary()
+
+        # Mark as sent
+        self.last_summary_date = now.date()
+
+        # Broadcast to UI
+        if self.web_server:
+            self.web_server.broadcast({
+                'type': 'morning_summary',
+                'summary': summary['text'],
+                'timestamp': now.isoformat()
+            })
+
+        # Send to Slack
+        for notif in self.notifications:
+            try:
+                notif.send(summary['text'], severity='info')
+            except Exception as e:
+                logger.error(f"Error sending morning summary: {e}")
+
+        # Store in DB
+        # TODO: Store as sweep_report with type='morning_summary'
+
+        logger.info("Morning summary sent")
+
+    def _generate_morning_summary(self) -> Dict[str, Any]:
+        """
+        Generate TPS report style morning summary.
+
+        Example output:
+        ```
+        ## Infrastructure Summary - 2024-01-15 07:30
+
+        ### Overnight Activity (midnight - 7am)
+        - 3 investigations resolved automatically
+        - 1 alert fired and auto-resolved (immich-ml memory)
+        - 12 container restarts across fleet (5 on Pi2, 4 on Pi3, 3 on Pi4)
+
+        ### Patterns Detected
+        - Pi2: telegraf restarts every ~2 hours (memory leak suspected)
+        - Pi3: immich-ml OOM events correlate with backup jobs
+        - Cross-host: redis connection spikes during postgres restarts
+
+        ### Metric Trends (7-day)
+        - Pi2 disk: 82% → 85% (+3% this week, +12% this month)
+        - Pi3 memory: Steady 95% utilization (container limits may need adjustment)
+        - Pi4 CPU: Spikes to 80% during backup windows (expected)
+
+        ### Learnings Extracted
+        - immich-ml: Increasing memory limit to 2GB prevents OOM during large imports
+        - telegraf: Restart every 6h as workaround for memory leak (upstream issue filed)
+
+        ### Recommendations
+        1. Increase Pi2 disk soon (will hit 90% in ~3 weeks at current rate)
+        2. Consider moving immich-ml to Pi4 (more memory available)
+        3. Update telegraf to v1.29 when available (memory leak fix)
+
+        ### System Health: GOOD ✓
+        - All hosts responding
+        - All critical services running
+        - No pending investigations
+        ```
+        """
+        from datetime import datetime as dt, timedelta
+
+        # Query overnight activity (midnight to now)
+        midnight = dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+        # TODO: Query investigations from last night
+        # investigations = self.kb.get_investigations_since(midnight)
+
+        # TODO: Query alerts from last night
+        # alerts = self.kb.get_alerts_since(midnight)
+
+        # TODO: Query container events from last night
+        # container_events = self.kb.get_container_events_since(midnight)
+
+        # TODO: Get metric trends (7-day comparison)
+        # metric_trends = self._get_metric_trends(days=7)
+
+        # TODO: Get newly extracted learnings
+        # new_learnings = self.kb.get_learnings_since(midnight)
+
+        # For now, generate placeholder summary
+        summary_text = f"""## Infrastructure Summary - {dt.now().strftime("%Y-%m-%d %H:%M")}
+
+### Overnight Activity (midnight - {dt.now().strftime("%H:%M")})
+- Morning summary not yet fully implemented
+- Placeholder report
+
+### System Health: UNKNOWN
+- Monitoring active
+- Data collection in progress
+
+### Next Steps
+- Implement full morning summary generation
+- Query DB for overnight events
+- Analyze patterns with LLM
+"""
+
+        return {
+            'text': summary_text,
+            'timestamp': dt.now(),
+            'severity': 'info'
+        }
 
 def main():
     """Main entry point."""

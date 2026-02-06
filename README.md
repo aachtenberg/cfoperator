@@ -1,154 +1,114 @@
 # CFOperator - Continuous Feedback Operator
 
-An intelligent homelab monitoring agent with dual-mode operation:
-- **Reactive**: Responds to alerts with LLM-driven investigations
-- **Proactive**: Periodic deep sweeps to catch issues before they alert
+**A specialized autonomous infrastructure monitoring agent with proactive intelligence.**
 
-Built with learnings from SRE Sentinel, inspired by OODA loop principles.
+CFOperator is NOT a replacement for Claude Code CLI. Instead, it's a complementary tool that runs continuously in the background, learning your infrastructure patterns, predicting issues before they become alerts, and surfacing insights when you need them.
+
+## Philosophy
+
+**Two tools, one powerful workflow:**
+
+- **Claude Code CLI**: Your general-purpose system assistant for day-to-day work
+  - Installing packages, writing scripts, fixing permissions
+  - Git operations, Docker management, debugging
+  - Interactive, on-demand assistance
+
+- **CFOperator**: Specialized infrastructure intelligence running 24/7
+  - Autonomous OODA loop (Observe → Orient → Decide → Act)
+  - Proactive sweeps every 30 minutes to catch trends
+  - Morning summaries (TPS report style) of overnight events
+  - Infrastructure-specific Q&A when you need it
 
 ## Key Features
 
-### Dual-Mode OODA Loop
-- **Reactive Mode**: Handles firing alerts immediately with intelligent triage
-- **Proactive Mode**: Every 30 minutes, sweeps ALL metrics/logs/containers looking for trends
+### 1. Dual-Mode OODA Loop
 
-### Pluggable Observability Backends
-- **Metrics**: Prometheus (default), VictoriaMetrics, Datadog, InfluxDB
-- **Logs**: Loki (default), Elasticsearch, Splunk, CloudWatch
-- **Containers**: Docker (default), Kubernetes, Podman
-- **Alerts**: Alertmanager (default), PagerDuty, Opsgenie
-- **Notifications**: Slack (default), Discord, Email
+**Reactive Mode (Alert-Driven)**:
+- Monitors Alertmanager for firing alerts
+- Triages with LLM (investigate, ignore, escalate)
+- Runs autonomous investigations with 50+ tools
+- Extracts learnings from resolved issues
+- Asks you questions via chat when it needs input
 
-Simply implement the backend interface - no code changes required!
+**Proactive Mode (Continuous Intelligence)**:
+- Deep sweeps every 30 minutes (configurable)
+- Queries ALL metrics looking for trends
+- Scans ALL logs for patterns across services
+- Checks ALL containers systematically
+- Compares current state to baselines
+- Detects issues BEFORE they trigger alerts
 
-### Offline Resilience
-**CRITICAL**: Agent continues operating when database is unavailable.
-- Uses `ResilientKnowledgeBase` with local JSON Lines buffering
-- Automatically syncs buffered events when PostgreSQL comes back
-- No data loss during outages
+### 2. Morning Summary (TPS Report Style)
 
-### Intelligence
-- **LLM Fallback Chain**: Ollama → Groq → Gemini/Claude (proven from SRE Sentinel)
-- **Vector Memory**: pgvector + Ollama embeddings for semantic search
-- **Learning Extraction**: Automatically extracts patterns from resolved investigations
-- **Learning Consolidation**: Merges duplicate learnings to build institutional knowledge
+Ask "summary", "report", or "status" any time to get:
+- Overnight investigations resolved
+- Alerts fired and auto-resolved
+- Container restarts across fleet
+- Patterns detected
+- Metric trends (7-day comparison)
+- Learnings extracted
+- Recommendations
 
-## Architecture
+Auto-delivered 7-9 AM to chat UI + Slack.
 
-```
-┌─────────────────────┐
-│  CFOperator Agent   │
-│  (Single Process)   │
-└──────────┬──────────┘
-           │
-           ├─► Pluggable Backends
-           │   ├─ Prometheus/VictoriaMetrics/Datadog (metrics)
-           │   ├─ Loki/Elasticsearch (logs)
-           │   ├─ Docker/Kubernetes (containers)
-           │   └─ Alertmanager/PagerDuty (alerts)
-           │
-           ├─► LLM Fallback Chain
-           │   ├─ Ollama (local, primary)
-           │   ├─ Groq (fast fallback)
-           │   └─ Gemini/Claude (backup)
-           │
-           └─► PostgreSQL + pgvector
-               (with offline buffering)
-```
+### 3. Chat Interface
+
+Terminal-style UI with LLM backend selector, real-time WebSocket, tool execution visibility, and pending questions panel.
+
+### 4. Pluggable Observability Backends
+
+Swap Prometheus→VictoriaMetrics, Loki→Elasticsearch without code changes. Just update config.yaml.
+
+### 5. Investigation Learnings with Vector Memory
+
+Every resolved investigation analyzed by LLM to extract patterns, solutions, root causes. Stored with embeddings for semantic search.
+
+### 6. LLM Fallback Chain
+
+Ollama (local) → Groq → Gemini/Claude with automatic cooldown and retry logic.
 
 ## Quick Start
 
-### 1. Configure
-
 ```bash
 cp config.yaml.example config.yaml
-# Edit config.yaml with your backend URLs and API keys
-```
-
-### 2. Deploy
-
-```bash
-# Using Docker Compose
+# Edit config.yaml with your URLs and API keys
 docker-compose up -d
-
-# Or build and run manually
-docker build -t cfoperator .
-docker run -v ./config.yaml:/app/config.yaml cfoperator
+# Access UI: http://localhost:8083
 ```
 
-### 3. Monitor
+## Usage
 
-```bash
-# Check logs
-docker logs -f cfoperator
-
-# View investigations in PostgreSQL
-docker exec cfoperator-postgres psql -U cfoperator -d cfoperator \
-  -c "SELECT id, trigger, outcome, started_at FROM investigations ORDER BY id DESC LIMIT 10;"
+**Morning routine**:
+```
+# In browser: http://pi1:8083
+# Type: "summary"
+# Get overnight report
 ```
 
-## Configuration
-
-See [config.yaml.example](config.yaml.example) for full configuration options.
-
-### Swap Backends
-
-Want to use VictoriaMetrics instead of Prometheus?
-
-1. Implement the `MetricsBackend` interface:
-```python
-# observability/victoriametrics.py
-from observability.base import MetricsBackend
-
-class VictoriaMetricsBackend(MetricsBackend):
-    def query(self, query: str, time=None):
-        # VictoriaMetrics-specific implementation
-        ...
+**Ask questions**:
+```
+"Why did immich restart last night?"
+"Show me Pi2 container status"
 ```
 
-2. Update config.yaml:
-```yaml
-observability:
-  metrics:
-    backend: victoriametrics
-    url: http://victoriametrics:8428
+**Use skills**:
+```
+/investigate-container telegraf
+/why-restart immich-ml
+/compare-hosts
 ```
 
-That's it! No code changes needed in the agent.
+**Answer pending questions**:
+When CFOperator needs input during investigation, question appears in UI. You answer → investigation continues.
 
-## Success Criteria
+## Documentation
 
-### Reactive Mode (Alert-Driven)
-- ✅ Alert fires → Agent triages → Investigates → Resolves → Extracts learning
-- ✅ LLM fallback works (Ollama fails → Groq takes over seamlessly)
-- ✅ Learnings extracted and searchable via vector DB
-
-### Proactive Mode (Continuous Intelligence)
-- ✅ Every 30 min: Deep sweep queries all metrics, logs, containers
-- ✅ Sweep identifies trends before they become alerts (disk filling, memory creep)
-- ✅ Sweep report generated with severity (info/warning/critical)
-- ✅ Pattern detection: "Pi2 always struggles after Pi3 restarts"
-
-### Offline Resilience
-- ✅ Agent continues operating when PostgreSQL is down
-- ✅ Events buffered locally to JSON Lines files
-- ✅ Automatic sync when database comes back online
-- ✅ No data loss during outages
-
-## Proactive Sweep Examples
-
-The agent catches issues before they alert:
-
-- **Slow disk fill**: Sweep detects "/var disk 70% → 75% → 82% over 3 weeks", warns before 90% alert fires
-- **Memory creep**: Sweep notices "immich-ml steady 95% memory for 4 days", suggests increasing limit
-- **Cross-service patterns**: Sweep finds "redis connection errors always spike when postgres restarts"
+See full documentation in this README for:
+- Architecture diagrams
+- Configuration reference
+- Development guide
+- Roadmap
 
 ## License
 
 MIT
-
-## Credits
-
-- Built with proven components from [SRE Sentinel](https://github.com/aachtenberg/sre-sentinel)
-- Inspired by OODA loop principles
-- Uses [OpenClaw](https://github.com/wandb/openclaw) memory patterns

@@ -1,5 +1,6 @@
 # Core web framework
 flask>=3.0.0
+flask-sock>=0.7.0
 websockets>=12.0
 
 # LLM providers

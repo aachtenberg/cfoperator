@@ -90,6 +90,12 @@ ooda:
     baseline_drift: true
     learning_consolidation: true
 
+  # Morning summary (TPS report style)
+  morning_summary:
+    enabled: true
+    hour_start: 7   # Start checking at 7 AM
+    hour_end: 9     # Stop checking at 9 AM
+
 # Chat Interface
 chat:
   enabled: true
