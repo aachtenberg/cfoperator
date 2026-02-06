@@ -70,8 +70,10 @@ class CFOperator:
             host_id='cfoperator'  # Single central agent
         )
 
-        self.llm = LLMFallback(kb=self.kb)
-        self.embeddings = EmbeddingService(kb=self.kb)
+        # LLMFallbackManager needs db_session_factory and settings_getter
+        # For CFOperator, we'll simplify this later - for now, skip LLM init
+        self.llm = None  # TODO: Initialize LLMFallbackManager properly
+        self.embeddings = None  # TODO: Initialize EmbeddingService properly
 
         # Initialize pluggable observability backends
         self._init_observability_backends()
