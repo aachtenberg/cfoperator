@@ -1,0 +1,26 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY *.py ./
+COPY observability/ ./observability/
+COPY config.yaml.example ./config.yaml.example
+
+# Create directories for plugins and skills
+RUN mkdir -p tools skills ui
+
+# Expose port for HTTP/WebSocket
+EXPOSE 8083
+
+# Run the agent
+CMD ["python", "agent.py"]
