@@ -70,10 +70,17 @@ class CFOperator:
             host_id='cfoperator'  # Single central agent
         )
 
-        # LLMFallbackManager needs db_session_factory and settings_getter
-        # For CFOperator, we'll simplify this later - for now, skip LLM init
-        self.llm = None  # TODO: Initialize LLMFallbackManager properly
-        self.embeddings = None  # TODO: Initialize EmbeddingService properly
+        # Initialize LLM fallback chain (reuses SRE Sentinel's proven architecture)
+        self.llm = LLMFallback(
+            db_session_factory=self.kb.session_scope,
+            settings_getter=self._get_agent_settings
+        )
+
+        # Initialize embeddings service for vector search
+        self.embeddings = EmbeddingService(
+            ollama_url=self.config.get('llm', {}).get('ollama_url', os.getenv('OLLAMA_URL', 'http://192.168.0.198:11434')),
+            db_session_factory=self.kb.session_scope
+        )
 
         # Initialize pluggable observability backends
         self._init_observability_backends()
@@ -748,6 +755,50 @@ Be concise and infrastructure-focused.
             'timestamp': dt.now(),
             'severity': 'info'
         }
+
+    def _get_agent_settings(self) -> Dict[str, Any]:
+        """
+        Get agent settings relevant to LLM fallback.
+
+        Returns dict with:
+        - enable_local_ollama: Whether to use local Ollama instances
+        - llm_fallback_chain: List of Ollama provider keys in priority order
+        - paid_llm_escalation: Single paid provider key
+        - allow_paid_escalation: Boolean flag to enable/disable paid LLM usage
+        """
+        settings = {}
+
+        # Get enable_local_ollama flag (default: True)
+        enable_local = self.kb.get_setting("enable_local_ollama", "true")
+        settings["enable_local_ollama"] = enable_local.lower() == "true" if isinstance(enable_local, str) else enable_local
+
+        # Get fallback chain (newline-separated string or JSON array)
+        chain_raw = self.kb.get_setting("llm_fallback_chain", "")
+        if chain_raw:
+            try:
+                # Try JSON array first
+                settings["llm_fallback_chain"] = json.loads(chain_raw)
+            except json.JSONDecodeError:
+                # Treat as newline-separated
+                settings["llm_fallback_chain"] = [line.strip() for line in chain_raw.split('\n') if line.strip()]
+        else:
+            settings["llm_fallback_chain"] = []
+
+        # Get paid LLM escalation provider
+        settings["paid_llm_escalation"] = self.kb.get_setting("paid_llm_escalation", "")
+
+        # Get allow paid flag (default: False for safety)
+        allow_paid = self.kb.get_setting("allow_paid_escalation", "false")
+        settings["allow_paid_escalation"] = allow_paid.lower() == "true" if isinstance(allow_paid, str) else allow_paid
+
+        # Get Ollama instances configuration (used by fallback manager to get URLs)
+        ollama_instances = self.kb.get_setting("ollama_instances", "{}")
+        try:
+            settings["ollama_instances"] = json.loads(ollama_instances)
+        except json.JSONDecodeError:
+            settings["ollama_instances"] = {}
+
+        return settings
 
 def main():
     """Main entry point."""
