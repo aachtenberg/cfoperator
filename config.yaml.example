@@ -1,0 +1,105 @@
+# CFOperator Configuration
+# Copy to config.yaml and customize for your environment
+
+# Observability Backends (Pluggable!)
+observability:
+  # Metrics backend - choose one:
+  metrics:
+    backend: prometheus  # or: victoria_metrics, datadog, influxdb
+    url: http://prometheus:9090
+    timeout: 30
+
+  # Logs backend - choose one:
+  logs:
+    backend: loki  # or: elasticsearch, splunk, cloudwatch
+    url: http://loki:3100
+    timeout: 30
+
+  # Container runtime - choose one:
+  containers:
+    backend: docker  # or: kubernetes, podman
+    hosts:
+      local: unix:///var/run/docker.sock
+      pi2: tcp://192.168.0.146:2375
+      pi3: tcp://192.168.0.111:2375
+      pi4: tcp://192.168.0.116:2375
+
+  # Alerts backend - choose one:
+  alerts:
+    backend: alertmanager  # or: pagerduty, opsgenie
+    url: http://alertmanager:9093
+
+  # Notifications backend - choose one or many:
+  notifications:
+    - backend: slack
+      webhook_url: ${SLACK_WEBHOOK_URL}
+    # - backend: discord
+    #   webhook_url: ${DISCORD_WEBHOOK_URL}
+    # - backend: email
+    #   smtp_host: smtp.gmail.com
+    #   smtp_port: 587
+    #   from: alerts@example.com
+
+# LLM Configuration
+llm:
+  # Primary LLM (Ollama local)
+  primary:
+    provider: ollama
+    url: http://192.168.0.198:11434
+    model: qwen3:14b/no_think  # /no_think disables deliberative mode
+
+  # Fallback chain (on error/timeout)
+  fallback:
+    - provider: groq
+      model: llama-3.3-70b-versatile
+      api_key: ${GROQ_API_KEY}
+    - provider: gemini
+      model: gemini-2.0-flash-exp
+      api_key: ${GEMINI_API_KEY}
+    - provider: anthropic
+      model: claude-3-5-sonnet-20241022
+      api_key: ${ANTHROPIC_API_KEY}
+
+  # Embeddings (for semantic search)
+  embeddings:
+    provider: ollama
+    url: http://192.168.0.198:11434
+    model: nomic-embed-text
+
+# Database
+database:
+  host: postgres
+  port: 5432
+  database: cfoperator
+  user: cfoperator
+  password: ${POSTGRES_PASSWORD}
+
+# OODA Loop Configuration
+ooda:
+  # Reactive mode: check for alerts every N seconds
+  alert_check_interval: 10
+
+  # Proactive mode: deep sweep every N seconds (1800 = 30 minutes)
+  sweep_interval: 1800
+
+  # What to sweep
+  sweep:
+    metrics: true
+    logs: true
+    containers: true
+    baseline_drift: true
+    learning_consolidation: true
+
+# Chat Interface
+chat:
+  enabled: true
+  port: 8083
+  websocket: true
+
+# Skills
+skills:
+  directory: ./skills
+  enabled:
+    - investigate-container
+    - why-restart
+    - compare-hosts
