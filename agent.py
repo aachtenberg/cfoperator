@@ -280,11 +280,20 @@ class CFOperator:
 
         # Container backend
         container_config = obs_config.get('containers', {})
-        if container_config.get('backend') == 'docker':
+        backend_type = container_config.get('backend')
+
+        if backend_type == 'prometheus':
+            # Use Prometheus for discovery, SSH for actions
+            from observability.prometheus_containers import PrometheusContainers
+            prometheus_url = metrics_config.get('url')  # Reuse Prometheus URL
+            ssh_user = container_config.get('ssh_user', 'aachten')
+            self.containers = PrometheusContainers(prometheus_url=prometheus_url, ssh_user=ssh_user)
+            logger.info(f"Initialized Prometheus container backend (SSH user: {ssh_user})")
+        elif backend_type == 'docker':
             self.containers = DockerContainers(hosts=container_config.get('hosts', {}))
             logger.info(f"Initialized Docker backend with {len(container_config.get('hosts', {}))} hosts")
         else:
-            logger.warning(f"Unsupported container backend: {container_config.get('backend')}")
+            logger.warning(f"Unsupported container backend: {backend_type}")
             self.containers = None
 
         # Alerts backend
@@ -802,17 +811,43 @@ Be concise and infrastructure-focused.
         tool_calls_count = 0
 
         try:
-            # Get next available provider
-            provider_info = self.llm.get_next_provider()
-            if not provider_info:
-                return {
-                    'response': 'All LLM providers are currently unavailable. Please try again later.',
-                    'backend': 'none',
-                    'model': 'none',
-                    'tool_calls': 0
-                }
-
-            provider_type, url, model = provider_info
+            # Get provider based on backend selection
+            if backend == 'auto':
+                # Use fallback chain
+                provider_info = self.llm.get_next_provider()
+                if not provider_info:
+                    return {
+                        'response': 'All LLM providers are currently unavailable. Please try again later.',
+                        'backend': 'none',
+                        'model': 'none',
+                        'tool_calls': 0
+                    }
+                provider_type, url, model = provider_info
+            else:
+                # User selected specific backend
+                provider_type = backend
+                if backend == 'ollama':
+                    # Get Ollama config from database
+                    settings = self._get_agent_settings()
+                    ollama_selection = settings.get('ollama_selection', {})
+                    url = ollama_selection.get('instance_url', 'http://192.168.0.150:11434')
+                    model = ollama_selection.get('model', 'qwen2.5-coder:14b')
+                elif backend == 'groq':
+                    url = None
+                    model = 'llama-3.3-70b-versatile'
+                elif backend == 'gemini':
+                    url = None
+                    model = 'gemini-2.0-flash-exp'
+                elif backend == 'anthropic':
+                    url = None
+                    model = 'claude-3-5-sonnet-20241022'
+                else:
+                    return {
+                        'response': f'Unknown backend: {backend}',
+                        'backend': 'error',
+                        'model': 'none',
+                        'tool_calls': 0
+                    }
 
             # Build messages
             messages = []
