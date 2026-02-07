@@ -14,28 +14,34 @@
             box-sizing: border-box;
         }
 
+        ::selection {
+            background: #083905;
+            color: #00ff00;
+        }
+
         body {
             font-family: 'Ubuntu Mono', 'Ubuntu', monospace;
-            background: #300a24;
-            color: #e8e8e8;
+            background: #000000;
+            color: #00ff00;
             height: 100vh;
             display: flex;
             flex-direction: column;
+            font-weight: 700;
         }
 
         header {
-            background: #2c001e;
+            background: #000000;
             padding: 12px 20px;
-            border-bottom: 1px solid #5e2750;
+            border-bottom: 1px solid #00a600;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .logo {
-            font-size: 16px;
-            font-weight: 600;
-            color: #8ae234;
+            font-size: 18px;
+            font-weight: 700;
+            color: #00ff00;
         }
 
         .settings-panel {
@@ -45,36 +51,37 @@
         }
 
         .settings-panel label {
-            font-size: 12px;
-            color: #858585;
+            font-size: 14px;
+            color: #00a600;
         }
 
         .settings-panel select {
-            background: #3d1f33;
-            color: #e8e8e8;
-            border: 1px solid #5e2750;
+            background: #000000;
+            color: #00ff00;
+            border: 1px solid #00a600;
             padding: 4px 8px;
             border-radius: 3px;
             font-family: inherit;
-            font-size: 12px;
+            font-size: 14px;
+            font-weight: 700;
         }
 
         .status-indicator {
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #8ae234;
+            background: #00d900;
             display: inline-block;
             margin-right: 6px;
         }
 
         .status-indicator.disconnected {
-            background: #ef2929;
+            background: #990000;
         }
 
         #questions-panel {
-            background: #3d1f33;
-            border-bottom: 1px solid #5e2750;
+            background: #000000;
+            border-bottom: 1px solid #00a600;
             padding: 12px 20px;
             display: none;
         }
@@ -84,27 +91,29 @@
         }
 
         .question-card {
-            background: #3d1f33;
+            background: #000000;
             padding: 12px;
             border-radius: 4px;
-            border-left: 3px solid #8ae234;
+            border-left: 3px solid #00ff00;
+            border: 1px solid #00a600;
             margin-bottom: 10px;
         }
 
         .question-card h4 {
-            color: #8ae234;
-            font-size: 12px;
+            color: #00ff00;
+            font-size: 14px;
+            font-weight: 700;
             margin-bottom: 6px;
         }
 
         .question-card p {
-            font-size: 13px;
+            font-size: 15px;
             margin-bottom: 8px;
         }
 
         .question-card .context {
-            font-size: 11px;
-            color: #858585;
+            font-size: 13px;
+            color: #00a600;
             margin-bottom: 10px;
         }
 
@@ -115,28 +124,30 @@
 
         .answer-input input {
             flex: 1;
-            background: #300a24;
-            border: 1px solid #5e2750;
-            color: #e8e8e8;
+            background: #000000;
+            border: 1px solid #00a600;
+            color: #00ff00;
             padding: 6px 10px;
             border-radius: 3px;
             font-family: inherit;
-            font-size: 12px;
+            font-size: 14px;
+            font-weight: 700;
         }
 
         .answer-input button {
-            background: #e95420;
-            color: #fff;
+            background: #00a600;
+            color: #000000;
             border: none;
             padding: 6px 16px;
             border-radius: 3px;
             cursor: pointer;
             font-family: inherit;
-            font-size: 12px;
+            font-size: 14px;
+            font-weight: 700;
         }
 
         .answer-input button:hover {
-            background: #f27649;
+            background: #00d900;
         }
 
         #chat-container {
@@ -151,46 +162,94 @@
         }
 
         .message-header {
-            font-size: 12px;
-            color: #858585;
+            font-size: 14px;
+            color: #00ff00;
             margin-bottom: 4px;
+            font-weight: 700;
         }
 
         .message.user .message-header {
-            color: #8ae234;
+            color: #00ff00;
         }
 
         .message.agent .message-header {
-            color: #729fcf;
+            color: #00a6b2;
         }
 
         .message.tool .message-header {
-            color: #e95420;
+            color: #e5e500;
         }
 
         .message-content {
-            font-size: 13px;
+            font-size: 15px;
             white-space: pre-wrap;
             word-wrap: break-word;
+            font-weight: 700;
         }
 
-        .tool-call {
-            background: #3d1f33;
+        .tool-log {
+            background: #0a0a0a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            max-height: 300px;
+            overflow-y: auto;
             padding: 8px 12px;
-            border-radius: 3px;
-            border-left: 3px solid #e95420;
+            margin: 6px 0 16px 0;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .tool-log-line {
+            padding: 2px 0;
+            border-bottom: 1px solid #111;
+        }
+
+        .tool-log-line:last-child {
+            border-bottom: none;
+        }
+
+        .tool-log-line .tl-label {
+            color: #666;
             font-size: 12px;
-            margin: 6px 0;
+        }
+
+        .tool-log-line .tl-name {
+            color: #e5e500;
+            font-weight: 700;
+        }
+
+        .tool-log-line .tl-args {
+            color: #00a600;
+            margin-left: 8px;
+        }
+
+        .tool-log-line .tl-result {
+            color: #557755;
+            margin-left: 8px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: inline-block;
+            max-width: calc(100% - 160px);
+            vertical-align: bottom;
+        }
+
+        .tool-log-header {
+            color: #666;
+            font-size: 12px;
+            padding-bottom: 4px;
+            border-bottom: 1px solid #222;
+            margin-bottom: 4px;
         }
 
         .tool-name {
-            color: #e95420;
-            font-weight: 600;
+            color: #e5e500;
+            font-weight: 700;
         }
 
         #input-area {
-            background: #2c001e;
-            border-top: 1px solid #5e2750;
+            background: #000000;
+            border-top: 1px solid #00a600;
             padding: 16px 20px;
             display: flex;
             gap: 10px;
@@ -198,52 +257,54 @@
 
         #message-input {
             flex: 1;
-            background: #3d1f33;
-            border: 1px solid #5e2750;
-            color: #e8e8e8;
+            background: #000000;
+            border: 1px solid #00a600;
+            color: #00ff00;
             padding: 10px 14px;
             border-radius: 4px;
             font-family: inherit;
-            font-size: 13px;
+            font-size: 15px;
+            font-weight: 700;
             resize: none;
+            caret-color: #23ff18;
         }
 
         #message-input:focus {
             outline: none;
-            border-color: #e95420;
+            border-color: #00d900;
         }
 
         #send-button {
-            background: #e95420;
-            color: #fff;
+            background: #00a600;
+            color: #000000;
             border: none;
             padding: 10px 20px;
             border-radius: 4px;
             cursor: pointer;
             font-family: inherit;
-            font-size: 13px;
-            font-weight: 500;
+            font-size: 15px;
+            font-weight: 700;
         }
 
         #send-button:hover {
-            background: #f27649;
+            background: #00d900;
         }
 
         #send-button:disabled {
-            background: #5e2750;
+            background: #333;
             cursor: not-allowed;
         }
 
         .links-section {
             margin-top: 20px;
             padding: 16px 20px;
-            background: #2c001e;
-            border-top: 1px solid #5e2750;
+            background: #000000;
+            border-top: 1px solid #00a600;
         }
 
         .links-section h3 {
-            font-size: 13px;
-            color: #999;
+            font-size: 15px;
+            color: #00a600;
             margin-bottom: 10px;
         }
 
@@ -256,9 +317,9 @@
         }
 
         .links-section a {
-            color: #8ae234;
+            color: #00ff00;
             text-decoration: none;
-            font-size: 12px;
+            font-size: 14px;
         }
 
         .links-section a:hover {
@@ -277,8 +338,8 @@
 
         .thinking .dots span {
             animation: blink 1.4s infinite both;
-            font-size: 18px;
-            color: #729fcf;
+            font-size: 20px;
+            color: #00a6b2;
         }
 
         .thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -294,16 +355,16 @@
         }
 
         ::-webkit-scrollbar-track {
-            background: #300a24;
+            background: #000000;
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #5e2750;
+            background: #333;
             border-radius: 5px;
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: #77216f;
+            background: #555;
         }
     </style>
 </head>
@@ -325,6 +386,8 @@
             <select id="ollama-model" style="display:none;">
                 <option value="">Loading models...</option>
             </select>
+            <label for="max-iterations">Max Tools:</label>
+            <input type="number" id="max-iterations" min="1" max="50" value="10" style="width: 50px; background: #000000; color: #00ff00; border: 1px solid #00a600; padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 14px; font-weight: 700; text-align: center;">
         </div>
     </header>
 
@@ -335,7 +398,7 @@
     <div id="chat-container">
         <div class="message agent">
             <div class="message-header">agent</div>
-            <div class="message-content">CFOperator v1.0.5 ready. Ask me about your infrastructure, or use skills:
+            <div class="message-content">CFOperator v1.0.8 ready. Ask me about your infrastructure, or use skills:
 - /investigate-container [name] - Systematic container investigation
 - /why-restart [container] - Analyze why a container restarted
 - /compare-hosts - Compare metrics and config across fleet</div>
@@ -343,7 +406,7 @@
     </div>
 
     <div id="thinking" class="thinking" style="padding: 0 20px;">
-        <div class="message-header" style="color: #729fcf;">agent</div>
+        <div class="message-header" style="color: #00a6b2;">agent</div>
         <div class="dots"><span>.</span><span>.</span><span>.</span></div>
     </div>
 
@@ -426,42 +489,43 @@
             container.scrollTop = container.scrollHeight;
         }
 
-        function addToolCall(toolName, input) {
+        // Current tool log container for the active chat response
+        let currentToolLog = null;
+
+        function getOrCreateToolLog() {
+            if (currentToolLog) return currentToolLog;
             const container = document.getElementById('chat-container');
-            const toolDiv = document.createElement('div');
-            toolDiv.className = 'message tool';
+            const logDiv = document.createElement('div');
+            logDiv.className = 'tool-log';
+            logDiv.innerHTML = '<div class="tool-log-header">tool activity</div>';
+            container.appendChild(logDiv);
+            currentToolLog = logDiv;
+            return logDiv;
+        }
 
-            const inputStr = JSON.stringify(input, null, 2);
+        function addToolCall(toolName, input, iteration, max) {
+            const log = getOrCreateToolLog();
+            const line = document.createElement('div');
+            line.className = 'tool-log-line';
 
-            toolDiv.innerHTML = `
-                <div class="message-header">tool execution</div>
-                <div class="tool-call">
-                    <span class="tool-name">${toolName}</span>
-                    <pre style="margin-top: 6px; font-size: 11px; color: #858585;">${escapeHtml(inputStr)}</pre>
-                </div>
-            `;
+            const argsStr = typeof input === 'string' ? input : JSON.stringify(input);
+            const iterLabel = (iteration && max) ? `[${iteration}/${max}] ` : '';
 
-            container.appendChild(toolDiv);
-            container.scrollTop = container.scrollHeight;
+            line.innerHTML = `<span class="tl-label">${iterLabel}</span><span class="tl-name">${escapeHtml(toolName)}</span><span class="tl-args">${escapeHtml(argsStr.substring(0, 200))}${argsStr.length > 200 ? '...' : ''}</span>`;
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
         }
 
         function addToolResult(toolName, result) {
-            const container = document.getElementById('chat-container');
-            const resultDiv = document.createElement('div');
-            resultDiv.className = 'message tool';
+            const log = getOrCreateToolLog();
+            const line = document.createElement('div');
+            line.className = 'tool-log-line';
 
-            const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+            const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
 
-            resultDiv.innerHTML = `
-                <div class="message-header">tool result</div>
-                <div class="tool-call">
-                    <span class="tool-name">${toolName}</span> → result
-                    <pre style="margin-top: 6px; font-size: 11px; color: #858585;">${escapeHtml(resultStr.substring(0, 500))}${resultStr.length > 500 ? '...' : ''}</pre>
-                </div>
-            `;
-
-            container.appendChild(resultDiv);
-            container.scrollTop = container.scrollHeight;
+            line.innerHTML = `<span class="tl-label">  </span><span class="tl-name">${escapeHtml(toolName)}</span> <span style="color:#666;">&rarr;</span> <span class="tl-result">${escapeHtml(resultStr.substring(0, 300))}${resultStr.length > 300 ? '...' : ''}</span>`;
+            log.appendChild(line);
+            log.scrollTop = log.scrollHeight;
         }
 
         function showQuestion(data) {
@@ -526,35 +590,78 @@
             document.getElementById('thinking').classList.add('active');
             document.getElementById('chat-container').scrollTop = document.getElementById('chat-container').scrollHeight;
 
-            const payload = {type: 'chat', message: message, history: chatHistory, backend: backend};
+            const payload = {message: message, history: chatHistory, backend: backend};
             if (model) payload.model = model;
 
-            // Use WebSocket if available, otherwise fall back to HTTP
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(payload));
-                setTimeout(() => {
-                    document.getElementById('send-button').disabled = false;
-                }, 1000);
-            } else {
-                // Fallback to HTTP API
-                fetch('/api/chat', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(payload)
-                })
-                .then(r => r.json())
-                .then(data => {
+            // Start chat — returns chat_id, then poll for events
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.chat_id) {
+                    pollChatEvents(data.chat_id, 0);
+                } else {
                     document.getElementById('thinking').classList.remove('active');
+                    document.getElementById('send-button').disabled = false;
+                    addMessage('agent', data.error || 'Unknown error', 'error', 'none');
+                }
+            })
+            .catch(err => {
+                document.getElementById('thinking').classList.remove('active');
+                console.error('Chat start error:', err);
+                addMessage('agent', `Error: ${err.message}`, 'error', 'none');
+                document.getElementById('send-button').disabled = false;
+            });
+        }
+
+        function pollChatEvents(chatId, cursor) {
+            fetch(`/api/chat/events/${chatId}?cursor=${cursor}`)
+            .then(r => r.json())
+            .then(data => {
+                // Process new events
+                for (const evt of (data.events || [])) {
+                    handleChatEvent(evt);
+                }
+                // Continue polling if not done
+                if (!data.done) {
+                    setTimeout(() => pollChatEvents(chatId, data.cursor), 1000);
+                }
+            })
+            .catch(err => {
+                console.error('Poll error:', err);
+                // Retry once after error
+                setTimeout(() => pollChatEvents(chatId, cursor), 2000);
+            });
+        }
+
+        function handleChatEvent(evt) {
+            const type = evt.event;
+            const data = evt.data;
+
+            if (type === 'tool_call') {
+                document.getElementById('thinking').classList.remove('active');
+                addToolCall(data.tool, data.args, data.iteration, data.max);
+                document.getElementById('thinking').classList.add('active');
+            } else if (type === 'tool_result') {
+                document.getElementById('thinking').classList.remove('active');
+                addToolResult(data.tool, data.result);
+                document.getElementById('thinking').classList.add('active');
+            } else if (type === 'done') {
+                document.getElementById('thinking').classList.remove('active');
+                document.getElementById('send-button').disabled = false;
+                currentToolLog = null;  // Reset for next interaction
+                if (data.response) {
                     addMessage('agent', data.response, data.backend, data.model);
                     chatHistory.push({role: 'assistant', content: data.response});
-                    document.getElementById('send-button').disabled = false;
-                })
-                .catch(err => {
-                    document.getElementById('thinking').classList.remove('active');
-                    console.error('Error:', err);
-                    addMessage('agent', `Error: ${err.message}`, 'error', 'none');
-                    document.getElementById('send-button').disabled = false;
-                });
+                }
+            } else if (type === 'error') {
+                document.getElementById('thinking').classList.remove('active');
+                document.getElementById('send-button').disabled = false;
+                currentToolLog = null;  // Reset for next interaction
+                addMessage('agent', `Error: ${data.error}`, 'error', 'none');
             }
         }
 
@@ -590,9 +697,10 @@
                         modelSelect.innerHTML = data.models
                             .map(m => `<option value="${m}">${m}</option>`)
                             .join('');
-                        // Pre-select persisted model if available
-                        if (data.selected && data.models.includes(data.selected)) {
-                            modelSelect.value = data.selected;
+                        // Pre-select: DB selection first, then localStorage, then first model
+                        const savedModel = data.selected || localStorage.getItem('cfoperator_ollama_model') || '';
+                        if (savedModel && data.models.includes(savedModel)) {
+                            modelSelect.value = savedModel;
                         }
                     } else {
                         modelSelect.innerHTML = '<option value="">No models found</option>';
@@ -607,6 +715,7 @@
         function onBackendChange() {
             const backend = document.getElementById('llm-backend').value;
             const modelSelect = document.getElementById('ollama-model');
+            localStorage.setItem('cfoperator_backend', backend);
             if (backend === 'ollama') {
                 modelSelect.style.display = '';
                 fetchOllamaModels();
@@ -618,6 +727,7 @@
         function onModelChange() {
             const model = document.getElementById('ollama-model').value;
             if (model) {
+                localStorage.setItem('cfoperator_ollama_model', model);
                 fetch('/api/ollama/models/select', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -626,9 +736,47 @@
             }
         }
 
+        function onMaxIterationsChange() {
+            const val = parseInt(document.getElementById('max-iterations').value) || 10;
+            const clamped = Math.max(1, Math.min(50, val));
+            document.getElementById('max-iterations').value = clamped;
+            localStorage.setItem('cfoperator_max_iterations', clamped);
+            fetch('/api/settings/max_tool_iterations', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({max_tool_iterations: clamped})
+            }).catch(err => console.error('Error saving max iterations:', err));
+        }
+
+        // Restore persisted backend and model on page load
+        function restoreSettings() {
+            const savedBackend = localStorage.getItem('cfoperator_backend');
+            if (savedBackend) {
+                document.getElementById('llm-backend').value = savedBackend;
+            }
+            // Always fetch models so the dropdown is ready; show if backend is ollama
+            const backend = document.getElementById('llm-backend').value;
+            if (backend === 'ollama') {
+                document.getElementById('ollama-model').style.display = '';
+                fetchOllamaModels();
+            }
+            // Restore max iterations from server (DB), fallback to localStorage
+            fetch('/api/settings/max_tool_iterations')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('max-iterations').value = data.max_tool_iterations;
+                    localStorage.setItem('cfoperator_max_iterations', data.max_tool_iterations);
+                })
+                .catch(() => {
+                    const saved = localStorage.getItem('cfoperator_max_iterations');
+                    if (saved) document.getElementById('max-iterations').value = saved;
+                });
+        }
+
         // Event listeners
         document.getElementById('llm-backend').addEventListener('change', onBackendChange);
         document.getElementById('ollama-model').addEventListener('change', onModelChange);
+        document.getElementById('max-iterations').addEventListener('change', onMaxIterationsChange);
         document.getElementById('send-button').addEventListener('click', sendMessage);
 
         document.getElementById('message-input').addEventListener('keydown', (e) => {
@@ -645,7 +793,8 @@
             e.target.rows = rows;
         });
 
-        // Initialize connection
+        // Initialize
+        restoreSettings();
         connectWebSocket();
     </script>
 </body>

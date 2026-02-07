@@ -2,14 +2,14 @@
 
 ## Overview
 
-CFOperator exposes Prometheus metrics at `http://192.168.0.167:8083/metrics` for comprehensive observability.
+CFOperator exposes Prometheus metrics at `http://192.168.0.111:8083/metrics` for comprehensive observability.
 
 ## Core Agent Metrics
 
 ### Agent Information
 ```promql
 # Agent version and configuration info
-cfoperator_agent_info{version="1.0.2", host_id="cfoperator", mode="dual_ooda"}
+cfoperator_agent_info{version="1.0.8", host_id="cfoperator", mode="dual_ooda"}
 
 # Agent uptime in seconds
 cfoperator_uptime_seconds
@@ -27,13 +27,13 @@ cfoperator_sweeps_total{mode="proactive"}
 
 ### Infrastructure Monitoring
 ```promql
-# Number of monitored hosts (should be 4)
+# Number of monitored hosts (should be 5)
 cfoperator_monitored_hosts
 
 # Running containers across fleet
 cfoperator_running_containers
 
-# Number of registered tools (should be 16)
+# Number of registered tools (should be 18)
 cfoperator_tools_registered
 ```
 
@@ -165,13 +165,13 @@ sum(rate(cfoperator_llm_tokens_total[1h])) * 3600
 
 ### Infrastructure Health
 ```promql
-# Expected: 4 hosts
+# Expected: 5 hosts
 cfoperator_monitored_hosts
 
 # Running containers (will vary)
 cfoperator_running_containers
 
-# Tools available (should be 16)
+# Tools available (should be 18)
 cfoperator_tools_registered
 ```
 
@@ -263,7 +263,7 @@ Add CFOperator as a scrape target:
 scrape_configs:
   - job_name: 'cfoperator'
     static_configs:
-      - targets: ['192.168.0.167:8083']
+      - targets: ['192.168.0.111:8083']  # raspberrypi3
     scrape_interval: 15s
     scrape_timeout: 10s
 ```
@@ -272,13 +272,13 @@ scrape_configs:
 
 ```bash
 # Check metrics endpoint
-curl http://192.168.0.167:8083/metrics | grep cfoperator
+curl http://192.168.0.111:8083/metrics | grep cfoperator
 
 # Check specific metric
-curl http://192.168.0.167:8083/metrics | grep cfoperator_uptime_seconds
+curl http://192.168.0.111:8083/metrics | grep cfoperator_uptime_seconds
 
 # Check LLM metrics (will appear after first LLM call)
-curl http://192.168.0.167:8083/metrics | grep cfoperator_llm
+curl http://192.168.0.111:8083/metrics | grep cfoperator_llm
 ```
 
 ## Metrics Implementation

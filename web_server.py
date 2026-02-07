@@ -14,6 +14,7 @@ Runs in separate thread alongside OODA loop.
 import json
 import logging
 import threading
+import uuid
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify, send_from_directory
 import time
@@ -56,6 +57,11 @@ class WebServer:
             self.ws_clients = []
             logger.warning("WebSocket disabled - use HTTP /api/chat endpoint instead")
 
+        # Chat sessions for polling-based streaming
+        # {chat_id: {'events': [...], 'done': bool, 'created': time}}
+        self._chat_sessions = {}
+        self._sessions_lock = threading.Lock()
+
         # Setup routes
         self._setup_routes()
 
@@ -74,7 +80,7 @@ class WebServer:
         def health():
             return jsonify({
                 'status': 'ok',
-                'version': '1.0.2',
+                'version': '1.0.8',
                 'current_investigation': self.operator.current_investigation is not None,
                 'uptime_seconds': time.time() - self.operator.start_time if hasattr(self.operator, 'start_time') else 0
             })
@@ -121,26 +127,30 @@ class WebServer:
                 logger.warning(f"Could not persist model selection (DB down?): {e}")
             return jsonify({'success': True, 'model': model_name})
 
-        # Chat API (HTTP)
+        # Settings API
+        @self.app.route('/api/settings/max_tool_iterations')
+        def get_max_tool_iterations():
+            """Get current max tool iterations setting."""
+            val = self.operator._get_max_tool_iterations()
+            return jsonify({'max_tool_iterations': val})
+
+        @self.app.route('/api/settings/max_tool_iterations', methods=['POST'])
+        def set_max_tool_iterations():
+            """Persist max tool iterations setting."""
+            data = request.json
+            val = max(1, min(50, int(data.get('max_tool_iterations', 10))))
+            try:
+                self.operator.kb._kb.set_setting('max_tool_iterations', str(val))
+            except Exception as e:
+                logger.warning(f"Could not persist max_tool_iterations (DB down?): {e}")
+            return jsonify({'success': True, 'max_tool_iterations': val})
+
+        # Chat API — starts chat in background, returns chat_id for polling
         @self.app.route('/api/chat', methods=['POST'])
         def api_chat():
             """
-            Handle chat message from user.
-
-            Request:
-                {
-                    "message": "Why did immich restart?",
-                    "history": [...],
-                    "backend": "auto|ollama|groq|gemini|anthropic"
-                }
-
-            Response:
-                {
-                    "response": "...",
-                    "backend": "ollama",
-                    "model": "qwen3:14b",
-                    "tool_calls": 2
-                }
+            Start a chat in the background and return a chat_id.
+            Poll /api/chat/events/<chat_id> for tool_call/tool_result/done events.
             """
             data = request.json
             message = data.get('message', '')
@@ -151,13 +161,62 @@ class WebServer:
             if not message:
                 return jsonify({'error': 'No message provided'}), 400
 
-            try:
-                # Delegate to operator's chat handler
-                result = self.operator.handle_chat_message(message, history, backend, model=model)
-                return jsonify(result)
-            except Exception as e:
-                logger.error(f"Error handling chat: {e}", exc_info=True)
-                return jsonify({'error': str(e)}), 500
+            chat_id = str(uuid.uuid4())[:8]
+            with self._sessions_lock:
+                self._chat_sessions[chat_id] = {
+                    'events': [],
+                    'cursor': 0,
+                    'done': False,
+                    'created': time.time()
+                }
+
+            def run_chat():
+                try:
+                    for evt in self.operator.handle_chat_message_stream(message, history, backend, model=model):
+                        with self._sessions_lock:
+                            session = self._chat_sessions.get(chat_id)
+                            if session:
+                                session['events'].append(evt)
+                                if evt['event'] in ('done', 'error'):
+                                    session['done'] = True
+                except Exception as e:
+                    logger.error(f"Chat session {chat_id} failed: {e}", exc_info=True)
+                    with self._sessions_lock:
+                        session = self._chat_sessions.get(chat_id)
+                        if session:
+                            session['events'].append({'event': 'error', 'data': {'error': str(e)}})
+                            session['done'] = True
+
+            thread = threading.Thread(target=run_chat, daemon=True)
+            thread.start()
+
+            return jsonify({'chat_id': chat_id})
+
+        # Poll for chat events
+        @self.app.route('/api/chat/events/<chat_id>')
+        def api_chat_events(chat_id):
+            """
+            Return new events since last poll. Client tracks cursor via 'cursor' field.
+            """
+            with self._sessions_lock:
+                session = self._chat_sessions.get(chat_id)
+                if not session:
+                    return jsonify({'error': 'Unknown chat_id'}), 404
+
+                cursor = int(request.args.get('cursor', 0))
+                new_events = session['events'][cursor:]
+                new_cursor = len(session['events'])
+                done = session['done']
+
+                # Clean up old sessions (>5 min after done)
+                if done and time.time() - session['created'] > 300:
+                    del self._chat_sessions[chat_id]
+
+            return jsonify({
+                'events': new_events,
+                'cursor': new_cursor,
+                'done': done
+            })
 
         # Q&A API (HTTP)
         @self.app.route('/api/qa', methods=['GET', 'POST'])

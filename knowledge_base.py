@@ -852,7 +852,37 @@ class KnowledgeBase:
         Base.metadata.create_all(self.engine)
         # Ensure FTS columns exist (added after initial schema)
         self.ensure_fts_schema()
+        # Ensure learning_embeddings table exists for semantic search on learnings
+        self._ensure_learning_embeddings_table()
         _log("info", "Knowledge base schema initialized")
+
+    def _ensure_learning_embeddings_table(self):
+        """Create learning_embeddings table if it doesn't exist."""
+        try:
+            from sqlalchemy import text
+            with self.session_scope() as session:
+                session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS learning_embeddings (
+                        id SERIAL PRIMARY KEY,
+                        learning_id INTEGER NOT NULL UNIQUE REFERENCES investigation_learnings(id) ON DELETE CASCADE,
+                        embedding vector(768),
+                        embedding_model VARCHAR(100) NOT NULL,
+                        embedding_text TEXT NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """))
+                session.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_learning_embeddings_lid
+                    ON learning_embeddings (learning_id)
+                """))
+                session.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_learning_embeddings_vector
+                    ON learning_embeddings USING hnsw (embedding vector_cosine_ops)
+                    WITH (m = 16, ef_construction = 64)
+                """))
+                session.commit()
+        except Exception as e:
+            _log("debug", "learning_embeddings table setup", note=str(e))
 
     def register_host(self, name: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
         """Register or update this host in the hosts table."""
@@ -2191,6 +2221,84 @@ class KnowledgeBase:
             results = q.limit(limit).all()
             return [self._learning_to_dict(l) for l in results]
 
+    def find_learnings_hybrid(
+        self,
+        query_text: str,
+        query_embedding: Optional[List[float]] = None,
+        limit: int = 5,
+        vector_weight: float = 0.7
+    ) -> List[Dict[str, Any]]:
+        """
+        Find learnings using hybrid search (vector similarity + FTS).
+
+        Falls back to FTS-only if no embedding provided.
+        """
+        from sqlalchemy import text
+        try:
+            with self.session_scope() as session:
+                if query_embedding and len(query_embedding) > 0:
+                    embedding_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+                    fts_weight = 1.0 - vector_weight
+
+                    result = session.execute(text(f"""
+                        WITH vector_scores AS (
+                            SELECT le.learning_id,
+                                1 - (le.embedding <=> '{embedding_str}'::vector) as vector_sim
+                            FROM learning_embeddings le
+                        ),
+                        fts_scores AS (
+                            SELECT il.id as learning_id,
+                                ts_rank_cd(to_tsvector('english', il.search_text),
+                                           plainto_tsquery('english', :query)) as fts_rank
+                            FROM investigation_learnings il
+                            WHERE il.deprecated = false
+                              AND to_tsvector('english', il.search_text) @@ plainto_tsquery('english', :query)
+                        )
+                        SELECT il.id, il.learning_type, il.title, il.description,
+                               il.applies_when, il.services, il.tags, il.category,
+                               il.success_rate, il.created_at,
+                               COALESCE(v.vector_sim, 0) as vector_sim,
+                               COALESCE(f.fts_rank, 0) as fts_rank,
+                               (COALESCE(v.vector_sim, 0) * :vw +
+                                COALESCE(f.fts_rank, 0) * :fw) as combined_score
+                        FROM investigation_learnings il
+                        LEFT JOIN vector_scores v ON il.id = v.learning_id
+                        LEFT JOIN fts_scores f ON il.id = f.learning_id
+                        WHERE il.deprecated = false
+                          AND (v.vector_sim IS NOT NULL OR f.fts_rank IS NOT NULL)
+                        ORDER BY combined_score DESC
+                        LIMIT :limit
+                    """), {
+                        'query': query_text,
+                        'vw': vector_weight,
+                        'fw': fts_weight,
+                        'limit': limit
+                    })
+                else:
+                    # FTS-only fallback
+                    return self.find_learnings(query=query_text, limit=limit)
+
+                rows = result.fetchall()
+                return [
+                    {
+                        'id': row[0],
+                        'learning_type': row[1],
+                        'title': row[2],
+                        'description': row[3],
+                        'applies_when': row[4] or '',
+                        'services': row[5] or [],
+                        'tags': row[6] or [],
+                        'category': row[7] or '',
+                        'success_rate': float(row[8]) if row[8] else None,
+                        'vector_similarity': round(float(row[10]), 3) if row[10] else 0,
+                        'fts_rank': round(float(row[11]), 3) if row[11] else 0,
+                    }
+                    for row in rows
+                ]
+        except Exception as e:
+            _log("warn", "Hybrid learning search failed, falling back to FTS", error=str(e))
+            return self.find_learnings(query=query_text, limit=limit)
+
     def record_learning_application(self, learning_id: int, successful: bool) -> bool:
         """
         Record that a learning was applied and whether it was successful.
@@ -2256,6 +2364,15 @@ class KnowledgeBase:
             List of learnings
         """
         return self.find_learnings(services=services, limit=limit)
+
+    def get_learnings_since(self, since, limit: int = 50) -> List[Dict[str, Any]]:
+        """Get all learnings created since a given timestamp."""
+        with self.session_scope() as session:
+            learnings = session.query(InvestigationLearning).filter(
+                InvestigationLearning.created_at >= since,
+                InvestigationLearning.deprecated == False
+            ).order_by(InvestigationLearning.created_at.desc()).limit(limit).all()
+            return [self._learning_to_dict(l) for l in learnings]
 
     def _learning_to_dict(self, learning: 'InvestigationLearning') -> Dict[str, Any]:
         """Convert an InvestigationLearning to a dictionary."""
@@ -3811,6 +3928,34 @@ class ResilientKnowledgeBase:
                 self._health_monitor.mark_unhealthy()
         stats["buffer_pending"] = self._buffer.pending_count()
         return stats
+
+    def find_learnings(self, **kwargs):
+        """Find learnings - returns empty list if offline."""
+        if self._health_monitor.is_healthy():
+            try:
+                return self._kb.find_learnings(**kwargs)
+            except Exception:
+                self._health_monitor.mark_unhealthy()
+        return []
+
+    def store_learning(self, learning_data):
+        """Store learning - silently fails if offline."""
+        if self._health_monitor.is_healthy():
+            try:
+                return self._kb.store_learning(learning_data)
+            except Exception as e:
+                self._health_monitor.mark_unhealthy()
+                _log("warn", "store_learning failed (DB down?)", error=str(e))
+        return -1
+
+    def get_learnings_since(self, since, limit=50):
+        """Get learnings since timestamp - returns empty list if offline."""
+        if self._health_monitor.is_healthy():
+            try:
+                return self._kb.get_learnings_since(since, limit)
+            except Exception:
+                self._health_monitor.mark_unhealthy()
+        return []
 
     # ====================== Delegate Everything Else to Underlying KB ===========
 

@@ -7,7 +7,7 @@ Single central agent with dual-mode OODA loop:
 - Reactive: Responds to alerts with LLM-driven investigations
 - Proactive: Periodic deep sweeps to catch issues before they alert
 
-Version: 1.0.5
+Version: 1.0.8
 """
 
 import os
@@ -16,7 +16,9 @@ import time
 import json
 import yaml
 import logging
+import hashlib
 from datetime import datetime
+import queue
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
@@ -140,7 +142,7 @@ class CFOperator:
         TOOLS_REGISTERED.set(len(self.tools.tools))
         MONITORED_HOSTS.set(len(self.config.get('infrastructure', {}).get('hosts', {})))
         AGENT_INFO.info({
-            'version': '1.0.5',
+            'version': '1.0.8',
             'host_id': 'cfoperator',
             'mode': 'dual_ooda'
         })
@@ -437,16 +439,47 @@ class CFOperator:
         """
         trigger = context.get('trigger', '')
 
-        # TODO: Search for similar past investigations
-        # similar = self.kb.search_similar_investigations(query=trigger, limit=5)
+        # Generate embedding once for both learning and investigation search
+        query_embedding = None
+        try:
+            if self.embeddings.is_available():
+                query_embedding = self.embeddings.generate_embedding(trigger)
+        except Exception:
+            pass
 
-        # TODO: Search for relevant learnings
-        # learnings = self.kb.search_learnings(query=trigger, limit=3)
+        # Search for relevant learnings (hybrid if embedding available, FTS otherwise)
+        try:
+            if query_embedding:
+                learnings = self.kb._kb.find_learnings_hybrid(
+                    query_text=trigger,
+                    query_embedding=query_embedding,
+                    limit=3
+                )
+            else:
+                learnings = self.kb.find_learnings(query=trigger, limit=3)
+            if learnings:
+                logger.info(f"Found {len(learnings)} relevant learnings for: {trigger[:60]}")
+            context['known_learnings'] = learnings
+        except Exception as e:
+            logger.warning(f"Learning search failed: {e}")
+            context['known_learnings'] = []
 
-        # context['similar_investigations'] = similar
-        # context['known_learnings'] = learnings
-        context['similar_investigations'] = []
-        context['known_learnings'] = []
+        # Search for similar past investigations using embeddings (semantic) + FTS
+        try:
+            if query_embedding:
+                similar = self.kb._kb.find_similar_investigations_hybrid(
+                    query_text=trigger,
+                    query_embedding=query_embedding,
+                    limit=3
+                )
+                if similar:
+                    logger.info(f"Found {len(similar)} similar investigations via hybrid search")
+                context['similar_investigations'] = similar
+            else:
+                context['similar_investigations'] = []
+        except Exception as e:
+            logger.warning(f"Similar investigation search failed: {e}")
+            context['similar_investigations'] = []
 
         return context
 
@@ -469,25 +502,118 @@ class CFOperator:
 
         - Create investigation record
         - Run LLM investigation loop with tools
-        - Extract learnings
+        - Extract learnings from resolved investigations
         """
-        logger.info("Starting investigation...")
+        trigger = context.get('trigger', 'Unknown trigger')
+        logger.info(f"Starting investigation: {trigger[:100]}")
 
-        # TODO: Create investigation record
-        # inv_id = self.kb.create_investigation(trigger=context['trigger'])
-        # self.current_investigation = inv_id
+        # Create investigation record
+        inv_id = self.kb.start_investigation(trigger=trigger)
+        self.current_investigation = inv_id
+        start_time = time.time()
 
         try:
-            # TODO: Run LLM investigation cycle with tools
-            # self._run_investigation_cycle(context)
+            # Build investigation prompt with learnings and similar investigations context
+            learnings_text = ""
+            if context.get('known_learnings'):
+                learnings_text = "\n\nRelevant past learnings:\n"
+                for l in context['known_learnings']:
+                    learnings_text += f"- [{l['learning_type']}] {l['title']}: {l['description'][:200]}\n"
 
-            # TODO: Extract learnings from resolved investigation
-            # self._extract_learnings(inv_id)
+            similar_text = ""
+            if context.get('similar_investigations'):
+                similar_text = "\n\nSimilar past investigations:\n"
+                for inv in context['similar_investigations'][:3]:
+                    sim_score = inv.get('similarity') or inv.get('vector_similarity', 0)
+                    similar_text += f"- [{inv.get('outcome', '?')}] {inv.get('trigger', '')[:100]} (similarity: {sim_score})\n"
 
-            logger.info("Investigation not yet implemented - placeholder")
+            alert_info = context.get('alert', {})
+            system_prompt = f"""You are CFOperator investigating an infrastructure alert.
+
+Alert: {trigger}
+Alert details: {json.dumps(alert_info, default=str)[:1000]}
+{learnings_text}{similar_text}
+
+Investigate this alert using the available tools. Check metrics, logs, and container/service status.
+When done, provide a summary of findings and whether the issue is resolved, needs monitoring, or should be escalated."""
+
+            # Get LLM provider (respects user's UI model selection)
+            resolved = self._resolve_provider()
+            if not resolved:
+                logger.error("No LLM provider available for investigation")
+                self.kb.update_investigation(
+                    investigation_id=inv_id,
+                    completed_at=datetime.now(),
+                    findings={'error': 'No LLM provider available'},
+                    outcome='failed',
+                    duration_seconds=time.time() - start_time
+                )
+                INVESTIGATIONS.labels(outcome='failed').inc()
+                return
+
+            provider_type, url, model = resolved
+
+            # Run LLM investigation with tools
+            result = self._chat_with_tools(
+                provider_type=provider_type,
+                url=url,
+                model=model,
+                messages=[{'role': 'user', 'content': f'Investigate this alert: {trigger}'}],
+                system_context=system_prompt
+            )
+
+            response_text = result.get('response', '')
+            tool_calls_count = result.get('tool_calls', 0)
+            duration = time.time() - start_time
+
+            # Determine outcome from response
+            response_lower = response_text.lower()
+            if any(w in response_lower for w in ['resolved', 'fixed', 'no issue', 'healthy', 'normal']):
+                outcome = 'resolved'
+            elif any(w in response_lower for w in ['escalat', 'critical', 'urgent']):
+                outcome = 'escalated'
+            else:
+                outcome = 'monitoring'
+
+            findings = {
+                'response': response_text[:5000],
+                'tool_calls': tool_calls_count,
+                'provider': f"{provider_type}/{model}"
+            }
+
+            # Update investigation record
+            self.kb.update_investigation(
+                investigation_id=inv_id,
+                completed_at=datetime.now(),
+                findings=findings,
+                outcome=outcome,
+                duration_seconds=duration,
+                tool_calls_count=tool_calls_count
+            )
+            INVESTIGATIONS.labels(outcome=outcome).inc()
+            logger.info(f"Investigation #{inv_id} completed: {outcome} ({duration:.1f}s, {tool_calls_count} tool calls)")
+
+            # Extract learnings from resolved investigations
+            if outcome == 'resolved':
+                self._extract_learnings(inv_id, trigger, findings)
+
+            # Generate embedding for this investigation (async, non-blocking)
+            self._embed_investigation(inv_id, trigger, findings, outcome)
 
         except Exception as e:
-            logger.error(f"Investigation failed: {e}", exc_info=True)
+            logger.error(f"Investigation #{inv_id} failed: {e}", exc_info=True)
+            duration = time.time() - start_time
+            try:
+                self.kb.update_investigation(
+                    investigation_id=inv_id,
+                    completed_at=datetime.now(),
+                    findings={'error': str(e)},
+                    outcome='failed',
+                    duration_seconds=duration
+                )
+            except Exception:
+                pass
+            INVESTIGATIONS.labels(outcome='failed').inc()
         finally:
             self.current_investigation = None
 
@@ -541,6 +667,19 @@ class CFOperator:
         if sweep_config.get('learning_consolidation'):
             logger.info("Consolidating learnings...")
             self._consolidate_learnings()
+
+        # 5b. Backfill embeddings for unindexed investigations
+        try:
+            if self.embeddings.is_available():
+                result = self.embeddings.batch_index_investigations(
+                    kb=self.kb._kb,
+                    batch_size=10,
+                    max_total=50
+                )
+                if result.get('success', 0) > 0:
+                    logger.info(f"Embedding backfill: {result['success']} indexed, {result.get('remaining', 0)} remaining")
+        except Exception as e:
+            logger.debug(f"Embedding backfill skipped: {e}")
 
         # 6. Generate sweep report
         if findings:
@@ -599,9 +738,178 @@ class CFOperator:
         return []
 
     def _consolidate_learnings(self):
-        """Periodically consolidate similar learnings."""
-        # TODO: Use LLM to find and merge duplicate learnings
-        pass
+        """Periodically consolidate similar learnings by deprecating duplicates."""
+        try:
+            learnings = self.kb.find_learnings(limit=100)
+            if len(learnings) < 10:
+                return  # Not enough to consolidate
+            logger.info(f"Consolidating {len(learnings)} learnings...")
+            # Group by title similarity — deprecate exact title duplicates
+            seen_titles = {}
+            deprecated_count = 0
+            for l in learnings:
+                title_key = l['title'].lower().strip()
+                if title_key in seen_titles:
+                    self.kb._kb.deprecate_learning(l['id'])  # No resilient wrapper needed
+                    deprecated_count += 1
+                else:
+                    seen_titles[title_key] = l['id']
+            if deprecated_count:
+                logger.info(f"Deprecated {deprecated_count} duplicate learnings")
+        except Exception as e:
+            logger.warning(f"Learning consolidation failed: {e}")
+
+    def _extract_learnings(self, inv_id: int, trigger: str, findings: Dict[str, Any]):
+        """Extract structured learnings from a resolved investigation using LLM."""
+        import requests as req
+
+        try:
+            resolved = self._resolve_provider()
+            if not resolved:
+                logger.warning("No LLM provider available for learning extraction")
+                return
+
+            provider_type, url, model = resolved
+
+            prompt = f"""Analyze this resolved infrastructure investigation and extract 1-3 reusable learnings.
+
+Investigation trigger: {trigger}
+Findings: {json.dumps(findings, default=str)[:2000]}
+
+Return ONLY valid JSON in this exact format:
+{{"learnings": [
+  {{
+    "learning_type": "solution",
+    "title": "Brief title (max 100 chars)",
+    "description": "What was learned and how it was resolved",
+    "applies_when": "Conditions when this learning applies",
+    "services": ["service1"],
+    "tags": ["tag1", "tag2"],
+    "category": "resource"
+  }}
+]}}
+
+learning_type must be one of: solution, pattern, root_cause, antipattern, insight
+category must be one of: resource, network, config, dependency
+Keep learnings specific and actionable. Only extract learnings if there's genuine insight."""
+
+            if provider_type == 'ollama':
+                payload = {
+                    'model': model,
+                    'messages': [
+                        {'role': 'system', 'content': 'You are a structured data extractor. Return ONLY valid JSON.'},
+                        {'role': 'user', 'content': prompt}
+                    ],
+                    'stream': False,
+                    'temperature': 0.3,
+                    'format': 'json'
+                }
+                resp = req.post(f"{url}/api/chat", json=payload, timeout=60)
+                data = resp.json()
+                text = data.get('message', {}).get('content', '')
+            else:
+                logger.warning(f"Learning extraction not implemented for {provider_type}")
+                return
+
+            # Parse JSON response
+            result = json.loads(text)
+            learnings = result.get('learnings', [])
+
+            stored = 0
+            for learning_data in learnings[:3]:  # Cap at 3
+                learning_data['investigation_id'] = inv_id
+                if not learning_data.get('learning_type') or not learning_data.get('title'):
+                    continue
+                try:
+                    lid = self.kb.store_learning(learning_data)
+                    stored += 1
+                    logger.info(f"Learning extracted: [{learning_data['learning_type']}] {learning_data['title'][:60]}")
+                    # Generate embedding for the learning
+                    if lid and lid > 0:
+                        search_text = ' '.join(filter(None, [
+                            learning_data.get('title', ''),
+                            learning_data.get('description', ''),
+                            learning_data.get('applies_when', ''),
+                        ]))
+                        self._embed_learning(lid, search_text)
+                except Exception as e:
+                    logger.warning(f"Failed to store learning: {e}")
+
+            if stored:
+                logger.info(f"Extracted {stored} learnings from investigation #{inv_id}")
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse learning extraction response: {e}")
+        except Exception as e:
+            logger.warning(f"Learning extraction failed for investigation #{inv_id}: {e}")
+
+    def _embed_investigation(self, inv_id: int, trigger: str, findings: Dict[str, Any], outcome: str):
+        """Generate and store embedding for a completed investigation."""
+        try:
+            if not self.embeddings.is_available():
+                return
+
+            investigation_data = {
+                'trigger': trigger,
+                'findings': findings,
+                'outcome': outcome
+            }
+            embedding_text = self.embeddings.create_investigation_text(investigation_data)
+            if not embedding_text or len(embedding_text) < 10:
+                return
+
+            embedding = self.embeddings.generate_embedding(embedding_text)
+            if not embedding:
+                return
+
+            self.kb._kb.store_investigation_embedding(
+                investigation_id=inv_id,
+                embedding=embedding,
+                embedding_model=self.embeddings.model,
+                embedding_text=embedding_text
+            )
+            logger.info(f"Embedding stored for investigation #{inv_id}")
+            EMBEDDING_REQUESTS.labels(result='success').inc()
+        except Exception as e:
+            logger.warning(f"Embedding generation failed for investigation #{inv_id}: {e}")
+            EMBEDDING_REQUESTS.labels(result='error').inc()
+
+    def _embed_learning(self, learning_id: int, search_text: str):
+        """Generate and store embedding for a learning."""
+        try:
+            if not self.embeddings.is_available():
+                return
+
+            embedding = self.embeddings.generate_embedding(search_text)
+            if not embedding:
+                return
+
+            from sqlalchemy import text as sql_text
+            embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+            with self.kb._kb.session_scope() as session:
+                session.execute(sql_text("""
+                    UPDATE investigation_learnings
+                    SET embedding_hash = :hash
+                    WHERE id = :lid
+                """), {'hash': hashlib.md5(search_text.encode()).hexdigest(), 'lid': learning_id})
+                # Store in embedding cache for retrieval during search
+                session.execute(sql_text("""
+                    INSERT INTO learning_embeddings (learning_id, embedding, embedding_model, embedding_text)
+                    VALUES (:lid, :embedding, :model, :text)
+                    ON CONFLICT (learning_id) DO UPDATE SET
+                        embedding = EXCLUDED.embedding,
+                        embedding_model = EXCLUDED.embedding_model,
+                        embedding_text = EXCLUDED.embedding_text
+                """), {
+                    'lid': learning_id,
+                    'embedding': embedding_str,
+                    'model': self.embeddings.model,
+                    'text': search_text
+                })
+                session.commit()
+            logger.info(f"Embedding stored for learning #{learning_id}")
+        except Exception as e:
+            logger.debug(f"Learning embedding failed for #{learning_id}: {e}")
 
     def _generate_sweep_report(self, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate summary report from sweep findings."""
@@ -630,9 +938,66 @@ class CFOperator:
             except Exception as e:
                 logger.error(f"Error sending notification: {e}")
 
+    def _get_max_tool_iterations(self) -> int:
+        """Get max tool iterations: DB setting → config.yaml → default 10."""
+        try:
+            val = self.kb.get_setting('max_tool_iterations', '')
+            if val:
+                return max(1, min(50, int(val)))
+        except Exception:
+            pass
+        return self.config.get('chat', {}).get('max_tool_iterations', 10)
+
+    def _resolve_provider(self, backend: str = 'auto', model: str = None):
+        """
+        Resolve LLM provider from UI selection.
+
+        Centralizes provider resolution so chat, skills, and OODA all stay in sync.
+
+        Args:
+            backend: 'auto', 'ollama', 'groq', 'gemini', 'anthropic'
+            model: Explicit model override, or None to resolve from DB/config
+
+        Returns:
+            Tuple of (provider_type, url, model) or None if unavailable
+        """
+        if backend == 'auto':
+            # Use fallback chain, but still respect DB model selection for ollama
+            provider_info = self.llm.get_next_provider()
+            if not provider_info:
+                return None
+            provider_type, url, resolved_model = provider_info
+            # If fallback chain selected ollama, override model with user's DB selection
+            if provider_type == 'ollama' and not model:
+                primary = self.config.get('llm', {}).get('primary', {})
+                db_model = self.kb.get_setting('ollama_selected_model', '')
+                if db_model:
+                    resolved_model = db_model
+            return (provider_type, url, model or resolved_model)
+
+        provider_type = backend
+        llm_config = self.config.get('llm', {})
+
+        if backend == 'ollama':
+            primary = llm_config.get('primary', {})
+            url = primary.get('url', os.getenv('OLLAMA_URL', ''))
+            if not model:
+                model = self.kb.get_setting('ollama_selected_model', '') or primary.get('model', '')
+            return (provider_type, url, model)
+        elif backend in ('groq', 'gemini', 'anthropic'):
+            url = None
+            if not model:
+                for fb in llm_config.get('fallback', []):
+                    if fb.get('provider') == backend:
+                        model = fb.get('model', '')
+                        break
+            return (provider_type, url, model)
+        else:
+            return None
+
     def _chat_with_tools(self, provider_type: str, url: str, model: str,
                          messages: List[Dict[str, str]], system_context: str,
-                         max_iterations: int = 10) -> Dict[str, Any]:
+                         max_iterations: int = None, event_callback=None) -> Dict[str, Any]:
         """
         Execute LLM chat with tool calling support.
 
@@ -653,6 +1018,9 @@ class CFOperator:
             }
         """
         import requests
+
+        if max_iterations is None:
+            max_iterations = self._get_max_tool_iterations()
 
         tool_calls_count = 0
         total_input_tokens = 0
@@ -700,9 +1068,27 @@ class CFOperator:
                         tool_name = tool_call['function']['name']
                         tool_args = tool_call['function']['arguments']
 
+                        # Notify UI about tool call
+                        if event_callback:
+                            event_callback('tool_call', {
+                                'tool': tool_name,
+                                'args': tool_args,
+                                'iteration': iteration + 1,
+                                'max': max_iterations
+                            })
+
                         logger.info(f"Executing tool: {tool_name}")
                         result = self.tools.execute(tool_name, tool_args)
                         tool_calls_count += 1
+
+                        # Notify UI about tool result
+                        if event_callback:
+                            result_preview = json.dumps(result, default=str)[:500]
+                            event_callback('tool_result', {
+                                'tool': tool_name,
+                                'result': result_preview,
+                                'iteration': iteration + 1
+                            })
 
                         # Track tool execution
                         TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
@@ -799,7 +1185,8 @@ You have access to:
 - Prometheus metrics (all hosts)
 - Loki logs (all hosts)
 - Docker containers AND systemd services (all hosts via SSH — not everything is a container!)
-- Investigation history and learnings (vector DB)
+- Knowledge base: store_learning (save solutions/insights) and find_learnings (search past learnings)
+- Web search: web_search (look up docs, error messages, CVEs via SearXNG)
 
 Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
 Use ssh_list_services to see BOTH containers and systemd services on a host.
@@ -808,6 +1195,8 @@ Your role:
 - Answer infrastructure-specific questions
 - Investigate issues using available tools
 - Execute skills when requested (e.g., /investigate-container)
+- ALWAYS use store_learning to save solutions when you or the user resolves an issue
+- Use find_learnings to check for known solutions before investigating
 - NOT general system administration (user has Claude Code CLI for that)
 
 Be concise and infrastructure-focused.
@@ -815,7 +1204,7 @@ Be concise and infrastructure-focused.
 
         # Check for skill/command invocation
         if message.startswith('/'):
-            return self._execute_skill(message)
+            return self._execute_skill(message, backend=backend, model=model)
 
         # Check for explicit summary request (must be the primary intent, not just containing the word)
         msg_lower = message.lower().strip()
@@ -833,44 +1222,15 @@ Be concise and infrastructure-focused.
         tool_calls_count = 0
 
         try:
-            # Get provider based on backend selection
-            if backend == 'auto':
-                # Use fallback chain
-                provider_info = self.llm.get_next_provider()
-                if not provider_info:
-                    return {
-                        'response': 'All LLM providers are currently unavailable. Please try again later.',
-                        'backend': 'none',
-                        'model': 'none',
-                        'tool_calls': 0
-                    }
-                provider_type, url, model = provider_info
-            else:
-                # User selected specific backend - resolve URL and model from config
-                provider_type = backend
-                llm_config = self.config.get('llm', {})
-
-                if backend == 'ollama':
-                    primary = llm_config.get('primary', {})
-                    url = primary.get('url', os.getenv('OLLAMA_URL', ''))
-                    if not model:
-                        # Fall back to DB-persisted selection, then config default
-                        model = self.kb.get_setting('ollama_selected_model', '') or primary.get('model', '')
-                elif backend in ('groq', 'gemini', 'anthropic'):
-                    # Find matching provider in fallback chain
-                    url = None
-                    if not model:
-                        for fb in llm_config.get('fallback', []):
-                            if fb.get('provider') == backend:
-                                model = fb.get('model', '')
-                                break
-                else:
-                    return {
-                        'response': f'Unknown backend: {backend}',
-                        'backend': 'error',
-                        'model': 'none',
-                        'tool_calls': 0
-                    }
+            resolved = self._resolve_provider(backend, model)
+            if not resolved:
+                return {
+                    'response': f'LLM provider unavailable: {backend}',
+                    'backend': 'none',
+                    'model': 'none',
+                    'tool_calls': 0
+                }
+            provider_type, url, model = resolved
 
             # Build messages
             messages = []
@@ -936,7 +1296,185 @@ Be concise and infrastructure-focused.
                 'tool_calls': tool_calls_count
             }
 
-    def _execute_skill(self, message: str) -> Dict[str, Any]:
+    def handle_chat_message_stream(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None):
+        """
+        Streaming version of handle_chat_message. Yields SSE event dicts.
+
+        Events yielded:
+            {'event': 'tool_call', 'data': {'tool': ..., 'args': ..., 'iteration': ..., 'max': ...}}
+            {'event': 'tool_result', 'data': {'tool': ..., 'result': ..., 'iteration': ...}}
+            {'event': 'done', 'data': {'response': ..., 'backend': ..., 'model': ..., 'tool_calls': ...}}
+            {'event': 'error', 'data': {'error': ...}}
+        """
+        event_queue = queue.Queue()
+
+        def event_callback(event_type, data):
+            event_queue.put({'event': event_type, 'data': data})
+
+        def run_chat():
+            try:
+                # Check for skill/command invocation
+                if message.startswith('/'):
+                    result = self._execute_skill_stream(message, backend=backend, model=model, event_callback=event_callback)
+                elif message.lower().strip() in ('summary', 'report', 'status', 'tps report', 'morning summary', 'give me a summary', 'show summary'):
+                    summary = self._generate_morning_summary()
+                    result = {'response': summary['text'], 'backend': 'N/A', 'model': 'N/A', 'tool_calls': 0}
+                else:
+                    result = self._handle_chat_with_stream(message, history, backend, model, event_callback)
+                event_queue.put({'event': 'done', 'data': result})
+            except Exception as e:
+                logger.error(f"Stream chat failed: {e}", exc_info=True)
+                event_queue.put({'event': 'error', 'data': {'error': str(e)}})
+
+        # Run the chat in a background thread
+        import threading
+        thread = threading.Thread(target=run_chat, daemon=True)
+        thread.start()
+
+        # Yield events as they arrive
+        while True:
+            try:
+                evt = event_queue.get(timeout=180)
+                yield evt
+                if evt['event'] in ('done', 'error'):
+                    break
+            except queue.Empty:
+                yield {'event': 'error', 'data': {'error': 'Timeout waiting for response'}}
+                break
+
+    def _handle_chat_with_stream(self, message, history, backend, model, event_callback):
+        """Internal: runs handle_chat_message logic but passes event_callback to _chat_with_tools."""
+        hosts_config = self.config.get('infrastructure', {}).get('hosts', {})
+        host_list = ', '.join(f"{name} ({info.get('address', '?')}, {info.get('role', 'unknown')})"
+                              for name, info in hosts_config.items())
+
+        system_context = f"""You are CFOperator, an autonomous infrastructure monitoring agent.
+
+Current System State:
+- Active investigation: {self.current_investigation is not None}
+- Last sweep: {int(time.time() - self.last_sweep)}s ago
+- Monitoring {len(hosts_config)} hosts: {host_list}
+
+You have access to:
+- Prometheus metrics (all hosts)
+- Loki logs (all hosts)
+- Docker containers AND systemd services (all hosts via SSH — not everything is a container!)
+- Knowledge base: store_learning (save solutions/insights) and find_learnings (search past learnings)
+- Web search: web_search (look up docs, error messages, CVEs via SearXNG)
+
+Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
+Use ssh_list_services to see BOTH containers and systemd services on a host.
+
+Your role:
+- Answer infrastructure-specific questions
+- Investigate issues using available tools
+- ALWAYS use store_learning to save solutions when you or the user resolves an issue
+- Use find_learnings to check for known solutions before investigating
+- NOT general system administration (user has Claude Code CLI for that)
+
+Be concise and infrastructure-focused.
+"""
+
+        start_time = time.time()
+        tool_calls_count = 0
+
+        try:
+            resolved = self._resolve_provider(backend, model)
+            if not resolved:
+                return {'response': f'LLM provider unavailable: {backend}', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
+            provider_type, url, model = resolved
+
+            messages = list(history) + [{'role': 'user', 'content': message}]
+
+            result = self._chat_with_tools(
+                provider_type=provider_type, url=url, model=model,
+                messages=messages, system_context=system_context,
+                event_callback=event_callback
+            )
+
+            tool_calls_count = result.get('tool_calls', 0)
+            latency = time.time() - start_time
+            LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
+            LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
+            if result.get('input_tokens'):
+                LLM_TOKENS.labels(provider=provider_type, model=model, type='input').inc(result['input_tokens'])
+            if result.get('output_tokens'):
+                LLM_TOKENS.labels(provider=provider_type, model=model, type='output').inc(result['output_tokens'])
+
+            provider_key = f"{provider_type}/{url}/{model}" if url else f"{provider_type}/{model}"
+            self.llm.record_success(provider_key)
+
+            return {'response': result.get('response', ''), 'backend': provider_type, 'model': model, 'tool_calls': tool_calls_count}
+
+        except Exception as e:
+            latency = time.time() - start_time
+            provider = provider_type if 'provider_type' in locals() else 'unknown'
+            model_name = model if 'model' in locals() else 'unknown'
+            LLM_REQUESTS.labels(provider=provider, model=model_name, result='error').inc()
+            LLM_ERRORS.labels(provider=provider, error_type=type(e).__name__).inc()
+            raise
+
+    def _execute_skill_stream(self, message: str, backend: str = 'auto', model: str = None, event_callback=None) -> Dict[str, Any]:
+        """Execute a skill with streaming events."""
+        parts = message.split(maxsplit=1)
+        skill_name = parts[0][1:]
+        skill_args = parts[1] if len(parts) > 1 else ''
+
+        if skill_name not in self.skills:
+            available = ', '.join(self.skills.keys())
+            return {'response': f"Unknown skill: {skill_name}\n\nAvailable skills: {available}", 'backend': 'N/A', 'model': 'N/A', 'tool_calls': 0}
+
+        skill = self.skills[skill_name]
+        logger.info(f"Executing skill (stream): {skill_name} with args: {skill_args}")
+
+        system_context = f"""You are CFOperator executing the "{skill['name']}" skill.
+
+SKILL DESCRIPTION:
+{skill['description']}
+
+SKILL INSTRUCTIONS:
+{skill['instructions']}
+
+USER REQUEST:
+{message}
+
+IMPORTANT:
+- Follow the skill instructions exactly as written
+- Use the tools in the suggested sequence
+- Provide structured output as described in the skill
+- Be thorough but concise
+"""
+
+        user_message = f"Execute {skill_name} for: {skill_args}" if skill_args else f"Execute {skill_name}"
+        start_time = time.time()
+
+        try:
+            resolved = self._resolve_provider(backend, model)
+            if not resolved:
+                return {'response': f'LLM provider unavailable: {backend}', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
+            provider_type, url, model = resolved
+
+            result = self._chat_with_tools(
+                provider_type=provider_type, url=url, model=model,
+                messages=[{'role': 'user', 'content': user_message}],
+                system_context=system_context,
+                max_iterations=None,
+                event_callback=event_callback
+            )
+
+            duration = time.time() - start_time
+            LLM_LATENCY.labels(provider=provider_type, model=model).observe(duration)
+            LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
+            LLM_TOKENS.labels(provider=provider_type, model=model, type='prompt').inc(result.get('input_tokens', 0))
+            LLM_TOKENS.labels(provider=provider_type, model=model, type='completion').inc(result.get('output_tokens', 0))
+
+            return {'response': result.get('response', ''), 'backend': provider_type, 'model': model, 'tool_calls': result.get('tool_calls', 0)}
+
+        except Exception as e:
+            logger.error(f"Skill execution (stream) failed: {e}", exc_info=True)
+            return {'response': f"Skill execution failed: {str(e)}", 'backend': 'error', 'model': 'N/A', 'tool_calls': 0}
+
+    def _execute_skill(self, message: str, backend: str = 'auto', model: str = None) -> Dict[str, Any]:
         """
         Execute a skill command (e.g., /investigate-container immich-ml).
 
@@ -994,17 +1532,15 @@ IMPORTANT:
         start_time = time.time()
 
         try:
-            # Get next available provider
-            provider_info = self.llm.get_next_provider()
-            if not provider_info:
+            resolved = self._resolve_provider(backend, model)
+            if not resolved:
                 return {
-                    'response': 'All LLM providers are currently unavailable. Please try again later.',
+                    'response': f'LLM provider unavailable: {backend}',
                     'backend': 'none',
                     'model': 'none',
                     'tool_calls': 0
                 }
-
-            provider_type, url, model = provider_info
+            provider_type, url, model = resolved
 
             # Call LLM with tools
             result = self._chat_with_tools(
@@ -1013,33 +1549,32 @@ IMPORTANT:
                 model=model,
                 messages=[{'role': 'user', 'content': user_message}],
                 system_context=system_context,
-                max_iterations=20  # Skills may need more iterations
+                max_iterations=None  # Uses DB/config setting
             )
 
             # Track metrics
             duration = time.time() - start_time
-            LLM_REQUEST_DURATION.labels(
+            LLM_LATENCY.labels(
                 provider=provider_type,
-                model=model,
-                request_type='skill'
+                model=model
             ).observe(duration)
 
-            LLM_REQUESTS_TOTAL.labels(
+            LLM_REQUESTS.labels(
                 provider=provider_type,
                 model=model,
                 result='success'
             ).inc()
 
-            LLM_TOKENS_TOTAL.labels(
+            LLM_TOKENS.labels(
                 provider=provider_type,
                 model=model,
-                token_type='input'
+                type='prompt'
             ).inc(result.get('input_tokens', 0))
 
-            LLM_TOKENS_TOTAL.labels(
+            LLM_TOKENS.labels(
                 provider=provider_type,
                 model=model,
-                token_type='output'
+                type='completion'
             ).inc(result.get('output_tokens', 0))
 
             return {
@@ -1272,7 +1807,7 @@ def main():
     """Main entry point."""
     logger.info("="*60)
     logger.info("CFOperator - Continuous Feedback Operator")
-    logger.info("Version: 1.0.0")
+    logger.info("Version: 1.0.8")
     logger.info("="*60)
 
     config_path = os.getenv('CONFIG_PATH', 'config.yaml')

@@ -60,7 +60,7 @@ class SSHTools:
         ssh_key = host_config['ssh'].get('key_path')
 
         # Build SSH command
-        ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no']
+        ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
         if ssh_key:
             ssh_cmd.extend(['-i', ssh_key])
         ssh_cmd.append(f'{ssh_user}@{ssh_address}')

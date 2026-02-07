@@ -14,6 +14,7 @@ Tools from SRE Sentinel, adapted for single-agent architecture.
 
 from typing import Dict, Any, List, Optional
 import logging
+import requests as _requests
 from .ssh import SSHTools
 from .discovery import DiscoveryTools
 
@@ -164,6 +165,107 @@ class ToolRegistry:
                     'schema': schema
                 }
 
+        # Knowledge base tools — allow the LLM to store and retrieve learnings
+        self.tools['store_learning'] = {
+            'function': self._store_learning,
+            'schema': {
+                'name': 'store_learning',
+                'description': 'Save a learning/insight to the knowledge base. Use this when you diagnose an issue, the user tells you how they fixed something, or you discover a useful pattern. Learnings are reused in future investigations.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'learning_type': {
+                            'type': 'string',
+                            'description': 'Type: solution, pattern, root_cause, antipattern, or insight',
+                            'enum': ['solution', 'pattern', 'root_cause', 'antipattern', 'insight']
+                        },
+                        'title': {
+                            'type': 'string',
+                            'description': 'Brief title (max 100 chars)'
+                        },
+                        'description': {
+                            'type': 'string',
+                            'description': 'Detailed description of what was learned and how to fix/avoid'
+                        },
+                        'applies_when': {
+                            'type': 'string',
+                            'description': 'Conditions when this learning applies'
+                        },
+                        'services': {
+                            'type': 'array',
+                            'items': {'type': 'string'},
+                            'description': 'Services this applies to (e.g., ["immich-kiosk", "docker"])'
+                        },
+                        'tags': {
+                            'type': 'array',
+                            'items': {'type': 'string'},
+                            'description': 'Tags for categorization (e.g., ["dns", "docker", "networking"])'
+                        },
+                        'category': {
+                            'type': 'string',
+                            'description': 'High-level category',
+                            'enum': ['resource', 'network', 'config', 'dependency']
+                        }
+                    },
+                    'required': ['learning_type', 'title', 'description']
+                }
+            }
+        }
+
+        self.tools['find_learnings'] = {
+            'function': self._find_learnings,
+            'schema': {
+                'name': 'find_learnings',
+                'description': 'Search the knowledge base for past learnings and solutions. Use this when investigating an issue to see if a similar problem was solved before.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'query': {
+                            'type': 'string',
+                            'description': 'Free-text search query (e.g., "docker dns failure")'
+                        },
+                        'services': {
+                            'type': 'array',
+                            'items': {'type': 'string'},
+                            'description': 'Filter by services (e.g., ["immich-kiosk"])'
+                        },
+                        'category': {
+                            'type': 'string',
+                            'description': 'Filter by category: resource, network, config, or dependency'
+                        },
+                        'limit': {
+                            'type': 'integer',
+                            'description': 'Max results (default 5)',
+                            'default': 5
+                        }
+                    }
+                }
+            }
+        }
+
+        # Web search tool (SearXNG)
+        searxng_url = self.operator.config.get('search', {}).get('url', '')
+        if searxng_url:
+            self._searxng_url = searxng_url
+            self.tools['web_search'] = {
+                'function': self._web_search,
+                'schema': {
+                    'name': 'web_search',
+                    'description': 'Search the web using SearXNG. Use this to look up documentation, error messages, software versions, CVEs, or any external information needed during investigations.',
+                    'parameters': {
+                        'type': 'object',
+                        'properties': {
+                            'query': {
+                                'type': 'string',
+                                'description': 'Search query (e.g., "docker dns resolution failure", "immich v1.99 changelog")'
+                            }
+                        },
+                        'required': ['query']
+                    }
+                }
+            }
+            logger.info(f"Web search tool enabled (SearXNG: {searxng_url})")
+
     def execute(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """
         Execute a tool by name with given arguments.
@@ -267,6 +369,113 @@ class ToolRegistry:
             }
         except Exception as e:
             return {'error': str(e)}
+
+    def _web_search(self, query: str) -> Dict[str, Any]:
+        """Search the web using SearXNG."""
+        try:
+            resp = _requests.get(
+                f"{self._searxng_url}/search",
+                params={"q": query, "format": "json"},
+                timeout=10
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            results = data.get("results", [])[:5]
+            if not results:
+                return {'success': True, 'query': query, 'results': [], 'message': 'No results found'}
+
+            return {
+                'success': True,
+                'query': query,
+                'results': [
+                    {
+                        'title': r.get('title', ''),
+                        'url': r.get('url', ''),
+                        'content': r.get('content', '')[:300]
+                    }
+                    for r in results
+                ]
+            }
+        except Exception as e:
+            return {'error': str(e), 'query': query}
+
+    def _store_learning(self, learning_type: str, title: str, description: str,
+                        applies_when: str = '', services: List[str] = None,
+                        tags: List[str] = None, category: str = '') -> Dict[str, Any]:
+        """Store a learning in the knowledge base."""
+        try:
+            learning_data = {
+                'learning_type': learning_type,
+                'title': title[:100],
+                'description': description,
+                'applies_when': applies_when,
+                'services': services or [],
+                'tags': tags or [],
+                'category': category,
+            }
+            lid = self.operator.kb.store_learning(learning_data)
+            if lid and lid > 0:
+                # Generate embedding for semantic search
+                search_text = ' '.join(filter(None, [title, description, applies_when]))
+                try:
+                    self.operator._embed_learning(lid, search_text)
+                except Exception:
+                    pass  # Non-critical - FTS still works
+                return {'success': True, 'learning_id': lid, 'title': title[:100]}
+            else:
+                return {'success': False, 'error': 'DB may be offline'}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _find_learnings(self, query: str = '', services: List[str] = None,
+                        category: str = '', limit: int = 5) -> Dict[str, Any]:
+        """Search learnings in the knowledge base using hybrid (vector+FTS) search."""
+        try:
+            # Try hybrid search if we have a query and embeddings are available
+            if query and hasattr(self.operator, 'embeddings') and self.operator.embeddings.is_available():
+                query_embedding = self.operator.embeddings.generate_embedding(query)
+                if query_embedding:
+                    results = self.operator.kb._kb.find_learnings_hybrid(
+                        query_text=query,
+                        query_embedding=query_embedding,
+                        limit=limit
+                    )
+                    # Apply service/category filters post-search if needed
+                    if services:
+                        results = [r for r in results if any(s in (r.get('services') or []) for s in services)]
+                    if category:
+                        results = [r for r in results if r.get('category') == category]
+                else:
+                    results = self.operator.kb.find_learnings(query=query, services=services, category=category, limit=limit)
+            else:
+                kwargs = {'limit': limit}
+                if query:
+                    kwargs['query'] = query
+                if services:
+                    kwargs['services'] = services
+                if category:
+                    kwargs['category'] = category
+                results = self.operator.kb.find_learnings(**kwargs)
+            return {
+                'success': True,
+                'count': len(results),
+                'learnings': [
+                    {
+                        'id': r['id'],
+                        'type': r['learning_type'],
+                        'title': r['title'],
+                        'description': r['description'][:300],
+                        'applies_when': r.get('applies_when', ''),
+                        'services': r.get('services', []),
+                        'category': r.get('category', ''),
+                        'success_rate': r.get('success_rate'),
+                    }
+                    for r in results
+                ]
+            }
+        except Exception as e:
+            return {'error': str(e), 'count': 0, 'learnings': []}
 
     def _make_ssh_tool_wrapper(self, tool_name: str):
         """Create wrapper function for SSH tools."""

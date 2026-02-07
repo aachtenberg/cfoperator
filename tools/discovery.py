@@ -71,7 +71,7 @@ class DiscoveryTools:
         ssh_key = host_config['ssh'].get('key_path')
 
         # Build SSH command
-        ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=5']
+        ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'ConnectTimeout=5']
         if ssh_key:
             ssh_cmd.extend(['-i', ssh_key])
         ssh_cmd.append(f'{ssh_user}@{ssh_address}')
@@ -113,7 +113,7 @@ class DiscoveryTools:
         ssh_key = host_config['ssh'].get('key_path')
 
         # Test sudo without password
-        ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'ConnectTimeout=5']
+        ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'ConnectTimeout=5']
         if ssh_key:
             ssh_cmd.extend(['-i', ssh_key])
         ssh_cmd.append(f'{ssh_user}@{ssh_address}')

@@ -10,7 +10,7 @@ Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure inte
 - **Monitored Hosts** - Count of hosts being monitored
 - **Running Containers** - Total containers across fleet
 - **Error Rate** - Errors per second (5m window)
-- **Tools Available** - Number of registered tools (should be 16)
+- **Tools Available** - Number of registered tools (should be 18)
 
 ### Second Row - LLM Observability
 - **LLM Request Rate** - Requests per minute by provider (Ollama, Groq, Gemini, etc.)
@@ -31,7 +31,7 @@ Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure inte
 - **Fallback Chain Activity** - Which fallbacks are activating (Ollama → Groq, etc.)
 
 ### Fifth Row - Infrastructure Health
-- **CPU Usage by Host** - CPU % for raspberrypi, pi2, pi3, pi4
+- **CPU Usage by Host** - CPU % for raspberrypi, pi2, pi3, pi4, ollama-gpu
 - **Memory Usage by Host** - Memory % for all hosts
 
 ### Log Panels (Comprehensive Coverage)
@@ -254,7 +254,7 @@ Any metric panel can have alerts:
 
 ### "Panels show 'No data'"
 - **Check**: Are Prometheus/Loki data sources configured?
-- **Check**: Is CFOperator exposing metrics? (curl http://192.168.0.167:8083/metrics)
+- **Check**: Is CFOperator exposing metrics? (curl http://192.168.0.111:8083/metrics)
 - **Check**: Is promtail shipping logs? (check Loki)
 
 ### "Metrics missing"
@@ -286,5 +286,5 @@ Consider also importing:
 ## Support
 
 For issues or improvements:
-- GitHub: /path/to/cfoperator/issues
-- Chat: http://192.168.0.167:8083 (ask CFOperator itself!)
+- GitHub: https://github.com/aachtenberg/cfoperator/issues
+- Chat: http://192.168.0.111:8083 (ask CFOperator itself!)
