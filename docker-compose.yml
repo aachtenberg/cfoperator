@@ -15,7 +15,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 
       # LLM API keys
-      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.0.198:11434}
+      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.0.150:11434}
       - GROQ_API_KEY=${GROQ_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
@@ -23,7 +23,7 @@ services:
       # Observability backends
       - PROMETHEUS_URL=${PROMETHEUS_URL:-http://192.168.0.167:9090}
       - LOKI_URL=${LOKI_URL:-http://192.168.0.167:3100}
-      - ALERTMANAGER_URL=${ALERTMANAGER_URL:-http://192.168.0.167:9093}
+      - ALERTMANAGER_URL=${ALERTMANAGER_URL:-http://192.168.0.150:9093}
 
       # Notifications
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
@@ -34,6 +34,7 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./skills:/app/skills:ro
       - /var/run/docker.sock:/var/run/docker.sock  # Docker access
+      - ~/.ssh:/root/.ssh:ro  # SSH keys for fleet access
     restart: unless-stopped
     network_mode: host  # Use host network to access Prometheus/Loki/PostgreSQL
 

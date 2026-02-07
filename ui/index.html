@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CFOperator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Ubuntu+Mono:wght@400;700&family=Ubuntu:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -12,18 +15,18 @@
         }
 
         body {
-            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', monospace;
-            background: #1e1e1e;
-            color: #d4d4d4;
+            font-family: 'Ubuntu Mono', 'Ubuntu', monospace;
+            background: #300a24;
+            color: #e8e8e8;
             height: 100vh;
             display: flex;
             flex-direction: column;
         }
 
         header {
-            background: #252526;
+            background: #2c001e;
             padding: 12px 20px;
-            border-bottom: 1px solid #3e3e42;
+            border-bottom: 1px solid #5e2750;
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -32,7 +35,7 @@
         .logo {
             font-size: 16px;
             font-weight: 600;
-            color: #4ec9b0;
+            color: #8ae234;
         }
 
         .settings-panel {
@@ -47,9 +50,9 @@
         }
 
         .settings-panel select {
-            background: #3c3c3c;
-            color: #d4d4d4;
-            border: 1px solid #3e3e42;
+            background: #3d1f33;
+            color: #e8e8e8;
+            border: 1px solid #5e2750;
             padding: 4px 8px;
             border-radius: 3px;
             font-family: inherit;
@@ -60,18 +63,18 @@
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #4ec9b0;
+            background: #8ae234;
             display: inline-block;
             margin-right: 6px;
         }
 
         .status-indicator.disconnected {
-            background: #f48771;
+            background: #ef2929;
         }
 
         #questions-panel {
-            background: #2d2d30;
-            border-bottom: 1px solid #3e3e42;
+            background: #3d1f33;
+            border-bottom: 1px solid #5e2750;
             padding: 12px 20px;
             display: none;
         }
@@ -81,15 +84,15 @@
         }
 
         .question-card {
-            background: #3c3c3c;
+            background: #3d1f33;
             padding: 12px;
             border-radius: 4px;
-            border-left: 3px solid #4ec9b0;
+            border-left: 3px solid #8ae234;
             margin-bottom: 10px;
         }
 
         .question-card h4 {
-            color: #4ec9b0;
+            color: #8ae234;
             font-size: 12px;
             margin-bottom: 6px;
         }
@@ -112,9 +115,9 @@
 
         .answer-input input {
             flex: 1;
-            background: #2d2d30;
-            border: 1px solid #3e3e42;
-            color: #d4d4d4;
+            background: #300a24;
+            border: 1px solid #5e2750;
+            color: #e8e8e8;
             padding: 6px 10px;
             border-radius: 3px;
             font-family: inherit;
@@ -122,7 +125,7 @@
         }
 
         .answer-input button {
-            background: #0e639c;
+            background: #e95420;
             color: #fff;
             border: none;
             padding: 6px 16px;
@@ -133,7 +136,7 @@
         }
 
         .answer-input button:hover {
-            background: #1177bb;
+            background: #f27649;
         }
 
         #chat-container {
@@ -154,15 +157,15 @@
         }
 
         .message.user .message-header {
-            color: #4ec9b0;
+            color: #8ae234;
         }
 
         .message.agent .message-header {
-            color: #569cd6;
+            color: #729fcf;
         }
 
         .message.tool .message-header {
-            color: #ce9178;
+            color: #e95420;
         }
 
         .message-content {
@@ -172,22 +175,22 @@
         }
 
         .tool-call {
-            background: #2d2d30;
+            background: #3d1f33;
             padding: 8px 12px;
             border-radius: 3px;
-            border-left: 3px solid #ce9178;
+            border-left: 3px solid #e95420;
             font-size: 12px;
             margin: 6px 0;
         }
 
         .tool-name {
-            color: #ce9178;
+            color: #e95420;
             font-weight: 600;
         }
 
         #input-area {
-            background: #252526;
-            border-top: 1px solid #3e3e42;
+            background: #2c001e;
+            border-top: 1px solid #5e2750;
             padding: 16px 20px;
             display: flex;
             gap: 10px;
@@ -195,9 +198,9 @@
 
         #message-input {
             flex: 1;
-            background: #3c3c3c;
-            border: 1px solid #3e3e42;
-            color: #d4d4d4;
+            background: #3d1f33;
+            border: 1px solid #5e2750;
+            color: #e8e8e8;
             padding: 10px 14px;
             border-radius: 4px;
             font-family: inherit;
@@ -207,11 +210,11 @@
 
         #message-input:focus {
             outline: none;
-            border-color: #0e639c;
+            border-color: #e95420;
         }
 
         #send-button {
-            background: #0e639c;
+            background: #e95420;
             color: #fff;
             border: none;
             padding: 10px 20px;
@@ -223,24 +226,24 @@
         }
 
         #send-button:hover {
-            background: #1177bb;
+            background: #f27649;
         }
 
         #send-button:disabled {
-            background: #3e3e42;
+            background: #5e2750;
             cursor: not-allowed;
         }
 
         .links-section {
             margin-top: 20px;
             padding: 16px 20px;
-            background: #252526;
-            border-top: 1px solid #3e3e42;
+            background: #2c001e;
+            border-top: 1px solid #5e2750;
         }
 
         .links-section h3 {
             font-size: 13px;
-            color: #858585;
+            color: #999;
             margin-bottom: 10px;
         }
 
@@ -253,7 +256,7 @@
         }
 
         .links-section a {
-            color: #4ec9b0;
+            color: #8ae234;
             text-decoration: none;
             font-size: 12px;
         }
@@ -262,21 +265,45 @@
             text-decoration: underline;
         }
 
+        .thinking {
+            display: none;
+            margin-bottom: 16px;
+            line-height: 1.6;
+        }
+
+        .thinking.active {
+            display: block;
+        }
+
+        .thinking .dots span {
+            animation: blink 1.4s infinite both;
+            font-size: 18px;
+            color: #729fcf;
+        }
+
+        .thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
+        .thinking .dots span:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes blink {
+            0%, 80%, 100% { opacity: 0.2; }
+            40% { opacity: 1; }
+        }
+
         ::-webkit-scrollbar {
             width: 10px;
         }
 
         ::-webkit-scrollbar-track {
-            background: #1e1e1e;
+            background: #300a24;
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #424242;
+            background: #5e2750;
             border-radius: 5px;
         }
 
         ::-webkit-scrollbar-thumb:hover {
-            background: #4e4e4e;
+            background: #77216f;
         }
     </style>
 </head>
@@ -313,6 +340,11 @@
 - /why-restart [container] - Analyze why a container restarted
 - /compare-hosts - Compare metrics and config across fleet</div>
         </div>
+    </div>
+
+    <div id="thinking" class="thinking" style="padding: 0 20px;">
+        <div class="message-header" style="color: #729fcf;">agent</div>
+        <div class="dots"><span>.</span><span>.</span><span>.</span></div>
     </div>
 
     <div id="input-area">
@@ -362,10 +394,13 @@
 
         function handleMessage(data) {
             if (data.type === 'chat') {
+                document.getElementById('thinking').classList.remove('active');
+                document.getElementById('send-button').disabled = false;
                 addMessage('agent', data.text, data.backend, data.model);
             } else if (data.type === 'question') {
                 showQuestion(data);
             } else if (data.type === 'tool_call') {
+                document.getElementById('thinking').classList.remove('active');
                 addToolCall(data.tool_name, data.input);
             } else if (data.type === 'tool_result') {
                 addToolResult(data.tool_name, data.result);
@@ -486,8 +521,10 @@
             input.value = '';
             input.rows = 1;
 
-            // Disable send button while waiting
+            // Show thinking indicator and disable send
             document.getElementById('send-button').disabled = true;
+            document.getElementById('thinking').classList.add('active');
+            document.getElementById('chat-container').scrollTop = document.getElementById('chat-container').scrollHeight;
 
             const payload = {type: 'chat', message: message, history: chatHistory, backend: backend};
             if (model) payload.model = model;
@@ -507,11 +544,13 @@
                 })
                 .then(r => r.json())
                 .then(data => {
+                    document.getElementById('thinking').classList.remove('active');
                     addMessage('agent', data.response, data.backend, data.model);
                     chatHistory.push({role: 'assistant', content: data.response});
                     document.getElementById('send-button').disabled = false;
                 })
                 .catch(err => {
+                    document.getElementById('thinking').classList.remove('active');
                     console.error('Error:', err);
                     addMessage('agent', `Error: ${err.message}`, 'error', 'none');
                     document.getElementById('send-button').disabled = false;

@@ -15,6 +15,7 @@ build/
 config.yaml
 .env
 *.secret
+secrets/
 
 # IDE
 .vscode/

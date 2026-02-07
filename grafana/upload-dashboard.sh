@@ -5,7 +5,12 @@ set -e
 # Usage: ./upload-dashboard.sh [folder-name]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
-SECRETS_FILE="$HOME/repos/homelab-infra/secrets/.env.secrets"
+REPO_DIR="$(dirname "$SCRIPT_DIR")"
+SECRETS_FILE="${REPO_DIR}/secrets/.env.secrets"
+# Fallback to homelab-infra location
+if [[ ! -f "$SECRETS_FILE" ]]; then
+    SECRETS_FILE="$HOME/repos/homelab-infra/secrets/.env.secrets"
+fi
 DASHBOARD_FILE="$SCRIPT_DIR/cfoperator-dashboard.json"
 
 # Load environment variables

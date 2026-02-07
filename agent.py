@@ -147,6 +147,18 @@ class CFOperator:
 
         logger.info("CFOperator initialized successfully")
 
+    def reload_config(self) -> Dict[str, Any]:
+        """Reload configuration from disk without restarting."""
+        config_path = os.getenv('CONFIG_PATH', 'config.yaml')
+        old_hosts = set(self.config.get('infrastructure', {}).get('hosts', {}).keys())
+        self.config = self._load_config(config_path)
+        new_hosts = set(self.config.get('infrastructure', {}).get('hosts', {}).keys())
+        MONITORED_HOSTS.set(len(new_hosts))
+        added = new_hosts - old_hosts
+        removed = old_hosts - new_hosts
+        logger.info(f"Config reloaded: {len(new_hosts)} hosts (added={added or 'none'}, removed={removed or 'none'})")
+        return {'hosts': len(new_hosts), 'added': list(added), 'removed': list(removed)}
+
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file."""
         if not os.path.exists(config_path):
@@ -770,19 +782,27 @@ class CFOperator:
         """
         logger.info(f"Handling chat message: {message[:100]}")
 
+        # Build host list dynamically from config
+        hosts_config = self.config.get('infrastructure', {}).get('hosts', {})
+        host_list = ', '.join(f"{name} ({info.get('address', '?')}, {info.get('role', 'unknown')})"
+                              for name, info in hosts_config.items())
+
         # Build system context with current infrastructure state
         system_context = f"""You are CFOperator, an autonomous infrastructure monitoring agent.
 
 Current System State:
 - Active investigation: {self.current_investigation is not None}
 - Last sweep: {int(time.time() - self.last_sweep)}s ago
-- Monitoring: 4 Raspberry Pi hosts (raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4)
+- Monitoring {len(hosts_config)} hosts: {host_list}
 
 You have access to:
 - Prometheus metrics (all hosts)
 - Loki logs (all hosts)
-- Docker containers (all hosts via remote API)
+- Docker containers AND systemd services (all hosts via SSH — not everything is a container!)
 - Investigation history and learnings (vector DB)
+
+Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
+Use ssh_list_services to see BOTH containers and systemd services on a host.
 
 Your role:
 - Answer infrastructure-specific questions
@@ -797,8 +817,9 @@ Be concise and infrastructure-focused.
         if message.startswith('/'):
             return self._execute_skill(message)
 
-        # Check for summary request (special command)
-        if any(keyword in message.lower() for keyword in ['summary', 'report', 'status', 'tps']):
+        # Check for explicit summary request (must be the primary intent, not just containing the word)
+        msg_lower = message.lower().strip()
+        if msg_lower in ('summary', 'report', 'status', 'tps report', 'morning summary', 'give me a summary', 'show summary'):
             summary = self._generate_morning_summary()
             return {
                 'response': summary['text'],

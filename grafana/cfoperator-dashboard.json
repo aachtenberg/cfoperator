@@ -209,7 +209,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "count(up{job=\"node-exporter\"})",
+          "expr": "cfoperator_monitored_hosts",
           "refId": "A"
         }
       ],
@@ -275,7 +275,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "cfoperator_running_containers",
+          "expr": "count(docker_container_cpu_usage_total{container_name=~\".+\"})",
           "refId": "A"
         }
       ],

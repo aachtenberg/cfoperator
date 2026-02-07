@@ -79,6 +79,12 @@ class WebServer:
                 'uptime_seconds': time.time() - self.operator.start_time if hasattr(self.operator, 'start_time') else 0
             })
 
+        # Config reload (hot-reload hosts without restart)
+        @self.app.route('/api/config/reload', methods=['POST'])
+        def reload_config():
+            result = self.operator.reload_config()
+            return jsonify({'status': 'ok', **result})
+
         # Prometheus metrics endpoint
         @self.app.route('/metrics')
         def metrics():

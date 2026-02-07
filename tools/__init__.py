@@ -276,6 +276,7 @@ class ToolRegistry:
             'ssh_check_service': 'check_service_status',
             'ssh_restart_service': 'restart_service',
             'ssh_get_logs': 'get_logs',
+            'ssh_list_services': 'list_services',
             'ssh_docker_list': 'list_docker_containers',
             'ssh_docker_restart': 'docker_restart',
             'ssh_get_system_info': 'get_system_info',

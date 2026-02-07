@@ -167,6 +167,47 @@ class SSHTools:
                 'source': 'journalctl'
             }
 
+    def list_services(self, host: str) -> Dict[str, Any]:
+        """List all running services on host — both Docker containers and systemd services."""
+        services = []
+
+        # Docker containers
+        docker_result = self.execute(host, 'docker ps --format "{{.Names}}|{{.Status}}|{{.Image}}" 2>/dev/null')
+        if docker_result['success']:
+            for line in docker_result['stdout'].strip().split('\n'):
+                if line:
+                    parts = line.split('|')
+                    if len(parts) == 3:
+                        services.append({
+                            'name': parts[0],
+                            'type': 'container',
+                            'status': parts[1],
+                            'image': parts[2]
+                        })
+
+        # Systemd services (running only)
+        systemd_result = self.execute(host, 'systemctl list-units --type=service --state=running --no-pager --no-legend')
+        if systemd_result['success']:
+            for line in systemd_result['stdout'].strip().split('\n'):
+                if line:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        svc_name = parts[0].replace('.service', '')
+                        services.append({
+                            'name': svc_name,
+                            'type': 'systemd',
+                            'status': 'running',
+                            'description': ' '.join(parts[4:]) if len(parts) > 4 else ''
+                        })
+
+        return {
+            'success': True,
+            'host': host,
+            'services': services,
+            'containers': sum(1 for s in services if s['type'] == 'container'),
+            'systemd': sum(1 for s in services if s['type'] == 'systemd')
+        }
+
     def list_docker_containers(self, host: str) -> Dict[str, Any]:
         """List Docker containers on host."""
         result = self.execute(host, 'docker ps -a --format "{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}"')
@@ -344,8 +385,19 @@ class SSHTools:
                 }
             },
             {
+                'name': 'ssh_list_services',
+                'description': 'List ALL running services on a host — both Docker containers AND systemd services (e.g., ollama). Use this instead of ssh_docker_list when you want a complete picture.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'host': {'type': 'string', 'description': f'Target host (one of: {", ".join(self.hosts.keys())})'}
+                    },
+                    'required': ['host']
+                }
+            },
+            {
                 'name': 'ssh_docker_list',
-                'description': 'List Docker containers on remote host',
+                'description': 'List Docker containers on remote host (containers only, use ssh_list_services for full picture)',
                 'parameters': {
                     'type': 'object',
                     'properties': {
