@@ -17,6 +17,7 @@ import threading
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify, send_from_directory
 import time
+import requests
 
 # WebSocket support (optional - doesn't work with Waitress)
 try:
@@ -85,6 +86,35 @@ class WebServer:
             from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
             return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
+        # Ollama models API
+        @self.app.route('/api/ollama/models')
+        def ollama_models():
+            """List available models and the currently selected model."""
+            try:
+                ollama_url = self.operator.config.get('llm', {}).get('primary', {}).get('url', '')
+                if not ollama_url:
+                    return jsonify({'error': 'No Ollama URL configured'}), 500
+                resp = requests.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=5)
+                resp.raise_for_status()
+                data = resp.json()
+                models = [m['name'] for m in data.get('models', [])]
+                selected = self.operator.kb.get_setting('ollama_selected_model', '')
+                return jsonify({'models': models, 'url': ollama_url, 'selected': selected})
+            except Exception as e:
+                logger.error(f"Error fetching Ollama models: {e}")
+                return jsonify({'error': str(e), 'models': []}), 500
+
+        @self.app.route('/api/ollama/models/select', methods=['POST'])
+        def ollama_select_model():
+            """Persist the user's model selection."""
+            data = request.json
+            model_name = data.get('model', '')
+            try:
+                self.operator.kb._kb.set_setting('ollama_selected_model', model_name)
+            except Exception as e:
+                logger.warning(f"Could not persist model selection (DB down?): {e}")
+            return jsonify({'success': True, 'model': model_name})
+
         # Chat API (HTTP)
         @self.app.route('/api/chat', methods=['POST'])
         def api_chat():
@@ -110,13 +140,14 @@ class WebServer:
             message = data.get('message', '')
             history = data.get('history', [])
             backend = data.get('backend', 'auto')
+            model = data.get('model')
 
             if not message:
                 return jsonify({'error': 'No message provided'}), 400
 
             try:
                 # Delegate to operator's chat handler
-                result = self.operator.handle_chat_message(message, history, backend)
+                result = self.operator.handle_chat_message(message, history, backend, model=model)
                 return jsonify(result)
             except Exception as e:
                 logger.error(f"Error handling chat: {e}", exc_info=True)
@@ -202,11 +233,12 @@ class WebServer:
             message = data.get('message', '')
             history = data.get('history', [])
             backend = data.get('backend', 'auto')
+            model = data.get('model')
 
             # Handle in background to not block WebSocket
             def handle_chat():
                 try:
-                    result = self.operator.handle_chat_message(message, history, backend)
+                    result = self.operator.handle_chat_message(message, history, backend, model=model)
                     ws.send(json.dumps({
                         'type': 'chat',
                         'text': result.get('response', ''),

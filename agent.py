@@ -742,7 +742,7 @@ class CFOperator:
             'output_tokens': total_output_tokens
         }
 
-    def handle_chat_message(self, message: str, history: List[Dict[str, str]], backend: str = 'auto') -> Dict[str, Any]:
+    def handle_chat_message(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None) -> Dict[str, Any]:
         """
         Handle chat message from user (via web UI).
 
@@ -758,6 +758,7 @@ class CFOperator:
             message: User's message
             history: Chat history
             backend: LLM backend to use (auto, ollama, groq, gemini, anthropic)
+            model: Specific model to use (overrides default for the backend)
 
         Returns:
             {
@@ -824,23 +825,24 @@ Be concise and infrastructure-focused.
                     }
                 provider_type, url, model = provider_info
             else:
-                # User selected specific backend
+                # User selected specific backend - resolve URL and model from config
                 provider_type = backend
+                llm_config = self.config.get('llm', {})
+
                 if backend == 'ollama':
-                    # Get Ollama config from database
-                    settings = self._get_agent_settings()
-                    ollama_selection = settings.get('ollama_selection', {})
-                    url = ollama_selection.get('instance_url', 'http://192.168.0.150:11434')
-                    model = ollama_selection.get('model', 'qwen2.5-coder:14b')
-                elif backend == 'groq':
+                    primary = llm_config.get('primary', {})
+                    url = primary.get('url', os.getenv('OLLAMA_URL', ''))
+                    if not model:
+                        # Fall back to DB-persisted selection, then config default
+                        model = self.kb.get_setting('ollama_selected_model', '') or primary.get('model', '')
+                elif backend in ('groq', 'gemini', 'anthropic'):
+                    # Find matching provider in fallback chain
                     url = None
-                    model = 'llama-3.3-70b-versatile'
-                elif backend == 'gemini':
-                    url = None
-                    model = 'gemini-2.0-flash-exp'
-                elif backend == 'anthropic':
-                    url = None
-                    model = 'claude-3-5-sonnet-20241022'
+                    if not model:
+                        for fb in llm_config.get('fallback', []):
+                            if fb.get('provider') == backend:
+                                model = fb.get('model', '')
+                                break
                 else:
                     return {
                         'response': f'Unknown backend: {backend}',

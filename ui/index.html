@@ -287,13 +287,16 @@
             CFOperator
         </div>
         <div class="settings-panel">
-            <label for="llm-backend">LLM Backend:</label>
+            <label for="llm-backend">Backend:</label>
             <select id="llm-backend">
                 <option value="auto">Auto (Fallback)</option>
                 <option value="ollama">Ollama (Local)</option>
                 <option value="groq">Groq</option>
                 <option value="gemini">Gemini</option>
                 <option value="anthropic">Claude</option>
+            </select>
+            <select id="ollama-model" style="display:none;">
+                <option value="">Loading models...</option>
             </select>
         </div>
     </header>
@@ -473,6 +476,8 @@
             if (!message) return;
 
             const backend = document.getElementById('llm-backend').value;
+            const modelSelect = document.getElementById('ollama-model');
+            const model = (backend === 'ollama' && modelSelect.value) ? modelSelect.value : null;
 
             // Add user message to chat
             addMessage('user', message);
@@ -484,14 +489,12 @@
             // Disable send button while waiting
             document.getElementById('send-button').disabled = true;
 
+            const payload = {type: 'chat', message: message, history: chatHistory, backend: backend};
+            if (model) payload.model = model;
+
             // Use WebSocket if available, otherwise fall back to HTTP
             if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'chat',
-                    message: message,
-                    history: chatHistory,
-                    backend: backend
-                }));
+                ws.send(JSON.stringify(payload));
                 setTimeout(() => {
                     document.getElementById('send-button').disabled = false;
                 }, 1000);
@@ -500,11 +503,7 @@
                 fetch('/api/chat', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        message: message,
-                        history: chatHistory,
-                        backend: backend
-                    })
+                    body: JSON.stringify(payload)
                 })
                 .then(r => r.json())
                 .then(data => {
@@ -541,7 +540,56 @@
                 .catch(err => console.error('Error fetching questions:', err));
         }, 10000);
 
+        // Ollama model fetching
+        function fetchOllamaModels() {
+            const modelSelect = document.getElementById('ollama-model');
+            modelSelect.innerHTML = '<option value="">Loading...</option>';
+            fetch('/api/ollama/models')
+                .then(r => r.json())
+                .then(data => {
+                    if (data.models && data.models.length > 0) {
+                        modelSelect.innerHTML = data.models
+                            .map(m => `<option value="${m}">${m}</option>`)
+                            .join('');
+                        // Pre-select persisted model if available
+                        if (data.selected && data.models.includes(data.selected)) {
+                            modelSelect.value = data.selected;
+                        }
+                    } else {
+                        modelSelect.innerHTML = '<option value="">No models found</option>';
+                    }
+                })
+                .catch(err => {
+                    console.error('Error fetching Ollama models:', err);
+                    modelSelect.innerHTML = '<option value="">Error loading models</option>';
+                });
+        }
+
+        function onBackendChange() {
+            const backend = document.getElementById('llm-backend').value;
+            const modelSelect = document.getElementById('ollama-model');
+            if (backend === 'ollama') {
+                modelSelect.style.display = '';
+                fetchOllamaModels();
+            } else {
+                modelSelect.style.display = 'none';
+            }
+        }
+
+        function onModelChange() {
+            const model = document.getElementById('ollama-model').value;
+            if (model) {
+                fetch('/api/ollama/models/select', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({model: model})
+                }).catch(err => console.error('Error saving model selection:', err));
+            }
+        }
+
         // Event listeners
+        document.getElementById('llm-backend').addEventListener('change', onBackendChange);
+        document.getElementById('ollama-model').addEventListener('change', onModelChange);
         document.getElementById('send-button').addEventListener('click', sendMessage);
 
         document.getElementById('message-input').addEventListener('keydown', (e) => {
