@@ -13,7 +13,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY *.py ./
+COPY agent/ ./agent/
+COPY web_server.py ./
 COPY observability/ ./observability/
 COPY tools/ ./tools/
 COPY skills/ ./skills/
@@ -24,4 +25,4 @@ COPY config.yaml.example ./config.yaml.example
 EXPOSE 8083
 
 # Run the agent
-CMD ["python", "agent.py"]
+CMD ["python", "-m", "agent"]

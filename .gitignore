@@ -16,6 +16,8 @@ config.yaml
 .env
 *.secret
 secrets/
+.claude/*.local.json
+.claude/secrets.local.json
 
 # IDE
 .vscode/
