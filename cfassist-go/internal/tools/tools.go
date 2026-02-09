@@ -12,6 +12,7 @@ import (
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/memory"
 )
 
 // Registry holds available tools and their execution functions.
@@ -84,6 +85,55 @@ func New(cfg *config.Config) *Registry {
 				return readFileExecute(args, maxLines)
 			},
 		}
+	}
+
+	// search_memory — search past conversations
+	memDir := cfg.Memory.Directory
+	r.tools["search_memory"] = tool{
+		schema: client.ToolSchema{
+			Type: "function",
+			Function: client.ToolSchemaFunction{
+				Name: "search_memory",
+				Description: "Search past conversations by keyword. Use when the user asks about " +
+					"previous discussions, wants to recall something, or references a past topic.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "Keyword or phrase to search for in past conversations",
+						},
+						"max_results": map[string]any{
+							"type":        "integer",
+							"description": "Maximum number of matching messages to return (default 10)",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		execute: func(args map[string]any) map[string]any {
+			return searchMemoryExecute(args, memDir)
+		},
+	}
+
+	// list_tools — describe available tools
+	r.tools["list_tools"] = tool{
+		schema: client.ToolSchema{
+			Type: "function",
+			Function: client.ToolSchemaFunction{
+				Name: "list_tools",
+				Description: "List all available tools with their descriptions. Use when the user " +
+					"asks what you can do, what tools are available, or your capabilities.",
+				Parameters: map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
+			},
+		},
+		execute: func(args map[string]any) map[string]any {
+			return r.listToolsExecute()
+		},
 	}
 
 	return r
@@ -197,6 +247,45 @@ func readFileExecute(args map[string]any, defaultMaxLines int) map[string]any {
 		result["showing"] = maxLines
 	}
 	return result
+}
+
+func searchMemoryExecute(args map[string]any, memDir string) map[string]any {
+	query, _ := args["query"].(string)
+	if query == "" {
+		return map[string]any{"error": "no query provided"}
+	}
+
+	maxResults := 10
+	if mr, ok := args["max_results"].(float64); ok {
+		maxResults = int(mr)
+	}
+
+	results := memory.SearchConversations(memDir, query, maxResults)
+	if len(results) == 0 {
+		return map[string]any{
+			"matches": 0,
+			"message": fmt.Sprintf("No past conversations found matching '%s'.", query),
+		}
+	}
+
+	return map[string]any{
+		"matches": len(results),
+		"results": results,
+	}
+}
+
+func (r *Registry) listToolsExecute() map[string]any {
+	var toolList []map[string]string
+	for name, t := range r.tools {
+		toolList = append(toolList, map[string]string{
+			"name":        name,
+			"description": t.schema.Function.Description,
+		})
+	}
+	return map[string]any{
+		"tools": toolList,
+		"count": len(toolList),
+	}
 }
 
 // MarshalResult serializes a tool result to JSON string for the LLM.

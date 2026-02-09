@@ -98,6 +98,86 @@ func Cleanup(memoryDir string, maxConversations int) error {
 	return nil
 }
 
+// SearchResult holds a matching conversation snippet.
+type SearchResult struct {
+	File      string `json:"file"`
+	Timestamp string `json:"timestamp"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+}
+
+// SearchConversations searches all saved conversations for a keyword.
+// Returns matching messages with surrounding context.
+func SearchConversations(memoryDir string, query string, maxResults int) []SearchResult {
+	if maxResults <= 0 {
+		maxResults = 20
+	}
+
+	matches, err := filepath.Glob(filepath.Join(memoryDir, "*.jsonl"))
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+
+	// Search newest first
+	sort.Sort(sort.Reverse(sort.StringSlice(matches)))
+
+	queryLower := strings.ToLower(query)
+	var results []SearchResult
+
+	for _, path := range matches {
+		if len(results) >= maxResults {
+			break
+		}
+
+		messages, err := LoadConversation(path)
+		if err != nil {
+			continue
+		}
+
+		// Extract timestamp from filename: 2006-01-02T15-04-05_slug.jsonl
+		base := filepath.Base(path)
+		ts := ""
+		if idx := strings.Index(base, "_"); idx > 0 {
+			ts = base[:idx]
+		}
+
+		for _, m := range messages {
+			if m.Role == "system" || m.Role == "tool" {
+				continue
+			}
+			if strings.Contains(strings.ToLower(m.Content), queryLower) {
+				content := m.Content
+				if len(content) > 300 {
+					// Find the match position and show surrounding context
+					pos := strings.Index(strings.ToLower(content), queryLower)
+					start := pos - 100
+					if start < 0 {
+						start = 0
+					}
+					end := pos + len(query) + 200
+					if end > len(content) {
+						end = len(content)
+					}
+					content = "..." + content[start:end] + "..."
+				}
+
+				results = append(results, SearchResult{
+					File:      base,
+					Timestamp: ts,
+					Role:      m.Role,
+					Content:   content,
+				})
+
+				if len(results) >= maxResults {
+					break
+				}
+			}
+		}
+	}
+
+	return results
+}
+
 var nonWordRe = regexp.MustCompile(`[^\w\s-]`)
 var whitespaceRe = regexp.MustCompile(`[\s_]+`)
 

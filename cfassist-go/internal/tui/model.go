@@ -184,9 +184,31 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 		}
 		return m, nil
+	case "/tools":
+		m.outputLines = append(m.outputLines, "")
+		m.outputLines = append(m.outputLines, bannerStyle.Render("Available Tools:"))
+		for _, schema := range m.toolReg.GetSchemas() {
+			name := schema.Function.Name
+			desc := schema.Function.Description
+			if len(desc) > 80 {
+				desc = desc[:80] + "..."
+			}
+			m.outputLines = append(m.outputLines,
+				fmt.Sprintf("  %s  %s",
+					toolNameStyle.Render(name),
+					dimStyle.Render(desc),
+				),
+			)
+		}
+		m.outputLines = append(m.outputLines, "")
+		if m.ready {
+			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+			m.viewport.GotoBottom()
+		}
+		return m, nil
 	case "/help", "help":
 		m.outputLines = append(m.outputLines,
-			dimStyle.Render("Commands: /clear, /exit, /help"),
+			dimStyle.Render("Commands: /clear, /exit, /help, /tools"),
 			dimStyle.Render("Ctrl-D to exit, Ctrl-C to cancel input."),
 		)
 		if m.ready {
