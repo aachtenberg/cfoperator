@@ -287,6 +287,48 @@
             padding: 16px 20px;
             display: flex;
             gap: 10px;
+            position: relative;
+        }
+
+        #slash-menu {
+            display: none;
+            position: absolute;
+            bottom: 100%;
+            left: 20px;
+            right: 80px;
+            background: #0a0a0a;
+            border: 1px solid #00a600;
+            border-radius: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 100;
+        }
+
+        #slash-menu.active {
+            display: block;
+        }
+
+        .slash-item {
+            padding: 8px 14px;
+            cursor: pointer;
+            display: flex;
+            gap: 12px;
+            align-items: baseline;
+        }
+
+        .slash-item:hover, .slash-item.selected {
+            background: #003300;
+        }
+
+        .slash-item .cmd {
+            color: #00ff00;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        .slash-item .desc {
+            color: #00a600;
+            font-size: 13px;
         }
 
         #message-input {
@@ -437,9 +479,12 @@
         <div class="message agent">
             <div class="message-header">agent</div>
             <div class="message-content">CFOperator v1.0.8 ready. Ask me about your infrastructure, or use skills:
+- /investigate-host [hostname] - Systematic host/server investigation
 - /investigate-container [name] - Systematic container investigation
 - /why-restart [container] - Analyze why a container restarted
-- /compare-hosts - Compare metrics and config across fleet</div>
+- /compare-hosts - Compare metrics and config across fleet
+
+Type / for autocomplete.</div>
         </div>
     </div>
 
@@ -449,6 +494,7 @@
     </div>
 
     <div id="input-area">
+        <div id="slash-menu"></div>
         <textarea id="message-input" rows="1" placeholder="Ask about your homelab..." autofocus></textarea>
         <button id="send-button">Send</button>
     </div>
@@ -872,6 +918,98 @@
                 .catch(() => {});
         }
 
+        // Slash-command autocomplete
+        const SLASH_COMMANDS = [
+            {cmd: '/investigate-host', args: '[hostname]', desc: 'Systematic host/server investigation'},
+            {cmd: '/investigate-container', args: '[name]', desc: 'Systematic container investigation'},
+            {cmd: '/why-restart', args: '[container]', desc: 'Analyze why a container restarted'},
+            {cmd: '/compare-hosts', args: '', desc: 'Compare metrics across fleet'},
+        ];
+
+        let slashMenuIndex = -1;
+
+        function updateSlashMenu() {
+            const input = document.getElementById('message-input');
+            const menu = document.getElementById('slash-menu');
+            const val = input.value;
+
+            // Only show when input starts with /
+            if (!val.startsWith('/') || val.includes(' ')) {
+                menu.classList.remove('active');
+                slashMenuIndex = -1;
+                return;
+            }
+
+            const filter = val.toLowerCase();
+            const matches = SLASH_COMMANDS.filter(c => c.cmd.startsWith(filter));
+
+            if (matches.length === 0) {
+                menu.classList.remove('active');
+                slashMenuIndex = -1;
+                return;
+            }
+
+            menu.innerHTML = matches.map((c, i) =>
+                `<div class="slash-item${i === slashMenuIndex ? ' selected' : ''}" data-index="${i}">` +
+                `<span class="cmd">${escapeHtml(c.cmd)}${c.args ? ' ' + escapeHtml(c.args) : ''}</span>` +
+                `<span class="desc">${escapeHtml(c.desc)}</span></div>`
+            ).join('');
+
+            menu.querySelectorAll('.slash-item').forEach(item => {
+                item.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    const idx = parseInt(item.dataset.index);
+                    applySlashCommand(matches[idx]);
+                });
+            });
+
+            menu.classList.add('active');
+        }
+
+        function applySlashCommand(cmd) {
+            const input = document.getElementById('message-input');
+            input.value = cmd.cmd + ' ';
+            input.focus();
+            document.getElementById('slash-menu').classList.remove('active');
+            slashMenuIndex = -1;
+        }
+
+        function handleSlashKeydown(e) {
+            const menu = document.getElementById('slash-menu');
+            if (!menu.classList.contains('active')) return false;
+
+            const items = menu.querySelectorAll('.slash-item');
+            const val = document.getElementById('message-input').value.toLowerCase();
+            const matches = SLASH_COMMANDS.filter(c => c.cmd.startsWith(val) || !val.includes(' '));
+
+            if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                slashMenuIndex = Math.min(slashMenuIndex + 1, items.length - 1);
+                updateSlashMenu();
+                return true;
+            } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                slashMenuIndex = Math.max(slashMenuIndex - 1, 0);
+                updateSlashMenu();
+                return true;
+            } else if (e.key === 'Tab' || (e.key === 'Enter' && slashMenuIndex >= 0)) {
+                e.preventDefault();
+                const filter = document.getElementById('message-input').value.toLowerCase();
+                const filtered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(filter));
+                if (slashMenuIndex >= 0 && slashMenuIndex < filtered.length) {
+                    applySlashCommand(filtered[slashMenuIndex]);
+                } else if (filtered.length === 1) {
+                    applySlashCommand(filtered[0]);
+                }
+                return true;
+            } else if (e.key === 'Escape') {
+                menu.classList.remove('active');
+                slashMenuIndex = -1;
+                return true;
+            }
+            return false;
+        }
+
         // Event listeners
         document.getElementById('llm-backend').addEventListener('change', onBackendChange);
         document.getElementById('ollama-model').addEventListener('change', onModelChange);
@@ -881,6 +1019,9 @@
         document.getElementById('send-button').addEventListener('click', sendMessage);
 
         document.getElementById('message-input').addEventListener('keydown', (e) => {
+            // Let slash menu handle navigation keys first
+            if (handleSlashKeydown(e)) return;
+
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendMessage();
@@ -892,6 +1033,14 @@
             e.target.rows = 1;
             const rows = Math.min(Math.ceil(e.target.scrollHeight / 24), 6);
             e.target.rows = rows;
+
+            // Update slash autocomplete
+            updateSlashMenu();
+        });
+
+        document.getElementById('message-input').addEventListener('blur', () => {
+            // Small delay so mousedown on menu item fires first
+            setTimeout(() => document.getElementById('slash-menu').classList.remove('active'), 150);
         });
 
         // Initialize
