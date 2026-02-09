@@ -9,7 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var Version = "0.2.0"
+var Version = "0.3.0"
 
 type LLMConfig struct {
 	Provider      string  `yaml:"provider"`
