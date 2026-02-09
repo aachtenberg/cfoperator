@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
@@ -68,9 +69,17 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 		return "   "
 	})
 
-	// Glamour renderer for markdown
+	// Glamour renderer for markdown — dark style, no red backgrounds
+	mdStyle := styles.DarkStyleConfig
+	noColor := ""
+	orangeColor := "214" // ANSI 214 = orange
+	mdStyle.Code.BackgroundColor = &noColor
+	mdStyle.Code.Color = &orangeColor
+	mdStyle.CodeBlock.BackgroundColor = &noColor
+	mdStyle.Table.BackgroundColor = &noColor
+	mdStyle.Document.BackgroundColor = &noColor
 	r, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStyles(mdStyle),
 		glamour.WithWordWrap(80),
 	)
 
@@ -93,13 +102,16 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 
 func (m *model) appendWelcome(contextCount int) {
 	sep := strings.Repeat("─", 80)
+	welcome := fmt.Sprintf("  %s %s",
+		bannerStyle.Render("cfassist"),
+		bannerDimStyle.Render("v"+config.Version),
+	)
+	if contextCount > 0 {
+		welcome += dimStyle.Render(fmt.Sprintf("  (%d context files loaded)", contextCount))
+	}
 	m.outputLines = append(m.outputLines,
 		separatorStyle.Render(sep),
-		fmt.Sprintf("  %s %s | %s",
-			bannerStyle.Render("cfassist"),
-			bannerDimStyle.Render("v"+config.Version),
-			dimStyle.Render(m.cfg.LLM.Provider+"/"+m.cfg.LLM.Model),
-		),
+		welcome,
 		separatorStyle.Render(sep),
 		"",
 	)
@@ -347,21 +359,35 @@ func (m *model) View() string {
 		return "Initializing..."
 	}
 
-	// Build status bar
+	// Build status bar — left: model + status, right: stats
 	status := "ready"
 	if m.busy {
 		status = "working..."
 	}
-	statusText := fmt.Sprintf(" cfassist v%s | %s | %s",
-		config.Version, m.llm.Model, status)
+	left := fmt.Sprintf(" %s | %s", m.llm.Model, status)
+
+	var rightParts []string
 	if m.contextUsed > 0 && m.cfg.LLM.ContextWindow > 0 {
 		ctxK := float64(m.contextUsed) / 1000
 		maxK := float64(m.cfg.LLM.ContextWindow) / 1000
-		statusText += fmt.Sprintf(" | %.1fk/%.0fk ctx", ctxK, maxK)
+		rightParts = append(rightParts, fmt.Sprintf("%.1fk/%.0fk ctx", ctxK, maxK))
 	}
 	if m.lastStats != "" {
-		statusText += " | " + m.lastStats
+		rightParts = append(rightParts, m.lastStats)
 	}
+	right := strings.Join(rightParts, " | ")
+	if right != "" {
+		right += " "
+	}
+
+	// Pad middle with spaces to push right side to the edge
+	// statusStyle has Padding(0,1) which adds 2 chars, so content width is width-2
+	contentWidth := m.width - 2
+	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	statusText := left + strings.Repeat(" ", gap) + right
 	statusBar := statusStyle.Width(m.width).Render(statusText)
 
 	// Separator
