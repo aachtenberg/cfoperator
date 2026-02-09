@@ -1,2 +1,3 @@
-cfassist
-cfassist-*
+# Built binaries (not the source directory)
+/cfassist
+/cfassist-*
