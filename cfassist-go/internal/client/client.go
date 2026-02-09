@@ -114,6 +114,71 @@ func (c *LLMClient) CheckConnection() error {
 	return nil
 }
 
+// ListModels fetches available models from the provider.
+func (c *LLMClient) ListModels() ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var url string
+	if c.Provider == "ollama" {
+		url = c.URL + "/api/tags"
+	} else {
+		url = c.URL + "/v1/models"
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var names []string
+	if c.Provider == "ollama" {
+		var data struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(body, &data); err != nil {
+			return nil, err
+		}
+		for _, m := range data.Models {
+			names = append(names, m.Name)
+		}
+	} else {
+		var data struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &data); err != nil {
+			return nil, err
+		}
+		for _, m := range data.Data {
+			names = append(names, m.ID)
+		}
+	}
+
+	return names, nil
+}
+
 // --- Ollama provider ---
 
 type ollamaChatRequest struct {

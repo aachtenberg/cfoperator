@@ -19,7 +19,7 @@ import (
 const (
 	statusBarHeight = 1
 	separatorHeight = 1
-	inputAreaHeight = 3
+	inputAreaHeight = 5
 	fixedHeight     = statusBarHeight + separatorHeight + inputAreaHeight
 )
 
@@ -50,6 +50,8 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 	ta.ShowLineNumbers = false
 	ta.SetHeight(inputAreaHeight)
 	ta.Prompt = " > "
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#00aa00")).Bold(true)
+	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#006600"))
 
 	// Glamour renderer for markdown
 	r, _ := glamour.NewTermRenderer(
@@ -206,11 +208,60 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 		}
 		return m, nil
+	case "/models":
+		models, err := m.llm.ListModels()
+		if err != nil {
+			m.outputLines = append(m.outputLines,
+				errorStyle.Render(fmt.Sprintf("Failed to fetch models: %v", err)),
+			)
+		} else {
+			m.outputLines = append(m.outputLines, "")
+			m.outputLines = append(m.outputLines, bannerStyle.Render("Available Models:"))
+			for _, name := range models {
+				marker := "  "
+				if name == m.llm.Model {
+					marker = dimStyle.Render("* ")
+				}
+				m.outputLines = append(m.outputLines, marker+toolNameStyle.Render(name))
+			}
+			m.outputLines = append(m.outputLines,
+				"",
+				dimStyle.Render("  Switch with: /model <name>"),
+			)
+		}
+		if m.ready {
+			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+			m.viewport.GotoBottom()
+		}
+		return m, nil
 	case "/help", "help":
 		m.outputLines = append(m.outputLines,
-			dimStyle.Render("Commands: /clear, /exit, /help, /tools"),
+			dimStyle.Render("Commands: /clear, /exit, /help, /tools, /models, /model <name>"),
 			dimStyle.Render("Ctrl-D to exit, Ctrl-C to cancel input."),
 		)
+		if m.ready {
+			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+			m.viewport.GotoBottom()
+		}
+		return m, nil
+	}
+
+	// /model <name> — switch model
+	if strings.HasPrefix(lower, "/model ") {
+		newModel := strings.TrimSpace(text[7:])
+		if newModel == "" {
+			m.outputLines = append(m.outputLines,
+				dimStyle.Render("  Current model: "+m.llm.Model),
+				dimStyle.Render("  Usage: /model <name>"),
+			)
+		} else {
+			oldModel := m.llm.Model
+			m.llm.Model = newModel
+			m.outputLines = append(m.outputLines,
+				"",
+				dimStyle.Render(fmt.Sprintf("  Model switched: %s → %s", oldModel, newModel)),
+			)
+		}
 		if m.ready {
 			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
 			m.viewport.GotoBottom()
