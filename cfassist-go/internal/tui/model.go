@@ -19,7 +19,7 @@ import (
 const (
 	statusBarHeight = 1
 	separatorHeight = 1
-	inputAreaHeight = 5
+	inputAreaHeight = 3
 	fixedHeight     = statusBarHeight + separatorHeight + inputAreaHeight
 )
 
@@ -38,6 +38,7 @@ type model struct {
 	height       int
 	program      *tea.Program
 	renderer     *glamour.TermRenderer
+	lastStats    string
 }
 
 // New creates a new TUI model.
@@ -49,9 +50,21 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 	ta.CharLimit = 4096
 	ta.ShowLineNumbers = false
 	ta.SetHeight(inputAreaHeight)
-	ta.Prompt = " > "
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#00aa00")).Bold(true)
+	ta.BlurredStyle.Base = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.EndOfBuffer = lipgloss.NewStyle()
 	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("#006600"))
+	ta.EndOfBufferCharacter = ' '
+	ta.SetPromptFunc(3, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return " > "
+		}
+		return "   "
+	})
 
 	// Glamour renderer for markdown
 	r, _ := glamour.NewTermRenderer(
@@ -137,7 +150,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case llmDoneMsg:
 		m.busy = false
-		// Response already appended via appendOutputMsg during conversation
+		r := msg.result
+		latency := r.Latency.Seconds()
+		m.lastStats = fmt.Sprintf("%d↑ %d↓ %.1fs", r.InputTokens, r.OutputTokens, latency)
+		if r.ToolCalls > 0 {
+			m.lastStats += fmt.Sprintf(" %dt", r.ToolCalls)
+		}
 		return m, nil
 
 	case errMsg:
@@ -315,7 +333,10 @@ func (m *model) View() string {
 		status = "working..."
 	}
 	statusText := fmt.Sprintf(" cfassist v%s | %s | %s",
-		config.Version, m.cfg.LLM.Model, status)
+		config.Version, m.llm.Model, status)
+	if m.lastStats != "" {
+		statusText += " | " + m.lastStats
+	}
 	statusBar := statusStyle.Width(m.width).Render(statusText)
 
 	// Separator

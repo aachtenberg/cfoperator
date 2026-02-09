@@ -3,6 +3,7 @@ package conversation
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
@@ -14,6 +15,7 @@ type Result struct {
 	ToolCalls    int
 	InputTokens  int
 	OutputTokens int
+	Latency      time.Duration
 	Error        string
 }
 
@@ -49,6 +51,7 @@ func Run(
 
 	toolSchemas := toolReg.GetSchemas()
 	result := Result{}
+	start := time.Now()
 
 	for i := 0; i < maxIterations; i++ {
 		output.ShowThinking()
@@ -62,6 +65,7 @@ func Run(
 				fmt.Sprintf("Check connection: curl %s/api/tags", llm.URL),
 			)
 			result.Error = err.Error()
+			result.Latency = time.Since(start)
 			return result, fullMessages
 		}
 
@@ -103,11 +107,13 @@ func Run(
 			output.ShowResponse(text)
 		}
 		result.Response = text
+		result.Latency = time.Since(start)
 		return result, fullMessages
 	}
 
 	// Max iterations reached
 	output.ShowWarning(fmt.Sprintf("Reached maximum tool iterations (%d).", maxIterations))
+	result.Latency = time.Since(start)
 	return result, fullMessages
 }
 
