@@ -1,0 +1,2 @@
+# False positive: placeholder API key in curl example
+c0deee7cb5d4a862ac33cf135d207a2b9e3bb207:grafana/README.md:curl-auth-header:128

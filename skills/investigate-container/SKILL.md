@@ -37,7 +37,7 @@ Examples:
 
 ## Implementation
 
-The skill uses the SRE Sentinel agent's investigation tools in a structured workflow:
+The skill uses CFOperator's investigation tools in a structured workflow:
 
 1. **System State**: Get current container status
 2. **Logs Analysis**: Pull last 200 lines, identify errors

@@ -30,6 +30,12 @@ secrets/
 *.db
 *.sqlite
 
+# Certificates & keys
+*.pem
+*.key
+*.p12
+*.der
+
 # OS
 .DS_Store
 Thumbs.db

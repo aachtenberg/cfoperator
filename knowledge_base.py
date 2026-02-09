@@ -712,7 +712,7 @@ class LLMProviderState(Base):
     """
     __tablename__ = 'llm_provider_state'
 
-    provider_key = Column(String(255), primary_key=True)  # e.g., "ollama/192.168.0.198/qwen3:14b"
+    provider_key = Column(String(255), primary_key=True)  # e.g., "ollama/localhost/qwen3:14b"
     cooldown_until = Column(TIMESTAMP, nullable=True)  # NULL if not in cooldown
     error_count = Column(Integer, default=0)
     last_error_at = Column(TIMESTAMP, nullable=True)

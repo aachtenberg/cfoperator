@@ -1,5 +1,5 @@
 """
-Embedding Service for SRE Sentinel
+Embedding Service for CFOperator
 
 Generates text embeddings via Ollama's /api/embeddings endpoint.
 Used for semantic search over past investigations.

@@ -9,7 +9,7 @@ Provides infrastructure monitoring tools to the LLM:
 - SSH remote execution
 - System health checks
 
-Tools from SRE Sentinel, adapted for single-agent architecture.
+Tools for CFOperator's single-agent architecture.
 """
 
 from typing import Dict, Any, List, Optional

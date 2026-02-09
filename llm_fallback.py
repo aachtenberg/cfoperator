@@ -181,7 +181,7 @@ class LLMFallbackManager:
         Record a failure for a provider and update cooldown.
 
         Args:
-            provider_key: Provider identifier (e.g., "ollama/192.168.0.198/qwen3:14b")
+            provider_key: Provider identifier (e.g., "ollama/localhost/qwen3:14b")
             reason: Error type from classify_error()
         """
         try:
@@ -302,7 +302,7 @@ class LLMFallbackManager:
         Parse provider key into (type, url, model).
 
         Formats:
-        - "ollama/192.168.0.198/qwen3:14b" -> ("ollama", "http://192.168.0.198:11434", "qwen3:14b")
+        - "ollama/localhost/qwen3:14b" -> ("ollama", "http://localhost:11434", "qwen3:14b")
         - "groq/llama-3.3-70b-versatile" -> ("groq", None, "llama-3.3-70b-versatile")
         - "gemini/gemini-2.0-flash" -> ("gemini", None, "gemini-2.0-flash")
 

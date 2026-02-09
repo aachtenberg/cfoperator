@@ -7,16 +7,16 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 SECRETS_FILE="${REPO_DIR}/secrets/.env.secrets"
-# Fallback to homelab-infra location
+# Fallback to secrets directory in home
 if [[ ! -f "$SECRETS_FILE" ]]; then
-    SECRETS_FILE="$HOME/repos/homelab-infra/secrets/.env.secrets"
+    SECRETS_FILE="$HOME/.config/cfoperator/.env.secrets"
 fi
 DASHBOARD_FILE="$SCRIPT_DIR/cfoperator-dashboard.json"
 
 # Load environment variables
 if [[ ! -f "$SECRETS_FILE" ]]; then
     echo "❌ Secrets file not found at $SECRETS_FILE"
-    echo "Expected: ~/repos/homelab-infra/secrets/.env.secrets"
+    echo "Expected: secrets/.env.secrets or ~/.config/cfoperator/.env.secrets"
     exit 1
 fi
 

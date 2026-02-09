@@ -7,23 +7,23 @@ services:
     ports:
       - "8083:8083"  # HTTP/WebSocket
     environment:
-      # Database connection (reuse existing SRE Sentinel DB)
-      - POSTGRES_HOST=${POSTGRES_HOST:-192.168.0.167}
-      - POSTGRES_PORT=${POSTGRES_PORT:-5434}
-      - POSTGRES_DB=${POSTGRES_DB:-sre_knowledge}
-      - POSTGRES_USER=${POSTGRES_USER:-sre_agent}
+      # Database connection
+      - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-cfoperator}
+      - POSTGRES_USER=${POSTGRES_USER:-cfoperator}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 
       # LLM API keys
-      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.0.150:11434}
+      - OLLAMA_URL=${OLLAMA_URL:-http://localhost:11434}
       - GROQ_API_KEY=${GROQ_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
 
       # Observability backends
-      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://192.168.0.167:9090}
-      - LOKI_URL=${LOKI_URL:-http://192.168.0.167:3100}
-      - ALERTMANAGER_URL=${ALERTMANAGER_URL:-http://192.168.0.150:9093}
+      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://localhost:9090}
+      - LOKI_URL=${LOKI_URL:-http://localhost:3100}
+      - ALERTMANAGER_URL=${ALERTMANAGER_URL:-http://localhost:9093}
 
       # Notifications
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
@@ -38,5 +38,4 @@ services:
     restart: unless-stopped
     network_mode: host  # Use host network to access Prometheus/Loki/PostgreSQL
 
-# Note: We reuse the existing sre-sentinel-postgres database
-# No need to create a new PostgreSQL instance
+# Ensure PostgreSQL is running and accessible before starting CFOperator

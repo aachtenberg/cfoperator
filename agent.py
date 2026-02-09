@@ -25,7 +25,7 @@ from pathlib import Path
 # Prometheus metrics
 from prometheus_client import Counter, Gauge, Histogram, Info
 
-# Import proven components from SRE Sentinel
+# Import core components
 from knowledge_base import ResilientKnowledgeBase
 from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService
@@ -89,7 +89,7 @@ class CFOperator:
         # Load configuration
         self.config = self._load_config(config_path)
 
-        # Initialize core components (from SRE Sentinel)
+        # Initialize core components
         # Build database URL for ResilientKnowledgeBase
         db_url = f"postgresql://{self.config['database']['user']}:{self.config['database']['password']}@{self.config['database']['host']}:{self.config['database']['port']}/{self.config['database']['database']}"
         self.kb = ResilientKnowledgeBase(
@@ -100,7 +100,7 @@ class CFOperator:
         # Initialize database schema (creates tables if they don't exist)
         self.kb.initialize_schema()
 
-        # Initialize LLM fallback chain (reuses SRE Sentinel's proven architecture)
+        # Initialize LLM fallback chain
         self.llm = LLMFallback(
             db_session_factory=self.kb.session_scope,
             settings_getter=self._get_agent_settings
@@ -108,7 +108,7 @@ class CFOperator:
 
         # Initialize embeddings service for vector search
         self.embeddings = EmbeddingService(
-            ollama_url=self.config.get('llm', {}).get('ollama_url', os.getenv('OLLAMA_URL', 'http://192.168.0.198:11434')),
+            ollama_url=self.config.get('llm', {}).get('ollama_url', os.getenv('OLLAMA_URL', 'http://localhost:11434')),
             db_session_factory=self.kb.session_scope
         )
 

@@ -21,7 +21,7 @@ class PrometheusContainers(ContainerBackend):
         Initialize Prometheus container backend.
 
         Args:
-            prometheus_url: Prometheus URL (e.g., http://192.168.0.167:9090)
+            prometheus_url: Prometheus URL (e.g., http://localhost:9090)
             ssh_user: SSH username for remote actions
         """
         self.prometheus_url = prometheus_url.rstrip('/')

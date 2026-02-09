@@ -31,7 +31,7 @@ Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure inte
 - **Fallback Chain Activity** - Which fallbacks are activating (Ollama → Groq, etc.)
 
 ### Fifth Row - Infrastructure Health
-- **CPU Usage by Host** - CPU % for raspberrypi, pi2, pi3, pi4, ollama-gpu
+- **CPU Usage by Host** - CPU % for each host in your fleet
 - **Memory Usage by Host** - Memory % for all hosts
 
 ### Log Panels (Comprehensive Coverage)
@@ -111,11 +111,11 @@ This will:
 - Upload the dashboard with all panels configured
 - Return a direct URL to the dashboard
 
-**Dashboard URL**: https://aachten.grafana.net/d/cfoperator-fleet/cfoperator-fleet-monitoring
+**Dashboard URL**: `https://<your-org>.grafana.net/d/cfoperator-fleet/cfoperator-fleet-monitoring`
 
 ### Option 2: Import via Grafana UI
 
-1. Log into Grafana: http://192.168.0.167:3000 (or Grafana Cloud)
+1. Log into Grafana: `http://<grafana-host>:3000` (or Grafana Cloud)
 2. Go to **Dashboards** → **Import**
 3. Click **Upload JSON file**
 4. Select `cfoperator-dashboard.json`
@@ -125,7 +125,7 @@ This will:
 
 ```bash
 # Local Grafana
-curl -X POST http://192.168.0.167:3000/api/dashboards/db \
+curl -X POST http://<grafana-host>:3000/api/dashboards/db \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d @cfoperator-dashboard.json
@@ -139,12 +139,12 @@ This dashboard requires two data sources configured in Grafana:
 
 ### 1. Prometheus
 - **Name**: `prometheus` (lowercase, no spaces)
-- **URL**: http://192.168.0.167:9090
+- **URL**: `http://<prometheus-host>:9090`
 - **Access**: Server (default)
 
 ### 2. Loki
 - **Name**: `loki` (lowercase, no spaces)
-- **URL**: http://192.168.0.167:3100
+- **URL**: `http://<loki-host>:3100`
 - **Access**: Server (default)
 
 ## Metrics Reference
@@ -209,11 +209,11 @@ LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'componen
 2. Check **Tool Execution Logs** panel (see active tool calls)
 3. Check **Live Logs** with level=`.*` (see everything)
 
-### "Why is raspberrypi3 having issues?"
-1. Check **CPU/Memory by Host** for raspberrypi3
+### "Why is a host having issues?"
+1. Check **CPU/Memory by Host** for the affected host
 2. Check **Fleet Discovery & SSH Activity** for SSH errors
 3. Check **Tool Execution Logs** for failed ssh_* calls
-4. Use Loki filter: `{container="cfoperator"} |= "raspberrypi3"`
+4. Use Loki filter: `{container="cfoperator"} |= "<hostname>"`
 
 ### "Is the LLM working?"
 1. Check **LLM Activity** panel for recent calls
@@ -254,7 +254,7 @@ Any metric panel can have alerts:
 
 ### "Panels show 'No data'"
 - **Check**: Are Prometheus/Loki data sources configured?
-- **Check**: Is CFOperator exposing metrics? (curl http://192.168.0.111:8083/metrics)
+- **Check**: Is CFOperator exposing metrics? (`curl http://localhost:8083/metrics`)
 - **Check**: Is promtail shipping logs? (check Loki)
 
 ### "Metrics missing"
@@ -287,4 +287,3 @@ Consider also importing:
 
 For issues or improvements:
 - GitHub: https://github.com/aachtenberg/cfoperator/issues
-- Chat: http://192.168.0.111:8083 (ask CFOperator itself!)

@@ -2,29 +2,29 @@
 
 **v1.0.8** — Autonomous infrastructure monitoring agent with proactive intelligence.
 
-CFOperator runs continuously in the background, monitoring your homelab fleet via an OODA loop (Observe → Orient → Decide → Act), predicting issues before they become alerts, and surfacing insights through a chat UI.
+CFOperator runs continuously in the background, monitoring your fleet via an OODA loop (Observe → Orient → Decide → Act), predicting issues before they become alerts, and surfacing insights through a chat UI.
 
 ## Architecture
 
 ```
-CFOperator (Docker container on raspberrypi3)
+CFOperator (Docker container)
 ├── OODA Loop (Dual-Mode)
 │   ├── Reactive: Monitor Alertmanager every 10s
 │   ├── Proactive: Deep sweeps every 30min
 │   └── Morning: TPS reports at 7-9 AM
 │
 ├── Knowledge Base (ResilientKnowledgeBase)
-│   ├── PostgreSQL: 192.168.0.167:5434 (sre_knowledge)
+│   ├── PostgreSQL (persistent storage)
 │   └── Offline Buffer: JSON Lines fallback
 │
 ├── Observability (Pluggable)
-│   ├── Prometheus (192.168.0.167:9090)
-│   ├── Loki (192.168.0.167:3100)
-│   ├── Alertmanager (192.168.0.150:9093)
+│   ├── Prometheus
+│   ├── Loki
+│   ├── Alertmanager
 │   └── Docker (local socket)
 │
 ├── LLM Fallback Chain
-│   └── Ollama (192.168.0.150) → Groq → Gemini → Anthropic
+│   └── Ollama (local) → Groq → Gemini → Anthropic
 │
 ├── Tools (18 registered)
 │   ├── Core: prometheus_query, loki_query, docker_list, docker_inspect
@@ -44,15 +44,15 @@ CFOperator (Docker container on raspberrypi3)
     └── Pending questions panel
 ```
 
-## Fleet
+## Example Fleet
 
 | Host | Address | Role | Services |
 |------|---------|------|----------|
-| raspberrypi | 192.168.0.167 | primary | Prometheus, Loki, PostgreSQL |
-| raspberrypi2 | 192.168.0.146 | worker | node_exporter, promtail, Docker |
-| raspberrypi3 | 192.168.0.111 | worker (CFOperator host) | node_exporter, promtail, Docker |
-| raspberrypi4 | 192.168.0.116 | worker | node_exporter, promtail, Docker |
-| ollama-gpu | 192.168.0.150 | gpu | Ollama (6 models), Alertmanager |
+| primary | 10.0.0.10 | primary | Prometheus, Loki, PostgreSQL |
+| worker-1 | 10.0.0.11 | worker | node_exporter, promtail, Docker |
+| worker-2 | 10.0.0.12 | worker (CFOperator host) | node_exporter, promtail, Docker |
+| worker-3 | 10.0.0.13 | worker | node_exporter, promtail, Docker |
+| gpu-host | 10.0.0.14 | gpu | Ollama, Alertmanager |
 
 ## Quick Start
 
@@ -67,12 +67,12 @@ docker compose up -d
 
 ## Usage
 
-**Chat UI**: `http://192.168.0.111:8083`
+**Chat UI**: `http://<cfoperator-host>:8083`
 
 ```
 "summary"                          → Overnight TPS report
 "Why did immich restart last night?" → Targeted investigation
-"Show me Pi2 container status"      → Fleet query
+"Show me worker-1 container status" → Fleet query
 /investigate-container telegraf     → Skill execution
 /why-restart immich-ml              → Root cause analysis
 /compare-hosts                      → Fleet comparison
@@ -91,6 +91,27 @@ docker compose up -d
 | `/api/qa` | Pending questions (GET/POST) |
 | `/metrics` | Prometheus metrics |
 | `/ws` | WebSocket chat |
+
+## cfassist (Go CLI)
+
+A standalone single-binary CLI assistant for SRE and systems administration. Cross-compiles to any platform — no Python or runtime dependencies needed.
+
+```bash
+# Download from GitHub Releases
+gh release download cfassist-v0.3.0 --pattern 'cfassist-linux-amd64'
+chmod +x cfassist-linux-amd64
+
+# One-shot mode
+./cfassist "what is my hostname?"
+
+# Interactive TUI
+./cfassist
+
+# Pipe mode
+journalctl -u nginx --since '1 hour ago' | ./cfassist "summarize errors"
+```
+
+See [cfassist-go/](cfassist-go/) for build instructions and source.
 
 ## Key Files
 
@@ -116,4 +137,4 @@ docker compose up -d
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

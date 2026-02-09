@@ -2,7 +2,7 @@
 
 ## Overview
 
-CFOperator exposes Prometheus metrics at `http://192.168.0.111:8083/metrics` for comprehensive observability.
+CFOperator exposes Prometheus metrics at `http://<cfoperator-host>:8083/metrics` for comprehensive observability.
 
 ## Core Agent Metrics
 
@@ -27,13 +27,13 @@ cfoperator_sweeps_total{mode="proactive"}
 
 ### Infrastructure Monitoring
 ```promql
-# Number of monitored hosts (should be 5)
+# Number of monitored hosts
 cfoperator_monitored_hosts
 
 # Running containers across fleet
 cfoperator_running_containers
 
-# Number of registered tools (should be 18)
+# Number of registered tools
 cfoperator_tools_registered
 ```
 
@@ -165,13 +165,13 @@ sum(rate(cfoperator_llm_tokens_total[1h])) * 3600
 
 ### Infrastructure Health
 ```promql
-# Expected: 5 hosts
+# Monitored hosts
 cfoperator_monitored_hosts
 
 # Running containers (will vary)
 cfoperator_running_containers
 
-# Tools available (should be 18)
+# Tools available
 cfoperator_tools_registered
 ```
 
@@ -263,7 +263,7 @@ Add CFOperator as a scrape target:
 scrape_configs:
   - job_name: 'cfoperator'
     static_configs:
-      - targets: ['192.168.0.111:8083']  # raspberrypi3
+      - targets: ['<cfoperator-host>:8083']
     scrape_interval: 15s
     scrape_timeout: 10s
 ```
@@ -272,13 +272,13 @@ scrape_configs:
 
 ```bash
 # Check metrics endpoint
-curl http://192.168.0.111:8083/metrics | grep cfoperator
+curl http://localhost:8083/metrics | grep cfoperator
 
 # Check specific metric
-curl http://192.168.0.111:8083/metrics | grep cfoperator_uptime_seconds
+curl http://localhost:8083/metrics | grep cfoperator_uptime_seconds
 
 # Check LLM metrics (will appear after first LLM call)
-curl http://192.168.0.111:8083/metrics | grep cfoperator_llm
+curl http://localhost:8083/metrics | grep cfoperator_llm
 ```
 
 ## Metrics Implementation

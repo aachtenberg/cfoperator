@@ -13,7 +13,7 @@ class DockerContainers(ContainerBackend):
         Args:
             hosts: Dict mapping host names to Docker socket URLs
                    e.g., {'local': 'unix:///var/run/docker.sock',
-                         'pi2': 'tcp://192.168.0.146:2375'}
+                         'worker-1': 'tcp://worker-1:2375'}
         """
         self.hosts = hosts or {'local': 'unix:///var/run/docker.sock'}
         self.clients = {name: docker.DockerClient(base_url=url) for name, url in self.hosts.items()}

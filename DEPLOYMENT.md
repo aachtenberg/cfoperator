@@ -4,19 +4,17 @@
 
 ## Deployment Location
 
-- **Host**: raspberrypi3 (192.168.0.111)
-- **Deploy dir**: `~/repos/cfoperator/`
+- **Host**: Your Docker host (any Linux machine)
+- **Deploy dir**: Clone the repo or copy files
 - **Container**: cfoperator (host network mode)
-- **Web UI**: http://192.168.0.111:8083
-- **Health**: http://192.168.0.111:8083/api/health
-- **Metrics**: http://192.168.0.111:8083/metrics
-- **Grafana**: https://aachten.grafana.net/d/cfoperator-fleet/cfoperator-fleet-monitoring
+- **Web UI**: http://localhost:8083
+- **Health**: http://localhost:8083/api/health
+- **Metrics**: http://localhost:8083/metrics
 
 ## Deploy / Rebuild
 
 ```bash
-# On raspberrypi3
-cd ~/repos/cfoperator
+cd /path/to/cfoperator
 git pull
 docker compose down && docker compose build && docker compose up -d
 ```
@@ -48,18 +46,18 @@ docker logs -f cfoperator
 |------|---------|
 | `.env` | POSTGRES_PASSWORD, LLM API keys |
 | `config.yaml` | Host IPs, OODA timing, backend URLs |
-| `secrets/.env.secrets` | Grafana Cloud creds (for dashboard upload) |
-| `~/.ssh/id_rsa` | SSH keys (mounted into container) |
+| `secrets/.env.secrets` | Grafana Cloud creds (for dashboard upload, optional) |
+| `~/.ssh/id_rsa` | SSH keys (mounted into container for fleet access) |
 
 ### Infrastructure dependencies
 
-| Service | Host | Port |
-|---------|------|------|
-| PostgreSQL | 192.168.0.167 | 5434 |
-| Prometheus | 192.168.0.167 | 9090 |
-| Loki | 192.168.0.167 | 3100 |
-| Alertmanager | 192.168.0.150 | 9093 |
-| Ollama | 192.168.0.150 | 11434 |
+| Service | Default Port | Required |
+|---------|-------------|----------|
+| PostgreSQL | 5432 | Yes |
+| Prometheus | 9090 | Yes |
+| Loki | 3100 | Yes |
+| Alertmanager | 9093 | Optional |
+| Ollama | 11434 | Yes (or configure cloud LLM) |
 
 ## What's Running
 
@@ -68,10 +66,9 @@ docker logs -f cfoperator
 | OODA Loop | Reactive (10s) + Proactive (30min sweeps) |
 | Web Server | Flask + Waitress on port 8083 (host network) |
 | Tools | 18 registered (4 core + 9 SSH + 4 discovery + function) |
-| Fleet | 5 hosts (raspberrypi, pi2, pi3, pi4, ollama-gpu) |
 | Skills | 3 loaded (investigate-container, why-restart, compare-hosts) |
 | LLM | Ollama → Groq → Gemini → Anthropic fallback chain |
-| Knowledge Base | PostgreSQL (sre_knowledge) + offline buffer |
+| Knowledge Base | PostgreSQL + offline buffer |
 | Metrics | /metrics endpoint with Prometheus counters/gauges/histograms |
 
 ## Quick Commands

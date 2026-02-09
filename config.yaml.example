@@ -20,9 +20,8 @@ observability:
     backend: docker  # or: kubernetes, podman
     hosts:
       local: unix:///var/run/docker.sock
-      pi2: tcp://192.168.0.146:2375
-      pi3: tcp://192.168.0.111:2375
-      pi4: tcp://192.168.0.116:2375
+      # worker-1: tcp://worker-1:2375
+      # worker-2: tcp://worker-2:2375
 
   # Alerts backend - choose one:
   alerts:
@@ -45,7 +44,7 @@ llm:
   # Primary LLM (Ollama local)
   primary:
     provider: ollama
-    url: http://192.168.0.198:11434
+    url: http://localhost:11434
     model: qwen3:14b/no_think  # /no_think disables deliberative mode
 
   # Fallback chain (on error/timeout)
@@ -63,7 +62,7 @@ llm:
   # Embeddings (for semantic search)
   embeddings:
     provider: ollama
-    url: http://192.168.0.198:11434
+    url: http://localhost:11434
     model: nomic-embed-text
 
 # Database
