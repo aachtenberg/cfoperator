@@ -124,7 +124,6 @@ class CFOperator:
         # OODA state
         self.current_investigation = None
         self.last_sweep = 0
-        self.sweep_interval = self.config['ooda']['sweep_interval']
         self.start_time = time.time()
 
         # Initialize web server
@@ -337,8 +336,10 @@ class CFOperator:
         """
         logger.info("="*60)
         logger.info("Starting CFOperator OODA loop")
-        logger.info(f"Reactive: check alerts every {self.config['ooda']['alert_check_interval']}s")
-        logger.info(f"Proactive: deep sweep every {self.sweep_interval}s ({self.sweep_interval//60} minutes)")
+        alert_interval = self._get_alert_check_interval()
+        sweep_interval = self._get_sweep_interval()
+        logger.info(f"Reactive: check alerts every {alert_interval}s")
+        logger.info(f"Proactive: deep sweep every {sweep_interval}s ({sweep_interval//60} minutes)")
         logger.info("="*60)
 
         # Start web server in background thread
@@ -362,7 +363,7 @@ class CFOperator:
                             self._handle_alert_reactive(alert)
 
                 # MODE 2: Proactive - periodic deep sweep
-                if time.time() - self.last_sweep > self.sweep_interval:
+                if time.time() - self.last_sweep > self._get_sweep_interval():
                     logger.info("="*60)
                     logger.info("PROACTIVE MODE: Starting deep system sweep")
                     logger.info("="*60)
@@ -373,7 +374,7 @@ class CFOperator:
                 # MODE 3: Morning summary (TPS report style)
                 self._check_morning_summary()
 
-                time.sleep(self.config['ooda']['alert_check_interval'])
+                time.sleep(self._get_alert_check_interval())
 
             except KeyboardInterrupt:
                 logger.info("Shutting down CFOperator...")
@@ -937,6 +938,26 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                 notif.send(report['summary'], severity=report['severity'])
             except Exception as e:
                 logger.error(f"Error sending notification: {e}")
+
+    def _get_alert_check_interval(self) -> int:
+        """Get alert check interval: DB setting → config.yaml → default 10."""
+        try:
+            val = self.kb.get_setting('alert_check_interval', '')
+            if val:
+                return max(5, min(300, int(val)))
+        except Exception:
+            pass
+        return self.config.get('ooda', {}).get('alert_check_interval', 10)
+
+    def _get_sweep_interval(self) -> int:
+        """Get sweep interval: DB setting → config.yaml → default 1800."""
+        try:
+            val = self.kb.get_setting('sweep_interval', '')
+            if val:
+                return max(60, min(86400, int(val)))
+        except Exception:
+            pass
+        return self.config.get('ooda', {}).get('sweep_interval', 1800)
 
     def _get_max_tool_iterations(self) -> int:
         """Get max tool iterations: DB setting → config.yaml → default 10."""

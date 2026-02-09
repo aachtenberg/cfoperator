@@ -145,6 +145,36 @@ class WebServer:
                 logger.warning(f"Could not persist max_tool_iterations (DB down?): {e}")
             return jsonify({'success': True, 'max_tool_iterations': val})
 
+        # OODA interval settings
+        @self.app.route('/api/settings/ooda')
+        def get_ooda_settings():
+            """Get current OODA loop intervals."""
+            return jsonify({
+                'alert_check_interval': self.operator._get_alert_check_interval(),
+                'sweep_interval': self.operator._get_sweep_interval(),
+            })
+
+        @self.app.route('/api/settings/ooda', methods=['POST'])
+        def set_ooda_settings():
+            """Persist OODA loop interval settings."""
+            data = request.json
+            result = {}
+            if 'alert_check_interval' in data:
+                val = max(5, min(300, int(data['alert_check_interval'])))
+                try:
+                    self.operator.kb._kb.set_setting('alert_check_interval', str(val))
+                except Exception as e:
+                    logger.warning(f"Could not persist alert_check_interval: {e}")
+                result['alert_check_interval'] = val
+            if 'sweep_interval' in data:
+                val = max(60, min(86400, int(data['sweep_interval'])))
+                try:
+                    self.operator.kb._kb.set_setting('sweep_interval', str(val))
+                except Exception as e:
+                    logger.warning(f"Could not persist sweep_interval: {e}")
+                result['sweep_interval'] = val
+            return jsonify({'success': True, **result})
+
         # Chat API — starts chat in background, returns chat_id for polling
         @self.app.route('/api/chat', methods=['POST'])
         def api_chat():

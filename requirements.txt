@@ -27,3 +27,6 @@ slack-sdk>=3.26.0
 # For embeddings (Ollama via OpenAI-compat API)
 # numpy for vector operations (used by embedding_service)
 numpy>=1.26.0
+
+# MCP (Model Context Protocol) server
+mcp>=0.9.0

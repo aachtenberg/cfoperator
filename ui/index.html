@@ -422,6 +422,10 @@
             </select>
             <label for="max-iterations">Max Tools:</label>
             <input type="number" id="max-iterations" min="1" max="50" value="10" style="width: 50px; background: #000000; color: #00ff00; border: 1px solid #00a600; padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 14px; font-weight: 700; text-align: center;">
+            <label for="alert-interval">Alert(s):</label>
+            <input type="number" id="alert-interval" min="5" max="300" value="10" style="width: 50px; background: #000000; color: #00ff00; border: 1px solid #00a600; padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 14px; font-weight: 700; text-align: center;">
+            <label for="sweep-interval">Sweep(m):</label>
+            <input type="number" id="sweep-interval" min="1" max="1440" value="30" style="width: 50px; background: #000000; color: #00ff00; border: 1px solid #00a600; padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 14px; font-weight: 700; text-align: center;">
         </div>
     </header>
 
@@ -813,6 +817,28 @@
             }).catch(err => console.error('Error saving max iterations:', err));
         }
 
+        function onAlertIntervalChange() {
+            const val = parseInt(document.getElementById('alert-interval').value) || 10;
+            const clamped = Math.max(5, Math.min(300, val));
+            document.getElementById('alert-interval').value = clamped;
+            fetch('/api/settings/ooda', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({alert_check_interval: clamped})
+            }).catch(err => console.error('Error saving alert interval:', err));
+        }
+
+        function onSweepIntervalChange() {
+            const val = parseInt(document.getElementById('sweep-interval').value) || 30;
+            const clamped = Math.max(1, Math.min(1440, val));
+            document.getElementById('sweep-interval').value = clamped;
+            fetch('/api/settings/ooda', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({sweep_interval: clamped * 60})
+            }).catch(err => console.error('Error saving sweep interval:', err));
+        }
+
         // Restore persisted backend and model on page load
         function restoreSettings() {
             const savedBackend = localStorage.getItem('cfoperator_backend');
@@ -836,12 +862,22 @@
                     const saved = localStorage.getItem('cfoperator_max_iterations');
                     if (saved) document.getElementById('max-iterations').value = saved;
                 });
+            // Restore OODA intervals from server
+            fetch('/api/settings/ooda')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('alert-interval').value = data.alert_check_interval;
+                    document.getElementById('sweep-interval').value = Math.round(data.sweep_interval / 60);
+                })
+                .catch(() => {});
         }
 
         // Event listeners
         document.getElementById('llm-backend').addEventListener('change', onBackendChange);
         document.getElementById('ollama-model').addEventListener('change', onModelChange);
         document.getElementById('max-iterations').addEventListener('change', onMaxIterationsChange);
+        document.getElementById('alert-interval').addEventListener('change', onAlertIntervalChange);
+        document.getElementById('sweep-interval').addEventListener('change', onSweepIntervalChange);
         document.getElementById('send-button').addEventListener('click', sendMessage);
 
         document.getElementById('message-input').addEventListener('keydown', (e) => {
