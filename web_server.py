@@ -251,6 +251,36 @@ class WebServer:
                     logger.error(f"Error answering question: {e}")
                     return jsonify({'error': str(e)}), 500
 
+        # Feedback API — thumbs up/down on chat responses
+        @self.app.route('/api/feedback', methods=['POST'])
+        def api_feedback():
+            """Record user feedback on a chat response to close the learning loop."""
+            data = request.json
+            feedback_type = data.get('type')  # 'thumbs_up' or 'thumbs_down'
+            learning_ids = data.get('learning_ids', [])
+
+            if feedback_type not in ('thumbs_up', 'thumbs_down'):
+                return jsonify({'error': 'Invalid feedback type'}), 400
+
+            successful = (feedback_type == 'thumbs_up')
+            updated = 0
+            for lid in learning_ids:
+                try:
+                    if self.operator.kb._kb.record_learning_application(int(lid), successful):
+                        updated += 1
+                except Exception as e:
+                    logger.warning(f"Failed to record feedback for learning {lid}: {e}")
+
+            # Thumbs up also marks learnings as human-verified
+            if successful:
+                for lid in learning_ids:
+                    try:
+                        self.operator.kb._kb.verify_learning(int(lid), True)
+                    except Exception:
+                        pass
+
+            return jsonify({'success': True, 'updated': updated})
+
         # WebSocket endpoint (only if available)
         if self.sock:
             @self.sock.route('/ws')

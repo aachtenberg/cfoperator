@@ -2266,7 +2266,10 @@ class KnowledgeBase:
                         LEFT JOIN fts_scores f ON il.id = f.learning_id
                         WHERE il.deprecated = false
                           AND (v.vector_sim IS NOT NULL OR f.fts_rank IS NOT NULL)
-                        ORDER BY combined_score DESC
+                        ORDER BY combined_score * COALESCE(
+                            CASE WHEN il.times_applied >= 3 THEN 0.5 + COALESCE(il.success_rate, 0.5)
+                                 ELSE 1.0 END,
+                            1.0) DESC
                         LIMIT :limit
                     """), {
                         'query': query_text,

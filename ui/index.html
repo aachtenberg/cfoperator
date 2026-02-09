@@ -247,6 +247,40 @@
             font-weight: 700;
         }
 
+        .feedback-buttons {
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+        }
+
+        .feedback-buttons button {
+            background: transparent;
+            border: 1px solid #00a600;
+            color: #00a600;
+            padding: 4px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .feedback-buttons button:hover {
+            background: #003300;
+            color: #00ff00;
+        }
+
+        .feedback-buttons button.selected {
+            background: #003300;
+            color: #00ff00;
+            border-color: #00ff00;
+        }
+
+        .feedback-buttons button:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+
         #input-area {
             background: #000000;
             border-top: 1px solid #00a600;
@@ -487,6 +521,7 @@
 
             container.appendChild(messageDiv);
             container.scrollTop = container.scrollHeight;
+            return messageDiv;
         }
 
         // Current tool log container for the active chat response
@@ -566,6 +601,17 @@
             if (document.getElementById('questions-panel').children.length === 0) {
                 document.getElementById('questions-panel').classList.remove('active');
             }
+        }
+
+        function sendFeedback(btn, learningIds, type) {
+            fetch('/api/feedback', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({learning_ids: learningIds, type: type})
+            }).then(r => r.json()).then(() => {
+                btn.classList.add('selected');
+                btn.parentElement.querySelectorAll('button').forEach(b => { b.disabled = true; });
+            }).catch(err => console.error('Feedback error:', err));
         }
 
         function sendMessage() {
@@ -654,8 +700,27 @@
                 document.getElementById('send-button').disabled = false;
                 currentToolLog = null;  // Reset for next interaction
                 if (data.response) {
-                    addMessage('agent', data.response, data.backend, data.model);
+                    const msgEl = addMessage('agent', data.response, data.backend, data.model);
                     chatHistory.push({role: 'assistant', content: data.response});
+
+                    // Show feedback buttons if learnings were used
+                    if (data.learning_ids && data.learning_ids.length > 0) {
+                        const fbDiv = document.createElement('div');
+                        fbDiv.className = 'feedback-buttons';
+                        const lids = data.learning_ids;
+
+                        const btnUp = document.createElement('button');
+                        btnUp.innerHTML = '&#x1F44D; helpful';
+                        btnUp.addEventListener('click', () => sendFeedback(btnUp, lids, 'thumbs_up'));
+
+                        const btnDown = document.createElement('button');
+                        btnDown.innerHTML = '&#x1F44E; not helpful';
+                        btnDown.addEventListener('click', () => sendFeedback(btnDown, lids, 'thumbs_down'));
+
+                        fbDiv.appendChild(btnUp);
+                        fbDiv.appendChild(btnDown);
+                        msgEl.appendChild(fbDiv);
+                    }
                 }
             } else if (type === 'error') {
                 document.getElementById('thinking').classList.remove('active');

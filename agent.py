@@ -1025,6 +1025,7 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
         tool_calls_count = 0
         total_input_tokens = 0
         total_output_tokens = 0
+        learnings_used = []  # Track learning IDs consulted during this conversation
 
         # Get tool schemas
         tools = self.tools.get_schemas()
@@ -1081,6 +1082,10 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                         result = self.tools.execute(tool_name, tool_args)
                         tool_calls_count += 1
 
+                        # Track learning IDs when find_learnings is called
+                        if tool_name == 'find_learnings' and isinstance(result, list):
+                            learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
+
                         # Notify UI about tool result
                         if event_callback:
                             result_preview = json.dumps(result, default=str)[:500]
@@ -1111,7 +1116,8 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                         'response': text,
                         'tool_calls': tool_calls_count,
                         'input_tokens': total_input_tokens,
-                        'output_tokens': total_output_tokens
+                        'output_tokens': total_output_tokens,
+                        'learning_ids': learnings_used
                     }
 
                 else:
@@ -1129,7 +1135,8 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                     'response': f"Error during tool execution: {str(e)}",
                     'tool_calls': tool_calls_count,
                     'input_tokens': total_input_tokens,
-                    'output_tokens': total_output_tokens
+                    'output_tokens': total_output_tokens,
+                    'learning_ids': learnings_used
                 }
 
         # Hit max iterations
@@ -1137,7 +1144,8 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             'response': "Maximum tool iterations reached. Please simplify your request.",
             'tool_calls': tool_calls_count,
             'input_tokens': total_input_tokens,
-            'output_tokens': total_output_tokens
+            'output_tokens': total_output_tokens,
+            'learning_ids': learnings_used
         }
 
     def handle_chat_message(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None) -> Dict[str, Any]:
@@ -1201,6 +1209,18 @@ Your role:
 
 Be concise and infrastructure-focused.
 """
+
+        # Surface recent verified learnings so LLM knows what's available
+        try:
+            recent_learnings = self.kb.find_learnings(limit=5, verified_only=False)
+            if recent_learnings:
+                system_context += "\n\nRecent learnings from past investigations:\n"
+                for l in recent_learnings[:3]:
+                    rate = f" ({l.get('success_rate', 0):.0%} success)" if l.get('times_applied', 0) > 0 else ""
+                    system_context += f"- [{l.get('learning_type', '?')}] {l.get('title', '?')}{rate}\n"
+                system_context += "Use find_learnings tool for more details on any of these.\n"
+        except Exception:
+            pass  # Don't break chat if KB is down
 
         # Check for skill/command invocation
         if message.startswith('/'):
@@ -1269,7 +1289,8 @@ Be concise and infrastructure-focused.
                 'response': response_text,
                 'backend': provider_type,
                 'model': model,
-                'tool_calls': tool_calls_count
+                'tool_calls': tool_calls_count,
+                'learning_ids': result.get('learning_ids', [])
             }
 
         except Exception as e:
@@ -1293,7 +1314,8 @@ Be concise and infrastructure-focused.
                 'response': f"Error processing request: {str(e)}",
                 'backend': provider,
                 'model': model_name,
-                'tool_calls': tool_calls_count
+                'tool_calls': tool_calls_count,
+                'learning_ids': []
             }
 
     def handle_chat_message_stream(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None):
@@ -1375,6 +1397,18 @@ Your role:
 Be concise and infrastructure-focused.
 """
 
+        # Surface recent verified learnings so LLM knows what's available
+        try:
+            recent_learnings = self.kb.find_learnings(limit=5, verified_only=False)
+            if recent_learnings:
+                system_context += "\n\nRecent learnings from past investigations:\n"
+                for l in recent_learnings[:3]:
+                    rate = f" ({l.get('success_rate', 0):.0%} success)" if l.get('times_applied', 0) > 0 else ""
+                    system_context += f"- [{l.get('learning_type', '?')}] {l.get('title', '?')}{rate}\n"
+                system_context += "Use find_learnings tool for more details on any of these.\n"
+        except Exception:
+            pass  # Don't break chat if KB is down
+
         start_time = time.time()
         tool_calls_count = 0
 
@@ -1404,7 +1438,7 @@ Be concise and infrastructure-focused.
             provider_key = f"{provider_type}/{url}/{model}" if url else f"{provider_type}/{model}"
             self.llm.record_success(provider_key)
 
-            return {'response': result.get('response', ''), 'backend': provider_type, 'model': model, 'tool_calls': tool_calls_count}
+            return {'response': result.get('response', ''), 'backend': provider_type, 'model': model, 'tool_calls': tool_calls_count, 'learning_ids': result.get('learning_ids', [])}
 
         except Exception as e:
             latency = time.time() - start_time
