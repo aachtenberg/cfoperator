@@ -32,7 +32,8 @@ CFOperator (Docker container)
 │   │           list_services, docker_list, docker_restart, get_system_info, check_port
 │   └── Discovery (4): ping_host, verify_ssh, verify_sudo, discover_all_hosts
 │
-├── Skills (3 investigation workflows)
+├── Skills (4 investigation workflows)
+│   ├── /investigate-host — Systematic host/server investigation
 │   ├── /investigate-container — Systematic container investigation
 │   ├── /why-restart — Analyze container restart causes
 │   └── /compare-hosts — Compare metrics across fleet
@@ -114,7 +115,8 @@ cn "@cfoperator search logs for errors in telegraf"
 "summary"                          → Overnight TPS report
 "Why did immich restart last night?" → Targeted investigation
 "Show me worker-1 container status" → Fleet query
-/investigate-container telegraf     → Skill execution
+/investigate-host raspberrypi2      → Host-level investigation
+/investigate-container telegraf     → Container investigation
 /why-restart immich-ml              → Root cause analysis
 /compare-hosts                      → Fleet comparison
 ```

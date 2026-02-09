@@ -72,6 +72,20 @@ async def list_tools() -> List[Tool]:
             }
         ),
         Tool(
+            name="investigate_host",
+            description="Investigate a host's health, resource usage, services, and connectivity. Works for bare metal servers, VMs, and Raspberry Pis — not just Docker hosts. Checks CPU, memory, disk, swap, failed services, recent errors, and past learnings.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "hostname": {
+                        "type": "string",
+                        "description": "Host name from config (e.g., raspberrypi, raspberrypi2, ollama-gpu)"
+                    }
+                },
+                "required": ["hostname"]
+            }
+        ),
+        Tool(
             name="why_restart",
             description="Analyze why a container restarted. Examines exit codes, pre-crash logs, OOM events, and restart patterns.",
             inputSchema={
@@ -272,6 +286,9 @@ def _build_message(tool_name: str, args: Dict) -> str:
 
     if tool_name == "investigate_container":
         return f"/investigate-container {args['container_name']}"
+
+    elif tool_name == "investigate_host":
+        return f"/investigate-host {args['hostname']}"
 
     elif tool_name == "why_restart":
         container = args["container_name"]
