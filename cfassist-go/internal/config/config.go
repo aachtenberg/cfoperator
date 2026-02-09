@@ -12,11 +12,12 @@ import (
 var Version = "0.2.0"
 
 type LLMConfig struct {
-	Provider    string  `yaml:"provider"`
-	URL         string  `yaml:"url"`
-	Model       string  `yaml:"model"`
-	Temperature float64 `yaml:"temperature"`
-	APIKey      string  `yaml:"api_key"`
+	Provider      string  `yaml:"provider"`
+	URL           string  `yaml:"url"`
+	Model         string  `yaml:"model"`
+	Temperature   float64 `yaml:"temperature"`
+	APIKey        string  `yaml:"api_key"`
+	ContextWindow int     `yaml:"context_window"`
 }
 
 type ContextConfig struct {
@@ -64,10 +65,11 @@ func DefaultConfigPath() string {
 func Defaults() *Config {
 	return &Config{
 		LLM: LLMConfig{
-			Provider:    "ollama",
-			URL:         "http://localhost:11434",
-			Model:       "llama3.2",
-			Temperature: 0.7,
+			Provider:      "ollama",
+			URL:           "http://localhost:11434",
+			Model:         "llama3.2",
+			Temperature:   0.7,
+			ContextWindow: 8192,
 		},
 		Context: ContextConfig{
 			Directory: filepath.Join(DefaultConfigDir(), "context"),
@@ -167,6 +169,7 @@ llm:
   url: http://localhost:11434
   model: llama3.2
   temperature: 0.7
+  context_window: 8192  # max tokens for the model
 
   # OpenAI-compatible provider example:
   # provider: openai

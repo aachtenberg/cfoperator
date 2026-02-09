@@ -11,12 +11,13 @@ import (
 
 // Result holds the outcome of a conversation turn.
 type Result struct {
-	Response     string
-	ToolCalls    int
-	InputTokens  int
-	OutputTokens int
-	Latency      time.Duration
-	Error        string
+	Response        string
+	ToolCalls       int
+	InputTokens     int
+	OutputTokens    int
+	LastPromptTokens int // tokens in the last prompt (= current context usage)
+	Latency         time.Duration
+	Error           string
 }
 
 // Output is called during a conversation to report what's happening.
@@ -71,6 +72,7 @@ func Run(
 
 		result.InputTokens += resp.InputTokens
 		result.OutputTokens += resp.OutputTokens
+		result.LastPromptTokens = resp.InputTokens
 
 		// Handle tool calls
 		if len(resp.ToolCalls) > 0 {

@@ -13,6 +13,7 @@ import (
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/conversation"
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/memory"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 )
 
@@ -39,6 +40,7 @@ type model struct {
 	program      *tea.Program
 	renderer     *glamour.TermRenderer
 	lastStats    string
+	contextUsed  int // last prompt token count (current context usage)
 }
 
 // New creates a new TUI model.
@@ -155,6 +157,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastStats = fmt.Sprintf("%d↑ %d↓ %.1fs", r.InputTokens, r.OutputTokens, latency)
 		if r.ToolCalls > 0 {
 			m.lastStats += fmt.Sprintf(" %dt", r.ToolCalls)
+		}
+		m.contextUsed = r.LastPromptTokens
+
+		// Auto-save and truncate when context exceeds 80%
+		ctxLimit := m.cfg.LLM.ContextWindow
+		if ctxLimit > 0 && m.contextUsed > ctxLimit*80/100 && len(m.messages) > 4 {
+			memory.SaveConversation(m.cfg.Memory.Directory, m.messages)
+			// Keep system prompt context + last 4 messages
+			m.messages = m.messages[len(m.messages)-4:]
+			m.outputLines = append(m.outputLines,
+				"",
+				warningStyle.Render(fmt.Sprintf("  Context %d/%d tokens (>80%%) — conversation saved and trimmed.",
+					m.contextUsed, ctxLimit)),
+			)
+			if m.ready {
+				m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+				m.viewport.GotoBottom()
+			}
 		}
 		return m, nil
 
@@ -334,6 +354,11 @@ func (m *model) View() string {
 	}
 	statusText := fmt.Sprintf(" cfassist v%s | %s | %s",
 		config.Version, m.llm.Model, status)
+	if m.contextUsed > 0 && m.cfg.LLM.ContextWindow > 0 {
+		ctxK := float64(m.contextUsed) / 1000
+		maxK := float64(m.cfg.LLM.ContextWindow) / 1000
+		statusText += fmt.Sprintf(" | %.1fk/%.0fk ctx", ctxK, maxK)
+	}
 	if m.lastStats != "" {
 		statusText += " | " + m.lastStats
 	}
