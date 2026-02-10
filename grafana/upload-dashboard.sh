@@ -35,6 +35,23 @@ fi
 
 FOLDER_NAME="${1:-CFOperator}"
 
+# Ensure PostgreSQL datasource for sweep reports exists
+SRE_PG_UID="${SRE_PG_DATASOURCE_UID:-ffcrf4dsqchz4e}"
+echo "🔌 Checking sre-knowledge PostgreSQL datasource (uid: $SRE_PG_UID)..."
+DS_CHECK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRAFANA_CLOUD_API_KEY" \
+    "$GRAFANA_CLOUD_URL/api/datasources/uid/$SRE_PG_UID")
+
+if [[ "$DS_CHECK" == "200" ]]; then
+    echo "✓ Datasource exists"
+else
+    echo "⚠️  sre-knowledge PostgreSQL datasource not found (uid: $SRE_PG_UID)"
+    echo "   Create in Grafana UI: Connections → Add data source → PostgreSQL"
+    echo "   Host: 192.168.0.167:5434 | DB: sre_knowledge | User: sre_agent"
+    echo "   Enable PDC proxy | SSL: disable"
+    echo "   Then set SRE_PG_DATASOURCE_UID in .env.secrets to match the new UID"
+fi
+
+echo ""
 echo "📊 Uploading CFOperator dashboard to Grafana Cloud..."
 echo "   Instance: $GRAFANA_CLOUD_URL"
 echo "   Dashboard: cfoperator-dashboard.json"
@@ -89,7 +106,7 @@ API_PAYLOAD=$(jq -n \
         dashboard: ($dashboard | .id = null),
         folderUid: (if $folderUid != "" then $folderUid else null end),
         overwrite: true,
-        message: "CFOperator v1.0.2 - Fleet-wide monitoring + LLM observability"
+        message: "CFOperator v1.0.8 - Fleet monitoring + sweep findings & recommendations"
     }')
 
 # Create/update dashboard
@@ -115,6 +132,7 @@ if [[ "$STATUS" == "success" ]] && [[ -n "$URL" ]]; then
     echo "   • LLM observability (requests, tokens, latency, fallbacks)"
     echo "   • OODA loop activity and tool usage"
     echo "   • Infrastructure health (CPU, memory by host)"
+    echo "   • Sweep findings & recommendations (PostgreSQL)"
     echo "   • Comprehensive log panels (7 specialized views)"
     echo ""
 else
