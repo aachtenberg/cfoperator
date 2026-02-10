@@ -13,7 +13,7 @@ from .base import (
 )
 
 # Import implementations
-from .prometheus import PrometheusMetrics, AlertmanagerAlerts
+from .prometheus import PrometheusMetrics, AlertmanagerAlerts, AlertmanagerNotifications
 from .loki import LokiLogs
 from .docker import DockerContainers
 from .slack import SlackNotifications
@@ -30,5 +30,6 @@ __all__ = [
     'LokiLogs',
     'DockerContainers',
     'AlertmanagerAlerts',
+    'AlertmanagerNotifications',
     'SlackNotifications',
 ]

@@ -17,6 +17,7 @@ import json
 import yaml
 import logging
 import hashlib
+import subprocess
 from datetime import datetime
 import queue
 from typing import Dict, List, Any, Optional
@@ -36,6 +37,7 @@ from observability import (
     LokiLogs,
     DockerContainers,
     AlertmanagerAlerts,
+    AlertmanagerNotifications,
     SlackNotifications
 )
 
@@ -325,6 +327,10 @@ class CFOperator:
                 notif = SlackNotifications(webhook_url=notif_config.get('webhook_url'))
                 self.notifications.append(notif)
                 logger.info("Initialized Slack notifications")
+            elif notif_config.get('backend') == 'alertmanager':
+                notif = AlertmanagerNotifications(url=notif_config.get('url', alerts_config.get('url', '')))
+                self.notifications.append(notif)
+                logger.info("Initialized Alertmanager notifications")
 
     def run(self):
         """
@@ -682,45 +688,178 @@ When done, provide a summary of findings and whether the issue is resolved, need
         except Exception as e:
             logger.debug(f"Embedding backfill skipped: {e}")
 
-        # 6. Generate sweep report
+        # 6. Deduplicate findings across phases
+        findings = self._dedup_findings(findings)
+
+        # 7. Generate sweep report
         if findings:
             logger.info(f"Sweep found {len(findings)} total issues")
             report = self._generate_sweep_report(findings)
 
-            # Post to chat/notifications if critical/warning
+            # Only notify if findings changed since last sweep
             if report['severity'] in ['warning', 'critical']:
-                logger.warning(f"Critical/warning findings in sweep: {report['summary'][:200]}")
-                self._notify_sweep_findings(report)
+                new_findings = self._get_new_findings(report['findings'])
+                if new_findings:
+                    logger.warning(f"New findings in sweep ({len(new_findings)} new): {report['summary'][:200]}")
+                    # Build a notification-only report with just the new stuff
+                    notif_report = self._generate_sweep_report(new_findings)
+                    notif_report['summary'] = f"[{len(new_findings)} new of {len(findings)} total] " + notif_report['summary']
+                    self._notify_sweep_findings(notif_report)
+                else:
+                    logger.info(f"Sweep found {len(findings)} issues (all known from previous sweep, skipping notification)")
 
-            # TODO: Store in database
-            # self.kb.store_sweep_report(report)
+            # Always store the full report in DB
+            try:
+                self.kb.store_sweep_report(
+                    severity=report['severity'],
+                    findings=report['findings'],
+                    summary=report['summary'],
+                    sweep_meta=report.get('sweep_meta')
+                )
+            except Exception as e:
+                logger.warning(f"Could not store sweep report (DB down?): {e}")
         else:
             logger.info("Sweep complete - no findings")
 
-    def _sweep_metrics(self) -> List[Dict[str, Any]]:
-        """Query all key metrics and look for trends."""
-        # TODO: Implement metric sweep with LLM analysis
+    def _get_infra_summary(self) -> str:
+        """Build a concise summary of the infrastructure from config for LLM context."""
+        hosts = self.config.get('infrastructure', {}).get('hosts', {})
+        lines = []
+        for name, info in hosts.items():
+            addr = info.get('address', '?')
+            role = info.get('role', '?')
+            services = [s.get('name', '?') for s in info.get('services', [])]
+            lines.append(f"  {name} ({addr}, {role}): {', '.join(services)}")
+        return "Infrastructure hosts:\n" + "\n".join(lines)
+
+    def _sweep_with_llm(self, task: str, max_iterations: int = None) -> List[Dict[str, Any]]:
+        """
+        Run an LLM-driven sweep phase. The LLM gets the task description,
+        infrastructure context, and access to all tools (prometheus_query,
+        loki_query, docker_list, ssh_execute, etc).
+
+        Returns list of findings: [{'severity': ..., 'finding': ...}]
+        """
+        if max_iterations is None:
+            max_iterations = self._get_max_tool_iterations()
+
+        # Check for sweep-specific backend/model override (DB settings)
+        sweep_backend = self.kb.get_setting('sweep_backend', '')
+        sweep_model = self.kb.get_setting('sweep_model', '')
+
+        if sweep_backend:
+            resolved = self._resolve_provider(backend=sweep_backend, model=sweep_model or None)
+        else:
+            resolved = self._resolve_provider()
+
+        if not resolved:
+            logger.warning("No LLM provider available for sweep — skipping")
+            return []
+
+        provider_type, url, model = resolved
+        infra = self._get_infra_summary()
+
+        system_prompt = f"""You are CFOperator performing a proactive infrastructure sweep.
+
+{infra}
+
+{task}
+
+After investigating, respond with your findings as a JSON array:
+[{{"severity": "info|warning|critical", "finding": "description", "remediation": "suggested fix or action"}}]
+
+If everything looks healthy, return an empty array: []
+Only return the JSON array, no other text."""
+
+        try:
+            result = self._chat_with_tools(
+                provider_type=provider_type,
+                url=url,
+                model=model,
+                messages=[{'role': 'user', 'content': task}],
+                system_context=system_prompt,
+                max_iterations=max_iterations
+            )
+
+            response_text = result.get('response', '')
+            tool_calls = result.get('tool_calls', 0)
+            input_tokens = result.get('input_tokens', 0)
+            output_tokens = result.get('output_tokens', 0)
+            hit_limit = tool_calls >= max_iterations
+            logger.info(
+                f"Sweep LLM completed: {provider_type}/{model} | "
+                f"{tool_calls}/{max_iterations} tool calls{'(limit hit)' if hit_limit else ''} | "
+                f"{len(response_text)} chars | "
+                f"tokens: {input_tokens}in/{output_tokens}out"
+            )
+
+            # Parse findings from response
+            return self._parse_sweep_findings(response_text)
+
+        except Exception as e:
+            logger.error(f"Sweep LLM failed: {e}")
+            ERROR_RATE.inc()
+            return []
+
+    def _parse_sweep_findings(self, response_text: str) -> List[Dict[str, Any]]:
+        """Parse LLM response into structured findings."""
+        # Try to extract JSON array from the response
+        text = response_text.strip()
+
+        # Find JSON array in the response (may be wrapped in markdown code blocks)
+        import re
+        json_match = re.search(r'\[.*\]', text, re.DOTALL)
+        if json_match:
+            try:
+                findings = json.loads(json_match.group())
+                if isinstance(findings, list):
+                    # Validate each finding has required keys
+                    valid = []
+                    for f in findings:
+                        if isinstance(f, dict) and 'finding' in f:
+                            valid.append({
+                                'severity': f.get('severity', 'info'),
+                                'finding': str(f['finding'])
+                            })
+                    return valid
+            except json.JSONDecodeError:
+                pass
+
+        # If JSON parsing failed but response has content, treat it as a single info finding
+        # Filter out iteration-limit messages — those aren't real findings
+        if text and text != '[]' and 'Maximum tool iterations' not in text:
+            return [{'severity': 'info', 'finding': text[:500]}]
+
         return []
+
+    def _sweep_metrics(self) -> List[Dict[str, Any]]:
+        """Sweep metrics across the infrastructure using LLM analysis."""
+        logger.info("Starting LLM-driven metric sweep")
+        return self._sweep_with_llm(
+            "Check the health of all infrastructure hosts and services by examining metrics. "
+            "Look at resource usage, scrape targets, container health, and anything that looks off."
+        )
 
     def _sweep_logs(self) -> List[Dict[str, Any]]:
-        """Scan logs across all services looking for patterns."""
-        # TODO: Implement log sweep with LLM pattern detection
-        return []
+        """Sweep logs across all services using LLM pattern detection."""
+        logger.info("Starting LLM-driven log sweep")
+        return self._sweep_with_llm(
+            "Check recent logs across infrastructure services for errors, warnings, or concerning patterns."
+        )
 
     def _sweep_containers(self) -> List[Dict[str, Any]]:
-        """Check all Docker containers systematically."""
+        """Check all Docker containers — direct query + LLM review."""
         findings = []
 
+        # Direct container status check (fast, no LLM needed)
         try:
             containers = self.containers.list_containers()
             logger.info(f"Found {len(containers)} containers across all hosts")
 
-            # Update running containers metric
             running_count = sum(1 for c in containers if c.get('status') == 'running')
             RUNNING_CONTAINERS.set(running_count)
 
             for container in containers:
-                # Check for unhealthy status
                 if container.get('status') != 'running':
                     findings.append({
                         'severity': 'warning',
@@ -728,15 +867,157 @@ When done, provide a summary of findings and whether the issue is resolved, need
                     })
 
         except Exception as e:
-            logger.error(f"Error sweeping containers: {e}")
+            logger.error(f"Error listing containers: {e}")
             ERROR_RATE.inc()
+
+        # LLM review of container health
+        container_summary = ""
+        if containers:
+            container_summary = f"\n\nCurrently running {running_count} of {len(containers)} containers."
+            stopped = [c for c in containers if c.get('status') != 'running']
+            if stopped:
+                container_summary += f"\nStopped containers: {', '.join(c['name'] for c in stopped)}"
+
+        llm_findings = self._sweep_with_llm(
+            f"Review Docker container health across the fleet.{container_summary} "
+            "Check for containers with high resource usage, frequent restarts, or other issues."
+        )
+        findings.extend(llm_findings)
 
         return findings
 
     def _check_baseline_drift(self) -> List[Dict[str, Any]]:
-        """Compare current state to expected baseline."""
-        # TODO: Implement baseline drift detection
-        return []
+        """Compare expected infrastructure state to reality."""
+        findings = []
+
+        try:
+            # Get expected services from config
+            hosts_config = self.config.get('infrastructure', {}).get('hosts', {})
+            expected_services = {}
+            for host_name, host_info in hosts_config.items():
+                for svc in host_info.get('services', []):
+                    container = svc.get('container')
+                    if container:
+                        expected_services.setdefault(host_name, []).append({
+                            'name': svc['name'],
+                            'container': container
+                        })
+
+            # Get actually-running containers
+            actual_containers = {}
+            if self.containers:
+                try:
+                    for c in self.containers.list_containers():
+                        host = c.get('host', 'unknown')
+                        actual_containers.setdefault(host, set()).add(c['name'])
+                except Exception as e:
+                    logger.warning(f"Failed to list containers for drift check: {e}")
+
+            # Compare expected vs actual
+            for host_name, services in expected_services.items():
+                host_info = hosts_config.get(host_name, {})
+                host_addr = host_info.get('address', '')
+
+                # Match Prometheus engine_host to config host by exact name or IP
+                actual_names = set()
+                for actual_host, containers in actual_containers.items():
+                    if (actual_host == host_name or
+                            actual_host == host_addr or
+                            actual_host.split('.')[0] == host_name):
+                        actual_names.update(containers)
+
+                # If no Prometheus data for this host, try SSH docker ps
+                if not actual_names and host_addr:
+                    ssh_user = host_info.get('ssh', {}).get('user', 'aachten')
+                    try:
+                        result = subprocess.run(
+                            ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
+                             '-o', 'ConnectTimeout=5', f'{ssh_user}@{host_addr}',
+                             'docker', 'ps', '--format', '{{.Names}}'],
+                            capture_output=True, text=True, timeout=10
+                        )
+                        if result.returncode == 0:
+                            actual_names = {name.strip() for name in result.stdout.strip().split('\n') if name.strip()}
+                            logger.debug(f"Drift check: SSH fallback for {host_name} found {len(actual_names)} containers")
+                    except Exception as e:
+                        logger.debug(f"Drift check: SSH fallback failed for {host_name}: {e}")
+
+                for svc in services:
+                    container_name = svc['container']
+                    if actual_names and container_name not in actual_names:
+                        findings.append({
+                            'severity': 'warning',
+                            'finding': f"Expected service '{svc['name']}' (container: {container_name}) not found running on {host_name}"
+                        })
+
+            # Bootstrap/update baselines
+            self._update_baselines(actual_containers)
+
+        except Exception as e:
+            logger.error(f"Error checking baseline drift: {e}")
+            ERROR_RATE.inc()
+
+        return findings
+
+    def _update_baselines(self, actual_containers: Dict[str, set]):
+        """Update stored baselines with current state."""
+        try:
+            stored = self.kb.get_baseline()
+
+            if not stored:
+                # No baselines yet — bootstrap from current state
+                for host, containers in actual_containers.items():
+                    self.kb.update_baseline(
+                        service_name=f"host:{host}",
+                        expected_state='running',
+                        baseline_metrics={
+                            'container_count': len(containers),
+                            'containers': sorted(containers)
+                        }
+                    )
+                if actual_containers:
+                    logger.info(f"Bootstrapped baselines for {len(actual_containers)} hosts")
+            else:
+                # Compare to stored baselines and record drift
+                for host, containers in actual_containers.items():
+                    key = f"host:{host}"
+                    baseline = stored.get(key, {})
+                    if baseline:
+                        old_containers = set(baseline.get('baseline_metrics', {}).get('containers', []))
+                        new_containers = set(containers)
+                        added = new_containers - old_containers
+                        removed = old_containers - new_containers
+
+                        if added or removed:
+                            desc_parts = []
+                            if added:
+                                desc_parts.append(f"new: {', '.join(sorted(added))}")
+                            if removed:
+                                desc_parts.append(f"gone: {', '.join(sorted(removed))}")
+
+                            self.kb.record_drift_event(
+                                drift_type='container_change',
+                                description=f"{host}: {'; '.join(desc_parts)}",
+                                drift_details={
+                                    'host': host,
+                                    'added': sorted(added),
+                                    'removed': sorted(removed),
+                                    'current_count': len(containers)
+                                }
+                            )
+                            # Update baseline to current state
+                            self.kb.update_baseline(
+                                service_name=key,
+                                expected_state='running',
+                                baseline_metrics={
+                                    'container_count': len(containers),
+                                    'containers': sorted(containers)
+                                }
+                            )
+                            logger.info(f"Drift detected on {host}: {'; '.join(desc_parts)}")
+
+        except Exception as e:
+            logger.warning(f"Baseline update failed: {e}")
 
     def _consolidate_learnings(self):
         """Periodically consolidate similar learnings by deprecating duplicates."""
@@ -912,6 +1193,48 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
         except Exception as e:
             logger.debug(f"Learning embedding failed for #{learning_id}: {e}")
 
+    @staticmethod
+    def _finding_key(finding: Dict[str, Any]) -> str:
+        """Produce a stable key for dedup by stripping variable parts (numbers, timestamps)."""
+        import re
+        text = finding.get('finding', '')
+        # Strip numbers (counts, ports, timestamps change across sweeps)
+        text = re.sub(r'\d+', '#', text)
+        # Collapse whitespace
+        text = re.sub(r'\s+', ' ', text).strip().lower()
+        # Take first 120 chars — enough to identify the issue
+        return text[:120]
+
+    def _dedup_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Deduplicate findings across sweep phases.
+
+        When multiple phases report the same issue, keep the one with highest severity.
+        """
+        severity_rank = {'critical': 3, 'warning': 2, 'info': 1}
+        seen = {}  # key -> finding
+        for f in findings:
+            key = self._finding_key(f)
+            existing = seen.get(key)
+            if not existing or severity_rank.get(f.get('severity', 'info'), 0) > severity_rank.get(existing.get('severity', 'info'), 0):
+                seen[key] = f
+        deduped = list(seen.values())
+        if len(deduped) < len(findings):
+            logger.info(f"Deduplicated {len(findings)} findings to {len(deduped)}")
+        return deduped
+
+    def _get_new_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return only findings that weren't in the previous sweep report."""
+        try:
+            prev_reports = self.kb.get_recent_sweep_reports(limit=1)
+            if not prev_reports:
+                return findings  # First sweep — everything is new
+            prev_keys = {self._finding_key(f) for f in prev_reports[0].get('findings', [])}
+            new = [f for f in findings if self._finding_key(f) not in prev_keys]
+            return new
+        except Exception as e:
+            logger.debug(f"Could not check previous sweep for dedup: {e}")
+            return findings  # On error, notify for everything
+
     def _generate_sweep_report(self, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate summary report from sweep findings."""
         max_severity = 'info'
@@ -922,13 +1245,23 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
 
         summary = f"System sweep found {len(findings)} issues:\n"
         for f in findings:
-            summary += f"- [{f.get('severity', 'info').upper()}] {f.get('finding', '')}\n"
+            summary += f"- [{f.get('severity', 'info').upper()}] {f.get('finding', '')}"
+            if f.get('remediation'):
+                summary += f"\n  -> {f['remediation']}"
+            summary += "\n"
+
+        sweep_backend = self.kb.get_setting('sweep_backend', '')
+        sweep_model = self.kb.get_setting('sweep_model', '')
 
         return {
             'timestamp': datetime.now(),
             'findings': findings,
             'summary': summary,
-            'severity': max_severity
+            'severity': max_severity,
+            'sweep_meta': {
+                'sweep_backend': sweep_backend or 'default',
+                'sweep_model': sweep_model or 'default',
+            }
         }
 
     def _notify_sweep_findings(self, report: Dict[str, Any]):
@@ -1141,9 +1474,151 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                         'learning_ids': learnings_used
                     }
 
+                elif provider_type == 'anthropic':
+                    # Anthropic Messages API with tool use
+                    api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                    if not api_key:
+                        raise ValueError("ANTHROPIC_API_KEY not set")
+
+                    # Convert OpenAI tool schemas to Anthropic format
+                    anthropic_tools = []
+                    for t in tools:
+                        func = t.get('function', {})
+                        anthropic_tools.append({
+                            'name': func['name'],
+                            'description': func.get('description', ''),
+                            'input_schema': func.get('parameters', {'type': 'object', 'properties': {}})
+                        })
+
+                    # Anthropic uses system as a top-level param, not a message
+                    anthropic_messages = [m for m in full_messages if m.get('role') != 'system']
+
+                    # Convert tool results from Ollama format to Anthropic format
+                    converted_messages = []
+                    for m in anthropic_messages:
+                        if m.get('role') == 'tool':
+                            # Use stored tool_results array if present (parallel tool calls)
+                            if m.get('tool_results'):
+                                converted_messages.append({
+                                    'role': 'user',
+                                    'content': m['tool_results']
+                                })
+                            else:
+                                converted_messages.append({
+                                    'role': 'user',
+                                    'content': [{
+                                        'type': 'tool_result',
+                                        'tool_use_id': m.get('tool_use_id', 'tool_0'),
+                                        'content': m.get('content', '')
+                                    }]
+                                })
+                        elif m.get('role') == 'assistant' and isinstance(m.get('content'), list):
+                            converted_messages.append(m)
+                        else:
+                            converted_messages.append({
+                                'role': m.get('role', 'user'),
+                                'content': m.get('content', '')
+                            })
+
+                    payload = {
+                        'model': model,
+                        'max_tokens': 4096,
+                        'system': system_context,
+                        'messages': converted_messages,
+                        'tools': anthropic_tools,
+                        'temperature': 0.7
+                    }
+                    headers = {
+                        'Content-Type': 'application/json',
+                        'x-api-key': api_key,
+                        'anthropic-version': '2023-06-01'
+                    }
+
+                    response = requests.post(
+                        'https://api.anthropic.com/v1/messages',
+                        json=payload,
+                        headers=headers,
+                        timeout=120
+                    )
+                    data = response.json()
+
+                    if data.get('error'):
+                        raise ValueError(f"Anthropic API error: {data['error']}")
+
+                    # Extract tokens
+                    usage = data.get('usage', {})
+                    total_input_tokens += usage.get('input_tokens', 0)
+                    total_output_tokens += usage.get('output_tokens', 0)
+
+                    # Check for tool use in content blocks
+                    # Anthropic can return multiple tool_use blocks in parallel
+                    content_blocks = data.get('content', [])
+                    tool_use_blocks = [b for b in content_blocks if b.get('type') == 'tool_use']
+                    text_parts = [b.get('text', '') for b in content_blocks if b.get('type') == 'text']
+
+                    if tool_use_blocks:
+                        # Execute ALL tool calls and collect results
+                        tool_results = []
+                        for tool_block in tool_use_blocks:
+                            tool_name = tool_block['name']
+                            tool_args = tool_block.get('input', {})
+                            tool_use_id = tool_block.get('id', f'tool_{iteration}')
+
+                            if event_callback:
+                                event_callback('tool_call', {
+                                    'tool': tool_name,
+                                    'args': tool_args,
+                                    'iteration': iteration + 1,
+                                    'max': max_iterations
+                                })
+
+                            logger.info(f"Executing tool: {tool_name}")
+                            result = self.tools.execute(tool_name, tool_args)
+                            tool_calls_count += 1
+
+                            if tool_name == 'find_learnings' and isinstance(result, list):
+                                learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
+
+                            if event_callback:
+                                result_preview = json.dumps(result, default=str)[:500]
+                                event_callback('tool_result', {
+                                    'tool': tool_name,
+                                    'result': result_preview,
+                                    'iteration': iteration + 1
+                                })
+
+                            TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
+                            tool_results.append({
+                                'type': 'tool_result',
+                                'tool_use_id': tool_use_id,
+                                'content': json.dumps(result, default=str)
+                            })
+
+                        # Append assistant message with all tool uses
+                        full_messages.append({
+                            'role': 'assistant',
+                            'content': content_blocks
+                        })
+                        # Append all tool results in a single user message
+                        full_messages.append({
+                            'role': 'tool',
+                            'tool_use_id': tool_results[0]['tool_use_id'],
+                            'tool_results': tool_results,
+                            'content': json.dumps([tr['content'] for tr in tool_results])
+                        })
+                        continue
+
+                    # No tool calls — return text response
+                    text = '\n'.join(text_parts)
+                    return {
+                        'response': text,
+                        'tool_calls': tool_calls_count,
+                        'input_tokens': total_input_tokens,
+                        'output_tokens': total_output_tokens,
+                        'learning_ids': learnings_used
+                    }
+
                 else:
-                    # For other providers (groq, gemini, anthropic) - simplified for now
-                    # TODO: Implement full support for other providers
                     raise NotImplementedError(f"Provider {provider_type} not yet implemented for chat")
 
             except Exception as e:
@@ -1160,7 +1635,103 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                     'learning_ids': learnings_used
                 }
 
-        # Hit max iterations
+        # Hit max iterations — do one final no-tools call to get a summary.
+        # Extract tool results from conversation to provide as context.
+        logger.info(f"Hit iteration limit ({max_iterations}), attempting summary call")
+        try:
+            # Collect tool results from the conversation for context
+            tool_summaries = []
+            for msg in full_messages:
+                if msg.get('role') == 'tool':
+                    content = msg.get('content', '')
+                    # Truncate long tool results
+                    if len(content) > 500:
+                        content = content[:500] + '...'
+                    tool_summaries.append(content)
+
+            tool_context = "\n---\n".join(tool_summaries[-6:])  # Last 6 tool results
+
+            summary_messages = [
+                {'role': 'system', 'content': system_context},
+                {'role': 'user', 'content': (
+                    f'You investigated the infrastructure using {tool_calls_count} tool calls. '
+                    f'Here are the key results from your tool calls:\n\n{tool_context}\n\n'
+                    f'Based on these results, provide your findings as a JSON array:\n'
+                    f'[{{"severity": "info|warning|critical", "finding": "description", '
+                    f'"remediation": "suggested fix"}}]\n'
+                    f'If everything looks healthy, return: []\n'
+                    f'Only return the JSON array, no other text.'
+                )}
+            ]
+
+            if provider_type == 'ollama':
+                payload = {
+                    'model': model,
+                    'messages': summary_messages,
+                    'stream': False,
+                    'temperature': 0.7
+                }
+                response = requests.post(
+                    f"{url}/api/chat",
+                    json=payload,
+                    headers={'Content-Type': 'application/json'},
+                    timeout=120
+                )
+                data = response.json()
+                total_input_tokens += data.get('prompt_eval_count', 0)
+                total_output_tokens += data.get('eval_count', 0)
+                summary_text = data.get('message', {}).get('content', '')
+            elif provider_type == 'anthropic':
+                api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                anthropic_messages = [m for m in full_messages if m.get('role') != 'system']
+                converted = []
+                for m in anthropic_messages:
+                    if m.get('role') == 'tool':
+                        if m.get('tool_results'):
+                            converted.append({'role': 'user', 'content': m['tool_results']})
+                        else:
+                            converted.append({
+                                'role': 'user',
+                                'content': [{'type': 'tool_result', 'tool_use_id': m.get('tool_use_id', 'tool_0'), 'content': m.get('content', '')}]
+                            })
+                    elif m.get('role') == 'assistant' and isinstance(m.get('content'), list):
+                        converted.append(m)
+                    else:
+                        converted.append({'role': m.get('role', 'user'), 'content': m.get('content', '')})
+                payload = {
+                    'model': model, 'max_tokens': 4096,
+                    'system': system_context,
+                    'messages': converted, 'temperature': 0.7
+                }
+                headers = {
+                    'Content-Type': 'application/json',
+                    'x-api-key': api_key,
+                    'anthropic-version': '2023-06-01'
+                }
+                response = requests.post('https://api.anthropic.com/v1/messages', json=payload, headers=headers, timeout=120)
+                data = response.json()
+                usage = data.get('usage', {})
+                total_input_tokens += usage.get('input_tokens', 0)
+                total_output_tokens += usage.get('output_tokens', 0)
+                summary_text = '\n'.join(b.get('text', '') for b in data.get('content', []) if b.get('type') == 'text')
+            else:
+                summary_text = ''
+
+            if summary_text.strip():
+                logger.info(f"Got {len(summary_text)} char summary after hitting iteration limit")
+                return {
+                    'response': summary_text,
+                    'tool_calls': tool_calls_count,
+                    'input_tokens': total_input_tokens,
+                    'output_tokens': total_output_tokens,
+                    'learning_ids': learnings_used
+                }
+            else:
+                logger.warning("Summary call returned empty response after iteration limit")
+        except Exception as e:
+            logger.warning(f"Failed to get summary after iteration limit: {e}", exc_info=True)
+
+        # Fallback if summary call also failed
         return {
             'response': "Maximum tool iterations reached. Please simplify your request.",
             'tool_calls': tool_calls_count,
@@ -1728,89 +2299,141 @@ IMPORTANT:
             except Exception as e:
                 logger.error(f"Error sending morning summary: {e}")
 
-        # Store in DB
-        # TODO: Store as sweep_report with type='morning_summary'
+        # Store in DB as a sweep report
+        try:
+            self.kb.store_sweep_report(
+                severity=summary.get('severity', 'info'),
+                findings=[{'severity': 'info', 'finding': summary['text'][:500]}],
+                summary=f"Morning summary - {now.strftime('%Y-%m-%d')}",
+                sweep_meta={'type': 'morning_summary'}
+            )
+        except Exception as e:
+            logger.warning(f"Could not store morning summary in DB: {e}")
 
         logger.info("Morning summary sent")
 
     def _generate_morning_summary(self) -> Dict[str, Any]:
         """
-        Generate TPS report style morning summary.
-
-        Example output:
-        ```
-        ## Infrastructure Summary - 2024-01-15 07:30
-
-        ### Overnight Activity (midnight - 7am)
-        - 3 investigations resolved automatically
-        - 1 alert fired and auto-resolved (immich-ml memory)
-        - 12 container restarts across fleet (5 on Pi2, 4 on Pi3, 3 on Pi4)
-
-        ### Patterns Detected
-        - Pi2: telegraf restarts every ~2 hours (memory leak suspected)
-        - Pi3: immich-ml OOM events correlate with backup jobs
-        - Cross-host: redis connection spikes during postgres restarts
-
-        ### Metric Trends (7-day)
-        - Pi2 disk: 82% → 85% (+3% this week, +12% this month)
-        - Pi3 memory: Steady 95% utilization (container limits may need adjustment)
-        - Pi4 CPU: Spikes to 80% during backup windows (expected)
-
-        ### Learnings Extracted
-        - immich-ml: Increasing memory limit to 2GB prevents OOM during large imports
-        - telegraf: Restart every 6h as workaround for memory leak (upstream issue filed)
-
-        ### Recommendations
-        1. Increase Pi2 disk soon (will hit 90% in ~3 weeks at current rate)
-        2. Consider moving immich-ml to Pi4 (more memory available)
-        3. Update telegraf to v1.29 when available (memory leak fix)
-
-        ### System Health: GOOD ✓
-        - All hosts responding
-        - All critical services running
-        - No pending investigations
-        ```
+        Generate morning summary by gathering overnight data from DB
+        and having the LLM synthesize it with live infrastructure checks.
         """
         from datetime import datetime as dt, timedelta
 
-        # Query overnight activity (midnight to now)
         midnight = dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        now = dt.now()
 
-        # TODO: Query investigations from last night
-        # investigations = self.kb.get_investigations_since(midnight)
+        # Gather overnight data from DB
+        context_parts = []
 
-        # TODO: Query alerts from last night
-        # alerts = self.kb.get_alerts_since(midnight)
+        # 1. Sweep reports since midnight
+        try:
+            reports = self.kb.get_recent_sweep_reports(limit=10)
+            overnight_reports = [r for r in reports
+                                if r.get('swept_at', '') >= midnight.isoformat()]
+            if overnight_reports:
+                context_parts.append(f"## Overnight Sweep Reports ({len(overnight_reports)} sweeps)")
+                for r in overnight_reports:
+                    context_parts.append(
+                        f"- {r['swept_at']}: {r['severity'].upper()} - "
+                        f"{r['finding_count']} findings: {r.get('summary', '')[:200]}"
+                    )
+                    for f in (r.get('findings') or [])[:5]:
+                        sev = f.get('severity', 'info')
+                        finding = f.get('finding', '')[:150]
+                        remediation = f.get('remediation', '')
+                        context_parts.append(f"  [{sev}] {finding}")
+                        if remediation:
+                            context_parts.append(f"    -> {remediation[:150]}")
+            else:
+                context_parts.append("## No sweep reports since midnight")
+        except Exception as e:
+            context_parts.append(f"## Sweep reports unavailable: {e}")
 
-        # TODO: Query container events from last night
-        # container_events = self.kb.get_container_events_since(midnight)
+        # 2. Investigations since midnight
+        try:
+            investigations = self.kb.get_recent_investigations(limit=20)
+            overnight_inv = [i for i in investigations
+                            if i.get('started_at', '') >= midnight.isoformat()]
+            if overnight_inv:
+                context_parts.append(f"\n## Overnight Investigations ({len(overnight_inv)})")
+                for inv in overnight_inv:
+                    outcome = inv.get('outcome', 'unknown')
+                    trigger = inv.get('trigger', '')[:100]
+                    duration = inv.get('duration_seconds', 0) or 0
+                    tools = inv.get('tool_calls_count', 0) or 0
+                    context_parts.append(
+                        f"- [{outcome}] {trigger} ({duration}s, {tools} tool calls)"
+                    )
+            else:
+                context_parts.append("\n## No investigations since midnight")
+        except Exception as e:
+            context_parts.append(f"\n## Investigations unavailable: {e}")
 
-        # TODO: Get metric trends (7-day comparison)
-        # metric_trends = self._get_metric_trends(days=7)
+        # 3. New learnings since midnight
+        try:
+            learnings = self.kb.get_learnings_since(midnight, limit=20)
+            if learnings:
+                context_parts.append(f"\n## New Learnings ({len(learnings)})")
+                for l in learnings:
+                    context_parts.append(f"- {l.get('title', 'untitled')}: {l.get('description', '')[:150]}")
+            else:
+                context_parts.append("\n## No new learnings since midnight")
+        except Exception as e:
+            context_parts.append(f"\n## Learnings unavailable: {e}")
 
-        # TODO: Get newly extracted learnings
-        # new_learnings = self.kb.get_learnings_since(midnight)
+        overnight_data = "\n".join(context_parts)
+        infra = self._get_infra_summary()
 
-        # For now, generate placeholder summary
-        summary_text = f"""## Infrastructure Summary - {dt.now().strftime("%Y-%m-%d %H:%M")}
+        # Ask LLM to synthesize + do live checks
+        task = (
+            f"Generate a concise morning infrastructure summary for "
+            f"{now.strftime('%Y-%m-%d %H:%M')}.\n\n"
+            f"{infra}\n\n"
+            f"Here is overnight activity data from the database:\n{overnight_data}\n\n"
+            f"Do a quick live check: ping each host, check key metrics (CPU, memory, disk), "
+            f"and verify critical services are running. Then produce a summary covering:\n"
+            f"1. Overnight activity highlights\n"
+            f"2. Current system health status\n"
+            f"3. Any issues or recommendations\n\n"
+            f"Be concise and practical. Use markdown formatting."
+        )
 
-### Overnight Activity (midnight - {dt.now().strftime("%H:%M")})
-- Morning summary not yet fully implemented
-- Placeholder report
+        resolved = self._resolve_provider()
+        if resolved:
+            provider_type, url, model = resolved
+            try:
+                result = self._chat_with_tools(
+                    provider_type=provider_type,
+                    url=url,
+                    model=model,
+                    messages=[{'role': 'user', 'content': task}],
+                    system_context=(
+                        f"You are CFOperator generating a morning infrastructure summary. "
+                        f"You have tools to check live infrastructure. Be concise and actionable.\n\n"
+                        f"{infra}"
+                    ),
+                    max_iterations=15
+                )
+                summary_text = result.get('response', '')
+                if summary_text and 'Maximum tool iterations' not in summary_text:
+                    return {
+                        'text': summary_text,
+                        'timestamp': now,
+                        'severity': 'info'
+                    }
+            except Exception as e:
+                logger.error(f"LLM morning summary failed: {e}")
 
-### System Health: UNKNOWN
-- Monitoring active
-- Data collection in progress
-
-### Next Steps
-- Implement full morning summary generation
-- Query DB for overnight events
-- Analyze patterns with LLM
-"""
+        # Fallback: return the raw data if LLM is unavailable
+        summary_text = (
+            f"## Infrastructure Summary - {now.strftime('%Y-%m-%d %H:%M')}\n\n"
+            f"{overnight_data}\n\n"
+            f"*LLM unavailable — raw data shown above*"
+        )
 
         return {
             'text': summary_text,
-            'timestamp': dt.now(),
+            'timestamp': now,
             'severity': 'info'
         }
 

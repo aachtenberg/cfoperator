@@ -11,7 +11,7 @@ class PrometheusContainers(ContainerBackend):
     Uses SSH for actions (restart, logs, etc.).
 
     This approach:
-    - Queries Prometheus for container_last_seen metrics across all hosts
+    - Queries Prometheus for docker_container_status_uptime_ns (Telegraf metrics)
     - Uses SSH for container actions (no Docker TCP API needed)
     - Works with existing infrastructure (Prometheus + SSH keys)
     """
@@ -60,32 +60,26 @@ class PrometheusContainers(ContainerBackend):
         """
         List all containers by querying Prometheus.
 
-        Uses container_last_seen metric which is exported by cAdvisor/node-exporter.
+        Uses docker_container_status_uptime_ns from Telegraf Docker input plugin.
         """
-        # Query Prometheus for all containers across fleet
-        query = 'container_last_seen{name!="", name!="POD"}'
+        query = 'docker_container_status_uptime_ns{container_name!=""}'
         if host:
-            query = f'container_last_seen{{name!="", name!="POD", instance=~".*{host}.*"}}'
+            query = f'docker_container_status_uptime_ns{{container_name!="", engine_host=~".*{host}.*"}}'
 
         results = self._query_prometheus(query)
 
         containers = []
         for result in results:
             metric = result.get('metric', {})
-            container_name = metric.get('name', metric.get('container_name', ''))
-            instance = metric.get('instance', '')
-            image = metric.get('image', '')
+            container_name = metric.get('container_name', '')
+            engine_host = metric.get('engine_host', metric.get('instance', '').split(':')[0])
+            image = metric.get('container_image', '')
 
-            # Extract host from instance label (format: hostname:port or hostname)
-            host_name = instance.split(':')[0] if instance else 'unknown'
-
-            # Check if container is running (value is timestamp, if recent = running)
-            value = float(result.get('value', [0, 0])[1])
-            import time
-            is_running = (time.time() - value) < 120  # Consider running if seen in last 2 min
+            uptime_ns = float(result.get('value', [0, 0])[1])
+            is_running = uptime_ns > 0
 
             containers.append({
-                'host': host_name,
+                'host': engine_host or 'unknown',
                 'name': container_name,
                 'status': 'running' if is_running else 'stopped',
                 'image': image

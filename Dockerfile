@@ -21,6 +21,9 @@ COPY skills/ ./skills/
 COPY ui/ ./ui/
 COPY config.yaml.example ./config.yaml.example
 
+# agent.py uses bare imports (knowledge_base, llm_fallback, etc.)
+ENV PYTHONPATH="/app/agent:/app:${PYTHONPATH}"
+
 # Expose port for HTTP/WebSocket
 EXPOSE 8083
 

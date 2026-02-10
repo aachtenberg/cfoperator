@@ -3,9 +3,9 @@ Prometheus Metrics Backend Implementation
 """
 
 import requests
-from datetime import datetime
-from typing import Dict, Any, Optional
-from .base import MetricsBackend, AlertsBackend
+from datetime import datetime, timedelta
+from typing import Dict, Any, List, Optional
+from .base import MetricsBackend, AlertsBackend, NotificationBackend
 
 class PrometheusMetrics(MetricsBackend):
     """Prometheus implementation of MetricsBackend."""
@@ -96,3 +96,40 @@ class AlertmanagerAlerts(AlertsBackend):
             timeout=self.timeout
         )
         return resp.status_code == 200
+
+
+class AlertmanagerNotifications(NotificationBackend):
+    """Push sweep findings as alerts to Alertmanager.
+
+    Alertmanager then routes to Slack/email/etc via its own config.
+    This keeps CFOperator from needing to know about every notification channel.
+    """
+
+    def __init__(self, url: str = 'http://localhost:9093'):
+        self.url = url.rstrip('/')
+        self.timeout = 10
+
+    def send(self, message: str, severity: str = 'info') -> bool:
+        """Post an alert to Alertmanager."""
+        alert = [{
+            'labels': {
+                'alertname': 'CFOperatorSweep',
+                'severity': severity,
+                'source': 'cfoperator',
+            },
+            'annotations': {
+                'summary': f'CFOperator sweep: {severity}',
+                'description': message[:2048],
+            },
+            'startsAt': datetime.utcnow().isoformat() + 'Z',
+            'endsAt': (datetime.utcnow() + timedelta(minutes=10)).isoformat() + 'Z',
+        }]
+        try:
+            resp = requests.post(
+                f'{self.url}/api/v2/alerts',
+                json=alert,
+                timeout=self.timeout
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False

@@ -311,6 +311,18 @@ class WebServer:
 
             return jsonify({'success': True, 'updated': updated})
 
+        # Sweep Reports API
+        @self.app.route('/api/sweep-reports')
+        def sweep_reports():
+            """Get recent sweep reports."""
+            try:
+                limit = request.args.get('limit', 20, type=int)
+                reports = self.operator.kb.get_recent_sweep_reports(limit=limit)
+                return jsonify({'reports': reports})
+            except Exception as e:
+                logger.error(f"Error fetching sweep reports: {e}")
+                return jsonify({'error': str(e), 'reports': []}), 500
+
         # WebSocket endpoint (only if available)
         if self.sock:
             @self.sock.route('/ws')

@@ -721,6 +721,28 @@ class LLMProviderState(Base):
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
+class SweepReport(Base):
+    """Proactive sweep results — stored per sweep cycle."""
+    __tablename__ = 'sweep_reports'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    host_id = Column(String(64), nullable=False, default='default')
+    swept_at = Column(TIMESTAMP, nullable=False, default=lambda: datetime.now(timezone.utc))
+    severity = Column(String(20), nullable=False)  # 'info', 'warning', 'critical'
+    finding_count = Column(Integer, nullable=False, default=0)
+    findings = Column(JSONB, nullable=False)  # list of {severity, finding, sweep_phase}
+    summary = Column(Text, nullable=False)
+    sweep_meta = Column(JSONB, nullable=True)  # provider, model, token usage, durations
+
+    __table_args__ = (
+        Index('idx_sweep_swept_at', 'swept_at', postgresql_using='btree', postgresql_ops={'swept_at': 'DESC'}),
+        Index('idx_sweep_severity', 'severity'),
+        Index('idx_sweep_host', 'host_id'),
+        Index('idx_sweep_findings_gin', 'findings', postgresql_using='gin'),
+        {'extend_existing': True}
+    )
+
+
 # ============================= Connection Health Monitor ======================
 
 class ConnectionHealthMonitor:
@@ -1156,6 +1178,45 @@ class KnowledgeBase:
             }, synchronize_session=False)
             _log("info", "Bulk acknowledged drift", count=count, type=drift_type)
             return count
+
+    # ============================= Sweep Reports =============================
+
+    def store_sweep_report(self, severity: str, findings: List[Dict[str, Any]],
+                           summary: str, sweep_meta: Optional[Dict[str, Any]] = None) -> int:
+        """Store a sweep report."""
+        with self.session_scope() as session:
+            report = SweepReport(
+                host_id=self.host_id,
+                severity=severity,
+                finding_count=len(findings),
+                findings=findings,
+                summary=summary,
+                sweep_meta=sweep_meta or {}
+            )
+            session.add(report)
+            session.flush()
+            report_id = report.id
+            _log("info", "Sweep report stored", report_id=report_id, severity=severity, findings=len(findings))
+            return report_id
+
+    def get_recent_sweep_reports(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get recent sweep reports, newest first."""
+        with self.session_scope() as session:
+            reports = session.query(SweepReport).order_by(
+                SweepReport.swept_at.desc()
+            ).limit(limit).all()
+            return [
+                {
+                    'id': r.id,
+                    'swept_at': r.swept_at.isoformat(),
+                    'severity': r.severity,
+                    'finding_count': r.finding_count,
+                    'findings': r.findings,
+                    'summary': r.summary,
+                    'sweep_meta': r.sweep_meta
+                }
+                for r in reports
+            ]
 
     def get_human_responses(self, unprocessed_only: bool = True) -> List[Dict[str, Any]]:
         """Get human responses to input requests.
