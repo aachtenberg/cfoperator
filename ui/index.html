@@ -15,33 +15,33 @@
         }
 
         ::selection {
-            background: #083905;
-            color: #00ff00;
+            background: #1a1a3a;
+            color: #00aa00;
         }
 
         body {
             font-family: 'Ubuntu Mono', 'Ubuntu', monospace;
             background: #000000;
-            color: #00ff00;
+            color: #cccccc;
             height: 100vh;
             display: flex;
             flex-direction: column;
-            font-weight: 700;
+            font-weight: 400;
         }
 
         header {
-            background: #000000;
-            padding: 12px 20px;
-            border-bottom: 1px solid #00a600;
+            background: #1a1a2e;
+            padding: 14px 20px;
+            border-bottom: 1px solid #333333;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .logo {
-            font-size: 18px;
+            font-size: 20px;
             font-weight: 700;
-            color: #00ff00;
+            color: #00aa00;
         }
 
         .settings-panel {
@@ -51,37 +51,37 @@
         }
 
         .settings-panel label {
-            font-size: 14px;
-            color: #00a600;
+            font-size: 15px;
+            color: #888888;
         }
 
         .settings-panel select {
-            background: #000000;
-            color: #00ff00;
-            border: 1px solid #00a600;
-            padding: 4px 8px;
+            background: #101020;
+            color: #cccccc;
+            border: 1px solid #333333;
+            padding: 5px 10px;
             border-radius: 3px;
             font-family: inherit;
-            font-size: 14px;
-            font-weight: 700;
+            font-size: 15px;
+            font-weight: 400;
         }
 
         .status-indicator {
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #00d900;
+            background: #00aa00;
             display: inline-block;
             margin-right: 6px;
         }
 
         .status-indicator.disconnected {
-            background: #990000;
+            background: #aa0000;
         }
 
         #questions-panel {
             background: #000000;
-            border-bottom: 1px solid #00a600;
+            border-bottom: 1px solid #333333;
             padding: 12px 20px;
             display: none;
         }
@@ -91,29 +91,29 @@
         }
 
         .question-card {
-            background: #000000;
+            background: #111122;
             padding: 12px;
             border-radius: 4px;
-            border-left: 3px solid #00ff00;
-            border: 1px solid #00a600;
+            border-left: 3px solid #00aa00;
+            border: 1px solid #333333;
             margin-bottom: 10px;
         }
 
         .question-card h4 {
-            color: #00ff00;
-            font-size: 14px;
+            color: #00aa00;
+            font-size: 16px;
             font-weight: 700;
             margin-bottom: 6px;
         }
 
         .question-card p {
-            font-size: 15px;
+            font-size: 16px;
             margin-bottom: 8px;
         }
 
         .question-card .context {
-            font-size: 13px;
-            color: #00a600;
+            font-size: 14px;
+            color: #888888;
             margin-bottom: 10px;
         }
 
@@ -124,84 +124,85 @@
 
         .answer-input input {
             flex: 1;
-            background: #000000;
-            border: 1px solid #00a600;
-            color: #00ff00;
-            padding: 6px 10px;
+            background: #101020;
+            border: 1px solid #333333;
+            color: #cccccc;
+            padding: 8px 12px;
             border-radius: 3px;
             font-family: inherit;
-            font-size: 14px;
-            font-weight: 700;
+            font-size: 16px;
+            font-weight: 400;
         }
 
         .answer-input button {
-            background: #00a600;
-            color: #000000;
+            background: #00aa00;
+            color: #101020;
             border: none;
-            padding: 6px 16px;
+            padding: 8px 18px;
             border-radius: 3px;
             cursor: pointer;
             font-family: inherit;
-            font-size: 14px;
+            font-size: 16px;
             font-weight: 700;
         }
 
         .answer-input button:hover {
-            background: #00d900;
+            background: #00cc00;
         }
 
         #chat-container {
             flex: 1;
             overflow-y: auto;
             padding: 20px;
+            background: #000000;
         }
 
         .message {
-            margin-bottom: 16px;
-            line-height: 1.6;
+            margin-bottom: 18px;
+            line-height: 1.7;
         }
 
         .message-header {
-            font-size: 14px;
-            color: #00ff00;
+            font-size: 15px;
+            color: #00aa00;
             margin-bottom: 4px;
             font-weight: 700;
         }
 
         .message.user .message-header {
-            color: #00ff00;
+            color: #00aa00;
         }
 
         .message.agent .message-header {
-            color: #00a6b2;
+            color: #008888;
         }
 
         .message.tool .message-header {
-            color: #e5e500;
+            color: #ffaa00;
         }
 
         .message-content {
-            font-size: 15px;
+            font-size: 17px;
             white-space: pre-wrap;
             word-wrap: break-word;
-            font-weight: 700;
+            font-weight: 400;
         }
 
         .tool-log {
-            background: #0a0a0a;
-            border: 1px solid #333;
+            background: #111122;
+            border: 1px solid #333333;
             border-radius: 4px;
             max-height: 300px;
             overflow-y: auto;
-            padding: 8px 12px;
+            padding: 10px 14px;
             margin: 6px 0 16px 0;
-            font-size: 13px;
-            line-height: 1.5;
+            font-size: 14px;
+            line-height: 1.6;
         }
 
         .tool-log-line {
-            padding: 2px 0;
-            border-bottom: 1px solid #111;
+            padding: 3px 0;
+            border-bottom: 1px solid #1a1a2e;
         }
 
         .tool-log-line:last-child {
@@ -209,22 +210,22 @@
         }
 
         .tool-log-line .tl-label {
-            color: #666;
-            font-size: 12px;
+            color: #888888;
+            font-size: 13px;
         }
 
         .tool-log-line .tl-name {
-            color: #e5e500;
+            color: #008888;
             font-weight: 700;
         }
 
         .tool-log-line .tl-args {
-            color: #00a600;
+            color: #888888;
             margin-left: 8px;
         }
 
         .tool-log-line .tl-result {
-            color: #557755;
+            color: #006600;
             margin-left: 8px;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -235,15 +236,15 @@
         }
 
         .tool-log-header {
-            color: #666;
-            font-size: 12px;
+            color: #888888;
+            font-size: 13px;
             padding-bottom: 4px;
-            border-bottom: 1px solid #222;
+            border-bottom: 1px solid #333333;
             margin-bottom: 4px;
         }
 
         .tool-name {
-            color: #e5e500;
+            color: #008888;
             font-weight: 700;
         }
 
@@ -255,25 +256,25 @@
 
         .feedback-buttons button {
             background: transparent;
-            border: 1px solid #00a600;
-            color: #00a600;
-            padding: 4px 12px;
+            border: 1px solid #333333;
+            color: #888888;
+            padding: 5px 14px;
             border-radius: 3px;
             cursor: pointer;
             font-family: inherit;
-            font-size: 13px;
-            font-weight: 700;
+            font-size: 14px;
+            font-weight: 400;
         }
 
         .feedback-buttons button:hover {
-            background: #003300;
-            color: #00ff00;
+            background: #1a1a2e;
+            color: #00aa00;
         }
 
         .feedback-buttons button.selected {
-            background: #003300;
-            color: #00ff00;
-            border-color: #00ff00;
+            background: #1a1a2e;
+            color: #00aa00;
+            border-color: #00aa00;
         }
 
         .feedback-buttons button:disabled {
@@ -282,8 +283,8 @@
         }
 
         #input-area {
-            background: #000000;
-            border-top: 1px solid #00a600;
+            background: #101020;
+            border-top: 1px solid #333333;
             padding: 16px 20px;
             display: flex;
             gap: 10px;
@@ -296,8 +297,8 @@
             bottom: 100%;
             left: 20px;
             right: 80px;
-            background: #0a0a0a;
-            border: 1px solid #00a600;
+            background: #111122;
+            border: 1px solid #333333;
             border-radius: 4px;
             max-height: 200px;
             overflow-y: auto;
@@ -309,7 +310,7 @@
         }
 
         .slash-item {
-            padding: 8px 14px;
+            padding: 10px 14px;
             cursor: pointer;
             display: flex;
             gap: 12px;
@@ -317,70 +318,160 @@
         }
 
         .slash-item:hover, .slash-item.selected {
-            background: #003300;
+            background: #1a1a2e;
         }
 
         .slash-item .cmd {
-            color: #00ff00;
+            color: #00aa00;
             font-weight: 700;
             white-space: nowrap;
+            font-size: 16px;
         }
 
         .slash-item .desc {
-            color: #00a600;
-            font-size: 13px;
+            color: #888888;
+            font-size: 14px;
         }
 
         #message-input {
             flex: 1;
-            background: #000000;
-            border: 1px solid #00a600;
-            color: #00ff00;
-            padding: 10px 14px;
+            background: #101020;
+            border: 1px solid #333333;
+            color: #cccccc;
+            padding: 12px 16px;
             border-radius: 4px;
             font-family: inherit;
-            font-size: 15px;
-            font-weight: 700;
+            font-size: 17px;
+            font-weight: 400;
             resize: none;
-            caret-color: #23ff18;
+            caret-color: #00aa00;
         }
 
         #message-input:focus {
             outline: none;
-            border-color: #00d900;
+            border-color: #00aa00;
         }
 
         #send-button {
-            background: #00a600;
-            color: #000000;
+            background: #00aa00;
+            color: #101020;
             border: none;
-            padding: 10px 20px;
+            padding: 12px 22px;
             border-radius: 4px;
             cursor: pointer;
             font-family: inherit;
-            font-size: 15px;
+            font-size: 17px;
             font-weight: 700;
         }
 
         #send-button:hover {
-            background: #00d900;
+            background: #00cc00;
         }
 
         #send-button:disabled {
-            background: #333;
+            background: #333333;
             cursor: not-allowed;
+        }
+
+        #sweep-panel {
+            display: none;
+            margin: 0 20px 10px;
+            border: 1px solid #333333;
+            border-radius: 4px;
+            background: #111122;
+        }
+
+        #sweep-panel.active {
+            display: block;
+        }
+
+        .sweep-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 14px;
+            cursor: pointer;
+            border-bottom: 1px solid #333333;
+        }
+
+        .sweep-header:hover {
+            background: #1a1a2e;
+        }
+
+        .sweep-severity {
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 13px;
+        }
+
+        .sweep-severity.critical { color: #aa0000; }
+        .sweep-severity.warning { color: #ffaa00; }
+        .sweep-severity.info { color: #008888; }
+
+        .sweep-time {
+            color: #888888;
+            font-size: 13px;
+        }
+
+        .sweep-body {
+            display: none;
+            padding: 10px 14px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .sweep-body.open {
+            display: block;
+        }
+
+        .sweep-finding {
+            padding: 5px 0;
+            font-size: 14px;
+            border-bottom: 1px solid #1a1a2e;
+            line-height: 1.5;
+        }
+
+        .sweep-finding:last-child {
+            border-bottom: none;
+        }
+
+        .sweep-remediation {
+            color: #006600;
+            font-size: 13px;
+            margin-top: 2px;
+            padding-left: 4px;
+        }
+
+        .sweep-badge {
+            display: inline-block;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            margin-right: 6px;
+            font-weight: bold;
+        }
+
+        .sweep-badge.critical { background: #2a0a0a; color: #aa0000; }
+        .sweep-badge.warning { background: #2a2200; color: #ffaa00; }
+        .sweep-badge.info { background: #0a2233; color: #008888; }
+
+        .sweep-meta {
+            color: #888888;
+            font-size: 12px;
+            padding: 8px 14px;
+            border-top: 1px solid #333333;
         }
 
         .links-section {
             margin-top: 20px;
             padding: 16px 20px;
             background: #000000;
-            border-top: 1px solid #00a600;
+            border-top: 1px solid #333333;
         }
 
         .links-section h3 {
-            font-size: 15px;
-            color: #00a600;
+            font-size: 16px;
+            color: #888888;
             margin-bottom: 10px;
         }
 
@@ -393,9 +484,9 @@
         }
 
         .links-section a {
-            color: #00ff00;
+            color: #00aa00;
             text-decoration: none;
-            font-size: 14px;
+            font-size: 15px;
         }
 
         .links-section a:hover {
@@ -414,8 +505,8 @@
 
         .thinking .dots span {
             animation: blink 1.4s infinite both;
-            font-size: 20px;
-            color: #00a6b2;
+            font-size: 22px;
+            color: #008888;
         }
 
         .thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
@@ -435,7 +526,7 @@
         }
 
         ::-webkit-scrollbar-thumb {
-            background: #333;
+            background: #333333;
             border-radius: 5px;
         }
 
@@ -463,16 +554,20 @@
                 <option value="">Loading models...</option>
             </select>
             <label for="max-iterations">Max Tools:</label>
-            <input type="number" id="max-iterations" min="1" max="50" value="10" style="width: 50px; background: #000000; color: #00ff00; border: 1px solid #00a600; padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 14px; font-weight: 700; text-align: center;">
+            <input type="number" id="max-iterations" min="1" max="50" value="10" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
             <label for="alert-interval">Alert(s):</label>
-            <input type="number" id="alert-interval" min="5" max="300" value="10" style="width: 50px; background: #000000; color: #00ff00; border: 1px solid #00a600; padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 14px; font-weight: 700; text-align: center;">
+            <input type="number" id="alert-interval" min="5" max="300" value="10" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
             <label for="sweep-interval">Sweep(m):</label>
-            <input type="number" id="sweep-interval" min="1" max="1440" value="30" style="width: 50px; background: #000000; color: #00ff00; border: 1px solid #00a600; padding: 4px 6px; border-radius: 3px; font-family: inherit; font-size: 14px; font-weight: 700; text-align: center;">
+            <input type="number" id="sweep-interval" min="1" max="1440" value="30" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
         </div>
     </header>
 
     <div id="questions-panel">
         <!-- Pending questions will be populated here -->
+    </div>
+
+    <div id="sweep-panel">
+        <!-- Latest sweep report rendered here -->
     </div>
 
     <div id="chat-container">
@@ -489,7 +584,7 @@ Type / for autocomplete.</div>
     </div>
 
     <div id="thinking" class="thinking" style="padding: 0 20px;">
-        <div class="message-header" style="color: #00a6b2;">agent</div>
+        <div class="message-header" style="color: #008888;">agent</div>
         <div class="dots"><span>.</span><span>.</span><span>.</span></div>
     </div>
 
@@ -1042,6 +1137,49 @@ Type / for autocomplete.</div>
             // Small delay so mousedown on menu item fires first
             setTimeout(() => document.getElementById('slash-menu').classList.remove('active'), 150);
         });
+
+        // Sweep Reports
+        function loadSweepReports() {
+            fetch('/api/sweep-reports?limit=1')
+                .then(r => r.json())
+                .then(data => {
+                    const panel = document.getElementById('sweep-panel');
+                    const reports = data.reports || [];
+                    if (!reports.length) { panel.classList.remove('active'); return; }
+                    const r = reports[0];
+                    const ago = timeAgo(r.swept_at);
+                    const meta = r.sweep_meta || {};
+                    panel.innerHTML = `
+                        <div class="sweep-header" onclick="this.nextElementSibling.classList.toggle('open')">
+                            <span><span class="sweep-severity ${r.severity}">${r.severity}</span> Sweep: ${r.finding_count} finding${r.finding_count !== 1 ? 's' : ''}</span>
+                            <span class="sweep-time">${ago}</span>
+                        </div>
+                        <div class="sweep-body">
+                            ${r.findings.map(f => `<div class="sweep-finding"><span class="sweep-badge ${f.severity || 'info'}">${(f.severity || 'info').toUpperCase()}</span>${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}</div>`).join('')}
+                            <div class="sweep-meta">${meta.sweep_backend || ''}/${meta.sweep_model || ''}</div>
+                        </div>`;
+                    panel.classList.add('active');
+                })
+                .catch(() => {});
+        }
+
+        function timeAgo(iso) {
+            const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+            if (s < 60) return s + 's ago';
+            if (s < 3600) return Math.floor(s/60) + 'm ago';
+            if (s < 86400) return Math.floor(s/3600) + 'h ago';
+            return Math.floor(s/86400) + 'd ago';
+        }
+
+        function escapeHtml(t) {
+            const d = document.createElement('div');
+            d.textContent = t;
+            return d.innerHTML;
+        }
+
+        // Poll sweep reports every 60s
+        loadSweepReports();
+        setInterval(loadSweepReports, 60000);
 
         // Initialize
         restoreSettings();
