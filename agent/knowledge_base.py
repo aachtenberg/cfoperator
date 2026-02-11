@@ -1218,6 +1218,58 @@ class KnowledgeBase:
                 for r in reports
             ]
 
+    def get_sweep_report(self, report_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single sweep report by ID."""
+        with self.session_scope() as session:
+            r = session.query(SweepReport).filter(SweepReport.id == report_id).first()
+            if not r:
+                return None
+            return {
+                'id': r.id,
+                'swept_at': r.swept_at.isoformat(),
+                'severity': r.severity,
+                'finding_count': r.finding_count,
+                'findings': r.findings,
+                'summary': r.summary,
+                'sweep_meta': r.sweep_meta
+            }
+
+    def update_sweep_finding(self, report_id: int, finding_index: int,
+                             status: str, resolution: str = '') -> bool:
+        """Update a specific finding within a sweep report.
+
+        Args:
+            report_id: Sweep report ID
+            finding_index: Index of the finding in the findings array (0-based)
+            status: New status (e.g., 'resolved', 'acknowledged', 'investigating', 'false_positive')
+            resolution: Optional resolution note
+
+        Returns:
+            True if updated successfully
+        """
+        with self.session_scope() as session:
+            report = session.query(SweepReport).filter(SweepReport.id == report_id).first()
+            if not report:
+                _log("warning", "Sweep report not found", report_id=report_id)
+                return False
+
+            findings = list(report.findings)  # copy JSONB
+            if finding_index < 0 or finding_index >= len(findings):
+                _log("warning", "Finding index out of range", report_id=report_id, index=finding_index)
+                return False
+
+            findings[finding_index]['status'] = status
+            if resolution:
+                findings[finding_index]['resolution'] = resolution
+            report.findings = findings
+            # Force SQLAlchemy to detect JSONB change
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(report, 'findings')
+
+            _log("info", "Sweep finding updated", report_id=report_id,
+                 index=finding_index, status=status)
+            return True
+
     def get_human_responses(self, unprocessed_only: bool = True) -> List[Dict[str, Any]]:
         """Get human responses to input requests.
 

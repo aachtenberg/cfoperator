@@ -243,6 +243,56 @@ class ToolRegistry:
             }
         }
 
+        # Sweep report tools — allow the LLM to view and update sweep findings
+        self.tools['get_sweep_report'] = {
+            'function': self._get_sweep_report,
+            'schema': {
+                'name': 'get_sweep_report',
+                'description': 'Get a sweep report by ID. Returns findings with their index numbers. Use this when a user references a sweep report number (e.g., "#42").',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'report_id': {
+                            'type': 'integer',
+                            'description': 'The sweep report ID number'
+                        }
+                    },
+                    'required': ['report_id']
+                }
+            }
+        }
+
+        self.tools['update_sweep_finding'] = {
+            'function': self._update_sweep_finding,
+            'schema': {
+                'name': 'update_sweep_finding',
+                'description': 'Update the status of a specific finding in a sweep report. Use this to mark findings as resolved, acknowledged, or false positives after investigation.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'report_id': {
+                            'type': 'integer',
+                            'description': 'The sweep report ID number'
+                        },
+                        'finding_index': {
+                            'type': 'integer',
+                            'description': 'Index of the finding within the report (0-based)'
+                        },
+                        'status': {
+                            'type': 'string',
+                            'description': 'New status for the finding',
+                            'enum': ['resolved', 'acknowledged', 'investigating', 'false_positive']
+                        },
+                        'resolution': {
+                            'type': 'string',
+                            'description': 'Optional note explaining the resolution or action taken'
+                        }
+                    },
+                    'required': ['report_id', 'finding_index', 'status']
+                }
+            }
+        }
+
         # Web search tool (SearXNG)
         searxng_url = self.operator.config.get('search', {}).get('url', '')
         if searxng_url:
@@ -476,6 +526,34 @@ class ToolRegistry:
             }
         except Exception as e:
             return {'error': str(e), 'count': 0, 'learnings': []}
+
+    def _get_sweep_report(self, report_id: int) -> Dict[str, Any]:
+        """Get a sweep report by ID."""
+        try:
+            report = self.operator.kb.get_sweep_report(report_id)
+            if not report:
+                return {'error': f'Sweep report #{report_id} not found'}
+            # Add index to each finding for easy reference
+            for i, f in enumerate(report.get('findings', [])):
+                f['index'] = i
+            return {'success': True, 'report': report}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _update_sweep_finding(self, report_id: int, finding_index: int,
+                              status: str, resolution: str = '') -> Dict[str, Any]:
+        """Update a finding's status in a sweep report."""
+        try:
+            updated = self.operator.kb.update_sweep_finding(
+                report_id, finding_index, status, resolution
+            )
+            if updated:
+                return {'success': True, 'report_id': report_id,
+                        'finding_index': finding_index, 'status': status}
+            else:
+                return {'error': f'Could not update finding {finding_index} in report #{report_id}'}
+        except Exception as e:
+            return {'error': str(e)}
 
     def _make_ssh_tool_wrapper(self, tool_name: str):
         """Create wrapper function for SSH tools."""

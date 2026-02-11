@@ -455,6 +455,27 @@
         .sweep-badge.warning { background: #2a2200; color: #ffaa00; }
         .sweep-badge.info { background: #0a2233; color: #008888; }
 
+        .finding-id {
+            color: #666666;
+            font-size: 12px;
+            margin-right: 6px;
+        }
+
+        .finding-status {
+            display: inline-block;
+            font-size: 11px;
+            padding: 1px 5px;
+            border-radius: 3px;
+            margin-right: 6px;
+        }
+        .finding-status.resolved { background: #0a2a0a; color: #00aa00; }
+        .finding-status.acknowledged { background: #1a1a2e; color: #6666cc; }
+        .finding-status.investigating { background: #2a2200; color: #ffaa00; }
+        .finding-status.false_positive { background: #1a1a1a; color: #666666; }
+
+        .finding-resolved { opacity: 0.5; }
+        .finding-false_positive { opacity: 0.4; }
+
         .sweep-meta {
             color: #888888;
             font-size: 12px;
@@ -1151,11 +1172,11 @@ Type / for autocomplete.</div>
                     const meta = r.sweep_meta || {};
                     panel.innerHTML = `
                         <div class="sweep-header" onclick="this.nextElementSibling.classList.toggle('open')">
-                            <span><span class="sweep-severity ${r.severity}">${r.severity}</span> Sweep: ${r.finding_count} finding${r.finding_count !== 1 ? 's' : ''}</span>
+                            <span><span class="sweep-severity ${r.severity}">${r.severity}</span> #${r.id} Sweep: ${r.finding_count} finding${r.finding_count !== 1 ? 's' : ''}</span>
                             <span class="sweep-time">${ago}</span>
                         </div>
                         <div class="sweep-body">
-                            ${r.findings.map(f => `<div class="sweep-finding"><span class="sweep-badge ${f.severity || 'info'}">${(f.severity || 'info').toUpperCase()}</span>${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}</div>`).join('')}
+                            ${r.findings.map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + f.status : ''}"><span class="sweep-badge ${f.severity || 'info'}">${(f.severity || 'info').toUpperCase()}</span><span class="finding-id">#${r.id}.${i}</span>${f.status ? `<span class="finding-status ${f.status}">${f.status}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div>`).join('')}
                             <div class="sweep-meta">${meta.sweep_backend || ''}/${meta.sweep_model || ''}</div>
                         </div>`;
                     panel.classList.add('active');

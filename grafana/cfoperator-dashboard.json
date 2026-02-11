@@ -1617,7 +1617,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1632,11 +1634,11 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT finding_count FROM sweep_reports ORDER BY swept_at DESC LIMIT 1",
+          "rawSql": "SELECT COUNT(*) FROM sweep_reports sr, jsonb_array_elements(sr.findings) AS f WHERE sr.id = (SELECT id FROM sweep_reports ORDER BY swept_at DESC LIMIT 1) AND COALESCE(f->>'status', 'open') NOT IN ('resolved', 'false_positive')",
           "refId": "A"
         }
       ],
-      "title": "Findings (Latest Sweep)",
+      "title": "Open Findings",
       "type": "stat"
     },
     {
@@ -1652,9 +1654,21 @@
           "mappings": [
             {
               "options": {
-                "critical": { "color": "red", "index": 2, "text": "CRITICAL" },
-                "info": { "color": "blue", "index": 0, "text": "INFO" },
-                "warning": { "color": "yellow", "index": 1, "text": "WARNING" }
+                "critical": {
+                  "color": "red",
+                  "index": 2,
+                  "text": "CRITICAL"
+                },
+                "info": {
+                  "color": "blue",
+                  "index": 0,
+                  "text": "INFO"
+                },
+                "warning": {
+                  "color": "yellow",
+                  "index": 1,
+                  "text": "WARNING"
+                }
               },
               "type": "value"
             }
@@ -1684,7 +1698,9 @@
         "justifyMode": "center",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1750,7 +1766,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1809,7 +1827,9 @@
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": "",
           "values": false
         },
@@ -1861,7 +1881,10 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "severity" },
+            "matcher": {
+              "id": "byName",
+              "options": "severity"
+            },
             "properties": [
               {
                 "id": "custom.width",
@@ -1880,9 +1903,18 @@
                   {
                     "type": "value",
                     "options": {
-                      "critical": { "color": "red", "index": 2 },
-                      "warning": { "color": "yellow", "index": 1 },
-                      "info": { "color": "blue", "index": 0 }
+                      "critical": {
+                        "color": "red",
+                        "index": 2
+                      },
+                      "warning": {
+                        "color": "yellow",
+                        "index": 1
+                      },
+                      "info": {
+                        "color": "blue",
+                        "index": 0
+                      }
                     }
                   }
                 ]
@@ -1890,7 +1922,10 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "finding" },
+            "matcher": {
+              "id": "byName",
+              "options": "finding"
+            },
             "properties": [
               {
                 "id": "custom.width",
@@ -1899,7 +1934,10 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "remediation" },
+            "matcher": {
+              "id": "byName",
+              "options": "remediation"
+            },
             "properties": [
               {
                 "id": "custom.width",
@@ -1907,7 +1945,110 @@
               },
               {
                 "id": "color",
-                "value": { "mode": "fixed", "fixedColor": "green" }
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "report_id"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              },
+              {
+                "id": "displayName",
+                "value": "ID"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "finding_idx"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 40
+              },
+              {
+                "id": "displayName",
+                "value": "#"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "open": {
+                        "color": "orange",
+                        "index": 0
+                      },
+                      "investigating": {
+                        "color": "yellow",
+                        "index": 1
+                      },
+                      "acknowledged": {
+                        "color": "blue",
+                        "index": 2
+                      },
+                      "resolved": {
+                        "color": "green",
+                        "index": 3
+                      },
+                      "false_positive": {
+                        "color": "dark-gray",
+                        "index": 4
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "resolution"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 300
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
               }
             ]
           }
@@ -1925,7 +2066,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true,
@@ -1945,11 +2088,11 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT f->>'severity' AS severity, f->>'finding' AS finding, COALESCE(f->>'remediation', '') AS remediation FROM sweep_reports sr, jsonb_array_elements(sr.findings) AS f WHERE sr.id = (SELECT id FROM sweep_reports ORDER BY swept_at DESC LIMIT 1) ORDER BY CASE f->>'severity' WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END",
+          "rawSql": "SELECT sr.id AS report_id, ROW_NUMBER() OVER () - 1 AS finding_idx, f->>'severity' AS severity, f->>'finding' AS finding, COALESCE(f->>'status', 'open') AS status, COALESCE(f->>'remediation', '') AS remediation, COALESCE(f->>'resolution', '') AS resolution FROM sweep_reports sr, jsonb_array_elements(sr.findings) AS f WHERE sr.id = (SELECT id FROM sweep_reports ORDER BY swept_at DESC LIMIT 1) ORDER BY CASE f->>'severity' WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END",
           "refId": "A"
         }
       ],
-      "title": "Latest Sweep Findings & Recommendations",
+      "title": "Sweep Findings",
       "type": "table"
     },
     {
@@ -1979,38 +2122,75 @@
             "lineInterpolation": "linear",
             "lineWidth": 1,
             "pointSize": 5,
-            "scaleDistribution": { "type": "linear" },
+            "scaleDistribution": {
+              "type": "linear"
+            },
             "showPoints": "never",
             "spanNulls": false,
-            "stacking": { "group": "A", "mode": "normal" },
-            "thresholdsStyle": { "mode": "off" }
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
           },
           "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null }
+              {
+                "color": "green",
+                "value": null
+              }
             ]
           },
           "unit": "short"
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "critical" },
+            "matcher": {
+              "id": "byName",
+              "options": "critical"
+            },
             "properties": [
-              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "warning" },
+            "matcher": {
+              "id": "byName",
+              "options": "warning"
+            },
             "properties": [
-              { "id": "color", "value": { "fixedColor": "yellow", "mode": "fixed" } }
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "info" },
+            "matcher": {
+              "id": "byName",
+              "options": "info"
+            },
             "properties": [
-              { "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
             ]
           }
         ]
@@ -2024,7 +2204,9 @@
       "id": 36,
       "options": {
         "legend": {
-          "calcs": ["sum"],
+          "calcs": [
+            "sum"
+          ],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
