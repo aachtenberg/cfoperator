@@ -22,8 +22,13 @@ secrets/
 # IDE
 .vscode/
 .idea/
+.continue/
 *.swp
 *.swo
+
+# Misc non-project files
+linkinpost
+CONTINUE_QUICKREF.md
 
 # Logs
 *.log
