@@ -31,6 +31,7 @@ func New(cfg *config.Config) *Registry {
 	r := &Registry{tools: make(map[string]tool)}
 
 	if cfg.Tools.Bash.Enabled {
+		bashTimeout := cfg.Tools.Bash.Timeout
 		r.tools["bash"] = tool{
 			schema: client.ToolSchema{
 				Type: "function",
@@ -38,7 +39,9 @@ func New(cfg *config.Config) *Registry {
 					Name: "bash",
 					Description: "Execute a shell command and return stdout, stderr, and exit code. " +
 						"Use for checking system state, running diagnostics, reading logs, " +
-						"querying APIs, network checks, and any system administration task.",
+						"querying APIs, network checks, and any system administration task. " +
+						"For commands that need elevated privileges, use 'sudo -n' (non-interactive). " +
+						"For package installs, set DEBIAN_FRONTEND=noninteractive.",
 					Parameters: map[string]any{
 						"type": "object",
 						"properties": map[string]any{
@@ -46,13 +49,19 @@ func New(cfg *config.Config) *Registry {
 								"type":        "string",
 								"description": "The shell command to execute",
 							},
+							"timeout": map[string]any{
+								"type":        "integer",
+								"description": fmt.Sprintf("Timeout in seconds (default %d). Use higher values for long-running commands like package installs.", bashTimeout),
+							},
 						},
 						"required": []string{"command"},
 					},
 				},
 			},
-			execute: bashExecute,
-			timeout: cfg.Tools.Bash.Timeout,
+			execute: func(args map[string]any) map[string]any {
+				return bashExecute(args, bashTimeout)
+			},
+			timeout: bashTimeout,
 		}
 	}
 
@@ -157,15 +166,14 @@ func (r *Registry) Execute(name string, args map[string]any) map[string]any {
 	return t.execute(args)
 }
 
-func bashExecute(args map[string]any) map[string]any {
+func bashExecute(args map[string]any, defaultTimeout int) map[string]any {
 	command, _ := args["command"].(string)
 	if command == "" {
 		return map[string]any{"error": "no command provided"}
 	}
 
-	// Default 30s timeout
-	timeout := 30
-	if t, ok := args["timeout"].(float64); ok {
+	timeout := defaultTimeout
+	if t, ok := args["timeout"].(float64); ok && int(t) > 0 {
 		timeout = int(t)
 	}
 
@@ -173,6 +181,9 @@ func bashExecute(args map[string]any) map[string]any {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
+	// Prevent commands from hanging on stdin (e.g. sudo password prompt)
+	cmd.Stdin = nil
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

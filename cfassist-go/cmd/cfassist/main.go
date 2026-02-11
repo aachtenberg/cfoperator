@@ -70,14 +70,28 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("directories: %w", err)
 	}
 
-	// Resolve which provider to use
+	// Resolve which provider to use: CLI flag > saved state > config default
 	activeProvider := flagProvider
+	if activeProvider == "" {
+		if saved := config.LoadState(); saved.Provider != "" {
+			// Only use saved provider if it still exists in config
+			if _, ok := cfg.Providers[saved.Provider]; ok {
+				activeProvider = saved.Provider
+			}
+		}
+	}
 	if activeProvider == "" {
 		activeProvider = cfg.DefaultProviderName()
 	}
 	resolved := cfg.ResolveProvider(activeProvider)
 
-	// Apply CLI overrides
+	// Apply saved model if same provider and no CLI override
+	if flagModel == "" {
+		if saved := config.LoadState(); saved.Model != "" && saved.Provider == activeProvider {
+			resolved.Model = saved.Model
+		}
+	}
+	// CLI overrides always win
 	if flagModel != "" {
 		resolved.Model = flagModel
 	}
@@ -149,7 +163,13 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- TUI mode ---
-	return tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider)
+	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider)
+	if err != nil {
+		return err
+	}
+	// Persist last-used provider/model for next session
+	config.SaveState(result.Provider, result.Model)
+	return nil
 }
 
 func runNonInteractive(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt, question string) error {

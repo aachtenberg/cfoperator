@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -8,6 +9,34 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// State holds persisted runtime state (e.g. last-used provider/model).
+type State struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+func statePath() string {
+	return filepath.Join(DefaultConfigDir(), "state.json")
+}
+
+// LoadState reads the persisted state file. Returns zero State if missing.
+func LoadState() State {
+	data, err := os.ReadFile(statePath())
+	if err != nil {
+		return State{}
+	}
+	var s State
+	json.Unmarshal(data, &s)
+	return s
+}
+
+// SaveState writes the current provider/model to the state file.
+func SaveState(provider, model string) {
+	s := State{Provider: provider, Model: model}
+	data, _ := json.Marshal(s)
+	os.WriteFile(statePath(), data, 0644)
+}
 
 var Version = "0.4.0"
 

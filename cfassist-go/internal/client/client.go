@@ -65,9 +65,12 @@ type LLMClient struct {
 
 // New creates a new LLMClient from config values.
 func New(provider, url, model string, temperature float64, apiKey string) *LLMClient {
+	url = strings.TrimRight(url, "/")
+	// Strip trailing /v1 to avoid double-prefixing (e.g. /openai/v1/v1/chat/completions)
+	url = strings.TrimSuffix(url, "/v1")
 	return &LLMClient{
 		Provider:    provider,
-		URL:         strings.TrimRight(url, "/"),
+		URL:         url,
 		Model:       model,
 		Temperature: temperature,
 		APIKey:      apiKey,
@@ -289,11 +292,21 @@ func (c *LLMClient) ollamaChat(messages []Message, tools []ToolSchema) (*Respons
 // --- OpenAI-compatible provider ---
 
 type openaiChatRequest struct {
-	Model       string       `json:"model"`
-	Messages    []Message    `json:"messages"`
-	Stream      bool         `json:"stream"`
-	Temperature float64      `json:"temperature"`
-	Tools       []ToolSchema `json:"tools,omitempty"`
+	Model       string            `json:"model"`
+	Messages    []openaiReqMsg    `json:"messages"`
+	Stream      bool              `json:"stream"`
+	Temperature float64           `json:"temperature"`
+	Tools       []ToolSchema      `json:"tools,omitempty"`
+}
+
+// openaiReqMsg is the outbound message format for OpenAI-compatible APIs,
+// where tool_calls[].function.arguments must be a JSON string.
+// Content must always be present for assistant messages (Groq requires it).
+type openaiReqMsg struct {
+	Role       string              `json:"role"`
+	Content    *string             `json:"content"`
+	ToolCalls  []openaiToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID string              `json:"tool_call_id,omitempty"`
 }
 
 type openaiChatResponse struct {
@@ -312,6 +325,8 @@ type openaiMessage struct {
 }
 
 type openaiToolCall struct {
+	ID       string             `json:"id,omitempty"`
+	Type     string             `json:"type,omitempty"`
 	Function openaiToolCallFunc `json:"function"`
 }
 
@@ -326,9 +341,32 @@ type openaiUsage struct {
 }
 
 func (c *LLMClient) openaiChat(messages []Message, tools []ToolSchema) (*Response, error) {
+	// Convert to OpenAI message format (arguments must be JSON strings)
+	oaiMsgs := make([]openaiReqMsg, 0, len(messages))
+	for _, m := range messages {
+		content := m.Content
+		msg := openaiReqMsg{
+			Role:       m.Role,
+			Content:    &content,
+			ToolCallID: m.ToolCallID,
+		}
+		for _, tc := range m.ToolCalls {
+			argsJSON, _ := json.Marshal(tc.Function.Arguments)
+			msg.ToolCalls = append(msg.ToolCalls, openaiToolCall{
+				ID:   tc.ID,
+				Type: "function",
+				Function: openaiToolCallFunc{
+					Name:      tc.Function.Name,
+					Arguments: string(argsJSON),
+				},
+			})
+		}
+		oaiMsgs = append(oaiMsgs, msg)
+	}
+
 	payload := openaiChatRequest{
 		Model:       c.Model,
-		Messages:    messages,
+		Messages:    oaiMsgs,
 		Stream:      false,
 		Temperature: c.Temperature,
 	}
@@ -380,6 +418,7 @@ func (c *LLMClient) openaiChat(messages []Message, tools []ToolSchema) (*Respons
 			args = map[string]any{"raw": tc.Function.Arguments}
 		}
 		toolCalls = append(toolCalls, ToolCall{
+			ID: tc.ID,
 			Function: ToolCallFunction{
 				Name:      tc.Function.Name,
 				Arguments: args,

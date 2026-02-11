@@ -31,6 +31,18 @@ func TestNewClientTrimsTrailingSlash(t *testing.T) {
 	}
 }
 
+func TestNewClientTrimsTrailingV1(t *testing.T) {
+	c := New("openai", "https://api.groq.com/openai/v1", "model", 0.7, "key")
+	if c.URL != "https://api.groq.com/openai" {
+		t.Errorf("URL should have /v1 trimmed, got %q", c.URL)
+	}
+	// Also with trailing slash
+	c2 := New("openai", "https://api.groq.com/openai/v1/", "model", 0.7, "key")
+	if c2.URL != "https://api.groq.com/openai" {
+		t.Errorf("URL should have /v1/ trimmed, got %q", c2.URL)
+	}
+}
+
 func TestCheckConnectionOllama(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/tags" {

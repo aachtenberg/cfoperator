@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 
@@ -40,6 +41,7 @@ type model struct {
 	height         int
 	program        *tea.Program
 	renderer       *glamour.TermRenderer
+	mdStyle        ansi.StyleConfig
 	lastStats      string
 	contextUsed    int // last prompt token count (current context usage)
 	providers      map[string]config.ProviderConfig
@@ -82,7 +84,7 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 	mdStyle.Document.BackgroundColor = &noColor
 	r, _ := glamour.NewTermRenderer(
 		glamour.WithStyles(mdStyle),
-		glamour.WithWordWrap(80),
+		glamour.WithWordWrap(120),
 	)
 
 	m := &model{
@@ -94,6 +96,7 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 		toolReg:        toolReg,
 		systemPrompt:   systemPrompt,
 		renderer:       r,
+		mdStyle:        mdStyle,
 		providers:      providers,
 		activeProvider: activeProvider,
 	}
@@ -105,7 +108,11 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 }
 
 func (m *model) appendWelcome(contextCount int) {
-	sep := strings.Repeat("─", 80)
+	width := 120
+	if m.width > 0 {
+		width = m.width
+	}
+	sep := strings.Repeat("─", width)
 	welcome := fmt.Sprintf("  %s %s",
 		bannerStyle.Render("cfassist"),
 		bannerDimStyle.Render("v"+config.Version),
@@ -146,6 +153,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
+		// Recreate markdown renderer at new width
+		wrapWidth := m.width - 4
+		if wrapWidth < 40 {
+			wrapWidth = 40
+		}
+		if r, err := glamour.NewTermRenderer(
+			glamour.WithStyles(m.mdStyle),
+			glamour.WithWordWrap(wrapWidth),
+		); err == nil {
+			m.renderer = r
+		}
 
 		vpHeight := m.height - fixedHeight
 		if !m.ready {
@@ -246,8 +265,12 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 		for _, schema := range m.toolReg.GetSchemas() {
 			name := schema.Function.Name
 			desc := schema.Function.Description
-			if len(desc) > 80 {
-				desc = desc[:80] + "..."
+			maxDesc := m.width - 20
+			if maxDesc < 80 {
+				maxDesc = 80
+			}
+			if len(desc) > maxDesc {
+				desc = desc[:maxDesc] + "..."
 			}
 			m.outputLines = append(m.outputLines,
 				fmt.Sprintf("  %s  %s",
@@ -494,14 +517,26 @@ func (m *model) View() string {
 	)
 }
 
-// Run starts the TUI application.
-func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string) error {
+// RunResult holds the final TUI state on exit.
+type RunResult struct {
+	Provider string
+	Model    string
+}
+
+// Run starts the TUI application and returns the final provider/model on exit.
+func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string) (RunResult, error) {
 	m := New(cfg, llm, toolReg, systemPrompt, contextCount, providers, activeProvider)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	m.program = p
 
-	_, err := p.Run()
-	return err
+	finalModel, err := p.Run()
+	if err != nil {
+		return RunResult{}, err
+	}
+	if fm, ok := finalModel.(*model); ok {
+		return RunResult{Provider: fm.activeProvider, Model: fm.llm.Model}, nil
+	}
+	return RunResult{Provider: activeProvider, Model: llm.Model}, nil
 }
 
 // tuiOutput implements conversation.Output by sending messages to the TUI.

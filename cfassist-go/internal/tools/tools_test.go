@@ -76,7 +76,7 @@ func TestExecuteUnknownTool(t *testing.T) {
 }
 
 func TestBashExecuteSimple(t *testing.T) {
-	result := bashExecute(map[string]any{"command": "echo hello"})
+	result := bashExecute(map[string]any{"command": "echo hello"}, 30)
 
 	stdout, ok := result["stdout"].(string)
 	if !ok {
@@ -96,21 +96,21 @@ func TestBashExecuteSimple(t *testing.T) {
 }
 
 func TestBashExecuteEmptyCommand(t *testing.T) {
-	result := bashExecute(map[string]any{"command": ""})
+	result := bashExecute(map[string]any{"command": ""}, 30)
 	if _, ok := result["error"]; !ok {
 		t.Error("empty command should return error")
 	}
 }
 
 func TestBashExecuteNoCommand(t *testing.T) {
-	result := bashExecute(map[string]any{})
+	result := bashExecute(map[string]any{}, 30)
 	if _, ok := result["error"]; !ok {
 		t.Error("missing command should return error")
 	}
 }
 
 func TestBashExecuteNonZeroExit(t *testing.T) {
-	result := bashExecute(map[string]any{"command": "exit 42"})
+	result := bashExecute(map[string]any{"command": "exit 42"}, 30)
 
 	exitCode, ok := result["exit_code"].(int)
 	if !ok {
@@ -122,7 +122,7 @@ func TestBashExecuteNonZeroExit(t *testing.T) {
 }
 
 func TestBashExecuteStderr(t *testing.T) {
-	result := bashExecute(map[string]any{"command": "echo error >&2"})
+	result := bashExecute(map[string]any{"command": "echo error >&2"}, 30)
 
 	stderr, ok := result["stderr"].(string)
 	if !ok {
@@ -137,7 +137,7 @@ func TestBashExecuteTimeout(t *testing.T) {
 	result := bashExecute(map[string]any{
 		"command": "sleep 10",
 		"timeout": float64(1),
-	})
+	}, 30)
 
 	errMsg, ok := result["error"].(string)
 	if !ok {
