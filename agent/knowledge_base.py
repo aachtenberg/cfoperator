@@ -2004,6 +2004,37 @@ class KnowledgeBase:
                 _log("error", "Failed to get investigations missing FTS", error=str(e))
                 return []
 
+    def get_unindexed_learnings(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Get learnings that don't have embeddings yet."""
+        with self.session_scope() as session:
+            try:
+                results = session.execute(text("""
+                    SELECT il.id, il.title, il.description, il.applies_when,
+                           il.category, il.services, il.tags
+                    FROM investigation_learnings il
+                    LEFT JOIN learning_embeddings le ON il.id = le.learning_id
+                    WHERE le.learning_id IS NULL
+                    AND il.deprecated = false
+                    ORDER BY il.created_at DESC
+                    LIMIT :limit
+                """), {'limit': limit}).fetchall()
+
+                return [
+                    {
+                        "id": row[0],
+                        "title": row[1],
+                        "description": row[2],
+                        "applies_when": row[3],
+                        "category": row[4],
+                        "services": row[5],
+                        "tags": row[6],
+                    }
+                    for row in results
+                ]
+            except Exception as e:
+                _log("error", "Failed to get unindexed learnings", error=str(e))
+                return []
+
     # ============================= Settings =================================
 
     def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:

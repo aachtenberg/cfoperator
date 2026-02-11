@@ -675,7 +675,7 @@ When done, provide a summary of findings and whether the issue is resolved, need
             logger.info("Consolidating learnings...")
             self._consolidate_learnings()
 
-        # 5b. Backfill embeddings for unindexed investigations
+        # 5b. Backfill embeddings for unindexed investigations and learnings
         try:
             if self.embeddings.is_available():
                 result = self.embeddings.batch_index_investigations(
@@ -684,7 +684,15 @@ When done, provide a summary of findings and whether the issue is resolved, need
                     max_total=50
                 )
                 if result.get('success', 0) > 0:
-                    logger.info(f"Embedding backfill: {result['success']} indexed, {result.get('remaining', 0)} remaining")
+                    logger.info(f"Embedding backfill (investigations): {result['success']} indexed, {result.get('remaining', 0)} remaining")
+
+                lr = self.embeddings.batch_index_learnings(
+                    kb=self.kb._kb,
+                    batch_size=10,
+                    max_total=50
+                )
+                if lr.get('success', 0) > 0:
+                    logger.info(f"Embedding backfill (learnings): {lr['success']} indexed, {lr.get('remaining', 0)} remaining")
         except Exception as e:
             logger.debug(f"Embedding backfill skipped: {e}")
 

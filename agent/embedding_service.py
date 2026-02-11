@@ -459,3 +459,100 @@ class EmbeddingService:
             "failed": failed,
             "remaining": remaining
         }
+
+    def batch_index_learnings(
+        self,
+        kb,
+        batch_size: int = 10,
+        max_total: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Batch index unindexed learnings.
+
+        Processes learnings that don't have embeddings yet.
+        """
+        if not self.is_available():
+            return {"error": "Embedding service not available", "processed": 0}
+
+        unindexed = kb.get_unindexed_learnings(limit=max_total)
+        if not unindexed:
+            return {"processed": 0, "success": 0, "failed": 0, "remaining": 0}
+
+        _log("info", "Starting learning batch indexing",
+             unindexed_count=len(unindexed),
+             batch_size=batch_size)
+
+        processed = 0
+        success = 0
+        failed = 0
+
+        for learning in unindexed:
+            lid = learning['id']
+
+            # Build search text from learning fields
+            search_text = ' '.join(filter(None, [
+                learning.get('title', ''),
+                learning.get('description', ''),
+                learning.get('applies_when', ''),
+            ]))
+
+            if not search_text or len(search_text) < 10:
+                processed += 1
+                continue
+
+            embedding = self.generate_embedding(search_text)
+            if not embedding:
+                _log("warn", "Failed to generate learning embedding", learning_id=lid)
+                failed += 1
+                processed += 1
+                continue
+
+            # Store embedding
+            try:
+                import hashlib
+                from sqlalchemy import text as sql_text
+                embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+                with kb.session_scope() as session:
+                    session.execute(sql_text("""
+                        UPDATE investigation_learnings
+                        SET embedding_hash = :hash
+                        WHERE id = :lid
+                    """), {'hash': hashlib.md5(search_text.encode()).hexdigest(), 'lid': lid})
+                    session.execute(sql_text("""
+                        INSERT INTO learning_embeddings (learning_id, embedding, embedding_model, embedding_text)
+                        VALUES (:lid, :embedding, :model, :text)
+                        ON CONFLICT (learning_id) DO UPDATE SET
+                            embedding = EXCLUDED.embedding,
+                            embedding_model = EXCLUDED.embedding_model,
+                            embedding_text = EXCLUDED.embedding_text
+                    """), {
+                        'lid': lid,
+                        'embedding': embedding_str,
+                        'model': self.model,
+                        'text': search_text
+                    })
+                    session.commit()
+                success += 1
+                _log("info", "Learning embedding stored", learning_id=lid)
+            except Exception as e:
+                _log("warn", "Failed to store learning embedding", learning_id=lid, error=str(e))
+                failed += 1
+
+            processed += 1
+
+            if processed % batch_size == 0:
+                import time
+                time.sleep(0.5)
+
+        remaining = len(kb.get_unindexed_learnings(limit=1))
+
+        _log("info", "Learning batch indexing complete",
+             processed=processed, success=success,
+             failed=failed, remaining=remaining)
+
+        return {
+            "processed": processed,
+            "success": success,
+            "failed": failed,
+            "remaining": remaining
+        }
