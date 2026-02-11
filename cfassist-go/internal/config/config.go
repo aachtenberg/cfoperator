@@ -9,9 +9,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var Version = "0.3.0"
+var Version = "0.4.0"
 
 type LLMConfig struct {
+	Provider      string  `yaml:"provider"`
+	URL           string  `yaml:"url"`
+	Model         string  `yaml:"model"`
+	Temperature   float64 `yaml:"temperature"`
+	APIKey        string  `yaml:"api_key"`
+	ContextWindow int     `yaml:"context_window"`
+	Default       string  `yaml:"default"`
+}
+
+// ProviderConfig defines a named LLM provider in the providers map.
+type ProviderConfig struct {
 	Provider      string  `yaml:"provider"`
 	URL           string  `yaml:"url"`
 	Model         string  `yaml:"model"`
@@ -46,11 +57,58 @@ type ToolsConfig struct {
 }
 
 type Config struct {
-	LLM          LLMConfig     `yaml:"llm"`
-	Context      ContextConfig `yaml:"context"`
-	Memory       MemoryConfig  `yaml:"memory"`
-	Tools        ToolsConfig   `yaml:"tools"`
-	SystemPrompt string        `yaml:"system_prompt"`
+	LLM          LLMConfig                 `yaml:"llm"`
+	Providers    map[string]ProviderConfig  `yaml:"providers"`
+	Context      ContextConfig              `yaml:"context"`
+	Memory       MemoryConfig               `yaml:"memory"`
+	Tools        ToolsConfig                `yaml:"tools"`
+	SystemPrompt string                     `yaml:"system_prompt"`
+}
+
+// ResolveProvider returns the LLMConfig for a named provider.
+// If name is empty, uses LLM.Default. If no providers map exists, returns
+// the top-level LLM block (backward compatible).
+func (c *Config) ResolveProvider(name string) LLMConfig {
+	if name == "" {
+		name = c.LLM.Default
+	}
+
+	if name != "" && len(c.Providers) > 0 {
+		if p, ok := c.Providers[name]; ok {
+			llm := LLMConfig{
+				Provider:      p.Provider,
+				URL:           p.URL,
+				Model:         p.Model,
+				APIKey:        p.APIKey,
+				ContextWindow: p.ContextWindow,
+			}
+			// Use provider-level temperature, fall back to top-level default
+			if p.Temperature != 0 {
+				llm.Temperature = p.Temperature
+			} else {
+				llm.Temperature = c.LLM.Temperature
+			}
+			return llm
+		}
+	}
+
+	// Fallback: use the top-level llm block
+	return c.LLM
+}
+
+// DefaultProviderName returns the name of the active provider.
+// Returns LLM.Default if set, otherwise "" (meaning top-level llm block).
+func (c *Config) DefaultProviderName() string {
+	if c.LLM.Default != "" {
+		return c.LLM.Default
+	}
+	if len(c.Providers) > 0 {
+		// Return first provider alphabetically as a fallback
+		for name := range c.Providers {
+			return name
+		}
+	}
+	return ""
 }
 
 func DefaultConfigDir() string {
@@ -165,17 +223,34 @@ func writeDefaultConfig(path string) error {
 # See: https://github.com/aachtenberg/cfoperator
 
 llm:
-  provider: ollama
-  url: http://localhost:11434
-  model: llama3.2
-  temperature: 0.7
-  context_window: 8192  # max tokens for the model
+  default: ollama      # which provider name to start with
+  temperature: 0.7     # shared default
 
-  # OpenAI-compatible provider example:
-  # provider: openai
-  # url: https://api.openai.com/v1
-  # model: gpt-4o
-  # api_key: ${OPENAI_API_KEY}
+  # Legacy single-provider mode (used if no providers block):
+  # provider: ollama
+  # url: http://localhost:11434
+  # model: llama3.2
+  # context_window: 8192
+
+# Named providers — switch with /use <name> in TUI
+providers:
+  ollama:
+    provider: ollama
+    url: http://localhost:11434
+    model: llama3.2
+    context_window: 8192
+  # groq:
+  #   provider: openai
+  #   url: https://api.groq.com/openai/v1
+  #   model: llama-3.3-70b-versatile
+  #   api_key: ${GROQ_API_KEY}
+  #   context_window: 131072
+  # claude:
+  #   provider: anthropic
+  #   url: https://api.anthropic.com
+  #   model: claude-sonnet-4-20250514
+  #   api_key: ${ANTHROPIC_API_KEY}
+  #   context_window: 200000
 
 context:
   directory: ~/.cfassist/context

@@ -226,3 +226,186 @@ func TestExpandPath(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadProviders(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+
+	yaml := `
+llm:
+  default: groq
+  temperature: 0.7
+
+providers:
+  ollama:
+    provider: ollama
+    url: http://localhost:11434
+    model: qwen3:8b
+    context_window: 8192
+  groq:
+    provider: openai
+    url: https://api.groq.com/openai/v1
+    model: llama-3.3-70b-versatile
+    api_key: test-groq-key
+    context_window: 131072
+  claude:
+    provider: anthropic
+    url: https://api.anthropic.com
+    model: claude-sonnet-4-20250514
+    api_key: test-anthropic-key
+    context_window: 200000
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if len(cfg.Providers) != 3 {
+		t.Fatalf("expected 3 providers, got %d", len(cfg.Providers))
+	}
+	if cfg.LLM.Default != "groq" {
+		t.Errorf("LLM.Default = %q, want %q", cfg.LLM.Default, "groq")
+	}
+	if cfg.Providers["claude"].Provider != "anthropic" {
+		t.Errorf("claude provider = %q, want %q", cfg.Providers["claude"].Provider, "anthropic")
+	}
+	if cfg.Providers["groq"].APIKey != "test-groq-key" {
+		t.Errorf("groq api_key = %q, want %q", cfg.Providers["groq"].APIKey, "test-groq-key")
+	}
+}
+
+func TestResolveProviderNamed(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Default:     "groq",
+			Temperature: 0.7,
+		},
+		Providers: map[string]ProviderConfig{
+			"ollama": {Provider: "ollama", URL: "http://localhost:11434", Model: "qwen3:8b", ContextWindow: 8192},
+			"groq":   {Provider: "openai", URL: "https://api.groq.com/openai/v1", Model: "llama-3.3-70b", APIKey: "key123", ContextWindow: 131072},
+		},
+	}
+
+	// Resolve by explicit name
+	resolved := cfg.ResolveProvider("groq")
+	if resolved.Provider != "openai" {
+		t.Errorf("resolved provider = %q, want %q", resolved.Provider, "openai")
+	}
+	if resolved.Model != "llama-3.3-70b" {
+		t.Errorf("resolved model = %q, want %q", resolved.Model, "llama-3.3-70b")
+	}
+	if resolved.APIKey != "key123" {
+		t.Errorf("resolved api_key = %q, want %q", resolved.APIKey, "key123")
+	}
+	if resolved.ContextWindow != 131072 {
+		t.Errorf("resolved context_window = %d, want %d", resolved.ContextWindow, 131072)
+	}
+	// Temperature should fall back to top-level
+	if resolved.Temperature != 0.7 {
+		t.Errorf("resolved temperature = %f, want %f", resolved.Temperature, 0.7)
+	}
+}
+
+func TestResolveProviderDefault(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Default:     "ollama",
+			Temperature: 0.5,
+		},
+		Providers: map[string]ProviderConfig{
+			"ollama": {Provider: "ollama", URL: "http://localhost:11434", Model: "llama3.2", ContextWindow: 8192},
+		},
+	}
+
+	// Empty name should resolve using LLM.Default
+	resolved := cfg.ResolveProvider("")
+	if resolved.Provider != "ollama" {
+		t.Errorf("resolved provider = %q, want %q", resolved.Provider, "ollama")
+	}
+	if resolved.Model != "llama3.2" {
+		t.Errorf("resolved model = %q, want %q", resolved.Model, "llama3.2")
+	}
+}
+
+func TestResolveProviderFallback(t *testing.T) {
+	// No providers block — should fall back to top-level LLM block
+	cfg := &Config{
+		LLM: LLMConfig{
+			Provider:      "ollama",
+			URL:           "http://localhost:11434",
+			Model:         "llama3.2",
+			Temperature:   0.7,
+			ContextWindow: 8192,
+		},
+	}
+
+	resolved := cfg.ResolveProvider("")
+	if resolved.Provider != "ollama" {
+		t.Errorf("fallback provider = %q, want %q", resolved.Provider, "ollama")
+	}
+	if resolved.Model != "llama3.2" {
+		t.Errorf("fallback model = %q, want %q", resolved.Model, "llama3.2")
+	}
+}
+
+func TestResolveProviderUnknownName(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{
+			Provider: "ollama",
+			URL:      "http://localhost:11434",
+			Model:    "fallback-model",
+		},
+		Providers: map[string]ProviderConfig{
+			"ollama": {Provider: "ollama", URL: "http://localhost:11434", Model: "qwen3:8b"},
+		},
+	}
+
+	// Unknown name should fall back to top-level LLM block
+	resolved := cfg.ResolveProvider("nonexistent")
+	if resolved.Model != "fallback-model" {
+		t.Errorf("unknown name should fallback, got model = %q", resolved.Model)
+	}
+}
+
+func TestDefaultProviderName(t *testing.T) {
+	// With LLM.Default set
+	cfg := &Config{LLM: LLMConfig{Default: "groq"}}
+	if name := cfg.DefaultProviderName(); name != "groq" {
+		t.Errorf("DefaultProviderName = %q, want %q", name, "groq")
+	}
+
+	// Without LLM.Default but with providers
+	cfg = &Config{
+		Providers: map[string]ProviderConfig{
+			"ollama": {Provider: "ollama"},
+		},
+	}
+	name := cfg.DefaultProviderName()
+	if name != "ollama" {
+		t.Errorf("DefaultProviderName = %q, want %q", name, "ollama")
+	}
+
+	// No default, no providers
+	cfg = &Config{}
+	if name := cfg.DefaultProviderName(); name != "" {
+		t.Errorf("DefaultProviderName = %q, want empty", name)
+	}
+}
+
+func TestProviderTemperatureOverride(t *testing.T) {
+	cfg := &Config{
+		LLM: LLMConfig{Default: "custom", Temperature: 0.7},
+		Providers: map[string]ProviderConfig{
+			"custom": {Provider: "openai", URL: "http://example.com", Model: "test", Temperature: 0.3},
+		},
+	}
+
+	resolved := cfg.ResolveProvider("custom")
+	if resolved.Temperature != 0.3 {
+		t.Errorf("provider-level temperature = %f, want %f", resolved.Temperature, 0.3)
+	}
+}

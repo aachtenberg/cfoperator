@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	flagConfig  string
-	flagModel   string
-	flagURL     string
-	flagVersion bool
+	flagConfig   string
+	flagModel    string
+	flagURL      string
+	flagProvider string
+	flagVersion  bool
 )
 
 func main() {
@@ -44,6 +45,7 @@ Pipe data in for analysis mode.`,
 	rootCmd.Flags().StringVar(&flagConfig, "config", "", "Path to config file")
 	rootCmd.Flags().StringVar(&flagModel, "model", "", "Override LLM model")
 	rootCmd.Flags().StringVar(&flagURL, "url", "", "Override LLM endpoint URL")
+	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "Select starting provider by name")
 	rootCmd.Flags().BoolVar(&flagVersion, "version", false, "Show version")
 
 	if err := rootCmd.Execute(); err != nil {
@@ -68,22 +70,31 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("directories: %w", err)
 	}
 
+	// Resolve which provider to use
+	activeProvider := flagProvider
+	if activeProvider == "" {
+		activeProvider = cfg.DefaultProviderName()
+	}
+	resolved := cfg.ResolveProvider(activeProvider)
+
 	// Apply CLI overrides
 	if flagModel != "" {
-		cfg.LLM.Model = flagModel
+		resolved.Model = flagModel
 	}
 	if flagURL != "" {
-		cfg.LLM.URL = flagURL
+		resolved.URL = flagURL
 	}
 
 	// Create LLM client
 	llm := client.New(
-		cfg.LLM.Provider,
-		cfg.LLM.URL,
-		cfg.LLM.Model,
-		cfg.LLM.Temperature,
-		cfg.LLM.APIKey,
+		resolved.Provider,
+		resolved.URL,
+		resolved.Model,
+		resolved.Temperature,
+		resolved.APIKey,
 	)
+	// Update cfg.LLM.ContextWindow for context tracking
+	cfg.LLM.ContextWindow = resolved.ContextWindow
 
 	// Check connection
 	if err := llm.CheckConnection(); err != nil {
@@ -138,7 +149,7 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- TUI mode ---
-	return tui.Run(cfg, llm, toolReg, systemPrompt, contextCount)
+	return tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider)
 }
 
 func runNonInteractive(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt, question string) error {

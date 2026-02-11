@@ -26,26 +26,28 @@ const (
 )
 
 type model struct {
-	viewport     viewport.Model
-	textarea     textarea.Model
-	messages     []client.Message
-	outputLines  []string
-	busy         bool
-	ready        bool
-	cfg          *config.Config
-	llm          *client.LLMClient
-	toolReg      *tools.Registry
-	systemPrompt string
-	width        int
-	height       int
-	program      *tea.Program
-	renderer     *glamour.TermRenderer
-	lastStats    string
-	contextUsed  int // last prompt token count (current context usage)
+	viewport       viewport.Model
+	textarea       textarea.Model
+	messages       []client.Message
+	outputLines    []string
+	busy           bool
+	ready          bool
+	cfg            *config.Config
+	llm            *client.LLMClient
+	toolReg        *tools.Registry
+	systemPrompt   string
+	width          int
+	height         int
+	program        *tea.Program
+	renderer       *glamour.TermRenderer
+	lastStats      string
+	contextUsed    int // last prompt token count (current context usage)
+	providers      map[string]config.ProviderConfig
+	activeProvider string
 }
 
 // New creates a new TUI model.
-func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int) *model {
+func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string) *model {
 	// Text area for input
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question..."
@@ -84,14 +86,16 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 	)
 
 	m := &model{
-		textarea:     ta,
-		messages:     []client.Message{},
-		outputLines:  []string{},
-		cfg:          cfg,
-		llm:          llm,
-		toolReg:      toolReg,
-		systemPrompt: systemPrompt,
-		renderer:     r,
+		textarea:       ta,
+		messages:       []client.Message{},
+		outputLines:    []string{},
+		cfg:            cfg,
+		llm:            llm,
+		toolReg:        toolReg,
+		systemPrompt:   systemPrompt,
+		renderer:       r,
+		providers:      providers,
+		activeProvider: activeProvider,
 	}
 
 	// Build welcome banner
@@ -284,11 +288,91 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 		}
 		return m, nil
+	case "/providers":
+		if len(m.providers) == 0 {
+			m.outputLines = append(m.outputLines, "",
+				dimStyle.Render("  No providers configured. Using single llm: block."),
+				dimStyle.Render(fmt.Sprintf("  Provider: %s  Model: %s", m.llm.Provider, m.llm.Model)),
+			)
+		} else {
+			m.outputLines = append(m.outputLines, "", bannerStyle.Render("Configured Providers:"))
+			for name, p := range m.providers {
+				marker := "  "
+				if name == m.activeProvider {
+					marker = dimStyle.Render("* ")
+				}
+				m.outputLines = append(m.outputLines,
+					fmt.Sprintf("  %s%s  %s",
+						marker,
+						toolNameStyle.Render(name),
+						dimStyle.Render(fmt.Sprintf("(%s, %s)", p.Provider, p.Model)),
+					),
+				)
+			}
+			m.outputLines = append(m.outputLines,
+				"",
+				dimStyle.Render("  Switch with: /use <name>"),
+			)
+		}
+		if m.ready {
+			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+			m.viewport.GotoBottom()
+		}
+		return m, nil
 	case "/help", "help":
 		m.outputLines = append(m.outputLines,
 			dimStyle.Render("Commands: /clear, /exit, /help, /tools, /models, /model <name>"),
+			dimStyle.Render("          /providers, /use <name>"),
 			dimStyle.Render("Ctrl-D to exit, Ctrl-C to cancel input."),
 		)
+		if m.ready {
+			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+			m.viewport.GotoBottom()
+		}
+		return m, nil
+	}
+
+	// /use <name> — switch provider
+	if strings.HasPrefix(lower, "/use ") {
+		name := strings.TrimSpace(text[5:])
+		if name == "" {
+			m.outputLines = append(m.outputLines,
+				dimStyle.Render("  Usage: /use <provider-name>"),
+			)
+		} else if len(m.providers) == 0 {
+			m.outputLines = append(m.outputLines,
+				errorStyle.Render("  No providers configured. Add a providers: block to config.yaml."),
+			)
+		} else if _, ok := m.providers[name]; !ok {
+			m.outputLines = append(m.outputLines,
+				errorStyle.Render(fmt.Sprintf("  Unknown provider: %s", name)),
+			)
+			var names []string
+			for n := range m.providers {
+				names = append(names, n)
+			}
+			m.outputLines = append(m.outputLines,
+				dimStyle.Render(fmt.Sprintf("  Available: %s", strings.Join(names, ", "))),
+			)
+		} else {
+			resolved := m.cfg.ResolveProvider(name)
+			m.llm = client.New(
+				resolved.Provider,
+				resolved.URL,
+				resolved.Model,
+				resolved.Temperature,
+				resolved.APIKey,
+			)
+			oldProvider := m.activeProvider
+			m.activeProvider = name
+			m.cfg.LLM.ContextWindow = resolved.ContextWindow
+			m.messages = nil
+			m.contextUsed = 0
+			m.outputLines = append(m.outputLines, "",
+				dimStyle.Render(fmt.Sprintf("  Provider switched: %s → %s (%s)", oldProvider, name, resolved.Model)),
+				dimStyle.Render("  Conversation cleared."),
+			)
+		}
 		if m.ready {
 			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
 			m.viewport.GotoBottom()
@@ -359,12 +443,16 @@ func (m *model) View() string {
 		return "Initializing..."
 	}
 
-	// Build status bar — left: model + status, right: stats
+	// Build status bar — left: provider:model + status, right: stats
 	status := "ready"
 	if m.busy {
 		status = "working..."
 	}
-	left := fmt.Sprintf(" %s | %s", m.llm.Model, status)
+	modelDisplay := m.llm.Model
+	if m.activeProvider != "" {
+		modelDisplay = m.activeProvider + ":" + m.llm.Model
+	}
+	left := fmt.Sprintf(" %s | %s", modelDisplay, status)
 
 	var rightParts []string
 	if m.contextUsed > 0 && m.cfg.LLM.ContextWindow > 0 {
@@ -407,8 +495,8 @@ func (m *model) View() string {
 }
 
 // Run starts the TUI application.
-func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int) error {
-	m := New(cfg, llm, toolReg, systemPrompt, contextCount)
+func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string) error {
+	m := New(cfg, llm, toolReg, systemPrompt, contextCount, providers, activeProvider)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	m.program = p
 

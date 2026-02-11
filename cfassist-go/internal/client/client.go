@@ -13,13 +13,15 @@ import (
 
 // Message represents a chat message.
 type Message struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"` // for tool result → tool_use_id reference
 }
 
 // ToolCall represents a tool call from the LLM.
 type ToolCall struct {
+	ID       string           `json:"id,omitempty"` // Anthropic tool_use_id
 	Function ToolCallFunction `json:"function"`
 }
 
@@ -75,16 +77,24 @@ func New(provider, url, model string, temperature float64, apiKey string) *LLMCl
 
 // Chat sends a non-streaming chat request and returns the full response.
 func (c *LLMClient) Chat(messages []Message, tools []ToolSchema) (*Response, error) {
-	if c.Provider == "ollama" {
+	switch c.Provider {
+	case "ollama":
 		return c.ollamaChat(messages, tools)
+	case "anthropic":
+		return c.anthropicChat(messages, tools)
+	default:
+		return c.openaiChat(messages, tools)
 	}
-	return c.openaiChat(messages, tools)
 }
 
 // CheckConnection tests if the LLM endpoint is reachable.
 func (c *LLMClient) CheckConnection() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	if c.Provider == "anthropic" {
+		return c.checkAnthropicConnection(ctx)
+	}
 
 	var url string
 	if c.Provider == "ollama" {
@@ -114,8 +124,41 @@ func (c *LLMClient) CheckConnection() error {
 	return nil
 }
 
+func (c *LLMClient) checkAnthropicConnection(ctx context.Context) error {
+	// Anthropic has no list-models GET endpoint; send a minimal messages request
+	payload := []byte(fmt.Sprintf(`{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, c.Model))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/v1/messages", bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("connection failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d from Anthropic: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 // ListModels fetches available models from the provider.
 func (c *LLMClient) ListModels() ([]string, error) {
+	// Anthropic has no list-models API; return known models
+	if c.Provider == "anthropic" {
+		return []string{
+			"claude-sonnet-4-20250514",
+			"claude-haiku-4-20250414",
+			"claude-opus-4-20250514",
+		}, nil
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -351,4 +394,187 @@ func (c *LLMClient) openaiChat(messages []Message, tools []ToolSchema) (*Respons
 		InputTokens:  result.Usage.PromptTokens,
 		OutputTokens: result.Usage.CompletionTokens,
 	}, nil
+}
+
+// --- Anthropic provider ---
+
+type anthropicRequest struct {
+	Model     string           `json:"model"`
+	MaxTokens int              `json:"max_tokens"`
+	System    string           `json:"system,omitempty"`
+	Messages  []anthropicMsg   `json:"messages"`
+	Tools     []anthropicTool  `json:"tools,omitempty"`
+}
+
+type anthropicMsg struct {
+	Role    string `json:"role"`
+	Content any    `json:"content"` // string or []anthropicContentBlock
+}
+
+type anthropicContentBlock struct {
+	Type      string         `json:"type"`
+	Text      string         `json:"text,omitempty"`
+	ID        string         `json:"id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
+	ToolUseID string         `json:"tool_use_id,omitempty"`
+	Content   string         `json:"content,omitempty"`
+}
+
+type anthropicTool struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"input_schema"`
+}
+
+type anthropicResponse struct {
+	Content []struct {
+		Type  string         `json:"type"`
+		Text  string         `json:"text,omitempty"`
+		ID    string         `json:"id,omitempty"`
+		Name  string         `json:"name,omitempty"`
+		Input map[string]any `json:"input,omitempty"`
+	} `json:"content"`
+	Role  string `json:"role"`
+	Usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
+	StopReason string `json:"stop_reason"`
+}
+
+func (c *LLMClient) anthropicChat(messages []Message, tools []ToolSchema) (*Response, error) {
+	// Extract system prompt from messages
+	var systemPrompt string
+	var anthropicMsgs []anthropicMsg
+
+	for _, msg := range messages {
+		switch msg.Role {
+		case "system":
+			systemPrompt = msg.Content
+		case "user":
+			anthropicMsgs = append(anthropicMsgs, anthropicMsg{Role: "user", Content: msg.Content})
+		case "assistant":
+			if len(msg.ToolCalls) > 0 {
+				// Build content blocks for assistant tool_use
+				var blocks []anthropicContentBlock
+				if msg.Content != "" {
+					blocks = append(blocks, anthropicContentBlock{Type: "text", Text: msg.Content})
+				}
+				for _, tc := range msg.ToolCalls {
+					blocks = append(blocks, anthropicContentBlock{
+						Type:  "tool_use",
+						ID:    tc.ID,
+						Name:  tc.Function.Name,
+						Input: tc.Function.Arguments,
+					})
+				}
+				anthropicMsgs = append(anthropicMsgs, anthropicMsg{Role: "assistant", Content: blocks})
+			} else {
+				anthropicMsgs = append(anthropicMsgs, anthropicMsg{Role: "assistant", Content: msg.Content})
+			}
+		case "tool":
+			// Tool results go as user messages with tool_result content blocks
+			anthropicMsgs = append(anthropicMsgs, anthropicMsg{
+				Role: "user",
+				Content: []anthropicContentBlock{{
+					Type:      "tool_result",
+					ToolUseID: msg.ToolCallID,
+					Content:   msg.Content,
+				}},
+			})
+		}
+	}
+
+	// Convert tool schemas from OpenAI format to Anthropic format
+	var anthropicTools []anthropicTool
+	for _, ts := range tools {
+		anthropicTools = append(anthropicTools, anthropicTool{
+			Name:        ts.Function.Name,
+			Description: ts.Function.Description,
+			InputSchema: ts.Function.Parameters,
+		})
+	}
+
+	payload := anthropicRequest{
+		Model:     c.Model,
+		MaxTokens: 4096,
+		System:    systemPrompt,
+		Messages:  anthropicMsgs,
+	}
+	if len(anthropicTools) > 0 {
+		payload.Tools = anthropicTools
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", c.URL+"/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", c.APIKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("anthropic HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result anthropicResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	// Parse content blocks into our normalized format
+	var content string
+	var toolCalls []ToolCall
+	for _, block := range result.Content {
+		switch block.Type {
+		case "text":
+			content += block.Text
+		case "tool_use":
+			toolCalls = append(toolCalls, ToolCall{
+				ID: block.ID,
+				Function: ToolCallFunction{
+					Name:      block.Name,
+					Arguments: block.Input,
+				},
+			})
+		}
+	}
+
+	return &Response{
+		Content:      content,
+		ToolCalls:    toolCalls,
+		Role:         "assistant",
+		InputTokens:  result.Usage.InputTokens,
+		OutputTokens: result.Usage.OutputTokens,
+	}, nil
+}
+
+// MarshalContentBlocks is needed for proper JSON serialization of anthropicMsg.Content
+// which can be either a string or []anthropicContentBlock.
+func (m anthropicMsg) MarshalJSON() ([]byte, error) {
+	type alias struct {
+		Role    string `json:"role"`
+		Content any    `json:"content"`
+	}
+	switch v := m.Content.(type) {
+	case string:
+		return json.Marshal(alias{Role: m.Role, Content: v})
+	case []anthropicContentBlock:
+		return json.Marshal(alias{Role: m.Role, Content: v})
+	default:
+		return json.Marshal(alias{Role: m.Role, Content: v})
+	}
 }

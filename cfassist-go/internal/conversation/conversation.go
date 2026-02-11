@@ -97,8 +97,9 @@ func Run(
 
 			// Append tool result
 			fullMessages = append(fullMessages, client.Message{
-				Role:    "tool",
-				Content: tools.MarshalResult(toolResult),
+				Role:       "tool",
+				Content:    tools.MarshalResult(toolResult),
+				ToolCallID: tc.ID,
 			})
 			continue
 		}

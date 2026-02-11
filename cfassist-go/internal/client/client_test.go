@@ -357,12 +357,238 @@ func TestChatHTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Test both providers
-	for _, provider := range []string{"ollama", "openai"} {
+	// Test all providers
+	for _, provider := range []string{"ollama", "openai", "anthropic"} {
 		c := New(provider, server.URL, "model", 0.7, "key")
 		_, err := c.Chat([]Message{{Role: "user", Content: "hi"}}, nil)
 		if err == nil {
 			t.Errorf("%s: expected error for HTTP 400", provider)
 		}
+	}
+}
+
+func TestAnthropicChat(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			return
+		}
+
+		// Verify Anthropic auth headers
+		if apiKey := r.Header.Get("x-api-key"); apiKey != "test-key" {
+			t.Errorf("x-api-key = %q, want %q", apiKey, "test-key")
+		}
+		if version := r.Header.Get("anthropic-version"); version != "2023-06-01" {
+			t.Errorf("anthropic-version = %q, want %q", version, "2023-06-01")
+		}
+
+		// Verify system prompt extracted from messages
+		var req anthropicRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		if req.System != "You are helpful." {
+			t.Errorf("system = %q, want %q", req.System, "You are helpful.")
+		}
+		if req.Model != "claude-sonnet-4-20250514" {
+			t.Errorf("model = %q, want %q", req.Model, "claude-sonnet-4-20250514")
+		}
+
+		json.NewEncoder(w).Encode(anthropicResponse{
+			Content: []struct {
+				Type  string         `json:"type"`
+				Text  string         `json:"text,omitempty"`
+				ID    string         `json:"id,omitempty"`
+				Name  string         `json:"name,omitempty"`
+				Input map[string]any `json:"input,omitempty"`
+			}{
+				{Type: "text", Text: "Hello from Claude!"},
+			},
+			Role: "assistant",
+			Usage: struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			}{InputTokens: 25, OutputTokens: 8},
+			StopReason: "end_turn",
+		})
+	}))
+	defer server.Close()
+
+	c := New("anthropic", server.URL, "claude-sonnet-4-20250514", 0.7, "test-key")
+	messages := []Message{
+		{Role: "system", Content: "You are helpful."},
+		{Role: "user", Content: "hello"},
+	}
+
+	resp, err := c.Chat(messages, nil)
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+
+	if resp.Content != "Hello from Claude!" {
+		t.Errorf("Content = %q, want %q", resp.Content, "Hello from Claude!")
+	}
+	if resp.Role != "assistant" {
+		t.Errorf("Role = %q, want %q", resp.Role, "assistant")
+	}
+	if resp.InputTokens != 25 {
+		t.Errorf("InputTokens = %d, want %d", resp.InputTokens, 25)
+	}
+	if resp.OutputTokens != 8 {
+		t.Errorf("OutputTokens = %d, want %d", resp.OutputTokens, 8)
+	}
+}
+
+func TestAnthropicChatWithToolCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(anthropicResponse{
+			Content: []struct {
+				Type  string         `json:"type"`
+				Text  string         `json:"text,omitempty"`
+				ID    string         `json:"id,omitempty"`
+				Name  string         `json:"name,omitempty"`
+				Input map[string]any `json:"input,omitempty"`
+			}{
+				{Type: "text", Text: "Let me check that."},
+				{Type: "tool_use", ID: "toolu_abc123", Name: "bash", Input: map[string]any{"command": "hostname"}},
+			},
+			Role: "assistant",
+			Usage: struct {
+				InputTokens  int `json:"input_tokens"`
+				OutputTokens int `json:"output_tokens"`
+			}{InputTokens: 30, OutputTokens: 15},
+			StopReason: "tool_use",
+		})
+	}))
+	defer server.Close()
+
+	c := New("anthropic", server.URL, "claude-sonnet-4-20250514", 0.7, "key")
+	resp, err := c.Chat([]Message{{Role: "user", Content: "hostname?"}}, nil)
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+
+	if resp.Content != "Let me check that." {
+		t.Errorf("Content = %q", resp.Content)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected 1 tool call, got %d", len(resp.ToolCalls))
+	}
+	tc := resp.ToolCalls[0]
+	if tc.ID != "toolu_abc123" {
+		t.Errorf("tool call ID = %q, want %q", tc.ID, "toolu_abc123")
+	}
+	if tc.Function.Name != "bash" {
+		t.Errorf("tool call name = %q, want %q", tc.Function.Name, "bash")
+	}
+	cmd, ok := tc.Function.Arguments["command"].(string)
+	if !ok || cmd != "hostname" {
+		t.Errorf("tool args command = %v", tc.Function.Arguments["command"])
+	}
+}
+
+func TestCheckConnectionAnthropic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != "POST" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if apiKey := r.Header.Get("x-api-key"); apiKey != "test-key" {
+			t.Errorf("x-api-key = %q, want %q", apiKey, "test-key")
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"content": []map[string]any{{"type": "text", "text": "hi"}},
+			"role":    "assistant",
+		})
+	}))
+	defer server.Close()
+
+	c := New("anthropic", server.URL, "claude-sonnet-4-20250514", 0.7, "test-key")
+	if err := c.CheckConnection(); err != nil {
+		t.Errorf("CheckConnection failed: %v", err)
+	}
+}
+
+func TestListModelsAnthropic(t *testing.T) {
+	c := New("anthropic", "https://api.anthropic.com", "claude-sonnet-4-20250514", 0.7, "key")
+	models, err := c.ListModels()
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if len(models) != 3 {
+		t.Fatalf("expected 3 models, got %d", len(models))
+	}
+	// Should include known Claude models
+	found := false
+	for _, m := range models {
+		if m == "claude-sonnet-4-20250514" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected claude-sonnet-4-20250514 in models list: %v", models)
+	}
+}
+
+func TestAnthropicChatToolSchemaConversion(t *testing.T) {
+	var receivedReq anthropicRequest
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&receivedReq)
+		json.NewEncoder(w).Encode(anthropicResponse{
+			Content: []struct {
+				Type  string         `json:"type"`
+				Text  string         `json:"text,omitempty"`
+				ID    string         `json:"id,omitempty"`
+				Name  string         `json:"name,omitempty"`
+				Input map[string]any `json:"input,omitempty"`
+			}{
+				{Type: "text", Text: "ok"},
+			},
+			Role: "assistant",
+		})
+	}))
+	defer server.Close()
+
+	c := New("anthropic", server.URL, "claude-sonnet-4-20250514", 0.7, "key")
+	tools := []ToolSchema{
+		{
+			Type: "function",
+			Function: ToolSchemaFunction{
+				Name:        "bash",
+				Description: "Run a shell command",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"command": map[string]any{"type": "string"},
+					},
+					"required": []string{"command"},
+				},
+			},
+		},
+	}
+
+	_, err := c.Chat([]Message{{Role: "user", Content: "test"}}, tools)
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+
+	// Verify tool schema was converted to Anthropic format
+	if len(receivedReq.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(receivedReq.Tools))
+	}
+	tool := receivedReq.Tools[0]
+	if tool.Name != "bash" {
+		t.Errorf("tool name = %q, want %q", tool.Name, "bash")
+	}
+	if tool.Description != "Run a shell command" {
+		t.Errorf("tool description = %q", tool.Description)
+	}
+	if tool.InputSchema == nil {
+		t.Error("tool input_schema should not be nil")
 	}
 }
