@@ -783,8 +783,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (direction) (rate(cfoperator_llm_tokens_total[5m]))",
-          "legendFormat": "{{direction}}",
+          "expr": "sum by (type) (rate(cfoperator_llm_tokens_total[5m]))",
+          "legendFormat": "{{type}}",
           "refId": "A"
         }
       ],
@@ -1103,6 +1103,503 @@
       "type": "stat"
     },
     {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 40,
+      "panels": [],
+      "title": "Investigations & Knowledge Base",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "ffcrf4dsqchz4e"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 25
+      },
+      "id": 41,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "ffcrf4dsqchz4e"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM investigations WHERE started_at > NOW() - INTERVAL '24 hours'",
+          "refId": "A"
+        }
+      ],
+      "title": "Investigations (24h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "ffcrf4dsqchz4e"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 25
+      },
+      "id": 42,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "ffcrf4dsqchz4e"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*) FROM investigation_learnings WHERE deprecated = false",
+          "refId": "A"
+        }
+      ],
+      "title": "Total Learnings",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "ffcrf4dsqchz4e"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 50
+              },
+              {
+                "color": "red",
+                "value": 25
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 25
+      },
+      "id": 43,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "ffcrf4dsqchz4e"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT ROUND(100.0 * (SELECT COUNT(*) FROM investigation_embeddings) / NULLIF((SELECT COUNT(*) FROM investigations WHERE outcome IN ('resolved','escalated','failed')), 0), 1) AS pct",
+          "refId": "A"
+        }
+      ],
+      "title": "Embedding Coverage",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "green",
+                "value": 95
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 25
+      },
+      "id": 44,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(cfoperator_tool_calls_total{result=\"success\"}) / sum(cfoperator_tool_calls_total)",
+          "refId": "A"
+        }
+      ],
+      "title": "Tool Success Rate",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "ffcrf4dsqchz4e"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "investigations",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "resolved"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "green",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "escalated"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "yellow",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "id": 45,
+      "options": {
+        "legend": {
+          "calcs": [
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "ffcrf4dsqchz4e"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT date_trunc('hour', started_at) AS time, COUNT(*) FILTER (WHERE outcome = 'resolved') AS resolved, COUNT(*) FILTER (WHERE outcome = 'escalated') AS escalated, COUNT(*) FILTER (WHERE outcome = 'failed') AS failed FROM investigations WHERE $__timeFilter(started_at) GROUP BY time ORDER BY time",
+          "refId": "A"
+        }
+      ],
+      "title": "Investigation Velocity (by Outcome)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "ffcrf4dsqchz4e"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "id": 46,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "ffcrf4dsqchz4e"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT created_at AS time, COUNT(*) OVER (ORDER BY created_at) AS learnings, SUM(CASE WHEN learning_type = 'solution' THEN 1 ELSE 0 END) OVER (ORDER BY created_at) AS solutions FROM investigation_learnings WHERE deprecated = false AND $__timeFilter(created_at) ORDER BY created_at",
+          "refId": "A"
+        }
+      ],
+      "title": "Knowledge Base Growth",
+      "type": "timeseries"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1171,7 +1668,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 37
       },
       "id": 9,
       "options": {
@@ -1274,7 +1771,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 37
       },
       "id": 10,
       "options": {
@@ -1318,7 +1815,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 45
       },
       "id": 11,
       "options": {
@@ -1349,84 +1846,12 @@
         "type": "loki",
         "uid": "loki"
       },
-      "description": "OODA loop activity - sweeps, investigations, tool calls",
+      "description": "Errors and warnings with component context",
       "gridPos": {
         "h": 10,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 56
-      },
-      "id": 12,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{container=\"cfoperator\"} |= \"OODA\" or \"sweep\" or \"investigation\" | json | line_format `{{.ts}} {{.msg}}`",
-          "refId": "A"
-        }
-      ],
-      "title": "OODA Loop Activity",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "description": "Tool execution logs - what tools are being called and results",
-      "gridPos": {
-        "h": 10,
-        "w": 12,
-        "x": 12,
-        "y": 56
-      },
-      "id": 13,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{container=\"cfoperator\"} |= \"tool\" or \"ssh\" or \"docker\" | json | line_format `{{.ts}} [{{.tool_name}}] {{.msg}}`",
-          "refId": "A"
-        }
-      ],
-      "title": "Tool Execution Logs",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "description": "Error and warning logs only",
-      "gridPos": {
-        "h": 10,
-        "w": 12,
-        "x": 0,
-        "y": 66
+        "y": 57
       },
       "id": 14,
       "options": {
@@ -1445,7 +1870,7 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{container=\"cfoperator\"} | json | level=~\"ERROR|WARN\" | line_format `{{.ts}} [{{.level}}] {{.component}}: {{.msg}}`",
+          "expr": "{container=\"cfoperator\"} | json | level=~\"error|warn|ERROR|WARN\" | line_format `[{{.level}}] {{.component}}: {{.msg}}`",
           "refId": "A"
         }
       ],
@@ -1457,12 +1882,48 @@
         "type": "loki",
         "uid": "loki"
       },
-      "description": "LLM interactions - calls, responses, tool use",
+      "description": "OODA loop, sweeps, investigations, and tool calls",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 67
+      },
+      "id": 12,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{container=\"cfoperator\"} | json | component=~\"cfoperator|tools|embedding_service\" | line_format `[{{.component}}] {{.msg}}`",
+          "refId": "A"
+        }
+      ],
+      "title": "Agent & Tools Activity",
+      "type": "logs"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "LLM calls, embeddings, and knowledge base operations",
       "gridPos": {
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 66
+        "y": 67
       },
       "id": 15,
       "options": {
@@ -1481,83 +1942,11 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "{container=\"cfoperator\"} |= \"llm\" or \"LLM\" or \"chat\" or \"embedding\" | json | line_format `{{.ts}} {{.msg}}`",
+          "expr": "{container=\"cfoperator\"} | json | component=~\"llm_fallback|knowledge_base|embedding_service\" | line_format `[{{.component}}] {{.msg}}`",
           "refId": "A"
         }
       ],
-      "title": "LLM Activity",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "description": "Host discovery and SSH activity",
-      "gridPos": {
-        "h": 10,
-        "w": 12,
-        "x": 0,
-        "y": 76
-      },
-      "id": 16,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{container=\"cfoperator\"} |= \"ssh\" or \"ping\" or \"discovery\" or \"host\" | json | line_format `{{.ts}} {{.msg}}`",
-          "refId": "A"
-        }
-      ],
-      "title": "Fleet Discovery & SSH Activity",
-      "type": "logs"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "description": "Knowledge base operations - learnings, investigations",
-      "gridPos": {
-        "h": 10,
-        "w": 12,
-        "x": 12,
-        "y": 76
-      },
-      "id": 17,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{container=\"cfoperator\"} |= \"knowledge\" or \"investigation\" or \"learning\" or \"vector\" | json | line_format `{{.ts}} {{.msg}}`",
-          "refId": "A"
-        }
-      ],
-      "title": "Knowledge Base Activity",
+      "title": "LLM & Knowledge Base",
       "type": "logs"
     },
     {
@@ -1566,7 +1955,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 86
+        "y": 77
       },
       "id": 30,
       "panels": [],
@@ -1608,7 +1997,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 87
+        "y": 78
       },
       "id": 31,
       "options": {
@@ -1689,7 +2078,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 87
+        "y": 78
       },
       "id": 32,
       "options": {
@@ -1757,7 +2146,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 87
+        "y": 78
       },
       "id": 33,
       "options": {
@@ -1818,7 +2207,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 87
+        "y": 78
       },
       "id": 34,
       "options": {
@@ -2058,7 +2447,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 82
       },
       "id": 35,
       "options": {
@@ -2199,7 +2588,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 101
+        "y": 92
       },
       "id": 36,
       "options": {
@@ -2299,6 +2688,6 @@
   "timezone": "",
   "title": "CFOperator Fleet Monitoring",
   "uid": "cfoperator-fleet",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
