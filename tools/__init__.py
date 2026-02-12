@@ -83,13 +83,13 @@ class ToolRegistry:
             'function': self._loki_query,
             'schema': {
                 'name': 'loki_query',
-                'description': 'Query Loki logs across all monitored hosts',
+                'description': 'Query Loki logs across all monitored hosts. Available labels: host (raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4, headless-gpu), container_name, compose_service, job (varlogs), level, source, stream. Example queries: {host="raspberrypi"} |= "error", {container_name="immich_server"} |= "error", {host="raspberrypi"} | json | level="error"',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'query': {
                             'type': 'string',
-                            'description': 'LogQL query string'
+                            'description': 'LogQL query string. Use labels: host, container_name, compose_service, job, level, source. Example: {host="raspberrypi"} |= "error"'
                         },
                         'limit': {
                             'type': 'integer',

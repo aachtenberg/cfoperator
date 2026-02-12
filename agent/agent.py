@@ -47,6 +47,9 @@ from web_server import WebServer
 # Import tool registry
 from tools import ToolRegistry
 
+# Import Ollama pool (for parallel sweeps)
+from ollama_pool import OllamaPool
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -138,6 +141,14 @@ class CFOperator:
             )
         else:
             self.web_server = None
+
+        # Initialize Ollama pool for parallel sweeps (if configured)
+        pool_config = self.config.get('ollama_pool', {}).get('instances', [])
+        if pool_config:
+            self.ollama_pool = OllamaPool(pool_config)
+            logger.info(f"Ollama pool initialized with {len(pool_config)} instances")
+        else:
+            self.ollama_pool = None
 
         # Update Prometheus metrics
         TOOLS_REGISTERED.set(len(self.tools.tools))
@@ -638,30 +649,25 @@ When done, provide a summary of findings and whether the issue is resolved, need
         7. Generate summary report
         """
         logger.info("Starting deep system sweep")
+        sweep_start = time.time()
 
         findings = []
         sweep_config = self.config['ooda']['sweep']
 
-        # 1. Metric sweep - look at trends over 24h
-        if sweep_config.get('metrics') and self.metrics:
-            logger.info("Sweeping metrics...")
-            metric_findings = self._sweep_metrics()
-            findings.extend(metric_findings)
-            logger.info(f"Metric sweep found {len(metric_findings)} findings")
-
-        # 2. Log sweep - scan for patterns across all services
-        if sweep_config.get('logs') and self.logs:
-            logger.info("Sweeping logs...")
-            log_findings = self._sweep_logs()
-            findings.extend(log_findings)
-            logger.info(f"Log sweep found {len(log_findings)} findings")
-
-        # 3. Container sweep - check health of all containers
-        if sweep_config.get('containers') and self.containers:
-            logger.info("Sweeping containers...")
-            container_findings = self._sweep_containers()
-            findings.extend(container_findings)
-            logger.info(f"Container sweep found {len(container_findings)} findings")
+        # Parallel sweep: if pool has 2+ instances, fan out LLM phases concurrently
+        if self.ollama_pool and self.ollama_pool.available_count() >= 2:
+            logger.info(f"Using parallel sweep ({self.ollama_pool.available_count()} instances available)")
+            try:
+                from sweep_graph import run_parallel_sweep
+                parallel_findings = run_parallel_sweep(self, self.ollama_pool, sweep_config)
+                findings.extend(parallel_findings)
+            except Exception as e:
+                logger.error(f"Parallel sweep failed, falling back to sequential: {e}")
+                findings.extend(self._sequential_sweep(sweep_config))
+        else:
+            if self.ollama_pool:
+                logger.info("Pool has <2 available instances, using sequential sweep")
+            findings.extend(self._sequential_sweep(sweep_config))
 
         # 4. Baseline drift detection
         if sweep_config.get('baseline_drift'):
@@ -715,6 +721,13 @@ When done, provide a summary of findings and whether the issue is resolved, need
                     self._notify_sweep_findings(notif_report)
                 else:
                     logger.info(f"Sweep found {len(findings)} issues (all known from previous sweep, skipping notification)")
+
+            # Add timing and mode info to sweep_meta
+            sweep_duration = time.time() - sweep_start
+            sweep_mode = 'parallel' if (self.ollama_pool and self.ollama_pool.available_count() >= 0) else 'sequential'
+            if report.get('sweep_meta'):
+                report['sweep_meta']['duration_seconds'] = round(sweep_duration, 1)
+                report['sweep_meta']['mode'] = sweep_mode
 
             # Always store the full report in DB
             try:
@@ -893,6 +906,88 @@ Only return the JSON array, no other text."""
         findings.extend(llm_findings)
 
         return findings
+
+    def _sequential_sweep(self, sweep_config: dict) -> List[Dict[str, Any]]:
+        """Run sweep phases sequentially (fallback when pool unavailable)."""
+        from ollama_pool import SWEEP_DURATION
+        start = time.time()
+        findings = []
+
+        if sweep_config.get('metrics') and self.metrics:
+            logger.info("Sweeping metrics...")
+            metric_findings = self._sweep_metrics()
+            findings.extend(metric_findings)
+            logger.info(f"Metric sweep found {len(metric_findings)} findings")
+
+        if sweep_config.get('logs') and self.logs:
+            logger.info("Sweeping logs...")
+            log_findings = self._sweep_logs()
+            findings.extend(log_findings)
+            logger.info(f"Log sweep found {len(log_findings)} findings")
+
+        if sweep_config.get('containers') and self.containers:
+            logger.info("Sweeping containers...")
+            container_findings = self._sweep_containers()
+            findings.extend(container_findings)
+            logger.info(f"Container sweep found {len(container_findings)} findings")
+
+        SWEEP_DURATION.labels(mode='sequential').observe(time.time() - start)
+        return findings
+
+    def _sweep_with_llm_on_instance(self, task: str, url: str, model: str,
+                                     max_iterations: int = None) -> List[Dict[str, Any]]:
+        """
+        Run an LLM-driven sweep phase on a specific Ollama instance.
+
+        Like _sweep_with_llm() but takes explicit url/model from pool checkout
+        instead of resolving via _resolve_provider().
+        """
+        if max_iterations is None:
+            max_iterations = self._get_max_tool_iterations()
+
+        provider_type = 'ollama'
+        infra = self._get_infra_summary()
+
+        system_prompt = f"""You are CFOperator performing a proactive infrastructure sweep.
+
+{infra}
+
+{task}
+
+After investigating, respond with your findings as a JSON array:
+[{{"severity": "info|warning|critical", "finding": "description", "remediation": "suggested fix or action"}}]
+
+If everything looks healthy, return an empty array: []
+Only return the JSON array, no other text."""
+
+        try:
+            result = self._chat_with_tools(
+                provider_type=provider_type,
+                url=url,
+                model=model,
+                messages=[{'role': 'user', 'content': task}],
+                system_context=system_prompt,
+                max_iterations=max_iterations
+            )
+
+            response_text = result.get('response', '')
+            tool_calls = result.get('tool_calls', 0)
+            input_tokens = result.get('input_tokens', 0)
+            output_tokens = result.get('output_tokens', 0)
+            hit_limit = tool_calls >= max_iterations
+            logger.info(
+                f"Sweep LLM completed: {provider_type}/{model}@{url} | "
+                f"{tool_calls}/{max_iterations} tool calls{'(limit hit)' if hit_limit else ''} | "
+                f"{len(response_text)} chars | "
+                f"tokens: {input_tokens}in/{output_tokens}out"
+            )
+
+            return self._parse_sweep_findings(response_text)
+
+        except Exception as e:
+            logger.error(f"Sweep LLM failed on {url}/{model}: {e}")
+            ERROR_RATE.inc()
+            return []
 
     def _check_baseline_drift(self) -> List[Dict[str, Any]]:
         """Compare expected infrastructure state to reality."""
@@ -1083,13 +1178,15 @@ learning_type must be one of: solution, pattern, root_cause, antipattern, insigh
 category must be one of: resource, network, config, dependency
 Keep learnings specific and actionable. Only extract learnings if there's genuine insight."""
 
+            messages = [
+                {'role': 'system', 'content': 'You are a structured data extractor. Return ONLY valid JSON.'},
+                {'role': 'user', 'content': prompt}
+            ]
+
             if provider_type == 'ollama':
                 payload = {
                     'model': model,
-                    'messages': [
-                        {'role': 'system', 'content': 'You are a structured data extractor. Return ONLY valid JSON.'},
-                        {'role': 'user', 'content': prompt}
-                    ],
+                    'messages': messages,
                     'stream': False,
                     'temperature': 0.3,
                     'format': 'json'
@@ -1097,6 +1194,54 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                 resp = req.post(f"{url}/api/chat", json=payload, timeout=60)
                 data = resp.json()
                 text = data.get('message', {}).get('content', '')
+            elif provider_type == 'groq':
+                api_key = os.getenv('GROQ_API_KEY', '')
+                if not api_key:
+                    logger.warning("GROQ_API_KEY not set for learning extraction")
+                    return
+                payload = {
+                    'model': model,
+                    'messages': messages,
+                    'temperature': 0.3,
+                    'max_tokens': 2048,
+                    'response_format': {'type': 'json_object'}
+                }
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {api_key}'
+                }
+                resp = req.post(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    json=payload, headers=headers, timeout=60
+                )
+                data = resp.json()
+                text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+            elif provider_type == 'anthropic':
+                api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                if not api_key:
+                    logger.warning("ANTHROPIC_API_KEY not set for learning extraction")
+                    return
+                payload = {
+                    'model': model,
+                    'max_tokens': 2048,
+                    'system': 'You are a structured data extractor. Return ONLY valid JSON.',
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'temperature': 0.3
+                }
+                headers = {
+                    'Content-Type': 'application/json',
+                    'x-api-key': api_key,
+                    'anthropic-version': '2023-06-01'
+                }
+                resp = req.post(
+                    'https://api.anthropic.com/v1/messages',
+                    json=payload, headers=headers, timeout=60
+                )
+                data = resp.json()
+                text = '\n'.join(
+                    b.get('text', '') for b in data.get('content', [])
+                    if b.get('type') == 'text'
+                )
             else:
                 logger.warning(f"Learning extraction not implemented for {provider_type}")
                 return
@@ -1346,13 +1491,18 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             if not model:
                 model = self.kb.get_setting('ollama_selected_model', '') or primary.get('model', '')
             return (provider_type, url, model)
-        elif backend in ('groq', 'gemini', 'anthropic'):
+        elif backend in ('groq', 'anthropic'):
             url = None
             if not model:
-                for fb in llm_config.get('fallback', []):
-                    if fb.get('provider') == backend:
-                        model = fb.get('model', '')
-                        break
+                # Check DB for user's model selection, fall back to config
+                db_model = self.kb.get_setting(f'{backend}_selected_model', '')
+                if db_model:
+                    model = db_model
+                else:
+                    for fb in llm_config.get('fallback', []):
+                        if fb.get('provider') == backend:
+                            model = fb.get('model', '')
+                            break
             return (provider_type, url, model)
         else:
             return None
@@ -1473,6 +1623,100 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                         continue
 
                     # No tool calls, extract text response
+                    text = message.get('content', '')
+                    return {
+                        'response': text,
+                        'tool_calls': tool_calls_count,
+                        'input_tokens': total_input_tokens,
+                        'output_tokens': total_output_tokens,
+                        'learning_ids': learnings_used
+                    }
+
+                elif provider_type == 'groq':
+                    # Groq API (OpenAI-compatible) with tool use
+                    api_key = os.getenv('GROQ_API_KEY', '')
+                    if not api_key:
+                        raise ValueError("GROQ_API_KEY not set")
+
+                    payload = {
+                        'model': model,
+                        'messages': full_messages,
+                        'tools': tools,
+                        'temperature': 0.7,
+                        'max_tokens': 4096
+                    }
+                    headers = {
+                        'Content-Type': 'application/json',
+                        'Authorization': f'Bearer {api_key}'
+                    }
+
+                    response = requests.post(
+                        'https://api.groq.com/openai/v1/chat/completions',
+                        json=payload,
+                        headers=headers,
+                        timeout=120
+                    )
+                    data = response.json()
+
+                    if data.get('error'):
+                        raise ValueError(f"Groq API error: {data['error']}")
+
+                    # Extract tokens
+                    usage = data.get('usage', {})
+                    total_input_tokens += usage.get('prompt_tokens', 0)
+                    total_output_tokens += usage.get('completion_tokens', 0)
+
+                    # Check for tool calls
+                    choice = data.get('choices', [{}])[0]
+                    message = choice.get('message', {})
+                    tool_calls = message.get('tool_calls', [])
+
+                    if tool_calls:
+                        # Append the assistant message (with all tool_calls) once
+                        full_messages.append(message)
+
+                        for tool_call in tool_calls:
+                            tool_name = tool_call['function']['name']
+                            # Groq returns arguments as JSON string
+                            raw_args = tool_call['function'].get('arguments', '{}')
+                            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                            tool_call_id = tool_call.get('id', f'call_{iteration}')
+
+                            if event_callback:
+                                event_callback('tool_call', {
+                                    'tool': tool_name,
+                                    'args': tool_args,
+                                    'iteration': iteration + 1,
+                                    'max': max_iterations
+                                })
+
+                            logger.info(f"Executing tool: {tool_name}")
+                            result = self.tools.execute(tool_name, tool_args)
+                            tool_calls_count += 1
+
+                            if tool_name == 'find_learnings' and isinstance(result, list):
+                                learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
+
+                            if event_callback:
+                                result_preview = json.dumps(result, default=str)[:500]
+                                event_callback('tool_result', {
+                                    'tool': tool_name,
+                                    'result': result_preview,
+                                    'iteration': iteration + 1
+                                })
+
+                            TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
+
+                            # Append each tool result as a separate message
+                            full_messages.append({
+                                'role': 'tool',
+                                'tool_call_id': tool_call_id,
+                                'content': json.dumps(result, default=str)
+                            })
+
+                        continue
+
+                    # No tool calls — return text response
                     text = message.get('content', '')
                     return {
                         'response': text,
@@ -1689,6 +1933,29 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                 total_input_tokens += data.get('prompt_eval_count', 0)
                 total_output_tokens += data.get('eval_count', 0)
                 summary_text = data.get('message', {}).get('content', '')
+            elif provider_type == 'groq':
+                api_key = os.getenv('GROQ_API_KEY', '')
+                payload = {
+                    'model': model,
+                    'messages': summary_messages,
+                    'temperature': 0.7,
+                    'max_tokens': 4096
+                }
+                headers = {
+                    'Content-Type': 'application/json',
+                    'Authorization': f'Bearer {api_key}'
+                }
+                response = requests.post(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    json=payload,
+                    headers=headers,
+                    timeout=120
+                )
+                data = response.json()
+                usage = data.get('usage', {})
+                total_input_tokens += usage.get('prompt_tokens', 0)
+                total_output_tokens += usage.get('completion_tokens', 0)
+                summary_text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
             elif provider_type == 'anthropic':
                 api_key = os.getenv('ANTHROPIC_API_KEY', '')
                 anthropic_messages = [m for m in full_messages if m.get('role') != 'system']

@@ -15,7 +15,7 @@
         }
 
         ::selection {
-            background: #1a1a3a;
+            background: #1a1a1a;
             color: #00aa00;
         }
 
@@ -30,7 +30,7 @@
         }
 
         header {
-            background: #1a1a2e;
+            background: #111111;
             padding: 14px 20px;
             border-bottom: 1px solid #333333;
             display: flex;
@@ -66,6 +66,45 @@
             font-weight: 400;
         }
 
+        .toggle-switch {
+            position: relative;
+            display: inline-block;
+            width: 36px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+        .toggle-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .toggle-slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background: #333333;
+            border-radius: 20px;
+            transition: background 0.2s;
+        }
+        .toggle-slider::before {
+            content: "";
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            left: 3px;
+            bottom: 3px;
+            background: #888;
+            border-radius: 50%;
+            transition: transform 0.2s, background 0.2s;
+        }
+        .toggle-switch input:checked + .toggle-slider {
+            background: #225522;
+        }
+        .toggle-switch input:checked + .toggle-slider::before {
+            transform: translateX(16px);
+            background: #44cc44;
+        }
+
         .status-indicator {
             width: 8px;
             height: 8px;
@@ -91,7 +130,7 @@
         }
 
         .question-card {
-            background: #111122;
+            background: #0d0d0d;
             padding: 12px;
             border-radius: 4px;
             border-left: 3px solid #00aa00;
@@ -189,7 +228,7 @@
         }
 
         .tool-log {
-            background: #111122;
+            background: #0d0d0d;
             border: 1px solid #333333;
             border-radius: 4px;
             max-height: 300px;
@@ -202,7 +241,7 @@
 
         .tool-log-line {
             padding: 3px 0;
-            border-bottom: 1px solid #1a1a2e;
+            border-bottom: 1px solid #111111;
         }
 
         .tool-log-line:last-child {
@@ -267,12 +306,12 @@
         }
 
         .feedback-buttons button:hover {
-            background: #1a1a2e;
+            background: #111111;
             color: #00aa00;
         }
 
         .feedback-buttons button.selected {
-            background: #1a1a2e;
+            background: #111111;
             color: #00aa00;
             border-color: #00aa00;
         }
@@ -297,7 +336,7 @@
             bottom: 100%;
             left: 20px;
             right: 80px;
-            background: #111122;
+            background: #0d0d0d;
             border: 1px solid #333333;
             border-radius: 4px;
             max-height: 200px;
@@ -318,7 +357,7 @@
         }
 
         .slash-item:hover, .slash-item.selected {
-            background: #1a1a2e;
+            background: #111111;
         }
 
         .slash-item .cmd {
@@ -378,7 +417,7 @@
             margin: 0 20px 10px;
             border: 1px solid #333333;
             border-radius: 4px;
-            background: #111122;
+            background: #0d0d0d;
         }
 
         #sweep-panel.active {
@@ -395,7 +434,7 @@
         }
 
         .sweep-header:hover {
-            background: #1a1a2e;
+            background: #111111;
         }
 
         .sweep-severity {
@@ -427,7 +466,7 @@
         .sweep-finding {
             padding: 5px 0;
             font-size: 14px;
-            border-bottom: 1px solid #1a1a2e;
+            border-bottom: 1px solid #111111;
             line-height: 1.5;
         }
 
@@ -469,7 +508,7 @@
             margin-right: 6px;
         }
         .finding-status.resolved { background: #0a2a0a; color: #00aa00; }
-        .finding-status.acknowledged { background: #1a1a2e; color: #6666cc; }
+        .finding-status.acknowledged { background: #111111; color: #888888; }
         .finding-status.investigating { background: #2a2200; color: #ffaa00; }
         .finding-status.false_positive { background: #1a1a1a; color: #666666; }
 
@@ -568,12 +607,16 @@
                 <option value="auto">Auto (Fallback)</option>
                 <option value="ollama">Ollama (Local)</option>
                 <option value="groq">Groq</option>
-                <option value="gemini">Gemini</option>
                 <option value="anthropic">Claude</option>
             </select>
-            <select id="ollama-model" style="display:none;">
+            <select id="model-select" style="display:none;">
                 <option value="">Loading models...</option>
             </select>
+            <label for="fallback-toggle" style="cursor:pointer;" title="Allow fallback to paid LLM providers (Groq, Claude) when Ollama is unavailable">Fallback:</label>
+            <label class="toggle-switch" title="Allow fallback to paid LLM providers (Groq, Claude) when Ollama is unavailable">
+                <input type="checkbox" id="fallback-toggle" onchange="onFallbackToggle()">
+                <span class="toggle-slider"></span>
+            </label>
             <label for="max-iterations">Max Tools:</label>
             <input type="number" id="max-iterations" min="1" max="50" value="10" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
             <label for="alert-interval">Alert(s):</label>
@@ -787,8 +830,8 @@ Type / for autocomplete.</div>
             if (!message) return;
 
             const backend = document.getElementById('llm-backend').value;
-            const modelSelect = document.getElementById('ollama-model');
-            const model = (backend === 'ollama' && modelSelect.value) ? modelSelect.value : null;
+            const modelSelect = document.getElementById('model-select');
+            const model = (backend !== 'auto' && modelSelect.value) ? modelSelect.value : null;
 
             // Add user message to chat
             addMessage('user', message);
@@ -917,19 +960,25 @@ Type / for autocomplete.</div>
                 .catch(err => console.error('Error fetching questions:', err));
         }, 10000);
 
-        // Ollama model fetching
-        function fetchOllamaModels() {
-            const modelSelect = document.getElementById('ollama-model');
+        // Model fetching for all backends
+        function fetchModels(backend) {
+            const modelSelect = document.getElementById('model-select');
+            if (!backend || backend === 'auto') {
+                modelSelect.style.display = 'none';
+                return;
+            }
+            modelSelect.style.display = '';
             modelSelect.innerHTML = '<option value="">Loading...</option>';
-            fetch('/api/ollama/models')
+            fetch(`/api/models/${backend}`)
                 .then(r => r.json())
                 .then(data => {
                     if (data.models && data.models.length > 0) {
                         modelSelect.innerHTML = data.models
                             .map(m => `<option value="${m}">${m}</option>`)
                             .join('');
-                        // Pre-select: DB selection first, then localStorage, then first model
-                        const savedModel = data.selected || localStorage.getItem('cfoperator_ollama_model') || '';
+                        // Pre-select: server selection first, then localStorage, then first model
+                        const storageKey = `cfoperator_${backend}_model`;
+                        const savedModel = data.selected || localStorage.getItem(storageKey) || '';
                         if (savedModel && data.models.includes(savedModel)) {
                             modelSelect.value = savedModel;
                         }
@@ -938,28 +987,23 @@ Type / for autocomplete.</div>
                     }
                 })
                 .catch(err => {
-                    console.error('Error fetching Ollama models:', err);
+                    console.error(`Error fetching ${backend} models:`, err);
                     modelSelect.innerHTML = '<option value="">Error loading models</option>';
                 });
         }
 
         function onBackendChange() {
             const backend = document.getElementById('llm-backend').value;
-            const modelSelect = document.getElementById('ollama-model');
             localStorage.setItem('cfoperator_backend', backend);
-            if (backend === 'ollama') {
-                modelSelect.style.display = '';
-                fetchOllamaModels();
-            } else {
-                modelSelect.style.display = 'none';
-            }
+            fetchModels(backend);
         }
 
         function onModelChange() {
-            const model = document.getElementById('ollama-model').value;
+            const backend = document.getElementById('llm-backend').value;
+            const model = document.getElementById('model-select').value;
             if (model) {
-                localStorage.setItem('cfoperator_ollama_model', model);
-                fetch('/api/ollama/models/select', {
+                localStorage.setItem(`cfoperator_${backend}_model`, model);
+                fetch(`/api/models/${backend}/select`, {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({model: model})
@@ -1001,18 +1045,24 @@ Type / for autocomplete.</div>
             }).catch(err => console.error('Error saving sweep interval:', err));
         }
 
+        function onFallbackToggle() {
+            const enabled = document.getElementById('fallback-toggle').checked;
+            fetch('/api/settings/fallback', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({allow_paid_escalation: enabled})
+            }).catch(err => console.error('Error saving fallback setting:', err));
+        }
+
         // Restore persisted backend and model on page load
         function restoreSettings() {
             const savedBackend = localStorage.getItem('cfoperator_backend');
             if (savedBackend) {
                 document.getElementById('llm-backend').value = savedBackend;
             }
-            // Always fetch models so the dropdown is ready; show if backend is ollama
+            // Fetch models for the selected backend
             const backend = document.getElementById('llm-backend').value;
-            if (backend === 'ollama') {
-                document.getElementById('ollama-model').style.display = '';
-                fetchOllamaModels();
-            }
+            fetchModels(backend);
             // Restore max iterations from server (DB), fallback to localStorage
             fetch('/api/settings/max_tool_iterations')
                 .then(r => r.json())
@@ -1030,6 +1080,13 @@ Type / for autocomplete.</div>
                 .then(data => {
                     document.getElementById('alert-interval').value = data.alert_check_interval;
                     document.getElementById('sweep-interval').value = Math.round(data.sweep_interval / 60);
+                })
+                .catch(() => {});
+            // Restore fallback toggle from server
+            fetch('/api/settings/fallback')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('fallback-toggle').checked = data.allow_paid_escalation;
                 })
                 .catch(() => {});
         }
@@ -1128,7 +1185,7 @@ Type / for autocomplete.</div>
 
         // Event listeners
         document.getElementById('llm-backend').addEventListener('change', onBackendChange);
-        document.getElementById('ollama-model').addEventListener('change', onModelChange);
+        document.getElementById('model-select').addEventListener('change', onModelChange);
         document.getElementById('max-iterations').addEventListener('change', onMaxIterationsChange);
         document.getElementById('alert-interval').addEventListener('change', onAlertIntervalChange);
         document.getElementById('sweep-interval').addEventListener('change', onSweepIntervalChange);

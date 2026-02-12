@@ -6,7 +6,7 @@ waitress>=3.0.0
 
 # LLM providers
 anthropic>=0.18.0
-google-generativeai>=0.3.0
+groq>=0.4.0
 openai>=1.12.0
 
 # Database
@@ -27,6 +27,9 @@ slack-sdk>=3.26.0
 # For embeddings (Ollama via OpenAI-compat API)
 # numpy for vector operations (used by embedding_service)
 numpy>=1.26.0
+
+# LangGraph (parallel sweep orchestration)
+langgraph>=0.2.0
 
 # MCP (Model Context Protocol) server
 mcp>=0.9.0
