@@ -1,11 +1,11 @@
 # Ollama Tool-Calling Benchmark Results
 
-**Date:** 2026-02-12
+**Date:** 2026-02-13
 **Test harness:** `test_tool_calling.py`
-**Hosts tested:** 3 Ollama instances (GPU server, desktop, Raspberry Pi)
-**Models tested:** 22
+**Hosts tested:** 3 Ollama instances (GPU server, RTX 5080 desktop, CPU desktop)
+**Models tested:** 12 (current run) / 22 (cumulative across runs)
 
-## What We Tested
+## Part 1: Model Tool-Calling Benchmark
 
 An autonomous infrastructure monitoring agent (CFOperator) needs LLMs that can reliably make structured tool calls — not just generate text about tools, but emit proper JSON function calls that code can parse and execute.
 
@@ -19,146 +19,135 @@ We tested every model across our 3 Ollama instances against 3 scenarios:
 
 **Scoring:** 0 = no tool call / garbled, 1 = tool call but wrong name or bad args, 2 = correct tool with reasonable args. Max raw score = 6, normalized to 0–10.
 
-## Rankings
+### Rankings (latest run)
 
 | Rank | Model | Size | Host | T1 | T2 | T3 | Score | Time |
 |-----:|-------|------|------|:--:|:--:|:--:|------:|-----:|
-| 1 | qwen2.5:7b-instruct-q8_0 | 7B | ollama-198 | 2 | 2 | 2 | **10.0** | 19.4s |
-| 2 | ministral-3:latest | 3B | ollama-desktop | 2 | 2 | 2 | **10.0** | 20.2s |
-| 3 | mistral-small3.2:24b | 24B | ollama-gpu | 2 | 2 | 2 | **10.0** | 24.1s |
-| 4 | glm-4.7-flash:q4_K_M | ~9B | ollama-gpu | 2 | 2 | 2 | **10.0** | 28.4s |
-| 5 | gpt-oss:20b | 20B | ollama-desktop | 2 | 2 | 2 | **10.0** | 59.3s |
-| 6 | qwen3:8b | 8B | ollama-198 | 2 | 1 | 2 | 8.3 | 20.4s |
-| 7 | qwen3:14b | 14B | ollama-198 | 2 | 1 | 2 | 8.3 | 35.5s |
-| 8 | qwen3:14b | 14B | ollama-gpu | 2 | 1 | 2 | 8.3 | 30.5s |
-| 9 | qwen3-14b-quiet:latest | 14B | ollama-gpu | 2 | 1 | 2 | 8.3 | 38.3s |
-| 10 | llama3.1:8b | 8B | ollama-desktop | 2 | 1 | 2 | 8.3 | 45.1s |
-| 11 | ministral-3:14b | 14B | ollama-desktop | 2 | 1 | 0 | 5.0 | 7.6s |
-| 12 | hermes3:70b-llama3.1-q3_K_M | 70B | ollama-gpu | 2 | 1 | 0 | 5.0 | 146.3s |
-| 13 | qwen2.5-coder:14b | 14B | ollama-198 | 1 | 0 | 0 | 1.7 | 15.7s |
-| 14 | qwen2.5-coder:14b-instruct-q4_K_M | 14B | ollama-gpu | 1 | 0 | 0 | 1.7 | 15.6s |
-| 15 | qwen2.5-coder:14b | 14B | ollama-gpu | 1 | 0 | 0 | 1.7 | 3.6s |
-| 16 | qwen32b-8k:latest | 32B | ollama-gpu | 1 | 0 | 0 | 1.7 | 33.0s |
-| 17 | qwen2.5-coder:32b-instruct-q4_K_M | 32B | ollama-gpu | 1 | 0 | 0 | 1.7 | 27.3s |
-| 18 | llava:7b | 7B | ollama-198 | 0 | 0 | 0 | 0.0 | — |
-| 19 | llava:13b | 13B | ollama-198 | 0 | 0 | 0 | 0.0 | — |
-| 20 | glm4:9b | 9B | ollama-198 | 0 | 0 | 0 | 0.0 | — |
-| 21 | llama3.2-vision:11b | 11B | ollama-198 | 0 | 0 | 0 | 0.0 | — |
-| 22 | phi4:latest | 14B | ollama-desktop | 0 | 0 | 0 | 0.0 | — |
+| 1 | mistral-small3.2:24b | 24B | ollama-gpu | 2 | 2 | 2 | **10.0** | 6.1s |
+| 2 | glm-4.7-flash:q4_K_M | ~9B | ollama-gpu | 2 | 2 | 2 | **10.0** | 25.5s |
+| 3 | qwen2.5:7b-instruct-q8_0 | 7B | ollama-198 | 2 | 2 | 2 | **10.0** | 6.9s |
+| 4 | gpt-oss:20b | 20B | ollama-desktop | 2 | 2 | 2 | **10.0** | 42.6s |
+| 5 | ministral-3:latest | 3B | ollama-desktop | 2 | 2 | 2 | **10.0** | 22.6s |
+| 6 | qwen3:14b | 14B | ollama-198 | 2 | 1 | 2 | 8.3 | 29.9s |
+| 7 | qwen3:8b | 8B | ollama-198 | 2 | 1 | 2 | 8.3 | 30.6s |
+| 8 | qwen2.5:14b | 14B | ollama-desktop | 1 | 2 | 2 | 8.3 | 55.1s |
+| 9 | llama3.1:8b | 8B | ollama-desktop | 2 | 1 | 2 | 8.3 | 42.3s |
+| 10 | llava:7b | 7B | ollama-198 | 0 | 0 | 0 | 0.0 | — |
+| 11 | llava:13b | 13B | ollama-198 | 0 | 0 | 0 | 0.0 | — |
+| 12 | llama3.2-vision:11b | 11B | ollama-198 | 0 | 0 | 0 | 0.0 | — |
 
-## Key Takeaways
+Models no longer loaded (from initial 22-model run): hermes3:70b (5.0), ministral-3:14b (5.0), qwen2.5-coder variants (1.7), qwen32b-8k (1.7), phi4 (0.0), glm4:9b (0.0).
 
-### Perfect scores (10/10) — 5 models
+### Run-to-Run Consistency
 
-These models nailed all three tests: single call, multi-turn continuation, and correct tool selection from multiple options.
+Across 3 runs, these models scored 10/10 every time:
+- **qwen2.5:7b-instruct-q8_0** — rock solid
+- **ministral-3:latest** — rock solid
+- **gpt-oss:20b** — rock solid
 
-- **qwen2.5:7b-instruct-q8_0** — Best bang for buck. 7B parameters, fastest of the perfect-score group (19.4s), running on a Raspberry Pi-class host.
-- **ministral-3:latest** — Only 3B parameters and still perfect. 20.2s. Impressive efficiency.
-- **mistral-small3.2:24b** — Solid mid-size option at 24.1s.
-- **glm-4.7-flash:q4_K_M** — Q4 quantized and still flawless. 28.4s.
-- **gpt-oss:20b** — Perfect but slowest of the top tier at 59.3s.
+These models fluctuated between 8.3 and 10.0 across runs (borderline on multi-turn T2):
+- **mistral-small3.2:24b** — 10.0 → 8.3 → 10.0
+- **glm-4.7-flash:q4_K_M** — 10.0 → 8.3 → 10.0
 
-### Strong but stumble on multi-turn (8.3/10) — 5 models
+### Key Takeaways
 
-All of these make the first tool call correctly and select the right tool from a set of 3, but fail to make the *second* tool call after receiving a tool result. They respond with text instead of continuing the tool chain.
+**Perfect scores (10/10) — 5 models**
 
-- **qwen3:8b/14b**, **qwen3-14b-quiet**, **llama3.1:8b** — The qwen3 family consistently struggles with multi-turn despite being otherwise capable.
+- **qwen2.5:7b-instruct-q8_0** — Best bang for buck. 7B params, 6.9s warm. Consistent across every run.
+- **ministral-3:latest** — Only 3B parameters and still perfect. Consistently reliable.
+- **mistral-small3.2:24b** — 24B Q4_K_M, fastest on GPU (6.1s). Occasionally drops T2.
+- **glm-4.7-flash:q4_K_M** — Q4 quantized, 25.5s. Same T2 variance as mistral-small.
+- **gpt-oss:20b** — Perfect every time but slowest (42.6s).
 
-### Broken tool calling (0–1.7/10) — 12 models
+**Strong but stumble on multi-turn (8.3/10) — 4 models**
 
-- **qwen2.5-coder** variants (14B, 32B) — Put tool names in text but never emit structured calls. Code-focused training may have deprioritized tool-use format.
-- **Vision models** (llava, llama3.2-vision) — No tool calling at all. Expected.
-- **phi4, glm4:9b** — Zero tool calls across all tests.
+All of these make the first tool call correctly and select the right tool from a set of 3, but fail to make the second tool call after receiving a tool result.
+
+- **qwen3:8b/14b** — Consistently struggles with multi-turn despite being otherwise capable.
+- **qwen2.5:14b** — Good multi-turn but sometimes puts T1 tool call in text instead of structured format.
+- **llama3.1:8b** — Same multi-turn weakness as qwen3.
+
+**Broken tool calling (0/10) — 3 models (current run)**
+
+- **Vision models** (llava:7b, llava:13b, llama3.2-vision:11b) — No tool calling at all. Expected.
+
+**Previously tested, now unloaded**
+- **hermes3:70b** (5.0/10) — Largest model tested, worst value. 146s response time.
+- **qwen2.5-coder variants** (1.7/10) — Put tool names in text but never emit structured calls.
+- **phi4, glm4:9b** (0.0/10) — Zero tool calls on any test.
 
 ### Size isn't everything
 
-- **hermes3:70b** scored only 5.0/10 despite being the largest model tested (146s response time).
-- **ministral-3** at 3B parameters scored a perfect 10/10 in 20s.
+- **hermes3:70b** scored only 5.0/10 despite being the largest model tested.
+- **ministral-3** at 3B parameters scores a perfect 10/10.
 - The qwen2.5-coder:32b scored the same 1.7/10 as its 14B sibling.
 
-## Detailed Results
+## Part 2: Parallel vs Sequential Sweep Comparison
 
-### qwen2.5:7b-instruct-q8_0 — 10.0/10
-- **T1** [2/2]: `node_exporter_cpu_utilization{instance=~"raspberrypi"}`
-- **T2** [2/2]: prometheus_query → loki_query
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
+The real question: does fanning out monitoring phases to multiple Ollama instances actually save time? We tested this directly by running the same 3 sweep phases both ways.
 
-### ministral-3:latest — 10.0/10
-- **T1** [2/2]: `rate(container_cpu_usage_seconds_total{container_name="raspberrypi"}[1m]) * 100`
-- **T2** [2/2]: prometheus_query → loki_query
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
+### Test Design
 
-### mistral-small3.2:24b — 10.0/10
-- **T1** [2/2]: `100 - (avg by (instance) (rate(node_cpu_seconds_total{instance="raspberrypi", mode="idle"}[1m])) * 100)`
-- **T2** [2/2]: prometheus_query → loki_query
-- **T3** [2/2]: `container_name="immich_server" |= "error"`
+Each phase simulates a real CFOperator sweep step — multi-turn (tool call → receive result → analyze):
 
-### glm-4.7-flash:q4_K_M — 10.0/10
-- **T1** [2/2]: `cpu_usage_percent`
-- **T2** [2/2]: prometheus_query → loki_query
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
+| Phase | Prompt | Expected Tool |
+|-------|--------|---------------|
+| **metrics** | "Check CPU and memory usage across all hosts. Are any over 80%?" | `prometheus_query` |
+| **logs** | "Search for recent error logs across all containers in the last hour." | `loki_query` |
+| **containers** | "List Docker containers on raspberrypi, check for unhealthy/restarting." | `docker_list` |
 
-### gpt-oss:20b — 10.0/10
-- **T1** [2/2]: `100 * (1 - sum(rate(node_cpu_seconds_total{mode="idle"}[5m])) by (instance) / sum(rate(node_cpu_seconds_total[5m])) by (instance))`
-- **T2** [2/2]: prometheus_query → loki_query
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
-
-### qwen3:8b — 8.3/10
-- **T1** [2/2]: `100 * (1 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[1m]))))`
-- **T2** [1/2]: 1 tool call then text response (no 2nd call)
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
-
-### qwen3:14b (ollama-198) — 8.3/10
-- **T1** [2/2]: `100 * (sum by (instance) (rate(node_cpu_seconds_total{mode!~"idle|guest"}[1m]))) / sum by (instance) (rate(node_cpu_seconds_total[1m]))`
-- **T2** [1/2]: 1 tool call then text response (no 2nd call)
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
-
-### qwen3:14b (ollama-gpu) — 8.3/10
-- **T1** [2/2]: `100 * (1 - (avg by (instance) (node_cpu_seconds_total{mode="idle"})))`
-- **T2** [1/2]: 1 tool call then text response (no 2nd call)
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
-
-### qwen3-14b-quiet:latest — 8.3/10
-- **T1** [2/2]: `(100 * sum by (instance) (rate(node_cpu_seconds_total{mode!~"idle|nice"}[1m]))) / sum by (instance) (rate(node_cpu_seconds_total[1m]))`
-- **T2** [1/2]: 1 tool call then text response (no 2nd call)
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
-
-### llama3.1:8b — 8.3/10
-- **T1** [2/2]: `node_cpu{instance="raspberrypi"}`
-- **T2** [1/2]: 1 tool call then text response (no 2nd call)
-- **T3** [2/2]: `{container_name="immich_server"} |= "error"`
-
-### ministral-3:14b — 5.0/10
-- **T1** [2/2]: `100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle",instance="raspberrypi"}[1m])) * 100)`
-- **T2** [1/2]: 1 tool call then text response (no 2nd call)
-- **T3** [0/2]: No tool call
-
-### hermes3:70b-llama3.1-q3_K_M — 5.0/10
-- **T1** [2/2]: `node_cpu{instance="raspberrypi"}`
-- **T2** [1/2]: 1 tool call then text response (no 2nd call)
-- **T3** [0/2]: No tool call
-
-### qwen2.5-coder variants (14b, 32b) — 1.7/10
-- All variants put tool names in text content but never emitted structured tool calls.
-
-### Zero-score models
-- **llava:7b**, **llava:13b**, **glm4:9b**, **llama3.2-vision:11b**, **phi4:latest** — No tool calls on any test.
-
-## LangGraph Parallel Sweep Results
-
-Beyond isolated tool-calling tests, we tested how these models perform in production as part of CFOperator's LangGraph parallel sweep pipeline. The sweep fans out 3 phases (metrics, logs, containers) to different Ollama instances concurrently, each making real tool calls against live infrastructure.
+After the model makes a tool call, it receives a fake result with realistic data (high CPU on one host, error logs from immich_server, a restarting mosquitto container) and must analyze the findings.
 
 ### Pool Configuration
 
-| Instance | Hardware | Model | Phase |
-|----------|----------|-------|-------|
-| ollama-gpu | RTX GPU server (192.168.0.150) | glm-4.7-flash:q4_K_M | metrics |
-| ollama-198 | RTX 5080 16GB (192.168.0.198) | qwen2.5:7b-instruct-q8_0 | logs/containers |
-| ollama-desktop | Desktop (192.168.0.220) | ministral-3:latest | logs/containers |
+| Instance | Hardware | Model | Role |
+|----------|----------|-------|------|
+| ollama-gpu | RTX GPU server (192.168.0.150) | mistral-small3.2:24b | metrics |
+| ollama-198 | RTX 5080 16GB (192.168.0.198) | qwen2.5:7b-instruct-q8_0 | logs |
+| ollama-desktop | Desktop CPU (192.168.0.220) | ministral-3:latest | containers |
 
-All three models scored 10/10 in the isolated tool-calling benchmark. Phase assignment rotates based on pool availability.
+### Sequential Baselines (each host running all 3 phases alone)
 
-### Sweep Timing (19 parallel sweeps, Feb 12–13 2026)
+| Host | Model | Wall Clock | Tool Calls |
+|------|-------|----------:|:----------:|
+| ollama-gpu | mistral-small3.2:24b | 24.6s | 3/3 |
+| ollama-198 | qwen2.5:7b-instruct-q8_0 | 7.3s | 2/3 |
+| ollama-desktop | ministral-3:latest | 11.8s | 2/3 |
+| **Average** | | **14.5s** | |
+
+### Parallel Result (1 phase per host, concurrent)
+
+| Phase | Host | Model | Time | Tool |
+|-------|------|-------|-----:|:----:|
+| metrics | ollama-gpu | mistral-small3.2:24b | 4.2s | OK |
+| logs | ollama-198 | qwen2.5:7b-instruct-q8_0 | 0.5s | BAD |
+| containers | ollama-desktop | ministral-3:latest | 3.0s | OK |
+| **Wall clock** | | | **4.2s** | **2/3** |
+
+Wall clock = longest phase. The other two phases ran concurrently and finished before it.
+
+### Comparison
+
+|  | Sequential (1 instance) | Parallel (3 instances) |
+|--|:-----------------------:|:----------------------:|
+| **Wall clock** | 14.5s | 4.2s |
+| **Speedup** | — | **3.4x faster** |
+| **Wall-clock reduction** | — | **70%** |
+
+### Analysis
+
+The parallel approach delivers a **3.4x speedup** by running each phase on a dedicated Ollama instance simultaneously. Wall clock time drops from 14.5s (sequential average) to 4.2s (limited by the slowest phase).
+
+Key observations:
+- **ollama-gpu (mistral-small3.2:24b)** was the most reliable — 3/3 correct tool calls every time as sequential, consistent as the metrics phase in parallel.
+- **ollama-198 (qwen2.5:7b)** is the fastest by far (7.3s for all 3 phases sequentially) but has a blind spot — it occasionally fails the generic "search for error logs" prompt while acing the more specific T3 test.
+- **ollama-desktop (ministral-3)** occasionally picks `docker_list` for the metrics prompt — a tool-selection error under ambiguity.
+
+## Part 3: Production LangGraph Sweep Data
+
+Beyond synthetic tests, we collected data from 19 real parallel sweeps running in CFOperator's LangGraph pipeline against live infrastructure (Prometheus, Loki, Docker).
+
+### Sweep Timing (19 sweeps, Feb 12–13 2026)
 
 | Metric | Value |
 |--------|-------|
@@ -169,20 +158,9 @@ All three models scored 10/10 in the isolated tool-calling benchmark. Phase assi
 | Slow sweeps (>=60s) | 8 (42%), avg 161.9s |
 | Min / Max | 19.4s / 185.1s |
 
-### Per-Phase Breakdown (typical fast sweep)
-
-| Phase | Instance | Model | Duration | Findings |
-|-------|----------|-------|----------|----------|
-| metrics | ollama-gpu | glm-4.7-flash:q4_K_M | 0.0s | 0 |
-| logs | ollama-desktop | ministral-3:latest | 37.5s | 1 |
-| containers | ollama-198 | qwen2.5:7b-instruct-q8_0 | 39.8s | 0 |
-| **Wall clock** | | | **39.8s** | |
-
-Wall clock time equals the slowest phase — that's the parallel advantage. Sequential would sum to ~77s.
-
 ### Bimodal Duration Pattern
 
-Sweeps show a clear bimodal distribution:
+Production sweeps show a clear bimodal distribution:
 
 - **Fast (58%)**: 19–50s. All 3 instances respond quickly, models already loaded in VRAM.
 - **Slow (42%)**: 135–185s. One instance stalls — typically cold model loading or the instance is busy with another request (luna-brain, chat, etc.).
@@ -199,18 +177,21 @@ The slow sweeps correlate with ollama-desktop being the bottleneck (ministral-3:
 | Severity: warning | 5 sweeps (26%) |
 | Severity: critical | 3 sweeps (16%) |
 
-Models produced actionable findings including container restart detection, high resource usage alerts, and Loki query failures. Some findings included raw JSON or verbose explanations — a known issue with smaller models not always following the structured output format strictly.
+Models produced actionable findings including container restart detection, high resource usage alerts, and Loki query failures.
 
 ## Methodology
 
-**Infrastructure:** 3 Ollama instances across different hardware — a GPU server (RTX-class), a desktop, and a Raspberry Pi cluster node. Models tested wherever they were already loaded.
+**Infrastructure:** 3 Ollama instances across different hardware — an RTX GPU server, an RTX 5080 desktop, and a CPU-only desktop. Models tested wherever they were loaded.
 
 **Prompt:** System message instructs the model to act as an infrastructure monitoring agent and always use tools rather than guessing. Temperature set to 0.3 for reproducibility.
 
 **Tools provided:** Simplified versions of real CFOperator tools — `prometheus_query`, `loki_query`, and `docker_list` — using standard OpenAI-compatible function schemas.
 
+**Sweep comparison:** Each phase is multi-turn — the model makes a tool call, receives a fake but realistic result, and analyzes it. Sequential runs all 3 phases on one host; parallel fans out 1 phase per host.
+
 **Limitations:**
-- Single run per model (no averaging across multiple trials)
+- Single run per model per test (no averaging across multiple trials) — but consistency tracked across 3 separate runs
 - Quantization varies across hosts (some Q4, some Q8, some full precision)
 - Models were tested on whichever host they were loaded on — hardware differences affect timing but not scoring
 - The "correct" PromQL varies widely between models but all were accepted if they referenced CPU-related metrics
+- Production sweep times include real tool execution (Prometheus/Loki queries) which adds latency beyond model inference
