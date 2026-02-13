@@ -106,7 +106,7 @@ API_PAYLOAD=$(jq -n \
         dashboard: ($dashboard | .id = null),
         folderUid: (if $folderUid != "" then $folderUid else null end),
         overwrite: true,
-        message: "CFOperator v1.0.8 - Ollama Pool + parallel sweep monitoring"
+        message: "CFOperator v1.0.8 - Correlation analysis, notifications, embedding metrics"
     }')
 
 # Create/update dashboard

@@ -751,15 +751,35 @@ When done, provide a summary of findings and whether the issue is resolved, need
                     svc_a = p.get('service_a', '')
                     svc_b = p.get('service_b', '')
                     if svc_a and svc_b:
-                        ctype = 'cascade_failure' if p.get('avg_time_delta', 0) > 30 else 'co_failure'
+                        ctype = p.get('correlation_type', 'co_failure')
                         self.kb._kb.record_service_correlation(
                             service_a=svc_a,
                             service_b=svc_b,
                             correlation_type=ctype,
-                            time_delta_seconds=p.get('avg_time_delta'),
+                            time_delta_seconds=p.get('avg_time_delta_seconds'),
                             details={'co_failure_count': p.get('co_failure_count', 0)}
                         )
                 logger.info(f"Correlation analysis: {len(patterns)} service failure patterns found")
+
+            # Persist event correlations (investigation<->drift, investigation<->investigation)
+            correlated = self.kb._kb.find_correlated_events(window_seconds=300, hours=24)
+            persisted = 0
+            for ce in correlated:
+                try:
+                    self.kb._kb.record_event_correlation(
+                        event_a_type=ce['event_a']['type'],
+                        event_a_id=ce['event_a']['id'],
+                        event_b_type=ce['event_b']['type'],
+                        event_b_id=ce['event_b']['id'],
+                        time_delta_seconds=ce['time_delta_seconds'],
+                        root_cause_candidate='event_a' if ce['time_delta_seconds'] > 0 else 'event_b',
+                        analysis_notes=f"{ce['event_a'].get('trigger', '')} <-> {ce['event_b'].get('trigger', ce['event_b'].get('drift_type', ''))}"
+                    )
+                    persisted += 1
+                except Exception:
+                    pass
+            if persisted:
+                logger.info(f"Correlation analysis: persisted {persisted} event correlations")
 
             # LLM analysis of operational data + correlations
             self._analyze_correlations(findings, patterns or [])

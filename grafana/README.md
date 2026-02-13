@@ -34,6 +34,44 @@ Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure inte
 - **CPU Usage by Host** - CPU % for each host in your fleet
 - **Memory Usage by Host** - Memory % for all hosts
 
+### Sweep Findings & Recommendations
+- **Open Findings** - Active unresolved sweep findings
+- **Latest Sweep Severity** - Most recent sweep severity level
+- **Sweeps (24h)** - Total sweeps in last 24 hours
+- **Last Sweep** - Timestamp of most recent sweep
+- **Sweep Findings Table** - Detailed table of all sweep findings with severity, remediation
+- **Findings Over Time** - Trend of findings by severity (critical/warning/info)
+
+### Ollama Pool & Parallel Sweeps
+- **Pool Instance Health** - Status of each Ollama pool instance
+- **Pool Checkouts** - Total checkout count across all instances
+- **Instances In Use** - Currently active instances
+- **Sweep Duration** - Parallel vs sequential sweep timing (p50/p95)
+- **Per-Phase Duration** - Metrics, Logs, Containers sweep phase timing by instance
+- **Checkout/Checkin Rate** - Pool operation rate per instance
+- **Pool Logs** - Filtered logs for pool and parallel sweep activity
+
+### Embedding & Log Metrics
+- **Embedding Request Rate** - Rate of embedding generation requests (success/error)
+- **Embedding Cache Hit Rate** - Ratio of cache hits to total embedding lookups
+- **Log Messages by Level** - Log message rate broken down by ERROR/WARN/INFO
+
+### Correlation Analysis
+- **Service Correlations** - Total learned service failure correlations
+- **Event Correlations (24h)** - Correlated events detected in last 24 hours
+- **Max Correlation Strength** - Highest correlation strength score (0-1)
+- **Metric Snapshots (24h)** - Infrastructure metric snapshots captured
+- **Service Failure Patterns** - Table of services that fail together, ordered by frequency
+- **Event Correlations Over Time** - Hourly trend of detected correlations
+- **Recent Event Correlations** - Table with correlation strength and root cause candidates
+
+### Notification History
+- **Notifications Sent (24h)** - Count of notifications sent in last 24 hours
+- **Notification Success Rate** - Delivery success percentage
+- **Unread Notifications** - Notifications not yet marked as read
+- **Notifications Over Time** - Stacked bar chart by severity (critical/warning/info)
+- **Recent Notifications** - Table of recent notifications with delivery status
+
 ### Log Panels (Comprehensive Coverage)
 
 #### 1. CFOperator Logs (Live)
@@ -135,7 +173,7 @@ curl -X POST http://<grafana-host>:3000/api/dashboards/db \
 
 ## Required Data Sources
 
-This dashboard requires two data sources configured in Grafana:
+This dashboard requires three data sources configured in Grafana:
 
 ### 1. Prometheus
 - **Name**: `prometheus` (lowercase, no spaces)
@@ -146,6 +184,12 @@ This dashboard requires two data sources configured in Grafana:
 - **Name**: `loki` (lowercase, no spaces)
 - **URL**: `http://<loki-host>:3100`
 - **Access**: Server (default)
+
+### 3. PostgreSQL
+- **UID**: `ffcrf4dsqchz4e` (or configure via `SRE_PG_DATASOURCE_UID` env var in upload script)
+- **Host**: `<postgres-host>:5434`
+- **Database**: `sre_knowledge`
+- **Used by**: Sweep Findings, Correlation Analysis, Notification History panels
 
 ## Metrics Reference
 
@@ -167,7 +211,33 @@ INVESTIGATIONS = Counter('cfoperator_investigations_total', 'Total investigation
 
 # Log metrics
 LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'component'])
+
+# Embedding metrics
+EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding requests', ['result'])
+EMBEDDING_CACHE_HITS = Counter('cfoperator_embedding_cache_hits_total', 'Embedding cache hits', ['result'])
+
+# Ollama Pool metrics
+POOL_INSTANCES = Gauge('cfoperator_pool_instances', 'Pool instance status', ['instance', 'status'])
+POOL_CHECKOUTS = Counter('cfoperator_pool_checkouts_total', 'Pool checkouts', ['instance', 'result'])
+POOL_CHECKINS = Counter('cfoperator_pool_checkins_total', 'Pool checkins', ['instance'])
+POOL_HEALTH_CHECKS = Counter('cfoperator_pool_health_checks_total', 'Pool health checks', ['instance', 'result'])
+
+# Sweep duration metrics
+SWEEP_DURATION = Histogram('cfoperator_sweep_duration_seconds', 'Sweep duration', ['mode'])
+SWEEP_PHASE_DURATION = Histogram('cfoperator_sweep_phase_duration_seconds', 'Phase duration', ['phase', 'instance'])
 ```
+
+### PostgreSQL Tables Used by Dashboard
+
+The Correlation Analysis and Notification History panels query these tables directly:
+
+- `service_correlations` — Learned service failure patterns (which services fail together)
+- `event_correlations` — Correlated events with strength scores and root cause candidates
+- `metric_snapshots` — Infrastructure metric snapshots captured during investigations
+- `notification_history` — Notification delivery audit trail
+- `sweep_reports` — Sweep findings and recommendations
+- `investigations` — Investigation outcomes and tool calls
+- `investigation_learnings` — Extracted learnings by type
 
 ## Dashboard Sections Explained
 

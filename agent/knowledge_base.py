@@ -3602,7 +3602,7 @@ class KnowledgeBase:
             # Get service-related drift events
             drift_events = session.query(DriftEvent).filter(
                 DriftEvent.detected_at >= cutoff,
-                DriftEvent.drift_type.in_(['container_stopped', 'state_change', 'service_unhealthy'])
+                DriftEvent.drift_type.in_(['container_stopped', 'state_change', 'service_unhealthy', 'container_change'])
             ).order_by(DriftEvent.detected_at).all()
 
             # Extract service names from drift events
@@ -3687,6 +3687,50 @@ class KnowledgeBase:
                 session.add(correlation)
                 session.flush()
                 return correlation.id
+
+    def record_event_correlation(
+        self,
+        event_a_type: str,
+        event_a_id: int,
+        event_b_type: str,
+        event_b_id: int,
+        time_delta_seconds: float,
+        correlation_window: int = 300,
+        correlation_strength: Optional[float] = None,
+        root_cause_candidate: Optional[str] = None,
+        analysis_notes: Optional[str] = None
+    ) -> Optional[int]:
+        """Persist an event correlation to the database."""
+        with self.session_scope() as session:
+            # Avoid duplicate: same event pair already recorded
+            existing = session.query(EventCorrelation).filter(
+                EventCorrelation.event_a_type == event_a_type,
+                EventCorrelation.event_a_id == event_a_id,
+                EventCorrelation.event_b_type == event_b_type,
+                EventCorrelation.event_b_id == event_b_id
+            ).first()
+            if existing:
+                return existing.id
+
+            # Compute strength from time delta if not provided
+            if correlation_strength is None:
+                # Closer in time = stronger correlation (linear decay within window)
+                correlation_strength = max(0.0, 1.0 - (abs(time_delta_seconds) / correlation_window))
+
+            ec = EventCorrelation(
+                correlation_window_seconds=correlation_window,
+                event_a_type=event_a_type,
+                event_a_id=event_a_id,
+                event_b_type=event_b_type,
+                event_b_id=event_b_id,
+                time_delta_seconds=time_delta_seconds,
+                correlation_strength=round(correlation_strength, 3),
+                root_cause_candidate=root_cause_candidate or 'unknown',
+                analysis_notes=analysis_notes
+            )
+            session.add(ec)
+            session.flush()
+            return ec.id
 
     def get_service_correlations(self, min_count: int = 2) -> List[Dict[str, Any]]:
         """Get all learned service correlations above a threshold."""
