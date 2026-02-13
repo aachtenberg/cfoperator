@@ -1097,6 +1097,10 @@ Type / for autocomplete.</div>
             {cmd: '/investigate-container', args: '[name]', desc: 'Systematic container investigation'},
             {cmd: '/why-restart', args: '[container]', desc: 'Analyze why a container restarted'},
             {cmd: '/compare-hosts', args: '', desc: 'Compare metrics across fleet'},
+            {cmd: '/sweeps', args: '', desc: 'List recent sweep reports'},
+            {cmd: '/stats', args: '[hours]', desc: 'Operational summary — sweeps, findings, investigations'},
+            {cmd: '/investigations', args: '', desc: 'List recent investigations'},
+            {cmd: '/correlations', args: '', desc: 'Service failure patterns & correlated events'},
         ];
 
         let slashMenuIndex = -1;
@@ -1214,6 +1218,19 @@ Type / for autocomplete.</div>
         document.getElementById('message-input').addEventListener('blur', () => {
             // Small delay so mousedown on menu item fires first
             setTimeout(() => document.getElementById('slash-menu').classList.remove('active'), 150);
+        });
+
+        // Global "/" shortcut — focus input and start slash command menu
+        document.addEventListener('keydown', (e) => {
+            const input = document.getElementById('message-input');
+            if (document.activeElement === input) return;
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+            if (e.key === '/') {
+                e.preventDefault();
+                input.value = '/';
+                input.focus();
+                updateSlashMenu();
+            }
         });
 
         // Sweep Reports

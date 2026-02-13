@@ -742,6 +742,202 @@ When done, provide a summary of findings and whether the issue is resolved, need
         else:
             logger.info("Sweep complete - no findings")
 
+        # 8. Correlation analysis — detect patterns AND have LLM analyze them
+        logger.info("Starting correlation analysis...")
+        try:
+            patterns = self.kb._kb.find_service_failure_patterns(days=7)
+            if patterns:
+                for p in patterns:
+                    svc_a = p.get('service_a', '')
+                    svc_b = p.get('service_b', '')
+                    if svc_a and svc_b:
+                        ctype = 'cascade_failure' if p.get('avg_time_delta', 0) > 30 else 'co_failure'
+                        self.kb._kb.record_service_correlation(
+                            service_a=svc_a,
+                            service_b=svc_b,
+                            correlation_type=ctype,
+                            time_delta_seconds=p.get('avg_time_delta'),
+                            details={'co_failure_count': p.get('co_failure_count', 0)}
+                        )
+                logger.info(f"Correlation analysis: {len(patterns)} service failure patterns found")
+
+            # LLM analysis of operational data + correlations
+            self._analyze_correlations(findings, patterns or [])
+        except Exception as e:
+            logger.warning(f"Correlation analysis failed: {e}", exc_info=True)
+
+    def _analyze_correlations(self, sweep_findings: list, failure_patterns: list):
+        """Have the LLM analyze operational data and correlations to produce insights."""
+        import requests as req
+
+        # Gather operational context
+        try:
+            ops = self.kb.get_operational_summary(hours=24)
+        except Exception:
+            ops = {}
+
+        correlated_events = []
+        learned_correlations = []
+        try:
+            correlated_events = self.kb._kb.find_correlated_events(hours=24)[:10]
+            learned_correlations = self.kb._kb.get_service_correlations(min_count=2)
+        except Exception:
+            pass
+
+        # Skip if there's nothing interesting to analyze
+        has_data = (
+            sweep_findings
+            or failure_patterns
+            or correlated_events
+            or ops.get('investigations', {}).get('total', 0) > 0
+        )
+        if not has_data:
+            logger.info("Correlation analysis: no data to analyze, skipping")
+            return
+
+        resolved = self._resolve_provider()
+        if not resolved:
+            logger.info("Correlation analysis: no LLM provider available, skipping")
+            return
+
+        provider_type, url, model = resolved
+        logger.info(f"Correlation analysis: sending to {provider_type}/{model} (findings={len(sweep_findings)}, patterns={len(failure_patterns)}, correlated={len(correlated_events)})")
+
+        prompt = f"""Analyze this operational data from the last 24 hours and identify patterns, root causes, or concerns.
+
+SWEEP FINDINGS (this cycle):
+{json.dumps(sweep_findings[:10], default=str)[:1500]}
+
+OPERATIONAL SUMMARY:
+- Sweeps: {ops.get('sweeps', {}).get('total', 0)} total, avg {ops.get('sweeps', {}).get('avg_findings', 0)} findings/sweep
+- Severity breakdown: {json.dumps(ops.get('sweeps', {}).get('by_severity', {}))}
+- Investigations: {ops.get('investigations', {}).get('total', 0)} total, outcomes: {json.dumps(ops.get('investigations', {}).get('by_outcome', {}))}
+- Learnings extracted: {ops.get('learnings', {}).get('total', 0)}
+
+SERVICE FAILURE PATTERNS (7-day window):
+{json.dumps(failure_patterns[:5], default=str)[:800]}
+
+CORRELATED EVENTS (same time window):
+{json.dumps(correlated_events[:5], default=str)[:800]}
+
+KNOWN SERVICE CORRELATIONS:
+{json.dumps(learned_correlations[:5], default=str)[:500]}
+
+Return ONLY valid JSON:
+{{"insights": [
+  {{
+    "learning_type": "pattern|root_cause|insight",
+    "title": "Brief title (max 100 chars)",
+    "description": "What pattern was detected and what it means",
+    "services": ["service1"],
+    "category": "resource|network|config|dependency"
+  }}
+]}}
+
+Focus on:
+- Services that fail together (dependency chains)
+- Recurring issues across multiple sweeps
+- Escalation patterns (info → warning → critical over time)
+- Issues that investigations failed to resolve
+Return empty array if nothing notable: {{"insights": []}}"""
+
+        messages = [
+            {'role': 'system', 'content': 'You are an SRE analyst. Analyze operational data for patterns. Return ONLY valid JSON.'},
+            {'role': 'user', 'content': prompt}
+        ]
+
+        try:
+            if provider_type == 'ollama':
+                payload = {
+                    'model': model,
+                    'messages': messages,
+                    'stream': False,
+                    'temperature': 0.3,
+                    'format': 'json'
+                }
+                resp = req.post(f"{url}/api/chat", json=payload, timeout=90)
+                text = resp.json().get('message', {}).get('content', '')
+            elif provider_type == 'groq':
+                api_key = os.getenv('GROQ_API_KEY', '')
+                if not api_key:
+                    return
+                payload = {
+                    'model': model,
+                    'messages': messages,
+                    'temperature': 0.3,
+                    'max_tokens': 2048,
+                    'response_format': {'type': 'json_object'}
+                }
+                resp = req.post(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    json=payload,
+                    headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'},
+                    timeout=60
+                )
+                text = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+            elif provider_type == 'anthropic':
+                api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                if not api_key:
+                    return
+                payload = {
+                    'model': model,
+                    'max_tokens': 2048,
+                    'system': 'You are an SRE analyst. Analyze operational data for patterns. Return ONLY valid JSON.',
+                    'messages': [{'role': 'user', 'content': prompt}],
+                    'temperature': 0.3
+                }
+                resp = req.post(
+                    'https://api.anthropic.com/v1/messages',
+                    json=payload,
+                    headers={'Content-Type': 'application/json', 'x-api-key': api_key, 'anthropic-version': '2023-06-01'},
+                    timeout=60
+                )
+                text = '\n'.join(
+                    b.get('text', '') for b in resp.json().get('content', [])
+                    if b.get('type') == 'text'
+                )
+            else:
+                return
+
+            result = json.loads(text)
+            insights = result.get('insights', [])
+
+            stored = 0
+            for insight in insights[:3]:
+                if not insight.get('title') or not insight.get('description'):
+                    continue
+                insight.setdefault('learning_type', 'insight')
+                insight.setdefault('tags', ['correlation', 'automated'])
+                try:
+                    lid = self.kb.store_learning(insight)
+                    stored += 1
+                    if lid and lid > 0:
+                        search_text = ' '.join(filter(None, [
+                            insight.get('title', ''),
+                            insight.get('description', ''),
+                        ]))
+                        self._embed_learning(lid, search_text)
+                except Exception as e:
+                    logger.warning(f"Failed to store correlation insight: {e}")
+
+            if stored:
+                logger.info(f"Correlation analysis: {stored} insights stored as learnings")
+                # Notify about correlation insights
+                titles = [i.get('title', '') for i in insights[:3] if i.get('title')]
+                summary = f"[Correlation] {stored} insight(s): " + "; ".join(titles)
+                for notif in self.notifications:
+                    try:
+                        notif.send(summary, severity='info')
+                    except Exception as e:
+                        logger.warning(f"Correlation notification failed: {e}")
+            else:
+                logger.info(f"Correlation analysis: LLM returned {len(insights)} insights (0 stored)")
+
+        except json.JSONDecodeError as e:
+            logger.warning(f"Correlation analysis LLM response not valid JSON: {e}")
+        except Exception as e:
+            logger.warning(f"Correlation analysis LLM call failed: {e}")
+
     def _get_infra_summary(self) -> str:
         """Build a concise summary of the infrastructure from config for LLM context."""
         hosts = self.config.get('infrastructure', {}).get('hosts', {})
@@ -1445,6 +1641,31 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             pass
         return self.config.get('ooda', {}).get('sweep_interval', 1800)
 
+    # Slash shortcut expansions — map short commands to natural language prompts
+    _SLASH_SHORTCUTS = {
+        '/sweeps': 'Show me the recent sweep reports with findings summaries.',
+        '/stats': 'Give me the operational summary for the last {0} hours.',
+        '/investigations': 'List recent investigations with their triggers and outcomes.',
+        '/correlations': 'Show me correlated events and service failure patterns.',
+    }
+
+    def _expand_slash_shortcut(self, message: str) -> str:
+        """Expand slash shortcuts into natural language prompts.
+        Returns the original message if not a shortcut."""
+        if not message.startswith('/'):
+            return message
+        parts = message.split(maxsplit=1)
+        cmd = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ''
+        template = self._SLASH_SHORTCUTS.get(cmd)
+        if template:
+            if '{0}' in template and args:
+                return template.format(args)
+            elif '{0}' in template:
+                return template.format('24')
+            return template
+        return message
+
     def _get_max_tool_iterations(self) -> int:
         """Get max tool iterations: DB setting → config.yaml → default 10."""
         try:
@@ -2089,6 +2310,9 @@ Be concise and infrastructure-focused.
         except Exception:
             pass  # Don't break chat if KB is down
 
+        # Expand shortcut slash commands into natural language prompts
+        message = self._expand_slash_shortcut(message)
+
         # Check for skill/command invocation
         if message.startswith('/'):
             return self._execute_skill(message, backend=backend, model=model)
@@ -2202,6 +2426,10 @@ Be concise and infrastructure-focused.
 
         def run_chat():
             try:
+                # Expand shortcut slash commands
+                nonlocal message
+                message = self._expand_slash_shortcut(message)
+
                 # Check for skill/command invocation
                 if message.startswith('/'):
                     result = self._execute_skill_stream(message, backend=backend, model=model, event_callback=event_callback)

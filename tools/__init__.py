@@ -293,6 +293,79 @@ class ToolRegistry:
             }
         }
 
+        # Operational data tools — let LLM query sweep stats, investigations, correlations
+        self.tools['get_operational_summary'] = {
+            'function': self._get_operational_summary,
+            'schema': {
+                'name': 'get_operational_summary',
+                'description': 'Get aggregate statistics about CFOperator activity — sweep counts, finding averages, investigation outcomes, and learnings. Use this when asked about operational metrics, sweep history, how many sweeps or findings, or any "how many" questions about agent activity.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'hours': {
+                            'type': 'integer',
+                            'description': 'How many hours back to look (default 24)'
+                        }
+                    },
+                    'required': []
+                }
+            }
+        }
+
+        self.tools['list_sweep_reports'] = {
+            'function': self._list_sweep_reports,
+            'schema': {
+                'name': 'list_sweep_reports',
+                'description': 'List recent sweep reports with findings summaries. Use this to browse sweeps, see what was found, and get report IDs for deeper investigation with get_sweep_report.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'limit': {
+                            'type': 'integer',
+                            'description': 'Number of reports to return (default 10)'
+                        }
+                    },
+                    'required': []
+                }
+            }
+        }
+
+        self.tools['list_investigations'] = {
+            'function': self._list_investigations,
+            'schema': {
+                'name': 'list_investigations',
+                'description': 'List recent investigations with triggers and outcomes. Use this to see what the agent has investigated, whether issues were resolved, and how long investigations took.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'limit': {
+                            'type': 'integer',
+                            'description': 'Number of investigations to return (default 10)'
+                        }
+                    },
+                    'required': []
+                }
+            }
+        }
+
+        self.tools['get_correlations'] = {
+            'function': self._get_correlations,
+            'schema': {
+                'name': 'get_correlations',
+                'description': 'Find correlated events — investigations and drift events that occurred close together, service failure patterns, and learned service dependencies. Use this to understand relationships between incidents.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'hours': {
+                            'type': 'integer',
+                            'description': 'How many hours back to look for correlations (default 24)'
+                        }
+                    },
+                    'required': []
+                }
+            }
+        }
+
         # Web search tool (SearXNG)
         searxng_url = self.operator.config.get('search', {}).get('url', '')
         if searxng_url:
@@ -552,6 +625,46 @@ class ToolRegistry:
                         'finding_index': finding_index, 'status': status}
             else:
                 return {'error': f'Could not update finding {finding_index} in report #{report_id}'}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _get_operational_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Get aggregate operational statistics."""
+        try:
+            summary = self.operator.kb.get_operational_summary(hours)
+            return {'success': True, **summary}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _list_sweep_reports(self, limit: int = 10) -> Dict[str, Any]:
+        """List recent sweep reports."""
+        try:
+            reports = self.operator.kb.get_recent_sweep_reports(limit)
+            for r in reports:
+                if r.get('summary') and len(r['summary']) > 200:
+                    r['summary'] = r['summary'][:200] + '...'
+            return {'success': True, 'count': len(reports), 'reports': reports}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _list_investigations(self, limit: int = 10) -> Dict[str, Any]:
+        """List recent investigations."""
+        try:
+            investigations = self.operator.kb.get_recent_investigations(limit)
+            return {'success': True, 'count': len(investigations), 'investigations': investigations}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _get_correlations(self, hours: int = 24) -> Dict[str, Any]:
+        """Get event correlations and service failure patterns."""
+        try:
+            # get_correlation_summary is on the underlying KB, not the resilient wrapper
+            kb = self.operator.kb
+            if hasattr(kb, '_kb'):
+                summary = kb._kb.get_correlation_summary(hours)
+            else:
+                summary = kb.get_correlation_summary(hours)
+            return {'success': True, **summary}
         except Exception as e:
             return {'error': str(e)}
 

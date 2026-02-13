@@ -1270,6 +1270,91 @@ class KnowledgeBase:
                  index=finding_index, status=status)
             return True
 
+    def get_operational_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Get aggregate stats across sweeps, investigations, and learnings for a time window."""
+        from datetime import timedelta
+        from sqlalchemy import func
+
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(hours=hours)
+
+        with self.session_scope() as session:
+            # --- Sweeps ---
+            sweep_rows = session.query(SweepReport).filter(SweepReport.swept_at >= cutoff).all()
+            sweep_total = len(sweep_rows)
+            sweep_severity = {}
+            total_findings = 0
+            for r in sweep_rows:
+                total_findings += r.finding_count
+                sweep_severity[r.severity] = sweep_severity.get(r.severity, 0) + 1
+            recent_sweeps = sorted(sweep_rows, key=lambda r: r.swept_at, reverse=True)[:5]
+
+            # --- Investigations ---
+            inv_rows = session.query(Investigation).filter(Investigation.started_at >= cutoff).all()
+            inv_total = len(inv_rows)
+            inv_outcomes = {}
+            durations = []
+            tool_calls_total = 0
+            for inv in inv_rows:
+                inv_outcomes[inv.outcome] = inv_outcomes.get(inv.outcome, 0) + 1
+                if inv.duration_seconds:
+                    durations.append(inv.duration_seconds)
+                tool_calls_total += inv.tool_calls_count or 0
+            recent_invs = sorted(inv_rows, key=lambda i: i.started_at, reverse=True)[:5]
+
+            # --- Learnings ---
+            learn_rows = session.query(InvestigationLearning).filter(
+                InvestigationLearning.created_at >= cutoff
+            ).all()
+            learn_total = len(learn_rows)
+            learn_types = {}
+            for l in learn_rows:
+                learn_types[l.learning_type] = learn_types.get(l.learning_type, 0) + 1
+
+        return {
+            "time_window": {
+                "hours": hours,
+                "from_utc": cutoff.isoformat(),
+                "to_utc": now.isoformat()
+            },
+            "sweeps": {
+                "total": sweep_total,
+                "total_findings": total_findings,
+                "avg_findings": round(total_findings / sweep_total, 1) if sweep_total else 0,
+                "by_severity": sweep_severity,
+                "recent": [
+                    {
+                        "id": r.id,
+                        "swept_at": r.swept_at.isoformat(),
+                        "severity": r.severity,
+                        "finding_count": r.finding_count,
+                        "summary": (r.summary or "")[:150]
+                    }
+                    for r in recent_sweeps
+                ]
+            },
+            "investigations": {
+                "total": inv_total,
+                "by_outcome": inv_outcomes,
+                "avg_duration_seconds": round(sum(durations) / len(durations), 1) if durations else None,
+                "total_tool_calls": tool_calls_total,
+                "recent": [
+                    {
+                        "id": inv.id,
+                        "started_at": inv.started_at.isoformat(),
+                        "trigger": (inv.trigger or "")[:150],
+                        "outcome": inv.outcome,
+                        "duration_seconds": inv.duration_seconds
+                    }
+                    for inv in recent_invs
+                ]
+            },
+            "learnings": {
+                "total": learn_total,
+                "by_type": learn_types
+            }
+        }
+
     def get_human_responses(self, unprocessed_only: bool = True) -> List[Dict[str, Any]]:
         """Get human responses to input requests.
 
