@@ -179,7 +179,47 @@ The slow sweeps correlate with ollama-desktop being the bottleneck (ministral-3:
 
 Models produced actionable findings including container restart detection, high resource usage alerts, and Loki query failures.
 
-## Methodology
+## Ollama vs Commercial APIs for Agent Work
+
+CFOperator is designed as a local-first autonomous agent — it runs an OODA loop every 30 minutes, makes tool calls against Prometheus, Loki, and Docker, correlates findings, and stores learnings. This workload has specific characteristics that inform the Ollama vs commercial API decision.
+
+### Where Ollama works well
+
+**Cost at volume.** CFOperator runs 48 sweeps/day, each with 3 parallel phases making multi-turn tool calls. That's ~144 LLM calls/day minimum, plus alert checks, correlation analysis, chat interactions, and learning extraction. At commercial API rates, this adds up. With Ollama, the marginal cost per call is zero — just electricity and hardware you already own.
+
+**Latency for structured tasks.** For simple tool-calling (T1, T3 in our benchmark), the best Ollama models respond in 0.5–6s on consumer hardware. That's comparable to API round-trip times once you account for network latency, and there's no rate limiting or queueing behind other customers.
+
+**Privacy and control.** All infrastructure data — metrics, logs, container states, SSH access — stays on the local network. No prompts containing hostnames, IP addresses, error logs, or credentials leave the premises.
+
+**Reliability.** No dependency on external services. The agent keeps running during internet outages, API provider incidents, or billing issues. For infrastructure monitoring, this is table stakes — the monitoring system shouldn't go down when the network does.
+
+**Parallelism scales freely.** Adding a third Ollama instance gave us a 3.4x sweep speedup with zero incremental API cost. With commercial APIs you'd pay 3x for the same parallelism, and you'd still hit rate limits.
+
+### Where Ollama falls short
+
+**Tool-calling reliability.** The data is clear — even the best Ollama models aren't 100% reliable across runs. mistral-small3.2 and glm-4.7-flash fluctuate between 8.3 and 10.0 on multi-turn. qwen2.5:7b occasionally fails generic prompts it should handle. Commercial models like Claude and GPT-4 handle tool calling with near-perfect reliability and don't need careful prompt engineering to get structured output right.
+
+**Reasoning depth.** When CFOperator asks a model to correlate patterns across multiple data sources, analyze root causes, or generate nuanced operational insights, the quality gap widens. A 7B model can call the right tool, but its analysis of the results is often shallow or formulaic compared to what Claude or GPT-4 would produce. We see this in finding quality — some sweep findings are raw JSON dumps or generic observations rather than actionable insights.
+
+**Multi-turn consistency.** Half the models we tested (including some that score 10/10 on simple tests) fail to continue a tool chain after receiving a result. They respond with text analysis instead of making the next tool call. This is the single biggest gap — commercial models handle multi-step tool workflows without dropping the chain.
+
+**Context window and complex prompts.** Smaller Ollama models struggle with longer system prompts, multiple tool schemas, and conversation history. CFOperator's real prompts are more complex than our test prompts, and we've seen models degrade as context grows. Commercial models handle 100K+ token contexts without this degradation.
+
+### CFOperator's approach: hybrid fallback
+
+CFOperator uses a provider chain — Ollama first, with Groq and Claude as fallbacks:
+
+```
+Ollama (local, free) → Groq (fast, cheap) → Claude (reliable, expensive)
+```
+
+The OODA loop and sweeps run on Ollama because they're high-volume, structured, and latency-tolerant (a sweep every 30 minutes doesn't need sub-second response). Chat interactions fall back to commercial APIs when Ollama is busy or returns poor results. Correlation analysis — which benefits most from reasoning depth — could justify routing to a stronger model, but currently runs on Ollama to keep costs at zero.
+
+### The bottom line
+
+For an autonomous agent making dozens of structured tool calls per hour on a local network, Ollama is viable and cost-effective. The 5 models that scored 10/10 in our benchmark can reliably call `prometheus_query`, `loki_query`, and `docker_list` when prompted clearly. But if your agent needs reliable multi-step reasoning, nuanced analysis, or robust handling of ambiguous prompts, commercial APIs are still meaningfully better. The pragmatic answer is both — Ollama for volume, commercial APIs for quality-critical paths.
+
+
 
 **Infrastructure:** 3 Ollama instances across different hardware — an RTX GPU server, an RTX 5080 desktop, and a CPU-only desktop. Models tested wherever they were loaded.
 
