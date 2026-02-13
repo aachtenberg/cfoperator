@@ -144,6 +144,63 @@ All of these make the first tool call correctly and select the right tool from a
 ### Zero-score models
 - **llava:7b**, **llava:13b**, **glm4:9b**, **llama3.2-vision:11b**, **phi4:latest** — No tool calls on any test.
 
+## LangGraph Parallel Sweep Results
+
+Beyond isolated tool-calling tests, we tested how these models perform in production as part of CFOperator's LangGraph parallel sweep pipeline. The sweep fans out 3 phases (metrics, logs, containers) to different Ollama instances concurrently, each making real tool calls against live infrastructure.
+
+### Pool Configuration
+
+| Instance | Hardware | Model | Phase |
+|----------|----------|-------|-------|
+| ollama-gpu | RTX GPU server (192.168.0.150) | glm-4.7-flash:q4_K_M | metrics |
+| ollama-198 | RTX 5080 16GB (192.168.0.198) | qwen2.5:7b-instruct-q8_0 | logs/containers |
+| ollama-desktop | Desktop (192.168.0.220) | ministral-3:latest | logs/containers |
+
+All three models scored 10/10 in the isolated tool-calling benchmark. Phase assignment rotates based on pool availability.
+
+### Sweep Timing (19 parallel sweeps, Feb 12–13 2026)
+
+| Metric | Value |
+|--------|-------|
+| Sample size | 19 parallel sweeps |
+| Median duration | 38.3s |
+| Average duration | 84.3s |
+| Fast sweeps (<60s) | 11 (58%), avg 27.8s |
+| Slow sweeps (>=60s) | 8 (42%), avg 161.9s |
+| Min / Max | 19.4s / 185.1s |
+
+### Per-Phase Breakdown (typical fast sweep)
+
+| Phase | Instance | Model | Duration | Findings |
+|-------|----------|-------|----------|----------|
+| metrics | ollama-gpu | glm-4.7-flash:q4_K_M | 0.0s | 0 |
+| logs | ollama-desktop | ministral-3:latest | 37.5s | 1 |
+| containers | ollama-198 | qwen2.5:7b-instruct-q8_0 | 39.8s | 0 |
+| **Wall clock** | | | **39.8s** | |
+
+Wall clock time equals the slowest phase — that's the parallel advantage. Sequential would sum to ~77s.
+
+### Bimodal Duration Pattern
+
+Sweeps show a clear bimodal distribution:
+
+- **Fast (58%)**: 19–50s. All 3 instances respond quickly, models already loaded in VRAM.
+- **Slow (42%)**: 135–185s. One instance stalls — typically cold model loading or the instance is busy with another request (luna-brain, chat, etc.).
+
+The slow sweeps correlate with ollama-desktop being the bottleneck (ministral-3:latest on CPU-only desktop takes longer when the model needs to reload).
+
+### Finding Quality
+
+| Metric | Value |
+|--------|-------|
+| Total findings | 40 across 19 sweeps |
+| Avg findings/sweep | 2.1 |
+| Severity: info | 11 sweeps (58%) |
+| Severity: warning | 5 sweeps (26%) |
+| Severity: critical | 3 sweeps (16%) |
+
+Models produced actionable findings including container restart detection, high resource usage alerts, and Loki query failures. Some findings included raw JSON or verbose explanations — a known issue with smaller models not always following the structured output format strictly.
+
 ## Methodology
 
 **Infrastructure:** 3 Ollama instances across different hardware — a GPU server (RTX-class), a desktop, and a Raspberry Pi cluster node. Models tested wherever they were already loaded.
