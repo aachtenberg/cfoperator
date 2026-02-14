@@ -112,8 +112,10 @@ class CFOperator:
         )
 
         # Initialize embeddings service for vector search
+        embedding_config = self.config.get('llm', {}).get('embeddings', {})
         self.embeddings = EmbeddingService(
-            ollama_url=self.config.get('llm', {}).get('ollama_url', os.getenv('OLLAMA_URL', 'http://localhost:11434')),
+            ollama_url=embedding_config.get('url') or self.config.get('llm', {}).get('primary', {}).get('url') or os.getenv('OLLAMA_URL', 'http://localhost:11434'),
+            model=embedding_config.get('model'),
             db_session_factory=self.kb.session_scope
         )
 
@@ -145,7 +147,7 @@ class CFOperator:
         # Initialize Ollama pool for parallel sweeps (if configured)
         pool_config = self.config.get('ollama_pool', {}).get('instances', [])
         if pool_config:
-            self.ollama_pool = OllamaPool(pool_config)
+            self.ollama_pool = OllamaPool(pool_config, kb=self.kb)
             logger.info(f"Ollama pool initialized with {len(pool_config)} instances")
         else:
             self.ollama_pool = None
@@ -846,13 +848,16 @@ KNOWN SERVICE CORRELATIONS:
 Return ONLY valid JSON:
 {{"insights": [
   {{
-    "learning_type": "pattern|root_cause|insight",
+    "learning_type": "pattern",
     "title": "Brief title (max 100 chars)",
     "description": "What pattern was detected and what it means",
     "services": ["service1"],
-    "category": "resource|network|config|dependency"
+    "category": "resource"
   }}
 ]}}
+
+learning_type must be one of: solution, pattern, root_cause, antipattern, insight
+category must be one of: resource, network, config, dependency
 
 Focus on:
 - Services that fail together (dependency chains)
@@ -928,6 +933,10 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     continue
                 insight.setdefault('learning_type', 'insight')
                 insight.setdefault('tags', ['correlation', 'automated'])
+                valid_types = {'pattern', 'solution', 'root_cause', 'antipattern', 'insight'}
+                if insight['learning_type'] not in valid_types:
+                    logger.warning(f"Invalid learning_type '{insight['learning_type']}', defaulting to 'insight'")
+                    insight['learning_type'] = 'insight'
                 try:
                     lid = self.kb.store_learning(insight)
                     stored += 1
