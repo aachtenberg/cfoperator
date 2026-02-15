@@ -139,22 +139,69 @@ cn "@cfoperator search logs for errors in telegraf"
 
 A standalone single-binary CLI assistant for SRE and systems administration. Cross-compiles to any platform — no Python or runtime dependencies needed.
 
+### Install
+
 ```bash
-# Download from GitHub Releases
-gh release download cfassist-v0.3.0 --pattern 'cfassist-linux-amd64'
-chmod +x cfassist-linux-amd64
+# Download the latest release (pick your platform)
+gh release download cfassist-v0.4.0 -R aachtenberg/cfoperator --pattern 'cfassist-linux-arm64'
+chmod +x cfassist-linux-arm64
+sudo mv cfassist-linux-arm64 /usr/local/bin/cfassist
 
-# One-shot mode
-./cfassist "what is my hostname?"
-
-# Interactive TUI
-./cfassist
-
-# Pipe mode
-journalctl -u nginx --since '1 hour ago' | ./cfassist "summarize errors"
+# Available binaries: linux-amd64, linux-arm64, linux-arm, darwin-amd64, darwin-arm64
 ```
 
-See [cfassist-go/](cfassist-go/) for build instructions and source.
+### Configure
+
+cfassist reads `~/.cfassist/config.yaml` on startup:
+
+```yaml
+llm:
+  provider: ollama
+  url: http://localhost:11434
+  model: llama3:8b
+  temperature: 0.7
+  context_window: 8192
+
+tools:
+  bash:
+    enabled: true
+    timeout: 30
+  read_file:
+    enabled: true
+    max_lines: 500
+```
+
+### Usage
+
+```bash
+# Interactive TUI
+cfassist
+
+# One-shot mode
+cfassist "what is my hostname?"
+
+# Pipe mode
+journalctl -u nginx --since '1 hour ago' | cfassist "summarize errors"
+```
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--config` | Path to config file (default `~/.cfassist/config.yaml`) |
+| `--model` | Override LLM model |
+| `--provider` | Select LLM provider by name |
+| `--url` | Override LLM endpoint URL |
+| `--version` | Show version |
+
+### Build from Source
+
+```bash
+cd cfassist-go
+make build          # native binary
+make linux-arm64    # cross-compile for Pi
+make all            # all platforms
+```
 
 ## Key Files
 
