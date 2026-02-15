@@ -381,6 +381,19 @@ class WebServer:
                 return jsonify({'error': 'Ollama pool not configured', 'instances': [], 'total': 0, 'healthy': 0, 'available': 0})
             return jsonify(self.operator.ollama_pool.status())
 
+        @self.app.route('/api/pool/instance', methods=['POST'])
+        def toggle_pool_instance():
+            """Enable or disable an Ollama pool instance."""
+            if not hasattr(self.operator, 'ollama_pool') or not self.operator.ollama_pool:
+                return jsonify({'error': 'Ollama pool not configured'}), 400
+            data = request.json
+            name = data.get('name', '')
+            enabled = data.get('enabled', True)
+            ok = self.operator.ollama_pool.set_enabled(name, enabled)
+            if not ok:
+                return jsonify({'error': f'Instance {name} not found'}), 404
+            return jsonify(self.operator.ollama_pool.status())
+
         # WebSocket endpoint (only if available)
         if self.sock:
             @self.sock.route('/ws')

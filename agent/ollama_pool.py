@@ -51,13 +51,14 @@ SWEEP_PHASE_DURATION = Histogram(
 class OllamaInstance:
     """A single Ollama GPU instance in the pool."""
 
-    def __init__(self, name: str, url: str, model: str):
+    def __init__(self, name: str, url: str, model: str, enabled: bool = True):
         self.name = name
         self.url = url.rstrip('/')
         self.model = model
         self.models: list[str] = []  # discovered via /api/tags
         self.in_use = False
         self.healthy = True
+        self.enabled = enabled
         self.last_checkout: Optional[str] = None
         self.last_health_check: Optional[float] = None
 
@@ -69,6 +70,7 @@ class OllamaInstance:
             'models': self.models,
             'healthy': self.healthy,
             'in_use': self.in_use,
+            'enabled': self.enabled,
             'last_checkout': self.last_checkout,
         }
 
@@ -89,20 +91,35 @@ class OllamaPool:
 
     HEALTH_CHECK_INTERVAL = 300  # 5 minutes
 
-    def __init__(self, instances: list[dict]):
+    def __init__(self, instances: list[dict], kb=None):
         self._lock = threading.Lock()
         self._instances: list[OllamaInstance] = []
+        self._kb = kb  # KnowledgeBase for persisting enabled/disabled state
+
+        # Load persisted enabled state from DB
+        disabled = set()
+        if kb:
+            try:
+                raw = kb.get_setting('ollama_pool_disabled', '')
+                if raw:
+                    disabled = set(raw.split(','))
+            except Exception:
+                pass
 
         for cfg in instances:
+            name = cfg['name']
             inst = OllamaInstance(
-                name=cfg['name'],
+                name=name,
                 url=cfg['url'],
                 model=cfg.get('model', ''),
+                enabled=name not in disabled,
             )
             self._instances.append(inst)
 
+        enabled_names = [i.name for i in self._instances if i.enabled]
+        disabled_names = [i.name for i in self._instances if not i.enabled]
         logger.info(f"Ollama pool initialized with {len(self._instances)} instances: "
-                     f"{[i.name for i in self._instances]}")
+                     f"enabled={enabled_names}, disabled={disabled_names}")
 
         # Run initial model discovery in background
         self._discover_thread = threading.Thread(
@@ -153,13 +170,13 @@ class OllamaPool:
         Check out an available instance from the pool.
 
         Prefers an instance that has the preferred_model available.
-        Returns None if no instance is free.
+        Returns None if no instance is free. Skips disabled instances.
         """
         with self._lock:
-            # First pass: find a free, healthy instance with the preferred model
+            # First pass: find a free, healthy, enabled instance with the preferred model
             if preferred_model:
                 for inst in self._instances:
-                    if not inst.in_use and inst.healthy:
+                    if not inst.in_use and inst.healthy and inst.enabled:
                         if preferred_model in inst.models or inst.model == preferred_model:
                             inst.in_use = True
                             inst.last_checkout = datetime.now(timezone.utc).isoformat()
@@ -168,9 +185,9 @@ class OllamaPool:
                             logger.info(f"Pool checkout: {inst.name} (preferred model: {preferred_model})")
                             return inst
 
-            # Second pass: any free, healthy instance
+            # Second pass: any free, healthy, enabled instance
             for inst in self._instances:
-                if not inst.in_use and inst.healthy:
+                if not inst.in_use and inst.healthy and inst.enabled:
                     inst.in_use = True
                     inst.last_checkout = datetime.now(timezone.utc).isoformat()
                     POOL_CHECKOUTS.labels(instance=inst.name, result='success').inc()
@@ -192,19 +209,40 @@ class OllamaPool:
             logger.info(f"Pool checkin: {instance.name}")
 
     def available_count(self) -> int:
-        """Number of healthy, non-in-use instances."""
+        """Number of healthy, enabled, non-in-use instances."""
         with self._lock:
-            return sum(1 for i in self._instances if not i.in_use and i.healthy)
+            return sum(1 for i in self._instances if not i.in_use and i.healthy and i.enabled)
+
+    def set_enabled(self, instance_name: str, enabled: bool) -> bool:
+        """Enable or disable a pool instance. Persists to DB."""
+        with self._lock:
+            for inst in self._instances:
+                if inst.name == instance_name:
+                    inst.enabled = enabled
+                    logger.info(f"Pool instance {instance_name} {'enabled' if enabled else 'disabled'}")
+                    # Persist disabled list to DB
+                    disabled = [i.name for i in self._instances if not i.enabled]
+                    if self._kb:
+                        try:
+                            self._kb._kb.set_setting('ollama_pool_disabled', ','.join(disabled))
+                        except Exception as e:
+                            logger.warning(f"Could not persist pool state: {e}")
+                    return True
+            return False
 
     def status(self) -> dict:
         """Return pool status for the web API."""
         with self._lock:
             instances = [inst.to_dict() for inst in self._instances]
-            healthy = sum(1 for i in self._instances if i.healthy)
-            available = sum(1 for i in self._instances if not i.in_use and i.healthy)
+            enabled = sum(1 for i in self._instances if i.enabled)
+            healthy = sum(1 for i in self._instances if i.healthy and i.enabled)
+            available = sum(1 for i in self._instances if not i.in_use and i.healthy and i.enabled)
+            mode = 'parallel' if available >= 2 else 'sequential'
             return {
                 'instances': instances,
                 'total': len(self._instances),
+                'enabled': enabled,
                 'healthy': healthy,
                 'available': available,
+                'mode': mode,
             }

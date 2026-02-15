@@ -623,6 +623,7 @@
             <input type="number" id="alert-interval" min="5" max="300" value="10" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
             <label for="sweep-interval">Sweep(m):</label>
             <input type="number" id="sweep-interval" min="1" max="1440" value="30" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
+            <span id="pool-toggles" style="display: inline-flex; gap: 8px; align-items: center; margin-left: 8px; border-left: 1px solid #333; padding-left: 10px;"></span>
         </div>
     </header>
 
@@ -1089,6 +1090,43 @@ Type / for autocomplete.</div>
                     document.getElementById('fallback-toggle').checked = data.allow_paid_escalation;
                 })
                 .catch(() => {});
+            // Load pool instance toggles
+            loadPoolToggles();
+        }
+
+        function loadPoolToggles() {
+            fetch('/api/pool/status')
+                .then(r => r.json())
+                .then(data => {
+                    const container = document.getElementById('pool-toggles');
+                    if (!data.instances || data.instances.length === 0) {
+                        container.style.display = 'none';
+                        return;
+                    }
+                    let html = '<label style="color:#888;font-size:15px;">Pool:</label>';
+                    data.instances.forEach(inst => {
+                        const color = !inst.enabled ? '#666' : inst.healthy ? '#44cc44' : '#cc4444';
+                        const title = `${inst.name} (${inst.model})\nHealthy: ${inst.healthy}\nEnabled: ${inst.enabled}`;
+                        html += `<label style="cursor:pointer;display:inline-flex;align-items:center;gap:3px;font-size:13px;color:${color};" title="${title}">`;
+                        html += `<input type="checkbox" ${inst.enabled ? 'checked' : ''} onchange="togglePoolInstance('${inst.name}', this.checked)" style="accent-color:#44cc44;">`;
+                        html += `${inst.name.replace('ollama-','')}</label>`;
+                    });
+                    const mode = data.mode || 'sequential';
+                    html += `<span style="font-size:12px;color:#666;margin-left:2px;">(${mode})</span>`;
+                    container.innerHTML = html;
+                })
+                .catch(() => {});
+        }
+
+        function togglePoolInstance(name, enabled) {
+            fetch('/api/pool/instance', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name, enabled})
+            })
+            .then(r => r.json())
+            .then(() => loadPoolToggles())
+            .catch(() => {});
         }
 
         // Slash-command autocomplete
