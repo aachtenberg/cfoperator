@@ -83,13 +83,23 @@ class ToolRegistry:
             'function': self._loki_query,
             'schema': {
                 'name': 'loki_query',
-                'description': 'Query Loki logs across all monitored hosts. Available labels: host (raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4, headless-gpu), container_name, compose_service, job (varlogs), level, source, stream. Example queries: {host="raspberrypi"} |= "error", {container_name="immich_server"} |= "error", {host="raspberrypi"} | json | level="error"',
+                'description': 'Query Loki logs across all monitored hosts. '
+                    'Available labels: host, container_name, compose_service, container, container_id, job, level, source, stream, component, service_name. '
+                    'Host values: raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4, headless-gpu. '
+                    'CORRECT syntax examples: '
+                    '{host="raspberrypi2"} |= "error"  --  '
+                    '{container_name="immich_server"} |= "error"  --  '
+                    '{host="raspberrypi2", container_name="telegraf"} |= "timeout"  --  '
+                    '{container_name=~"immich.*"} |= "error"  --  '
+                    'WRONG patterns (DO NOT USE): '
+                    '{job="x"} |= "e" and {container_name="y"} is WRONG - combine into {job="x", container_name="y"} |= "e".  '
+                    'Never use and/or between {} selectors. Never quote the selector. Use regex .* not glob *.',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'query': {
                             'type': 'string',
-                            'description': 'LogQL query string. Use labels: host, container_name, compose_service, job, level, source. Example: {host="raspberrypi"} |= "error"'
+                            'description': 'LogQL query. Put ALL labels in one {} selector. Example: {host="raspberrypi2", container_name="telegraf"} |= "error". Never use and/or between {} selectors. Use regex .* not glob *.'
                         },
                         'limit': {
                             'type': 'integer',
@@ -448,9 +458,12 @@ class ToolRegistry:
             return {'error': str(e)}
 
     def _loki_query(self, query: str, limit: int = 100, since: str = '1h') -> Dict[str, Any]:
-        """Query Loki logs."""
+        """Query Loki logs with input validation."""
         if not self.operator.logs:
             return {'error': 'Loki backend not configured'}
+
+        # Strip accidental whitespace/quotes
+        query = query.strip().strip("'").strip('"')
 
         try:
             result = self.operator.logs.query(query, since=since, limit=limit)
@@ -458,6 +471,12 @@ class ToolRegistry:
                 'success': True,
                 'query': query,
                 'result': result
+            }
+        except ValueError as e:
+            # Validation error - return helpful hint
+            return {
+                'error': str(e),
+                'hint': 'Put all labels in ONE selector: {label1="val1", label2="val2"} |= "filter". Use regex .* not glob *. Do not quote the selector.'
             }
         except Exception as e:
             return {'error': str(e)}
