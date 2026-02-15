@@ -24,7 +24,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -71,7 +71,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "cfoperator_uptime_seconds",
           "refId": "A"
@@ -83,7 +83,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -149,7 +149,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "up{job=\"cfoperator\"}",
           "refId": "A"
@@ -161,7 +161,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -207,7 +207,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "cfoperator_monitored_hosts",
           "refId": "A"
@@ -219,7 +219,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -273,9 +273,9 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "count(docker_container_cpu_usage_total{container_name=~\".+\"})",
+          "expr": "count(docker_container_status_uptime_ns{container_name!=\"\"})",
           "refId": "A"
         }
       ],
@@ -285,7 +285,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -339,7 +339,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "rate(cfoperator_errors_total[5m])",
           "refId": "A"
@@ -351,7 +351,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -397,7 +397,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "cfoperator_tools_registered",
           "refId": "A"
@@ -409,7 +409,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -487,7 +487,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "rate(cfoperator_ooda_cycles_total[5m])",
           "legendFormat": "OODA Cycles/sec",
@@ -496,7 +496,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "rate(cfoperator_sweeps_total{mode=\"reactive\"}[5m])",
           "legendFormat": "Reactive Sweeps/sec",
@@ -505,7 +505,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "rate(cfoperator_sweeps_total{mode=\"proactive\"}[5m])",
           "legendFormat": "Proactive Sweeps/sec",
@@ -518,7 +518,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -597,7 +597,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum by (tool_name) (rate(cfoperator_tool_calls_total[5m]))",
           "legendFormat": "{{tool_name}}",
@@ -610,7 +610,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -689,7 +689,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum by (provider) (rate(cfoperator_llm_requests_total[5m]))",
           "legendFormat": "{{provider}}",
@@ -702,7 +702,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -781,7 +781,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum by (type) (rate(cfoperator_llm_tokens_total[5m]))",
           "legendFormat": "{{type}}",
@@ -794,7 +794,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -881,7 +881,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "histogram_quantile(0.50, sum by (le, provider) (rate(cfoperator_llm_latency_seconds_bucket[5m])))",
           "legendFormat": "p50 {{provider}}",
@@ -890,7 +890,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(cfoperator_llm_latency_seconds_bucket[5m])))",
           "legendFormat": "p95 {{provider}}",
@@ -899,7 +899,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "histogram_quantile(0.99, sum by (le, provider) (rate(cfoperator_llm_latency_seconds_bucket[5m])))",
           "legendFormat": "p99 {{provider}}",
@@ -912,7 +912,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -967,7 +967,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum(rate(cfoperator_llm_errors_total[5m])) by (provider)",
           "refId": "A"
@@ -979,7 +979,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -1034,7 +1034,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum(rate(cfoperator_llm_fallbacks_total[5m]))",
           "refId": "A"
@@ -1046,7 +1046,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -1093,7 +1093,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum(cfoperator_llm_requests_total)",
           "refId": "A"
@@ -1307,7 +1307,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -1362,7 +1362,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum(cfoperator_tool_calls_total{result=\"success\"}) / sum(cfoperator_tool_calls_total)",
           "refId": "A"
@@ -1602,7 +1602,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "description": "CPU usage across all monitored hosts",
       "fieldConfig": {
@@ -1692,7 +1692,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
           "legendFormat": "{{instance}}",
@@ -1705,7 +1705,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "description": "Memory usage across all monitored hosts",
       "fieldConfig": {
@@ -1795,7 +1795,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "((node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes) / node_memory_MemTotal_bytes) * 100",
           "legendFormat": "{{instance}}",
@@ -1808,7 +1808,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "loki"
+        "uid": "cfawbn0oyoqv4f"
       },
       "description": "All CFOperator logs with level filter",
       "gridPos": {
@@ -1832,7 +1832,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "loki"
+            "uid": "cfawbn0oyoqv4f"
           },
           "expr": "{container=\"cfoperator\"} |~ \"$level\" | json | line_format `{{.ts}} [{{.level}}] {{.component}}: {{.msg}}`",
           "refId": "A"
@@ -1844,7 +1844,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "loki"
+        "uid": "cfawbn0oyoqv4f"
       },
       "description": "Errors and warnings with component context",
       "gridPos": {
@@ -1868,7 +1868,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "loki"
+            "uid": "cfawbn0oyoqv4f"
           },
           "expr": "{container=\"cfoperator\"} | json | level=~\"error|warn|ERROR|WARN\" | line_format `[{{.level}}] {{.component}}: {{.msg}}`",
           "refId": "A"
@@ -1880,7 +1880,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "loki"
+        "uid": "cfawbn0oyoqv4f"
       },
       "description": "OODA loop, sweeps, investigations, and tool calls",
       "gridPos": {
@@ -1904,7 +1904,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "loki"
+            "uid": "cfawbn0oyoqv4f"
           },
           "expr": "{container=\"cfoperator\"} | json | component=~\"cfoperator|tools|embedding_service\" | line_format `[{{.component}}] {{.msg}}`",
           "refId": "A"
@@ -1916,7 +1916,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "loki"
+        "uid": "cfawbn0oyoqv4f"
       },
       "description": "LLM calls, embeddings, and knowledge base operations",
       "gridPos": {
@@ -1940,7 +1940,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "loki"
+            "uid": "cfawbn0oyoqv4f"
           },
           "expr": "{container=\"cfoperator\"} | json | component=~\"llm_fallback|knowledge_base|embedding_service\" | line_format `[{{.component}}] {{.msg}}`",
           "refId": "A"
@@ -2637,7 +2637,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -2703,7 +2703,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "cfoperator_pool_instances{status=\"healthy\"}",
           "legendFormat": "{{instance}}",
@@ -2716,7 +2716,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -2762,7 +2762,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum(cfoperator_pool_checkouts_total)",
           "legendFormat": "Total Checkouts",
@@ -2775,7 +2775,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -2841,7 +2841,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "cfoperator_pool_instances{status=\"in_use\"}",
           "legendFormat": "{{instance}}",
@@ -2854,7 +2854,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -2932,7 +2932,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "histogram_quantile(0.50, sum by (le, mode) (rate(cfoperator_sweep_duration_seconds_bucket[1h])))",
           "legendFormat": "p50 {{mode}}",
@@ -2941,7 +2941,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "histogram_quantile(0.95, sum by (le, mode) (rate(cfoperator_sweep_duration_seconds_bucket[1h])))",
           "legendFormat": "p95 {{mode}}",
@@ -2954,7 +2954,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -3033,7 +3033,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "histogram_quantile(0.50, sum by (le, phase, instance) (rate(cfoperator_sweep_phase_duration_seconds_bucket[1h])))",
           "legendFormat": "{{phase}} on {{instance}}",
@@ -3046,7 +3046,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -3124,7 +3124,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum by (instance) (rate(cfoperator_pool_checkouts_total{result=\"success\"}[5m]))",
           "legendFormat": "{{instance}} checkouts",
@@ -3133,7 +3133,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum by (instance) (rate(cfoperator_pool_checkins_total[5m]))",
           "legendFormat": "{{instance}} checkins",
@@ -3146,7 +3146,7 @@
     {
       "datasource": {
         "type": "loki",
-        "uid": "loki"
+        "uid": "cfawbn0oyoqv4f"
       },
       "description": "Pool checkout, checkin, health check, and parallel sweep logs",
       "gridPos": {
@@ -3170,7 +3170,7 @@
         {
           "datasource": {
             "type": "loki",
-            "uid": "loki"
+            "uid": "cfawbn0oyoqv4f"
           },
           "expr": "{container=\"cfoperator\"} |~ \"Pool|Parallel sweep|sweep_graph|Fan-out|Phase\"",
           "refId": "A"
@@ -3195,7 +3195,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -3273,7 +3273,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "rate(cfoperator_embedding_requests_total{result=\"success\"}[5m])",
           "legendFormat": "Success",
@@ -3282,7 +3282,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "rate(cfoperator_embedding_requests_total{result=\"error\"}[5m])",
           "legendFormat": "Error",
@@ -3295,7 +3295,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -3350,7 +3350,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "rate(cfoperator_embedding_cache_hits_total{result=\"hit\"}[5m]) / (rate(cfoperator_embedding_cache_hits_total{result=\"hit\"}[5m]) + rate(cfoperator_embedding_cache_hits_total{result=\"miss\"}[5m]))",
           "refId": "A"
@@ -3363,7 +3363,7 @@
     {
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "cf6z7j8gxto1sc"
       },
       "fieldConfig": {
         "defaults": {
@@ -3487,7 +3487,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum(rate(log_messages_total{level=\"ERROR\"}[5m]))",
           "legendFormat": "ERROR",
@@ -3496,7 +3496,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum(rate(log_messages_total{level=\"WARN\"}[5m]))",
           "legendFormat": "WARN",
@@ -3505,7 +3505,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "cf6z7j8gxto1sc"
           },
           "expr": "sum(rate(log_messages_total{level=\"INFO\"}[5m]))",
           "legendFormat": "INFO",
