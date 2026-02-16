@@ -1740,6 +1740,11 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
 
         Centralizes provider resolution so chat, skills, and OODA all stay in sync.
 
+        Resolution order (first non-empty wins):
+        1. Explicit `model` param (caller override)
+        2. DB `ollama_selected_model` (UI selection)
+        3. Fallback chain / config.yaml primary model
+
         Args:
             backend: 'auto', 'ollama', 'groq', 'gemini', 'anthropic'
             model: Explicit model override, or None to resolve from DB/config
@@ -1753,13 +1758,18 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             if not provider_info:
                 return None
             provider_type, url, resolved_model = provider_info
+            source = 'fallback-chain'
             # If fallback chain selected ollama, override model with user's DB selection
             if provider_type == 'ollama' and not model:
-                primary = self.config.get('llm', {}).get('primary', {})
                 db_model = self.kb.get_setting('ollama_selected_model', '')
                 if db_model:
                     resolved_model = db_model
-            return (provider_type, url, model or resolved_model)
+                    source = 'db:ollama_selected_model'
+            if model:
+                source = 'explicit-override'
+            final = (provider_type, url, model or resolved_model)
+            logger.debug(f"Resolved provider: {final[0]}/{final[2]} (source={source})")
+            return final
 
         provider_type = backend
         llm_config = self.config.get('llm', {})
@@ -1768,7 +1778,13 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             primary = llm_config.get('primary', {})
             url = primary.get('url', os.getenv('OLLAMA_URL', ''))
             if not model:
-                model = self.kb.get_setting('ollama_selected_model', '') or primary.get('model', '')
+                db_model = self.kb.get_setting('ollama_selected_model', '')
+                config_model = primary.get('model', '')
+                model = db_model or config_model
+                source = 'db:ollama_selected_model' if db_model else 'config:llm.primary.model'
+            else:
+                source = 'explicit-override'
+            logger.debug(f"Resolved provider: {provider_type}/{model} (source={source})")
             return (provider_type, url, model)
         elif backend in ('groq', 'anthropic'):
             url = None
@@ -1782,6 +1798,7 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                         if fb.get('provider') == backend:
                             model = fb.get('model', '')
                             break
+            logger.debug(f"Resolved provider: {provider_type}/{model}")
             return (provider_type, url, model)
         else:
             return None
