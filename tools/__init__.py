@@ -464,9 +464,11 @@ class ToolRegistry:
 
         # Strip accidental whitespace/quotes
         query = query.strip().strip("'").strip('"')
+        logger.debug(f"Loki query: {query} (since={since}, limit={limit})")
 
         try:
             result = self.operator.logs.query(query, since=since, limit=limit)
+            logger.debug(f"Loki query returned {len(result)} streams")
             return {
                 'success': True,
                 'query': query,
@@ -474,11 +476,13 @@ class ToolRegistry:
             }
         except ValueError as e:
             # Validation error - return helpful hint
+            logger.warning(f"Loki query rejected: {e} | query: {query}")
             return {
                 'error': str(e),
                 'hint': 'Put all labels in ONE selector: {label1="val1", label2="val2"} |= "filter". Use regex .* not glob *. Do not quote the selector.'
             }
         except Exception as e:
+            logger.warning(f"Loki query failed: {e} | query: {query}")
             return {'error': str(e)}
 
     def _docker_list(self, host: Optional[str] = None) -> Dict[str, Any]:

@@ -1047,6 +1047,29 @@ Only return the JSON array, no other text."""
             ERROR_RATE.inc()
             return []
 
+    # Patterns that indicate the LLM is reporting its own tool failures, not real
+    # infrastructure issues.  Case-insensitive substring match on finding text.
+    _SELF_REFERENTIAL_PATTERNS = [
+        'unable to query',
+        'could not query',
+        'failed to query',
+        'syntax error in the query',
+        'persistent syntax error',
+        'query syntax is invalid',
+        'no logs could be retrieved',
+        'loki query parser is failing',
+        'literal not terminated',
+        'could not retrieve logs',
+        'unable to retrieve logs',
+        'query failed due to',
+        'logql query error',
+    ]
+
+    def _is_self_referential(self, finding_text: str) -> bool:
+        """Return True if a finding is about the agent's own tool failures."""
+        lower = finding_text.lower()
+        return any(p in lower for p in self._SELF_REFERENTIAL_PATTERNS)
+
     def _parse_sweep_findings(self, response_text: str) -> List[Dict[str, Any]]:
         """Parse LLM response into structured findings."""
         # Try to extract JSON array from the response
@@ -1063,18 +1086,23 @@ Only return the JSON array, no other text."""
                     valid = []
                     for f in findings:
                         if isinstance(f, dict) and 'finding' in f:
+                            finding_text = str(f['finding'])
+                            if self._is_self_referential(finding_text):
+                                logger.info(f"Filtered self-referential finding: {finding_text[:120]}")
+                                continue
                             valid.append({
                                 'severity': f.get('severity', 'info'),
-                                'finding': str(f['finding'])
+                                'finding': finding_text
                             })
                     return valid
             except json.JSONDecodeError:
                 pass
 
         # If JSON parsing failed but response has content, treat it as a single info finding
-        # Filter out iteration-limit messages — those aren't real findings
+        # Filter out iteration-limit messages and self-referential tool failures
         if text and text != '[]' and 'Maximum tool iterations' not in text:
-            return [{'severity': 'info', 'finding': text[:500]}]
+            if not self._is_self_referential(text):
+                return [{'severity': 'info', 'finding': text[:500]}]
 
         return []
 
