@@ -1053,8 +1053,7 @@ Only return the JSON array, no other text."""
         'unable to query',
         'could not query',
         'failed to query',
-        'syntax error in the query',
-        'persistent syntax error',
+        'syntax error',
         'query syntax is invalid',
         'no logs could be retrieved',
         'loki query parser is failing',
@@ -1063,6 +1062,8 @@ Only return the JSON array, no other text."""
         'unable to retrieve logs',
         'query failed due to',
         'logql query error',
+        'errors prevent log analysis',
+        'prevent log retrieval',
     ]
 
     def _is_self_referential(self, finding_text: str) -> bool:

@@ -21,6 +21,37 @@ def _parse_duration(since: str) -> timedelta:
     return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
 
 
+def _fix_unterminated_strings(query: str) -> str:
+    """Fix unterminated string literals in filter pipeline (e.g. |= "error -> |= "error")."""
+    # Find the end of the stream selector
+    brace_depth = 0
+    selector_end = -1
+    for i, ch in enumerate(query):
+        if ch == '{':
+            brace_depth += 1
+        elif ch == '}':
+            brace_depth -= 1
+            if brace_depth == 0:
+                selector_end = i
+                break
+    if selector_end == -1:
+        return query
+
+    pipeline = query[selector_end + 1:]
+    if not pipeline:
+        return query
+
+    # Count quotes in the pipeline portion — odd means unterminated
+    if pipeline.count('"') % 2 != 0:
+        pipeline = pipeline.rstrip()
+        # Append closing quote if the pipeline ends with an unterminated string
+        if not pipeline.endswith('"'):
+            pipeline += '"'
+        query = query[:selector_end + 1] + pipeline
+
+    return query
+
+
 def validate_logql(query: str) -> Tuple[bool, str]:
     """
     Validate a LogQL query for common syntax errors.
@@ -77,7 +108,8 @@ class LokiLogs(LogsBackend):
         self.timeout = 30
 
     def query(self, query: str, since: str = '1h', limit: int = 100) -> List[Dict[str, Any]]:
-        """Query logs using LogQL with input validation."""
+        """Query logs using LogQL with input validation and auto-repair."""
+        query = _fix_unterminated_strings(query)
         is_valid, error_msg = validate_logql(query)
         if not is_valid:
             raise ValueError(f"Invalid LogQL query: {error_msg}")
@@ -101,6 +133,7 @@ class LokiLogs(LogsBackend):
 
     def query_range(self, query: str, start: datetime, end: datetime, limit: int = 1000) -> List[Dict[str, Any]]:
         """Query logs over time range."""
+        query = _fix_unterminated_strings(query)
         is_valid, error_msg = validate_logql(query)
         if not is_valid:
             raise ValueError(f"Invalid LogQL query: {error_msg}")
