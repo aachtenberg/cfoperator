@@ -64,6 +64,20 @@ TOOL_CALLS = Counter('cfoperator_tool_calls_total', 'Tool executions', ['tool_na
 TOOLS_REGISTERED = Gauge('cfoperator_tools_registered', 'Number of registered tools')
 INVESTIGATIONS = Counter('cfoperator_investigations_total', 'Total investigations', ['outcome'])
 LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'component'])
+
+
+class _MetricsLogHandler(logging.Handler):
+    """Logging handler that increments LOG_MESSAGES Prometheus counter."""
+    def emit(self, record):
+        try:
+            level = record.levelname
+            component = record.name or 'cfoperator'
+            LOG_MESSAGES.labels(level=level, component=component).inc()
+        except Exception:
+            pass
+
+
+logging.getLogger().addHandler(_MetricsLogHandler())
 AGENT_INFO = Info('cfoperator_agent', 'CFOperator agent information')
 AGENT_UPTIME = Gauge('cfoperator_uptime_seconds', 'Agent uptime in seconds')
 MONITORED_HOSTS = Gauge('cfoperator_monitored_hosts', 'Number of monitored hosts')
@@ -401,7 +415,6 @@ class CFOperator:
             except Exception as e:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
                 ERROR_RATE.inc()
-                LOG_MESSAGES.labels(level='ERROR', component='cfoperator').inc()
                 time.sleep(30)  # Back off on errors
 
     def _check_alerts(self) -> List[Dict[str, Any]]:
@@ -707,6 +720,9 @@ When done, provide a summary of findings and whether the issue is resolved, need
         # 6. Deduplicate findings across phases
         findings = self._dedup_findings(findings)
 
+        # 6b. LLM judge — filter hallucinated/unsupported findings
+        findings = self._verify_findings(findings)
+
         # 7. Generate sweep report
         if findings:
             logger.info(f"Sweep found {len(findings)} total issues")
@@ -747,7 +763,7 @@ When done, provide a summary of findings and whether the issue is resolved, need
         # 8. Correlation analysis — detect patterns AND have LLM analyze them
         logger.info("Starting correlation analysis...")
         try:
-            patterns = self.kb._kb.find_service_failure_patterns(days=7)
+            patterns = self.kb._kb.find_service_failure_patterns(days=30)
             if patterns:
                 for p in patterns:
                     svc_a = p.get('service_a', '')
@@ -764,7 +780,7 @@ When done, provide a summary of findings and whether the issue is resolved, need
                 logger.info(f"Correlation analysis: {len(patterns)} service failure patterns found")
 
             # Persist event correlations (investigation<->drift, investigation<->investigation)
-            correlated = self.kb._kb.find_correlated_events(window_seconds=300, hours=24)
+            correlated = self.kb._kb.find_correlated_events(window_seconds=300, hours=168)
             persisted = 0
             for ce in correlated:
                 try:
@@ -801,7 +817,7 @@ When done, provide a summary of findings and whether the issue is resolved, need
         correlated_events = []
         learned_correlations = []
         try:
-            correlated_events = self.kb._kb.find_correlated_events(hours=24)[:10]
+            correlated_events = self.kb._kb.find_correlated_events(hours=168)[:10]
             learned_correlations = self.kb._kb.get_service_correlations(min_count=2)
         except Exception:
             pass
@@ -955,10 +971,28 @@ Return empty array if nothing notable: {{"insights": []}}"""
                 titles = [i.get('title', '') for i in insights[:3] if i.get('title')]
                 summary = f"[Correlation] {stored} insight(s): " + "; ".join(titles)
                 for notif in self.notifications:
+                    success = False
+                    error_msg = None
                     try:
                         notif.send(summary, severity='info')
+                        success = True
                     except Exception as e:
+                        error_msg = str(e)
                         logger.warning(f"Correlation notification failed: {e}")
+                    try:
+                        channel_type = getattr(notif, 'channel_type', 'slack')
+                        self.kb._kb.record_notification_history(
+                            channel_id=0,
+                            channel_type=channel_type,
+                            severity='info',
+                            title=summary[:200],
+                            message=summary,
+                            success=success,
+                            context={'insights_count': stored},
+                            error_message=error_msg
+                        )
+                    except Exception as e:
+                        logger.debug(f"Could not record notification history: {e}")
             else:
                 logger.info(f"Correlation analysis: LLM returned {len(insights)} insights (0 stored)")
 
@@ -1012,7 +1046,9 @@ Return empty array if nothing notable: {{"insights": []}}"""
 {task}
 
 After investigating, respond with your findings as a JSON array:
-[{{"severity": "info|warning|critical", "finding": "description", "remediation": "suggested fix or action"}}]
+[{{"severity": "info|warning|critical", "finding": "description", "evidence": "exact tool output or data supporting this finding", "remediation": "suggested fix or action"}}]
+
+The "evidence" field is REQUIRED — paste the specific metric value, log line, container name, or tool output that proves the finding. Do not make claims without evidence.
 
 If everything looks healthy, return an empty array: []
 Only return the JSON array, no other text."""
@@ -1091,10 +1127,15 @@ Only return the JSON array, no other text."""
                             if self._is_self_referential(finding_text):
                                 logger.info(f"Filtered self-referential finding: {finding_text[:120]}")
                                 continue
-                            valid.append({
+                            parsed = {
                                 'severity': f.get('severity', 'info'),
                                 'finding': finding_text
-                            })
+                            }
+                            if f.get('evidence'):
+                                parsed['evidence'] = str(f['evidence'])
+                            if f.get('remediation'):
+                                parsed['remediation'] = str(f['remediation'])
+                            valid.append(parsed)
                     return valid
             except json.JSONDecodeError:
                 pass
@@ -1209,7 +1250,9 @@ Only return the JSON array, no other text."""
 {task}
 
 After investigating, respond with your findings as a JSON array:
-[{{"severity": "info|warning|critical", "finding": "description", "remediation": "suggested fix or action"}}]
+[{{"severity": "info|warning|critical", "finding": "description", "evidence": "exact tool output or data supporting this finding", "remediation": "suggested fix or action"}}]
+
+The "evidence" field is REQUIRED — paste the specific metric value, log line, container name, or tool output that proves the finding. Do not make claims without evidence.
 
 If everything looks healthy, return an empty array: []
 Only return the JSON array, no other text."""
@@ -1629,6 +1672,78 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             logger.info(f"Deduplicated {len(findings)} findings to {len(deduped)}")
         return deduped
 
+    def _verify_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """LLM judge pass to filter hallucinated or unsupported findings.
+
+        Sends each finding with its evidence to the LLM and asks it to return
+        only findings where the evidence actually supports the claim.
+        Graceful degradation: returns original findings if verification fails.
+        """
+        if not findings:
+            return findings
+
+        resolved = self._resolve_provider()
+        if not resolved:
+            logger.warning("No LLM provider for finding verification — skipping")
+            return findings
+
+        provider_type, url, model = resolved
+
+        # Build the findings list for the judge
+        findings_text = ""
+        for i, f in enumerate(findings, 1):
+            evidence = f.get('evidence', 'No evidence provided')
+            findings_text += (
+                f"\n--- Finding {i} ---\n"
+                f"Severity: {f.get('severity', 'info')}\n"
+                f"Finding: {f['finding']}\n"
+                f"Evidence: {evidence}\n"
+            )
+
+        system_prompt = """You are a verification judge for infrastructure monitoring findings.
+For each finding below, check if the evidence actually supports the claim.
+Remove findings where:
+- The evidence contradicts the finding
+- The evidence is missing, vague, or says "No evidence provided"
+- The finding describes a tool/query failure, not an infrastructure issue
+- Container/service names don't match between finding and evidence
+
+Return ONLY verified findings as a JSON array:
+[{"severity": "info|warning|critical", "finding": "description", "evidence": "the evidence"}]
+
+If no findings survive verification, return [].
+Only return the JSON array, no other text."""
+
+        user_msg = f"Verify these {len(findings)} findings:\n{findings_text}"
+
+        try:
+            result = self._chat_with_tools(
+                provider_type=provider_type,
+                url=url,
+                model=model,
+                messages=[{'role': 'user', 'content': user_msg}],
+                system_context=system_prompt,
+                max_iterations=1
+            )
+            response_text = result.get('response', '')
+            verified = self._parse_sweep_findings(response_text)
+
+            removed = len(findings) - len(verified)
+            logger.info(f"Finding verification: {len(findings)} → {len(verified)} ({removed} filtered)")
+
+            if removed > 0:
+                # Log which findings were filtered
+                verified_texts = {v['finding'] for v in verified}
+                for f in findings:
+                    if f['finding'] not in verified_texts:
+                        logger.info(f"Judge filtered: {f['finding'][:150]}")
+
+            return verified
+
+        except Exception as e:
+            logger.warning(f"Finding verification failed, returning unfiltered: {e}")
+            return findings
+
     def _get_new_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Return only findings that weren't in the previous sweep report."""
         try:
@@ -1672,12 +1787,32 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
         }
 
     def _notify_sweep_findings(self, report: Dict[str, Any]):
-        """Send notifications for sweep findings."""
+        """Send notifications for sweep findings and record in history."""
         for notif in self.notifications:
+            success = False
+            error_msg = None
             try:
                 notif.send(report['summary'], severity=report['severity'])
+                success = True
             except Exception as e:
+                error_msg = str(e)
                 logger.error(f"Error sending notification: {e}")
+
+            # Record in notification_history
+            try:
+                channel_type = getattr(notif, 'channel_type', 'slack')
+                self.kb._kb.record_notification_history(
+                    channel_id=0,
+                    channel_type=channel_type,
+                    severity=report['severity'],
+                    title=report['summary'][:200],
+                    message=report['summary'],
+                    success=success,
+                    context={'findings_count': len(report.get('findings', []))},
+                    error_message=error_msg
+                )
+            except Exception as e:
+                logger.debug(f"Could not record notification history: {e}")
 
     def _get_alert_check_interval(self) -> int:
         """Get alert check interval: DB setting → config.yaml → default 10."""
@@ -1804,6 +1939,35 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             return None
 
     def _chat_with_tools(self, provider_type: str, url: str, model: str,
+                         messages: List[Dict[str, str]], system_context: str,
+                         max_iterations: int = None, event_callback=None) -> Dict[str, Any]:
+        """
+        Execute LLM chat with tool calling support.
+
+        Wraps _chat_with_tools_inner with Prometheus metrics tracking.
+        """
+        start = time.time()
+        try:
+            result = self._chat_with_tools_inner(
+                provider_type, url, model, messages, system_context,
+                max_iterations, event_callback
+            )
+            latency = time.time() - start
+            LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
+            LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
+            if result.get('input_tokens'):
+                LLM_TOKENS.labels(provider=provider_type, model=model, type='input').inc(result['input_tokens'])
+            if result.get('output_tokens'):
+                LLM_TOKENS.labels(provider=provider_type, model=model, type='output').inc(result['output_tokens'])
+            return result
+        except Exception as e:
+            latency = time.time() - start
+            LLM_REQUESTS.labels(provider=provider_type, model=model, result='error').inc()
+            LLM_ERRORS.labels(provider=provider_type, error_type=type(e).__name__).inc()
+            LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
+            raise
+
+    def _chat_with_tools_inner(self, provider_type: str, url: str, model: str,
                          messages: List[Dict[str, str]], system_context: str,
                          max_iterations: int = None, event_callback=None) -> Dict[str, Any]:
         """
@@ -2872,10 +3036,27 @@ IMPORTANT:
 
         # Send to Slack
         for notif in self.notifications:
+            success = False
+            error_msg = None
             try:
                 notif.send(summary['text'], severity='info')
+                success = True
             except Exception as e:
+                error_msg = str(e)
                 logger.error(f"Error sending morning summary: {e}")
+            try:
+                channel_type = getattr(notif, 'channel_type', 'slack')
+                self.kb._kb.record_notification_history(
+                    channel_id=0,
+                    channel_type=channel_type,
+                    severity='info',
+                    title='Morning Summary',
+                    message=summary['text'][:2000],
+                    success=success,
+                    error_message=error_msg
+                )
+            except Exception as e:
+                logger.debug(f"Could not record notification history: {e}")
 
         # Store in DB as a sweep report
         try:

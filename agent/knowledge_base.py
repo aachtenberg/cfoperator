@@ -3609,10 +3609,33 @@ class KnowledgeBase:
             service_events = []
             for drift in drift_events:
                 details = drift.drift_details or {}
-                service = details.get('service') or details.get('container') or details.get('service_name')
-                if service:
+                services = set()
+
+                # Direct service/container keys
+                for key in ('service', 'container', 'service_name'):
+                    if details.get(key):
+                        services.add(details[key])
+
+                # container_change events: added/removed lists
+                for key in ('added', 'removed'):
+                    for svc in (details.get(key) or []):
+                        if isinstance(svc, str):
+                            services.add(svc)
+
+                # state_change events: affected_services list
+                for svc in (details.get('affected_services') or []):
+                    if isinstance(svc, str):
+                        services.add(svc)
+
+                # state_change events: current_state dict with service->status
+                cs = details.get('current_state')
+                if isinstance(cs, dict):
+                    for svc in cs:
+                        services.add(svc)
+
+                for svc in services:
                     service_events.append({
-                        'service': service,
+                        'service': svc,
                         'time': drift.detected_at,
                         'type': drift.drift_type
                     })
@@ -3626,6 +3649,10 @@ class KnowledgeBase:
                     delta = (event2['time'] - event1['time']).total_seconds()
                     if delta > window:
                         break
+                    # Skip delta=0: same drift event reported multiple services
+                    # at the exact same timestamp — that's one event, not a correlation
+                    if delta < 1:
+                        continue
                     if event1['service'] != event2['service']:
                         key = tuple(sorted([event1['service'], event2['service']]))
                         co_failures[key]["count"] += 1

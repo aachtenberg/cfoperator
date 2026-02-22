@@ -3852,7 +3852,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT service_a, service_b, correlation_type, occurrence_count, ROUND(avg_time_delta_seconds::numeric, 1) AS avg_delta_sec, last_seen FROM service_correlations ORDER BY occurrence_count DESC LIMIT 20",
+          "rawSql": "SELECT service_a, service_b, correlation_type, CASE correlation_type WHEN 'co_failure' THEN 'Both failed simultaneously (≤30s apart)' WHEN 'cascade_failure' THEN 'One failed, then the other followed (>30s apart)' WHEN 'dependency' THEN 'Service B depends on Service A' WHEN 'resource_contention' THEN 'Competing for same resource' END AS description, occurrence_count, ROUND(avg_time_delta_seconds::numeric, 1) AS avg_delta_sec, last_seen FROM service_correlations ORDER BY occurrence_count DESC LIMIT 20",
           "refId": "A"
         }
       ],

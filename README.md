@@ -11,6 +11,7 @@ CFOperator (Docker container)
 ├── OODA Loop (Dual-Mode)
 │   ├── Reactive: Monitor Alertmanager every 10s
 │   ├── Proactive: Deep sweeps every 30min
+│   ├── LLM Judge: Verify findings before reporting
 │   └── Morning: TPS reports at 7-9 AM
 │
 ├── Knowledge Base (ResilientKnowledgeBase)
@@ -44,6 +45,20 @@ CFOperator (Docker container)
     ├── Thinking indicator
     └── Pending questions panel
 ```
+
+## Sweep Finding Verification (LLM Judge)
+
+Sweep models sometimes hallucinate findings — e.g., reporting "immich-ml container is missing" when `immich_machine_learning` is running fine (name mismatch). To prevent false findings from cascading into false correlations and polluting the knowledge base, a verification step runs after each sweep.
+
+**How it works:**
+1. Each sweep phase is required to include an `evidence` field — the specific tool output supporting the finding
+2. After dedup, an LLM judge reviews each finding against its evidence
+3. Findings where the evidence contradicts the claim, is missing, or has name mismatches are filtered out
+4. Only verified findings reach report generation, notifications, storage, and correlation
+
+**Graceful degradation:** If the judge LLM call fails, original findings pass through unmodified.
+
+**Logs:** Look for `"Finding verification: N → M (K filtered)"` to see the judge in action.
 
 ## Example Fleet
 

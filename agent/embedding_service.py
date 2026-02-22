@@ -18,6 +18,14 @@ from collections import OrderedDict
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timezone
 
+def _get_metrics():
+    """Lazy import of Prometheus counters from agent.agent (avoids circular import)."""
+    try:
+        from agent.agent import EMBEDDING_REQUESTS, EMBEDDING_CACHE_HITS
+        return EMBEDDING_REQUESTS, EMBEDDING_CACHE_HITS
+    except ImportError:
+        return None, None
+
 # Default embedding model - nomic-embed-text is fast and high quality
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 EMBEDDING_DIMENSION = 768  # nomic-embed-text dimension
@@ -258,7 +266,14 @@ class EmbeddingService:
                 _log("debug", "Embedding cache hit",
                      model=self.model,
                      text_len=len(text))
+                _er, _ec = _get_metrics()
+                if _ec:
+                    _ec.labels(result='hit').inc()
                 return cached
+            else:
+                _er, _ec = _get_metrics()
+                if _ec:
+                    _ec.labels(result='miss').inc()
 
         # Need to generate - check availability
         if not self.is_available():
@@ -285,18 +300,30 @@ class EmbeddingService:
                          model=self.model,
                          text_len=len(text),
                          embedding_dim=len(embedding))
+                    _er, _ec = _get_metrics()
+                    if _er:
+                        _er.labels(result='success').inc()
                     return embedding
 
             _log("warn", "Failed to generate embedding",
                  status=response.status_code,
                  response=response.text[:200] if response.text else "")
+            _er, _ec = _get_metrics()
+            if _er:
+                _er.labels(result='error').inc()
             return None
 
         except requests.exceptions.Timeout:
             _log("warn", "Embedding generation timed out", model=self.model)
+            _er, _ec = _get_metrics()
+            if _er:
+                _er.labels(result='error').inc()
             return None
         except Exception as e:
             _log("error", "Embedding generation error", error=str(e))
+            _er, _ec = _get_metrics()
+            if _er:
+                _er.labels(result='error').inc()
             return None
 
     def get_cache_stats(self) -> Dict[str, Any]:

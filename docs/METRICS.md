@@ -107,6 +107,19 @@ cfoperator_embedding_cache_hits_total{result="hit"}
 cfoperator_embedding_cache_hits_total{result="miss"}
 ```
 
+## Sweep Finding Verification
+
+The LLM judge that verifies sweep findings logs its activity (no dedicated Prometheus metrics — uses existing LLM request counters):
+
+```
+# Log lines to watch for:
+"Finding verification: 8 → 5 (3 filtered)"   # Summary line (INFO)
+"Judge filtered: <finding text>"               # Each filtered finding (INFO)
+"Finding verification failed, returning unfiltered: ..."  # Graceful degradation (WARNING)
+```
+
+The judge's LLM call is tracked by existing `cfoperator_llm_requests_total` and `cfoperator_llm_tokens_total` metrics.
+
 ## Common Queries
 
 ### Agent Health
