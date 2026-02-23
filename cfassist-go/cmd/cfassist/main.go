@@ -178,7 +178,7 @@ func runNonInteractive(cfg *config.Config, llm *client.LLMClient, toolReg *tools
 	}
 
 	out := &consoleOutput{}
-	result, msgs := conversation.Run(llm, toolReg, out, messages, systemPrompt, 10)
+	result, msgs := conversation.Run(llm, toolReg, out, messages, systemPrompt, cfg.MaxToolIterations)
 
 	// Save conversation to memory
 	if len(msgs) > 0 {

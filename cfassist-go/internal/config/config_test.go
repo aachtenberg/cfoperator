@@ -39,6 +39,9 @@ func TestDefaults(t *testing.T) {
 	if cfg.SystemPrompt == "" {
 		t.Error("default system prompt should not be empty")
 	}
+	if cfg.MaxToolIterations != 50 {
+		t.Errorf("default max_tool_iterations = %d, want %d", cfg.MaxToolIterations, 50)
+	}
 }
 
 func TestLoadMissing(t *testing.T) {
@@ -76,6 +79,8 @@ tools:
 memory:
   directory: /tmp/cfassist-test-mem
   max_conversations: 100
+
+max_tool_iterations: 25
 `
 	if err := os.WriteFile(cfgPath, []byte(yaml), 0644); err != nil {
 		t.Fatal(err)
@@ -115,6 +120,9 @@ memory:
 	}
 	if cfg.Memory.MaxConversations != 100 {
 		t.Errorf("max_conversations = %d, want %d", cfg.Memory.MaxConversations, 100)
+	}
+	if cfg.MaxToolIterations != 25 {
+		t.Errorf("max_tool_iterations = %d, want %d", cfg.MaxToolIterations, 25)
 	}
 }
 

@@ -38,7 +38,7 @@ func SaveState(provider, model string) {
 	os.WriteFile(statePath(), data, 0644)
 }
 
-var Version = "0.4.0"
+var Version = "0.5.0"
 
 type LLMConfig struct {
 	Provider      string  `yaml:"provider"`
@@ -86,12 +86,13 @@ type ToolsConfig struct {
 }
 
 type Config struct {
-	LLM          LLMConfig                 `yaml:"llm"`
-	Providers    map[string]ProviderConfig  `yaml:"providers"`
-	Context      ContextConfig              `yaml:"context"`
-	Memory       MemoryConfig               `yaml:"memory"`
-	Tools        ToolsConfig                `yaml:"tools"`
-	SystemPrompt string                     `yaml:"system_prompt"`
+	LLM               LLMConfig                 `yaml:"llm"`
+	Providers         map[string]ProviderConfig `yaml:"providers"`
+	Context           ContextConfig             `yaml:"context"`
+	Memory            MemoryConfig              `yaml:"memory"`
+	Tools             ToolsConfig               `yaml:"tools"`
+	SystemPrompt      string                    `yaml:"system_prompt"`
+	MaxToolIterations int                       `yaml:"max_tool_iterations"`
 }
 
 // ResolveProvider returns the LLMConfig for a named provider.
@@ -170,6 +171,7 @@ func Defaults() *Config {
 			Bash:     BashToolConfig{Enabled: true, Timeout: 30},
 			ReadFile: ReadFileToolConfig{Enabled: true, MaxLines: 500},
 		},
+		MaxToolIterations: 50,
 		SystemPrompt: "You are cfassist, a helpful SRE and systems administration assistant " +
 			"running in the user's terminal. You have access to tools for running " +
 			"shell commands and reading files. Be concise and practical. Focus on " +
@@ -296,6 +298,8 @@ tools:
   read_file:
     enabled: true
     max_lines: 500
+
+max_tool_iterations: 50  # max tool calls per conversation turn
 
 # Override the default system prompt:
 # system_prompt: |

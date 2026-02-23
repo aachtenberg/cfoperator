@@ -448,7 +448,7 @@ func (m *model) runConversationCmd(userInput string) tea.Cmd {
 		m.messages = append(m.messages, client.Message{Role: "user", Content: userInput})
 
 		out := &tuiOutput{program: m.program, renderer: m.renderer}
-		result, _ := conversation.Run(m.llm, m.toolReg, out, m.messages, m.systemPrompt, 10)
+		result, _ := conversation.Run(m.llm, m.toolReg, out, m.messages, m.systemPrompt, m.cfg.MaxToolIterations)
 
 		if result.Response != "" {
 			m.messages = append(m.messages, client.Message{Role: "assistant", Content: result.Response})
