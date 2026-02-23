@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -46,6 +47,23 @@ type model struct {
 	contextUsed    int // last prompt token count (current context usage)
 	providers      map[string]config.ProviderConfig
 	activeProvider string
+	// Tab completion state
+	completions    []string
+	completionIdx  int
+	lastInput      string
+}
+
+// slashCommands is the list of available commands for tab completion.
+var slashCommands = []string{
+	"/clear",
+	"/exit",
+	"/help",
+	"/model",
+	"/models",
+	"/providers",
+	"/quit",
+	"/tools",
+	"/use",
 }
 
 // New creates a new TUI model.
@@ -142,12 +160,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyCtrlC:
 			m.textarea.Reset()
+			m.completions = nil
 			return m, nil
+		case tea.KeyTab:
+			if m.busy {
+				return m, nil
+			}
+			return m.handleTabCompletion()
 		case tea.KeyEnter:
 			if m.busy {
 				return m, nil
 			}
+			m.completions = nil
 			return m.handleSubmit()
+		case tea.KeyEsc:
+			m.completions = nil
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -235,6 +263,66 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
+}
+
+func (m *model) handleTabCompletion() (tea.Model, tea.Cmd) {
+	text := m.textarea.Value()
+
+	// Only complete if input starts with /
+	if !strings.HasPrefix(text, "/") {
+		return m, nil
+	}
+
+	// If input changed, rebuild completions
+	if text != m.lastInput {
+		m.lastInput = text
+		m.completions = nil
+		m.completionIdx = 0
+
+		prefix := strings.ToLower(text)
+		for _, cmd := range slashCommands {
+			if strings.HasPrefix(cmd, prefix) {
+				m.completions = append(m.completions, cmd)
+			}
+		}
+		sort.Strings(m.completions)
+
+		// Also add provider names for /use
+		if strings.HasPrefix(prefix, "/use ") || prefix == "/use" {
+			providerPrefix := ""
+			if len(text) > 5 {
+				providerPrefix = strings.ToLower(text[5:])
+			}
+			for name := range m.providers {
+				if strings.HasPrefix(strings.ToLower(name), providerPrefix) {
+					m.completions = append(m.completions, "/use "+name)
+				}
+			}
+		}
+
+		// Add model names for /model
+		if strings.HasPrefix(prefix, "/model ") || prefix == "/model" {
+			// Current model as suggestion
+			if m.llm.Model != "" {
+				m.completions = append(m.completions, "/model "+m.llm.Model)
+			}
+		}
+	}
+
+	if len(m.completions) == 0 {
+		return m, nil
+	}
+
+	// Cycle through completions
+	completion := m.completions[m.completionIdx]
+	m.completionIdx = (m.completionIdx + 1) % len(m.completions)
+
+	// Set the completion in textarea
+	m.textarea.SetValue(completion)
+	// Move cursor to end
+	m.textarea.CursorEnd()
+
+	return m, nil
 }
 
 func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
@@ -346,7 +434,7 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 		m.outputLines = append(m.outputLines,
 			dimStyle.Render("Commands: /clear, /exit, /help, /tools, /models, /model <name>"),
 			dimStyle.Render("          /providers, /use <name>"),
-			dimStyle.Render("Ctrl-D to exit, Ctrl-C to cancel input."),
+			dimStyle.Render("Tab to autocomplete commands, Ctrl-D to exit, Ctrl-C to cancel."),
 		)
 		if m.ready {
 			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
