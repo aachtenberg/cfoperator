@@ -270,11 +270,21 @@ func (m *model) handleTabCompletion() (tea.Model, tea.Cmd) {
 
 	// Only complete if input starts with /
 	if !strings.HasPrefix(text, "/") {
+		m.completions = nil
 		return m, nil
 	}
 
-	// If input changed, rebuild completions
-	if text != m.lastInput {
+	// Check if current text is already one of our completions (user is cycling)
+	isCycling := false
+	for _, c := range m.completions {
+		if text == c {
+			isCycling = true
+			break
+		}
+	}
+
+	// If input changed and we're not cycling through completions, rebuild
+	if !isCycling && text != m.lastInput {
 		m.lastInput = text
 		m.completions = nil
 		m.completionIdx = 0
