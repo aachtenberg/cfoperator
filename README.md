@@ -158,7 +158,7 @@ A standalone single-binary CLI assistant for SRE and systems administration. Cro
 
 ```bash
 # Download the latest release (pick your platform)
-gh release download cfassist-v0.4.0 -R aachtenberg/cfoperator --pattern 'cfassist-linux-arm64'
+gh release download cfassist-v0.6.1 -R aachtenberg/cfoperator --pattern 'cfassist-linux-arm64'
 chmod +x cfassist-linux-arm64
 sudo mv cfassist-linux-arm64 /usr/local/bin/cfassist
 

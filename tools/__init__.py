@@ -17,6 +17,7 @@ import logging
 import requests as _requests
 from .ssh import SSHTools
 from .discovery import DiscoveryTools
+from .k8s import K8sTools
 
 logger = logging.getLogger("cfoperator.tools")
 
@@ -48,6 +49,14 @@ class ToolRegistry:
             self.ssh_tools = None
             self.discovery_tools = None
             logger.warning("No infrastructure hosts configured - SSH/discovery tools disabled")
+
+        # Initialize K8s tools (works in-cluster or with kubeconfig)
+        k8s_config = operator.config.get('kubernetes', {})
+        self.k8s_tools = K8sTools(
+            kubeconfig=k8s_config.get('kubeconfig'),
+            context=k8s_config.get('context')
+        )
+        logger.info("K8s tools initialized")
 
         # Register all tools
         self._register_tools()
@@ -172,6 +181,15 @@ class ToolRegistry:
                 tool_name = schema['name']
                 self.tools[tool_name] = {
                     'function': self._make_discovery_tool_wrapper(tool_name),
+                    'schema': schema
+                }
+
+        # K8s tools for cluster operations
+        if self.k8s_tools:
+            for schema in self.k8s_tools.get_schemas():
+                tool_name = schema['name']
+                self.tools[tool_name] = {
+                    'function': self._make_k8s_tool_wrapper(tool_name),
                     'schema': schema
                 }
 
@@ -735,6 +753,41 @@ class ToolRegistry:
             return lambda **kwargs: {'error': f'Unknown discovery tool: {tool_name}'}
 
         method = getattr(self.discovery_tools, method_name)
+
+        def wrapper(**kwargs):
+            try:
+                return method(**kwargs)
+            except Exception as e:
+                return {'error': str(e), 'tool': tool_name}
+
+        return wrapper
+
+    def _make_k8s_tool_wrapper(self, tool_name: str):
+        """Create wrapper function for K8s tools."""
+        # Map tool names to K8sTools methods
+        method_map = {
+            'k8s_get_pods': 'get_pods',
+            'k8s_get_pod_status': 'get_pod_status',
+            'k8s_get_pod_logs': 'get_pod_logs',
+            'k8s_get_deployments': 'get_deployments',
+            'k8s_rollout_status': 'rollout_status',
+            'k8s_rollout_restart': 'rollout_restart',
+            'k8s_get_services': 'get_services',
+            'k8s_get_events': 'get_events',
+            'k8s_describe': 'describe',
+            'k8s_get_nodes': 'get_nodes',
+            'k8s_get_node_metrics': 'get_node_metrics',
+            'k8s_exec_pod': 'exec_pod',
+            'k8s_get_namespaces': 'get_namespaces',
+            'k8s_get_all_unhealthy': 'get_all_unhealthy',
+            'k8s_get_cluster_info': 'get_cluster_info'
+        }
+
+        method_name = method_map.get(tool_name)
+        if not method_name:
+            return lambda **kwargs: {'error': f'Unknown K8s tool: {tool_name}'}
+
+        method = getattr(self.k8s_tools, method_name)
 
         def wrapper(**kwargs):
             try:
