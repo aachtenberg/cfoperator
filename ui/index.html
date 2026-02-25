@@ -598,16 +598,12 @@
 <body>
     <header>
         <div class="logo">
-            <span class="status-indicator" id="connection-status"></span>
             CFOperator
         </div>
         <div class="settings-panel">
             <label for="llm-backend">Backend:</label>
             <select id="llm-backend">
-                <option value="auto">Auto (Fallback)</option>
-                <option value="ollama">Ollama (Local)</option>
-                <option value="groq">Groq</option>
-                <option value="anthropic">Claude</option>
+                <option value="auto">Auto</option>
             </select>
             <select id="model-select" style="display:none;">
                 <option value="">Loading models...</option>
@@ -996,6 +992,12 @@ Type / for autocomplete.</div>
         function onBackendChange() {
             const backend = document.getElementById('llm-backend').value;
             localStorage.setItem('cfoperator_backend', backend);
+            // Persist to server so OODA/sweep uses same provider
+            fetch('/api/settings/provider', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({backend: backend})
+            }).catch(err => console.error('Error saving provider selection:', err));
             fetchModels(backend);
         }
 
@@ -1055,15 +1057,53 @@ Type / for autocomplete.</div>
             }).catch(err => console.error('Error saving fallback setting:', err));
         }
 
+        // Populate provider dropdown dynamically based on server config
+        function loadProviders() {
+            return fetch('/api/providers')
+                .then(r => r.json())
+                .then(data => {
+                    const select = document.getElementById('llm-backend');
+                    select.innerHTML = '';
+                    data.providers.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p.id;
+                        opt.textContent = p.name;
+                        if (!p.available && p.id !== 'auto') {
+                            opt.disabled = true;
+                            opt.textContent += ' (not configured)';
+                        }
+                        select.appendChild(opt);
+                    });
+                })
+                .catch(err => {
+                    console.error('Error loading providers:', err);
+                    // Keep default "Auto" option on error
+                });
+        }
+
         // Restore persisted backend and model on page load
         function restoreSettings() {
-            const savedBackend = localStorage.getItem('cfoperator_backend');
-            if (savedBackend) {
-                document.getElementById('llm-backend').value = savedBackend;
-            }
-            // Fetch models for the selected backend
-            const backend = document.getElementById('llm-backend').value;
-            fetchModels(backend);
+            // First load available providers, then restore selection
+            loadProviders().then(() => {
+                // Load selected provider from server (single source of truth)
+                fetch('/api/settings/provider')
+                    .then(r => r.json())
+                    .then(data => {
+                        const backend = data.backend || 'auto';
+                        document.getElementById('llm-backend').value = backend;
+                        localStorage.setItem('cfoperator_backend', backend);
+                        fetchModels(backend);
+                    })
+                    .catch(() => {
+                        // Fallback to localStorage if server unavailable
+                        const savedBackend = localStorage.getItem('cfoperator_backend');
+                        if (savedBackend) {
+                            document.getElementById('llm-backend').value = savedBackend;
+                        }
+                        const backend = document.getElementById('llm-backend').value;
+                        fetchModels(backend);
+                    });
+            });
             // Restore max iterations from server (DB), fallback to localStorage
             fetch('/api/settings/max_tool_iterations')
                 .then(r => r.json())
@@ -1316,7 +1356,7 @@ Type / for autocomplete.</div>
 
         // Initialize
         restoreSettings();
-        connectWebSocket();
+        // WebSocket disabled - using HTTP polling via /api/chat instead
     </script>
 </body>
 </html>

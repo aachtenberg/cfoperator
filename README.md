@@ -81,47 +81,6 @@ docker compose up -d
 # Access UI: http://localhost:8083
 ```
 
-## MCP Integration (NEW!)
-
-CFOperator now supports **Model Context Protocol (MCP)**, allowing Continue CLI, Claude Desktop, and other MCP clients to use CFOperator's infrastructure tools.
-
-**Automated Setup:**
-```bash
-./setup-continue.sh
-```
-
-**Manual Setup:**
-```bash
-# 1. Rebuild container
-docker compose up --build -d
-
-# 2. Configure Continue (~/.continue/config.json)
-{
-  "mcpServers": {
-    "cfoperator": {
-      "command": "docker",
-      "args": ["exec", "-i", "cfoperator", "python", "/app/mcp_server.py"]
-    }
-  }
-}
-
-# 3. Use it
-cn "@cfoperator list containers"
-```
-
-**Documentation:**
-- **Quick Reference:** [CONTINUE_QUICKREF.md](CONTINUE_QUICKREF.md) - One-line commands
-- **Full Setup Guide:** [docs/continue-integration.md](docs/continue-integration.md)
-- **MCP Technical Details:** [MCP_INTEGRATION.md](MCP_INTEGRATION.md)
-
-**Usage Examples:**
-```bash
-cn "@cfoperator investigate the sre-agent container"
-cn "@cfoperator why did prometheus restart?"
-cn "@cfoperator compare all hosts"
-cn "@cfoperator search logs for errors in telegraf"
-```
-
 ## Usage
 
 **Chat UI**: `http://<cfoperator-host>:8083`
@@ -238,12 +197,6 @@ make all            # all platforms
 ### Getting Started
 - [README.md](README.md) — This file (architecture, quick start)
 - [DEPLOYMENT.md](DEPLOYMENT.md) — Deploy checklist and quick commands
-
-### Continue/MCP Integration
-- [CONTINUE_QUICKREF.md](CONTINUE_QUICKREF.md) — One-line commands for common ops
-- [docs/continue-integration.md](docs/continue-integration.md) — Complete Continue setup guide
-- [MCP_INTEGRATION.md](MCP_INTEGRATION.md) — MCP technical details
-- [setup-continue.sh](setup-continue.sh) — Automated setup script
 
 ### Operations & Monitoring
 - [METRICS.md](METRICS.md) — Prometheus metrics reference

@@ -13,6 +13,7 @@ Runs in separate thread alongside OODA loop.
 
 import json
 import logging
+import os
 import threading
 import uuid
 from typing import Dict, Any, Optional
@@ -20,13 +21,9 @@ from flask import Flask, request, jsonify, send_from_directory
 import time
 import requests
 
-# WebSocket support (optional - doesn't work with Waitress)
-try:
-    from flask_sock import Sock
-    WEBSOCKET_AVAILABLE = True
-except ImportError:
-    WEBSOCKET_AVAILABLE = False
-    logger.warning("flask-sock not available - WebSocket disabled")
+# WebSocket support - disabled because Waitress (WSGI) doesn't support it
+# The UI uses HTTP polling via /api/chat instead
+WEBSOCKET_AVAILABLE = False
 
 logger = logging.getLogger("cfoperator.web")
 
@@ -98,19 +95,51 @@ class WebServer:
             from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
             return generate_latest(), 200, {'Content-Type': CONTENT_TYPE_LATEST}
 
-        # Ollama models API
-        # Anthropic has no model listing API — hardcode supported models
-        ANTHROPIC_MODELS = [
-            'claude-sonnet-4-5-20250929',
-            'claude-haiku-4-5-20251001',
-        ]
+        # Available providers endpoint
+        @self.app.route('/api/providers')
+        def list_providers():
+            """List available LLM providers based on configuration."""
+            providers = [
+                {'id': 'auto', 'name': 'Auto', 'description': 'Automatic fallback', 'available': True}
+            ]
+
+            # Check Ollama
+            ollama_url = self.operator.config.get('llm', {}).get('primary', {}).get('url', '')
+            providers.append({
+                'id': 'ollama',
+                'name': 'Ollama',
+                'description': 'Local inference',
+                'available': bool(ollama_url)
+            })
+
+            # Check Groq
+            providers.append({
+                'id': 'groq',
+                'name': 'Groq',
+                'description': 'Fast cloud inference',
+                'available': bool(os.getenv('GROQ_API_KEY', ''))
+            })
+
+            # Check Anthropic
+            providers.append({
+                'id': 'anthropic',
+                'name': 'Anthropic',
+                'description': 'Claude models',
+                'available': bool(os.getenv('ANTHROPIC_API_KEY', ''))
+            })
+
+            return jsonify({'providers': providers})
 
         @self.app.route('/api/models/<backend>')
         def list_models(backend):
             """List available models for a given backend."""
             try:
                 if backend == 'ollama':
-                    ollama_url = self.operator.config.get('llm', {}).get('primary', {}).get('url', '')
+                    # Use OLLAMA_DIRECT_URL for model listing if set, otherwise fall back to primary URL
+                    # This allows llm-gateway for inference but direct Ollama for model listing
+                    ollama_url = os.getenv('OLLAMA_DIRECT_URL', '')
+                    if not ollama_url:
+                        ollama_url = self.operator.config.get('llm', {}).get('primary', {}).get('url', '')
                     if not ollama_url:
                         return jsonify({'error': 'No Ollama URL configured', 'models': []}), 500
                     resp = requests.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=5)
@@ -121,7 +150,6 @@ class WebServer:
                     return jsonify({'models': models, 'selected': selected})
 
                 elif backend == 'groq':
-                    import os
                     api_key = os.getenv('GROQ_API_KEY', '')
                     if not api_key:
                         return jsonify({'error': 'GROQ_API_KEY not set', 'models': []}), 500
@@ -137,8 +165,22 @@ class WebServer:
                     return jsonify({'models': models, 'selected': selected})
 
                 elif backend == 'anthropic':
+                    api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                    if not api_key:
+                        return jsonify({'error': 'ANTHROPIC_API_KEY not set', 'models': []}), 500
+                    resp = requests.get(
+                        'https://api.anthropic.com/v1/models',
+                        headers={
+                            'x-api-key': api_key,
+                            'anthropic-version': '2023-06-01'
+                        },
+                        timeout=5
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    models = [m['id'] for m in data.get('data', [])]
                     selected = self.operator.kb.get_setting('anthropic_selected_model', '')
-                    return jsonify({'models': ANTHROPIC_MODELS, 'selected': selected})
+                    return jsonify({'models': models, 'selected': selected})
 
                 else:
                     return jsonify({'error': f'Unknown backend: {backend}', 'models': []}), 400
@@ -149,15 +191,42 @@ class WebServer:
 
         @self.app.route('/api/models/<backend>/select', methods=['POST'])
         def select_model(backend):
-            """Persist the user's model selection for a backend."""
+            """Persist the user's model selection for a backend AND set as default provider."""
             data = request.json
             model_name = data.get('model', '')
             setting_key = f'{backend}_selected_model'
             try:
+                # Save model selection for this backend
                 self.operator.kb._kb.set_setting(setting_key, model_name)
+                # Also set this backend as the system-wide default provider
+                self.operator.kb._kb.set_setting('selected_backend', backend)
+                logger.info(f"Set default provider to {backend}/{model_name}")
             except Exception as e:
                 logger.warning(f"Could not persist {backend} model selection (DB down?): {e}")
-            return jsonify({'success': True, 'model': model_name})
+            return jsonify({'success': True, 'backend': backend, 'model': model_name})
+
+        @self.app.route('/api/settings/provider')
+        def get_selected_provider():
+            """Get the currently selected LLM provider."""
+            backend = self.operator.kb.get_setting('selected_backend', 'auto')
+            model = ''
+            if backend and backend != 'auto':
+                model = self.operator.kb.get_setting(f'{backend}_selected_model', '')
+            return jsonify({'backend': backend, 'model': model})
+
+        @self.app.route('/api/settings/provider', methods=['POST'])
+        def set_selected_provider():
+            """Set the default LLM provider (without changing model)."""
+            data = request.json
+            backend = data.get('backend', 'auto')
+            if backend not in ('auto', 'ollama', 'groq', 'anthropic'):
+                return jsonify({'error': f'Invalid backend: {backend}'}), 400
+            try:
+                self.operator.kb._kb.set_setting('selected_backend', backend if backend != 'auto' else '')
+                logger.info(f"Set default provider to: {backend}")
+            except Exception as e:
+                logger.warning(f"Could not persist provider selection: {e}")
+            return jsonify({'success': True, 'backend': backend})
 
         # Settings API
         @self.app.route('/api/settings/max_tool_iterations')
@@ -252,6 +321,7 @@ class WebServer:
 
             def run_chat():
                 try:
+                    logger.debug(f"Chat {chat_id} started")
                     for evt in self.operator.handle_chat_message_stream(message, history, backend, model=model):
                         with self._sessions_lock:
                             session = self._chat_sessions.get(chat_id)

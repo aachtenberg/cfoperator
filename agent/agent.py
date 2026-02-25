@@ -20,7 +20,7 @@ import hashlib
 import subprocess
 from datetime import datetime
 import queue
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 
 # Prometheus metrics
@@ -1869,42 +1869,98 @@ Only return the JSON array, no other text."""
             pass
         return self.config.get('chat', {}).get('max_tool_iterations', 10)
 
+    def _get_provider_chain(self, backend: str = 'auto', model: str = None) -> List[Tuple[str, str, str]]:
+        """
+        Get ordered list of providers to try for fallback.
+
+        Returns providers in order: user-selected first, then fallbacks.
+        Respects allow_paid_escalation setting for cloud providers.
+
+        Args:
+            backend: 'auto', 'ollama', 'groq', 'anthropic'
+            model: Optional model override
+
+        Returns:
+            List of (provider_type, url, model) tuples to try in order
+        """
+        providers = []
+
+        # First, add the selected/resolved provider
+        primary = self._resolve_provider(backend, model)
+        if primary:
+            providers.append(primary)
+
+        # Check if fallback is allowed
+        allow_fallback = self.kb.get_setting('allow_paid_escalation', 'true')
+        if allow_fallback == 'false':
+            return providers
+
+        # Define fallback order: ollama -> groq -> anthropic
+        fallback_order = ['ollama', 'groq', 'anthropic']
+
+        # Add other providers as fallbacks (skip the primary)
+        primary_type = primary[0] if primary else None
+        for fb_type in fallback_order:
+            if fb_type == primary_type:
+                continue  # Skip primary - already added
+
+            fb_provider = self._resolve_provider(fb_type, None)
+            if fb_provider and fb_provider not in providers:
+                # Verify the provider has required config (API keys, etc.)
+                if fb_type == 'groq' and not os.getenv('GROQ_API_KEY'):
+                    continue
+                if fb_type == 'anthropic' and not os.getenv('ANTHROPIC_API_KEY'):
+                    continue
+                providers.append(fb_provider)
+
+        return providers
+
     def _resolve_provider(self, backend: str = 'auto', model: str = None):
         """
         Resolve LLM provider from UI selection.
 
         Centralizes provider resolution so chat, skills, and OODA all stay in sync.
 
-        Resolution order (first non-empty wins):
+        Resolution order for 'auto' mode:
+        1. DB `selected_backend` (UI provider selection - ollama/groq/anthropic)
+        2. Fallback chain if no DB preference set
+
+        For each provider, model resolution order:
         1. Explicit `model` param (caller override)
-        2. DB `ollama_selected_model` (UI selection)
-        3. Fallback chain / config.yaml primary model
+        2. DB `{provider}_selected_model` (UI model selection)
+        3. Config fallback
 
         Args:
-            backend: 'auto', 'ollama', 'groq', 'gemini', 'anthropic'
+            backend: 'auto', 'ollama', 'groq', 'anthropic'
             model: Explicit model override, or None to resolve from DB/config
 
         Returns:
             Tuple of (provider_type, url, model) or None if unavailable
         """
+        # For 'auto', check if user has selected a preferred backend in UI
         if backend == 'auto':
-            # Use fallback chain, but still respect DB model selection for ollama
-            provider_info = self.llm.get_next_provider()
-            if not provider_info:
-                return None
-            provider_type, url, resolved_model = provider_info
-            source = 'fallback-chain'
-            # If fallback chain selected ollama, override model with user's DB selection
-            if provider_type == 'ollama' and not model:
-                db_model = self.kb.get_setting('ollama_selected_model', '')
-                if db_model:
-                    resolved_model = db_model
-                    source = 'db:ollama_selected_model'
-            if model:
-                source = 'explicit-override'
-            final = (provider_type, url, model or resolved_model)
-            logger.debug(f"Resolved provider: {final[0]}/{final[2]} (source={source})")
-            return final
+            db_backend = self.kb.get_setting('selected_backend', '')
+            if db_backend and db_backend in ('ollama', 'groq', 'anthropic'):
+                backend = db_backend
+                logger.info(f"[PROVIDER] Using UI-selected backend: {backend}")
+            else:
+                # No UI preference - use fallback chain
+                provider_info = self.llm.get_next_provider()
+                if not provider_info:
+                    return None
+                provider_type, url, resolved_model = provider_info
+                source = 'fallback-chain'
+                # If fallback chain selected ollama, override model with user's DB selection
+                if provider_type == 'ollama' and not model:
+                    db_model = self.kb.get_setting('ollama_selected_model', '')
+                    if db_model:
+                        resolved_model = db_model
+                        source = 'db:ollama_selected_model'
+                if model:
+                    source = 'explicit-override'
+                final = (provider_type, url, model or resolved_model)
+                logger.debug(f"Resolved provider: {final[0]}/{final[2]} (source={source})")
+                return final
 
         provider_type = backend
         llm_config = self.config.get('llm', {})
@@ -1919,7 +1975,7 @@ Only return the JSON array, no other text."""
                 source = 'db:ollama_selected_model' if db_model else 'config:llm.primary.model'
             else:
                 source = 'explicit-override'
-            logger.debug(f"Resolved provider: {provider_type}/{model} (source={source})")
+            logger.debug(f"[PROVIDER] Resolved ollama: {model} (source={source})")
             return (provider_type, url, model)
         elif backend in ('groq', 'anthropic'):
             url = None
@@ -2007,6 +2063,7 @@ Only return the JSON array, no other text."""
 
         for iteration in range(max_iterations):
             try:
+                logger.debug(f"[CHAT] iteration {iteration+1}/{max_iterations}, messages count: {len(full_messages)}")
                 # Build payload for Ollama (OpenAI-compatible format)
                 if provider_type == 'ollama':
                     payload = {
@@ -2017,6 +2074,7 @@ Only return the JSON array, no other text."""
                         'temperature': 0.7
                     }
                     headers = {'Content-Type': 'application/json'}
+                    logger.debug(f"[CHAT] POST to {url}/api/chat, roles={[m.get('role') for m in full_messages]}")
                     response = requests.post(
                         f"{url}/api/chat",
                         json=payload,
@@ -2024,6 +2082,7 @@ Only return the JSON array, no other text."""
                         timeout=120
                     )
                     data = response.json()
+                    logger.debug(f"[CHAT] LLM status={response.status_code}, tool_calls={bool(data.get('message', {}).get('tool_calls'))}, content_len={len(data.get('message', {}).get('content', ''))}")
 
                     # Extract tokens
                     if 'prompt_eval_count' in data:
@@ -2039,7 +2098,12 @@ Only return the JSON array, no other text."""
                         # Execute tool
                         tool_call = tool_calls[0]
                         tool_name = tool_call['function']['name']
-                        tool_args = tool_call['function']['arguments']
+                        raw_args = tool_call['function'].get('arguments', {})
+                        # Ollama may return arguments as JSON string or dict
+                        if isinstance(raw_args, str):
+                            tool_args = json.loads(raw_args) if raw_args.strip() else {}
+                        else:
+                            tool_args = raw_args if raw_args else {}
 
                         # Notify UI about tool call
                         if event_callback:
@@ -2137,9 +2201,12 @@ Only return the JSON array, no other text."""
 
                         for tool_call in tool_calls:
                             tool_name = tool_call['function']['name']
-                            # Groq returns arguments as JSON string
+                            # Groq returns arguments as JSON string (handle empty strings safely)
                             raw_args = tool_call['function'].get('arguments', '{}')
-                            tool_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                            if isinstance(raw_args, str):
+                                tool_args = json.loads(raw_args) if raw_args.strip() else {}
+                            else:
+                                tool_args = raw_args if raw_args else {}
                             tool_call_id = tool_call.get('id', f'call_{iteration}')
 
                             if event_callback:
@@ -2746,41 +2813,69 @@ Be concise and infrastructure-focused.
         start_time = time.time()
         tool_calls_count = 0
 
-        try:
-            resolved = self._resolve_provider(backend, model)
-            if not resolved:
-                return {'response': f'LLM provider unavailable: {backend}', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
-            provider_type, url, model = resolved
+        # Get provider chain for fallback
+        provider_chain = self._get_provider_chain(backend, model)
+        if not provider_chain:
+            return {'response': 'No LLM providers available', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
 
-            messages = list(history) + [{'role': 'user', 'content': message}]
+        messages = list(history) + [{'role': 'user', 'content': message}]
+        last_error = None
+        prev_provider = None
 
-            result = self._chat_with_tools(
-                provider_type=provider_type, url=url, model=model,
-                messages=messages, system_context=system_context,
-                event_callback=event_callback
-            )
+        for idx, (provider_type, url, model_name) in enumerate(provider_chain):
+            try:
+                # Notify UI if falling back to a different provider
+                if idx > 0 and event_callback and prev_provider:
+                    event_callback('fallback', {
+                        'from': prev_provider,
+                        'to': f"{provider_type}/{model_name}",
+                        'reason': str(last_error)[:100] if last_error else 'unknown'
+                    })
 
-            tool_calls_count = result.get('tool_calls', 0)
-            latency = time.time() - start_time
-            LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
-            LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
-            if result.get('input_tokens'):
-                LLM_TOKENS.labels(provider=provider_type, model=model, type='input').inc(result['input_tokens'])
-            if result.get('output_tokens'):
-                LLM_TOKENS.labels(provider=provider_type, model=model, type='output').inc(result['output_tokens'])
+                logger.info(f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: {provider_type}/{model_name}")
 
-            provider_key = f"{provider_type}/{url}/{model}" if url else f"{provider_type}/{model}"
-            self.llm.record_success(provider_key)
+                result = self._chat_with_tools(
+                    provider_type=provider_type, url=url, model=model_name,
+                    messages=messages, system_context=system_context,
+                    event_callback=event_callback
+                )
 
-            return {'response': result.get('response', ''), 'backend': provider_type, 'model': model, 'tool_calls': tool_calls_count, 'learning_ids': result.get('learning_ids', [])}
+                # Success!
+                tool_calls_count = result.get('tool_calls', 0)
+                latency = time.time() - start_time
+                LLM_REQUESTS.labels(provider=provider_type, model=model_name, result='success').inc()
+                LLM_LATENCY.labels(provider=provider_type, model=model_name).observe(latency)
+                if result.get('input_tokens'):
+                    LLM_TOKENS.labels(provider=provider_type, model=model_name, type='input').inc(result['input_tokens'])
+                if result.get('output_tokens'):
+                    LLM_TOKENS.labels(provider=provider_type, model=model_name, type='output').inc(result['output_tokens'])
 
-        except Exception as e:
-            latency = time.time() - start_time
-            provider = provider_type if 'provider_type' in locals() else 'unknown'
-            model_name = model if 'model' in locals() else 'unknown'
-            LLM_REQUESTS.labels(provider=provider, model=model_name, result='error').inc()
-            LLM_ERRORS.labels(provider=provider, error_type=type(e).__name__).inc()
-            raise
+                provider_key = f"{provider_type}/{url}/{model_name}" if url else f"{provider_type}/{model_name}"
+                self.llm.record_success(provider_key)
+
+                return {
+                    'response': result.get('response', ''),
+                    'backend': provider_type,
+                    'model': model_name,
+                    'tool_calls': tool_calls_count,
+                    'learning_ids': result.get('learning_ids', []),
+                    'fallback_used': idx > 0  # Indicate if fallback was used
+                }
+
+            except Exception as e:
+                last_error = e
+                prev_provider = f"{provider_type}/{model_name}"
+                provider_key = f"{provider_type}/{url}/{model_name}" if url else f"{provider_type}/{model_name}"
+
+                logger.warning(f"[FALLBACK] Provider {provider_type}/{model_name} failed: {e}")
+                self.llm.record_failure(provider_key, str(e))
+                LLM_REQUESTS.labels(provider=provider_type, model=model_name, result='error').inc()
+                LLM_ERRORS.labels(provider=provider_type, error_type=type(e).__name__).inc()
+                continue  # Try next provider
+
+        # All providers failed
+        logger.error(f"[FALLBACK] All {len(provider_chain)} providers failed. Last error: {last_error}")
+        raise last_error or RuntimeError("All LLM providers exhausted")
 
     def _execute_skill_stream(self, message: str, backend: str = 'auto', model: str = None, event_callback=None) -> Dict[str, Any]:
         """Execute a skill with streaming events."""

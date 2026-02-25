@@ -432,6 +432,13 @@ class ToolRegistry:
             return {'error': f'Tool {tool_name} not found'}
 
         try:
+            # Defensive: handle arguments that may still be JSON strings
+            if isinstance(arguments, str):
+                import json
+                arguments = json.loads(arguments) if arguments.strip() else {}
+            elif arguments is None:
+                arguments = {}
+
             logger.info(f"Executing tool: {tool_name}")
             func = self.tools[tool_name]['function']
             result = func(**arguments)

@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -150,22 +151,11 @@ func init() {
 // Backend Health
 // ============================================================================
 
-// DiscoveredModel represents a model found on a backend
-type DiscoveredModel struct {
-	Name       string
-	Backend    string
-	Provider   string
-	Size       int64
-	ModifiedAt string
-	Details    map[string]interface{}
-}
-
 type BackendState struct {
 	sync.RWMutex
 	healthy    map[string]bool
 	lastCheck  map[string]time.Time
 	errorCount map[string]int
-	models     map[string][]DiscoveredModel // backend name -> models
 }
 
 func NewBackendState() *BackendState {
@@ -173,7 +163,6 @@ func NewBackendState() *BackendState {
 		healthy:    make(map[string]bool),
 		lastCheck:  make(map[string]time.Time),
 		errorCount: make(map[string]int),
-		models:     make(map[string][]DiscoveredModel),
 	}
 }
 
@@ -215,22 +204,6 @@ func (bs *BackendState) RecordSuccess(name string) {
 	bs.errorCount[name] = 0
 	bs.healthy[name] = true
 	backendHealth.WithLabelValues(name).Set(1)
-}
-
-func (bs *BackendState) SetModels(backend string, models []DiscoveredModel) {
-	bs.Lock()
-	defer bs.Unlock()
-	bs.models[backend] = models
-}
-
-func (bs *BackendState) GetAllModels() []DiscoveredModel {
-	bs.RLock()
-	defer bs.RUnlock()
-	var all []DiscoveredModel
-	for _, models := range bs.models {
-		all = append(all, models...)
-	}
-	return all
 }
 
 // ============================================================================
@@ -369,7 +342,219 @@ func (gw *Gateway) SelectBackend(preferredModel string) *Backend {
 }
 
 func (gw *Gateway) ProxyRequest(backend *Backend, body []byte) ([]byte, int, error) {
-	return gw.ProxyRequestWithProvider(backend, body)
+	var url string
+	var req *http.Request
+	var err error
+
+	switch backend.Provider {
+	case "ollama":
+		url = strings.TrimRight(backend.URL, "/") + "/api/chat"
+		// Transform OpenAI format to Ollama format
+		var openaiReq map[string]interface{}
+		json.Unmarshal(body, &openaiReq)
+		ollamaReq := map[string]interface{}{
+			"model":    backend.Model,
+			"messages": openaiReq["messages"],
+			"stream":   false,
+		}
+		if tools, ok := openaiReq["tools"]; ok {
+			ollamaReq["tools"] = tools
+		}
+		if temp, ok := openaiReq["temperature"]; ok {
+			ollamaReq["temperature"] = temp
+		}
+		body, _ = json.Marshal(ollamaReq)
+		req, err = http.NewRequest("POST", url, bytes.NewReader(body))
+
+	case "anthropic":
+		url = strings.TrimRight(backend.URL, "/") + "/v1/messages"
+		// Transform OpenAI format to Anthropic format
+		var openaiReq map[string]interface{}
+		json.Unmarshal(body, &openaiReq)
+
+		messages := openaiReq["messages"].([]interface{})
+		var systemPrompt string
+		var anthropicMsgs []map[string]interface{}
+		for _, m := range messages {
+			msg := m.(map[string]interface{})
+			if msg["role"] == "system" {
+				systemPrompt = msg["content"].(string)
+			} else {
+				anthropicMsgs = append(anthropicMsgs, map[string]interface{}{
+					"role":    msg["role"],
+					"content": msg["content"],
+				})
+			}
+		}
+
+		anthropicReq := map[string]interface{}{
+			"model":      backend.Model,
+			"max_tokens": 4096,
+			"messages":   anthropicMsgs,
+		}
+		if systemPrompt != "" {
+			anthropicReq["system"] = systemPrompt
+		}
+		if tools, ok := openaiReq["tools"]; ok {
+			// Transform to Anthropic tool format
+			var anthropicTools []map[string]interface{}
+			for _, t := range tools.([]interface{}) {
+				tool := t.(map[string]interface{})
+				if fn, ok := tool["function"].(map[string]interface{}); ok {
+					anthropicTools = append(anthropicTools, map[string]interface{}{
+						"name":         fn["name"],
+						"description":  fn["description"],
+						"input_schema": fn["parameters"],
+					})
+				}
+			}
+			anthropicReq["tools"] = anthropicTools
+		}
+		body, _ = json.Marshal(anthropicReq)
+		req, err = http.NewRequest("POST", url, bytes.NewReader(body))
+		if err == nil {
+			req.Header.Set("x-api-key", backend.APIKey)
+			req.Header.Set("anthropic-version", "2023-06-01")
+		}
+
+	default: // openai compatible (groq, etc)
+		url = strings.TrimRight(backend.URL, "/")
+		url = strings.TrimSuffix(url, "/v1") + "/v1/chat/completions"
+		// Inject model
+		var openaiReq map[string]interface{}
+		json.Unmarshal(body, &openaiReq)
+		openaiReq["model"] = backend.Model
+		body, _ = json.Marshal(openaiReq)
+		req, err = http.NewRequest("POST", url, bytes.NewReader(body))
+		if err == nil && backend.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+backend.APIKey)
+		}
+	}
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := gw.client.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, err
+	}
+
+	// Transform response back to OpenAI format if needed
+	if backend.Provider == "ollama" {
+		respBody = gw.transformOllamaResponse(respBody)
+	} else if backend.Provider == "anthropic" {
+		respBody = gw.transformAnthropicResponse(respBody)
+	}
+
+	return respBody, resp.StatusCode, nil
+}
+
+func (gw *Gateway) transformOllamaResponse(body []byte) []byte {
+	var ollamaResp map[string]interface{}
+	if err := json.Unmarshal(body, &ollamaResp); err != nil {
+		return body
+	}
+
+	msg, _ := ollamaResp["message"].(map[string]interface{})
+	content, _ := msg["content"].(string)
+	toolCalls, _ := msg["tool_calls"].([]interface{})
+
+	openaiResp := map[string]interface{}{
+		"id":      "chatcmpl-" + generateID(),
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   ollamaResp["model"],
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":       "assistant",
+					"content":    content,
+					"tool_calls": toolCalls,
+				},
+				"finish_reason": "stop",
+			},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     ollamaResp["prompt_eval_count"],
+			"completion_tokens": ollamaResp["eval_count"],
+			"total_tokens": func() int {
+				p, _ := ollamaResp["prompt_eval_count"].(float64)
+				c, _ := ollamaResp["eval_count"].(float64)
+				return int(p + c)
+			}(),
+		},
+	}
+
+	result, _ := json.Marshal(openaiResp)
+	return result
+}
+
+func (gw *Gateway) transformAnthropicResponse(body []byte) []byte {
+	var anthropicResp map[string]interface{}
+	if err := json.Unmarshal(body, &anthropicResp); err != nil {
+		return body
+	}
+
+	content := ""
+	var toolCalls []interface{}
+
+	if contentBlocks, ok := anthropicResp["content"].([]interface{}); ok {
+		for _, block := range contentBlocks {
+			b := block.(map[string]interface{})
+			if b["type"] == "text" {
+				content = b["text"].(string)
+			} else if b["type"] == "tool_use" {
+				toolCalls = append(toolCalls, map[string]interface{}{
+					"id":   b["id"],
+					"type": "function",
+					"function": map[string]interface{}{
+						"name":      b["name"],
+						"arguments": b["input"],
+					},
+				})
+			}
+		}
+	}
+
+	usage, _ := anthropicResp["usage"].(map[string]interface{})
+	inputTokens, _ := usage["input_tokens"].(float64)
+	outputTokens, _ := usage["output_tokens"].(float64)
+
+	openaiResp := map[string]interface{}{
+		"id":      anthropicResp["id"],
+		"object":  "chat.completion",
+		"created": time.Now().Unix(),
+		"model":   anthropicResp["model"],
+		"choices": []map[string]interface{}{
+			{
+				"index": 0,
+				"message": map[string]interface{}{
+					"role":       "assistant",
+					"content":    content,
+					"tool_calls": toolCalls,
+				},
+				"finish_reason": anthropicResp["stop_reason"],
+			},
+		},
+		"usage": map[string]interface{}{
+			"prompt_tokens":     int(inputTokens),
+			"completion_tokens": int(outputTokens),
+			"total_tokens":      int(inputTokens + outputTokens),
+		},
+	}
+
+	result, _ := json.Marshal(openaiResp)
+	return result
 }
 
 // ============================================================================
@@ -388,80 +573,16 @@ func (gw *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Parse request to get model for routing
+	// Parse request to get model hint (for future model-specific routing)
 	var req map[string]interface{}
 	json.Unmarshal(body, &req)
-	requestedModel, _ := req["model"].(string)
+	_ = req["model"] // Reserved for model-specific routing
 
-	// Parse "backend/model" format
-	specifiedBackend, actualModel, hasBackendPrefix := parseModelSpec(requestedModel)
-
-	// If backend is explicitly specified, use it directly
-	if hasBackendPrefix {
-		backend := gw.backends[specifiedBackend]
-		if backend == nil || !backend.Enabled {
-			http.Error(w, fmt.Sprintf("Backend %s not available", specifiedBackend), http.StatusBadGateway)
-			return
-		}
-		if !gw.state.IsHealthy(specifiedBackend) {
-			http.Error(w, fmt.Sprintf("Backend %s is unhealthy", specifiedBackend), http.StatusBadGateway)
-			return
-		}
-
-		// Update request body with actual model name (without prefix)
-		req["model"] = actualModel
-		body, _ = json.Marshal(req)
-
-		start := time.Now()
-		respBody, statusCode, err := gw.ProxyRequest(backend, body)
-		latency := time.Since(start).Seconds()
-
-		requestLatency.WithLabelValues(backend.Name, actualModel).Observe(latency)
-
-		if err != nil || statusCode >= 500 {
-			gw.state.RecordError(backend.Name)
-			requestsTotal.WithLabelValues(backend.Name, actualModel, "error").Inc()
-			http.Error(w, fmt.Sprintf("Backend failed: %v", err), http.StatusBadGateway)
-			return
-		}
-
-		gw.state.RecordSuccess(backend.Name)
-		requestsTotal.WithLabelValues(backend.Name, actualModel, "success").Inc()
-
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-LLM-Backend", backend.Name)
-		w.WriteHeader(statusCode)
-		w.Write(respBody)
-		return
-	}
-
-	// No explicit backend - build ordered list of backends to try
-	var backendsToTry []string
-	backendSet := make(map[string]bool)
-
-	if requestedModel != "" {
-		// Find backends that have this model
-		for _, m := range gw.state.GetAllModels() {
-			if m.Name == requestedModel && !backendSet[m.Backend] {
-				backendsToTry = append(backendsToTry, m.Backend)
-				backendSet[m.Backend] = true
-			}
-		}
-	}
-
-	// Add remaining backends from fallback order
-	for _, backendName := range gw.config.Fallback {
-		if !backendSet[backendName] {
-			backendsToTry = append(backendsToTry, backendName)
-			backendSet[backendName] = true
-		}
-	}
-
-	// Try backends in priority order
+	// Try backends in fallback order
 	var lastErr error
 	var lastBackend string
 
-	for _, backendName := range backendsToTry {
+	for _, backendName := range gw.config.Fallback {
 		backend := gw.backends[backendName]
 		if backend == nil || !backend.Enabled {
 			continue
@@ -519,66 +640,16 @@ func (gw *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request)
 	http.Error(w, fmt.Sprintf("All backends failed: %v", lastErr), http.StatusBadGateway)
 }
 
-// parseModelSpec parses "backend/model" format, returns (backend, model, hasPrefix)
-func parseModelSpec(spec string) (string, string, bool) {
-	if idx := strings.Index(spec, "/"); idx > 0 {
-		return spec[:idx], spec[idx+1:], true
-	}
-	return "", spec, false
-}
-
 func (gw *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 	var models []map[string]interface{}
-	seen := make(map[string]bool)
-
-	// First add dynamically discovered models (with backend prefix)
-	for _, m := range gw.state.GetAllModels() {
-		prefixedName := m.Backend + "/" + m.Name
-		if !seen[prefixedName] {
-			seen[prefixedName] = true
-			models = append(models, map[string]interface{}{
-				"id":       prefixedName,
-				"object":   "model",
-				"owned_by": m.Provider,
-				"backend":  m.Backend,
-			})
-		}
-	}
-
-	// Add configured model from backends (with backend prefix)
-	for _, b := range gw.backends {
-		if b.Enabled && b.Model != "" {
-			prefixedName := b.Name + "/" + b.Model
-			if !seen[prefixedName] {
-				seen[prefixedName] = true
-				models = append(models, map[string]interface{}{
-					"id":       prefixedName,
-					"object":   "model",
-					"owned_by": b.Provider,
-					"backend":  b.Name,
-				})
-			}
-		}
-	}
-
-	// Add static models from providers (with backend prefix)
 	for _, b := range gw.backends {
 		if b.Enabled {
-			provider := GetProvider(b.Provider)
-			if provider != nil {
-				for _, name := range provider.StaticModels() {
-					prefixedName := b.Name + "/" + name
-					if !seen[prefixedName] {
-						seen[prefixedName] = true
-						models = append(models, map[string]interface{}{
-							"id":       prefixedName,
-							"object":   "model",
-							"owned_by": b.Provider,
-							"backend":  b.Name,
-						})
-					}
-				}
-			}
+			models = append(models, map[string]interface{}{
+				"id":       b.Model,
+				"object":   "model",
+				"owned_by": b.Provider,
+				"backend":  b.Name,
+			})
 		}
 	}
 
@@ -589,221 +660,6 @@ func (gw *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
-}
-
-// handleOllamaTags returns models in Ollama /api/tags format for compatibility
-// Model names are prefixed with backend: "backend/model" for clear identification
-func (gw *Gateway) handleOllamaTags(w http.ResponseWriter, r *http.Request) {
-	var models []map[string]interface{}
-	seen := make(map[string]bool)
-
-	// Add dynamically discovered models (with backend prefix)
-	for _, m := range gw.state.GetAllModels() {
-		prefixedName := m.Backend + "/" + m.Name
-		if !seen[prefixedName] {
-			seen[prefixedName] = true
-			details := m.Details
-			if details == nil {
-				details = map[string]interface{}{
-					"format":             "gguf",
-					"family":             m.Backend,
-					"parameter_size":     "unknown",
-					"quantization_level": "unknown",
-				}
-			}
-			models = append(models, map[string]interface{}{
-				"name":        prefixedName,
-				"modified_at": m.ModifiedAt,
-				"size":        m.Size,
-				"digest":      "",
-				"details":     details,
-			})
-		}
-	}
-
-	// Add configured model from non-Ollama backends (with backend prefix)
-	for _, b := range gw.backends {
-		if b.Enabled && b.Provider != "ollama" && b.Model != "" {
-			prefixedName := b.Name + "/" + b.Model
-			if !seen[prefixedName] {
-				seen[prefixedName] = true
-				models = append(models, map[string]interface{}{
-					"name":        prefixedName,
-					"modified_at": time.Now().Format(time.RFC3339),
-					"size":        0,
-					"digest":      "",
-					"details": map[string]interface{}{
-						"format":             "api",
-						"family":             b.Name,
-						"parameter_size":     "cloud",
-						"quantization_level": "none",
-					},
-				})
-			}
-		}
-	}
-
-	// Add static models from providers (with backend prefix)
-	for _, b := range gw.backends {
-		if b.Enabled {
-			provider := GetProvider(b.Provider)
-			if provider != nil {
-				for _, name := range provider.StaticModels() {
-					prefixedName := b.Name + "/" + name
-					if !seen[prefixedName] {
-						seen[prefixedName] = true
-						models = append(models, map[string]interface{}{
-							"name":        prefixedName,
-							"modified_at": time.Now().Format(time.RFC3339),
-							"size":        0,
-							"digest":      "",
-							"details": map[string]interface{}{
-								"format":             "api",
-								"family":             b.Name,
-								"parameter_size":     "cloud",
-								"quantization_level": "none",
-							},
-						})
-					}
-				}
-			}
-		}
-	}
-
-	resp := map[string]interface{}{
-		"models": models,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-// handleOllamaChat handles native Ollama /api/chat format requests
-func (gw *Gateway) handleOllamaChat(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "Failed to read request", http.StatusBadRequest)
-		return
-	}
-
-	// Parse the Ollama request
-	var ollamaReq map[string]interface{}
-	if err := json.Unmarshal(body, &ollamaReq); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	requestedModel, _ := ollamaReq["model"].(string)
-	if requestedModel == "" {
-		http.Error(w, "Model required", http.StatusBadRequest)
-		return
-	}
-
-	// Parse "backend/model" format
-	specifiedBackend, actualModel, hasBackendPrefix := parseModelSpec(requestedModel)
-
-	// Find a backend that has this model
-	var targetBackend *Backend
-
-	// If backend is specified explicitly, use it directly
-	if hasBackendPrefix {
-		if backend, ok := gw.backends[specifiedBackend]; ok && backend.Enabled && gw.state.IsHealthy(specifiedBackend) {
-			targetBackend = backend
-			requestedModel = actualModel // Use the model name without prefix for the actual request
-		} else {
-			http.Error(w, fmt.Sprintf("Backend %s not available", specifiedBackend), http.StatusBadGateway)
-			return
-		}
-	} else {
-		// No prefix - search across all backends
-		// First try backends with dynamically discovered models
-		for _, m := range gw.state.GetAllModels() {
-			if m.Name == requestedModel {
-				if backend, ok := gw.backends[m.Backend]; ok && backend.Enabled && gw.state.IsHealthy(m.Backend) {
-					targetBackend = backend
-					break
-				}
-			}
-		}
-
-		// Then check statically configured models on backends
-		if targetBackend == nil {
-			for _, backend := range gw.backends {
-				if backend.Enabled && backend.Model == requestedModel && gw.state.IsHealthy(backend.Name) {
-					targetBackend = backend
-					break
-				}
-			}
-		}
-
-		// Then check static models from provider
-		if targetBackend == nil {
-			for _, backend := range gw.backends {
-				if backend.Enabled && gw.state.IsHealthy(backend.Name) {
-					provider := GetProvider(backend.Provider)
-					if provider != nil {
-						for _, m := range provider.StaticModels() {
-							if m == requestedModel {
-								targetBackend = backend
-								break
-							}
-						}
-					}
-				}
-				if targetBackend != nil {
-					break
-				}
-			}
-		}
-
-		// Fall back to first healthy backend
-		if targetBackend == nil {
-			for _, backendName := range gw.config.Fallback {
-				backend := gw.backends[backendName]
-				if backend != nil && backend.Enabled && gw.state.IsHealthy(backendName) {
-					targetBackend = backend
-					break
-				}
-			}
-		}
-	}
-
-	if targetBackend == nil {
-		http.Error(w, fmt.Sprintf("No healthy backend available for model %s", requestedModel), http.StatusBadGateway)
-		return
-	}
-
-	start := time.Now()
-
-	// Use provider interface to handle the request
-	respBody, statusCode, err := gw.ProxyOllamaRequestWithProvider(targetBackend, requestedModel, ollamaReq)
-	if err != nil {
-		log.Printf("Backend %s failed: %v", targetBackend.Name, err)
-		gw.state.RecordError(targetBackend.Name)
-		http.Error(w, fmt.Sprintf("Backend request failed: %v", err), http.StatusBadGateway)
-		return
-	}
-
-	latency := time.Since(start).Seconds()
-	requestLatency.WithLabelValues(targetBackend.Name, requestedModel).Observe(latency)
-
-	if statusCode >= 400 {
-		gw.state.RecordError(targetBackend.Name)
-		requestsTotal.WithLabelValues(targetBackend.Name, requestedModel, "error").Inc()
-	} else {
-		gw.state.RecordSuccess(targetBackend.Name)
-		requestsTotal.WithLabelValues(targetBackend.Name, requestedModel, "success").Inc()
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-LLM-Backend", targetBackend.Name)
-	w.WriteHeader(statusCode)
-	w.Write(respBody)
 }
 
 func (gw *Gateway) handleJobSubmit(w http.ResponseWriter, r *http.Request) {
@@ -896,16 +752,17 @@ func (gw *Gateway) healthChecker(ctx context.Context) {
 				continue
 			}
 
-			provider := GetProvider(b.Provider)
-			if provider == nil {
-				provider = GetProvider("openai")
-			}
-
-			url := provider.HealthCheckURL(b)
-			if url == "" {
-				// No health check endpoint, assume healthy
+			var url string
+			switch b.Provider {
+			case "ollama":
+				url = strings.TrimRight(b.URL, "/") + "/api/tags"
+			case "anthropic":
+				// Skip health check for Anthropic (no list endpoint)
 				gw.state.SetHealthy(name, true)
 				continue
+			default:
+				url = strings.TrimRight(b.URL, "/")
+				url = strings.TrimSuffix(url, "/v1") + "/v1/models"
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -918,19 +775,7 @@ func (gw *Gateway) healthChecker(ctx context.Context) {
 			cancel()
 
 			healthy := err == nil && resp != nil && resp.StatusCode == 200
-
-			// Parse response to discover models if provider supports it
-			if healthy && provider.SupportsModelDiscovery() && resp != nil {
-				body, readErr := io.ReadAll(resp.Body)
-				resp.Body.Close()
-				if readErr == nil {
-					models := provider.ParseModelsResponse(name, body)
-					if len(models) > 0 {
-						gw.state.SetModels(name, models)
-						log.Printf("Discovered %d models from %s", len(models), name)
-					}
-				}
-			} else if resp != nil {
+			if resp != nil {
 				resp.Body.Close()
 			}
 
@@ -1013,10 +858,6 @@ func main() {
 	// OpenAI-compatible endpoints
 	mux.HandleFunc("/v1/chat/completions", gw.handleChatCompletions)
 	mux.HandleFunc("/v1/models", gw.handleModels)
-
-	// Ollama-compatible endpoints
-	mux.HandleFunc("/api/tags", gw.handleOllamaTags)
-	mux.HandleFunc("/api/chat", gw.handleOllamaChat)
 
 	// Job queue endpoints
 	mux.HandleFunc("/v1/jobs", gw.handleJobSubmit)
