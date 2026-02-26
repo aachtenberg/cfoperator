@@ -38,7 +38,8 @@ from observability import (
     DockerContainers,
     AlertmanagerAlerts,
     AlertmanagerNotifications,
-    SlackNotifications
+    SlackNotifications,
+    DiscordNotifications
 )
 
 # Import web server
@@ -354,6 +355,10 @@ class CFOperator:
                 notif = SlackNotifications(webhook_url=notif_config.get('webhook_url'))
                 self.notifications.append(notif)
                 logger.info("Initialized Slack notifications")
+            elif notif_config.get('backend') == 'discord':
+                notif = DiscordNotifications(webhook_url=notif_config.get('webhook_url'))
+                self.notifications.append(notif)
+                logger.info("Initialized Discord notifications")
             elif notif_config.get('backend') == 'alertmanager':
                 notif = AlertmanagerNotifications(url=notif_config.get('url', alerts_config.get('url', '')))
                 self.notifications.append(notif)

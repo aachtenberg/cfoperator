@@ -32,8 +32,8 @@ observability:
   notifications:
     - backend: slack
       webhook_url: ${SLACK_WEBHOOK_URL}
-    # - backend: discord
-    #   webhook_url: ${DISCORD_WEBHOOK_URL}
+    - backend: discord
+      webhook_url: ${DISCORD_WEBHOOK_URL}
     # - backend: email
     #   smtp_host: smtp.gmail.com
     #   smtp_port: 587

@@ -17,6 +17,7 @@ from .prometheus import PrometheusMetrics, AlertmanagerAlerts, AlertmanagerNotif
 from .loki import LokiLogs
 from .docker import DockerContainers
 from .slack import SlackNotifications
+from .discord import DiscordNotifications
 
 __all__ = [
     # Interfaces
@@ -32,4 +33,5 @@ __all__ = [
     'AlertmanagerAlerts',
     'AlertmanagerNotifications',
     'SlackNotifications',
+    'DiscordNotifications',
 ]
