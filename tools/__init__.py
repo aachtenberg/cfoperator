@@ -126,18 +126,18 @@ class ToolRegistry:
             }
         }
 
-        # Docker tools
+        # Container tools (works across all configured backends: Docker, Kubernetes, etc.)
         self.tools['docker_list'] = {
             'function': self._docker_list,
             'schema': {
                 'name': 'docker_list',
-                'description': 'List all Docker containers across all hosts',
+                'description': 'List all containers/pods across all configured backends (Docker, Kubernetes, etc.)',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'host': {
                             'type': 'string',
-                            'description': 'Specific host to query (optional, queries all if not specified)'
+                            'description': 'Specific host or namespace to query (optional, queries all if not specified)'
                         }
                     }
                 }
@@ -148,17 +148,17 @@ class ToolRegistry:
             'function': self._docker_inspect,
             'schema': {
                 'name': 'docker_inspect',
-                'description': 'Inspect a specific Docker container',
+                'description': 'Inspect a specific container or pod from any configured backend',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'container_name': {
                             'type': 'string',
-                            'description': 'Name of the container to inspect'
+                            'description': 'Name of the container or pod to inspect'
                         },
                         'host': {
                             'type': 'string',
-                            'description': 'Host where container is running (optional)'
+                            'description': 'Host or namespace where container/pod is running (optional)'
                         }
                     },
                     'required': ['container_name']
@@ -511,9 +511,9 @@ class ToolRegistry:
             return {'error': str(e)}
 
     def _docker_list(self, host: Optional[str] = None) -> Dict[str, Any]:
-        """List Docker containers."""
+        """List containers/pods across all configured backends."""
         if not self.operator.containers:
-            return {'error': 'Docker backend not configured'}
+            return {'error': 'No container backend configured'}
 
         try:
             containers = self.operator.containers.list_containers(host=host)
@@ -526,9 +526,9 @@ class ToolRegistry:
             return {'error': str(e)}
 
     def _docker_inspect(self, container_name: str, host: Optional[str] = None) -> Dict[str, Any]:
-        """Inspect Docker container."""
+        """Inspect a container or pod."""
         if not self.operator.containers:
-            return {'error': 'Docker backend not configured'}
+            return {'error': 'No container backend configured'}
 
         try:
             info = self.operator.containers.inspect(container_name, host=host)

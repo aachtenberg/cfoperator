@@ -15,13 +15,15 @@ observability:
     url: http://loki:3100
     timeout: 30
 
-  # Container runtime - choose one:
+  # Container runtimes - one or many (like notifications):
   containers:
-    backend: docker  # or: kubernetes, podman
-    hosts:
-      local: unix:///var/run/docker.sock
-      # worker-1: tcp://worker-1:2375
-      # worker-2: tcp://worker-2:2375
+    - backend: kubernetes
+    - backend: prometheus    # bare-metal Docker via Prometheus discovery + SSH
+      ssh_user: aachten
+    # - backend: docker      # direct Docker API
+    #   hosts:
+    #     local: unix:///var/run/docker.sock
+    #     worker-1: tcp://worker-1:2375
 
   # Alerts backend - choose one:
   alerts:

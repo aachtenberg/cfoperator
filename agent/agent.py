@@ -36,6 +36,8 @@ from observability import (
     PrometheusMetrics,
     LokiLogs,
     DockerContainers,
+    KubernetesContainers,
+    CompositeContainerBackend,
     AlertmanagerAlerts,
     AlertmanagerNotifications,
     SlackNotifications,
@@ -321,22 +323,41 @@ class CFOperator:
             logger.warning(f"Unsupported logs backend: {logs_config.get('backend')}")
             self.logs = None
 
-        # Container backend
-        container_config = obs_config.get('containers', {})
-        backend_type = container_config.get('backend')
+        # Container backend(s) — supports list (like notifications) or single dict
+        container_configs = obs_config.get('containers', [])
+        if isinstance(container_configs, dict):
+            container_configs = [container_configs]  # backward compat
+        self._container_configs = container_configs  # stash for drift check
 
-        if backend_type == 'prometheus':
-            # Use Prometheus for discovery, SSH for actions
-            from observability.prometheus_containers import PrometheusContainers
-            prometheus_url = metrics_config.get('url')  # Reuse Prometheus URL
-            ssh_user = container_config.get('ssh_user', 'aachten')
-            self.containers = PrometheusContainers(prometheus_url=prometheus_url, ssh_user=ssh_user)
-            logger.info(f"Initialized Prometheus container backend (SSH user: {ssh_user})")
-        elif backend_type == 'docker':
-            self.containers = DockerContainers(hosts=container_config.get('hosts', {}))
-            logger.info(f"Initialized Docker backend with {len(container_config.get('hosts', {}))} hosts")
+        container_backends = []
+        for container_config in container_configs:
+            backend_type = container_config.get('backend')
+            if backend_type == 'prometheus':
+                from observability.prometheus_containers import PrometheusContainers
+                prometheus_url = metrics_config.get('url')
+                ssh_user = container_config.get('ssh_user', 'aachten')
+                backend = PrometheusContainers(prometheus_url=prometheus_url, ssh_user=ssh_user)
+                container_backends.append(backend)
+                logger.info(f"Initialized Prometheus container backend (SSH user: {ssh_user})")
+            elif backend_type == 'docker':
+                backend = DockerContainers(hosts=container_config.get('hosts', {}))
+                container_backends.append(backend)
+                logger.info(f"Initialized Docker backend with {len(container_config.get('hosts', {}))} hosts")
+            elif backend_type == 'kubernetes':
+                k8s_config = self.config.get('kubernetes', {})
+                backend = KubernetesContainers(
+                    kubeconfig=container_config.get('kubeconfig', k8s_config.get('kubeconfig')),
+                    context=container_config.get('context', k8s_config.get('context'))
+                )
+                container_backends.append(backend)
+                logger.info("Initialized Kubernetes container backend")
+            else:
+                if backend_type:
+                    logger.warning(f"Unsupported container backend: {backend_type}")
+
+        if container_backends:
+            self.containers = CompositeContainerBackend(container_backends)
         else:
-            logger.warning(f"Unsupported container backend: {backend_type}")
             self.containers = None
 
         # Alerts backend
@@ -1015,7 +1036,17 @@ Return empty array if nothing notable: {{"insights": []}}"""
             role = info.get('role', '?')
             services = [s.get('name', '?') for s in info.get('services', [])]
             lines.append(f"  {name} ({addr}, {role}): {', '.join(services)}")
-        return "Infrastructure hosts:\n" + "\n".join(lines)
+
+        summary = "Infrastructure hosts:\n" + "\n".join(lines)
+
+        # Append active container runtimes
+        if self.containers and hasattr(self.containers, 'runtime_names'):
+            runtimes = ', '.join(self.containers.runtime_names)
+            summary += f"\nContainer runtimes: {runtimes}."
+            if 'kubernetes' in runtimes:
+                summary += " Use k8s_* tools for pods/deployments."
+
+        return summary
 
     def _sweep_with_llm(self, task: str, max_iterations: int = None) -> List[Dict[str, Any]]:
         """
@@ -1169,13 +1200,19 @@ Only return the JSON array, no other text."""
         )
 
     def _sweep_containers(self) -> List[Dict[str, Any]]:
-        """Check all Docker containers — direct query + LLM review."""
+        """Check all containers/pods across configured backends + LLM review."""
         findings = []
+        containers = []
+
+        # Determine active runtime names for LLM context
+        runtime_label = "all configured backends"
+        if hasattr(self.containers, 'runtime_names'):
+            runtime_label = ', '.join(self.containers.runtime_names)
 
         # Direct container status check (fast, no LLM needed)
         try:
             containers = self.containers.list_containers()
-            logger.info(f"Found {len(containers)} containers across all hosts")
+            logger.info(f"Found {len(containers)} containers/pods across {runtime_label}")
 
             running_count = sum(1 for c in containers if c.get('status') == 'running')
             RUNNING_CONTAINERS.set(running_count)
@@ -1194,13 +1231,13 @@ Only return the JSON array, no other text."""
         # LLM review of container health
         container_summary = ""
         if containers:
-            container_summary = f"\n\nCurrently running {running_count} of {len(containers)} containers."
+            container_summary = f"\n\nCurrently running {running_count} of {len(containers)} containers/pods."
             stopped = [c for c in containers if c.get('status') != 'running']
             if stopped:
-                container_summary += f"\nStopped containers: {', '.join(c['name'] for c in stopped)}"
+                container_summary += f"\nStopped/unhealthy: {', '.join(c['name'] for c in stopped)}"
 
         llm_findings = self._sweep_with_llm(
-            f"Review Docker container health across the fleet.{container_summary} "
+            f"Review container/pod health across the fleet (runtimes: {runtime_label}).{container_summary} "
             "Check for containers with high resource usage, frequent restarts, or other issues."
         )
         findings.extend(llm_findings)
@@ -1319,6 +1356,10 @@ Only return the JSON array, no other text."""
                     logger.warning(f"Failed to list containers for drift check: {e}")
 
             # Compare expected vs actual
+            has_docker_backend = any(
+                c.get('backend') in ('docker', 'prometheus')
+                for c in self._container_configs
+            )
             for host_name, services in expected_services.items():
                 host_info = hosts_config.get(host_name, {})
                 host_addr = host_info.get('address', '')
@@ -1331,8 +1372,8 @@ Only return the JSON array, no other text."""
                             actual_host.split('.')[0] == host_name):
                         actual_names.update(containers)
 
-                # If no Prometheus data for this host, try SSH docker ps
-                if not actual_names and host_addr:
+                # If no data for this host, try SSH docker ps (only if a Docker-type backend is configured)
+                if not actual_names and host_addr and has_docker_backend:
                     ssh_user = host_info.get('ssh', {}).get('user', 'aachten')
                     try:
                         result = subprocess.run(

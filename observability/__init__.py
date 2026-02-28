@@ -16,6 +16,8 @@ from .base import (
 from .prometheus import PrometheusMetrics, AlertmanagerAlerts, AlertmanagerNotifications
 from .loki import LokiLogs
 from .docker import DockerContainers
+from .kubernetes_containers import KubernetesContainers
+from .composite_containers import CompositeContainerBackend
 from .slack import SlackNotifications
 from .discord import DiscordNotifications
 
@@ -30,6 +32,8 @@ __all__ = [
     'PrometheusMetrics',
     'LokiLogs',
     'DockerContainers',
+    'KubernetesContainers',
+    'CompositeContainerBackend',
     'AlertmanagerAlerts',
     'AlertmanagerNotifications',
     'SlackNotifications',
