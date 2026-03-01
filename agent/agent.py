@@ -2141,53 +2141,49 @@ Only return the JSON array, no other text."""
                     tool_calls = message.get('tool_calls', [])
 
                     if tool_calls:
-                        # Execute tool
-                        tool_call = tool_calls[0]
-                        tool_name = tool_call['function']['name']
-                        raw_args = tool_call['function'].get('arguments', {})
-                        # Ollama may return arguments as JSON string or dict
-                        if isinstance(raw_args, str):
-                            tool_args = json.loads(raw_args) if raw_args.strip() else {}
-                        else:
-                            tool_args = raw_args if raw_args else {}
-
-                        # Notify UI about tool call
-                        if event_callback:
-                            event_callback('tool_call', {
-                                'tool': tool_name,
-                                'args': tool_args,
-                                'iteration': iteration + 1,
-                                'max': max_iterations
-                            })
-
-                        logger.info(f"Executing tool: {tool_name}")
-                        result = self.tools.execute(tool_name, tool_args)
-                        tool_calls_count += 1
-
-                        # Track learning IDs when find_learnings is called
-                        if tool_name == 'find_learnings' and isinstance(result, list):
-                            learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
-
-                        # Notify UI about tool result
-                        if event_callback:
-                            result_preview = json.dumps(result, default=str)[:500]
-                            event_callback('tool_result', {
-                                'tool': tool_name,
-                                'result': result_preview,
-                                'iteration': iteration + 1
-                            })
-
-                        # Track tool execution
-                        TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
-
-                        # Append assistant message with tool call
+                        # Append the assistant message (with all tool_calls) once
                         full_messages.append(message)
 
-                        # Append tool result
-                        full_messages.append({
-                            'role': 'tool',
-                            'content': json.dumps(result)
-                        })
+                        # Execute ALL tool calls (not just the first)
+                        for tool_call in tool_calls:
+                            tool_name = tool_call['function']['name']
+                            raw_args = tool_call['function'].get('arguments', {})
+                            # Ollama may return arguments as JSON string or dict
+                            if isinstance(raw_args, str):
+                                tool_args = json.loads(raw_args) if raw_args.strip() else {}
+                            else:
+                                tool_args = raw_args if raw_args else {}
+
+                            if event_callback:
+                                event_callback('tool_call', {
+                                    'tool': tool_name,
+                                    'args': tool_args,
+                                    'iteration': iteration + 1,
+                                    'max': max_iterations
+                                })
+
+                            logger.info(f"Executing tool: {tool_name}")
+                            result = self.tools.execute(tool_name, tool_args)
+                            tool_calls_count += 1
+
+                            if tool_name == 'find_learnings' and isinstance(result, list):
+                                learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
+
+                            if event_callback:
+                                result_preview = json.dumps(result, default=str)[:500]
+                                event_callback('tool_result', {
+                                    'tool': tool_name,
+                                    'result': result_preview,
+                                    'iteration': iteration + 1
+                                })
+
+                            TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
+
+                            # Append each tool result
+                            full_messages.append({
+                                'role': 'tool',
+                                'content': json.dumps(result)
+                            })
 
                         # Continue loop for next iteration
                         continue

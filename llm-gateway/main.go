@@ -45,13 +45,14 @@ type Config struct {
 }
 
 type Backend struct {
-	Name     string `yaml:"name"`
-	Provider string `yaml:"provider"` // ollama, openai, anthropic
-	URL      string `yaml:"url"`
-	Model    string `yaml:"model"`
-	APIKey   string `yaml:"api_key"`
-	Priority int    `yaml:"priority"` // Lower = preferred
-	Enabled  bool   `yaml:"enabled"`
+	Name     string   `yaml:"name"`
+	Provider string   `yaml:"provider"` // ollama, openai, anthropic
+	URL      string   `yaml:"url"`
+	Model    string   `yaml:"model"`
+	Models   []string `yaml:"models"` // Pin backend to specific models (empty = serve any discovered)
+	APIKey   string   `yaml:"api_key"`
+	Priority int      `yaml:"priority"` // Lower = preferred
+	Enabled  bool     `yaml:"enabled"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -153,17 +154,53 @@ func init() {
 
 type BackendState struct {
 	sync.RWMutex
-	healthy    map[string]bool
-	lastCheck  map[string]time.Time
-	errorCount map[string]int
+	healthy          map[string]bool
+	lastCheck        map[string]time.Time
+	errorCount       map[string]int
+	discoveredModels map[string][]string // backend name -> list of available model names
 }
 
 func NewBackendState() *BackendState {
 	return &BackendState{
-		healthy:    make(map[string]bool),
-		lastCheck:  make(map[string]time.Time),
-		errorCount: make(map[string]int),
+		healthy:          make(map[string]bool),
+		lastCheck:        make(map[string]time.Time),
+		errorCount:       make(map[string]int),
+		discoveredModels: make(map[string][]string),
 	}
+}
+
+// DiscoveredModel represents a model found on a backend
+type DiscoveredModel struct {
+	Name       string                 `json:"name"`
+	Backend    string                 `json:"backend"`
+	Provider   string                 `json:"provider"`
+	Size       int64                  `json:"size,omitempty"`
+	ModifiedAt string                 `json:"modified_at,omitempty"`
+	Details    map[string]interface{} `json:"details,omitempty"`
+}
+
+func (bs *BackendState) SetDiscoveredModels(name string, models []string) {
+	bs.Lock()
+	defer bs.Unlock()
+	bs.discoveredModels[name] = models
+}
+
+func (bs *BackendState) GetDiscoveredModels(name string) []string {
+	bs.RLock()
+	defer bs.RUnlock()
+	return bs.discoveredModels[name]
+}
+
+func (bs *BackendState) GetAllModels() []DiscoveredModel {
+	bs.RLock()
+	defer bs.RUnlock()
+	var all []DiscoveredModel
+	for backend, models := range bs.discoveredModels {
+		for _, m := range models {
+			all = append(all, DiscoveredModel{Name: m, Backend: backend})
+		}
+	}
+	return all
 }
 
 func (bs *BackendState) SetHealthy(name string, healthy bool) {
@@ -314,17 +351,52 @@ func NewGateway(cfg *Config) *Gateway {
 	return gw
 }
 
+// canServeModel checks if a backend can serve the requested model.
+// For Ollama backends: checks pinned models list, then discovered models.
+// For cloud backends: checks the configured model name.
+func (gw *Gateway) canServeModel(b *Backend, requestedModel string) bool {
+	if requestedModel == "" {
+		return true
+	}
+
+	// Cloud backends: exact match on configured model
+	if b.Provider != "ollama" {
+		return b.Model == requestedModel
+	}
+
+	// Ollama: if models are pinned, only serve those
+	if len(b.Models) > 0 {
+		for _, m := range b.Models {
+			if m == requestedModel {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Ollama with no pinning: check if the model was discovered
+	discovered := gw.state.GetDiscoveredModels(b.Name)
+	for _, m := range discovered {
+		if m == requestedModel {
+			return true
+		}
+	}
+
+	// No models discovered yet (first request before health check), allow it
+	return len(discovered) == 0
+}
+
 func (gw *Gateway) SelectBackend(preferredModel string) *Backend {
-	// Try fallback order first
+	// Try fallback order, preferring backends that can serve the model
 	for _, name := range gw.config.Fallback {
 		if b, ok := gw.backends[name]; ok && b.Enabled && gw.state.IsHealthy(name) {
-			if preferredModel == "" || b.Model == preferredModel {
+			if gw.canServeModel(b, preferredModel) {
 				return b
 			}
 		}
 	}
 
-	// Fall back to any healthy backend
+	// Fall back to any healthy backend (model mismatch is better than nothing)
 	for _, name := range gw.config.Fallback {
 		if b, ok := gw.backends[name]; ok && b.Enabled && gw.state.IsHealthy(name) {
 			return b
@@ -352,8 +424,15 @@ func (gw *Gateway) ProxyRequest(backend *Backend, body []byte) ([]byte, int, err
 		// Transform OpenAI format to Ollama format
 		var openaiReq map[string]interface{}
 		json.Unmarshal(body, &openaiReq)
+
+		// Use the requested model from the client, fall back to backend's configured model
+		model := backend.Model
+		if requestedModel, ok := openaiReq["model"].(string); ok && requestedModel != "" {
+			model = requestedModel
+		}
+
 		ollamaReq := map[string]interface{}{
-			"model":    backend.Model,
+			"model":    model,
 			"messages": openaiReq["messages"],
 			"stream":   false,
 		}
@@ -573,16 +652,35 @@ func (gw *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Parse request to get model hint (for future model-specific routing)
+	// Parse request to get model for routing
 	var req map[string]interface{}
 	json.Unmarshal(body, &req)
-	_ = req["model"] // Reserved for model-specific routing
+	requestedModel, _ := req["model"].(string)
 
-	// Try backends in fallback order
+	// Select backend based on requested model
+	backend := gw.SelectBackend(requestedModel)
+	if backend != nil && requestedModel != "" {
+		log.Printf("Routing model=%q to backend=%s", requestedModel, backend.Name)
+	}
+
+	// Try backends in fallback order, starting with the selected one
 	var lastErr error
 	var lastBackend string
+	tried := make(map[string]bool)
 
-	for _, backendName := range gw.config.Fallback {
+	// Try selected backend first, then fall through the rest
+	orderedBackends := make([]string, 0, len(gw.config.Fallback))
+	if backend != nil {
+		orderedBackends = append(orderedBackends, backend.Name)
+		tried[backend.Name] = true
+	}
+	for _, name := range gw.config.Fallback {
+		if !tried[name] {
+			orderedBackends = append(orderedBackends, name)
+		}
+	}
+
+	for _, backendName := range orderedBackends {
 		backend := gw.backends[backendName]
 		if backend == nil || !backend.Enabled {
 			continue
@@ -641,9 +739,29 @@ func (gw *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request)
 }
 
 func (gw *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
+	seen := make(map[string]bool)
 	var models []map[string]interface{}
 	for _, b := range gw.backends {
-		if b.Enabled {
+		if !b.Enabled {
+			continue
+		}
+
+		if b.Provider == "ollama" {
+			// List discovered models from Ollama backends
+			discovered := gw.state.GetDiscoveredModels(b.Name)
+			for _, m := range discovered {
+				if !seen[m] {
+					seen[m] = true
+					models = append(models, map[string]interface{}{
+						"id":       m,
+						"object":   "model",
+						"owned_by": b.Provider,
+						"backend":  b.Name,
+					})
+				}
+			}
+		} else if b.Model != "" && !seen[b.Model] {
+			seen[b.Model] = true
 			models = append(models, map[string]interface{}{
 				"id":       b.Model,
 				"object":   "model",
@@ -775,12 +893,34 @@ func (gw *Gateway) healthChecker(ctx context.Context) {
 			cancel()
 
 			healthy := err == nil && resp != nil && resp.StatusCode == 200
-			if resp != nil {
+
+			// Discover available models from Ollama backends
+			if healthy && b.Provider == "ollama" && resp != nil {
+				body, readErr := io.ReadAll(resp.Body)
 				resp.Body.Close()
+				if readErr == nil {
+					var tagsResp struct {
+						Models []struct {
+							Name string `json:"name"`
+						} `json:"models"`
+					}
+					if json.Unmarshal(body, &tagsResp) == nil {
+						var modelNames []string
+						for _, m := range tagsResp.Models {
+							modelNames = append(modelNames, m.Name)
+						}
+						gw.state.SetDiscoveredModels(name, modelNames)
+						log.Printf("Health check %s: healthy=%v models=%v", name, healthy, modelNames)
+					}
+				}
+			} else {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				log.Printf("Health check %s: healthy=%v", name, healthy)
 			}
 
 			gw.state.SetHealthy(name, healthy)
-			log.Printf("Health check %s: healthy=%v", name, healthy)
 		}
 	}
 
