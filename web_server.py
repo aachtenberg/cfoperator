@@ -88,6 +88,26 @@ class WebServer:
             result = self.operator.reload_config()
             return jsonify({'status': 'ok', **result})
 
+        # Trigger a deep system sweep on demand
+        @self.app.route('/api/sweep', methods=['POST'])
+        def trigger_sweep():
+            """Trigger an immediate deep system sweep (async in background thread)."""
+            def _run_sweep():
+                try:
+                    logger.info("API-triggered deep system sweep starting")
+                    self.operator._deep_system_sweep()
+                    self.operator.last_sweep = time.time()
+                    logger.info("API-triggered deep system sweep completed")
+                except Exception as e:
+                    logger.error(f"API-triggered sweep failed: {e}", exc_info=True)
+
+            sweep_thread = threading.Thread(target=_run_sweep, daemon=True, name="api-sweep")
+            sweep_thread.start()
+            return jsonify({
+                'status': 'ok',
+                'message': 'Deep system sweep triggered',
+            })
+
         # Prometheus metrics endpoint
         @self.app.route('/metrics')
         def metrics():
