@@ -92,23 +92,38 @@ class ToolRegistry:
             'function': self._loki_query,
             'schema': {
                 'name': 'loki_query',
-                'description': 'Query Loki logs across all monitored hosts. '
-                    'Available labels: host, container_name, compose_service, container, container_id, job, level, source, stream, component, service_name. '
-                    'Host values: raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4, headless-gpu. '
-                    'CORRECT syntax examples: '
-                    '{host="raspberrypi2"} |= "error"  --  '
-                    '{container_name="immich_server"} |= "error"  --  '
-                    '{host="raspberrypi2", container_name="telegraf"} |= "timeout"  --  '
-                    '{container_name=~"immich.*"} |= "error"  --  '
-                    'WRONG patterns (DO NOT USE): '
-                    '{job="x"} |= "e" and {container_name="y"} is WRONG - combine into {job="x", container_name="y"} |= "e".  '
-                    'Never use and/or between {} selectors. Never quote the selector. Use regex .* not glob *.',
+                'description': (
+                    'Query Loki logs from the k3s cluster and bare-metal hosts. '
+                    'Available labels: namespace, pod, container, app, node, job, stream, service_name. '
+                    'Node values: raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4, headless-gpu. '
+                    'Namespace values: apps, monitoring, data, iot, ai, infrastructure. '
+                    '\n\nCORRECT LogQL examples:\n'
+                    '  {namespace="apps"} |= "error"                          -- errors in apps namespace\n'
+                    '  {namespace="apps", pod=~"cfoperator.*"} |= "error"     -- errors from cfoperator pods\n'
+                    '  {namespace="monitoring", container="prometheus"}        -- all prometheus logs\n'
+                    '  {node="raspberrypi"} |= "timeout"                      -- timeout on specific node\n'
+                    '  {namespace=~"apps|monitoring"} |= "error"              -- errors across multiple namespaces\n'
+                    '  {app="immich"} |~ "error|warning"                      -- error or warning in app\n'
+                    '  {namespace="apps"} |= "error" | json | level=~"error|critical"  -- structured log filter\n'
+                    '\n\nCRITICAL rules (violations cause 400 errors):\n'
+                    '  - ALL label selectors go inside ONE {} block, separated by commas\n'
+                    '  - NEVER use || or && between {} selectors\n'
+                    '  - Multi-value match uses regex: {namespace=~"apps|monitoring"} NOT {namespace="apps"} || {namespace="monitoring"}\n'
+                    '  - Line filters use |= (contains), != (not contains), |~ (regex match)\n'
+                    '  - WRONG: {namespace="apps"} |= "e" || {namespace="monitoring"} |= "e"\n'
+                    '  - RIGHT: {namespace=~"apps|monitoring"} |= "e"'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'query': {
                             'type': 'string',
-                            'description': 'LogQL query. Put ALL labels in one {} selector. Example: {host="raspberrypi2", container_name="telegraf"} |= "error". Never use and/or between {} selectors. Use regex .* not glob *.'
+                            'description': (
+                                'LogQL query. ALL label selectors go in ONE {} block. '
+                                'Multi-value: use =~ regex like {namespace=~"apps|monitoring"}. '
+                                'NEVER use || or && between {} selectors. '
+                                'Examples: {namespace="apps"} |= "error"  |  {pod=~"immich.*"} |~ "error|warning"'
+                            )
                         },
                         'limit': {
                             'type': 'integer',

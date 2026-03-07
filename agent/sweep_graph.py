@@ -29,20 +29,32 @@ SWEEP_PHASES = {
         'config_key': 'metrics',
         'task': (
             "Check the health of all infrastructure hosts and services by examining metrics. "
-            "Look at resource usage, scrape targets, container health, and anything that looks off."
+            "Look at resource usage, scrape targets, pod/container health, and anything that looks off. "
+            "Use k8s tools (k8s_get_pods, k8s_get_nodes, k8s_get_events) for Kubernetes workloads "
+            "and prometheus_query for host-level metrics."
         ),
     },
     'logs': {
         'config_key': 'logs',
         'task': (
-            "Check recent logs across infrastructure services for errors, warnings, or concerning patterns."
+            "Check recent logs across infrastructure services for errors, warnings, or concerning patterns. "
+            "Use loki_query with correct LogQL syntax. "
+            "CORRECT examples: "
+            "{namespace=\"apps\"} |= \"error\" -- "
+            "{namespace=~\"apps|monitoring\"} |~ \"error|warning\" -- "
+            "{pod=~\"cfoperator.*\"} |= \"error\" -- "
+            "{namespace=\"monitoring\", container=\"prometheus\"} |= \"error\". "
+            "Use =~ for multi-value matching. NEVER use || between {} selectors."
         ),
     },
     'containers': {
         'config_key': 'containers',
         'task': (
-            "Review Docker container health across the fleet. "
-            "Check for containers with high resource usage, frequent restarts, or other issues."
+            "Review workload health across the fleet — Kubernetes pods, bare-metal services, "
+            "and any Docker containers. Use k8s_get_pods, k8s_get_all_unhealthy, and k8s_get_events for k8s workloads across apps, monitoring, data, iot, ai, infrastructure, and kube-system, "
+            "loki_query for workload logs, prometheus_query for resource usage, and ssh_list_services for bare-metal hosts. "
+            "Do not rely only on current pod phase: recovered failures may appear only in recent Kubernetes warning events or Loki logs. "
+            "Check for BackOff, Unhealthy/readiness failures, restarts, CrashLoopBackOff history, and other issues."
         ),
     },
 }

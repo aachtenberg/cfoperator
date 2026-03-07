@@ -275,7 +275,7 @@
             "type": "prometheus",
             "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "count(docker_container_status_uptime_ns{container_name!=\"\"})",
+          "expr": "cfoperator_running_containers",
           "refId": "A"
         }
       ],

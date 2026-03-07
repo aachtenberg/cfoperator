@@ -1044,9 +1044,48 @@ Return empty array if nothing notable: {{"insights": []}}"""
             runtimes = ', '.join(self.containers.runtime_names)
             summary += f"\nContainer runtimes: {runtimes}."
             if 'kubernetes' in runtimes:
-                summary += " Use k8s_* tools for pods/deployments."
+                summary += " Use k8s_* tools for pods/deployments and k8s_get_events for recent BackOff/readiness failures."
+                k8s_summary = self._get_k8s_observation_summary()
+                if k8s_summary:
+                    summary += f"\n{k8s_summary}"
 
         return summary
+
+    def _get_k8s_observation_summary(self) -> str:
+        """Summarize recent Kubernetes signals so recovered failures remain visible to sweeps."""
+        if not getattr(self.tools, 'k8s_tools', None):
+            return ""
+
+        lines = []
+
+        try:
+            ns_result = self.tools.k8s_tools.get_namespaces()
+            if ns_result.get('success') and ns_result.get('namespaces'):
+                namespace_names = [n.get('name') for n in ns_result['namespaces'] if n.get('name')]
+                if namespace_names:
+                    lines.append(f"Kubernetes namespaces: {', '.join(namespace_names)}")
+        except Exception as e:
+            logger.debug(f"Could not summarize Kubernetes namespaces: {e}")
+
+        try:
+            events_result = self.tools.k8s_tools.get_events(all_namespaces=True)
+            if events_result.get('success') and events_result.get('events'):
+                warning_events = [e for e in events_result['events'] if e.get('type') == 'Warning']
+                if warning_events:
+                    lines.append(
+                        "Recent Kubernetes warning events (important: a pod can be Running now but still have recent BackOff/Unhealthy history):"
+                    )
+                    for event in warning_events[-8:]:
+                        obj = event.get('object', 'unknown')
+                        reason = event.get('reason', 'unknown')
+                        message = str(event.get('message', '')).replace('\n', ' ').strip()
+                        if len(message) > 180:
+                            message = message[:177] + '...'
+                        lines.append(f"  - {obj}: {reason} — {message}")
+        except Exception as e:
+            logger.debug(f"Could not summarize Kubernetes events: {e}")
+
+        return "\n".join(lines)
 
     def _sweep_with_llm(self, task: str, max_iterations: int = None) -> List[Dict[str, Any]]:
         """
@@ -1196,7 +1235,14 @@ Only return the JSON array, no other text."""
         """Sweep logs across all services using LLM pattern detection."""
         logger.info("Starting LLM-driven log sweep")
         return self._sweep_with_llm(
-            "Check recent logs across infrastructure services for errors, warnings, or concerning patterns."
+            "Check recent logs across infrastructure services for errors, warnings, or concerning patterns. "
+            "Use loki_query with correct LogQL syntax. "
+            "CORRECT examples: "
+            "{namespace=\"apps\"} |= \"error\" -- "
+            "{namespace=~\"apps|monitoring\"} |~ \"error|warning\" -- "
+            "{pod=~\"cfoperator.*\"} |= \"error\" -- "
+            "{namespace=\"monitoring\", container=\"prometheus\"} |= \"error\". "
+            "Use =~ for multi-value matching. NEVER use || between {} selectors."
         )
 
     def _sweep_containers(self) -> List[Dict[str, Any]]:
@@ -1236,9 +1282,16 @@ Only return the JSON array, no other text."""
             if stopped:
                 container_summary += f"\nStopped/unhealthy: {', '.join(c['name'] for c in stopped)}"
 
+        k8s_context = self._get_k8s_observation_summary()
+        if k8s_context:
+            container_summary += f"\n\n{k8s_context}"
+
         llm_findings = self._sweep_with_llm(
-            f"Review container/pod health across the fleet (runtimes: {runtime_label}).{container_summary} "
-            "Check for containers with high resource usage, frequent restarts, or other issues."
+            f"Review workload health across the fleet (backends: {runtime_label}).{container_summary} "
+            "Use k8s tools (k8s_get_pods, k8s_get_all_unhealthy, k8s_get_events) for Kubernetes workloads across apps, monitoring, data, iot, ai, infrastructure, and kube-system, "
+            "loki_query for workload logs, prometheus_query for resource metrics, and ssh_list_services for bare-metal hosts. "
+            "Do not rely only on current pod phase: recovered failures may appear only in recent Kubernetes warning events or Loki logs. "
+            "Check for BackOff, Unhealthy/readiness failures, restarts, CrashLoopBackOff history, and other issues."
         )
         findings.extend(llm_findings)
 

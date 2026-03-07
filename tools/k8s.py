@@ -560,19 +560,53 @@ class K8sTools:
         """
         unhealthy = {
             'pods': [],
-            'deployments': []
+            'deployments': [],
+            'restarted_pods': []
         }
 
         # Check pods
         pods_result = self.get_pods(all_namespaces=True)
         if pods_result['success']:
             for pod in pods_result.get('pods', []):
+                metadata = pod.get('metadata', {})
+                status = pod.get('status', {})
                 phase = pod.get('status', {}).get('phase')
+                namespace = metadata.get('namespace')
+                name = metadata.get('name')
+                container_statuses = status.get('containerStatuses', [])
+
                 if phase not in ['Running', 'Succeeded']:
                     unhealthy['pods'].append({
-                        'name': pod.get('metadata', {}).get('name'),
-                        'namespace': pod.get('metadata', {}).get('namespace'),
+                        'name': name,
+                        'namespace': namespace,
                         'phase': phase
+                    })
+
+                restart_count = sum(cs.get('restartCount', 0) for cs in container_statuses)
+                waiting_reasons = [
+                    cs.get('state', {}).get('waiting', {}).get('reason')
+                    for cs in container_statuses
+                    if cs.get('state', {}).get('waiting', {}).get('reason')
+                ]
+                last_terminated = []
+                for cs in container_statuses:
+                    terminated = cs.get('lastState', {}).get('terminated')
+                    if terminated:
+                        last_terminated.append({
+                            'container': cs.get('name'),
+                            'exit_code': terminated.get('exitCode'),
+                            'reason': terminated.get('reason'),
+                            'finished_at': terminated.get('finishedAt')
+                        })
+
+                if restart_count > 0 or waiting_reasons or last_terminated:
+                    unhealthy['restarted_pods'].append({
+                        'name': name,
+                        'namespace': namespace,
+                        'phase': phase,
+                        'restart_count': restart_count,
+                        'waiting_reasons': waiting_reasons,
+                        'last_terminated': last_terminated,
                     })
 
         # Check deployments
@@ -585,8 +619,13 @@ class K8sTools:
         return {
             'success': True,
             'unhealthy_pods': unhealthy['pods'],
+            'restarted_pods': unhealthy['restarted_pods'],
             'unhealthy_deployments': unhealthy['deployments'],
-            'total_issues': len(unhealthy['pods']) + len(unhealthy['deployments'])
+            'total_issues': (
+                len(unhealthy['pods'])
+                + len(unhealthy['deployments'])
+                + len(unhealthy['restarted_pods'])
+            )
         }
 
     # =========================================================================
@@ -763,7 +802,7 @@ class K8sTools:
             },
             {
                 'name': 'k8s_get_all_unhealthy',
-                'description': 'Get all unhealthy pods and deployments across the cluster. Quick health check.',
+                'description': 'Get unhealthy pods and deployments across the cluster, plus pods with restart history or recent waiting/termination state. Use this to catch recovered CrashLoopBackOff or readiness-failure cases that may look Running right now.',
                 'parameters': {
                     'type': 'object',
                     'properties': {}
