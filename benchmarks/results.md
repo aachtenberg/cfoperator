@@ -1,0 +1,97 @@
+# Ollama Inference Latency Benchmark
+
+**Model:** `qwen3:14b` | **Endpoint:** `http://localhost:11434` | **Iterations:** 10 | **Date:** 2026-03-17 22:21 UTC
+
+---
+
+## Results by Prompt
+
+### Time to First Token (TTFT) — seconds
+
+| Prompt | Category | Min | Mean | Median | P95 | Max |
+|--------|----------|-----|------|--------|-----|-----|
+| Alert severity classification | triage-short | 6.476 | 7.890 | 8.140 | 8.963 | 9.307 |
+| Quick health check response | triage-short | 8.659 | 12.949 | 11.950 | 20.662 | 25.839 |
+| Simple remediation suggestion | triage-short | 7.186 | 8.843 | 8.491 | 10.518 | 10.991 |
+| Metrics sweep analysis | analysis-medium | 6.262 | 8.962 | 8.947 | 12.045 | 12.132 |
+| Log pattern analysis | analysis-medium | 6.292 | 7.652 | 7.282 | 10.208 | 10.876 |
+| Correlation analysis | reasoning-long | 7.735 | 10.170 | 9.968 | 13.097 | 13.464 |
+| Container sweep + tool-call reasoning | reasoning-long | 13.252 | 31.388 | 28.971 | 53.654 | 62.641 |
+
+### Total Response Time — seconds
+
+| Prompt | Category | Min | Mean | Median | P95 | Max |
+|--------|----------|-----|------|--------|-----|-----|
+| Alert severity classification | triage-short | 18.52 | 21.44 | 20.66 | 25.24 | 26.08 |
+| Quick health check response | triage-short | 21.63 | 27.16 | 25.20 | 36.77 | 40.13 |
+| Simple remediation suggestion | triage-short | 17.72 | 22.37 | 22.69 | 26.02 | 26.97 |
+| Metrics sweep analysis | analysis-medium | 10.81 | 13.60 | 13.94 | 16.81 | 17.10 |
+| Log pattern analysis | analysis-medium | 13.80 | 18.43 | 18.49 | 21.18 | 22.61 |
+| Correlation analysis | reasoning-long | 13.81 | 17.46 | 17.31 | 20.66 | 21.14 |
+| Container sweep + tool-call reasoning | reasoning-long | 20.36 | 38.23 | 35.49 | 60.26 | 68.83 |
+
+### Tokens Generated
+
+| Prompt | Category | Min | Mean | Median | P95 | Max |
+|--------|----------|-----|------|--------|-----|-----|
+| Alert severity classification | triage-short | 1121 | 1295.9 | 1249.5 | 1522.1 | 1572 |
+| Quick health check response | triage-short | 1306 | 1631.5 | 1519.0 | 2191.0 | 2384 |
+| Simple remediation suggestion | triage-short | 1072 | 1348.2 | 1367.0 | 1564.1 | 1619 |
+| Metrics sweep analysis | analysis-medium | 651 | 819.1 | 840.0 | 1011.5 | 1029 |
+| Log pattern analysis | analysis-medium | 826 | 1099.8 | 1104.0 | 1260.8 | 1344 |
+| Correlation analysis | reasoning-long | 826 | 1041.5 | 1033.0 | 1230.1 | 1258 |
+| Container sweep + tool-call reasoning | reasoning-long | 798 | 1040 | 1023.5 | 1298.3 | 1328 |
+
+### Tokens per Second (throughput)
+
+| Prompt | Category | Min | Mean | Median | P95 | Max |
+|--------|----------|-----|------|--------|-----|-----|
+| Alert severity classification | triage-short | 60.3 | 60.4 | 60.5 | 60.5 | 60.5 |
+| Quick health check response | triage-short | 59.4 | 60.1 | 60.3 | 60.4 | 60.4 |
+| Simple remediation suggestion | triage-short | 60.0 | 60.3 | 60.3 | 60.5 | 60.5 |
+| Metrics sweep analysis | analysis-medium | 60.2 | 60.3 | 60.2 | 60.3 | 60.4 |
+| Log pattern analysis | analysis-medium | 59.4 | 59.7 | 59.7 | 59.8 | 59.8 |
+| Correlation analysis | reasoning-long | 59.5 | 59.7 | 59.7 | 59.8 | 59.8 |
+| Container sweep + tool-call reasoning | reasoning-long | 14.9 | 31.5 | 29.3 | 58.7 | 58.8 |
+
+---
+
+## Aggregate by Category
+
+| Category | Avg TTFT (s) | Avg Total (s) | Avg TPS |
+|----------|-------------|---------------|---------|
+| triage-short | 9.894 | 23.66 | 60.3 |
+| analysis-medium | 8.307 | 16.01 | 60.0 |
+| reasoning-long | 20.779 | 27.84 | 45.6 |
+
+---
+
+## Hardware & GPU Utilization
+
+**Host:** `ubuntu-llm-01` — AMD Ryzen 5 7600X (6C/12T) · 32 GB DDR5 · AMD Radeon RX 7900 XTX (24 GB VRAM)
+**Runtime:** Ollama v0.x (systemd) · ROCm · GGUF Q4_K_M quantization · 32K context
+
+### GPU at Idle (pre-benchmark)
+
+| GPU | Card | GPU % | VRAM Used | VRAM Total | Edge Temp | Junction Temp | Mem Temp | Power |
+|-----|------|-------|-----------|------------|-----------|---------------|----------|-------|
+| 0 | RX 7900 XTX | 100% | 15.2 GiB | 24.0 GiB | 63 °C | 72 °C | 74 °C | 109 W |
+
+> Note: GPU shows 100% even at "idle" because the model stays resident in VRAM with Ollama's keep-alive.
+
+### GPU During Inference (sampled mid-generation)
+
+| GPU | Card | GPU % | VRAM Used | VRAM Total | Edge Temp | Junction Temp | Mem Temp | Power |
+|-----|------|-------|-----------|------------|-----------|---------------|----------|-------|
+| 0 | RX 7900 XTX | 100% | 15.2 GiB | 24.0 GiB | 68–70 °C | 85–86 °C | 90–94 °C | 318–319 W |
+
+### Observations
+
+- **VRAM:** Qwen3:14b Q4_K_M uses **15.2 GiB** of 24 GiB — 63% utilization, leaving headroom for larger context or batch
+- **Thermals:** Junction temp climbs from 72 °C idle → **86 °C** under load; memory hits **94 °C** (within spec but warm)
+- **Power:** Jumps from 109 W idle → **319 W** under inference — nearly at the 7900 XTX's 355 W TDP
+- **No VRAM spill:** Entire model fits in GPU memory (Q4_K_M keeps it under 16 GiB), no CPU offload needed
+
+---
+
+*Generated by `benchmarks/ollama_latency_bench.py` — CFOperator project*
