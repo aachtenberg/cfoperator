@@ -15,7 +15,8 @@ CFOperator (Docker container)
 │   └── Morning: TPS reports at 7-9 AM
 │
 ├── Knowledge Base (ResilientKnowledgeBase)
-│   ├── PostgreSQL (persistent storage)
+│   ├── PostgreSQL + pgvector (persistent storage + semantic search)
+│   ├── Embeddings: nomic-embed-text via Ollama (768 dims, HNSW index)
 │   └── Offline Buffer: JSON Lines fallback
 │
 ├── Observability (Pluggable)
@@ -51,6 +52,17 @@ CFOperator (Docker container)
     ├── Thinking indicator
     └── Pending questions panel
 ```
+
+## Knowledge Base & Semantic Search
+
+CFOperator learns from every investigation. Findings, root causes, and remediation steps are stored in PostgreSQL and embedded via Ollama (`nomic-embed-text`, 768 dims) into pgvector with an HNSW index for cosine similarity search.
+
+When a new alert fires or a sweep surfaces a finding, the agent queries the knowledge base for similar past incidents — so it can reuse proven remediation steps instead of reasoning from scratch every time.
+
+**Components:**
+- **`agent/knowledge_base.py`** — `ResilientKnowledgeBase` wrapping PostgreSQL + pgvector, with offline JSON Lines fallback when the DB is unreachable
+- **`agent/embedding_service.py`** — Embedding generation via Ollama's `/api/embeddings`, with in-memory LRU cache and DB-backed cache for cross-session dedup
+- **Hybrid search** — combines pgvector cosine similarity with PostgreSQL full-text search (`tsvector`) for best-of-both retrieval
 
 ## Sweep Finding Verification (LLM Judge)
 
@@ -190,7 +202,8 @@ make all            # all platforms
 | `agent/agent.py` | Main OODA loop, chat handler, tool registry |
 | `web_server.py` | Flask + Waitress, REST + WebSocket APIs |
 | `ui/index.html` | Single-page chat UI (Ubuntu Campbell theme) |
-| `agent/knowledge_base.py` | ResilientKnowledgeBase wrapping PostgreSQL |
+| `agent/knowledge_base.py` | ResilientKnowledgeBase wrapping PostgreSQL + pgvector |
+| `agent/embedding_service.py` | Embedding generation via Ollama with LRU + DB cache |
 | `agent/llm_fallback.py` | LLM provider chain with cooldown/retry |
 | `config.yaml.example` | All URLs, host definitions, OODA timing |
 | `tools/` | SSH, K8s, discovery, and core tool implementations |
