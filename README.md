@@ -27,15 +27,21 @@ CFOperator (Docker container)
 ├── LLM Fallback Chain
 │   └── Ollama (local) → Groq → Gemini → Anthropic
 │
-├── Tools (18 registered)
-│   ├── Core: prometheus_query, loki_query, docker_list, docker_inspect
+├── Tools (41 registered)
+│   ├── Core: prometheus_query, loki_query, docker_list, docker_inspect,
+│   │         store_learning, find_learnings, get_sweep_report, web_search, ...
 │   ├── SSH (9): execute, check_service, restart_service, get_logs,
 │   │           list_services, docker_list, docker_restart, get_system_info, check_port
+│   ├── K8s (15): get_pods, get_pod_logs, get_deployments, rollout_restart,
+│   │            get_events, get_nodes, get_node_metrics, exec_pod, describe, ...
 │   └── Discovery (4): ping_host, verify_ssh, verify_sudo, discover_all_hosts
 │
-├── Skills (4 investigation workflows)
+├── Skills (7 investigation workflows)
 │   ├── /investigate-host — Systematic host/server investigation
 │   ├── /investigate-container — Systematic container investigation
+│   ├── /investigate-pod — Kubernetes pod investigation
+│   ├── /investigate-deployment — Kubernetes deployment investigation
+│   ├── /k3s-cluster-health — Full cluster health check
 │   ├── /why-restart — Analyze container restart causes
 │   └── /compare-hosts — Compare metrics across fleet
 │
@@ -181,29 +187,34 @@ make all            # all platforms
 
 | File | Purpose |
 |------|---------|
-| `agent.py` | Main OODA loop, chat handler, tool registry |
+| `agent/agent.py` | Main OODA loop, chat handler, tool registry |
 | `web_server.py` | Flask + Waitress, REST + WebSocket APIs |
 | `ui/index.html` | Single-page chat UI (Ubuntu Campbell theme) |
-| `knowledge_base.py` | ResilientKnowledgeBase wrapping PostgreSQL |
-| `llm_fallback.py` | LLM provider chain with cooldown/retry |
-| `config.yaml` | All URLs, host definitions, OODA timing |
-| `tools/` | SSH, discovery, and core tool implementations |
+| `agent/knowledge_base.py` | ResilientKnowledgeBase wrapping PostgreSQL |
+| `agent/llm_fallback.py` | LLM provider chain with cooldown/retry |
+| `config.yaml.example` | All URLs, host definitions, OODA timing |
+| `tools/` | SSH, K8s, discovery, and core tool implementations |
 | `skills/` | Investigation workflow definitions (SKILL.md) |
 | `observability/` | Pluggable backends (Prometheus, Loki, Docker) |
+| `llm-gateway/` | Go proxy with health-based routing + fallback |
+| `benchmarks/` | Inference latency benchmarks (TTFT, tokens/sec) |
 | `grafana/` | Dashboard JSON + upload script |
 
 ## Documentation
 
 ### Getting Started
 - [README.md](README.md) — This file (architecture, quick start)
-- [DEPLOYMENT.md](DEPLOYMENT.md) — Deploy checklist and quick commands
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Deploy checklist and quick commands
 
 ### Operations & Monitoring
-- [METRICS.md](METRICS.md) — Prometheus metrics reference
-- [MEMORY.md](MEMORY.md) — Memory management and investigation history
+- [docs/METRICS.md](docs/METRICS.md) — Prometheus metrics reference
 - [grafana/README.md](grafana/README.md) — Grafana dashboard guide
 - [docs/llm-observability.md](docs/llm-observability.md) — LLM metrics deep dive
 - [docs/infrastructure-config.md](docs/infrastructure-config.md) — Fleet configuration
+
+### Benchmarks
+- [benchmarks/results.md](benchmarks/results.md) — Ollama inference latency benchmark (TTFT, tokens/sec, GPU stats)
+- [docs/ollama-tool-calling-benchmark.md](docs/ollama-tool-calling-benchmark.md) — Multi-host tool calling benchmark
 
 ## License
 
