@@ -32,10 +32,10 @@ infrastructure:
   hosts:
     # Primary host (runs CFOperator itself)
     raspberrypi:
-      address: 192.168.0.167
+      address: 10.0.0.1
       role: primary
       ssh:
-        user: aachten
+        user: user
         key_path: ~/.ssh/id_rsa
       monitoring:
         - prometheus       # Scrapes metrics
@@ -44,10 +44,10 @@ infrastructure:
 
     # Worker hosts
     raspberrypi2:
-      address: 192.168.0.146
+      address: 10.0.0.2
       role: worker
       ssh:
-        user: aachten
+        user: user
         key_path: ~/.ssh/id_rsa
       monitoring:
         - node_exporter   # Exports metrics
@@ -55,10 +55,10 @@ infrastructure:
         - docker          # Runs containers
 
     raspberrypi3:
-      address: 192.168.0.111
+      address: 10.0.0.3
       role: worker
       ssh:
-        user: aachten
+        user: user
         key_path: ~/.ssh/id_rsa
       monitoring:
         - node_exporter
@@ -66,10 +66,10 @@ infrastructure:
         - docker
 
     ollama-gpu:
-      address: 192.168.0.150
+      address: 10.0.0.5
       role: gpu
       ssh:
-        user: aachten
+        user: user
         key_path: ~/.ssh/id_rsa
       monitoring:
         - node_exporter
@@ -90,12 +90,12 @@ On the CFOperator host (raspberrypi3):
 ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
 
 # Copy to each worker host
-ssh-copy-id aachten@192.168.0.146
-ssh-copy-id aachten@192.168.0.111
-ssh-copy-id aachten@192.168.0.116
+ssh-copy-id user@10.0.0.2
+ssh-copy-id user@10.0.0.3
+ssh-copy-id user@10.0.0.4
 
 # Test passwordless login
-ssh aachten@192.168.0.146 'echo "Success"'
+ssh user@10.0.0.2 'echo "Success"'
 ```
 
 #### Setup Passwordless Sudo
@@ -104,7 +104,7 @@ On each worker host (Pi2, Pi3, Pi4):
 
 ```bash
 # Add your user to sudoers with NOPASSWD
-echo "aachten ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/aachten
+echo "user ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/user
 
 # Test
 sudo ls  # Should not ask for password
@@ -122,7 +122,7 @@ observability:
   # Metrics - choose what you're using
   metrics:
     backend: prometheus  # or: victoria_metrics, datadog, dynatrace
-    url: http://192.168.0.167:9090
+    url: http://10.0.0.1:9090
     timeout: 30
     # For Datadog/Dynatrace:
     # api_key: ${DATADOG_API_KEY}
@@ -131,7 +131,7 @@ observability:
   # Logs - choose what you're using
   logs:
     backend: loki  # or: elasticsearch, datadog, splunk
-    url: http://192.168.0.167:3100
+    url: http://10.0.0.1:3100
     timeout: 30
 
   # Containers - multiple backends possible
@@ -140,8 +140,8 @@ observability:
     hosts:
       local: unix:///var/run/docker.sock
       # If remote Docker APIs are exposed:
-      # pi2: tcp://192.168.0.146:2375
-      # pi3: tcp://192.168.0.111:2375
+      # pi2: tcp://10.0.0.2:2375
+      # pi3: tcp://10.0.0.3:2375
 
   # Kubernetes (if you have a cluster)
   # kubernetes:
@@ -201,7 +201,7 @@ CFOperator learns about services from:
 
 1. **Alert fires**: "immich-ml container OOM killed on raspberrypi2"
 2. **Orient**: CFOperator knows:
-   - raspberrypi2 is at 192.168.0.146
+   - raspberrypi2 is at 10.0.0.2
    - SSH access available
    - Docker API available
    - Prometheus metrics available
@@ -244,7 +244,7 @@ CFOperator's observability backends are **pluggable**. You can swap implementati
 observability:
   metrics:
     backend: prometheus
-    url: http://192.168.0.167:9090
+    url: http://10.0.0.1:9090
 ```
 
 **After (Datadog):**
@@ -289,7 +289,7 @@ infrastructure:
   hosts:
     # On-premises
     raspberrypi:
-      address: 192.168.0.167
+      address: 10.0.0.1
       role: primary
       ssh: {...}
 
@@ -320,7 +320,7 @@ observability:
     # Aggregate from multiple sources
     backends:
       - type: prometheus
-        url: http://192.168.0.167:9090
+        url: http://10.0.0.1:9090
         scope: homelab
       - type: cloudwatch
         region: us-east-1
@@ -343,7 +343,7 @@ observability:
 # Check SSH access
 for host in raspberrypi2 raspberrypi3 raspberrypi4; do
     echo "Testing $host..."
-    ssh aachten@$host 'echo "OK" && sudo echo "SUDO OK"'
+    ssh user@$host 'echo "OK" && sudo echo "SUDO OK"'
 done
 
 # Restart CFOperator
@@ -359,12 +359,12 @@ docker logs -f cfoperator
 ### SSH connection refused
 
 ```
-Error: connection refused to 192.168.0.146:22
+Error: connection refused to 10.0.0.2:22
 ```
 
 Fix: Ensure SSH is running and firewall allows port 22:
 ```bash
-ssh aachten@192.168.0.146
+ssh user@10.0.0.2
 sudo systemctl status sshd
 sudo ufw allow 22
 ```
@@ -377,8 +377,8 @@ Error: sudo: a password is required
 
 Fix: Add NOPASSWD to sudoers:
 ```bash
-ssh aachten@192.168.0.146
-echo "aachten ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/aachten
+ssh user@10.0.0.2
+echo "user ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/user
 ```
 
 ### Host not in config

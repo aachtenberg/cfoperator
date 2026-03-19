@@ -157,7 +157,7 @@ Synthesize all findings into an actionable report.
 Host Investigation: raspberrypi2
 ==================================
 
-Role: worker | Address: 192.168.0.146
+Role: worker | Address: 10.0.0.2
 OS: Debian GNU/Linux 12 (bookworm) | Kernel: 6.1.0-rpi8-rpi-v8
 Uptime: 14 days, 7 hours | Last reboot: 2026-01-25 03:15:00
 
@@ -199,7 +199,7 @@ Past Learnings:
 Recommended Actions:
   1. ⚠️  Memory: immich-ml using 54% of host RAM — consider increasing
      swap or setting container memory limit
-  2. ❌ Fix telegraf: Check InfluxDB on raspberrypi (192.168.0.167),
+  2. ❌ Fix telegraf: Check InfluxDB on raspberrypi (10.0.0.1),
      then restart: sudo systemctl restart telegraf
   3. ❌ Fix promtail: sudo systemctl restart promtail
      (or fix /var/log/syslog permissions)

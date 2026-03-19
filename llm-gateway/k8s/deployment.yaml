@@ -94,21 +94,21 @@ data:
     backends:
       - name: ollama-llm01
         provider: ollama
-        url: http://192.168.0.150:11434
+        url: http://10.0.0.5:11434
         model: qwen3:14b
         enabled: true
         priority: 1
     
       - name: ollama-gaming1
         provider: ollama
-        url: http://192.168.0.198:11434
+        url: http://10.0.0.6:11434
         model: qwen3:14b
         enabled: true
         priority: 2
     
       - name: ollama-gaming2
         provider: ollama
-        url: http://192.168.0.219:11434
+        url: http://10.0.0.7:11434
         model: qwen3:14b
         enabled: true
         priority: 3

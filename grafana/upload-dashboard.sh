@@ -46,7 +46,7 @@ if [[ "$DS_CHECK" == "200" ]]; then
 else
     echo "⚠️  sre-knowledge PostgreSQL datasource not found (uid: $SRE_PG_UID)"
     echo "   Create in Grafana UI: Connections → Add data source → PostgreSQL"
-    echo "   Host: 192.168.0.167:5434 | DB: sre_knowledge | User: sre_agent"
+    echo "   Host: <your-db-host>:5434 | DB: sre_knowledge | User: sre_agent"
     echo "   Enable PDC proxy | SSL: disable"
     echo "   Then set SRE_PG_DATASOURCE_UID in .env.secrets to match the new UID"
 fi

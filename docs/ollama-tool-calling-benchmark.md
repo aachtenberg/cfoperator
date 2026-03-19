@@ -102,9 +102,9 @@ After the model makes a tool call, it receives a fake result with realistic data
 
 | Instance | Hardware | Model | Role |
 |----------|----------|-------|------|
-| ollama-gpu | RTX GPU server (192.168.0.150) | mistral-small3.2:24b | metrics |
-| ollama-198 | RTX 5080 16GB (192.168.0.198) | qwen2.5:7b-instruct-q8_0 | logs |
-| ollama-desktop | Desktop CPU (192.168.0.220) | ministral-3:latest | containers |
+| ollama-gpu | RTX GPU server (10.0.0.5) | mistral-small3.2:24b | metrics |
+| ollama-198 | RTX 5080 16GB (10.0.0.6) | qwen2.5:7b-instruct-q8_0 | logs |
+| ollama-desktop | Desktop CPU (10.0.0.8) | ministral-3:latest | containers |
 
 ### Sequential Baselines (each host running all 3 phases alone)
 

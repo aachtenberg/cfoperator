@@ -22,9 +22,9 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 HOSTS = {
-    'ollama-gpu':     'http://192.168.0.150:11434',
-    'ollama-198':     'http://192.168.0.198:11434',
-    'ollama-desktop': 'http://192.168.0.220:11434',
+    'ollama-gpu':     'http://10.0.0.5:11434',
+    'ollama-198':     'http://10.0.0.6:11434',
+    'ollama-desktop': 'http://10.0.0.8:11434',
 }
 
 # Models to skip (embedding, base, vision-only)
@@ -274,9 +274,9 @@ def test_host(host_name, url):
 
 # Pool config — matches config.yaml ollama_pool
 POOL = [
-    {'name': 'ollama-gpu',     'url': 'http://192.168.0.150:11434', 'model': 'mistral-small3.2:24b'},
-    {'name': 'ollama-198',     'url': 'http://192.168.0.198:11434', 'model': 'qwen2.5:7b-instruct-q8_0'},
-    {'name': 'ollama-desktop', 'url': 'http://192.168.0.220:11434', 'model': 'ministral-3:latest'},
+    {'name': 'ollama-gpu',     'url': 'http://10.0.0.5:11434', 'model': 'mistral-small3.2:24b'},
+    {'name': 'ollama-198',     'url': 'http://10.0.0.6:11434', 'model': 'qwen2.5:7b-instruct-q8_0'},
+    {'name': 'ollama-desktop', 'url': 'http://10.0.0.8:11434', 'model': 'ministral-3:latest'},
 ]
 
 # 3 sweep phases — each one a realistic monitoring prompt with all tools available
