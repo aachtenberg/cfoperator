@@ -97,6 +97,21 @@ def validate_logql(query: str) -> Tuple[bool, str]:
     if '*' in selector and '.*' not in selector and '=~' in selector:
         return False, 'Use regex syntax (.*) not glob (*) in label matchers. Example: {container_name=~"immich.*"}'
 
+    # Loki requires at least one positive matcher (=, =~) that isn't empty-compatible.
+    # Negative-only matchers (!=, !~) cause: "queries require at least one regexp or
+    # equality matcher that does not have an empty-compatible value"
+    matchers = re.findall(r'(\w+)\s*(=~|=|!=|!~)\s*"([^"]*)"', selector)
+    has_positive = any(
+        op in ('=', '=~') and val and val not in ('.*', '.+', '')
+        for _, op, val in matchers
+    )
+    if not has_positive:
+        return False, (
+            'Loki requires at least one positive label matcher (= or =~). '
+            'Negative-only selectors like {host!="x"} are rejected. '
+            'Use a positive matcher first, e.g. {job="docker", host!="x"} or {namespace="apps"} |~ "error"'
+        )
+
     return True, ''
 
 

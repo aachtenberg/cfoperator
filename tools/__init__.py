@@ -102,6 +102,8 @@ class ToolRegistry:
                     '{container_name=~"immich.*"} |= "error"  --  '
                     'WRONG patterns (DO NOT USE): '
                     '{job="x"} |= "e" and {container_name="y"} is WRONG - combine into {job="x", container_name="y"} |= "e".  '
+                    '{host!="x"} |~ "error" is WRONG - negative-only selectors are rejected by Loki.  '
+                    'ALWAYS include at least one positive matcher (= or =~) in the selector. '
                     'Never use and/or between {} selectors. Never quote the selector. Use regex .* not glob *.',
                 'parameters': {
                     'type': 'object',
