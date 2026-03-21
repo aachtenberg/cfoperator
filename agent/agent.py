@@ -1196,18 +1196,33 @@ Only return the JSON array, no other text."""
                 if isinstance(findings, list):
                     # Validate each finding has required keys
                     valid = []
+                    # Patterns that indicate tool errors, not infrastructure issues
+                    tool_error_patterns = [
+                        'is not found', 'not found in namespace', 'failed with',
+                        'returned empty', 'no such', 'could not find',
+                    ]
                     for f in findings:
                         if isinstance(f, dict) and 'finding' in f:
                             finding_text = str(f['finding'])
+                            evidence_text = str(f.get('evidence', ''))
                             if self._is_self_referential(finding_text):
                                 logger.info(f"Filtered self-referential finding: {finding_text[:120]}")
+                                continue
+                            # Filter findings with no evidence — likely hallucinated
+                            if not evidence_text.strip():
+                                logger.info(f"Filtered no-evidence finding: {finding_text[:120]}")
+                                continue
+                            # Filter findings that are tool/query errors, not real issues
+                            finding_lower = finding_text.lower()
+                            if any(p in finding_lower for p in tool_error_patterns):
+                                logger.info(f"Filtered tool-error finding: {finding_text[:120]}")
                                 continue
                             parsed = {
                                 'severity': f.get('severity', 'info'),
                                 'finding': finding_text
                             }
-                            if f.get('evidence'):
-                                parsed['evidence'] = str(f['evidence'])
+                            if evidence_text.strip():
+                                parsed['evidence'] = evidence_text
                             if f.get('remediation'):
                                 parsed['remediation'] = str(f['remediation'])
                             valid.append(parsed)
@@ -1799,13 +1814,17 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                 f"Evidence: {evidence}\n"
             )
 
-        system_prompt = """You are a verification judge for infrastructure monitoring findings.
+        system_prompt = """You are a strict verification judge for infrastructure monitoring findings.
 For each finding below, check if the evidence actually supports the claim.
-Remove findings where:
+REMOVE findings where:
 - The evidence contradicts the finding
 - The evidence is missing, vague, or says "No evidence provided"
-- The finding describes a tool/query failure, not an infrastructure issue
-- Container/service names don't match between finding and evidence
+- The finding describes a tool/query failure, not an actual infrastructure issue (e.g., "pod not found", "query returned empty")
+- Container/service/pod names don't match between finding and evidence
+- The finding merely reports that a lookup or API call failed — this is a monitoring gap, not an outage
+- The pod name looks fabricated or reuses hash suffixes from other pods
+
+Be aggressive about filtering. It is MUCH better to miss a real issue than to report a hallucinated one.
 
 Return ONLY verified findings as a JSON array:
 [{"severity": "info|warning|critical", "finding": "description", "evidence": "the evidence"}]
