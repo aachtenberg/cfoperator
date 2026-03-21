@@ -11,6 +11,7 @@ Stores system profiles, baselines, drift events, and investigation learnings.
 - Pure observation and learning
 """
 
+import hashlib
 import json
 import os
 import threading
@@ -1183,7 +1184,12 @@ class KnowledgeBase:
 
     def store_sweep_report(self, severity: str, findings: List[Dict[str, Any]],
                            summary: str, sweep_meta: Optional[Dict[str, Any]] = None) -> int:
-        """Store a sweep report."""
+        """Store a sweep report. Each finding gets a stable ID for safe updates."""
+        # Assign stable IDs so updates don't depend on brittle array indices
+        for f in findings:
+            if 'id' not in f:
+                key = f.get('finding', '') + f.get('sweep_phase', '')
+                f['id'] = hashlib.md5(key.encode()).hexdigest()[:8]
         with self.session_scope() as session:
             report = SweepReport(
                 host_id=self.host_id,
@@ -1234,15 +1240,17 @@ class KnowledgeBase:
                 'sweep_meta': r.sweep_meta
             }
 
-    def update_sweep_finding(self, report_id: int, finding_index: int,
-                             status: str, resolution: str = '') -> bool:
+    def update_sweep_finding(self, report_id: int, finding_index: int = -1,
+                             status: str = '', resolution: str = '',
+                             finding_id: str = '') -> bool:
         """Update a specific finding within a sweep report.
 
         Args:
             report_id: Sweep report ID
-            finding_index: Index of the finding in the findings array (0-based)
+            finding_index: Index of the finding (0-based). Used as fallback if finding_id not provided.
             status: New status (e.g., 'resolved', 'acknowledged', 'investigating', 'false_positive')
             resolution: Optional resolution note
+            finding_id: Stable finding ID (preferred over index)
 
         Returns:
             True if updated successfully
@@ -1254,13 +1262,27 @@ class KnowledgeBase:
                 return False
 
             findings = list(report.findings)  # copy JSONB
-            if finding_index < 0 or finding_index >= len(findings):
-                _log("warning", "Finding index out of range", report_id=report_id, index=finding_index)
+
+            # Resolve target: prefer stable ID, fall back to index
+            target_idx = None
+            if finding_id:
+                for i, f in enumerate(findings):
+                    if f.get('id') == finding_id:
+                        target_idx = i
+                        break
+                if target_idx is None:
+                    _log("warning", "Finding ID not found", report_id=report_id, finding_id=finding_id)
+                    return False
+            elif 0 <= finding_index < len(findings):
+                target_idx = finding_index
+            else:
+                _log("warning", "Finding index out of range", report_id=report_id,
+                     index=finding_index, findings_len=len(findings))
                 return False
 
-            findings[finding_index]['status'] = status
+            findings[target_idx]['status'] = status
             if resolution:
-                findings[finding_index]['resolution'] = resolution
+                findings[target_idx]['resolution'] = resolution
             report.findings = findings
             # Force SQLAlchemy to detect JSONB change
             from sqlalchemy.orm.attributes import flag_modified

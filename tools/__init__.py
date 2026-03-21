@@ -296,7 +296,7 @@ class ToolRegistry:
             'function': self._update_sweep_finding,
             'schema': {
                 'name': 'update_sweep_finding',
-                'description': 'Update the status of a specific finding in a sweep report. Use this to mark findings as resolved, acknowledged, or false positives after investigation.',
+                'description': 'Update the status of a specific finding in a sweep report. Use finding_id (preferred) or finding_index to identify the finding.',
                 'parameters': {
                     'type': 'object',
                     'properties': {
@@ -304,9 +304,13 @@ class ToolRegistry:
                             'type': 'integer',
                             'description': 'The sweep report ID number'
                         },
+                        'finding_id': {
+                            'type': 'string',
+                            'description': 'Stable finding ID (preferred over finding_index)'
+                        },
                         'finding_index': {
                             'type': 'integer',
-                            'description': 'Index of the finding within the report (0-based)'
+                            'description': 'Index of the finding within the report (0-based). Fallback if finding_id not provided.'
                         },
                         'status': {
                             'type': 'string',
@@ -318,7 +322,7 @@ class ToolRegistry:
                             'description': 'Optional note explaining the resolution or action taken'
                         }
                     },
-                    'required': ['report_id', 'finding_index', 'status']
+                    'required': ['report_id', 'status']
                 }
             }
         }
@@ -663,18 +667,21 @@ class ToolRegistry:
         except Exception as e:
             return {'error': str(e)}
 
-    def _update_sweep_finding(self, report_id: int, finding_index: int,
-                              status: str, resolution: str = '') -> Dict[str, Any]:
+    def _update_sweep_finding(self, report_id: int, finding_index: int = -1,
+                              status: str = '', resolution: str = '',
+                              finding_id: str = '') -> Dict[str, Any]:
         """Update a finding's status in a sweep report."""
         try:
             updated = self.operator.kb.update_sweep_finding(
-                report_id, finding_index, status, resolution
+                report_id, finding_index=finding_index, status=status,
+                resolution=resolution, finding_id=finding_id
             )
+            ref = finding_id or f"index {finding_index}"
             if updated:
                 return {'success': True, 'report_id': report_id,
-                        'finding_index': finding_index, 'status': status}
+                        'finding': ref, 'status': status}
             else:
-                return {'error': f'Could not update finding {finding_index} in report #{report_id}'}
+                return {'error': f'Could not update finding {ref} in report #{report_id}'}
         except Exception as e:
             return {'error': str(e)}
 

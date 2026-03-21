@@ -517,11 +517,16 @@ class WebServer:
                 if status not in valid_statuses:
                     return jsonify({'error': f'status must be one of: {", ".join(valid_statuses)}'}), 400
 
-                ok = self.operator.kb.update_sweep_finding(report_id, finding_index, status, resolution)
+                finding_id = data.get('finding_id', '')
+                ok = self.operator.kb.update_sweep_finding(
+                    report_id, finding_index=finding_index, status=status,
+                    resolution=resolution, finding_id=finding_id
+                )
                 if not ok:
                     return jsonify({'error': 'Finding not found'}), 404
 
-                return jsonify({'success': True, 'report_id': report_id, 'finding_index': finding_index, 'status': status})
+                ref = finding_id or finding_index
+                return jsonify({'success': True, 'report_id': report_id, 'finding': ref, 'status': status})
             except Exception as e:
                 logger.error(f"Error updating finding: {e}")
                 return jsonify({'error': str(e)}), 500
