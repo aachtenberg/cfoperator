@@ -1306,7 +1306,9 @@ Only return the JSON array, no other text."""
             "Use k8s tools (k8s_get_pods, k8s_get_all_unhealthy, k8s_get_events) for Kubernetes workloads across apps, monitoring, data, iot, ai, infrastructure, and kube-system, "
             "loki_query for workload logs, prometheus_query for resource metrics, and ssh_list_services for bare-metal hosts. "
             "Do not rely only on current pod phase: recovered failures may appear only in recent Kubernetes warning events or Loki logs. "
-            "Check for BackOff, Unhealthy/readiness failures, restarts, CrashLoopBackOff history, and other issues."
+            "Check for BackOff, Unhealthy/readiness failures, CrashLoopBackOff, and other issues. "
+            "IMPORTANT: High restart counts alone are NOT findings if the pod is currently healthy and the last restart was hours/days ago. "
+            "Only report restarts as issues if they are RECENT (last 2 hours) or ONGOING. Stale restart counts from past node reboots are normal."
         )
         findings.extend(llm_findings)
 

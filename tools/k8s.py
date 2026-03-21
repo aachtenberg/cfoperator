@@ -589,17 +589,31 @@ class K8sTools:
                     if cs.get('state', {}).get('waiting', {}).get('reason')
                 ]
                 last_terminated = []
+                recent_restart = False
                 for cs in container_statuses:
                     terminated = cs.get('lastState', {}).get('terminated')
                     if terminated:
+                        finished_at = terminated.get('finishedAt', '')
                         last_terminated.append({
                             'container': cs.get('name'),
                             'exit_code': terminated.get('exitCode'),
                             'reason': terminated.get('reason'),
-                            'finished_at': terminated.get('finishedAt')
+                            'finished_at': finished_at
                         })
+                        # Check if the restart was recent (within last 2 hours)
+                        if finished_at:
+                            try:
+                                from datetime import datetime, timezone, timedelta
+                                # Parse k8s timestamp (e.g., "2026-03-20T22:35:55Z")
+                                ts = datetime.fromisoformat(finished_at.replace('Z', '+00:00'))
+                                if datetime.now(timezone.utc) - ts < timedelta(hours=2):
+                                    recent_restart = True
+                            except (ValueError, TypeError):
+                                recent_restart = True  # Can't parse — assume recent
 
-                if restart_count > 0 or waiting_reasons or last_terminated:
+                # Only report pods with recent restarts, active waiting states,
+                # or currently not running. Stale restart counts are noise.
+                if waiting_reasons or (restart_count > 0 and recent_restart):
                     unhealthy['restarted_pods'].append({
                         'name': name,
                         'namespace': namespace,
