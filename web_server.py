@@ -463,6 +463,69 @@ class WebServer:
                 logger.error(f"Error fetching sweep reports: {e}")
                 return jsonify({'error': str(e), 'reports': []}), 500
 
+        # Findings API
+        @self.app.route('/api/findings')
+        def list_findings():
+            """List recent findings across sweep reports.
+
+            Query params:
+                limit: max reports to scan (default 10)
+                status: filter by status (e.g., 'new', 'resolved')
+            """
+            try:
+                limit = request.args.get('limit', 10, type=int)
+                status_filter = request.args.get('status')
+                reports = self.operator.kb.get_recent_sweep_reports(limit=limit)
+                findings = []
+                for report in reports:
+                    for i, f in enumerate(report.get('findings', [])):
+                        f_status = f.get('status', 'new')
+                        if status_filter and f_status != status_filter:
+                            continue
+                        findings.append({
+                            'report_id': report['id'],
+                            'finding_index': i,
+                            'swept_at': report['swept_at'],
+                            'status': f_status,
+                            'severity': f.get('severity', 'unknown'),
+                            'finding': f.get('finding', ''),
+                            'evidence': f.get('evidence', ''),
+                            'resolution': f.get('resolution', ''),
+                        })
+                return jsonify({'findings': findings, 'count': len(findings)})
+            except Exception as e:
+                logger.error(f"Error fetching findings: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/findings/<int:report_id>/<int:finding_index>', methods=['PATCH'])
+        def update_finding(report_id, finding_index):
+            """Update a finding's status and resolution.
+
+            JSON body:
+                status: 'resolved', 'acknowledged', 'investigating', 'false_positive'
+                resolution: free-text description of what was done
+            """
+            try:
+                data = request.json or {}
+                status = data.get('status')
+                resolution = data.get('resolution', '')
+
+                if not status:
+                    return jsonify({'error': 'status is required'}), 400
+
+                valid_statuses = ('resolved', 'acknowledged', 'investigating', 'false_positive')
+                if status not in valid_statuses:
+                    return jsonify({'error': f'status must be one of: {", ".join(valid_statuses)}'}), 400
+
+                ok = self.operator.kb.update_sweep_finding(report_id, finding_index, status, resolution)
+                if not ok:
+                    return jsonify({'error': 'Finding not found'}), 404
+
+                return jsonify({'success': True, 'report_id': report_id, 'finding_index': finding_index, 'status': status})
+            except Exception as e:
+                logger.error(f"Error updating finding: {e}")
+                return jsonify({'error': str(e)}), 500
+
         # Ollama Pool status API
         @self.app.route('/api/pool/status')
         def pool_status():
