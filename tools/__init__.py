@@ -73,7 +73,9 @@ class ToolRegistry:
             'function': self._prometheus_query,
             'schema': {
                 'name': 'prometheus_query',
-                'description': 'Query Prometheus metrics across all monitored hosts',
+                'description': 'Query Prometheus metrics across all monitored hosts. '
+                    'IMPORTANT: kube_node_status_condition produces 3 series per node (status=true/false/unknown). '
+                    'To count Ready nodes use: count(kube_node_status_condition{condition="Ready", status="true"} == 1)',
                 'parameters': {
                     'type': 'object',
                     'properties': {

@@ -102,7 +102,7 @@ def validate_logql(query: str) -> Tuple[bool, str]:
     # equality matcher that does not have an empty-compatible value"
     matchers = re.findall(r'(\w+)\s*(=~|=|!=|!~)\s*"([^"]*)"', selector)
     has_positive = any(
-        op in ('=', '=~') and val and val not in ('.*', '.+', '')
+        op in ('=', '=~') and val and val not in ('.*', '')
         for _, op, val in matchers
     )
     if not has_positive:
