@@ -786,6 +786,17 @@ When done, provide a summary of findings and whether the issue is resolved, need
         else:
             logger.info("Sweep complete - no findings")
 
+        # 7b. Capture metric snapshot for correlation baseline
+        try:
+            snapshot_metrics = self._capture_metric_snapshot()
+            if snapshot_metrics:
+                self.kb._kb.record_metric_snapshot(
+                    metrics=snapshot_metrics,
+                    snapshot_type='sweep'
+                )
+        except Exception as e:
+            logger.debug(f"Metric snapshot skipped: {e}")
+
         # 8. Correlation analysis — detect patterns AND have LLM analyze them
         logger.info("Starting correlation analysis...")
         try:
@@ -1876,6 +1887,35 @@ Only return the JSON array, no other text."""
         except Exception as e:
             logger.debug(f"Could not check previous sweep for dedup: {e}")
             return findings  # On error, notify for everything
+
+    def _capture_metric_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Capture key cluster metrics for correlation baseline."""
+        snapshot = {}
+        try:
+            if self.metrics:
+                # Node resource usage
+                cpu_result = self.metrics.query('100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle",job="kubernetes-nodes"}[5m])) * 100)')
+                if cpu_result:
+                    snapshot['node_cpu_percent'] = {r['metric'].get('instance', '?'): round(float(r['value'][1]), 1) for r in cpu_result}
+
+                mem_result = self.metrics.query('(1 - node_memory_MemAvailable_bytes{job="kubernetes-nodes"} / node_memory_MemTotal_bytes{job="kubernetes-nodes"}) * 100')
+                if mem_result:
+                    snapshot['node_memory_percent'] = {r['metric'].get('instance', '?'): round(float(r['value'][1]), 1) for r in mem_result}
+
+                # Pod counts by phase
+                phase_result = self.metrics.query('sum by (phase) (kube_pod_status_phase)')
+                if phase_result:
+                    snapshot['pod_phases'] = {r['metric'].get('phase', '?'): int(float(r['value'][1])) for r in phase_result}
+
+                # Container restart total
+                restart_result = self.metrics.query('sum(increase(kube_pod_container_status_restarts_total[30m]))')
+                if restart_result:
+                    snapshot['restarts_30m'] = round(float(restart_result[0]['value'][1]), 1)
+
+        except Exception as e:
+            logger.debug(f"Metric snapshot partial failure: {e}")
+
+        return snapshot if snapshot else None
 
     def _generate_sweep_report(self, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Generate summary report from sweep findings."""
