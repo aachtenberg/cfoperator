@@ -102,11 +102,14 @@ class ToolRegistry:
                     '{container_name="immich_server"} |= "error"  --  '
                     '{host="raspberrypi2", container_name="telegraf"} |= "timeout"  --  '
                     '{container_name=~"immich.*"} |= "error"  --  '
+                    'To query multiple hosts use regex: {host=~"raspberrypi|raspberrypi2|raspberrypi3"} |= "error".  '
                     'WRONG patterns (DO NOT USE): '
                     '{job="x"} |= "e" and {container_name="y"} is WRONG - combine into {job="x", container_name="y"} |= "e".  '
                     '{host!="x"} |~ "error" is WRONG - negative-only selectors are rejected by Loki.  '
+                    '{sel1} || {sel2} or {sel1} -- {sel2} is WRONG - LogQL has no multi-query syntax. Make separate calls.  '
+                    '{host="a",b,c} is WRONG - use {host=~"a|b|c"} for multiple values.  '
                     'ALWAYS include at least one positive matcher (= or =~) in the selector. '
-                    'Never use and/or between {} selectors. Never quote the selector. Use regex .* not glob *.',
+                    'Never use and/or/||/-- between {} selectors. Never quote the selector. Use regex .* not glob *.',
                 'parameters': {
                     'type': 'object',
                     'properties': {
@@ -479,6 +482,15 @@ class ToolRegistry:
         """Query Prometheus metrics."""
         if not self.operator.metrics:
             return {'error': 'Prometheus backend not configured'}
+
+        # Auto-correct: kube_node_status_condition needs status="true" filter
+        # to avoid counting all 3 series per node (true/false/unknown)
+        if 'kube_node_status_condition' in query and 'status=' not in query:
+            query = query.replace(
+                'kube_node_status_condition{',
+                'kube_node_status_condition{status="true", '
+            )
+            logger.warning(f"Auto-corrected PromQL query to include status=\"true\": {query}")
 
         try:
             result = self.operator.metrics.query(query)

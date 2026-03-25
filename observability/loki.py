@@ -84,14 +84,26 @@ def validate_logql(query: str) -> Tuple[bool, str]:
     if not selector.strip():
         return False, 'Empty stream selector {}. Specify at least one label, e.g. {host="raspberrypi2"}'
 
-    # Check for 'and' or 'or' between stream selectors (common LLM mistake)
+    # Check for 'and' or 'or' or '||' or '--' between stream selectors (common LLM mistake)
     remainder = query[selector_end + 1:]
     if re.search(r'\b(and|or)\b\s*\{', remainder, re.IGNORECASE):
         return False, 'Cannot use and/or between stream selectors. Combine labels in one selector: {job="docker", container_name="foo"}'
+    if re.search(r'(\|\||\-\-)\s*\{', remainder):
+        return False, (
+            'LogQL does not support || or -- to combine queries. '
+            'Run each stream selector as a separate loki_query call.'
+        )
 
     # Check for quoted stream selector (common LLM mistake)
     if query.startswith('{"') or query.startswith("{\'" ):
         return False, 'Stream selector should not be quoted. Use {container_name="foo"} not {"container_name=..."}'
+
+    # Check for bare comma-separated values like {host="a",b,c} (should be {host=~"a|b|c"})
+    if re.search(r'"[^"]*",[a-zA-Z0-9_-]+[,}]', selector):
+        return False, (
+            'Cannot use comma-separated bare values in a label matcher. '
+            'Use regex: {host=~"raspberrypi|raspberrypi2|raspberrypi3"}'
+        )
 
     # Check for glob patterns instead of regex
     if '*' in selector and '.*' not in selector and '=~' in selector:
