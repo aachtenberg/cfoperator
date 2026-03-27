@@ -130,17 +130,28 @@ func (m *model) appendWelcome(contextCount int) {
 	if m.width > 0 {
 		width = m.width
 	}
-	sep := strings.Repeat("─", width)
-	welcome := fmt.Sprintf("  %s %s",
-		bannerStyle.Render("cfassist"),
-		bannerDimStyle.Render("v"+config.Version),
-	)
-	if contextCount > 0 {
-		welcome += dimStyle.Render(fmt.Sprintf("  (%d context files loaded)", contextCount))
+
+	logo := []string{
+		`  _________ ___________ _____     _________  _________.___   ____________________ `,
+		`  \_   ___ \\_   _____//  _  \   /   _____/ /   _____/|   | /   _____/\__    ___/ `,
+		`  /    \  \/ |    __) /  /_\  \  \_____  \  \_____  \ |   | \_____  \   |    |    `,
+		`  \     \____|     \ /    |    \ /        \ /        \|   | /        \  |    |    `,
+		`   \______  /\___  / \____|__  //_______  //_______  /|___|/_______  /  |____|    `,
+		`          \/     \/          \/         \/         \/              \/              `,
 	}
+
+	for _, line := range logo {
+		m.outputLines = append(m.outputLines, bannerStyle.Render(line))
+	}
+
+	sep := strings.Repeat("─", width)
+	info := fmt.Sprintf("  %s", bannerDimStyle.Render("v"+config.Version))
+	if contextCount > 0 {
+		info += dimStyle.Render(fmt.Sprintf("  (%d context files loaded)", contextCount))
+	}
+	info += dimStyle.Render("  Type /help for commands")
 	m.outputLines = append(m.outputLines,
-		separatorStyle.Render(sep),
-		welcome,
+		info,
 		separatorStyle.Render(sep),
 		"",
 	)

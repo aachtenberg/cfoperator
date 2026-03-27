@@ -6,265 +6,574 @@
     <title>CFOperator</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Ubuntu+Mono:wght@400;700&family=Ubuntu:wght@400;500;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a26;
+            --bg-hover: #22222e;
+            --border: #2a2a3a;
+            --border-subtle: #1e1e2e;
+            --text-primary: #e0e0e8;
+            --text-secondary: #8888a0;
+            --text-muted: #555566;
+            --accent: #22c55e;
+            --accent-dim: #166534;
+            --accent-glow: rgba(34, 197, 94, 0.12);
+            --cyan: #06b6d4;
+            --cyan-dim: #164e63;
+            --orange: #f59e0b;
+            --orange-dim: #78350f;
+            --red: #ef4444;
+            --red-dim: #7f1d1d;
+            --sidebar-width: 260px;
+            --header-height: 56px;
+            --status-height: 32px;
+            --radius: 10px;
+            --radius-sm: 6px;
         }
 
-        ::selection {
-            background: #1a1a1a;
-            color: #00aa00;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        ::selection { background: var(--accent-dim); color: var(--accent); }
 
         body {
-            font-family: 'Ubuntu Mono', 'Ubuntu', monospace;
-            background: #000000;
-            color: #cccccc;
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             height: 100vh;
             display: flex;
             flex-direction: column;
-            font-weight: 400;
+            overflow: hidden;
         }
 
+        /* ── Header ── */
         header {
-            background: #111111;
-            padding: 14px 20px;
-            border-bottom: 1px solid #333333;
+            height: var(--header-height);
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            padding: 0 20px;
+            gap: 16px;
+            flex-shrink: 0;
+            z-index: 10;
         }
 
         .logo {
-            font-size: 20px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 18px;
             font-weight: 700;
-            color: #00aa00;
-        }
-
-        .settings-panel {
+            color: var(--accent);
+            letter-spacing: -0.5px;
             display: flex;
-            gap: 10px;
             align-items: center;
+            gap: 10px;
         }
 
-        .settings-panel label {
-            font-size: 15px;
-            color: #888888;
+        .logo svg {
+            width: 24px;
+            height: 24px;
+            opacity: 0.9;
         }
 
-        .settings-panel select {
-            background: #101020;
-            color: #cccccc;
-            border: 1px solid #333333;
-            padding: 5px 10px;
-            border-radius: 3px;
-            font-family: inherit;
-            font-size: 15px;
-            font-weight: 400;
+        .header-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-left: auto;
         }
+
+        .header-controls label {
+            font-size: 12px;
+            font-weight: 500;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .header-controls select, .header-controls input[type="number"] {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            padding: 6px 10px;
+            border-radius: var(--radius-sm);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .header-controls select:focus, .header-controls input:focus {
+            border-color: var(--accent);
+        }
+
+        .header-controls input[type="number"] {
+            width: 56px;
+            text-align: center;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 0 8px;
+            border-left: 1px solid var(--border);
+        }
+
+        .control-group:first-child { border-left: none; padding-left: 0; }
 
         .toggle-switch {
             position: relative;
             display: inline-block;
-            width: 36px;
-            height: 20px;
+            width: 34px;
+            height: 18px;
             flex-shrink: 0;
         }
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
         .toggle-slider {
             position: absolute;
             cursor: pointer;
             inset: 0;
-            background: #333333;
-            border-radius: 20px;
+            background: var(--border);
+            border-radius: 18px;
             transition: background 0.2s;
         }
         .toggle-slider::before {
             content: "";
             position: absolute;
-            width: 14px;
-            height: 14px;
+            width: 12px;
+            height: 12px;
             left: 3px;
             bottom: 3px;
-            background: #888;
+            background: var(--text-muted);
             border-radius: 50%;
             transition: transform 0.2s, background 0.2s;
         }
-        .toggle-switch input:checked + .toggle-slider {
-            background: #225522;
-        }
+        .toggle-switch input:checked + .toggle-slider { background: var(--accent-dim); }
         .toggle-switch input:checked + .toggle-slider::before {
             transform: translateX(16px);
-            background: #44cc44;
+            background: var(--accent);
         }
 
-        .status-indicator {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #00aa00;
-            display: inline-block;
-            margin-right: 6px;
+        .sidebar-toggle {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            width: 34px;
+            height: 34px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            font-size: 16px;
+        }
+        .sidebar-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+        /* ── Main layout ── */
+        .main-layout {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
         }
 
-        .status-indicator.disconnected {
-            background: #aa0000;
+        /* ── Sidebar ── */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow-y: auto;
+            transition: margin-left 0.3s ease;
         }
 
-        #questions-panel {
-            background: #000000;
-            border-bottom: 1px solid #333333;
-            padding: 12px 20px;
-            display: none;
+        .sidebar.collapsed {
+            margin-left: calc(-1 * var(--sidebar-width));
         }
 
-        #questions-panel.active {
+        .sidebar-section {
+            padding: 16px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .sidebar-section h3 {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+        }
+
+        .sidebar-field {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+
+        .sidebar-field:last-child { margin-bottom: 0; }
+
+        .sidebar-field label {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .sidebar-field select, .sidebar-field input[type="number"] {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+            padding: 5px 8px;
+            border-radius: var(--radius-sm);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            outline: none;
+        }
+
+        .sidebar-field input[type="number"] { width: 60px; text-align: center; }
+        .sidebar-field select { max-width: 140px; }
+
+        .skill-list { list-style: none; }
+        .skill-list li {
+            padding: 8px 10px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 13px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-secondary);
+            transition: all 0.15s;
+            margin-bottom: 2px;
+        }
+        .skill-list li:hover { background: var(--bg-hover); color: var(--accent); }
+        .skill-list .skill-desc {
             display: block;
+            font-family: 'Inter', sans-serif;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 2px;
         }
+
+        #pool-toggles-sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .pool-instance {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .pool-instance input[type="checkbox"] { accent-color: var(--accent); }
+
+        /* ── Chat area ── */
+        .chat-area {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        /* ── Sweep panel ── */
+        #sweep-panel {
+            display: none;
+            margin: 12px 20px 0;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg-secondary);
+            overflow: hidden;
+        }
+
+        #sweep-panel.active { display: block; }
+
+        .sweep-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 16px;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .sweep-header:hover { background: var(--bg-hover); }
+
+        .sweep-severity {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 11px;
+            letter-spacing: 0.5px;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+        .sweep-severity.critical { color: var(--red); background: var(--red-dim); }
+        .sweep-severity.warning { color: var(--orange); background: var(--orange-dim); }
+        .sweep-severity.info { color: var(--cyan); background: var(--cyan-dim); }
+
+        .sweep-time { color: var(--text-muted); font-size: 12px; }
+
+        .sweep-body {
+            display: none;
+            padding: 12px 16px;
+            max-height: 300px;
+            overflow-y: auto;
+            border-top: 1px solid var(--border-subtle);
+        }
+        .sweep-body.open { display: block; }
+
+        .sweep-finding {
+            padding: 8px 0;
+            font-size: 13px;
+            border-bottom: 1px solid var(--border-subtle);
+            line-height: 1.6;
+        }
+        .sweep-finding:last-child { border-bottom: none; }
+
+        .sweep-badge {
+            display: inline-block;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 6px;
+            border-radius: 4px;
+            margin-right: 8px;
+            letter-spacing: 0.3px;
+        }
+        .sweep-badge.critical { background: var(--red-dim); color: var(--red); }
+        .sweep-badge.warning { background: var(--orange-dim); color: var(--orange); }
+        .sweep-badge.info { background: var(--cyan-dim); color: var(--cyan); }
+
+        .finding-id { color: var(--text-muted); font-size: 11px; margin-right: 6px; font-family: 'JetBrains Mono', monospace; }
+
+        .finding-status {
+            display: inline-block;
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 4px;
+            margin-right: 6px;
+            font-weight: 500;
+        }
+        .finding-status.resolved { background: var(--accent-dim); color: var(--accent); }
+        .finding-status.acknowledged { background: var(--bg-tertiary); color: var(--text-muted); }
+        .finding-status.investigating { background: var(--orange-dim); color: var(--orange); }
+        .finding-status.false_positive { background: var(--bg-tertiary); color: var(--text-muted); }
+        .finding-resolved { opacity: 0.5; }
+        .finding-false_positive { opacity: 0.4; }
+
+        .sweep-remediation { color: var(--accent); font-size: 12px; margin-top: 4px; padding-left: 4px; opacity: 0.8; }
+
+        .sweep-meta {
+            color: var(--text-muted);
+            font-size: 11px;
+            padding: 8px 16px;
+            border-top: 1px solid var(--border-subtle);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* ── Questions panel ── */
+        #questions-panel {
+            display: none;
+            margin: 12px 20px 0;
+        }
+        #questions-panel.active { display: block; }
 
         .question-card {
-            background: #0d0d0d;
-            padding: 12px;
-            border-radius: 4px;
-            border-left: 3px solid #00aa00;
-            border: 1px solid #333333;
+            background: var(--bg-secondary);
+            padding: 14px 16px;
+            border-radius: var(--radius);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent);
             margin-bottom: 10px;
         }
-
         .question-card h4 {
-            color: #00aa00;
-            font-size: 16px;
-            font-weight: 700;
+            color: var(--accent);
+            font-size: 13px;
+            font-weight: 600;
             margin-bottom: 6px;
         }
+        .question-card p { font-size: 14px; margin-bottom: 8px; }
+        .question-card .context { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
 
-        .question-card p {
-            font-size: 16px;
-            margin-bottom: 8px;
-        }
-
-        .question-card .context {
-            font-size: 14px;
-            color: #888888;
-            margin-bottom: 10px;
-        }
-
-        .answer-input {
-            display: flex;
-            gap: 8px;
-        }
-
+        .answer-input { display: flex; gap: 8px; }
         .answer-input input {
             flex: 1;
-            background: #101020;
-            border: 1px solid #333333;
-            color: #cccccc;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
             padding: 8px 12px;
-            border-radius: 3px;
+            border-radius: var(--radius-sm);
             font-family: inherit;
-            font-size: 16px;
-            font-weight: 400;
+            font-size: 13px;
+            outline: none;
         }
-
+        .answer-input input:focus { border-color: var(--accent); }
         .answer-input button {
-            background: #00aa00;
-            color: #101020;
+            background: var(--accent);
+            color: var(--bg-primary);
             border: none;
-            padding: 8px 18px;
-            border-radius: 3px;
+            padding: 8px 16px;
+            border-radius: var(--radius-sm);
             cursor: pointer;
             font-family: inherit;
-            font-size: 16px;
-            font-weight: 700;
+            font-size: 13px;
+            font-weight: 600;
+            transition: opacity 0.15s;
         }
+        .answer-input button:hover { opacity: 0.85; }
 
-        .answer-input button:hover {
-            background: #00cc00;
-        }
-
+        /* ── Chat container ── */
         #chat-container {
             flex: 1;
             overflow-y: auto;
             padding: 20px;
-            background: #000000;
+            scroll-behavior: smooth;
         }
 
         .message {
-            margin-bottom: 18px;
-            line-height: 1.7;
+            margin-bottom: 16px;
+            display: flex;
+            flex-direction: column;
+            max-width: 85%;
+            animation: msgIn 0.2s ease;
+        }
+
+        @keyframes msgIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .message.user {
+            align-self: flex-end;
+            align-items: flex-end;
+        }
+
+        .message.agent, .message.tool {
+            align-self: flex-start;
+            align-items: flex-start;
         }
 
         .message-header {
-            font-size: 15px;
-            color: #00aa00;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
             margin-bottom: 4px;
-            font-weight: 700;
+            padding: 0 4px;
         }
 
-        .message.user .message-header {
-            color: #00aa00;
-        }
+        .message.user .message-header { color: var(--accent); }
+        .message.agent .message-header { color: var(--cyan); }
+        .message.tool .message-header { color: var(--orange); }
 
-        .message.agent .message-header {
-            color: #008888;
-        }
-
-        .message.tool .message-header {
-            color: #ffaa00;
-        }
-
-        .message-content {
-            font-size: 17px;
+        .message-bubble {
+            padding: 12px 16px;
+            border-radius: var(--radius);
+            font-size: 14px;
+            line-height: 1.7;
             white-space: pre-wrap;
             word-wrap: break-word;
-            font-weight: 400;
         }
 
-        .tool-log {
-            background: #0d0d0d;
-            border: 1px solid #333333;
+        .message.user .message-bubble {
+            background: var(--accent-dim);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            color: var(--text-primary);
+        }
+
+        .message.agent .message-bubble {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+        }
+
+        .message-bubble code {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            background: var(--bg-tertiary);
+            padding: 2px 6px;
             border-radius: 4px;
-            max-height: 300px;
+        }
+
+        .message-bubble pre {
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 12px;
+            margin: 8px 0;
+            overflow-x: auto;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .message-bubble pre code {
+            background: none;
+            padding: 0;
+        }
+
+        /* ── Tool log ── */
+        .tool-log {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            max-height: 200px;
             overflow-y: auto;
-            padding: 10px 14px;
-            margin: 6px 0 16px 0;
-            font-size: 14px;
-            line-height: 1.6;
+            margin: 4px 0 12px 0;
+            max-width: 85%;
+        }
+
+        .tool-log-header {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            padding: 8px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .tool-log-header::after {
+            content: "\25BE";
+            font-size: 12px;
+            transition: transform 0.2s;
+        }
+
+        .tool-log.collapsed .tool-log-header::after {
+            transform: rotate(-90deg);
+        }
+
+        .tool-log-body {
+            transition: max-height 0.3s ease;
+        }
+
+        .tool-log.collapsed .tool-log-body {
+            max-height: 0;
+            overflow: hidden;
         }
 
         .tool-log-line {
-            padding: 3px 0;
-            border-bottom: 1px solid #111111;
+            padding: 5px 14px;
+            border-bottom: 1px solid var(--border-subtle);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
         }
+        .tool-log-line:last-child { border-bottom: none; }
 
-        .tool-log-line:last-child {
-            border-bottom: none;
-        }
-
-        .tool-log-line .tl-label {
-            color: #888888;
-            font-size: 13px;
-        }
-
-        .tool-log-line .tl-name {
-            color: #008888;
-            font-weight: 700;
-        }
-
-        .tool-log-line .tl-args {
-            color: #888888;
-            margin-left: 8px;
-        }
-
-        .tool-log-line .tl-result {
-            color: #006600;
+        .tl-label { color: var(--text-muted); font-size: 11px; }
+        .tl-name { color: var(--cyan); font-weight: 600; }
+        .tl-args { color: var(--text-muted); margin-left: 8px; }
+        .tl-result {
+            color: var(--accent);
             margin-left: 8px;
             overflow: hidden;
             text-overflow: ellipsis;
@@ -272,59 +581,66 @@
             display: inline-block;
             max-width: calc(100% - 160px);
             vertical-align: bottom;
+            opacity: 0.7;
         }
 
-        .tool-log-header {
-            color: #888888;
-            font-size: 13px;
-            padding-bottom: 4px;
-            border-bottom: 1px solid #333333;
-            margin-bottom: 4px;
-        }
-
-        .tool-name {
-            color: #008888;
-            font-weight: 700;
-        }
-
+        /* ── Feedback buttons ── */
         .feedback-buttons {
             margin-top: 8px;
             display: flex;
-            gap: 8px;
+            gap: 6px;
         }
-
         .feedback-buttons button {
             background: transparent;
-            border: 1px solid #333333;
-            color: #888888;
-            padding: 5px 14px;
-            border-radius: 3px;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            padding: 4px 12px;
+            border-radius: var(--radius-sm);
             cursor: pointer;
-            font-family: inherit;
-            font-size: 14px;
-            font-weight: 400;
+            font-size: 12px;
+            transition: all 0.15s;
+        }
+        .feedback-buttons button:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .feedback-buttons button.selected { background: var(--bg-hover); color: var(--accent); border-color: var(--accent); }
+        .feedback-buttons button:disabled { opacity: 0.3; cursor: default; }
+
+        /* ── Thinking indicator ── */
+        #thinking {
+            display: none;
+            padding: 0 20px 12px;
+            max-width: 85%;
+        }
+        #thinking.active { display: block; }
+
+        .thinking-bubble {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 16px;
+            display: inline-flex;
+            gap: 4px;
         }
 
-        .feedback-buttons button:hover {
-            background: #111111;
-            color: #00aa00;
+        .thinking-bubble .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--cyan);
+            animation: pulse 1.4s infinite ease-in-out;
+        }
+        .thinking-bubble .dot:nth-child(2) { animation-delay: 0.2s; }
+        .thinking-bubble .dot:nth-child(3) { animation-delay: 0.4s; }
+
+        @keyframes pulse {
+            0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
+            40% { opacity: 1; transform: scale(1); }
         }
 
-        .feedback-buttons button.selected {
-            background: #111111;
-            color: #00aa00;
-            border-color: #00aa00;
-        }
-
-        .feedback-buttons button:disabled {
-            opacity: 0.4;
-            cursor: default;
-        }
-
+        /* ── Input area ── */
         #input-area {
-            background: #101020;
-            border-top: 1px solid #333333;
-            padding: 16px 20px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            padding: 14px 20px;
             display: flex;
             gap: 10px;
             position: relative;
@@ -336,17 +652,15 @@
             bottom: 100%;
             left: 20px;
             right: 80px;
-            background: #0d0d0d;
-            border: 1px solid #333333;
-            border-radius: 4px;
-            max-height: 200px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            max-height: 240px;
             overflow-y: auto;
             z-index: 100;
+            box-shadow: 0 -8px 32px rgba(0,0,0,0.4);
         }
-
-        #slash-menu.active {
-            display: block;
-        }
+        #slash-menu.active { display: block; }
 
         .slash-item {
             padding: 10px 14px;
@@ -354,305 +668,183 @@
             display: flex;
             gap: 12px;
             align-items: baseline;
+            transition: background 0.1s;
         }
-
-        .slash-item:hover, .slash-item.selected {
-            background: #111111;
-        }
-
+        .slash-item:hover, .slash-item.selected { background: var(--bg-hover); }
         .slash-item .cmd {
-            color: #00aa00;
-            font-weight: 700;
+            color: var(--accent);
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            font-size: 13px;
             white-space: nowrap;
-            font-size: 16px;
         }
-
-        .slash-item .desc {
-            color: #888888;
-            font-size: 14px;
-        }
+        .slash-item .desc { color: var(--text-muted); font-size: 12px; }
 
         #message-input {
             flex: 1;
-            background: #101020;
-            border: 1px solid #333333;
-            color: #cccccc;
-            padding: 12px 16px;
-            border-radius: 4px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 10px 14px;
+            border-radius: var(--radius);
             font-family: inherit;
-            font-size: 17px;
-            font-weight: 400;
+            font-size: 14px;
             resize: none;
-            caret-color: #00aa00;
-        }
-
-        #message-input:focus {
+            caret-color: var(--accent);
             outline: none;
-            border-color: #00aa00;
+            transition: border-color 0.2s;
         }
+        #message-input:focus { border-color: var(--accent); }
+        #message-input::placeholder { color: var(--text-muted); }
 
         #send-button {
-            background: #00aa00;
-            color: #101020;
+            background: var(--accent);
+            color: var(--bg-primary);
             border: none;
-            padding: 12px 22px;
-            border-radius: 4px;
+            padding: 10px 20px;
+            border-radius: var(--radius);
             cursor: pointer;
             font-family: inherit;
-            font-size: 17px;
-            font-weight: 700;
-        }
-
-        #send-button:hover {
-            background: #00cc00;
-        }
-
-        #send-button:disabled {
-            background: #333333;
-            cursor: not-allowed;
-        }
-
-        #sweep-panel {
-            display: none;
-            margin: 0 20px 10px;
-            border: 1px solid #333333;
-            border-radius: 4px;
-            background: #0d0d0d;
-        }
-
-        #sweep-panel.active {
-            display: block;
-        }
-
-        .sweep-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px 14px;
-            cursor: pointer;
-            border-bottom: 1px solid #333333;
-        }
-
-        .sweep-header:hover {
-            background: #111111;
-        }
-
-        .sweep-severity {
-            font-weight: bold;
-            text-transform: uppercase;
-            font-size: 13px;
-        }
-
-        .sweep-severity.critical { color: #aa0000; }
-        .sweep-severity.warning { color: #ffaa00; }
-        .sweep-severity.info { color: #008888; }
-
-        .sweep-time {
-            color: #888888;
-            font-size: 13px;
-        }
-
-        .sweep-body {
-            display: none;
-            padding: 10px 14px;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-
-        .sweep-body.open {
-            display: block;
-        }
-
-        .sweep-finding {
-            padding: 5px 0;
             font-size: 14px;
-            border-bottom: 1px solid #111111;
-            line-height: 1.5;
+            font-weight: 600;
+            transition: all 0.15s;
         }
+        #send-button:hover { opacity: 0.85; }
+        #send-button:disabled { background: var(--border); color: var(--text-muted); cursor: not-allowed; }
 
-        .sweep-finding:last-child {
-            border-bottom: none;
-        }
-
-        .sweep-remediation {
-            color: #006600;
-            font-size: 13px;
-            margin-top: 2px;
-            padding-left: 4px;
-        }
-
-        .sweep-badge {
-            display: inline-block;
+        /* ── Status bar ── */
+        .status-bar {
+            height: var(--status-height);
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            gap: 16px;
             font-size: 11px;
-            padding: 2px 6px;
-            border-radius: 3px;
-            margin-right: 6px;
-            font-weight: bold;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-muted);
+            flex-shrink: 0;
         }
 
-        .sweep-badge.critical { background: #2a0a0a; color: #aa0000; }
-        .sweep-badge.warning { background: #2a2200; color: #ffaa00; }
-        .sweep-badge.info { background: #0a2233; color: #008888; }
-
-        .finding-id {
-            color: #666666;
-            font-size: 12px;
-            margin-right: 6px;
-        }
-
-        .finding-status {
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent);
             display: inline-block;
-            font-size: 11px;
-            padding: 1px 5px;
-            border-radius: 3px;
-            margin-right: 6px;
+            margin-right: 4px;
         }
-        .finding-status.resolved { background: #0a2a0a; color: #00aa00; }
-        .finding-status.acknowledged { background: #111111; color: #888888; }
-        .finding-status.investigating { background: #2a2200; color: #ffaa00; }
-        .finding-status.false_positive { background: #1a1a1a; color: #666666; }
+        .status-dot.disconnected { background: var(--red); }
 
-        .finding-resolved { opacity: 0.5; }
-        .finding-false_positive { opacity: 0.4; }
+        .status-item { display: flex; align-items: center; gap: 4px; }
 
-        .sweep-meta {
-            color: #888888;
-            font-size: 12px;
-            padding: 8px 14px;
-            border-top: 1px solid #333333;
-        }
-
-        .links-section {
-            margin-top: 20px;
-            padding: 16px 20px;
-            background: #000000;
-            border-top: 1px solid #333333;
-        }
-
-        .links-section h3 {
-            font-size: 16px;
-            color: #888888;
-            margin-bottom: 10px;
-        }
-
-        .links-section ul {
-            list-style: none;
-        }
-
-        .links-section li {
-            margin-bottom: 6px;
-        }
-
-        .links-section a {
-            color: #00aa00;
-            text-decoration: none;
-            font-size: 15px;
-        }
-
-        .links-section a:hover {
-            text-decoration: underline;
-        }
-
-        .thinking {
-            display: none;
-            margin-bottom: 16px;
-            line-height: 1.6;
-        }
-
-        .thinking.active {
-            display: block;
-        }
-
-        .thinking .dots span {
-            animation: blink 1.4s infinite both;
-            font-size: 22px;
-            color: #008888;
-        }
-
-        .thinking .dots span:nth-child(2) { animation-delay: 0.2s; }
-        .thinking .dots span:nth-child(3) { animation-delay: 0.4s; }
-
-        @keyframes blink {
-            0%, 80%, 100% { opacity: 0.2; }
-            40% { opacity: 1; }
-        }
-
-        ::-webkit-scrollbar {
-            width: 10px;
-        }
-
-        ::-webkit-scrollbar-track {
-            background: #000000;
-        }
-
-        ::-webkit-scrollbar-thumb {
-            background: #333333;
-            border-radius: 5px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-            background: #555;
-        }
+        /* ── Scrollbar ── */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #444; }
     </style>
 </head>
 <body>
     <header>
+        <button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                <line x1="2" y1="4" x2="14" y2="4"/><line x1="2" y1="8" x2="14" y2="8"/><line x1="2" y1="12" x2="14" y2="12"/>
+            </svg>
+        </button>
         <div class="logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+            </svg>
             CFOperator
         </div>
-        <div class="settings-panel">
-            <label for="llm-backend">Backend:</label>
-            <select id="llm-backend">
-                <option value="auto">Auto</option>
-            </select>
-            <select id="model-select" style="display:none;">
-                <option value="">Loading models...</option>
-            </select>
-            <label for="fallback-toggle" style="cursor:pointer;" title="Allow fallback to paid LLM providers (Groq, Claude) when Ollama is unavailable">Fallback:</label>
-            <label class="toggle-switch" title="Allow fallback to paid LLM providers (Groq, Claude) when Ollama is unavailable">
-                <input type="checkbox" id="fallback-toggle" onchange="onFallbackToggle()">
-                <span class="toggle-slider"></span>
-            </label>
-            <label for="max-iterations">Max Tools:</label>
-            <input type="number" id="max-iterations" min="1" max="50" value="10" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
-            <label for="alert-interval">Alert(s):</label>
-            <input type="number" id="alert-interval" min="5" max="300" value="10" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
-            <label for="sweep-interval">Sweep(m):</label>
-            <input type="number" id="sweep-interval" min="1" max="1440" value="30" style="width: 55px; background: #101020; color: #cccccc; border: 1px solid #333333; padding: 5px 6px; border-radius: 3px; font-family: inherit; font-size: 15px; font-weight: 400; text-align: center;">
-            <span id="pool-toggles" style="display: inline-flex; gap: 8px; align-items: center; margin-left: 8px; border-left: 1px solid #333; padding-left: 10px;"></span>
+        <div class="header-controls">
+            <div class="control-group">
+                <label>Backend</label>
+                <select id="llm-backend"><option value="auto">Auto</option></select>
+                <select id="model-select" style="display:none;"><option value="">Loading...</option></select>
+            </div>
+            <div class="control-group">
+                <label>Fallback</label>
+                <label class="toggle-switch" title="Allow fallback to paid LLM providers">
+                    <input type="checkbox" id="fallback-toggle" onchange="onFallbackToggle()">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+            <div class="control-group" id="pool-toggles-header"></div>
         </div>
     </header>
 
-    <div id="questions-panel">
-        <!-- Pending questions will be populated here -->
-    </div>
+    <div class="main-layout">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-section">
+                <h3>OODA Configuration</h3>
+                <div class="sidebar-field">
+                    <label>Max Tool Calls</label>
+                    <input type="number" id="max-iterations" min="1" max="50" value="10">
+                </div>
+                <div class="sidebar-field">
+                    <label>Alert Interval (s)</label>
+                    <input type="number" id="alert-interval" min="5" max="300" value="10">
+                </div>
+                <div class="sidebar-field">
+                    <label>Sweep Interval (m)</label>
+                    <input type="number" id="sweep-interval" min="1" max="1440" value="30">
+                </div>
+            </div>
+            <div class="sidebar-section">
+                <h3>Skills</h3>
+                <ul class="skill-list" id="skill-list">
+                    <li onclick="insertSkill('/investigate-host ')">/investigate-host<span class="skill-desc">Systematic host investigation</span></li>
+                    <li onclick="insertSkill('/investigate-container ')">/investigate-container<span class="skill-desc">Container diagnostics</span></li>
+                    <li onclick="insertSkill('/investigate-pod ')">/investigate-pod<span class="skill-desc">Kubernetes pod health</span></li>
+                    <li onclick="insertSkill('/why-restart ')">/why-restart<span class="skill-desc">Root cause for restarts</span></li>
+                    <li onclick="insertSkill('/compare-hosts')">/compare-hosts<span class="skill-desc">Fleet-wide comparison</span></li>
+                    <li onclick="insertSkill('/k3s-cluster-health')">/k3s-cluster-health<span class="skill-desc">Cluster assessment</span></li>
+                    <li onclick="insertSkill('/sweeps')">/sweeps<span class="skill-desc">Recent sweep reports</span></li>
+                    <li onclick="insertSkill('/investigations')">/investigations<span class="skill-desc">Recent investigations</span></li>
+                    <li onclick="insertSkill('/correlations')">/correlations<span class="skill-desc">Service failure patterns</span></li>
+                    <li onclick="insertSkill('/stats ')">/stats<span class="skill-desc">Operational summary</span></li>
+                </ul>
+            </div>
+            <div class="sidebar-section" id="pool-section" style="display:none;">
+                <h3>Ollama Pool</h3>
+                <div id="pool-toggles-sidebar"></div>
+            </div>
+        </aside>
 
-    <div id="sweep-panel">
-        <!-- Latest sweep report rendered here -->
-    </div>
+        <div class="chat-area">
+            <div id="questions-panel"></div>
+            <div id="sweep-panel"></div>
 
-    <div id="chat-container">
-        <div class="message agent">
-            <div class="message-header">agent</div>
-            <div class="message-content">CFOperator v1.0.8 ready. Ask me about your infrastructure, or use skills:
-- /investigate-host [hostname] - Systematic host/server investigation
-- /investigate-container [name] - Systematic container investigation
-- /why-restart [container] - Analyze why a container restarted
-- /compare-hosts - Compare metrics and config across fleet
+            <div id="chat-container">
+                <div class="message agent">
+                    <div class="message-header">cfoperator</div>
+                    <div class="message-bubble">CFOperator v1.0.8 ready. Ask me about your infrastructure, or type <code>/</code> for skills.
+                    </div>
+                </div>
+            </div>
 
-Type / for autocomplete.</div>
+            <div id="thinking">
+                <div class="thinking-bubble">
+                    <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+                </div>
+            </div>
+
+            <div id="input-area">
+                <div id="slash-menu"></div>
+                <textarea id="message-input" rows="1" placeholder="Ask about your infrastructure..." autofocus></textarea>
+                <button id="send-button">Send</button>
+            </div>
         </div>
     </div>
 
-    <div id="thinking" class="thinking" style="padding: 0 20px;">
-        <div class="message-header" style="color: #008888;">agent</div>
-        <div class="dots"><span>.</span><span>.</span><span>.</span></div>
-    </div>
-
-    <div id="input-area">
-        <div id="slash-menu"></div>
-        <textarea id="message-input" rows="1" placeholder="Ask about your homelab..." autofocus></textarea>
-        <button id="send-button">Send</button>
+    <div class="status-bar">
+        <span class="status-item"><span class="status-dot" id="connection-status"></span>Connected</span>
+        <span class="status-item" id="status-uptime"></span>
+        <span class="status-item" id="status-sweep"></span>
+        <span style="margin-left:auto;" class="status-item" id="status-version">v1.0.8</span>
     </div>
 
     <script>
@@ -660,6 +852,16 @@ Type / for autocomplete.</div>
         let chatHistory = [];
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
+
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('collapsed');
+        }
+
+        function insertSkill(cmd) {
+            const input = document.getElementById('message-input');
+            input.value = cmd;
+            input.focus();
+        }
 
         // Initialize WebSocket connection
         function connectWebSocket() {
@@ -669,29 +871,22 @@ Type / for autocomplete.</div>
             ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
-                console.log('WebSocket connected');
                 document.getElementById('connection-status').classList.remove('disconnected');
                 reconnectAttempts = 0;
             };
 
             ws.onclose = () => {
-                console.log('WebSocket disconnected');
                 document.getElementById('connection-status').classList.add('disconnected');
-
-                // Attempt reconnection
                 if (reconnectAttempts < maxReconnectAttempts) {
                     reconnectAttempts++;
                     setTimeout(connectWebSocket, 2000 * reconnectAttempts);
                 }
             };
 
-            ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-            };
+            ws.onerror = () => {};
 
             ws.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                handleMessage(data);
+                handleMessage(JSON.parse(event.data));
             };
         }
 
@@ -710,19 +905,31 @@ Type / for autocomplete.</div>
             }
         }
 
+        function renderMarkdown(text) {
+            // Simple markdown: code blocks, inline code, bold, links
+            let html = escapeHtml(text);
+            // Code blocks
+            html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+            // Inline code
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            // Bold
+            html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            return html;
+        }
+
         function addMessage(role, text, backend = null, model = null) {
             const container = document.getElementById('chat-container');
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${role}`;
 
-            let header = role;
-            if (backend && model) {
-                header += ` (${backend}/${model})`;
+            let header = role === 'agent' ? 'cfoperator' : role;
+            if (role === 'agent' && backend && model) {
+                header += ` &middot; ${escapeHtml(backend)}/${escapeHtml(model)}`;
             }
 
             messageDiv.innerHTML = `
                 <div class="message-header">${header}</div>
-                <div class="message-content">${escapeHtml(text)}</div>
+                <div class="message-bubble">${role === 'agent' ? renderMarkdown(text) : escapeHtml(text)}</div>
             `;
 
             container.appendChild(messageDiv);
@@ -730,7 +937,6 @@ Type / for autocomplete.</div>
             return messageDiv;
         }
 
-        // Current tool log container for the active chat response
         let currentToolLog = null;
 
         function getOrCreateToolLog() {
@@ -738,7 +944,7 @@ Type / for autocomplete.</div>
             const container = document.getElementById('chat-container');
             const logDiv = document.createElement('div');
             logDiv.className = 'tool-log';
-            logDiv.innerHTML = '<div class="tool-log-header">tool activity</div>';
+            logDiv.innerHTML = '<div class="tool-log-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">Tool Activity</div><div class="tool-log-body"></div>';
             container.appendChild(logDiv);
             currentToolLog = logDiv;
             return logDiv;
@@ -746,37 +952,34 @@ Type / for autocomplete.</div>
 
         function addToolCall(toolName, input, iteration, max) {
             const log = getOrCreateToolLog();
+            const body = log.querySelector('.tool-log-body');
             const line = document.createElement('div');
             line.className = 'tool-log-line';
-
             const argsStr = typeof input === 'string' ? input : JSON.stringify(input);
             const iterLabel = (iteration && max) ? `[${iteration}/${max}] ` : '';
-
             line.innerHTML = `<span class="tl-label">${iterLabel}</span><span class="tl-name">${escapeHtml(toolName)}</span><span class="tl-args">${escapeHtml(argsStr.substring(0, 200))}${argsStr.length > 200 ? '...' : ''}</span>`;
-            log.appendChild(line);
-            log.scrollTop = log.scrollHeight;
+            body.appendChild(line);
+            body.scrollTop = body.scrollHeight;
         }
 
         function addToolResult(toolName, result) {
             const log = getOrCreateToolLog();
+            const body = log.querySelector('.tool-log-body');
             const line = document.createElement('div');
             line.className = 'tool-log-line';
-
             const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-
-            line.innerHTML = `<span class="tl-label">  </span><span class="tl-name">${escapeHtml(toolName)}</span> <span style="color:#666;">&rarr;</span> <span class="tl-result">${escapeHtml(resultStr.substring(0, 300))}${resultStr.length > 300 ? '...' : ''}</span>`;
-            log.appendChild(line);
-            log.scrollTop = log.scrollHeight;
+            line.innerHTML = `<span class="tl-label">  </span><span class="tl-name">${escapeHtml(toolName)}</span> <span style="color:var(--text-muted);">&rarr;</span> <span class="tl-result">${escapeHtml(resultStr.substring(0, 300))}${resultStr.length > 300 ? '...' : ''}</span>`;
+            body.appendChild(line);
+            body.scrollTop = body.scrollHeight;
         }
 
         function showQuestion(data) {
             const panel = document.getElementById('questions-panel');
             panel.classList.add('active');
-
             const questionCard = document.createElement('div');
             questionCard.className = 'question-card';
             questionCard.innerHTML = `
-                <h4>Investigation #${data.investigation_id} - ${data.host_id || 'cfoperator'}</h4>
+                <h4>Investigation #${data.investigation_id} &middot; ${data.host_id || 'cfoperator'}</h4>
                 <p>${escapeHtml(data.question)}</p>
                 ${data.context ? `<div class="context">${escapeHtml(data.context)}</div>` : ''}
                 <div class="answer-input">
@@ -784,26 +987,15 @@ Type / for autocomplete.</div>
                     <button onclick="submitAnswer(${data.id})">Submit</button>
                 </div>
             `;
-
             panel.appendChild(questionCard);
         }
 
         function submitAnswer(questionId) {
             const input = document.getElementById(`answer-${questionId}`);
             const answer = input.value.trim();
-
             if (!answer) return;
-
-            ws.send(JSON.stringify({
-                type: 'answer',
-                question_id: questionId,
-                answer: answer
-            }));
-
-            // Remove question card
+            ws.send(JSON.stringify({ type: 'answer', question_id: questionId, answer }));
             input.closest('.question-card').remove();
-
-            // Hide panel if no more questions
             if (document.getElementById('questions-panel').children.length === 0) {
                 document.getElementById('questions-panel').classList.remove('active');
             }
@@ -814,7 +1006,7 @@ Type / for autocomplete.</div>
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({learning_ids: learningIds, type: type})
-            }).then(r => r.json()).then(() => {
+            }).then(() => {
                 btn.classList.add('selected');
                 btn.parentElement.querySelectorAll('button').forEach(b => { b.disabled = true; });
             }).catch(err => console.error('Feedback error:', err));
@@ -823,29 +1015,24 @@ Type / for autocomplete.</div>
         function sendMessage() {
             const input = document.getElementById('message-input');
             const message = input.value.trim();
-
             if (!message) return;
 
             const backend = document.getElementById('llm-backend').value;
             const modelSelect = document.getElementById('model-select');
             const model = (backend !== 'auto' && modelSelect.value) ? modelSelect.value : null;
 
-            // Add user message to chat
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
-
             input.value = '';
             input.rows = 1;
 
-            // Show thinking indicator and disable send
             document.getElementById('send-button').disabled = true;
             document.getElementById('thinking').classList.add('active');
             document.getElementById('chat-container').scrollTop = document.getElementById('chat-container').scrollHeight;
 
-            const payload = {message: message, history: chatHistory, backend: backend};
+            const payload = {message, history: chatHistory, backend};
             if (model) payload.model = model;
 
-            // Start chat — returns chat_id, then poll for events
             fetch('/api/chat', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -863,7 +1050,6 @@ Type / for autocomplete.</div>
             })
             .catch(err => {
                 document.getElementById('thinking').classList.remove('active');
-                console.error('Chat start error:', err);
                 addMessage('agent', `Error: ${err.message}`, 'error', 'none');
                 document.getElementById('send-button').disabled = false;
             });
@@ -873,20 +1059,10 @@ Type / for autocomplete.</div>
             fetch(`/api/chat/events/${chatId}?cursor=${cursor}`)
             .then(r => r.json())
             .then(data => {
-                // Process new events
-                for (const evt of (data.events || [])) {
-                    handleChatEvent(evt);
-                }
-                // Continue polling if not done
-                if (!data.done) {
-                    setTimeout(() => pollChatEvents(chatId, data.cursor), 1000);
-                }
+                for (const evt of (data.events || [])) handleChatEvent(evt);
+                if (!data.done) setTimeout(() => pollChatEvents(chatId, data.cursor), 1000);
             })
-            .catch(err => {
-                console.error('Poll error:', err);
-                // Retry once after error
-                setTimeout(() => pollChatEvents(chatId, cursor), 2000);
-            });
+            .catch(() => setTimeout(() => pollChatEvents(chatId, cursor), 2000));
         }
 
         function handleChatEvent(evt) {
@@ -904,34 +1080,30 @@ Type / for autocomplete.</div>
             } else if (type === 'done') {
                 document.getElementById('thinking').classList.remove('active');
                 document.getElementById('send-button').disabled = false;
-                currentToolLog = null;  // Reset for next interaction
+                currentToolLog = null;
                 if (data.response) {
                     const msgEl = addMessage('agent', data.response, data.backend, data.model);
                     chatHistory.push({role: 'assistant', content: data.response});
 
-                    // Show feedback buttons if learnings were used
                     if (data.learning_ids && data.learning_ids.length > 0) {
                         const fbDiv = document.createElement('div');
                         fbDiv.className = 'feedback-buttons';
                         const lids = data.learning_ids;
-
                         const btnUp = document.createElement('button');
-                        btnUp.innerHTML = '&#x1F44D; helpful';
+                        btnUp.textContent = '\u{1F44D} helpful';
                         btnUp.addEventListener('click', () => sendFeedback(btnUp, lids, 'thumbs_up'));
-
                         const btnDown = document.createElement('button');
-                        btnDown.innerHTML = '&#x1F44E; not helpful';
+                        btnDown.textContent = '\u{1F44E} not helpful';
                         btnDown.addEventListener('click', () => sendFeedback(btnDown, lids, 'thumbs_down'));
-
                         fbDiv.appendChild(btnUp);
                         fbDiv.appendChild(btnDown);
-                        msgEl.appendChild(fbDiv);
+                        msgEl.querySelector('.message-bubble').appendChild(fbDiv);
                     }
                 }
             } else if (type === 'error') {
                 document.getElementById('thinking').classList.remove('active');
                 document.getElementById('send-button').disabled = false;
-                currentToolLog = null;  // Reset for next interaction
+                currentToolLog = null;
                 addMessage('agent', `Error: ${data.error}`, 'error', 'none');
             }
         }
@@ -942,62 +1114,43 @@ Type / for autocomplete.</div>
             return div.innerHTML;
         }
 
-        // Poll for pending questions every 10 seconds
+        // Poll for pending questions
         setInterval(() => {
-            fetch('/api/qa')
-                .then(r => r.json())
-                .then(questions => {
-                    questions.forEach(q => {
-                        // Only show if not already displayed
-                        if (!document.getElementById(`answer-${q.id}`)) {
-                            showQuestion(q);
-                        }
-                    });
-                })
-                .catch(err => console.error('Error fetching questions:', err));
+            fetch('/api/qa').then(r => r.json()).then(questions => {
+                questions.forEach(q => {
+                    if (!document.getElementById(`answer-${q.id}`)) showQuestion(q);
+                });
+            }).catch(() => {});
         }, 10000);
 
-        // Model fetching for all backends
+        // Model fetching
         function fetchModels(backend) {
             const modelSelect = document.getElementById('model-select');
-            if (!backend || backend === 'auto') {
-                modelSelect.style.display = 'none';
-                return;
-            }
+            if (!backend || backend === 'auto') { modelSelect.style.display = 'none'; return; }
             modelSelect.style.display = '';
             modelSelect.innerHTML = '<option value="">Loading...</option>';
             fetch(`/api/models/${backend}`)
                 .then(r => r.json())
                 .then(data => {
                     if (data.models && data.models.length > 0) {
-                        modelSelect.innerHTML = data.models
-                            .map(m => `<option value="${m}">${m}</option>`)
-                            .join('');
-                        // Pre-select: server selection first, then localStorage, then first model
+                        modelSelect.innerHTML = data.models.map(m => `<option value="${m}">${m}</option>`).join('');
                         const storageKey = `cfoperator_${backend}_model`;
                         const savedModel = data.selected || localStorage.getItem(storageKey) || '';
-                        if (savedModel && data.models.includes(savedModel)) {
-                            modelSelect.value = savedModel;
-                        }
+                        if (savedModel && data.models.includes(savedModel)) modelSelect.value = savedModel;
                     } else {
-                        modelSelect.innerHTML = '<option value="">No models found</option>';
+                        modelSelect.innerHTML = '<option value="">No models</option>';
                     }
                 })
-                .catch(err => {
-                    console.error(`Error fetching ${backend} models:`, err);
-                    modelSelect.innerHTML = '<option value="">Error loading models</option>';
-                });
+                .catch(() => { modelSelect.innerHTML = '<option value="">Error</option>'; });
         }
 
         function onBackendChange() {
             const backend = document.getElementById('llm-backend').value;
             localStorage.setItem('cfoperator_backend', backend);
-            // Persist to server so OODA/sweep uses same provider
             fetch('/api/settings/provider', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({backend: backend})
-            }).catch(err => console.error('Error saving provider selection:', err));
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({backend})
+            }).catch(() => {});
             fetchModels(backend);
         }
 
@@ -1007,178 +1160,150 @@ Type / for autocomplete.</div>
             if (model) {
                 localStorage.setItem(`cfoperator_${backend}_model`, model);
                 fetch(`/api/models/${backend}/select`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({model: model})
-                }).catch(err => console.error('Error saving model selection:', err));
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({model})
+                }).catch(() => {});
             }
         }
 
         function onMaxIterationsChange() {
-            const val = parseInt(document.getElementById('max-iterations').value) || 10;
-            const clamped = Math.max(1, Math.min(50, val));
-            document.getElementById('max-iterations').value = clamped;
-            localStorage.setItem('cfoperator_max_iterations', clamped);
+            const val = Math.max(1, Math.min(50, parseInt(document.getElementById('max-iterations').value) || 10));
+            document.getElementById('max-iterations').value = val;
+            localStorage.setItem('cfoperator_max_iterations', val);
             fetch('/api/settings/max_tool_iterations', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({max_tool_iterations: clamped})
-            }).catch(err => console.error('Error saving max iterations:', err));
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({max_tool_iterations: val})
+            }).catch(() => {});
         }
 
         function onAlertIntervalChange() {
-            const val = parseInt(document.getElementById('alert-interval').value) || 10;
-            const clamped = Math.max(5, Math.min(300, val));
-            document.getElementById('alert-interval').value = clamped;
+            const val = Math.max(5, Math.min(300, parseInt(document.getElementById('alert-interval').value) || 10));
+            document.getElementById('alert-interval').value = val;
             fetch('/api/settings/ooda', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({alert_check_interval: clamped})
-            }).catch(err => console.error('Error saving alert interval:', err));
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({alert_check_interval: val})
+            }).catch(() => {});
         }
 
         function onSweepIntervalChange() {
-            const val = parseInt(document.getElementById('sweep-interval').value) || 30;
-            const clamped = Math.max(1, Math.min(1440, val));
-            document.getElementById('sweep-interval').value = clamped;
+            const val = Math.max(1, Math.min(1440, parseInt(document.getElementById('sweep-interval').value) || 30));
+            document.getElementById('sweep-interval').value = val;
             fetch('/api/settings/ooda', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({sweep_interval: clamped * 60})
-            }).catch(err => console.error('Error saving sweep interval:', err));
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({sweep_interval: val * 60})
+            }).catch(() => {});
         }
 
         function onFallbackToggle() {
             const enabled = document.getElementById('fallback-toggle').checked;
             fetch('/api/settings/fallback', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({allow_paid_escalation: enabled})
-            }).catch(err => console.error('Error saving fallback setting:', err));
+            }).catch(() => {});
         }
 
-        // Populate provider dropdown dynamically based on server config
         function loadProviders() {
-            return fetch('/api/providers')
-                .then(r => r.json())
-                .then(data => {
-                    const select = document.getElementById('llm-backend');
-                    select.innerHTML = '';
-                    data.providers.forEach(p => {
-                        const opt = document.createElement('option');
-                        opt.value = p.id;
-                        opt.textContent = p.name;
-                        if (!p.available && p.id !== 'auto') {
-                            opt.disabled = true;
-                            opt.textContent += ' (not configured)';
-                        }
-                        select.appendChild(opt);
-                    });
-                })
-                .catch(err => {
-                    console.error('Error loading providers:', err);
-                    // Keep default "Auto" option on error
+            return fetch('/api/providers').then(r => r.json()).then(data => {
+                const select = document.getElementById('llm-backend');
+                select.innerHTML = '';
+                data.providers.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.id;
+                    opt.textContent = p.name;
+                    if (!p.available && p.id !== 'auto') {
+                        opt.disabled = true;
+                        opt.textContent += ' (unavailable)';
+                    }
+                    select.appendChild(opt);
                 });
+            }).catch(() => {});
         }
 
-        // Restore persisted backend and model on page load
         function restoreSettings() {
-            // First load available providers, then restore selection
             loadProviders().then(() => {
-                // Load selected provider from server (single source of truth)
-                fetch('/api/settings/provider')
-                    .then(r => r.json())
-                    .then(data => {
-                        const backend = data.backend || 'auto';
-                        document.getElementById('llm-backend').value = backend;
-                        localStorage.setItem('cfoperator_backend', backend);
-                        fetchModels(backend);
-                    })
-                    .catch(() => {
-                        // Fallback to localStorage if server unavailable
-                        const savedBackend = localStorage.getItem('cfoperator_backend');
-                        if (savedBackend) {
-                            document.getElementById('llm-backend').value = savedBackend;
-                        }
-                        const backend = document.getElementById('llm-backend').value;
-                        fetchModels(backend);
-                    });
-            });
-            // Restore max iterations from server (DB), fallback to localStorage
-            fetch('/api/settings/max_tool_iterations')
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('max-iterations').value = data.max_tool_iterations;
-                    localStorage.setItem('cfoperator_max_iterations', data.max_tool_iterations);
-                })
-                .catch(() => {
-                    const saved = localStorage.getItem('cfoperator_max_iterations');
-                    if (saved) document.getElementById('max-iterations').value = saved;
+                fetch('/api/settings/provider').then(r => r.json()).then(data => {
+                    const backend = data.backend || 'auto';
+                    document.getElementById('llm-backend').value = backend;
+                    localStorage.setItem('cfoperator_backend', backend);
+                    fetchModels(backend);
+                }).catch(() => {
+                    const saved = localStorage.getItem('cfoperator_backend');
+                    if (saved) document.getElementById('llm-backend').value = saved;
+                    fetchModels(document.getElementById('llm-backend').value);
                 });
-            // Restore OODA intervals from server
-            fetch('/api/settings/ooda')
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('alert-interval').value = data.alert_check_interval;
-                    document.getElementById('sweep-interval').value = Math.round(data.sweep_interval / 60);
-                })
-                .catch(() => {});
-            // Restore fallback toggle from server
-            fetch('/api/settings/fallback')
-                .then(r => r.json())
-                .then(data => {
-                    document.getElementById('fallback-toggle').checked = data.allow_paid_escalation;
-                })
-                .catch(() => {});
-            // Load pool instance toggles
+            });
+
+            fetch('/api/settings/max_tool_iterations').then(r => r.json()).then(data => {
+                document.getElementById('max-iterations').value = data.max_tool_iterations;
+            }).catch(() => {
+                const saved = localStorage.getItem('cfoperator_max_iterations');
+                if (saved) document.getElementById('max-iterations').value = saved;
+            });
+
+            fetch('/api/settings/ooda').then(r => r.json()).then(data => {
+                document.getElementById('alert-interval').value = data.alert_check_interval;
+                document.getElementById('sweep-interval').value = Math.round(data.sweep_interval / 60);
+            }).catch(() => {});
+
+            fetch('/api/settings/fallback').then(r => r.json()).then(data => {
+                document.getElementById('fallback-toggle').checked = data.allow_paid_escalation;
+            }).catch(() => {});
+
             loadPoolToggles();
         }
 
         function loadPoolToggles() {
-            fetch('/api/pool/status')
-                .then(r => r.json())
-                .then(data => {
-                    const container = document.getElementById('pool-toggles');
-                    if (!data.instances || data.instances.length === 0) {
-                        container.style.display = 'none';
-                        return;
-                    }
-                    let html = '<label style="color:#888;font-size:15px;">Pool:</label>';
-                    data.instances.forEach(inst => {
-                        const color = !inst.enabled ? '#666' : inst.healthy ? '#44cc44' : '#cc4444';
-                        const title = `${inst.name} (${inst.model})\nHealthy: ${inst.healthy}\nEnabled: ${inst.enabled}`;
-                        html += `<label style="cursor:pointer;display:inline-flex;align-items:center;gap:3px;font-size:13px;color:${color};" title="${title}">`;
-                        html += `<input type="checkbox" ${inst.enabled ? 'checked' : ''} onchange="togglePoolInstance('${inst.name}', this.checked)" style="accent-color:#44cc44;">`;
-                        html += `${inst.name.replace('ollama-','')}</label>`;
-                    });
-                    const mode = data.mode || 'sequential';
-                    html += `<span style="font-size:12px;color:#666;margin-left:2px;">(${mode})</span>`;
-                    container.innerHTML = html;
-                })
-                .catch(() => {});
+            fetch('/api/pool/status').then(r => r.json()).then(data => {
+                const sidebar = document.getElementById('pool-toggles-sidebar');
+                const section = document.getElementById('pool-section');
+                if (!data.instances || data.instances.length === 0) {
+                    section.style.display = 'none';
+                    return;
+                }
+                section.style.display = '';
+                sidebar.innerHTML = data.instances.map(inst => {
+                    const color = !inst.enabled ? 'var(--text-muted)' : inst.healthy ? 'var(--accent)' : 'var(--red)';
+                    return `<div class="pool-instance">
+                        <input type="checkbox" ${inst.enabled ? 'checked' : ''} onchange="togglePoolInstance('${inst.name}', this.checked)">
+                        <span style="color:${color}">${inst.name.replace('ollama-','')}</span>
+                        <span style="color:var(--text-muted);font-size:11px;">${inst.model || ''}</span>
+                    </div>`;
+                }).join('') + `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Mode: ${data.mode || 'sequential'}</div>`;
+            }).catch(() => {});
         }
 
         function togglePoolInstance(name, enabled) {
             fetch('/api/pool/instance', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
+                method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({name, enabled})
-            })
-            .then(r => r.json())
-            .then(() => loadPoolToggles())
-            .catch(() => {});
+            }).then(() => loadPoolToggles()).catch(() => {});
         }
+
+        // Status bar updates
+        function updateStatus() {
+            fetch('/api/health').then(r => r.json()).then(data => {
+                const uptime = data.uptime_seconds || 0;
+                const h = Math.floor(uptime / 3600);
+                const m = Math.floor((uptime % 3600) / 60);
+                document.getElementById('status-uptime').textContent = `Uptime: ${h}h ${m}m`;
+            }).catch(() => {});
+        }
+        updateStatus();
+        setInterval(updateStatus, 60000);
 
         // Slash-command autocomplete
         const SLASH_COMMANDS = [
-            {cmd: '/investigate-host', args: '[hostname]', desc: 'Systematic host/server investigation'},
-            {cmd: '/investigate-container', args: '[name]', desc: 'Systematic container investigation'},
-            {cmd: '/why-restart', args: '[container]', desc: 'Analyze why a container restarted'},
+            {cmd: '/investigate-host', args: '[hostname]', desc: 'Systematic host investigation'},
+            {cmd: '/investigate-container', args: '[name]', desc: 'Container diagnostics'},
+            {cmd: '/investigate-pod', args: '[name]', desc: 'Kubernetes pod health'},
+            {cmd: '/investigate-deployment', args: '[name]', desc: 'Deployment status'},
+            {cmd: '/k3s-cluster-health', args: '', desc: 'Cluster assessment'},
+            {cmd: '/why-restart', args: '[container]', desc: 'Root cause for restarts'},
             {cmd: '/compare-hosts', args: '', desc: 'Compare metrics across fleet'},
-            {cmd: '/sweeps', args: '', desc: 'List recent sweep reports'},
-            {cmd: '/stats', args: '[hours]', desc: 'Operational summary — sweeps, findings, investigations'},
-            {cmd: '/investigations', args: '', desc: 'List recent investigations'},
-            {cmd: '/correlations', args: '', desc: 'Service failure patterns & correlated events'},
+            {cmd: '/sweeps', args: '', desc: 'Recent sweep reports'},
+            {cmd: '/stats', args: '[hours]', desc: 'Operational summary'},
+            {cmd: '/investigations', args: '', desc: 'Recent investigations'},
+            {cmd: '/correlations', args: '', desc: 'Service failure patterns'},
         ];
 
         let slashMenuIndex = -1;
@@ -1187,44 +1312,27 @@ Type / for autocomplete.</div>
             const input = document.getElementById('message-input');
             const menu = document.getElementById('slash-menu');
             const val = input.value;
-
-            // Only show when input starts with /
-            if (!val.startsWith('/') || val.includes(' ')) {
-                menu.classList.remove('active');
-                slashMenuIndex = -1;
-                return;
-            }
-
+            if (!val.startsWith('/') || val.includes(' ')) { menu.classList.remove('active'); slashMenuIndex = -1; return; }
             const filter = val.toLowerCase();
             const matches = SLASH_COMMANDS.filter(c => c.cmd.startsWith(filter));
-
-            if (matches.length === 0) {
-                menu.classList.remove('active');
-                slashMenuIndex = -1;
-                return;
-            }
-
+            if (!matches.length) { menu.classList.remove('active'); slashMenuIndex = -1; return; }
             menu.innerHTML = matches.map((c, i) =>
                 `<div class="slash-item${i === slashMenuIndex ? ' selected' : ''}" data-index="${i}">` +
                 `<span class="cmd">${escapeHtml(c.cmd)}${c.args ? ' ' + escapeHtml(c.args) : ''}</span>` +
                 `<span class="desc">${escapeHtml(c.desc)}</span></div>`
             ).join('');
-
             menu.querySelectorAll('.slash-item').forEach(item => {
                 item.addEventListener('mousedown', (e) => {
                     e.preventDefault();
-                    const idx = parseInt(item.dataset.index);
-                    applySlashCommand(matches[idx]);
+                    applySlashCommand(matches[parseInt(item.dataset.index)]);
                 });
             });
-
             menu.classList.add('active');
         }
 
         function applySlashCommand(cmd) {
-            const input = document.getElementById('message-input');
-            input.value = cmd.cmd + ' ';
-            input.focus();
+            document.getElementById('message-input').value = cmd.cmd + ' ';
+            document.getElementById('message-input').focus();
             document.getElementById('slash-menu').classList.remove('active');
             slashMenuIndex = -1;
         }
@@ -1232,36 +1340,20 @@ Type / for autocomplete.</div>
         function handleSlashKeydown(e) {
             const menu = document.getElementById('slash-menu');
             if (!menu.classList.contains('active')) return false;
-
             const items = menu.querySelectorAll('.slash-item');
             const val = document.getElementById('message-input').value.toLowerCase();
-            const matches = SLASH_COMMANDS.filter(c => c.cmd.startsWith(val) || !val.includes(' '));
+            const matches = SLASH_COMMANDS.filter(c => c.cmd.startsWith(val));
 
-            if (e.key === 'ArrowDown') {
+            if (e.key === 'ArrowDown') { e.preventDefault(); slashMenuIndex = Math.min(slashMenuIndex + 1, items.length - 1); updateSlashMenu(); return true; }
+            if (e.key === 'ArrowUp') { e.preventDefault(); slashMenuIndex = Math.max(slashMenuIndex - 1, 0); updateSlashMenu(); return true; }
+            if (e.key === 'Tab' || (e.key === 'Enter' && slashMenuIndex >= 0)) {
                 e.preventDefault();
-                slashMenuIndex = Math.min(slashMenuIndex + 1, items.length - 1);
-                updateSlashMenu();
-                return true;
-            } else if (e.key === 'ArrowUp') {
-                e.preventDefault();
-                slashMenuIndex = Math.max(slashMenuIndex - 1, 0);
-                updateSlashMenu();
-                return true;
-            } else if (e.key === 'Tab' || (e.key === 'Enter' && slashMenuIndex >= 0)) {
-                e.preventDefault();
-                const filter = document.getElementById('message-input').value.toLowerCase();
-                const filtered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(filter));
-                if (slashMenuIndex >= 0 && slashMenuIndex < filtered.length) {
-                    applySlashCommand(filtered[slashMenuIndex]);
-                } else if (filtered.length === 1) {
-                    applySlashCommand(filtered[0]);
-                }
-                return true;
-            } else if (e.key === 'Escape') {
-                menu.classList.remove('active');
-                slashMenuIndex = -1;
+                const filtered = SLASH_COMMANDS.filter(c => c.cmd.startsWith(val));
+                if (slashMenuIndex >= 0 && slashMenuIndex < filtered.length) applySlashCommand(filtered[slashMenuIndex]);
+                else if (filtered.length === 1) applySlashCommand(filtered[0]);
                 return true;
             }
+            if (e.key === 'Escape') { menu.classList.remove('active'); slashMenuIndex = -1; return true; }
             return false;
         }
 
@@ -1274,66 +1366,48 @@ Type / for autocomplete.</div>
         document.getElementById('send-button').addEventListener('click', sendMessage);
 
         document.getElementById('message-input').addEventListener('keydown', (e) => {
-            // Let slash menu handle navigation keys first
             if (handleSlashKeydown(e)) return;
-
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
         });
 
         document.getElementById('message-input').addEventListener('input', (e) => {
-            // Auto-resize textarea
             e.target.rows = 1;
-            const rows = Math.min(Math.ceil(e.target.scrollHeight / 24), 6);
-            e.target.rows = rows;
-
-            // Update slash autocomplete
+            e.target.rows = Math.min(Math.ceil(e.target.scrollHeight / 22), 6);
             updateSlashMenu();
         });
 
         document.getElementById('message-input').addEventListener('blur', () => {
-            // Small delay so mousedown on menu item fires first
             setTimeout(() => document.getElementById('slash-menu').classList.remove('active'), 150);
         });
 
-        // Global "/" shortcut — focus input and start slash command menu
         document.addEventListener('keydown', (e) => {
             const input = document.getElementById('message-input');
             if (document.activeElement === input) return;
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
-            if (e.key === '/') {
-                e.preventDefault();
-                input.value = '/';
-                input.focus();
-                updateSlashMenu();
-            }
+            if (['INPUT','SELECT','TEXTAREA'].includes(e.target.tagName)) return;
+            if (e.key === '/') { e.preventDefault(); input.value = '/'; input.focus(); updateSlashMenu(); }
         });
 
         // Sweep Reports
         function loadSweepReports() {
-            fetch('/api/sweep-reports?limit=1')
-                .then(r => r.json())
-                .then(data => {
-                    const panel = document.getElementById('sweep-panel');
-                    const reports = data.reports || [];
-                    if (!reports.length) { panel.classList.remove('active'); return; }
-                    const r = reports[0];
-                    const ago = timeAgo(r.swept_at);
-                    const meta = r.sweep_meta || {};
-                    panel.innerHTML = `
-                        <div class="sweep-header" onclick="this.nextElementSibling.classList.toggle('open')">
-                            <span><span class="sweep-severity ${r.severity}">${r.severity}</span> #${r.id} Sweep: ${r.finding_count} finding${r.finding_count !== 1 ? 's' : ''}</span>
-                            <span class="sweep-time">${ago}</span>
-                        </div>
-                        <div class="sweep-body">
-                            ${r.findings.map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + f.status : ''}"><span class="sweep-badge ${f.severity || 'info'}">${(f.severity || 'info').toUpperCase()}</span><span class="finding-id">#${r.id}.${i}</span>${f.status ? `<span class="finding-status ${f.status}">${f.status}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div>`).join('')}
-                            <div class="sweep-meta">${meta.sweep_backend || ''}/${meta.sweep_model || ''}</div>
-                        </div>`;
-                    panel.classList.add('active');
-                })
-                .catch(() => {});
+            fetch('/api/sweep-reports?limit=1').then(r => r.json()).then(data => {
+                const panel = document.getElementById('sweep-panel');
+                const reports = data.reports || [];
+                if (!reports.length) { panel.classList.remove('active'); return; }
+                const r = reports[0];
+                const ago = timeAgo(r.swept_at);
+                const meta = r.sweep_meta || {};
+                document.getElementById('status-sweep').textContent = `Last sweep: ${ago}`;
+                panel.innerHTML = `
+                    <div class="sweep-header" onclick="this.nextElementSibling.classList.toggle('open')">
+                        <span><span class="sweep-severity ${r.severity}">${r.severity}</span> &nbsp;Sweep #${r.id}: ${r.finding_count} finding${r.finding_count !== 1 ? 's' : ''}</span>
+                        <span class="sweep-time">${ago}</span>
+                    </div>
+                    <div class="sweep-body">
+                        ${r.findings.map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + f.status : ''}"><span class="sweep-badge ${f.severity || 'info'}">${(f.severity || 'info').toUpperCase()}</span><span class="finding-id">#${r.id}.${i}</span>${f.status ? `<span class="finding-status ${f.status}">${f.status}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div>`).join('')}
+                        ${meta.sweep_backend ? `<div class="sweep-meta">${meta.sweep_backend}/${meta.sweep_model || ''}</div>` : ''}
+                    </div>`;
+                panel.classList.add('active');
+            }).catch(() => {});
         }
 
         function timeAgo(iso) {
@@ -1344,19 +1418,11 @@ Type / for autocomplete.</div>
             return Math.floor(s/86400) + 'd ago';
         }
 
-        function escapeHtml(t) {
-            const d = document.createElement('div');
-            d.textContent = t;
-            return d.innerHTML;
-        }
-
-        // Poll sweep reports every 60s
         loadSweepReports();
         setInterval(loadSweepReports, 60000);
 
         // Initialize
         restoreSettings();
-        // WebSocket disabled - using HTTP polling via /api/chat instead
     </script>
 </body>
 </html>
