@@ -20,17 +20,19 @@ CFOperator (Docker container)
 │   └── Offline Buffer: JSON Lines fallback
 │
 ├── Observability (Pluggable)
-│   ├── Prometheus
-│   ├── Loki
-│   ├── Alertmanager
-│   └── Docker (local socket)
+│   ├── Metrics: Prometheus / Victoria Metrics / Datadog / InfluxDB
+│   ├── Logs: Loki / Elasticsearch / Splunk / CloudWatch
+│   ├── Alerts: Alertmanager / PagerDuty / OpsGenie
+│   ├── Containers: Kubernetes + Docker (multi-runtime)
+│   └── Notifications: Slack + Discord
 │
 ├── LLM Fallback Chain
 │   └── Ollama (local) → Groq → Gemini → Anthropic
 │
-├── Tools (41 registered)
-│   ├── Core: prometheus_query, loki_query, docker_list, docker_inspect,
-│   │         store_learning, find_learnings, get_sweep_report, web_search, ...
+├── Tools
+│   ├── Core: prometheus_query (auto-corrects common PromQL), loki_query
+│   │         (validates LogQL), docker_list, docker_inspect, store_learning,
+│   │         find_learnings, get_sweep_report, web_search, ...
 │   ├── SSH (9): execute, check_service, restart_service, get_logs,
 │   │           list_services, docker_list, docker_restart, get_system_info, check_port
 │   ├── K8s (15): get_pods, get_pod_logs, get_deployments, rollout_restart,
@@ -46,11 +48,12 @@ CFOperator (Docker container)
 │   ├── /why-restart — Analyze container restart causes
 │   └── /compare-hosts — Compare metrics across fleet
 │
-└── Web UI (Ubuntu Campbell theme)
-    ├── Chat interface (WebSocket + HTTP fallback)
-    ├── LLM backend/model selector
-    ├── Thinking indicator
-    └── Pending questions panel
+└── Web UI (Dark theme, Inter + JetBrains Mono)
+    ├── Chat interface (HTTP polling with WebSocket fallback)
+    ├── Collapsible sidebar (OODA config, skills, pool toggles)
+    ├── LLM backend/model selector with provider fallback toggle
+    ├── Sweep findings panel with severity badges
+    └── Status bar (connection, uptime, last sweep)
 ```
 
 ## Knowledge Base & Semantic Search
@@ -120,6 +123,7 @@ docker compose up -d
 | `/` | Chat UI |
 | `/api/health` | Health check + uptime |
 | `/api/chat` | HTTP chat API |
+| `/api/sweep` | Trigger deep system sweep (POST) |
 | `/api/config/reload` | Hot-reload config (POST) |
 | `/api/ollama/models` | List available Ollama models |
 | `/api/ollama/models/select` | Persist model selection (POST) |
@@ -135,7 +139,7 @@ A standalone single-binary CLI assistant for SRE and systems administration. Cro
 
 ```bash
 # Download the latest release (pick your platform)
-gh release download cfassist-v0.6.1 -R aachtenberg/cfoperator --pattern 'cfassist-linux-arm64'
+gh release download cfassist-v0.7.0 -R aachtenberg/cfoperator --pattern 'cfassist-linux-arm64'
 chmod +x cfassist-linux-arm64
 sudo mv cfassist-linux-arm64 /usr/local/bin/cfassist
 
@@ -201,14 +205,14 @@ make all            # all platforms
 |------|---------|
 | `agent/agent.py` | Main OODA loop, chat handler, tool registry |
 | `web_server.py` | Flask + Waitress, REST + WebSocket APIs |
-| `ui/index.html` | Single-page chat UI (Ubuntu Campbell theme) |
+| `ui/index.html` | Single-page chat UI (dark theme, sidebar layout) |
 | `agent/knowledge_base.py` | ResilientKnowledgeBase wrapping PostgreSQL + pgvector |
 | `agent/embedding_service.py` | Embedding generation via Ollama with LRU + DB cache |
 | `agent/llm_fallback.py` | LLM provider chain with cooldown/retry |
 | `config.yaml.example` | All URLs, host definitions, OODA timing |
 | `tools/` | SSH, K8s, discovery, and core tool implementations |
 | `skills/` | Investigation workflow definitions (SKILL.md) |
-| `observability/` | Pluggable backends (Prometheus, Loki, Docker) |
+| `observability/` | Pluggable backends (Prometheus, Loki, Kubernetes, Docker, Slack, Discord) |
 | `llm-gateway/` | Go proxy with health-based routing + fallback |
 | `benchmarks/` | Inference latency benchmarks (TTFT, tokens/sec) |
 | `grafana/` | Dashboard JSON + upload script |

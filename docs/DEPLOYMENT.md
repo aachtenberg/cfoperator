@@ -65,8 +65,8 @@ docker logs -f cfoperator
 |-----------|---------|
 | OODA Loop | Reactive (10s) + Proactive (30min sweeps) |
 | Web Server | Flask + Waitress on port 8083 (host network) |
-| Tools | 18 registered (4 core + 9 SSH + 4 discovery + function) |
-| Skills | 3 loaded (investigate-container, why-restart, compare-hosts) |
+| Tools | Core + 9 SSH + 15 K8s + 4 discovery + function tools |
+| Skills | 7 loaded (investigate-host, investigate-container, investigate-pod, investigate-deployment, k3s-cluster-health, why-restart, compare-hosts) |
 | LLM | Ollama → Groq → Gemini → Anthropic fallback chain |
 | Knowledge Base | PostgreSQL + offline buffer |
 | Metrics | /metrics endpoint with Prometheus counters/gauges/histograms |

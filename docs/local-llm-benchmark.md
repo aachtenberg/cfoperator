@@ -1,9 +1,9 @@
 # Local LLMs vs Claude Haiku 
 ## Real-World Ops Tool Calling
 
-|  | GLM-4.7-Flash | Mistral Small | Qwen 3 | Claude Haiku |
+| Capability | GLM-4.7-Flash | Mistral Small | Qwen 3 | Claude Haiku |
 |--|---------------|---------------|--------|--------------|
-|  | 30B-A3B MoE | 3.2 (24B) | (14B) | (Cloud) |
+| Size | 30B-A3B MoE | 3.2 (24B) | (14B) | (Cloud) |
 | Structured tool calling | Yes | Yes | Yes | Yes |
 | Tool call format | Native | Native | Native | Native |
 | Calls tools without asking permission | Yes | Yes | No (asks first) | Yes |

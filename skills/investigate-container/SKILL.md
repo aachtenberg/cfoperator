@@ -95,4 +95,4 @@ Recommended Actions:
 - This skill is read-only during investigation
 - If remediation is needed, it will present options to the user
 - All findings are logged to the investigation timeline
-- Leverages the new learning extraction system (v1.17.0+)
+- Leverages the learning extraction system

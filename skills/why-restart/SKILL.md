@@ -166,5 +166,5 @@ Detects restart loops (>3 restarts in 5 minutes) and suggests cooldown.
 - Works best with recent restarts (logs still available)
 - Requires Docker socket access and Prometheus metrics
 - For old restarts, relies on investigation history
-- Integrates with new learning extraction (v1.17.0+)
+- Integrates with learning extraction
 - Can trigger auto-remediation if learning has high success rate
