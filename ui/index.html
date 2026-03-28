@@ -974,6 +974,13 @@
                     <li onclick="insertSkill('/stats ')">/stats<span class="skill-desc">Operational summary</span></li>
                 </ul>
             </div>
+            <div class="sidebar-section">
+                <h3 style="display:flex;justify-content:space-between;align-items:center;">
+                    Chat History
+                    <button onclick="startNewChat()" style="background:var(--accent);color:var(--bg-primary);border:none;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;">+ New</button>
+                </h3>
+                <ul class="skill-list" id="session-list" style="margin-top:8px;max-height:200px;overflow-y:auto;"></ul>
+            </div>
             <div class="sidebar-section" id="pool-section" style="display:none;">
                 <h3>Ollama Pool</h3>
                 <div id="pool-toggles-sidebar"></div>
@@ -1018,6 +1025,78 @@
         let chatHistory = [];
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
+        let chatSessionId = null;  // Current DB session ID
+
+        // ── Chat session persistence (fire-and-forget, never blocks UI) ──
+        function createChatSession() {
+            fetch('/api/chat-sessions', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({})
+            }).then(r => r.json()).then(data => {
+                if (data.id) {
+                    chatSessionId = data.id;
+                    localStorage.setItem('cfoperator_chat_session', chatSessionId);
+                    loadChatSessions();
+                }
+            }).catch(() => {});
+        }
+
+        function saveMessage(role, content, backend, model) {
+            if (!chatSessionId) return;
+            fetch(`/api/chat-sessions/${chatSessionId}/messages`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({role, content, backend: backend || '', model: model || ''})
+            }).catch(() => {});
+        }
+
+        function loadChatSession(id) {
+            fetch(`/api/chat-sessions/${id}`).then(r => r.json()).then(data => {
+                if (data.error) return;
+                // Clear current chat
+                chatHistory = [];
+                const container = document.getElementById('chat-container');
+                container.innerHTML = '';
+                chatSessionId = data.id;
+                localStorage.setItem('cfoperator_chat_session', chatSessionId);
+
+                // Replay messages
+                for (const msg of (data.messages || [])) {
+                    chatHistory.push({role: msg.role, content: msg.content});
+                    addMessage(msg.role === 'assistant' ? 'agent' : msg.role, msg.content, msg.backend, msg.model);
+                }
+                highlightActiveSession();
+            }).catch(() => {});
+        }
+
+        function loadChatSessions() {
+            fetch('/api/chat-sessions?limit=20').then(r => r.json()).then(data => {
+                const list = document.getElementById('session-list');
+                if (!list) return;
+                const sessions = data.sessions || [];
+                list.innerHTML = sessions.map(s => {
+                    const title = s.title || 'New chat';
+                    const active = s.id === chatSessionId ? ' style="color:var(--accent);"' : '';
+                    return `<li onclick="loadChatSession(${s.id})"${active}>${escapeHtml(title.substring(0, 40))}<span class="skill-desc">${s.message_count} msgs</span></li>`;
+                }).join('');
+            }).catch(() => {});
+        }
+
+        function highlightActiveSession() {
+            const list = document.getElementById('session-list');
+            if (!list) return;
+            list.querySelectorAll('li').forEach(li => {
+                li.style.color = '';
+            });
+            loadChatSessions();
+        }
+
+        function startNewChat() {
+            chatHistory = [];
+            chatSessionId = null;
+            const container = document.getElementById('chat-container');
+            container.innerHTML = `<div class="message agent"><div class="message-header">cfoperator</div><div class="message-bubble">CFOperator v1.0.8 ready. Ask me about your infrastructure, or type <code>/</code> for skills.</div></div>`;
+            createChatSession();
+        }
 
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('collapsed');
@@ -1254,6 +1333,7 @@
 
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
+            saveMessage('user', message);
             input.value = '';
             input.rows = 1;
 
@@ -1315,6 +1395,7 @@
                 if (data.response) {
                     const msgEl = addMessage('agent', data.response, data.backend, data.model);
                     chatHistory.push({role: 'assistant', content: data.response});
+                    saveMessage('assistant', data.response, data.backend, data.model);
 
                     if (data.learning_ids && data.learning_ids.length > 0) {
                         const fbDiv = document.createElement('div');
@@ -1654,6 +1735,28 @@
 
         // Initialize
         restoreSettings();
+
+        // Restore or create chat session
+        const savedSession = localStorage.getItem('cfoperator_chat_session');
+        if (savedSession) {
+            chatSessionId = parseInt(savedSession);
+            // Verify session still exists, load it
+            fetch(`/api/chat-sessions/${chatSessionId}`).then(r => {
+                if (r.ok) return r.json();
+                throw new Error('gone');
+            }).then(data => {
+                if (data.messages && data.messages.length > 0) {
+                    loadChatSession(chatSessionId);
+                }
+                loadChatSessions();
+            }).catch(() => {
+                createChatSession();
+            });
+        } else {
+            createChatSession();
+        }
+        // Refresh session list periodically
+        setInterval(loadChatSessions, 30000);
     </script>
 </body>
 </html>

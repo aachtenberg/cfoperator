@@ -744,6 +744,23 @@ class SweepReport(Base):
     )
 
 
+class ChatSession(Base):
+    """Persisted chat conversations."""
+    __tablename__ = 'chat_sessions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    created_at = Column(TIMESTAMP, nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(TIMESTAMP, nullable=False, default=lambda: datetime.now(timezone.utc))
+    title = Column(String(255), nullable=True)  # Auto-generated from first user message
+    messages = Column(JSONB, nullable=False, default=list)  # [{role, content, backend?, model?, ts}]
+    message_count = Column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index('idx_chat_created', 'created_at', postgresql_using='btree', postgresql_ops={'created_at': 'DESC'}),
+        {'extend_existing': True}
+    )
+
+
 # ============================= Connection Health Monitor ======================
 
 class ConnectionHealthMonitor:
@@ -1290,6 +1307,77 @@ class KnowledgeBase:
 
             _log("info", "Sweep finding updated", report_id=report_id,
                  index=finding_index, status=status)
+            return True
+
+    # ── Chat Sessions ──────────────────────────────────────────────────────
+
+    def create_chat_session(self, title: Optional[str] = None) -> int:
+        """Create a new chat session, return its ID."""
+        with self.session_scope() as session:
+            chat = ChatSession(title=title, messages=[], message_count=0)
+            session.add(chat)
+            session.flush()
+            return chat.id
+
+    def append_chat_message(self, session_id: int, role: str, content: str,
+                            backend: str = '', model: str = '') -> bool:
+        """Append a message to a chat session."""
+        with self.session_scope() as session:
+            chat = session.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if not chat:
+                return False
+            msgs = list(chat.messages)
+            msg = {'role': role, 'content': content, 'ts': datetime.now(timezone.utc).isoformat()}
+            if backend:
+                msg['backend'] = backend
+            if model:
+                msg['model'] = model
+            msgs.append(msg)
+            chat.messages = msgs
+            chat.message_count = len(msgs)
+            chat.updated_at = datetime.now(timezone.utc)
+            if not chat.title and role == 'user':
+                chat.title = content[:80]
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(chat, 'messages')
+            return True
+
+    def get_chat_session(self, session_id: int) -> Optional[Dict[str, Any]]:
+        """Get a single chat session with all messages."""
+        with self.session_scope() as session:
+            chat = session.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if not chat:
+                return None
+            return {
+                'id': chat.id,
+                'created_at': chat.created_at.isoformat(),
+                'updated_at': chat.updated_at.isoformat(),
+                'title': chat.title,
+                'messages': chat.messages,
+                'message_count': chat.message_count,
+            }
+
+    def list_chat_sessions(self, limit: int = 30) -> List[Dict[str, Any]]:
+        """List recent chat sessions (without full messages)."""
+        with self.session_scope() as session:
+            chats = session.query(ChatSession).order_by(
+                ChatSession.updated_at.desc()
+            ).limit(limit).all()
+            return [{
+                'id': c.id,
+                'created_at': c.created_at.isoformat(),
+                'updated_at': c.updated_at.isoformat(),
+                'title': c.title,
+                'message_count': c.message_count,
+            } for c in chats]
+
+    def delete_chat_session(self, session_id: int) -> bool:
+        """Delete a chat session."""
+        with self.session_scope() as session:
+            chat = session.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if not chat:
+                return False
+            session.delete(chat)
             return True
 
     def get_operational_summary(self, hours: int = 24) -> Dict[str, Any]:

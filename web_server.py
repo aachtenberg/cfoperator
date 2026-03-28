@@ -388,6 +388,64 @@ class WebServer:
                 'done': done
             })
 
+        # Chat sessions API
+        @self.app.route('/api/chat-sessions')
+        def list_chat_sessions():
+            try:
+                limit = request.args.get('limit', 30, type=int)
+                sessions = self.operator.kb.list_chat_sessions(limit=limit)
+                return jsonify({'sessions': sessions})
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/chat-sessions', methods=['POST'])
+        def create_chat_session():
+            try:
+                data = request.json or {}
+                session_id = self.operator.kb.create_chat_session(title=data.get('title'))
+                return jsonify({'id': session_id})
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/chat-sessions/<int:session_id>')
+        def get_chat_session(session_id):
+            try:
+                session = self.operator.kb.get_chat_session(session_id)
+                if not session:
+                    return jsonify({'error': 'Session not found'}), 404
+                return jsonify(session)
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/chat-sessions/<int:session_id>/messages', methods=['POST'])
+        def add_chat_message(session_id):
+            data = request.json or {}
+            role = data.get('role', '')
+            content = data.get('content', '')
+            if not role or not content:
+                return jsonify({'error': 'role and content required'}), 400
+            try:
+                ok = self.operator.kb.append_chat_message(
+                    session_id, role, content,
+                    backend=data.get('backend', ''),
+                    model=data.get('model', '')
+                )
+                if not ok:
+                    return jsonify({'error': 'Session not found'}), 404
+                return jsonify({'success': True})
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/chat-sessions/<int:session_id>', methods=['DELETE'])
+        def delete_chat_session(session_id):
+            try:
+                ok = self.operator.kb.delete_chat_session(session_id)
+                if not ok:
+                    return jsonify({'error': 'Session not found'}), 404
+                return jsonify({'success': True})
+            except Exception as e:
+                return jsonify({'error': str(e)}), 500
+
         # Q&A API (HTTP)
         @self.app.route('/api/qa', methods=['GET', 'POST'])
         def api_qa():
