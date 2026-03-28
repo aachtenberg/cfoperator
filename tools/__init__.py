@@ -685,6 +685,9 @@ class ToolRegistry:
                               status: str = '', resolution: str = '',
                               finding_id: str = '') -> Dict[str, Any]:
         """Update a finding's status in a sweep report."""
+        if not finding_id and finding_index < 0:
+            return {'error': 'Must provide finding_id or finding_index (0-based). '
+                    'Use get_sweep_report to list findings and their IDs/indices first.'}
         try:
             updated = self.operator.kb.update_sweep_finding(
                 report_id, finding_index=finding_index, status=status,
@@ -695,7 +698,8 @@ class ToolRegistry:
                 return {'success': True, 'report_id': report_id,
                         'finding': ref, 'status': status}
             else:
-                return {'error': f'Could not update finding {ref} in report #{report_id}'}
+                return {'error': f'Finding {ref} not found in report #{report_id}. '
+                        'Use get_sweep_report to list valid finding IDs/indices.'}
         except Exception as e:
             return {'error': str(e)}
 
