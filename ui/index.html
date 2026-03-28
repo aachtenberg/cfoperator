@@ -582,12 +582,8 @@
         .message-bubble strong { color: var(--text-primary); }
 
         /* ── Tool log ── */
+        /* ── Tool activity ── */
         .tool-log {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            max-height: 200px;
-            overflow-y: auto;
             margin: 4px 0 12px 0;
             max-width: 85%;
         }
@@ -598,55 +594,161 @@
             text-transform: uppercase;
             letter-spacing: 0.5px;
             color: var(--text-muted);
-            padding: 8px 14px;
-            border-bottom: 1px solid var(--border-subtle);
+            padding: 6px 0;
             cursor: pointer;
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            gap: 8px;
+            user-select: none;
         }
 
-        .tool-log-header::after {
-            content: "\25BE";
-            font-size: 12px;
+        .tool-log-header .tl-count {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 8px;
+        }
+
+        .tool-log-header .tl-chevron {
+            font-size: 10px;
             transition: transform 0.2s;
+            color: var(--text-muted);
         }
 
-        .tool-log.collapsed .tool-log-header::after {
-            transform: rotate(-90deg);
-        }
+        .tool-log.collapsed .tl-chevron { transform: rotate(-90deg); }
 
         .tool-log-body {
-            transition: max-height 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
         }
 
-        .tool-log.collapsed .tool-log-body {
-            max-height: 0;
+        .tool-log.collapsed .tool-log-body { display: none; }
+
+        .tool-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
             overflow: hidden;
+            transition: border-color 0.15s;
         }
 
-        .tool-log-line {
-            padding: 5px 14px;
-            border-bottom: 1px solid var(--border-subtle);
+        .tool-card:hover { border-color: var(--border); }
+
+        .tool-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            cursor: pointer;
+            user-select: none;
             font-size: 12px;
             font-family: 'JetBrains Mono', monospace;
         }
-        .tool-log-line:last-child { border-bottom: none; }
 
-        .tl-label { color: var(--text-muted); font-size: 11px; }
-        .tl-name { color: var(--cyan); font-weight: 600; }
-        .tl-args { color: var(--text-muted); margin-left: 8px; }
-        .tl-result {
+        .tool-card-header:hover { background: var(--bg-hover); }
+
+        .tool-card .tc-status {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+            flex-shrink: 0;
+        }
+
+        .tool-card .tc-status.pending {
+            border: 2px solid var(--cyan);
+            color: var(--cyan);
+            animation: tc-spin 1s linear infinite;
+        }
+
+        .tool-card .tc-status.success {
+            background: var(--accent-dim);
             color: var(--accent);
-            margin-left: 8px;
+        }
+
+        .tool-card .tc-status.error {
+            background: var(--red-dim);
+            color: var(--red);
+        }
+
+        @keyframes tc-spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .tool-card .tc-name {
+            color: var(--cyan);
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .tool-card .tc-iter {
+            color: var(--text-muted);
+            font-size: 10px;
+        }
+
+        .tool-card .tc-summary {
+            color: var(--text-muted);
+            font-size: 11px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
-            display: inline-block;
-            max-width: calc(100% - 160px);
-            vertical-align: bottom;
-            opacity: 0.7;
+            flex: 1;
+            min-width: 0;
         }
+
+        .tool-card .tc-chevron {
+            color: var(--text-muted);
+            font-size: 10px;
+            margin-left: auto;
+            transition: transform 0.2s;
+            flex-shrink: 0;
+        }
+
+        .tool-card.expanded .tc-chevron { transform: rotate(90deg); }
+
+        .tool-card-detail {
+            display: none;
+            border-top: 1px solid var(--border-subtle);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        .tool-card.expanded .tool-card-detail { display: block; }
+
+        .tc-detail-section {
+            padding: 8px 12px;
+        }
+
+        .tc-detail-section + .tc-detail-section {
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        .tc-detail-label {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .tc-detail-content {
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+            color: var(--text-secondary);
+        }
+
+        .tc-detail-content.tc-args { color: var(--text-secondary); }
+        .tc-detail-content.tc-result { color: var(--accent); opacity: 0.8; }
+        .tc-detail-content.tc-error { color: var(--red); }
 
         /* ── Feedback buttons ── */
         .feedback-buttons {
@@ -1004,39 +1106,102 @@
         }
 
         let currentToolLog = null;
+        let currentToolCard = null;
+        let toolCallCount = 0;
 
         function getOrCreateToolLog() {
             if (currentToolLog) return currentToolLog;
             const container = document.getElementById('chat-container');
             const logDiv = document.createElement('div');
             logDiv.className = 'tool-log';
-            logDiv.innerHTML = '<div class="tool-log-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">Tool Activity</div><div class="tool-log-body"></div>';
+            toolCallCount = 0;
+            logDiv.innerHTML = `<div class="tool-log-header" onclick="this.parentElement.classList.toggle('collapsed')"><span class="tl-chevron">\u25B6</span> Tool Activity <span class="tl-count">0</span></div><div class="tool-log-body"></div>`;
             container.appendChild(logDiv);
             currentToolLog = logDiv;
             return logDiv;
         }
 
+        function updateToolCount() {
+            if (!currentToolLog) return;
+            const badge = currentToolLog.querySelector('.tl-count');
+            if (badge) badge.textContent = toolCallCount;
+        }
+
         function addToolCall(toolName, input, iteration, max) {
             const log = getOrCreateToolLog();
             const body = log.querySelector('.tool-log-body');
-            const line = document.createElement('div');
-            line.className = 'tool-log-line';
-            const argsStr = typeof input === 'string' ? input : JSON.stringify(input);
-            const iterLabel = (iteration && max) ? `[${iteration}/${max}] ` : '';
-            line.innerHTML = `<span class="tl-label">${iterLabel}</span><span class="tl-name">${escapeHtml(toolName)}</span><span class="tl-args">${escapeHtml(argsStr.substring(0, 200))}${argsStr.length > 200 ? '...' : ''}</span>`;
-            body.appendChild(line);
-            body.scrollTop = body.scrollHeight;
+            toolCallCount++;
+            updateToolCount();
+
+            const argsStr = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
+            const summary = typeof input === 'string' ? input : JSON.stringify(input);
+            const iterLabel = (iteration && max) ? `${iteration}/${max}` : '';
+
+            const card = document.createElement('div');
+            card.className = 'tool-card';
+            card.dataset.tool = toolName;
+            card.innerHTML = `
+                <div class="tool-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+                    <span class="tc-status pending">\u25CF</span>
+                    <span class="tc-name">${escapeHtml(toolName)}</span>
+                    ${iterLabel ? `<span class="tc-iter">[${iterLabel}]</span>` : ''}
+                    <span class="tc-summary">${escapeHtml(summary.substring(0, 120))}</span>
+                    <span class="tc-chevron">\u25B6</span>
+                </div>
+                <div class="tool-card-detail">
+                    <div class="tc-detail-section">
+                        <div class="tc-detail-label">Input</div>
+                        <div class="tc-detail-content tc-args">${escapeHtml(argsStr)}</div>
+                    </div>
+                </div>`;
+            body.appendChild(card);
+            currentToolCard = card;
+
+            const container = document.getElementById('chat-container');
+            container.scrollTop = container.scrollHeight;
         }
 
         function addToolResult(toolName, result) {
-            const log = getOrCreateToolLog();
-            const body = log.querySelector('.tool-log-body');
-            const line = document.createElement('div');
-            line.className = 'tool-log-line';
-            const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-            line.innerHTML = `<span class="tl-label">  </span><span class="tl-name">${escapeHtml(toolName)}</span> <span style="color:var(--text-muted);">&rarr;</span> <span class="tl-result">${escapeHtml(resultStr.substring(0, 300))}${resultStr.length > 300 ? '...' : ''}</span>`;
-            body.appendChild(line);
-            body.scrollTop = body.scrollHeight;
+            const resultStr = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+            const isError = typeof result === 'object' && result && result.error;
+
+            // Find the matching card (last card for this tool, or last card overall)
+            let card = currentToolCard;
+            if (!card && currentToolLog) {
+                const cards = currentToolLog.querySelectorAll('.tool-card');
+                card = cards[cards.length - 1];
+            }
+
+            if (card) {
+                // Update status indicator
+                const status = card.querySelector('.tc-status');
+                if (status) {
+                    status.className = `tc-status ${isError ? 'error' : 'success'}`;
+                    status.textContent = isError ? '\u2717' : '\u2713';
+                }
+
+                // Update summary with result preview
+                const summaryEl = card.querySelector('.tc-summary');
+                if (summaryEl) {
+                    const preview = (typeof result === 'string' ? result : JSON.stringify(result)).substring(0, 100);
+                    summaryEl.textContent = '\u2192 ' + preview;
+                    summaryEl.style.color = isError ? 'var(--red)' : 'var(--accent)';
+                    summaryEl.style.opacity = '0.7';
+                }
+
+                // Add result section to detail
+                const detail = card.querySelector('.tool-card-detail');
+                if (detail) {
+                    const section = document.createElement('div');
+                    section.className = 'tc-detail-section';
+                    section.innerHTML = `
+                        <div class="tc-detail-label">Result</div>
+                        <div class="tc-detail-content ${isError ? 'tc-error' : 'tc-result'}">${escapeHtml(resultStr)}</div>`;
+                    detail.appendChild(section);
+                }
+            }
+
+            currentToolCard = null;
         }
 
         function showQuestion(data) {
@@ -1146,7 +1311,7 @@
             } else if (type === 'done') {
                 document.getElementById('thinking').classList.remove('active');
                 document.getElementById('send-button').disabled = false;
-                currentToolLog = null;
+                currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                 if (data.response) {
                     const msgEl = addMessage('agent', data.response, data.backend, data.model);
                     chatHistory.push({role: 'assistant', content: data.response});
@@ -1169,7 +1334,7 @@
             } else if (type === 'error') {
                 document.getElementById('thinking').classList.remove('active');
                 document.getElementById('send-button').disabled = false;
-                currentToolLog = null;
+                currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                 addMessage('agent', `Error: ${data.error}`, 'error', 'none');
             }
         }
