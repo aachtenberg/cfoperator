@@ -372,12 +372,19 @@ class CFOperator:
         # Notifications backend(s)
         self.notifications = []
         for notif_config in obs_config.get('notifications', []):
+            webhook = notif_config.get('webhook_url', '')
             if notif_config.get('backend') == 'slack':
-                notif = SlackNotifications(webhook_url=notif_config.get('webhook_url'))
+                if not webhook:
+                    logger.info("Slack notifications skipped (no webhook URL)")
+                    continue
+                notif = SlackNotifications(webhook_url=webhook)
                 self.notifications.append(notif)
                 logger.info("Initialized Slack notifications")
             elif notif_config.get('backend') == 'discord':
-                notif = DiscordNotifications(webhook_url=notif_config.get('webhook_url'))
+                if not webhook:
+                    logger.info("Discord notifications skipped (no webhook URL)")
+                    continue
+                notif = DiscordNotifications(webhook_url=webhook)
                 self.notifications.append(notif)
                 logger.info("Initialized Discord notifications")
             elif notif_config.get('backend') == 'alertmanager':
