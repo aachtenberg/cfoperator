@@ -655,22 +655,24 @@ class K8sTools:
         return [
             {
                 'name': 'k8s_get_pods',
-                'description': 'List pods in a namespace or across all namespaces. Returns pod names, phase, and status.',
+                'description': 'List pods in a namespace or across all namespaces. Returns pod names, phase, and status. '
+                    'Namespaces: apps, ai, monitoring, data, iot, infrastructure, kube-system, vaultwarden. '
+                    'TIP: use all_namespaces=true or search by name in the right namespace rather than guessing labels.',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'namespace': {
                             'type': 'string',
-                            'description': 'Kubernetes namespace (default: "default")',
-                            'default': 'default'
+                            'description': 'Kubernetes namespace. Common: apps, ai, monitoring, data, iot, kube-system',
+                            'default': 'apps'
                         },
                         'labels': {
                             'type': 'string',
-                            'description': 'Label selector (e.g., "app=nginx")'
+                            'description': 'Label selector. This cluster uses app.kubernetes.io/name labels (e.g., "app.kubernetes.io/name=immich-server"). Prefer searching by namespace over labels.'
                         },
                         'all_namespaces': {
                             'type': 'boolean',
-                            'description': 'List pods in all namespaces',
+                            'description': 'List pods in all namespaces — use this when unsure which namespace a service is in',
                             'default': False
                         }
                     }
