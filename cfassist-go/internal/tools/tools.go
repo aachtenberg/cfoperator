@@ -15,6 +15,14 @@ import (
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/memory"
 )
 
+const nonInteractiveShellPreamble = `ssh() { command ssh -o BatchMode=yes "$@"; }
+scp() { command scp -o BatchMode=yes "$@"; }
+sftp() { command sftp -o BatchMode=yes "$@"; }
+if [ -z "${GIT_SSH_COMMAND:-}" ]; then
+	GIT_SSH_COMMAND='ssh -o BatchMode=yes'
+	export GIT_SSH_COMMAND
+fi`
+
 // Registry holds available tools and their execution functions.
 type Registry struct {
 	tools map[string]tool
@@ -180,10 +188,17 @@ func bashExecute(args map[string]any, defaultTimeout int) map[string]any {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Env = append(os.Environ(), "DEBIAN_FRONTEND=noninteractive")
-	// Prevent commands from hanging on stdin (e.g. sudo password prompt)
+	cmd := exec.CommandContext(ctx, "sh", "-c", wrapNonInteractiveCommand(command))
+	cmd.Env = append(os.Environ(),
+		"DEBIAN_FRONTEND=noninteractive",
+		"GIT_TERMINAL_PROMPT=0",
+		"SSH_ASKPASS=/bin/false",
+		"SSH_ASKPASS_REQUIRE=never",
+		"SUDO_ASKPASS=/bin/false",
+	)
+	// Prevent commands from hanging on stdin or the controlling TTY.
 	cmd.Stdin = nil
+	cmd.SysProcAttr = detachedProcessAttrs()
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -206,6 +221,10 @@ func bashExecute(args map[string]any, defaultTimeout int) map[string]any {
 		"stderr":    stderr.String(),
 		"exit_code": exitCode,
 	}
+}
+
+func wrapNonInteractiveCommand(command string) string {
+	return nonInteractiveShellPreamble + "\n" + command
 }
 
 func readFileExecute(args map[string]any, defaultMaxLines int) map[string]any {

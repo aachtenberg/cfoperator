@@ -48,9 +48,9 @@ type model struct {
 	providers      map[string]config.ProviderConfig
 	activeProvider string
 	// Tab completion state
-	completions    []string
-	completionIdx  int
-	lastInput      string
+	completions   []string
+	completionIdx int
+	lastInput     string
 }
 
 // slashCommands is the list of available commands for tab completion.
@@ -654,6 +654,30 @@ type tuiOutput struct {
 	renderer *glamour.TermRenderer
 }
 
+const toolOutputIndent = "    "
+
+func formatToolCallLine(name, detail string) string {
+	line := toolOutputIndent + toolNameStyle.Render("-> "+name+":")
+	if detail != "" {
+		line += " " + detail
+	}
+	return line
+}
+
+func formatToolResultLine(name, detail string, isError bool) string {
+	prefix := "<- "
+	style := toolSuccessStyle
+	if isError {
+		prefix = "!! "
+		style = toolErrorStyle
+	}
+	line := toolOutputIndent + style.Render(prefix+name+":")
+	if detail != "" {
+		line += " " + detail
+	}
+	return line
+}
+
 func (o *tuiOutput) ShowThinking() {
 	o.program.Send(appendOutputMsg{text: dimStyle.Render("  thinking...")})
 }
@@ -663,27 +687,26 @@ func (o *tuiOutput) ClearThinking() {
 }
 
 func (o *tuiOutput) ShowToolCall(name string, args map[string]any) {
-	var line string
+	var detail string
 	switch name {
 	case "bash":
-		cmd, _ := args["command"].(string)
-		line = toolNameStyle.Render("[tool] bash:") + " " + cmd
+		detail, _ = args["command"].(string)
 	case "read_file":
-		path, _ := args["path"].(string)
-		line = toolNameStyle.Render("[tool] read_file:") + " " + path
+		detail, _ = args["path"].(string)
 	default:
-		line = toolNameStyle.Render(fmt.Sprintf("[tool] %s:", name)) + fmt.Sprintf(" %v", args)
+		detail = fmt.Sprintf("%v", args)
 	}
-	o.program.Send(appendOutputMsg{text: line})
+	o.program.Send(appendOutputMsg{text: formatToolCallLine(name, detail)})
 }
 
 func (o *tuiOutput) ShowToolResult(name string, result map[string]any) {
 	if errMsg, ok := result["error"]; ok {
-		o.program.Send(appendOutputMsg{text: toolErrorStyle.Render(fmt.Sprintf("[tool] error: %v", errMsg))})
+		o.program.Send(appendOutputMsg{text: formatToolResultLine(name, fmt.Sprintf("%v", errMsg), true)})
 		return
 	}
 
-	var line string
+	var detail string
+	isError := false
 	switch name {
 	case "bash":
 		stdout, _ := result["stdout"].(string)
@@ -695,22 +718,19 @@ func (o *tuiOutput) ShowToolResult(name string, result map[string]any) {
 		if stdout != "" {
 			lines = len(strings.Split(stdout, "\n"))
 		}
-		if exitCode == 0 {
-			line = toolSuccessStyle.Render(fmt.Sprintf("[tool] %d lines | exit %d", lines, exitCode))
-		} else {
-			line = toolErrorStyle.Render(fmt.Sprintf("[tool] %d lines | exit %d", lines, exitCode))
-		}
+		detail = fmt.Sprintf("%d lines | exit %d", lines, exitCode)
+		isError = exitCode != 0
 	case "read_file":
 		content, _ := result["content"].(string)
 		lines := 0
 		if content != "" {
 			lines = len(strings.Split(content, "\n"))
 		}
-		line = toolSuccessStyle.Render(fmt.Sprintf("[tool] %d lines", lines))
+		detail = fmt.Sprintf("%d lines", lines)
 	default:
-		line = dimStyle.Render("[tool] done")
+		detail = "done"
 	}
-	o.program.Send(appendOutputMsg{text: line})
+	o.program.Send(appendOutputMsg{text: formatToolResultLine(name, detail, isError)})
 }
 
 func (o *tuiOutput) ShowResponse(text string) {

@@ -3,6 +3,7 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
@@ -130,6 +131,26 @@ func TestBashExecuteStderr(t *testing.T) {
 	}
 	if stderr != "error\n" {
 		t.Errorf("stderr = %q, want %q", stderr, "error\n")
+	}
+}
+
+func TestBashExecuteWrapsSSHInBatchMode(t *testing.T) {
+	dir := t.TempDir()
+	sshPath := filepath.Join(dir, "ssh")
+	if err := os.WriteFile(sshPath, []byte("#!/bin/sh\nprintf '%s|' \"$@\"\n"), 0755); err != nil {
+		t.Fatalf("write fake ssh: %v", err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	result := bashExecute(map[string]any{"command": "ssh example.com"}, 30)
+
+	stdout, ok := result["stdout"].(string)
+	if !ok {
+		t.Fatal("expected stdout string")
+	}
+	if !strings.Contains(stdout, "-o|BatchMode=yes|example.com|") {
+		t.Fatalf("stdout = %q, want ssh batch mode args", stdout)
 	}
 }
 

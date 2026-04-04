@@ -1,4 +1,4 @@
-VERSION ?= 0.6.1
+VERSION ?= $(shell sed -n 's/^var Version = "\(.*\)"/\1/p' internal/config/config.go)
 BINARY  := cfassist
 PKG     := ./cmd/cfassist
 LDFLAGS := -s -w -X github.com/aachtenberg/cfoperator/cfassist-go/internal/config.Version=$(VERSION)
