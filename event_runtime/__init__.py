@@ -13,6 +13,7 @@ from .models import (
     SinkHealth,
 )
 from .plugin_manager import PluginManager
+from .worker import BackgroundAlertWorker
 
 __all__ = [
     "ActionRequest",
@@ -26,4 +27,5 @@ __all__ = [
     "PluginManager",
     "ScheduledTask",
     "SinkHealth",
+    "BackgroundAlertWorker",
 ]
