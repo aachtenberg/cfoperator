@@ -58,6 +58,13 @@ The portable bootstrap uses only stdlib pieces:
 - simple default safe action handlers
 - threaded stdlib HTTP server exposing `/alert`, `/health`, and `/history`
 
+Optional adapters may sit on top of the same runtime:
+
+- FastAPI or ASGI app for uvicorn or gunicorn deployments
+- future CLI or gRPC adapters if needed
+
+Adapters are transport-only. They must not own business logic.
+
 ### Plugin Types
 
 - `AlertSource`: emits normalized alerts into the runtime
@@ -104,6 +111,7 @@ The runtime must treat durable local storage as the write boundary.
 - Add `History` read path from local outbox plus remote sinks when available
 - Add basic metrics and degraded health reporting
 - Preserve the stdlib server as the zero-dependency fallback path
+- Keep adapter dependencies optional and out of the runtime core package path
 
 ### Milestone 3
 

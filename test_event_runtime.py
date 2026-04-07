@@ -158,3 +158,9 @@ def test_portable_runtime_bootstrap_uses_local_paths(monkeypatch, tmp_path: Path
         Alert(source="portable", severity=AlertSeverity.WARNING, summary="portable run")
     )
     assert result["success"] is True
+
+
+def test_fastapi_adapter_module_can_be_imported_without_fastapi_installed():
+    module = __import__("event_runtime.fastapi_app", fromlist=["build_app"])
+    assert hasattr(module, "create_app")
+    assert hasattr(module, "build_app")

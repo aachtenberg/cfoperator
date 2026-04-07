@@ -18,6 +18,8 @@ From the repository root:
 python3 -m event_runtime --host 0.0.0.0 --port 8080
 ```
 
+This is the default zero-dependency mode.
+
 By default the runtime stores data under:
 
 ```text
@@ -34,6 +36,17 @@ This includes:
 - `GET /health`
 - `GET /history?limit=50`
 - `POST /alert`
+
+## Optional ASGI Mode
+
+If you want FastAPI-style deployment behind uvicorn or gunicorn, install only the adapter dependencies:
+
+```bash
+python3 -m pip install fastapi uvicorn
+uvicorn event_runtime.fastapi_app:build_app --factory --host 0.0.0.0 --port 8080
+```
+
+The runtime core is the same. Only the HTTP adapter changes.
 
 ## Example Alert
 
@@ -89,3 +102,4 @@ WantedBy=multi-user.target
 - The portable mode is intentionally minimal and safe.
 - It records and schedules work locally.
 - Remote sinks, richer context providers, and Kubernetes-backed schedulers can be added later without changing the runtime boundary.
+- ASGI mode is optional and should be treated as an adapter, not a required dependency.
