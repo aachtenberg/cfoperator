@@ -6,16 +6,21 @@
 - Keep alert intake, severity gating, and safe actions operational when PostgreSQL is down.
 - Make persistence a sink, not a prerequisite for agent execution.
 - Add a clean migration seam beside the existing CFOperator runtime.
+- Keep the first runnable slice deployable with only Python 3 and stdlib modules.
 
 ## Package Layout
 
 ```text
 event_runtime/
   __init__.py
+  __main__.py
+  bootstrap.py
+  defaults.py
   engine.py
   models.py
   plugins.py
   plugin_manager.py
+  server.py
   state/
     __init__.py
     base.py
@@ -36,6 +41,22 @@ event_runtime/
 - dispatch actions to handlers
 
 It does not know about PostgreSQL, FastAPI, Prometheus, Loki, or Kubernetes internals.
+
+### Portable Bootstrap
+
+The first deployable slice should run on a generic host with:
+
+- Python 3.11+
+- no PostgreSQL
+- no Kubernetes client
+- no external Python packages
+
+The portable bootstrap uses only stdlib pieces:
+
+- local JSONL outbox for durable event storage
+- file-backed scheduler for recurring checks
+- simple default safe action handlers
+- threaded stdlib HTTP server exposing `/alert`, `/health`, and `/history`
 
 ### Plugin Types
 
@@ -82,6 +103,7 @@ The runtime must treat durable local storage as the write boundary.
 - Add FastAPI webhook receiver as an `AlertSource` adapter
 - Add `History` read path from local outbox plus remote sinks when available
 - Add basic metrics and degraded health reporting
+- Preserve the stdlib server as the zero-dependency fallback path
 
 ### Milestone 3
 
@@ -132,3 +154,4 @@ The runtime must treat durable local storage as the write boundary.
 - Plugin registration is explicit and typed.
 - Composite sinks degrade gracefully when remote sinks fail.
 - The runtime can record agent-requested recurring checks without hardwiring specific checklists into the engine.
+- A fresh host can run `python3 -m event_runtime --port 8080` without a pip install step.

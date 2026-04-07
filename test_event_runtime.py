@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from event_runtime.engine import EventRuntime
+from event_runtime.bootstrap import build_portable_runtime
 from event_runtime.models import Alert, AlertSeverity, ContextEnvelope, Decision, ScheduledTask
 from event_runtime.plugin_manager import PluginManager
 from event_runtime.plugins import ActionHandler, ContextProvider, DecisionEngine, Scheduler
@@ -142,3 +143,18 @@ def test_runtime_can_schedule_follow_up_tasks(tmp_path: Path):
     assert result["scheduled_tasks"]
     assert result["scheduled_tasks"][0]["success"] is True
     assert scheduler.tasks[0].name == "watch-crashloop-pod"
+
+
+def test_portable_runtime_bootstrap_uses_local_paths(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DIR", str(tmp_path / "portable"))
+    runtime = build_portable_runtime()
+
+    health = runtime.health()
+    sink = health["sink"]
+    assert sink["healthy"] is True
+    assert sink["durable"] is True
+
+    result = runtime.handle_alert(
+        Alert(source="portable", severity=AlertSeverity.WARNING, summary="portable run")
+    )
+    assert result["success"] is True

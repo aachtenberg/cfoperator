@@ -18,11 +18,13 @@ class LocalOutboxStateSink(BaseStateSink):
 
     def __init__(
         self,
-        directory: str = "/data/event-runtime-outbox",
+        directory: str | None = None,
         file_prefix: str = "events",
         max_file_size_bytes: int = 5 * 1024 * 1024,
     ):
         super().__init__(name="local_outbox")
+        if directory is None:
+            directory = str(Path.home() / ".cfoperator" / "event-runtime" / "outbox")
         self.directory = Path(directory)
         self.file_prefix = file_prefix
         self.max_file_size_bytes = max_file_size_bytes
