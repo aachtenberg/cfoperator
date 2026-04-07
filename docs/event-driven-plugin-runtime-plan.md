@@ -73,6 +73,14 @@ Cross-cutting behaviors such as duplicate suppression should live in alert polic
 - policies may suppress, annotate, or route alerts
 - policy state should be locally durable when it affects execution behavior
 
+### Background Workers
+
+Async processing should live in a worker layer around the runtime, not inside the runtime core.
+
+- transports may enqueue alerts for background processing
+- workers should emit explicit queue lifecycle events
+- synchronous processing must remain available for debugging and simple deployments
+
 ### Plugin Types
 
 - `AlertSource`: emits normalized alerts into the runtime
@@ -134,6 +142,7 @@ Remote persistence should be layered behind a replay-capable sink wrapper:
 - Add event fingerprints and duplicate suppression
 - Add background worker queue
 - Keep replay logic outside the runtime core so remote sinks remain pluggable
+- Keep queue orchestration outside the runtime core so transports can opt into sync or async handling
 
 ### Milestone 4
 

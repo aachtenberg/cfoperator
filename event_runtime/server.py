@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .engine import EventRuntime
 from .models import Alert, AlertSeverity
+from .worker import BackgroundAlertWorker
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]) -> None:
@@ -44,7 +45,7 @@ def _parse_alert(payload: Dict[str, Any]) -> Alert:
     )
 
 
-def make_handler(runtime: EventRuntime):
+def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = None):
     """Create a request handler bound to the provided runtime."""
 
     class EventRuntimeHandler(BaseHTTPRequestHandler):
@@ -53,12 +54,26 @@ def make_handler(runtime: EventRuntime):
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
             if parsed.path == "/health":
-                _json_response(self, HTTPStatus.OK, runtime.health())
+                payload = runtime.health()
+                if worker is not None:
+                    payload["worker"] = worker.health()
+                _json_response(self, HTTPStatus.OK, payload)
                 return
             if parsed.path == "/history":
                 query = parse_qs(parsed.query)
                 limit = int(query.get("limit", ["50"])[0])
                 _json_response(self, HTTPStatus.OK, {"events": runtime.recent_events(limit=limit)})
+                return
+            if parsed.path.startswith("/jobs/"):
+                if worker is None:
+                    _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Worker not enabled"})
+                    return
+                job_id = parsed.path.rsplit("/", 1)[-1]
+                job = worker.get_job(job_id)
+                if job is None:
+                    _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Job not found"})
+                    return
+                _json_response(self, HTTPStatus.OK, job)
                 return
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
@@ -68,12 +83,19 @@ def make_handler(runtime: EventRuntime):
                 return
 
             try:
+                parsed = urlparse(self.path)
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length) if length > 0 else b"{}"
                 payload = json.loads(body.decode("utf-8"))
                 alert = _parse_alert(payload)
-                result = runtime.handle_alert(alert)
-                _json_response(self, HTTPStatus.OK, result)
+                query = parse_qs(parsed.query)
+                mode = query.get("mode", ["async" if worker else "sync"])[0]
+                if worker is not None and mode != "sync":
+                    job = worker.enqueue(alert)
+                    _json_response(self, HTTPStatus.ACCEPTED, {"status": "queued", "job": job})
+                else:
+                    result = runtime.handle_alert(alert)
+                    _json_response(self, HTTPStatus.OK, result)
             except ValueError as exc:
                 _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             except json.JSONDecodeError:
@@ -87,9 +109,16 @@ def make_handler(runtime: EventRuntime):
     return EventRuntimeHandler
 
 
-def serve(runtime: EventRuntime, host: str = "0.0.0.0", port: int = 8080) -> None:
+def serve(
+    runtime: EventRuntime,
+    host: str = "0.0.0.0",
+    port: int = 8080,
+    worker: BackgroundAlertWorker | None = None,
+) -> None:
     """Start the portable threaded HTTP server."""
-    handler = make_handler(runtime)
+    if worker is not None:
+        worker.start()
+    handler = make_handler(runtime, worker=worker)
     server = ThreadingHTTPServer((host, port), handler)
     try:
         server.serve_forever()
@@ -97,3 +126,5 @@ def serve(runtime: EventRuntime, host: str = "0.0.0.0", port: int = 8080) -> Non
         pass
     finally:
         server.server_close()
+        if worker is not None:
+            worker.stop()

@@ -13,6 +13,7 @@ from event_runtime.plugins import ActionHandler, ContextProvider, DecisionEngine
 from event_runtime.state.composite import CompositeStateSink
 from event_runtime.state.local_outbox import LocalOutboxStateSink
 from event_runtime.state.replay import ReplayingStateSink
+from event_runtime.worker import BackgroundAlertWorker
 
 
 class StaticContext(ContextProvider):
@@ -250,3 +251,36 @@ def test_postgres_sink_module_can_be_imported_without_connecting():
     module = __import__("event_runtime.state.postgres", fromlist=["PostgresStateSink"])
     sink = module.PostgresStateSink(dsn="")
     assert sink.health()["configured"] is False
+
+
+def test_runtime_can_record_explicit_events(tmp_path: Path):
+    sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "events-outbox"))])
+    plugins = PluginManager()
+    plugins.register_state_sink(sink)
+    plugins.register_decision_engine(InvestigateDecision())
+
+    runtime = EventRuntime(plugins)
+    runtime.record_event("manual_event", ok=True)
+
+    events = runtime.recent_events(limit=5)
+    assert events[0]["event_type"] == "manual_event"
+
+
+def test_background_worker_processes_job(tmp_path: Path):
+    sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "worker-outbox"))])
+    plugins = PluginManager()
+    plugins.register_state_sink(sink)
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_action_handler(InvestigateAction())
+
+    runtime = EventRuntime(plugins)
+    worker = BackgroundAlertWorker(runtime=runtime, worker_count=1, max_queue_size=10)
+    worker.start()
+    try:
+        queued = worker.enqueue(Alert(source="test", severity=AlertSeverity.WARNING, summary="queued alert"))
+        job = worker.wait_for_job(queued["job_id"], timeout=2.0)
+        assert job is not None
+        assert job["status"] == "completed"
+        assert job["result"]["success"] is True
+    finally:
+        worker.stop()

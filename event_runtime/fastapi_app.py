@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from .bootstrap import build_portable_runtime
+from .bootstrap import build_portable_runtime, build_portable_worker
 from .models import Alert, AlertSeverity
 
 
@@ -35,7 +35,7 @@ def _build_alert(payload: Dict[str, Any]) -> Alert:
     )
 
 
-def create_app(runtime=None):
+def create_app(runtime=None, worker=None):
     """Create a FastAPI app bound to the provided runtime.
 
     FastAPI is optional. Install it only when you want ASGI deployment:
@@ -52,23 +52,41 @@ def create_app(runtime=None):
 
     if runtime is None:
         runtime = build_portable_runtime()
+    if worker is None:
+        worker = build_portable_worker(runtime)
+    if worker is not None:
+        worker.start()
 
     app = FastAPI(title="CFOperator Event Runtime", version="0.1.0")
 
     @app.get("/health")
     def health() -> dict:
-        return runtime.health()
+        payload = runtime.health()
+        if worker is not None:
+            payload["worker"] = worker.health()
+        return payload
 
     @app.get("/history")
     def history(limit: int = Query(default=50, ge=1, le=500)) -> dict:
         return {"events": runtime.recent_events(limit=limit)}
 
+    @app.get("/jobs/{job_id}")
+    def job(job_id: str) -> dict:
+        if worker is None:
+            raise HTTPException(status_code=404, detail="Worker not enabled")
+        payload = worker.get_job(job_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return payload
+
     @app.post("/alert")
-    def alert(payload: Dict[str, Any]) -> dict:
+    def alert(payload: Dict[str, Any], mode: str = Query(default="async")) -> dict:
         try:
             normalized = _build_alert(payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if worker is not None and mode != "sync":
+            return {"status": "queued", "job": worker.enqueue(normalized)}
         return runtime.handle_alert(normalized)
 
     return app

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from .bootstrap import build_portable_runtime
+from .bootstrap import build_portable_runtime, build_portable_worker
 from .server import serve
 
 
@@ -17,7 +17,8 @@ def main() -> None:
     args = parser.parse_args()
 
     runtime = build_portable_runtime()
-    serve(runtime, host=args.host, port=args.port)
+    worker = build_portable_worker(runtime)
+    serve(runtime, host=args.host, port=args.port, worker=worker)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from .state.composite import CompositeStateSink
 from .state.local_outbox import LocalOutboxStateSink
 from .state.postgres import PostgresStateSink
 from .state.replay import ReplayingStateSink
+from .worker import BackgroundAlertWorker
 
 
 def build_portable_runtime() -> EventRuntime:
@@ -48,3 +49,16 @@ def build_portable_runtime() -> EventRuntime:
     for handler in build_default_action_handlers().values():
         plugins.register_action_handler(handler)
     return EventRuntime(plugins)
+
+
+def build_portable_worker(runtime: EventRuntime | None = None) -> BackgroundAlertWorker | None:
+    """Build an optional background worker queue for async alert processing."""
+    worker_count = int(os.getenv("CFOP_EVENT_RUNTIME_WORKER_COUNT", "1"))
+    if worker_count <= 0:
+        return None
+    max_queue_size = int(os.getenv("CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE", "1000"))
+    return BackgroundAlertWorker(
+        runtime=runtime or build_portable_runtime(),
+        worker_count=worker_count,
+        max_queue_size=max_queue_size,
+    )

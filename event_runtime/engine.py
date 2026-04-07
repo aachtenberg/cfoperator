@@ -29,7 +29,7 @@ class EventRuntime:
 
     def handle_alert(self, alert: Alert) -> Dict[str, object]:
         """Process a single normalized alert end-to-end."""
-        self._emit("alert_received", alert=alert.to_dict())
+        self.record_event("alert_received", alert=alert.to_dict())
 
         for policy in self.plugins.alert_policies:
             allowed, reason = policy.evaluate(alert)
@@ -49,7 +49,7 @@ class EventRuntime:
                 }
 
         if alert.severity is AlertSeverity.INFO:
-            self._emit("alert_skipped", alert=alert.to_dict(), reason="severity_gate")
+            self.record_event("alert_skipped", alert=alert.to_dict(), reason="severity_gate")
             return {
                 "alert_id": alert.alert_id,
                 "status": "logged",
@@ -62,13 +62,13 @@ class EventRuntime:
             envelope = provider.provide(alert, envelope)
 
         decision = self.plugins.decision_engine.decide(envelope)
-        self._emit(
+        self.record_event(
             "decision_made",
             alert=alert.to_dict(),
             decision=asdict(decision),
         )
         if decision.requested_checks:
-            self._emit(
+            self.record_event(
                 "checks_requested",
                 alert=alert.to_dict(),
                 checks=list(decision.requested_checks),
@@ -76,7 +76,7 @@ class EventRuntime:
 
         handler = self.plugins.action_handlers.get(decision.action)
         if handler is None:
-            self._emit(
+            self.record_event(
                 "action_missing",
                 alert=alert.to_dict(),
                 decision=asdict(decision),
@@ -91,7 +91,7 @@ class EventRuntime:
 
         request = ActionRequest(alert=alert, decision=decision, context=envelope)
         result = handler.execute(request)
-        self._emit(
+        self.record_event(
             "action_completed",
             alert=alert.to_dict(),
             decision=asdict(decision),
@@ -122,9 +122,13 @@ class EventRuntime:
             "sink": self.plugins.state_sink.health(),
         }
 
-    def _emit(self, event_type: str, **payload: object) -> None:
+    def record_event(self, event_type: str, **payload: object) -> None:
+        """Append an explicit domain event to the configured state sink."""
         event = DomainEvent(event_type=event_type, payload=dict(payload))
         self.plugins.state_sink.append([event.to_dict()])
+
+    def _emit(self, event_type: str, **payload: object) -> None:
+        self.record_event(event_type, **payload)
 
     def _schedule_tasks(self, tasks: List[ScheduledTask]) -> List[dict]:
         results: List[dict] = []

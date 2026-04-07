@@ -36,6 +36,7 @@ This includes:
 - `GET /health`
 - `GET /history?limit=50`
 - `POST /alert`
+- `GET /jobs/<job_id>` when background workers are enabled
 
 ## Optional ASGI Mode
 
@@ -82,6 +83,24 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_PG_DSN`: optional PostgreSQL DSN for remote event persistence
 - `CFOP_EVENT_RUNTIME_REPLAY_INTERVAL_SECONDS`: optional replay interval for syncing outbox events to PostgreSQL
 - `CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS`: duplicate suppression window in seconds, default `300`, set to `0` to disable
+- `CFOP_EVENT_RUNTIME_WORKER_COUNT`: background worker count, default `1`, set to `0` to force synchronous processing
+- `CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE`: max in-memory queued jobs, default `1000`
+
+## Async Intake
+
+By default, if background workers are enabled, `POST /alert` queues the alert and returns immediately.
+
+- default mode with workers: async
+- force synchronous processing: `POST /alert?mode=sync`
+- inspect job status: `GET /jobs/<job_id>`
+
+Example:
+
+```bash
+curl -X POST 'http://127.0.0.1:8080/alert?mode=async' \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"manual","severity":"warning","summary":"async test"}'
+```
 
 ## Optional PostgreSQL Persistence
 
@@ -137,3 +156,4 @@ WantedBy=multi-user.target
 - Remote sinks, richer context providers, and Kubernetes-backed schedulers can be added later without changing the runtime boundary.
 - ASGI mode is optional and should be treated as an adapter, not a required dependency.
 - Optional PostgreSQL persistence does not change the runtime rule that local durability comes first.
+- Background workers improve intake latency but do not change the core runtime decision flow.
