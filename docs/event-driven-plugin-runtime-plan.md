@@ -94,6 +94,13 @@ The runtime must treat durable local storage as the write boundary.
 - `CompositeStateSink` succeeds if at least one durable sink succeeds.
 - Health should report degraded mode when the local outbox is growing because remote sinks are failing.
 
+Remote persistence should be layered behind a replay-capable sink wrapper:
+
+- append to local durable storage first
+- attempt remote persistence opportunistically
+- replay local outbox events in the background until the remote sink catches up
+- use idempotent remote writes keyed by `event_id`
+
 ## Initial Milestones
 
 ### Milestone 1
@@ -118,6 +125,7 @@ The runtime must treat durable local storage as the write boundary.
 - Add PostgreSQL sink with async replay from the local outbox
 - Add event fingerprints and duplicate suppression
 - Add background worker queue
+- Keep replay logic outside the runtime core so remote sinks remain pluggable
 
 ### Milestone 4
 

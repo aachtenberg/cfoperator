@@ -11,6 +11,7 @@ from event_runtime.plugin_manager import PluginManager
 from event_runtime.plugins import ActionHandler, ContextProvider, DecisionEngine, Scheduler
 from event_runtime.state.composite import CompositeStateSink
 from event_runtime.state.local_outbox import LocalOutboxStateSink
+from event_runtime.state.replay import ReplayingStateSink
 
 
 class StaticContext(ContextProvider):
@@ -164,3 +165,55 @@ def test_fastapi_adapter_module_can_be_imported_without_fastapi_installed():
     module = __import__("event_runtime.fastapi_app", fromlist=["build_app"])
     assert hasattr(module, "create_app")
     assert hasattr(module, "build_app")
+
+
+class MemoryRemoteSink:
+    durable = False
+    name = "memory-remote"
+
+    def __init__(self):
+        self.events = []
+
+    def start(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+    def append(self, events):
+        known = {event["event_id"] for event in self.events}
+        for event in events:
+            if event["event_id"] not in known:
+                self.events.append(event)
+        return True
+
+    def recent(self, limit: int = 50):
+        return list(reversed(self.events[-limit:]))
+
+    def health(self):
+        return {"name": self.name, "healthy": True, "durable": False}
+
+
+def test_replaying_sink_replays_outbox_events(tmp_path: Path):
+    local_sink = LocalOutboxStateSink(directory=str(tmp_path / "replay-outbox"))
+    remote_sink = MemoryRemoteSink()
+    sink = ReplayingStateSink(local_sink=local_sink, remote_sinks=[remote_sink], replay_interval_seconds=3600)
+
+    event = {
+        "event_id": "evt-1",
+        "created_at": "2026-04-07T00:00:00+00:00",
+        "event_type": "alert_received",
+        "payload": {"ok": True},
+    }
+    assert sink.append([event]) is True
+    replay = sink.replay_once()
+
+    assert replay["success"] is True
+    assert remote_sink.events
+    assert remote_sink.events[0]["event_id"] == "evt-1"
+
+
+def test_postgres_sink_module_can_be_imported_without_connecting():
+    module = __import__("event_runtime.state.postgres", fromlist=["PostgresStateSink"])
+    sink = module.PostgresStateSink(dsn="")
+    assert sink.health()["configured"] is False

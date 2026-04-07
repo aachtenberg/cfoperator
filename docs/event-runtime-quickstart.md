@@ -79,6 +79,24 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_DIR`: base directory for all runtime files
 - `CFOP_EVENT_RUNTIME_OUTBOX_DIR`: override outbox storage path
 - `CFOP_EVENT_RUNTIME_SCHEDULE_DIR`: override scheduled task storage path
+- `CFOP_EVENT_RUNTIME_PG_DSN`: optional PostgreSQL DSN for remote event persistence
+- `CFOP_EVENT_RUNTIME_REPLAY_INTERVAL_SECONDS`: optional replay interval for syncing outbox events to PostgreSQL
+
+## Optional PostgreSQL Persistence
+
+Portable mode does not require PostgreSQL. If you want remote event persistence in addition to the local outbox, set:
+
+```bash
+export CFOP_EVENT_RUNTIME_PG_DSN='postgresql://cfoperator:pass@db:5432/cfoperator'
+python3 -m event_runtime --host 0.0.0.0 --port 8080
+```
+
+Behavior:
+
+- the local outbox remains the success boundary for writes
+- PostgreSQL is best-effort at ingest time
+- a background replay loop retries syncing outbox events to PostgreSQL
+- duplicate replay is safe because the PostgreSQL table is keyed by `event_id`
 
 ## Systemd Example
 
@@ -103,3 +121,4 @@ WantedBy=multi-user.target
 - It records and schedules work locally.
 - Remote sinks, richer context providers, and Kubernetes-backed schedulers can be added later without changing the runtime boundary.
 - ASGI mode is optional and should be treated as an adapter, not a required dependency.
+- Optional PostgreSQL persistence does not change the runtime rule that local durability comes first.

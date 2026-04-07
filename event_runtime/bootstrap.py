@@ -15,6 +15,8 @@ from .engine import EventRuntime
 from .plugin_manager import PluginManager
 from .state.composite import CompositeStateSink
 from .state.local_outbox import LocalOutboxStateSink
+from .state.postgres import PostgresStateSink
+from .state.replay import ReplayingStateSink
 
 
 def build_portable_runtime() -> EventRuntime:
@@ -22,10 +24,18 @@ def build_portable_runtime() -> EventRuntime:
     base_dir = Path(os.getenv("CFOP_EVENT_RUNTIME_DIR", str(Path.home() / ".cfoperator" / "event-runtime")))
     outbox_dir = os.getenv("CFOP_EVENT_RUNTIME_OUTBOX_DIR", str(base_dir / "outbox"))
     schedule_dir = os.getenv("CFOP_EVENT_RUNTIME_SCHEDULE_DIR", str(base_dir / "scheduled"))
+    replay_interval = int(os.getenv("CFOP_EVENT_RUNTIME_REPLAY_INTERVAL_SECONDS", "30"))
+    pg_dsn = os.getenv("CFOP_EVENT_RUNTIME_PG_DSN", "")
 
-    sink = CompositeStateSink([
-        LocalOutboxStateSink(directory=outbox_dir),
-    ])
+    local_sink = LocalOutboxStateSink(directory=outbox_dir)
+    if pg_dsn:
+        sink = ReplayingStateSink(
+            local_sink=local_sink,
+            remote_sinks=[PostgresStateSink(dsn=pg_dsn)],
+            replay_interval_seconds=replay_interval,
+        )
+    else:
+        sink = CompositeStateSink([local_sink])
 
     plugins = PluginManager()
     plugins.register_state_sink(sink)

@@ -6,7 +6,7 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import List
+from typing import Iterator, List
 
 from .base import BaseStateSink
 
@@ -45,7 +45,7 @@ class LocalOutboxStateSink(BaseStateSink):
 
     def recent(self, limit: int = 50) -> List[dict]:
         events: List[dict] = []
-        files = sorted(self.directory.glob(f"{self.file_prefix}_*.jsonl"))
+        files = self._list_files()
         for path in reversed(files):
             with open(path, "r", encoding="utf-8") as handle:
                 for line in reversed(handle.readlines()):
@@ -57,8 +57,18 @@ class LocalOutboxStateSink(BaseStateSink):
                         return events
         return events
 
+    def iter_events(self) -> Iterator[dict]:
+        """Yield events in append order across all outbox files."""
+        for path in self._list_files():
+            with open(path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    yield json.loads(line)
+
     def health(self) -> dict:
-        files = sorted(self.directory.glob(f"{self.file_prefix}_*.jsonl"))
+        files = self._list_files()
         total_size = sum(path.stat().st_size for path in files)
         return {
             "name": self.name,
@@ -82,5 +92,8 @@ class LocalOutboxStateSink(BaseStateSink):
         self._handle = open(self._current_path, "a", encoding="utf-8")
 
     def _next_path(self) -> Path:
-        counter = len(list(self.directory.glob(f"{self.file_prefix}_*.jsonl"))) + 1
+        counter = len(self._list_files()) + 1
         return self.directory / f"{self.file_prefix}_{counter:06d}.jsonl"
+
+    def _list_files(self) -> List[Path]:
+        return sorted(self.directory.glob(f"{self.file_prefix}_*.jsonl"))
