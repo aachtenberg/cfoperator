@@ -80,6 +80,7 @@ Async processing should live in a worker layer around the runtime, not inside th
 - transports may enqueue alerts for background processing
 - workers should emit explicit queue lifecycle events
 - synchronous processing must remain available for debugging and simple deployments
+- queued jobs should be persisted locally and restored after restart in portable mode
 
 ### Plugin Types
 

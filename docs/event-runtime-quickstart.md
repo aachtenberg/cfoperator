@@ -85,6 +85,7 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS`: duplicate suppression window in seconds, default `300`, set to `0` to disable
 - `CFOP_EVENT_RUNTIME_WORKER_COUNT`: background worker count, default `1`, set to `0` to force synchronous processing
 - `CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE`: max in-memory queued jobs, default `1000`
+- `CFOP_EVENT_RUNTIME_QUEUE_STATE_PATH`: persisted worker job state path, default `~/.cfoperator/event-runtime/queue/jobs.json`
 
 ## Async Intake
 
@@ -93,6 +94,7 @@ By default, if background workers are enabled, `POST /alert` queues the alert an
 - default mode with workers: async
 - force synchronous processing: `POST /alert?mode=sync`
 - inspect job status: `GET /jobs/<job_id>`
+- queued jobs are persisted locally and restored on process restart
 
 Example:
 
@@ -157,3 +159,4 @@ WantedBy=multi-user.target
 - ASGI mode is optional and should be treated as an adapter, not a required dependency.
 - Optional PostgreSQL persistence does not change the runtime rule that local durability comes first.
 - Background workers improve intake latency but do not change the core runtime decision flow.
+- Worker job state is persisted locally so queued alerts survive restart by default.

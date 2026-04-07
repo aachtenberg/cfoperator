@@ -18,7 +18,7 @@ from .state.composite import CompositeStateSink
 from .state.local_outbox import LocalOutboxStateSink
 from .state.postgres import PostgresStateSink
 from .state.replay import ReplayingStateSink
-from .worker import BackgroundAlertWorker
+from .worker import BackgroundAlertWorker, FileBackedWorkerState
 
 
 def build_portable_runtime() -> EventRuntime:
@@ -57,8 +57,11 @@ def build_portable_worker(runtime: EventRuntime | None = None) -> BackgroundAler
     if worker_count <= 0:
         return None
     max_queue_size = int(os.getenv("CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE", "1000"))
+    base_dir = Path(os.getenv("CFOP_EVENT_RUNTIME_DIR", str(Path.home() / ".cfoperator" / "event-runtime")))
+    queue_path = os.getenv("CFOP_EVENT_RUNTIME_QUEUE_STATE_PATH", str(base_dir / "queue" / "jobs.json"))
     return BackgroundAlertWorker(
         runtime=runtime or build_portable_runtime(),
         worker_count=worker_count,
         max_queue_size=max_queue_size,
+        state=FileBackedWorkerState(queue_path),
     )

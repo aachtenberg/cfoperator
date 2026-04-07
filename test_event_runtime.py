@@ -13,7 +13,7 @@ from event_runtime.plugins import ActionHandler, ContextProvider, DecisionEngine
 from event_runtime.state.composite import CompositeStateSink
 from event_runtime.state.local_outbox import LocalOutboxStateSink
 from event_runtime.state.replay import ReplayingStateSink
-from event_runtime.worker import BackgroundAlertWorker
+from event_runtime.worker import BackgroundAlertWorker, FileBackedWorkerState
 
 
 class StaticContext(ContextProvider):
@@ -284,3 +284,27 @@ def test_background_worker_processes_job(tmp_path: Path):
         assert job["result"]["success"] is True
     finally:
         worker.stop()
+
+
+def test_background_worker_restores_persisted_queued_jobs(tmp_path: Path):
+    sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "restore-outbox"))])
+    state = FileBackedWorkerState(path=str(tmp_path / "queue" / "jobs.json"))
+
+    plugins = PluginManager()
+    plugins.register_state_sink(sink)
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_action_handler(InvestigateAction())
+    runtime = EventRuntime(plugins)
+
+    worker1 = BackgroundAlertWorker(runtime=runtime, worker_count=1, max_queue_size=10, state=state)
+    queued = worker1.enqueue(Alert(source="test", severity=AlertSeverity.WARNING, summary="restore me"))
+
+    worker2 = BackgroundAlertWorker(runtime=runtime, worker_count=1, max_queue_size=10, state=state)
+    worker2.start()
+    try:
+        job = worker2.wait_for_job(queued["job_id"], timeout=2.0)
+        assert job is not None
+        assert job["status"] == "completed"
+        assert job["result"]["success"] is True
+    finally:
+        worker2.stop()
