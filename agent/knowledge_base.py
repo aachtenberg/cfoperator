@@ -4312,6 +4312,16 @@ class ResilientKnowledgeBase:
                 self._health_monitor.mark_unhealthy()
         return default
 
+    def set_setting(self, key: str, value: str) -> None:
+        """Set setting - raises if offline so callers can report failure."""
+        if not self._health_monitor.is_healthy():
+            raise ConnectionError("Database is offline")
+        try:
+            self._kb.set_setting(key, value)
+        except Exception:
+            self._health_monitor.mark_unhealthy()
+            raise
+
     def get_next_queued_investigation(self) -> Optional[Dict[str, Any]]:
         """Get next queued investigation - returns None if offline."""
         if self._health_monitor.is_healthy():

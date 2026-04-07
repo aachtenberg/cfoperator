@@ -1,0 +1,163 @@
+{
+  "sequential_baselines": {
+    "ollama-gpu": {
+      "wall_s": 140.5,
+      "correct": 0,
+      "phases": [
+        {
+          "phase": "metrics",
+          "host": "ollama-gpu",
+          "model": "mistral-small3.2:24b",
+          "time_s": 136.4,
+          "tool_called": null,
+          "expected": "prometheus_query",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        },
+        {
+          "phase": "logs",
+          "host": "ollama-gpu",
+          "model": "mistral-small3.2:24b",
+          "time_s": 1.0,
+          "tool_called": null,
+          "expected": "loki_query",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        },
+        {
+          "phase": "containers",
+          "host": "ollama-gpu",
+          "model": "mistral-small3.2:24b",
+          "time_s": 3.1,
+          "tool_called": null,
+          "expected": "docker_list",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        }
+      ]
+    },
+    "ollama-198": {
+      "wall_s": 405.5,
+      "correct": 0,
+      "phases": [
+        {
+          "phase": "metrics",
+          "host": "ollama-198",
+          "model": "qwen2.5:7b-instruct-q8_0",
+          "time_s": 135.2,
+          "tool_called": null,
+          "expected": "prometheus_query",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        },
+        {
+          "phase": "logs",
+          "host": "ollama-198",
+          "model": "qwen2.5:7b-instruct-q8_0",
+          "time_s": 135.2,
+          "tool_called": null,
+          "expected": "loki_query",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        },
+        {
+          "phase": "containers",
+          "host": "ollama-198",
+          "model": "qwen2.5:7b-instruct-q8_0",
+          "time_s": 135.2,
+          "tool_called": null,
+          "expected": "docker_list",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        }
+      ]
+    },
+    "ollama-desktop": {
+      "wall_s": 270.3,
+      "correct": 0,
+      "phases": [
+        {
+          "phase": "metrics",
+          "host": "ollama-desktop",
+          "model": "ministral-3:latest",
+          "time_s": 135.2,
+          "tool_called": null,
+          "expected": "prometheus_query",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        },
+        {
+          "phase": "logs",
+          "host": "ollama-desktop",
+          "model": "ministral-3:latest",
+          "time_s": 2.1,
+          "tool_called": null,
+          "expected": "loki_query",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        },
+        {
+          "phase": "containers",
+          "host": "ollama-desktop",
+          "model": "ministral-3:latest",
+          "time_s": 133.1,
+          "tool_called": null,
+          "expected": "docker_list",
+          "correct": false,
+          "query": "",
+          "finding": ""
+        }
+      ]
+    }
+  },
+  "sequential_avg_wall_s": 272.1,
+  "parallel": {
+    "wall_s": 135.2,
+    "phases": [
+      {
+        "phase": "metrics",
+        "host": "ollama-gpu",
+        "model": "mistral-small3.2:24b",
+        "time_s": 135.2,
+        "tool_called": null,
+        "expected": "prometheus_query",
+        "correct": false,
+        "query": "",
+        "finding": ""
+      },
+      {
+        "phase": "logs",
+        "host": "ollama-198",
+        "model": "qwen2.5:7b-instruct-q8_0",
+        "time_s": 135.2,
+        "tool_called": null,
+        "expected": "loki_query",
+        "correct": false,
+        "query": "",
+        "finding": ""
+      },
+      {
+        "phase": "containers",
+        "host": "ollama-desktop",
+        "model": "ministral-3:latest",
+        "time_s": 135.2,
+        "tool_called": null,
+        "expected": "docker_list",
+        "correct": false,
+        "query": "",
+        "finding": ""
+      }
+    ],
+    "correct": 0
+  },
+  "speedup": 2.0,
+  "time_saved_s": 136.9
+}
