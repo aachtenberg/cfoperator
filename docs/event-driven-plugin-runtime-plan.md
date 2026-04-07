@@ -65,6 +65,14 @@ Optional adapters may sit on top of the same runtime:
 
 Adapters are transport-only. They must not own business logic.
 
+### Alert Policies
+
+Cross-cutting behaviors such as duplicate suppression should live in alert policy plugins.
+
+- policies run before the severity gate and action flow
+- policies may suppress, annotate, or route alerts
+- policy state should be locally durable when it affects execution behavior
+
 ### Plugin Types
 
 - `AlertSource`: emits normalized alerts into the runtime

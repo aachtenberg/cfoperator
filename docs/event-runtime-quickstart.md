@@ -81,6 +81,7 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_SCHEDULE_DIR`: override scheduled task storage path
 - `CFOP_EVENT_RUNTIME_PG_DSN`: optional PostgreSQL DSN for remote event persistence
 - `CFOP_EVENT_RUNTIME_REPLAY_INTERVAL_SECONDS`: optional replay interval for syncing outbox events to PostgreSQL
+- `CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS`: duplicate suppression window in seconds, default `300`, set to `0` to disable
 
 ## Optional PostgreSQL Persistence
 
@@ -97,6 +98,20 @@ Behavior:
 - PostgreSQL is best-effort at ingest time
 - a background replay loop retries syncing outbox events to PostgreSQL
 - duplicate replay is safe because the PostgreSQL table is keyed by `event_id`
+
+## Duplicate Suppression
+
+Portable mode enables file-backed duplicate suppression by default.
+
+- alerts with the same fingerprint are suppressed during the cooldown window
+- fingerprints are derived from source, severity, summary, namespace, and resource identity unless one is supplied explicitly
+- suppression state is stored under `~/.cfoperator/event-runtime/policies/`
+
+Disable it if you want every repeated alert to be processed:
+
+```bash
+export CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS=0
+```
 
 ## Systemd Example
 

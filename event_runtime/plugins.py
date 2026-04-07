@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterable, List
+from typing import Dict, Iterable, List, Tuple
 
 from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision, ScheduledTask
 
@@ -26,6 +26,14 @@ class AlertSource(RuntimePlugin):
     @abstractmethod
     def poll(self) -> Iterable[Alert]:
         """Return zero or more alerts ready for processing."""
+
+
+class AlertPolicy(RuntimePlugin):
+    """Plugin that can suppress or modify alert handling decisions."""
+
+    @abstractmethod
+    def evaluate(self, alert: Alert) -> Tuple[bool, str | None]:
+        """Return whether processing should continue and an optional reason."""
 
 
 class ContextProvider(RuntimePlugin):

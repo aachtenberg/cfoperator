@@ -6,6 +6,7 @@ from pathlib import Path
 
 from event_runtime.engine import EventRuntime
 from event_runtime.bootstrap import build_portable_runtime
+from event_runtime.dedupe import FileBackedCooldownPolicy
 from event_runtime.models import Alert, AlertSeverity, ContextEnvelope, Decision, ScheduledTask
 from event_runtime.plugin_manager import PluginManager
 from event_runtime.plugins import ActionHandler, ContextProvider, DecisionEngine, Scheduler
@@ -146,8 +147,40 @@ def test_runtime_can_schedule_follow_up_tasks(tmp_path: Path):
     assert scheduler.tasks[0].name == "watch-crashloop-pod"
 
 
+def test_file_backed_cooldown_policy_suppresses_duplicates(tmp_path: Path):
+    policy = FileBackedCooldownPolicy(path=str(tmp_path / "dedupe.json"), cooldown_seconds=300)
+    alert = Alert(source="test", severity=AlertSeverity.WARNING, summary="same alert")
+
+    allowed_first, reason_first = policy.evaluate(alert)
+    allowed_second, reason_second = policy.evaluate(alert)
+
+    assert allowed_first is True
+    assert reason_first is None
+    assert allowed_second is False
+    assert "duplicate suppressed" in str(reason_second)
+
+
+def test_runtime_suppresses_duplicate_alerts(tmp_path: Path):
+    sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "dedupe-outbox"))])
+    plugins = PluginManager()
+    plugins.register_state_sink(sink)
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_action_handler(InvestigateAction())
+    plugins.register_alert_policy(
+        FileBackedCooldownPolicy(path=str(tmp_path / "dedupe-state.json"), cooldown_seconds=300)
+    )
+
+    runtime = EventRuntime(plugins)
+    first = runtime.handle_alert(Alert(source="test", severity=AlertSeverity.WARNING, summary="dupe"))
+    second = runtime.handle_alert(Alert(source="test", severity=AlertSeverity.WARNING, summary="dupe"))
+
+    assert first["success"] is True
+    assert second["status"] == "suppressed"
+
+
 def test_portable_runtime_bootstrap_uses_local_paths(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("CFOP_EVENT_RUNTIME_DIR", str(tmp_path / "portable"))
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS", "0")
     runtime = build_portable_runtime()
 
     health = runtime.health()

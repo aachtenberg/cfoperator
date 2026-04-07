@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import Dict
 
+from .dedupe import FileBackedCooldownPolicy
 from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision, ScheduledTask
 from .plugins import ActionHandler, ContextProvider, DecisionEngine, Scheduler
 
@@ -147,3 +148,18 @@ def build_default_action_handlers() -> Dict[str, ActionHandler]:
     """Return the portable default safe action handlers."""
     handlers = [InvestigateActionHandler(), NotifyActionHandler(), LogOnlyActionHandler()]
     return {handler.action_name: handler for handler in handlers}
+
+
+def build_default_alert_policies(base_dir: str | None = None) -> list[FileBackedCooldownPolicy]:
+    """Return portable default alert policies."""
+    if base_dir is None:
+        base_dir = str(Path.home() / ".cfoperator" / "event-runtime")
+    cooldown_seconds = int(os.getenv("CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS", "300"))
+    if cooldown_seconds <= 0:
+        return []
+    return [
+        FileBackedCooldownPolicy(
+            path=str(Path(base_dir) / "policies" / "dedupe.json"),
+            cooldown_seconds=cooldown_seconds,
+        )
+    ]

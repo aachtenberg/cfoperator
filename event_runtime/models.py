@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -43,6 +45,21 @@ class Alert:
         payload["severity"] = self.severity.value
         payload["occurred_at"] = self.occurred_at.isoformat()
         return payload
+
+    def effective_fingerprint(self) -> str:
+        """Return a stable fingerprint for duplicate suppression."""
+        if self.fingerprint:
+            return self.fingerprint
+        stable = {
+            "source": self.source,
+            "severity": self.severity.value,
+            "summary": self.summary,
+            "namespace": self.namespace,
+            "resource_type": self.resource_type,
+            "resource_name": self.resource_name,
+        }
+        payload = json.dumps(stable, sort_keys=True, ensure_ascii=True)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(slots=True)

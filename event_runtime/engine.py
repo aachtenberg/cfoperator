@@ -31,6 +31,23 @@ class EventRuntime:
         """Process a single normalized alert end-to-end."""
         self._emit("alert_received", alert=alert.to_dict())
 
+        for policy in self.plugins.alert_policies:
+            allowed, reason = policy.evaluate(alert)
+            if not allowed:
+                self._emit(
+                    "alert_suppressed",
+                    alert=alert.to_dict(),
+                    policy=policy.name,
+                    reason=reason or "suppressed",
+                )
+                return {
+                    "alert_id": alert.alert_id,
+                    "status": "suppressed",
+                    "action": "suppressed",
+                    "success": True,
+                    "reason": reason or "suppressed",
+                }
+
         if alert.severity is AlertSeverity.INFO:
             self._emit("alert_skipped", alert=alert.to_dict(), reason="severity_gate")
             return {
@@ -98,6 +115,7 @@ class EventRuntime:
         """Return runtime health summary."""
         return {
             "sources": [plugin.name for plugin in self.plugins.alert_sources],
+            "policies": [plugin.name for plugin in self.plugins.alert_policies],
             "context_providers": [plugin.name for plugin in self.plugins.context_providers],
             "actions": sorted(self.plugins.action_handlers.keys()),
             "schedulers": [plugin.name for plugin in self.plugins.schedulers],

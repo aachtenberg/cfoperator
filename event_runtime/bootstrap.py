@@ -9,6 +9,7 @@ from .defaults import (
     HostContextProvider,
     JsonFileScheduler,
     OpenReasoningDecisionEngine,
+    build_default_alert_policies,
     build_default_action_handlers,
 )
 from .engine import EventRuntime
@@ -40,6 +41,8 @@ def build_portable_runtime() -> EventRuntime:
     plugins = PluginManager()
     plugins.register_state_sink(sink)
     plugins.register_decision_engine(OpenReasoningDecisionEngine())
+    for policy in build_default_alert_policies(str(base_dir)):
+        plugins.register_alert_policy(policy)
     plugins.register_context_provider(HostContextProvider())
     plugins.register_scheduler(JsonFileScheduler(directory=schedule_dir))
     for handler in build_default_action_handlers().values():
