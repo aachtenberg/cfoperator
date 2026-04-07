@@ -285,6 +285,10 @@ def test_background_worker_processes_job(tmp_path: Path):
     finally:
         worker.stop()
 
+    metrics = worker.health()["metrics"]
+    assert metrics["average_queue_delay_seconds"] >= 0.0
+    assert metrics["average_processing_duration_seconds"] >= 0.0
+
 
 def test_background_worker_restores_persisted_queued_jobs(tmp_path: Path):
     sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "restore-outbox"))])

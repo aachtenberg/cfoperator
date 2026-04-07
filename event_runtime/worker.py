@@ -72,6 +72,21 @@ class WorkerJob:
             "alert": self.alert.to_dict(),
         }
 
+    def queue_delay_seconds(self) -> Optional[float]:
+        if not self.started_at:
+            return None
+        return max(0.0, (_parse_datetime(self.started_at) - _parse_datetime(self.created_at)).total_seconds())
+
+    def processing_duration_seconds(self) -> Optional[float]:
+        if not self.started_at or not self.completed_at:
+            return None
+        return max(0.0, (_parse_datetime(self.completed_at) - _parse_datetime(self.started_at)).total_seconds())
+
+    def queued_age_seconds(self) -> Optional[float]:
+        if self.status != "queued":
+            return None
+        return max(0.0, (datetime.now(timezone.utc) - _parse_datetime(self.created_at)).total_seconds())
+
     @classmethod
     def from_dict(cls, payload: dict) -> "WorkerJob":
         job = cls(
@@ -211,10 +226,14 @@ class BackgroundAlertWorker:
 
     def health(self) -> dict:
         with self._jobs_lock:
+            jobs = list(self._jobs.values())
             queued = sum(1 for job in self._jobs.values() if job.status == "queued")
             running = sum(1 for job in self._jobs.values() if job.status == "running")
             completed = sum(1 for job in self._jobs.values() if job.status == "completed")
             failed = sum(1 for job in self._jobs.values() if job.status == "failed")
+        queue_delays = [value for job in jobs if (value := job.queue_delay_seconds()) is not None]
+        processing_durations = [value for job in jobs if (value := job.processing_duration_seconds()) is not None]
+        queued_ages = [value for job in jobs if (value := job.queued_age_seconds()) is not None]
         return {
             "enabled": True,
             "worker_count": self.worker_count,
@@ -226,6 +245,11 @@ class BackgroundAlertWorker:
                 "running": running,
                 "completed": completed,
                 "failed": failed,
+            },
+            "metrics": {
+                "oldest_queued_age_seconds": max(queued_ages) if queued_ages else 0.0,
+                "average_queue_delay_seconds": round(sum(queue_delays) / len(queue_delays), 6) if queue_delays else 0.0,
+                "average_processing_duration_seconds": round(sum(processing_durations) / len(processing_durations), 6) if processing_durations else 0.0,
             },
         }
 

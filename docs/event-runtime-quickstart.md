@@ -96,6 +96,12 @@ By default, if background workers are enabled, `POST /alert` queues the alert an
 - inspect job status: `GET /jobs/<job_id>`
 - queued jobs are persisted locally and restored on process restart
 
+`GET /health` also exposes worker metrics including:
+
+- `oldest_queued_age_seconds`
+- `average_queue_delay_seconds`
+- `average_processing_duration_seconds`
+
 Example:
 
 ```bash
