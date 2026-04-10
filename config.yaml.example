@@ -153,20 +153,62 @@ git:
       #   known_hosts_path: ${HOME}/.ssh/known_hosts  # enables StrictHostKeyChecking=yes
       hosts:
         - headless-gpu
+        - ubuntu-llm-01
       services:
         - cfoperator
-    # - name: infrastructure-repo
-    #   github: aachtenberg/infrastructure-repo
-    #   branch: main
-    #   # path: ~/repos/infrastructure-repo  # optional local clone
-    #   hosts:
-    #     - raspberrypi
-    #     - raspberrypi2
-    #     - raspberrypi3
-    #     - raspberrypi4
-    #     - headless-gpu
-    #   services:
-    #     - k3s
+        - cfoperator-event-runtime
+    - name: homelab-infra
+      github: aachtenberg/homelab-infra
+      branch: main
+      # path: ~/repos/homelab-infra  # optional local clone
+      hosts:
+        - raspberrypi
+        - raspberrypi2
+        - raspberrypi3
+        - raspberrypi4
+        - headless-gpu
+        - ubuntu-llm-01
+      services:
+        - apps
+        - ai
+        - data
+        - iot
+        - monitoring
+        - infrastructure
+        - daemonsets
+        - k3s
+    - name: luna-voice-assistance
+      github: aachtenberg/luna-voice-assistance
+      branch: main
+      services:
+        - luna-brain
+    - name: esp-sensor-hub
+      github: aachtenberg/esp-sensor-hub
+      branch: main
+      services:
+        - esp-sensor-hub
+        - mosquitto
+        - telegraf
+    - name: esp32-lora-gateway
+      github: aachtenberg/esp32-lora-gateway
+      branch: main
+      services:
+        - esp32-lora-api
+        - mosquitto
+    - name: esp32-lora-sensor
+      github: aachtenberg/esp32-lora-sensor
+      branch: main
+      services:
+        - esp32-lora-api
+        - mosquitto
+    - name: raspberry-pi-camera-control
+      github: aachtenberg/raspberry-pi-camera-control
+      branch: main
+      services:
+        - camera-api
+        - camera-web
+        - camera-postgres
+        - camera-postgres-exporter
 
 # Skills
 skills:

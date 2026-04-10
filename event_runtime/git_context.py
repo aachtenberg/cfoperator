@@ -39,7 +39,7 @@ class GitChangeContextProvider(ContextProvider):
             token=github_token,
             api_url=github_api_url,
             timeout=15,
-        ) if github_token else None
+        )
 
     # ------------------------------------------------------------------
     # Host / service matching
@@ -129,7 +129,7 @@ class GitChangeContextProvider(ContextProvider):
     def _fetch_commits_github(self, repo: Dict[str, Any]) -> List[Dict[str, str]]:
         """Fetch recent commits via the GitHub API (stdlib only)."""
         slug = repo.get("github")
-        if not slug or not self._github_client:
+        if not slug:
             return []
         try:
             slug = validate_repo_slug(str(slug))

@@ -86,6 +86,22 @@ def test_github_client_caches_get_requests(monkeypatch):
     assert calls["count"] == 1
 
 
+def test_github_client_allows_unauthenticated_requests(monkeypatch):
+    captured_headers: dict[str, str] = {}
+
+    def fake_urlopen(req, timeout=0):
+        captured_headers.update(dict(req.header_items()))
+        return _FakeResponse({"ok": True})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    client = GitHubApiClient(token="")
+    response = client.request("GET", "/repos/owner/repo")
+
+    assert response["success"] is True
+    assert "Authorization" not in captured_headers
+
+
 def test_github_tools_get_pr_includes_changed_files(monkeypatch):
     tools = GitHubTools(token="fake-token", repos_config=[{"name": "repo", "github": "owner/repo"}])
 

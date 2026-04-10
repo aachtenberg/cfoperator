@@ -2,85 +2,173 @@
 
 **Version**: 1.0.8
 
-## Deployment Location
+## Production Deployment
 
-- **Host**: Your Docker host (any Linux machine)
-- **Deploy dir**: Clone the repo or copy files
-- **Container**: cfoperator (host network mode)
-- **Web UI**: http://localhost:8083
-- **Health**: http://localhost:8083/api/health
-- **Metrics**: http://localhost:8083/metrics
+Production deployment is k3s-based. Docker Compose is for local development only.
 
-## Event Runtime Host Deployment
+- Control plane: `raspberrypi` (`192.168.0.167`)
+- CFOperator node: `ubuntu-llm-01` / `headless-gpu`
+- Namespace: `apps`
+- Infra source of truth: [k3s/base/apps/cfoperator.yml](/home/aachten/repos/homelab-infra/k3s/base/apps/cfoperator.yml)
+- Event runtime manifest: [k3s/base/apps/cfoperator-event-runtime.yml](/home/aachten/repos/homelab-infra/k3s/base/apps/cfoperator-event-runtime.yml)
 
-The modular event runtime is deployed differently from the legacy CFOperator container.
+## Runtime Layout
 
-- **Mode**: bare-metal host process
-- **Bind**: `python3 -m event_runtime --host 0.0.0.0 --port 8080`
-- **Health**: `http://<host>:8080/health`
-- **Metrics**: `http://<host>:8080/metrics`
-- **Systemd unit template**: [deploy/systemd/cfoperator-event-runtime.service](/home/aachten/repos/cfoperator/deploy/systemd/cfoperator-event-runtime.service)
-- **Prometheus scrape sample**: [observability/prometheus-event-runtime-scrape.yml](/home/aachten/repos/cfoperator/observability/prometheus-event-runtime-scrape.yml)
-- **Alert rules**: [observability/event-runtime-alert-rules.yml](/home/aachten/repos/cfoperator/observability/event-runtime-alert-rules.yml)
+Two workloads are deployed in production:
 
-The validated rollout path for the event runtime is host-mode first. The legacy Flask application remains the existing containerized/k3s-oriented service.
+| Workload | Deployment | Service | Port |
+|------|---------|---------|------|
+| CFOperator API/UI | `cfoperator` | host network | `8083` |
+| Event Runtime | `cfoperator-event-runtime` | `cfoperator-event-runtime` | `8080` |
 
-## Deploy / Rebuild
+The event runtime runs as a dedicated k3s deployment, not as a Docker Compose service and not as the primary production systemd path.
+
+## How Production Works
+
+Both workloads use a hostPath mount of the checked-out repository on the GPU node, so code changes are picked up from the node filesystem rather than a rebuilt image.
+
+- Repo hostPath: `/home/aachten/repos/cfoperator`
+- Shared config source: `cfoperator-config` ConfigMap
+- Shared secret source: `cfoperator-secrets`
+- Event runtime durable state: `/var/lib/cfoperator/event-runtime`
+
+The live event runtime command is:
+
+```bash
+python3 -m event_runtime --host 0.0.0.0 --port 8080 --config /app/config.yaml --poll-interval 30
+```
+
+## Production Deploy Flow
+
+### 1. Sync code to the GPU node
+
+Because both deployments mount the repo from the node filesystem, application code changes need to be synced to `ubuntu-llm-01`.
+
+```bash
+rsync -av --delete --exclude='.git' --exclude='__pycache__' --exclude='.env' \
+	/home/aachten/repos/cfoperator/ aachten@192.168.0.150:/home/aachten/repos/cfoperator/
+```
+
+### 2. Sync and apply k3s manifests
+
+Manifest, ConfigMap, deployment, and service changes come from `homelab-infra`.
+
+```bash
+rsync -av --delete /home/aachten/repos/homelab-infra/k3s/ \
+	aachten@192.168.0.167:~/repos/homelab-infra/k3s/
+
+ssh aachten@192.168.0.167 \
+	'sudo kubectl apply -k ~/repos/homelab-infra/k3s/overlays/production/'
+```
+
+### 3. Regenerate secrets when secret inputs change
+
+Cluster secrets are managed from `homelab-infra/secrets/.env.secrets` via Ansible.
+
+```bash
+cd /home/aachten/repos/homelab-infra/ansible
+ansible-playbook deploy-k3s-secrets.yml --skip-tags ghcr
+```
+
+Use this when changing values like:
+
+- `POSTGRES_PASSWORD`
+- `GITHUB_TOKEN`
+- `SLACK_WEBHOOK_URL`
+- `DISCORD_WEBHOOK_URL`
+- LLM API keys
+
+### 4. Restart the workloads
+
+Code-only changes usually require a rollout restart because the deployments mount source from hostPath.
+
+```bash
+ssh aachten@192.168.0.167 \
+	'sudo kubectl rollout restart deployment/cfoperator -n apps && \
+	 sudo kubectl rollout restart deployment/cfoperator-event-runtime -n apps'
+```
+
+## Event Runtime Production Details
+
+- Deployment manifest: [k3s/base/apps/cfoperator-event-runtime.yml](/home/aachten/repos/homelab-infra/k3s/base/apps/cfoperator-event-runtime.yml)
+- Service name: `cfoperator-event-runtime`
+- Health endpoint: `GET /health`
+- Metrics endpoint: `GET /metrics`
+- History endpoint: `GET /history`
+- Activity endpoint: `GET /activity`
+
+The event runtime currently uses:
+
+- local durable outbox on `/var/lib/cfoperator/event-runtime`
+- PostgreSQL replay/persistence via `cfoperator-config` + `cfoperator-secrets`
+- GitHub integration via `GITHUB_TOKEN` from `cfoperator-secrets`
+
+## Verify Production
+
+```bash
+# Pods
+ssh aachten@192.168.0.167 \
+	'sudo kubectl get pods -n apps -l app.kubernetes.io/name=cfoperator && \
+	 sudo kubectl get pods -n apps -l app.kubernetes.io/name=cfoperator-event-runtime'
+
+# CFOperator logs
+ssh aachten@192.168.0.167 \
+	'sudo kubectl logs -n apps deployment/cfoperator -f'
+
+# Event runtime logs
+ssh aachten@192.168.0.167 \
+	'sudo kubectl logs -n apps deployment/cfoperator-event-runtime -f'
+```
+
+For runtime endpoint checks from the control plane:
+
+```bash
+ssh aachten@192.168.0.167 '
+	pod_ip=$(sudo kubectl get pod -n apps -l app.kubernetes.io/name=cfoperator-event-runtime -o jsonpath="{.items[0].status.podIP}") &&
+	curl -fsS "http://${pod_ip}:8080/health" && echo &&
+	curl -fsS "http://${pod_ip}:8080/metrics" | grep cfoperator_event_runtime
+'
+```
+
+## Local / Non-Production Modes
+
+### Docker Compose
+
+Docker Compose is still available for local development of the legacy CFOperator service.
 
 ```bash
 cd /path/to/cfoperator
-git pull
 docker compose down && docker compose build && docker compose up -d
 ```
 
-## Verify
+### Direct Event Runtime Launch
+
+For local runtime development:
 
 ```bash
-# Health check
-curl http://localhost:8083/api/health
-
-# Ollama models available
-curl http://localhost:8083/api/ollama/models
-
-# Prometheus metrics
-curl http://localhost:8083/metrics | grep cfoperator
-
-# Container running
-docker ps | grep cfoperator
-
-# Live logs
-docker logs -f cfoperator
+python3 -m event_runtime --host 0.0.0.0 --port 8080
 ```
 
-For the event runtime:
+See [docs/event-runtime-quickstart.md](/home/aachten/repos/cfoperator/docs/event-runtime-quickstart.md) for local runtime usage.
 
-```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/metrics | grep cfoperator_event_runtime
-curl -X POST 'http://localhost:8080/alert?mode=sync' \
-	-H 'Content-Type: application/json' \
-	-d '{"source":"manual","severity":"warning","summary":"deployment smoke"}'
-systemctl status cfoperator-event-runtime
-journalctl -u cfoperator-event-runtime -f
-```
+### Systemd
+
+There is also a non-k8s systemd unit template for host installs:
+
+- [deploy/systemd/cfoperator-event-runtime.service](/home/aachten/repos/cfoperator/deploy/systemd/cfoperator-event-runtime.service)
+
+That unit is useful for standalone or portable host deployment, but it is not the current production deployment path.
 
 ## Prerequisites
 
-### Files required on deploy host (not in git)
+### Files and inputs
 
 | File | Purpose |
 |------|---------|
-| `.env` | POSTGRES_PASSWORD, LLM API keys |
-| `config.yaml` | Host IPs, OODA timing, backend URLs |
-| `secrets/.env.secrets` | Grafana Cloud creds (for dashboard upload, optional) |
-| `~/.ssh/id_rsa` | SSH keys (mounted into container for fleet access) |
-
-For the event runtime host deployment:
-
-| File | Purpose |
-|------|---------|
-| `/etc/cfoperator/config.yaml` | Runtime config including `event_runtime.host_observability` |
-| `/var/lib/cfoperator/event-runtime/` | Local runtime durability, queue, replay, scheduler, and policy state |
+| `config.yaml` | local/development config |
+| `.env` | local/development secrets |
+| `homelab-infra/secrets/.env.secrets` | source of truth for cluster secrets |
+| `~/.ssh/id_rsa` | SSH access for fleet operations |
 
 ### Infrastructure dependencies
 
@@ -92,55 +180,21 @@ For the event runtime host deployment:
 | Alertmanager | 9093 | Optional |
 | Ollama | 11434 | Yes (or configure cloud LLM) |
 
-## What's Running
-
-| Component | Details |
-|-----------|---------|
-| OODA Loop | Reactive (10s) + Proactive (30min sweeps) |
-| Web Server | Flask + Waitress on port 8083 (host network) |
-| Tools | Core + 9 SSH + 15 K8s + 4 discovery + function tools |
-| Skills | 7 loaded (investigate-host, investigate-container, investigate-pod, investigate-deployment, k3s-cluster-health, why-restart, compare-hosts) |
-| LLM | Ollama → Groq → Gemini → Anthropic fallback chain |
-| Knowledge Base | PostgreSQL + offline buffer |
-| Metrics | /metrics endpoint with Prometheus counters/gauges/histograms |
-
 ## Quick Commands
 
 ```bash
-# Restart
-docker compose restart
+# Reload manifests
+ssh aachten@192.168.0.167 \
+	'sudo kubectl apply -k ~/repos/homelab-infra/k3s/overlays/production/'
 
-# Rebuild
-docker compose down && docker compose build && docker compose up -d
+# Restart only event runtime
+ssh aachten@192.168.0.167 \
+	'sudo kubectl rollout restart deployment/cfoperator-event-runtime -n apps'
 
-# Hot-reload config (no restart needed)
-curl -X POST http://localhost:8083/api/config/reload
-
-# View sweep activity
-docker logs cfoperator 2>&1 | grep -i sweep
-
-# View errors
-docker logs cfoperator 2>&1 | grep ERROR
+# Restart only CFOperator
+ssh aachten@192.168.0.167 \
+	'sudo kubectl rollout restart deployment/cfoperator -n apps'
 
 # Upload Grafana dashboard
-./grafana/upload-dashboard.sh
+/home/aachten/repos/cfoperator/grafana/upload-dashboard.sh
 ```
-
-Event runtime host-mode commands:
-
-```bash
-sudo cp deploy/systemd/cfoperator-event-runtime.service /etc/systemd/system/
-sudo mkdir -p /etc/cfoperator /var/lib/cfoperator/event-runtime
-sudo systemctl daemon-reload
-sudo systemctl enable --now cfoperator-event-runtime
-sudo systemctl status cfoperator-event-runtime
-```
-
-## Docker Compose Notes
-
-- `network_mode: host` — no port mapping, container shares host network
-- `~/.ssh:/root/.ssh:ro` — SSH keys mounted for fleet access
-- `./config.yaml:/app/config.yaml:ro` — config mounted read-only
-- `./skills:/app/skills:ro` — skills mounted read-only
-- `/var/run/docker.sock` — local Docker access
-- `restart: unless-stopped` — auto-restart on failure/reboot

@@ -37,7 +37,7 @@ class GitHubApiClient:
 
     def __init__(
         self,
-        token: str,
+        token: Optional[str] = None,
         api_url: str = DEFAULT_GITHUB_API_URL,
         *,
         timeout: int = 30,
@@ -60,7 +60,7 @@ class GitHubApiClient:
         params: Optional[Dict[str, str]] = None,
         cache_ttl: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Make an authenticated GitHub API request."""
+        """Make a GitHub API request, optionally authenticated."""
         normalized_method = method.upper()
         normalized_params = {k: str(v) for k, v in (params or {}).items()}
         cache_key = self._cache_key(normalized_method, path, normalized_params) if cache_ttl and normalized_method == "GET" else None
@@ -78,7 +78,8 @@ class GitHubApiClient:
 
         for attempt in range(self._max_retries + 1):
             req = urllib.request.Request(url, data=data, method=normalized_method)
-            req.add_header("Authorization", f"Bearer {self._token}")
+            if self._token:
+                req.add_header("Authorization", f"Bearer {self._token}")
             req.add_header("Accept", "application/vnd.github+json")
             req.add_header("X-GitHub-Api-Version", DEFAULT_GITHUB_API_VERSION)
             if data:
