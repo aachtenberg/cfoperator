@@ -199,6 +199,7 @@ class EventRuntime:
             "host_observability_providers": [plugin.name for plugin in self.plugins.host_observability_providers],
             "context_providers": [plugin.name for plugin in self.plugins.context_providers],
             "actions": sorted(self.plugins.action_handlers.keys()),
+            "notification_sinks": [plugin.name for plugin in self.plugins.notification_sinks],
             "schedulers": [plugin.name for plugin in self.plugins.schedulers],
             "sink": self.plugins.state_sink.health(),
         }
