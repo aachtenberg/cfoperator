@@ -8,7 +8,8 @@ from time import perf_counter
 from typing import Dict, List
 
 from .activity import build_activity_feed, filter_activities, filter_events
-from .models import ActionRequest, Alert, AlertSeverity, ContextEnvelope, DomainEvent, ScheduledTask
+from .models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, DomainEvent, ScheduledTask
+from .notifications import should_notify
 from .plugin_manager import PluginManager
 from .telemetry import (
     initialize_runtime_info,
@@ -18,6 +19,7 @@ from .telemetry import (
     observe_alert_result,
     observe_decision,
     observe_event_recorded,
+    observe_notification,
     observe_scheduled_task,
 )
 
@@ -138,6 +140,7 @@ class EventRuntime:
                 decision=asdict(decision),
                 result=action_result.to_dict(),
             )
+            self._notify_action_completed(alert, action_result)
             schedule_results = self._schedule_tasks(decision.scheduled_tasks)
             result = {
                 "alert_id": alert.alert_id,
@@ -205,6 +208,31 @@ class EventRuntime:
         event = DomainEvent(event_type=event_type, payload=dict(payload))
         self.plugins.state_sink.append([event.to_dict()])
         observe_event_recorded(event_type)
+
+    def _notify_action_completed(self, alert: Alert, action_result: ActionResult) -> None:
+        """Best-effort notification dispatch after an action completes."""
+        if not self.plugins.notification_sinks:
+            return
+        if not should_notify(action_result.action, action_result.success):
+            return
+
+        severity = alert.severity.value if hasattr(alert.severity, "value") else str(alert.severity)
+        status = "completed" if action_result.success else "failed"
+        summary = f"Action {status}: {action_result.action}"
+        details = {
+            "alert_summary": alert.summary,
+            "action": action_result.action,
+            "result_message": action_result.message,
+            "result_details": action_result.details,
+        }
+
+        for sink in self.plugins.notification_sinks:
+            try:
+                ok = sink.notify(summary, severity=severity, details=details)
+                observe_notification(sink.name, "success" if ok else "error")
+            except Exception:
+                logger.warning("Notification sink %s failed", sink.name, exc_info=True)
+                observe_notification(sink.name, "error")
 
     def _schedule_tasks(self, tasks: List[ScheduledTask]) -> List[dict]:
         results: List[dict] = []

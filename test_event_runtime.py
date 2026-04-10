@@ -1435,6 +1435,47 @@ def test_git_context_provider_uses_github_api_primary(monkeypatch):
     assert result.context["recent_changes"][0]["commits"][0]["author"] == "Carol"
 
 
+def test_git_context_provider_uses_public_github_without_token(monkeypatch):
+    """Public GitHub repos should still be queried when no token is configured."""
+    from event_runtime.git_context import GitChangeContextProvider
+
+    def fail_run(cmd, **kwargs):
+        return SimpleNamespace(returncode=128, stdout="", stderr="not a git repo")
+
+    monkeypatch.setattr("subprocess.run", fail_run)
+
+    commit_data = [
+        {"sha": "bbb222", "commit": {"author": {"name": "Dana", "date": "2026-04-09T09:00:00Z"}, "message": "public repo fix"}},
+    ]
+
+    class FakeResp:
+        def __init__(self):
+            self.status = 200
+            self.headers = {"X-RateLimit-Remaining": "60"}
+
+        def read(self):
+            return json.dumps(commit_data).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr("urllib.request.urlopen", lambda req, **kw: FakeResp())
+
+    repos = [{"name": "test-repo", "path": "/nonexistent", "github": "owner/test-repo", "hosts": ["node1"]}]
+    provider = GitChangeContextProvider(repos=repos)
+
+    alert = Alert(source="test", severity=AlertSeverity.WARNING, summary="test", details={"host": "node1"})
+    envelope = ContextEnvelope(alert=alert)
+    result = provider.provide(alert, envelope)
+
+    assert "recent_changes" in result.context
+    assert result.context["recent_changes"][0]["source"] == "github"
+    assert result.context["recent_changes"][0]["commits"][0]["author"] == "Dana"
+
+
 # ---------------------------------------------------------------------------
 # GitHub action handler tests
 # ---------------------------------------------------------------------------
@@ -1687,3 +1728,261 @@ def test_bootstrap_derives_postgres_audit_sink_from_database_config(monkeypatch,
     assert created["dsn"] == "postgresql://audit-user:p%40ss%20word@db.internal:5432/cfoperator"
     assert created["table_name"] == "audit_events"
     assert runtime.health()["sink"]["remotes"][0]["table"] == "audit_events"
+
+
+# ---------------------------------------------------------------------------
+# Notification sinks
+# ---------------------------------------------------------------------------
+
+
+class TrackingNotificationSink:
+    """In-memory notification sink for testing."""
+
+    name = "tracking-notification"
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def notify(self, summary: str, *, severity: str = "info", details=None) -> bool:
+        self.calls.append({"summary": summary, "severity": severity, "details": details})
+        return True
+
+
+class FailingNotificationSink(TrackingNotificationSink):
+    name = "failing-notification"
+
+    def notify(self, summary: str, *, severity: str = "info", details=None) -> bool:
+        super().notify(summary, severity=severity, details=details)
+        raise RuntimeError("webhook down")
+
+
+def test_notification_dispatched_on_action_completed(tmp_path):
+    """Notification sinks receive a message when an action completes."""
+    sink = TrackingNotificationSink()
+    plugins = PluginManager()
+    plugins.register_state_sink(CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "outbox"))]))
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_action_handler(InvestigateAction())
+    plugins.register_context_provider(StaticContext())
+    plugins.register_notification_sink(sink)
+
+    runtime = EventRuntime(plugins)
+    result = runtime.handle_alert(
+        Alert(source="test", severity=AlertSeverity.WARNING, summary="disk full on edge-01")
+    )
+
+    assert result["success"] is True
+    assert len(sink.calls) == 1
+    call = sink.calls[0]
+    assert "completed" in call["summary"]
+    assert call["severity"] == "warning"
+    assert call["details"]["alert_summary"] == "disk full on edge-01"
+    assert call["details"]["action"] == "investigate"
+
+
+def test_notification_skipped_for_log_only(tmp_path):
+    """log_only actions should not trigger notifications."""
+
+    class LogOnlyDecision(DecisionEngine):
+        name = "log-only-decision"
+
+        def decide(self, envelope):
+            return Decision(action="log_only", confidence=1.0, reasoning="not worth it")
+
+    sink = TrackingNotificationSink()
+    plugins = PluginManager()
+    plugins.register_state_sink(CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "outbox"))]))
+    plugins.register_decision_engine(LogOnlyDecision())
+    from event_runtime.defaults import LogOnlyActionHandler
+    plugins.register_action_handler(LogOnlyActionHandler())
+    plugins.register_notification_sink(sink)
+
+    runtime = EventRuntime(plugins)
+    result = runtime.handle_alert(
+        Alert(source="test", severity=AlertSeverity.WARNING, summary="minor thing")
+    )
+
+    assert result["success"] is True
+    assert result["action"] == "log_only"
+    assert len(sink.calls) == 0
+
+
+def test_notification_skipped_for_info_severity(tmp_path):
+    """INFO alerts are gated before the decision engine, so no notification."""
+    sink = TrackingNotificationSink()
+    plugins = PluginManager()
+    plugins.register_state_sink(CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "outbox"))]))
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_notification_sink(sink)
+
+    runtime = EventRuntime(plugins)
+    result = runtime.handle_alert(
+        Alert(source="test", severity=AlertSeverity.INFO, summary="info only")
+    )
+
+    assert result["status"] == "logged"
+    assert len(sink.calls) == 0
+
+
+def test_notification_failure_does_not_block_alert(tmp_path):
+    """A failing notification sink must not prevent the alert result from returning."""
+    failing = FailingNotificationSink()
+    plugins = PluginManager()
+    plugins.register_state_sink(CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "outbox"))]))
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_action_handler(InvestigateAction())
+    plugins.register_context_provider(StaticContext())
+    plugins.register_notification_sink(failing)
+
+    runtime = EventRuntime(plugins)
+    result = runtime.handle_alert(
+        Alert(source="test", severity=AlertSeverity.CRITICAL, summary="node down")
+    )
+
+    assert result["success"] is True
+    assert len(failing.calls) == 1  # notify was called before the exception
+
+
+def test_multiple_notification_sinks(tmp_path):
+    """All registered notification sinks should be called."""
+    sink_a = TrackingNotificationSink()
+    sink_b = TrackingNotificationSink()
+    sink_b.name = "tracking-notification-b"
+    plugins = PluginManager()
+    plugins.register_state_sink(CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "outbox"))]))
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_action_handler(InvestigateAction())
+    plugins.register_context_provider(StaticContext())
+    plugins.register_notification_sink(sink_a)
+    plugins.register_notification_sink(sink_b)
+
+    runtime = EventRuntime(plugins)
+    runtime.handle_alert(
+        Alert(source="test", severity=AlertSeverity.WARNING, summary="high memory")
+    )
+
+    assert len(sink_a.calls) == 1
+    assert len(sink_b.calls) == 1
+
+
+def test_should_notify_helper():
+    from event_runtime.notifications import should_notify
+
+    assert should_notify("investigate", True) is True
+    assert should_notify("open_pr", True) is True
+    assert should_notify("notify", True) is True
+    assert should_notify("comment_issue", False) is True
+    assert should_notify("log_only", True) is False
+
+
+def test_slack_notification_sink_format():
+    from event_runtime.notifications import SlackNotificationSink
+
+    # Verify message construction without hitting a real webhook
+    sink = SlackNotificationSink(webhook_url="")
+    assert sink.notify("test") is False  # no URL → False
+
+    # Instantiation sanity
+    sink2 = SlackNotificationSink(webhook_url="https://hooks.slack.com/test")
+    assert sink2.name == "slack-notification"
+
+
+def test_discord_notification_sink_format():
+    from event_runtime.notifications import DiscordNotificationSink
+
+    sink = DiscordNotificationSink(webhook_url="")
+    assert sink.notify("test") is False
+
+    sink2 = DiscordNotificationSink(webhook_url="https://discord.com/api/webhooks/test")
+    assert sink2.name == "discord-notification"
+
+
+def test_notification_details_surfaces_pr_info(tmp_path):
+    """Result details like html_url should appear in notification details."""
+
+    class PRDecision(DecisionEngine):
+        name = "pr-decision"
+
+        def decide(self, envelope):
+            return Decision(action="open_pr", confidence=1.0, reasoning="auto-fix")
+
+    class PRAction(ActionHandler):
+        name = "pr-action"
+        action_name = "open_pr"
+
+        def execute(self, request):
+            from event_runtime.models import ActionResult
+            return ActionResult(
+                action="open_pr",
+                success=True,
+                message="PR #42 created",
+                details={"html_url": "https://github.com/owner/repo/pull/42", "pr_number": 42},
+            )
+
+    sink = TrackingNotificationSink()
+    plugins = PluginManager()
+    plugins.register_state_sink(CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "outbox"))]))
+    plugins.register_decision_engine(PRDecision())
+    plugins.register_action_handler(PRAction())
+    plugins.register_notification_sink(sink)
+
+    runtime = EventRuntime(plugins)
+    runtime.handle_alert(
+        Alert(source="ci", severity=AlertSeverity.WARNING, summary="auto-fix config drift")
+    )
+
+    assert len(sink.calls) == 1
+    details = sink.calls[0]["details"]
+    assert details["action"] == "open_pr"
+    assert details["result_message"] == "PR #42 created"
+    assert details["result_details"]["html_url"] == "https://github.com/owner/repo/pull/42"
+
+
+def test_bootstrap_notification_sinks_from_config(tmp_path, monkeypatch):
+    """build_portable_runtime picks up notification sinks from config YAML."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "observability:\n"
+        "  notifications:\n"
+        "    - backend: slack\n"
+        "      webhook_url: https://hooks.slack.com/test\n"
+        "    - backend: discord\n"
+        "      webhook_url: https://discord.com/api/webhooks/test\n"
+    )
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS", "0")
+    monkeypatch.delenv("CFOP_EVENT_RUNTIME_PG_DSN", raising=False)
+    monkeypatch.delenv("CFOP_EVENT_RUNTIME_PG_ENABLED", raising=False)
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+
+    runtime = build_portable_runtime(config_path=str(config_path))
+
+    assert len(runtime.plugins.notification_sinks) == 2
+    names = [s.name for s in runtime.plugins.notification_sinks]
+    assert "slack-notification" in names
+    assert "discord-notification" in names
+
+
+def test_bootstrap_notification_sinks_from_env(tmp_path, monkeypatch):
+    """Notification sinks fall back to env vars when no config entries exist."""
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS", "0")
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "https://hooks.slack.com/env")
+    monkeypatch.delenv("CFOP_EVENT_RUNTIME_PG_DSN", raising=False)
+    monkeypatch.delenv("CFOP_EVENT_RUNTIME_PG_ENABLED", raising=False)
+    # Set to empty rather than deleting — _load_env_file uses setdefault,
+    # so a deleted var gets re-populated from .env in the repo root.
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "")
+    monkeypatch.delenv("CONFIG_PATH", raising=False)
+
+    runtime = build_portable_runtime()
+
+    assert len(runtime.plugins.notification_sinks) == 1
+    assert runtime.plugins.notification_sinks[0].name == "slack-notification"

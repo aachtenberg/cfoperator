@@ -14,6 +14,7 @@ from .models import (
     ScheduledTask,
     SinkHealth,
 )
+from .notifications import DiscordNotificationSink, SlackNotificationSink
 from .plugin_manager import PluginManager
 from .telemetry import render_metrics, telemetry_available
 from .worker import BackgroundAlertWorker
@@ -25,6 +26,7 @@ __all__ = [
     "AlertSeverity",
     "ContextEnvelope",
     "Decision",
+    "DiscordNotificationSink",
     "DomainEvent",
     "EventRuntime",
     "HostObservation",
@@ -33,6 +35,7 @@ __all__ = [
     "render_metrics",
     "ScheduledTask",
     "SinkHealth",
+    "SlackNotificationSink",
     "telemetry_available",
     "BackgroundAlertWorker",
 ]

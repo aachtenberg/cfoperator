@@ -93,6 +93,14 @@ class Scheduler(RuntimePlugin):
         """Create or update a scheduled task."""
 
 
+class NotificationSink(RuntimePlugin):
+    """Plugin that delivers outbound notifications when actions complete."""
+
+    @abstractmethod
+    def notify(self, summary: str, *, severity: str = "info", details: Dict | None = None) -> bool:
+        """Send a notification message.  Return True on success."""
+
+
 class StateSink(RuntimePlugin):
     """Plugin that persists domain events and exposes health."""
 

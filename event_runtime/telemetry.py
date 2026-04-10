@@ -140,6 +140,11 @@ if PROMETHEUS_AVAILABLE:
         "Host observation attempts by provider and result.",
         ["provider", "result"],
     )
+    NOTIFICATIONS_SENT = Counter(
+        "cfoperator_event_runtime_notifications_sent_total",
+        "Notification delivery attempts by sink and result.",
+        ["sink", "result"],
+    )
 else:
     RUNTIME_INFO = None
     RUNTIME_UP = None
@@ -269,6 +274,14 @@ def observe_host_observation(provider: object, result: object) -> None:
         provider=_sanitize_label(provider, "unknown"),
         result=_sanitize_label(result, "unknown"),
     ).inc()
+
+
+def observe_notification(sink: object, result: object) -> None:
+    if PROMETHEUS_AVAILABLE:
+        NOTIFICATIONS_SENT.labels(
+            sink=_sanitize_label(sink, "unknown"),
+            result=_sanitize_label(result, "unknown"),
+        ).inc()
 
 
 def render_metrics() -> tuple[bytes, str]:

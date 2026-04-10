@@ -16,6 +16,7 @@ from .defaults import (
 )
 from .git_context import GitChangeContextProvider
 from .github_actions import build_github_action_handlers
+from .notifications import SlackNotificationSink, DiscordNotificationSink
 from .sources import AlertmanagerAlertSource
 from .engine import EventRuntime
 from .plugin_manager import PluginManager
@@ -81,6 +82,10 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
         ).values():
             plugins.register_action_handler(handler)
 
+    # Notification sinks (from observability.notifications config or env vars)
+    for sink in _build_notification_sinks(config_path):
+        plugins.register_notification_sink(sink)
+
     alertmanager_url = os.getenv("CFOP_EVENT_RUNTIME_ALERTMANAGER_URL", "").strip()
     if alertmanager_url:
         plugins.register_alert_source(AlertmanagerAlertSource(url=alertmanager_url))
@@ -107,6 +112,52 @@ def build_portable_worker(
         max_terminal_jobs=max_terminal_jobs,
         state=FileBackedWorkerState(queue_path),
     )
+
+
+def _build_notification_sinks(config_path: str | None = None) -> list:
+    """Build notification sinks from config or environment variables.
+
+    Reads ``observability.notifications`` from the YAML config (same block
+    the agent uses) and falls back to ``SLACK_WEBHOOK_URL`` /
+    ``DISCORD_WEBHOOK_URL`` environment variables.
+    """
+    import logging as _logging
+
+    _log = _logging.getLogger(__name__)
+    _load_env_file(config_path)
+
+    sinks: list = []
+    cfg = _load_root_config(config_path)
+    notifications_cfg = (cfg.get("observability") or {}).get("notifications") or []
+
+    for entry in notifications_cfg:
+        backend = str(entry.get("backend") or "").lower()
+        webhook = str(entry.get("webhook_url") or "").strip()
+        if backend == "slack":
+            if not webhook:
+                _log.info("Slack notification sink skipped (no webhook URL)")
+                continue
+            sinks.append(SlackNotificationSink(webhook_url=webhook))
+            _log.info("Initialized Slack notification sink")
+        elif backend == "discord":
+            if not webhook:
+                _log.info("Discord notification sink skipped (no webhook URL)")
+                continue
+            sinks.append(DiscordNotificationSink(webhook_url=webhook))
+            _log.info("Initialized Discord notification sink")
+
+    # Fallback: env vars when no config entries matched
+    if not sinks:
+        slack_url = os.getenv("SLACK_WEBHOOK_URL", "").strip()
+        if slack_url:
+            sinks.append(SlackNotificationSink(webhook_url=slack_url))
+            _log.info("Initialized Slack notification sink from SLACK_WEBHOOK_URL")
+        discord_url = os.getenv("DISCORD_WEBHOOK_URL", "").strip()
+        if discord_url:
+            sinks.append(DiscordNotificationSink(webhook_url=discord_url))
+            _log.info("Initialized Discord notification sink from DISCORD_WEBHOOK_URL")
+
+    return sinks
 
 
 def _load_git_repos(config_path: str | None = None) -> list[dict]:

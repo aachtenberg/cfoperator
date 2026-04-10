@@ -12,6 +12,7 @@ from .plugins import (
     ContextProvider,
     DecisionEngine,
     HostObservabilityProvider,
+    NotificationSink,
     Scheduler,
     StateSink,
 )
@@ -26,6 +27,7 @@ class PluginManager:
     host_observability_providers: List[HostObservabilityProvider] = field(default_factory=list)
     context_providers: List[ContextProvider] = field(default_factory=list)
     action_handlers: Dict[str, ActionHandler] = field(default_factory=dict)
+    notification_sinks: List[NotificationSink] = field(default_factory=list)
     schedulers: List[Scheduler] = field(default_factory=list)
     decision_engine: Optional[DecisionEngine] = None
     state_sink: Optional[StateSink] = None
@@ -44,6 +46,9 @@ class PluginManager:
 
     def register_action_handler(self, plugin: ActionHandler) -> None:
         self.action_handlers[plugin.action_name] = plugin
+
+    def register_notification_sink(self, plugin: NotificationSink) -> None:
+        self.notification_sinks.append(plugin)
 
     def register_scheduler(self, plugin: Scheduler) -> None:
         self.schedulers.append(plugin)
@@ -65,6 +70,8 @@ class PluginManager:
             plugin.start()
         for plugin in self.action_handlers.values():
             plugin.start()
+        for plugin in self.notification_sinks:
+            plugin.start()
         for plugin in self.schedulers:
             plugin.start()
         if self.decision_engine:
@@ -80,6 +87,8 @@ class PluginManager:
         for plugin in self.schedulers:
             plugin.stop()
         for plugin in self.action_handlers.values():
+            plugin.stop()
+        for plugin in self.notification_sinks:
             plugin.stop()
         for plugin in self.context_providers:
             plugin.stop()
