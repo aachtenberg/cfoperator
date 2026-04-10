@@ -2,6 +2,8 @@
 
 Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure intelligence.
 
+An additional dashboard for the modular event runtime lives in [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, and runtime error paths.
+
 ## Dashboard Features
 
 ### Top Row - Key Metrics (Stats)
@@ -142,6 +144,7 @@ Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure inte
 ```bash
 cd grafana
 ./upload-dashboard.sh
+./upload-dashboard.sh CFOperator event-runtime-dashboard.json
 ```
 
 This will:
@@ -158,6 +161,8 @@ This will:
 3. Click **Upload JSON file**
 4. Select `cfoperator-dashboard.json`
 5. Click **Import**
+
+For the event runtime dashboard, select `event-runtime-dashboard.json` instead.
 
 ### Option 3: Import via API
 

@@ -5,7 +5,16 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Dict, Iterable, List, Tuple
 
-from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision, ScheduledTask
+from .models import (
+    ActionRequest,
+    ActionResult,
+    Alert,
+    ContextEnvelope,
+    Decision,
+    HostObservation,
+    HostTarget,
+    ScheduledTask,
+)
 
 
 class RuntimePlugin(ABC):
@@ -44,6 +53,18 @@ class ContextProvider(RuntimePlugin):
     @abstractmethod
     def provide(self, alert: Alert, envelope: ContextEnvelope) -> ContextEnvelope:
         """Extend the provided context envelope."""
+
+
+class HostObservabilityProvider(RuntimePlugin):
+    """Plugin that discovers and collects bare-metal host OS stats."""
+
+    def discover_targets(self) -> List[HostTarget]:
+        """Return the host targets this provider can inspect."""
+        return []
+
+    @abstractmethod
+    def collect(self, target: HostTarget) -> HostObservation | None:
+        """Collect an observation for the provided host target."""
 
 
 class DecisionEngine(RuntimePlugin):

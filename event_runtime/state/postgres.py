@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import List, Optional
 
 from .base import BaseStateSink
+
+
+logger = logging.getLogger(__name__)
 
 
 class PostgresStateSink(BaseStateSink):
@@ -32,16 +36,17 @@ class PostgresStateSink(BaseStateSink):
             return True
 
         try:
-            psycopg2, extras = self._load_driver()
+            psycopg2, extras, sql = self._load_driver()
             self._ensure_schema()
+            query = sql.SQL(
+                "INSERT INTO {} (event_id, created_at, event_type, payload) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (event_id) DO NOTHING"
+            ).format(sql.Identifier(self.table_name))
             with psycopg2.connect(self.dsn) as conn:
                 with conn.cursor() as cur:
                     cur.executemany(
-                        (
-                            f"INSERT INTO {self.table_name} (event_id, created_at, event_type, payload) "
-                            "VALUES (%s, %s, %s, %s) "
-                            "ON CONFLICT (event_id) DO NOTHING"
-                        ),
+                        query,
                         [
                             (
                                 event["event_id"],
@@ -56,23 +61,22 @@ class PostgresStateSink(BaseStateSink):
             return True
         except Exception as exc:
             self._last_error = str(exc)
+            logger.warning("Failed to append events to PostgreSQL sink %s: %s", self.table_name, exc)
             return False
 
     def recent(self, limit: int = 50) -> List[dict]:
         if not self.dsn:
             return []
         try:
-            psycopg2, _ = self._load_driver()
+            psycopg2, _extras, sql = self._load_driver()
             self._ensure_schema()
+            query = sql.SQL(
+                "SELECT event_id, created_at, event_type, payload "
+                "FROM {} ORDER BY created_at DESC LIMIT %s"
+            ).format(sql.Identifier(self.table_name))
             with psycopg2.connect(self.dsn) as conn:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        (
-                            f"SELECT event_id, created_at, event_type, payload "
-                            f"FROM {self.table_name} ORDER BY created_at DESC LIMIT %s"
-                        ),
-                        (limit,),
-                    )
+                    cur.execute(query, (limit,))
                     rows = cur.fetchall()
             self._last_error = None
             return [
@@ -86,6 +90,7 @@ class PostgresStateSink(BaseStateSink):
             ]
         except Exception as exc:
             self._last_error = str(exc)
+            logger.warning("Failed to read recent events from PostgreSQL sink %s: %s", self.table_name, exc)
             return []
 
     def health(self) -> dict:
@@ -106,21 +111,28 @@ class PostgresStateSink(BaseStateSink):
     def _ensure_schema(self) -> None:
         if self._schema_ready or not self.dsn:
             return
-        psycopg2, _ = self._load_driver()
+        psycopg2, _extras, sql = self._load_driver()
+        table_identifier = sql.Identifier(self.table_name)
+        index_identifier = sql.Identifier(f"idx_{self.table_name}_created_at")
         with psycopg2.connect(self.dsn) as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"""
-                    CREATE TABLE IF NOT EXISTS {self.table_name} (
+                    sql.SQL(
+                        """
+                    CREATE TABLE IF NOT EXISTS {} (
                         event_id TEXT PRIMARY KEY,
                         created_at TIMESTAMPTZ NOT NULL,
                         event_type TEXT NOT NULL,
                         payload JSONB NOT NULL
                     )
                     """
+                    ).format(table_identifier)
                 )
                 cur.execute(
-                    f"CREATE INDEX IF NOT EXISTS idx_{self.table_name}_created_at ON {self.table_name} (created_at DESC)"
+                    sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (created_at DESC)").format(
+                        index_identifier,
+                        table_identifier,
+                    )
                 )
         self._schema_ready = True
         self._last_error = None
@@ -128,6 +140,6 @@ class PostgresStateSink(BaseStateSink):
     @staticmethod
     def _load_driver():
         import psycopg2
-        from psycopg2 import extras
+        from psycopg2 import extras, sql
 
-        return psycopg2, extras
+        return psycopg2, extras, sql

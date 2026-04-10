@@ -1,8 +1,8 @@
 #!/bin/bash
 set -e
 
-# Upload CFOperator dashboard to Grafana Cloud
-# Usage: ./upload-dashboard.sh [folder-name]
+# Upload a CFOperator dashboard to Grafana Cloud
+# Usage: ./upload-dashboard.sh [folder-name] [dashboard-file]
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &> /dev/null && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
@@ -11,7 +11,12 @@ SECRETS_FILE="${REPO_DIR}/secrets/.env.secrets"
 if [[ ! -f "$SECRETS_FILE" ]]; then
     SECRETS_FILE="$HOME/.config/cfoperator/.env.secrets"
 fi
-DASHBOARD_FILE="$SCRIPT_DIR/cfoperator-dashboard.json"
+DASHBOARD_INPUT="${2:-cfoperator-dashboard.json}"
+if [[ "$DASHBOARD_INPUT" = /* ]]; then
+    DASHBOARD_FILE="$DASHBOARD_INPUT"
+else
+    DASHBOARD_FILE="$SCRIPT_DIR/$DASHBOARD_INPUT"
+fi
 
 # Load environment variables
 if [[ ! -f "$SECRETS_FILE" ]]; then
@@ -35,26 +40,35 @@ fi
 
 FOLDER_NAME="${1:-CFOperator}"
 
-# Ensure PostgreSQL datasource for sweep reports exists
-SRE_PG_UID="${SRE_PG_DATASOURCE_UID:-ffcrf4dsqchz4e}"
-echo "🔌 Checking sre-knowledge PostgreSQL datasource (uid: $SRE_PG_UID)..."
-DS_CHECK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRAFANA_CLOUD_API_KEY" \
-    "$GRAFANA_CLOUD_URL/api/datasources/uid/$SRE_PG_UID")
+REQUIRE_PG_DATASOURCE="false"
+if [[ "$(basename "$DASHBOARD_FILE")" == "cfoperator-dashboard.json" ]]; then
+    REQUIRE_PG_DATASOURCE="true"
+fi
 
-if [[ "$DS_CHECK" == "200" ]]; then
-    echo "✓ Datasource exists"
+if [[ "$REQUIRE_PG_DATASOURCE" == "true" ]]; then
+    # Ensure PostgreSQL datasource for sweep reports exists
+    SRE_PG_UID="${SRE_PG_DATASOURCE_UID:-ffcrf4dsqchz4e}"
+    echo "🔌 Checking sre-knowledge PostgreSQL datasource (uid: $SRE_PG_UID)..."
+    DS_CHECK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRAFANA_CLOUD_API_KEY" \
+        "$GRAFANA_CLOUD_URL/api/datasources/uid/$SRE_PG_UID")
+
+    if [[ "$DS_CHECK" == "200" ]]; then
+        echo "✓ Datasource exists"
+    else
+        echo "⚠️  sre-knowledge PostgreSQL datasource not found (uid: $SRE_PG_UID)"
+        echo "   Create in Grafana UI: Connections → Add data source → PostgreSQL"
+        echo "   Host: <your-db-host>:5434 | DB: sre_knowledge | User: sre_agent"
+        echo "   Enable PDC proxy | SSL: disable"
+        echo "   Then set SRE_PG_DATASOURCE_UID in .env.secrets to match the new UID"
+    fi
 else
-    echo "⚠️  sre-knowledge PostgreSQL datasource not found (uid: $SRE_PG_UID)"
-    echo "   Create in Grafana UI: Connections → Add data source → PostgreSQL"
-    echo "   Host: <your-db-host>:5434 | DB: sre_knowledge | User: sre_agent"
-    echo "   Enable PDC proxy | SSL: disable"
-    echo "   Then set SRE_PG_DATASOURCE_UID in .env.secrets to match the new UID"
+    echo "ℹ️  Skipping PostgreSQL datasource check for $(basename "$DASHBOARD_FILE")"
 fi
 
 echo ""
-echo "📊 Uploading CFOperator dashboard to Grafana Cloud..."
+echo "📊 Uploading dashboard to Grafana Cloud..."
 echo "   Instance: $GRAFANA_CLOUD_URL"
-echo "   Dashboard: cfoperator-dashboard.json"
+echo "   Dashboard: $(basename "$DASHBOARD_FILE")"
 echo "   Folder: $FOLDER_NAME"
 echo ""
 
@@ -106,7 +120,7 @@ API_PAYLOAD=$(jq -n \
         dashboard: ($dashboard | .id = null),
         folderUid: (if $folderUid != "" then $folderUid else null end),
         overwrite: true,
-        message: "CFOperator v1.0.8 - Correlation analysis, notifications, embedding metrics"
+        message: "CFOperator dashboard upload via script"
     }')
 
 # Create/update dashboard
@@ -123,17 +137,11 @@ DASH_UID=$(echo "$RESPONSE" | jq -r '.uid // empty')
 
 if [[ "$STATUS" == "success" ]] && [[ -n "$URL" ]]; then
     echo ""
-    echo "✅ CFOperator dashboard uploaded successfully!"
+    echo "✅ Dashboard uploaded successfully!"
     echo "   UID: $DASH_UID"
     echo "   URL: $GRAFANA_CLOUD_URL$URL"
     echo ""
-    echo "Dashboard includes:"
-    echo "   • Key metrics (uptime, hosts, containers, error rate)"
-    echo "   • LLM observability (requests, tokens, latency, fallbacks)"
-    echo "   • OODA loop activity and tool usage"
-    echo "   • Infrastructure health (CPU, memory by host)"
-    echo "   • Sweep findings & recommendations (PostgreSQL)"
-    echo "   • Comprehensive log panels (7 specialized views)"
+    echo "Dashboard file: $(basename "$DASHBOARD_FILE")"
     echo ""
 else
     echo ""

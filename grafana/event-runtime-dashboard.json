@@ -1,0 +1,342 @@
+{
+  "uid": "cfoperator-event-runtime",
+  "title": "CFOperator Event Runtime",
+  "tags": ["cfoperator", "event-runtime", "prometheus"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {
+          "selected": true,
+          "text": "prometheus",
+          "value": "prometheus"
+        }
+      },
+      {
+        "name": "loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {
+          "selected": true,
+          "text": "Loki",
+          "value": "Loki"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Runtime Up",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "max(cfoperator_event_runtime_up)", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "justifyMode": "center"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Alerts / Minute",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum(rate(cfoperator_event_runtime_alerts_received_total[5m])) * 60", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area", "justifyMode": "center"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Queue Depth",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "max(cfoperator_event_runtime_queue_size)", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area", "justifyMode": "center"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Oldest Queued Age",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "max(cfoperator_event_runtime_queue_oldest_age_seconds)", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "s"}},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "area", "justifyMode": "center"}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Alert Outcomes",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (status) (rate(cfoperator_event_runtime_alert_results_total[5m]))", "legendFormat": "{{status}}", "refId": "A"}]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "P95 Alert Processing Latency",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "histogram_quantile(0.95, sum by (le) (rate(cfoperator_event_runtime_alert_processing_seconds_bucket[5m])))", "refId": "A"}],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Tracked Jobs By State",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (status) (cfoperator_event_runtime_jobs)", "legendFormat": "{{status}}", "refId": "A"}]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Queue Wait And Processing P95",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(cfoperator_event_runtime_queue_wait_seconds_bucket[5m])))", "legendFormat": "queue wait p95", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le) (rate(cfoperator_event_runtime_queue_processing_seconds_bucket[5m])))", "legendFormat": "processing p95", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "s"}}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Queue Rejections",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 20},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum(rate(cfoperator_event_runtime_queue_rejected_total[5m]))", "refId": "A"}]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Replay Attempts By Sink",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 20},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (sink, result) (rate(cfoperator_event_runtime_replay_attempts_total[5m]))", "legendFormat": "{{sink}} {{result}}", "refId": "A"}]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Replayed Events By Sink",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 20},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (sink, result) (rate(cfoperator_event_runtime_replay_events_total[5m]))", "legendFormat": "{{sink}} {{result}}", "refId": "A"}]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Recorded Event Types",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 28},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (event_type) (rate(cfoperator_event_runtime_events_recorded_total[5m]))", "legendFormat": "{{event_type}}", "refId": "A"}]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Host Observability",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 36},
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Host Discovery Runs",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 37},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (provider, result) (rate(cfoperator_event_runtime_host_discovery_runs_total[5m]))", "legendFormat": "{{provider}} {{result}}", "refId": "A"}]
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Discovered Targets",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 37},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (provider) (cfoperator_event_runtime_host_discovered_targets)", "legendFormat": "{{provider}}", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "graphMode": "none", "justifyMode": "auto", "textMode": "auto"}
+    },
+    {
+      "id": 23,
+      "type": "timeseries",
+      "title": "Host Observation Runs",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 37},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (provider, result) (rate(cfoperator_event_runtime_host_observation_runs_total[5m]))", "legendFormat": "{{provider}} {{result}}", "refId": "A"}]
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "K3s Cluster",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 45},
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "type": "table",
+      "title": "Node Conditions",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 46},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "kube_node_status_condition{status=\"true\",condition=~\"Ready|MemoryPressure|DiskPressure|PIDPressure\"}", "format": "table", "instant": true, "refId": "A"}],
+      "transformations": [
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["node", "condition", "Value"]}}},
+        {"id": "organize", "options": {"renameByName": {"Value": "Active"}}}
+      ]
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Pod Count By Node",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 46},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "count by (node) (kube_pod_info)", "legendFormat": "{{node}}", "refId": "A"}]
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "CPU Usage vs Allocatable By Node",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 54},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "sum by (node) (rate(container_cpu_usage_seconds_total{container!=\"\"}[5m]))", "legendFormat": "{{node}} usage", "refId": "A"},
+        {"expr": "kube_node_status_allocatable{resource=\"cpu\"}", "legendFormat": "{{node}} allocatable", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"fillOpacity": 10}}}
+    },
+    {
+      "id": 34,
+      "type": "timeseries",
+      "title": "Memory Usage vs Allocatable By Node",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 54},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [
+        {"expr": "sum by (node) (container_memory_working_set_bytes{container!=\"\"})", "legendFormat": "{{node}} usage", "refId": "A"},
+        {"expr": "kube_node_status_allocatable{resource=\"memory\"}", "legendFormat": "{{node}} allocatable", "refId": "B"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"fillOpacity": 10}}}
+    },
+    {
+      "id": 35,
+      "type": "timeseries",
+      "title": "Container Restarts By Namespace",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 62},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (namespace) (increase(kube_pod_container_status_restarts_total[1h]))", "legendFormat": "{{namespace}}", "refId": "A"}]
+    },
+    {
+      "id": 36,
+      "type": "bargauge",
+      "title": "Top 10 Restarting Pods (1h)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 62},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "topk(10, sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[1h])) > 0)", "legendFormat": "{{namespace}}/{{pod}}", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "orientation": "horizontal", "displayMode": "gradient"}
+    },
+    {
+      "id": 37,
+      "type": "stat",
+      "title": "Pods Not Ready",
+      "gridPos": {"h": 4, "w": 8, "x": 0, "y": 70},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "count(kube_pod_status_phase{phase=~\"Pending|Failed|Unknown\"} == 1) or vector(0)", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "justifyMode": "center"},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}}
+    },
+    {
+      "id": 38,
+      "type": "stat",
+      "title": "Nodes Not Ready",
+      "gridPos": {"h": 4, "w": 8, "x": 8, "y": 70},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "count(kube_node_status_condition{condition=\"Ready\",status=\"true\"} == 0) or vector(0)", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background", "graphMode": "none", "justifyMode": "center"},
+      "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+    },
+    {
+      "id": 39,
+      "type": "timeseries",
+      "title": "Pod Phases By Node",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 70},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "count by (node, phase) (kube_pod_status_phase{phase=~\"Running|Pending|Failed\"} == 1)", "legendFormat": "{{node}} {{phase}}", "refId": "A"}]
+    },
+    {
+      "id": 50,
+      "type": "row",
+      "title": "Logs",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 78},
+      "collapsed": false
+    },
+    {
+      "id": 51,
+      "type": "logs",
+      "title": "CFOperator Logs",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 79},
+      "datasource": {"type": "loki", "uid": "${loki}"},
+      "targets": [{"expr": "{namespace=\"apps\",container=\"cfoperator\"}", "refId": "A"}],
+      "options": {"showTime": true, "showLabels": false, "showCommonLabels": false, "wrapLogMessage": true, "prettifyLogMessage": false, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"}
+    },
+    {
+      "id": 52,
+      "type": "logs",
+      "title": "K3s System Events",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 91},
+      "datasource": {"type": "loki", "uid": "${loki}"},
+      "targets": [{"expr": "{namespace=\"monitoring\"} |~ \"(?i)error|warning|fail|crash|oom|restart\"", "refId": "A"}],
+      "options": {"showTime": true, "showLabels": true, "showCommonLabels": false, "wrapLogMessage": true, "prettifyLogMessage": false, "enableLogDetails": true, "sortOrder": "Descending", "dedupStrategy": "none"}
+    },
+    {
+      "id": 60,
+      "type": "row",
+      "title": "Audit Trail",
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 103},
+      "collapsed": false
+    },
+    {
+      "id": 61,
+      "type": "timeseries",
+      "title": "Decision Rate By Action",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 104},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (action) (rate(cfoperator_event_runtime_decisions_total[5m]))", "legendFormat": "{{action}}", "refId": "A"}]
+    },
+    {
+      "id": 62,
+      "type": "table",
+      "title": "Outcomes By Action (1h)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 104},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (action, status) (increase(cfoperator_event_runtime_alert_results_total[1h]))", "format": "table", "instant": true, "refId": "A"}],
+      "transformations": [
+        {"id": "filterFieldsByName", "options": {"include": {"names": ["action", "status", "Value"]}}},
+        {"id": "organize", "options": {"renameByName": {"Value": "Count"}}}
+      ]
+    },
+    {
+      "id": 63,
+      "type": "timeseries",
+      "title": "Suppressed And Logged Alerts",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 112},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "sum by (status) (rate(cfoperator_event_runtime_alert_results_total{status=~\"suppressed|logged\"}[5m]))", "legendFormat": "{{status}}", "refId": "A"}]
+    },
+    {
+      "id": 64,
+      "type": "bargauge",
+      "title": "Completed Actions (1h)",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 112},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "targets": [{"expr": "topk(10, sum by (action) (increase(cfoperator_event_runtime_alert_results_total{status=\"completed\"}[1h])))", "legendFormat": "{{action}}", "refId": "A"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "orientation": "horizontal", "displayMode": "gradient"}
+    }
+  ]
+}

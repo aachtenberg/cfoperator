@@ -18,6 +18,8 @@ import requests as _requests
 from .ssh import SSHTools
 from .discovery import DiscoveryTools
 from .k8s import K8sTools
+from .git import GitTools
+from .github import GitHubTools
 
 logger = logging.getLogger("cfoperator.tools")
 
@@ -57,6 +59,31 @@ class ToolRegistry:
             context=k8s_config.get('context')
         )
         logger.info("K8s tools initialized")
+
+        # Initialize GitHub API tools (primary — repos typically aren't cloned
+        # on deployed machines, so the GitHub API is the default path).
+        git_config = operator.config.get('git', {})
+        repos_config = git_config.get('repos', [])
+        github_config = git_config.get('github', {})
+        github_token = github_config.get('token', '').strip()
+        if github_token and repos_config:
+            self.github_tools = GitHubTools(
+                token=github_token,
+                api_url=github_config.get('api_url', 'https://api.github.com'),
+                repos_config=repos_config,
+            )
+            logger.info("GitHub tools initialized (primary code investigation path)")
+        else:
+            self.github_tools = None
+
+        # Initialize local Git tools (optional supplement — only useful when
+        # a repo clone exists on the host or is SSH-accessible).
+        has_local_paths = any(r.get("path") for r in repos_config)
+        if repos_config and has_local_paths:
+            self.git_tools = GitTools(repos_config)
+            logger.info(f"Local git tools initialized for {len(repos_config)} repos")
+        else:
+            self.git_tools = None
 
         # Register all tools
         self._register_tools()
@@ -197,6 +224,24 @@ class ToolRegistry:
                 tool_name = schema['name']
                 self.tools[tool_name] = {
                     'function': self._make_k8s_tool_wrapper(tool_name),
+                    'schema': schema
+                }
+
+        # Git tools for code-change investigation
+        if self.git_tools:
+            for schema in self.git_tools.get_schemas():
+                tool_name = schema['name']
+                self.tools[tool_name] = {
+                    'function': self._make_git_tool_wrapper(tool_name),
+                    'schema': schema
+                }
+
+        # GitHub API tools for PR/issue operations
+        if self.github_tools:
+            for schema in self.github_tools.get_schemas():
+                tool_name = schema['name']
+                self.tools[tool_name] = {
+                    'function': self._make_github_tool_wrapper(tool_name),
                     'schema': schema
                 }
 
@@ -502,8 +547,13 @@ class ToolRegistry:
         except Exception as e:
             return {'error': str(e)}
 
-    def _loki_query(self, query: str, limit: int = 100, since: str = '1h') -> Dict[str, Any]:
+    def _loki_query(self, query: str = None, limit: int = 100, since: str = '1h', expr: str = None) -> Dict[str, Any]:
         """Query Loki logs with input validation."""
+        # Accept 'expr' as alias for 'query' (LLMs often use Prometheus naming)
+        if query is None and expr is not None:
+            query = expr
+        if not query:
+            return {'error': 'Missing required parameter: query'}
         if not self.operator.logs:
             return {'error': 'Loki backend not configured'}
 
@@ -822,6 +872,54 @@ class ToolRegistry:
             return lambda **kwargs: {'error': f'Unknown K8s tool: {tool_name}'}
 
         method = getattr(self.k8s_tools, method_name)
+
+        def wrapper(**kwargs):
+            try:
+                return method(**kwargs)
+            except Exception as e:
+                return {'error': str(e), 'tool': tool_name}
+
+        return wrapper
+
+    def _make_git_tool_wrapper(self, tool_name: str):
+        """Create wrapper function for Git tools."""
+        method_map = {
+            'git_recent_commits': 'recent_commits',
+            'git_diff_summary': 'diff_summary',
+            'git_show_file': 'show_file',
+            'git_blame': 'blame',
+            'git_log_path': 'log_path',
+        }
+        method_name = method_map.get(tool_name)
+        if not method_name:
+            return lambda **kwargs: {'error': f'Unknown git tool: {tool_name}'}
+        method = getattr(self.git_tools, method_name)
+
+        def wrapper(**kwargs):
+            try:
+                return method(**kwargs)
+            except Exception as e:
+                return {'error': str(e), 'tool': tool_name}
+
+        return wrapper
+
+    def _make_github_tool_wrapper(self, tool_name: str):
+        """Create wrapper function for GitHub API tools."""
+        method_map = {
+            'github_list_recent_prs': 'list_recent_prs',
+            'github_get_pr': 'get_pr',
+            'github_list_recent_commits': 'list_recent_commits',
+            'github_get_issue': 'get_issue',
+            'github_search_issues': 'search_issues',
+            'github_get_file_contents': 'get_file_contents',
+            'github_compare_commits': 'compare_commits',
+            'github_create_pr': 'create_pr',
+            'github_create_issue_comment': 'create_issue_comment',
+        }
+        method_name = method_map.get(tool_name)
+        if not method_name:
+            return lambda **kwargs: {'error': f'Unknown GitHub tool: {tool_name}'}
+        method = getattr(self.github_tools, method_name)
 
         def wrapper(**kwargs):
             try:

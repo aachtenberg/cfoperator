@@ -128,6 +128,9 @@ class CFOperator:
             settings_getter=self._get_agent_settings
         )
 
+        # LLM request timeout (generous default for cold model loads)
+        self.llm_timeout = self.config.get('llm', {}).get('primary', {}).get('timeout', 180)
+
         # Initialize embeddings service for vector search
         embedding_config = self.config.get('llm', {}).get('embeddings', {})
         self.embeddings = EmbeddingService(
@@ -194,6 +197,7 @@ class CFOperator:
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file."""
+        self._load_env_file(config_path)
         if not os.path.exists(config_path):
             logger.warning(f"Config file {config_path} not found, using defaults")
             return self._default_config()
@@ -204,6 +208,24 @@ class CFOperator:
         # Expand environment variables
         config = self._expand_env_vars(config)
         return config
+
+    def _load_env_file(self, config_path: str) -> None:
+        """Load a colocated .env file so config.yaml placeholders resolve consistently."""
+        config_dir = Path(config_path).expanduser().resolve().parent
+        env_path = config_dir / ".env"
+        if env_path.exists():
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                value = value.strip()
+                if value and value[0] == value[-1] and value[0] in {'"', "'"}:
+                    value = value[1:-1]
+                os.environ.setdefault(key, value)
 
     def _expand_env_vars(self, config: Any) -> Any:
         """Recursively expand ${VAR} references in config."""
@@ -756,6 +778,13 @@ When done, provide a summary of findings and whether the issue is resolved, need
         # 6b. LLM judge — filter hallucinated/unsupported findings
         findings = self._verify_findings(findings)
 
+        # 6c. Post findings to event runtime (if configured)
+        if findings:
+            try:
+                self._post_findings_to_event_runtime(findings)
+            except Exception as e:
+                logger.debug(f"Could not post findings to event runtime: {e}")
+
         # 7. Generate sweep report
         if findings:
             logger.info(f"Sweep found {len(findings)} total issues")
@@ -940,7 +969,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     'temperature': 0.3,
                     'format': 'json'
                 }
-                resp = req.post(f"{url}/api/chat", json=payload, timeout=90)
+                resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
                 text = resp.json().get('message', {}).get('content', '')
             elif provider_type == 'groq':
                 api_key = os.getenv('GROQ_API_KEY', '')
@@ -1622,7 +1651,7 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                     'temperature': 0.3,
                     'format': 'json'
                 }
-                resp = req.post(f"{url}/api/chat", json=payload, timeout=60)
+                resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
                 data = resp.json()
                 text = data.get('message', {}).get('content', '')
             elif provider_type == 'groq':
@@ -1901,11 +1930,11 @@ Only return the JSON array, no other text."""
         try:
             if self.metrics:
                 # Node resource usage
-                cpu_result = self.metrics.query('100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle",job="kubernetes-nodes"}[5m])) * 100)')
+                cpu_result = self.metrics.query('100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle",job="node"}[5m])) * 100)')
                 if cpu_result:
                     snapshot['node_cpu_percent'] = {r['metric'].get('instance', '?'): round(float(r['value'][1]), 1) for r in cpu_result}
 
-                mem_result = self.metrics.query('(1 - node_memory_MemAvailable_bytes{job="kubernetes-nodes"} / node_memory_MemTotal_bytes{job="kubernetes-nodes"}) * 100')
+                mem_result = self.metrics.query('(1 - node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"}) * 100')
                 if mem_result:
                     snapshot['node_memory_percent'] = {r['metric'].get('instance', '?'): round(float(r['value'][1]), 1) for r in mem_result}
 
@@ -1952,6 +1981,41 @@ Only return the JSON array, no other text."""
                 'sweep_model': sweep_model or 'default',
             }
         }
+
+    def _post_findings_to_event_runtime(self, findings: List[Dict[str, Any]]) -> None:
+        """Post sweep findings as alerts to the event runtime if configured."""
+        url = os.getenv("CFOP_EVENT_RUNTIME_URL", "").strip()
+        if not url:
+            return
+        from urllib.request import Request, urlopen
+        from urllib.error import URLError
+        endpoint = f"{url.rstrip('/')}/alert?mode=async"
+        for finding in findings:
+            severity = str(finding.get("severity") or "info").lower()
+            if severity not in ("info", "warning", "critical"):
+                severity = "warning"
+            payload = {
+                "source": "cfoperator-sweep",
+                "severity": severity,
+                "summary": str(finding.get("finding") or finding.get("summary") or "sweep finding"),
+                "namespace": finding.get("namespace"),
+                "resource_type": finding.get("resource_type"),
+                "resource_name": finding.get("resource_name") or finding.get("resource"),
+                "details": {
+                    "category": finding.get("category"),
+                    "remediation": finding.get("remediation"),
+                    "evidence": finding.get("evidence"),
+                    "sweep_source": finding.get("source"),
+                },
+            }
+            body = json.dumps(payload, default=str).encode("utf-8")
+            try:
+                req = Request(endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST")
+                with urlopen(req, timeout=5) as resp:
+                    resp.read()
+            except (URLError, TimeoutError, OSError) as exc:
+                logger.debug(f"Failed to post finding to event runtime: {exc}")
+                return  # Stop trying on first failure
 
     def _notify_sweep_findings(self, report: Dict[str, Any]):
         """Send notifications for sweep findings and record in history."""
@@ -2246,7 +2310,7 @@ Only return the JSON array, no other text."""
                         f"{url}/api/chat",
                         json=payload,
                         headers=headers,
-                        timeout=120
+                        timeout=self.llm_timeout
                     )
                     data = response.json()
                     logger.debug(f"[CHAT] LLM status={response.status_code}, tool_calls={bool(data.get('message', {}).get('tool_calls'))}, content_len={len(data.get('message', {}).get('content', ''))}")
@@ -2617,7 +2681,7 @@ Only return the JSON array, no other text."""
                     f"{url}/api/chat",
                     json=payload,
                     headers={'Content-Type': 'application/json'},
-                    timeout=120
+                    timeout=self.llm_timeout
                 )
                 data = response.json()
                 total_input_tokens += data.get('prompt_eval_count', 0)

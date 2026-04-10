@@ -48,6 +48,7 @@ llm:
     provider: ollama
     url: http://localhost:11434
     model: qwen3:14b/no_think  # /no_think disables deliberative mode
+    timeout: 180  # seconds; generous default for cold model loads
 
   # Fallback chain (on error/timeout)
   fallback:
@@ -103,10 +104,75 @@ chat:
   port: 8083
   websocket: true
 
+# Event Runtime
+event_runtime:
+  persistence:
+    postgres:
+      enabled: true
+      table_name: event_runtime_events
+      # dsn: ${CFOP_EVENT_RUNTIME_PG_DSN}  # optional override; defaults to top-level database config
+  host_observability:
+    enabled: true
+    refresh_interval_seconds: 300
+    default_to_local: true
+    include_discovered_targets: true
+    providers:
+      - type: local
+      # - type: ssh
+      #   hosts:
+      #     edge-01:
+      #       address: 10.0.0.10
+      #       ssh:
+      #         user: aachten
+      #         key_path: ${HOME}/.ssh/id_ed25519
+      # - type: prometheus
+      #   url: http://prometheus:9090
+      #   discover: true
+      #   job_pattern: node-exporter|node_exporter
+      # - type: k3s
+      #   url: http://prometheus:9090
+      #   discover: true        # auto-discover nodes via kube_node_info
+      #   timeout: 10           # Prometheus query timeout in seconds
+
+# Git & GitHub Integration
+# Maps repositories to infrastructure targets so the agent can correlate
+# code changes with alerts and investigate recent deployments.
+git:
+  github:
+    token: ${GITHUB_TOKEN}
+    # api_url: https://api.github.com  # override for GitHub Enterprise
+  repos:
+    - name: cfoperator
+      github: aachtenberg/cfoperator
+      branch: main
+      # path: ~/repos/cfoperator  # optional: local clone for git blame/diff; GitHub API is the default
+      # ssh:                    # optional: for remote git access when using path on another host
+      #   user: aachten
+      #   address: 10.0.0.5
+      #   key_path: ${HOME}/.ssh/id_ed25519
+      #   known_hosts_path: ${HOME}/.ssh/known_hosts  # enables StrictHostKeyChecking=yes
+      hosts:
+        - headless-gpu
+      services:
+        - cfoperator
+    # - name: infrastructure-repo
+    #   github: aachtenberg/infrastructure-repo
+    #   branch: main
+    #   # path: ~/repos/infrastructure-repo  # optional local clone
+    #   hosts:
+    #     - raspberrypi
+    #     - raspberrypi2
+    #     - raspberrypi3
+    #     - raspberrypi4
+    #     - headless-gpu
+    #   services:
+    #     - k3s
+
 # Skills
 skills:
   directory: ./skills
   enabled:
     - investigate-container
+    - investigate-code-change
     - why-restart
     - compare-hosts

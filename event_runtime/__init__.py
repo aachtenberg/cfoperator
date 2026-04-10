@@ -9,10 +9,13 @@ from .models import (
     ContextEnvelope,
     Decision,
     DomainEvent,
+    HostObservation,
+    HostTarget,
     ScheduledTask,
     SinkHealth,
 )
 from .plugin_manager import PluginManager
+from .telemetry import render_metrics, telemetry_available
 from .worker import BackgroundAlertWorker
 
 __all__ = [
@@ -24,8 +27,12 @@ __all__ = [
     "Decision",
     "DomainEvent",
     "EventRuntime",
+    "HostObservation",
+    "HostTarget",
     "PluginManager",
+    "render_metrics",
     "ScheduledTask",
     "SinkHealth",
+    "telemetry_available",
     "BackgroundAlertWorker",
 ]

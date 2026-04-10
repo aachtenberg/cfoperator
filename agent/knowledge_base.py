@@ -3701,6 +3701,18 @@ class KnowledgeBase:
             correlations.sort(key=lambda x: x["time_delta_seconds"])
             return correlations
 
+    @staticmethod
+    def _normalize_service_name(name: str) -> str:
+        """Strip k8s pod hash suffixes to get the base service/deployment name.
+
+        E.g. 'searxng-c55b97cbb-ccnj6' -> 'searxng'
+             'immich-server-868f4dd875-p7kcc' -> 'immich-server'
+             'cfoperator-759f67fddb-sskq6' -> 'cfoperator'
+        """
+        import re
+        # Match k8s ReplicaSet hash + pod hash suffix: -<rs-hash>-<pod-hash>
+        return re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', name)
+
     def find_service_failure_patterns(self, days: int = 30) -> List[Dict[str, Any]]:
         """Find patterns of which services fail together or in sequence."""
         from datetime import timedelta
@@ -3724,24 +3736,24 @@ class KnowledgeBase:
                 # Direct service/container keys
                 for key in ('service', 'container', 'service_name'):
                     if details.get(key):
-                        services.add(details[key])
+                        services.add(self._normalize_service_name(details[key]))
 
                 # container_change events: added/removed lists
                 for key in ('added', 'removed'):
                     for svc in (details.get(key) or []):
                         if isinstance(svc, str):
-                            services.add(svc)
+                            services.add(self._normalize_service_name(svc))
 
                 # state_change events: affected_services list
                 for svc in (details.get('affected_services') or []):
                     if isinstance(svc, str):
-                        services.add(svc)
+                        services.add(self._normalize_service_name(svc))
 
                 # state_change events: current_state dict with service->status
                 cs = details.get('current_state')
                 if isinstance(cs, dict):
                     for svc in cs:
-                        services.add(svc)
+                        services.add(self._normalize_service_name(svc))
 
                 for svc in services:
                     service_events.append({
@@ -4067,18 +4079,25 @@ class ResilientKnowledgeBase:
         _log("info", "Syncing buffered events", count=len(events))
 
         synced_up_to = 0
+        consecutive_failures = 0
         for event in events:
             try:
                 self._replay_event(event)
                 synced_up_to = event.sequence
+                consecutive_failures = 0
             except Exception as e:
-                _log("error", "Failed to replay event",
+                consecutive_failures += 1
+                _log("warning", "Failed to replay event, skipping",
                      event_type=event.event_type,
                      sequence=event.sequence,
                      error=str(e))
-                # Mark connection unhealthy and stop syncing
-                self._health_monitor.mark_unhealthy()
-                break
+                # Still advance past this event so we don't retry it forever
+                synced_up_to = event.sequence
+                # Only mark unhealthy if multiple consecutive failures (actual DB outage)
+                if consecutive_failures >= 3:
+                    _log("error", "Multiple consecutive replay failures, marking unhealthy")
+                    self._health_monitor.mark_unhealthy()
+                    break
 
         if synced_up_to > 0:
             self._buffer.mark_synced(synced_up_to)

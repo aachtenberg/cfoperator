@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,8 @@ from typing import Dict, Tuple
 
 from .models import Alert
 from .plugins import AlertPolicy
+
+logger = logging.getLogger(__name__)
 
 
 class FileBackedCooldownPolicy(AlertPolicy):
@@ -58,7 +61,8 @@ class FileBackedCooldownPolicy(AlertPolicy):
                 data = json.load(handle)
             if isinstance(data, dict):
                 return {str(key): str(value) for key, value in data.items()}
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to load dedupe state from %s: %s", self.path, exc)
             return {}
         return {}
 

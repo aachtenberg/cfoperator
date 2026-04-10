@@ -16,6 +16,21 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _parse_alert_timestamp(raw: Any) -> datetime:
+    if raw in (None, ""):
+        return utc_now()
+    if isinstance(raw, datetime):
+        value = raw
+    else:
+        try:
+            value = datetime.fromisoformat(str(raw))
+        except ValueError as exc:
+            raise ValueError(f"Invalid occurred_at timestamp: {raw}") from exc
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 class AlertSeverity(str, Enum):
     """Normalized alert severities used by the runtime."""
 
@@ -46,6 +61,36 @@ class Alert:
         payload["occurred_at"] = self.occurred_at.isoformat()
         return payload
 
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any], *, require_summary: bool = True) -> "Alert":
+        """Build an alert from a transport or persisted payload."""
+        severity_value = str(payload.get("severity") or "info").lower()
+        try:
+            severity = AlertSeverity(severity_value)
+        except ValueError as exc:
+            raise ValueError(f"Invalid severity: {severity_value}") from exc
+
+        summary = payload.get("summary")
+        if require_summary and not summary:
+            raise ValueError("Missing required field: summary")
+
+        details = payload.get("details") or {}
+        if not isinstance(details, dict):
+            raise ValueError("Field details must be an object")
+
+        return cls(
+            source=str(payload.get("source") or "manual"),
+            severity=severity,
+            summary=str(summary or ""),
+            details=dict(details),
+            namespace=None if payload.get("namespace") is None else str(payload.get("namespace")),
+            resource_type=None if payload.get("resource_type") is None else str(payload.get("resource_type")),
+            resource_name=None if payload.get("resource_name") is None else str(payload.get("resource_name")),
+            fingerprint=None if payload.get("fingerprint") is None else str(payload.get("fingerprint")),
+            occurred_at=_parse_alert_timestamp(payload.get("occurred_at")),
+            alert_id=str(payload.get("alert_id") or str(uuid4())),
+        )
+
     def effective_fingerprint(self) -> str:
         """Return a stable fingerprint for duplicate suppression."""
         if self.fingerprint:
@@ -69,6 +114,37 @@ class ContextEnvelope:
     alert: Alert
     context: Dict[str, Any] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class HostTarget:
+    """A named bare-metal target that a host observability provider can inspect."""
+
+    name: str
+    provider: str
+    address: Optional[str] = None
+    aliases: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the target for context payloads."""
+        return asdict(self)
+
+
+@dataclass(slots=True)
+class HostObservation:
+    """A collected set of bare-metal host stats from a provider."""
+
+    provider: str
+    target: str
+    stats: Dict[str, Any] = field(default_factory=dict)
+    collected_at: datetime = field(default_factory=utc_now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize the observation for event payloads."""
+        payload = asdict(self)
+        payload["collected_at"] = self.collected_at.isoformat()
+        return payload
 
 
 @dataclass(slots=True)

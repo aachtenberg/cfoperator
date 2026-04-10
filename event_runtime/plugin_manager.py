@@ -5,7 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from .plugins import ActionHandler, AlertPolicy, AlertSource, ContextProvider, DecisionEngine, Scheduler, StateSink
+from .plugins import (
+    ActionHandler,
+    AlertPolicy,
+    AlertSource,
+    ContextProvider,
+    DecisionEngine,
+    HostObservabilityProvider,
+    Scheduler,
+    StateSink,
+)
 
 
 @dataclass(slots=True)
@@ -14,6 +23,7 @@ class PluginManager:
 
     alert_sources: List[AlertSource] = field(default_factory=list)
     alert_policies: List[AlertPolicy] = field(default_factory=list)
+    host_observability_providers: List[HostObservabilityProvider] = field(default_factory=list)
     context_providers: List[ContextProvider] = field(default_factory=list)
     action_handlers: Dict[str, ActionHandler] = field(default_factory=dict)
     schedulers: List[Scheduler] = field(default_factory=list)
@@ -25,6 +35,9 @@ class PluginManager:
 
     def register_alert_policy(self, plugin: AlertPolicy) -> None:
         self.alert_policies.append(plugin)
+
+    def register_host_observability_provider(self, plugin: HostObservabilityProvider) -> None:
+        self.host_observability_providers.append(plugin)
 
     def register_context_provider(self, plugin: ContextProvider) -> None:
         self.context_providers.append(plugin)
@@ -45,6 +58,8 @@ class PluginManager:
         for plugin in self.alert_sources:
             plugin.start()
         for plugin in self.alert_policies:
+            plugin.start()
+        for plugin in self.host_observability_providers:
             plugin.start()
         for plugin in self.context_providers:
             plugin.start()
@@ -67,6 +82,8 @@ class PluginManager:
         for plugin in self.action_handlers.values():
             plugin.stop()
         for plugin in self.context_providers:
+            plugin.stop()
+        for plugin in self.host_observability_providers:
             plugin.stop()
         for plugin in self.alert_policies:
             plugin.stop()

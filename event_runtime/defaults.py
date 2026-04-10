@@ -9,9 +9,10 @@ import threading
 from pathlib import Path
 from typing import Dict
 
+from .host_observability import build_host_observability_plugins
 from .dedupe import FileBackedCooldownPolicy
 from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision, ScheduledTask
-from .plugins import ActionHandler, ContextProvider, DecisionEngine, Scheduler
+from .plugins import ActionHandler, ContextProvider, DecisionEngine, HostObservabilityProvider, Scheduler
 
 
 class HostContextProvider(ContextProvider):
@@ -163,3 +164,10 @@ def build_default_alert_policies(base_dir: str | None = None) -> list[FileBacked
             cooldown_seconds=cooldown_seconds,
         )
     ]
+
+
+def build_default_host_observability_plugins(
+    config_path: str | None = None,
+) -> tuple[list[HostObservabilityProvider], ContextProvider | None]:
+    """Return portable bare-metal observability providers plus a context provider."""
+    return build_host_observability_plugins(config_path=config_path)
