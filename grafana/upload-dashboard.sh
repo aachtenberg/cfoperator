@@ -11,6 +11,12 @@ SECRETS_FILE="${REPO_DIR}/secrets/.env.secrets"
 if [[ ! -f "$SECRETS_FILE" ]]; then
     SECRETS_FILE="$HOME/.config/cfoperator/.env.secrets"
 fi
+if [[ ! -f "$SECRETS_FILE" ]]; then
+    ALT_SECRETS_FILE="/home/aachten/repos/homelab-infra/secrets/.env.secrets"
+    if [[ -f "$ALT_SECRETS_FILE" ]]; then
+        SECRETS_FILE="$ALT_SECRETS_FILE"
+    fi
+fi
 DASHBOARD_INPUT="${2:-cfoperator-dashboard.json}"
 if [[ "$DASHBOARD_INPUT" = /* ]]; then
     DASHBOARD_FILE="$DASHBOARD_INPUT"
@@ -27,10 +33,22 @@ fi
 
 source "$SECRETS_FILE"
 
-if [[ -z "$GRAFANA_CLOUD_URL" ]] || [[ -z "$GRAFANA_CLOUD_API_KEY" ]]; then
-    echo "❌ Missing Grafana Cloud credentials in secrets/.env.secrets"
-    echo "Required: GRAFANA_CLOUD_URL and GRAFANA_CLOUD_API_KEY"
-    exit 1
+API_MODE="cloud"
+API_BASE_URL="${GRAFANA_CLOUD_URL:-}"
+AUTH_HEADER="Authorization: Bearer ${GRAFANA_CLOUD_API_KEY:-}"
+
+if [[ -z "$API_BASE_URL" ]] || [[ -z "${GRAFANA_CLOUD_API_KEY:-}" ]]; then
+    if [[ -n "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
+        API_MODE="local"
+        API_BASE_URL="${GRAFANA_URL:-http://192.168.0.167:30091}"
+        AUTH_HEADER="Authorization: Basic $(printf 'admin:%s' "$GRAFANA_ADMIN_PASSWORD" | base64 -w0)"
+    else
+        echo "❌ Missing Grafana credentials"
+        echo "Required one of:"
+        echo "  - GRAFANA_CLOUD_URL and GRAFANA_CLOUD_API_KEY"
+        echo "  - GRAFANA_ADMIN_PASSWORD (and optional GRAFANA_URL for local k3s Grafana)"
+        exit 1
+    fi
 fi
 
 if [[ ! -f "$DASHBOARD_FILE" ]]; then
@@ -49,10 +67,14 @@ esac
 
 if [[ "$REQUIRE_PG_DATASOURCE" == "true" ]]; then
     # Ensure PostgreSQL datasource for sweep reports exists
-    SRE_PG_UID="${SRE_PG_DATASOURCE_UID:-ffcrf4dsqchz4e}"
+    if [[ "$API_MODE" == "local" ]]; then
+        SRE_PG_UID="${SRE_PG_DATASOURCE_UID:-sre-postgres}"
+    else
+        SRE_PG_UID="${SRE_PG_DATASOURCE_UID:-ffcrf4dsqchz4e}"
+    fi
     echo "🔌 Checking sre-knowledge PostgreSQL datasource (uid: $SRE_PG_UID)..."
-    DS_CHECK=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GRAFANA_CLOUD_API_KEY" \
-        "$GRAFANA_CLOUD_URL/api/datasources/uid/$SRE_PG_UID")
+    DS_CHECK=$(curl -s -o /dev/null -w '%{http_code}' -H "$AUTH_HEADER" \
+        "$API_BASE_URL/api/datasources/uid/$SRE_PG_UID")
 
     if [[ "$DS_CHECK" == "200" ]]; then
         echo "✓ Datasource exists"
@@ -68,8 +90,9 @@ else
 fi
 
 echo ""
-echo "📊 Uploading dashboard to Grafana Cloud..."
-echo "   Instance: $GRAFANA_CLOUD_URL"
+echo "📊 Uploading dashboard to Grafana..."
+echo "   Mode: $API_MODE"
+echo "   Instance: $API_BASE_URL"
 echo "   Dashboard: $(basename "$DASHBOARD_FILE")"
 echo "   Folder: $FOLDER_NAME"
 echo ""
@@ -79,7 +102,7 @@ FOLDER_ID=""
 FOLDER_UID=""
 if [[ "$FOLDER_NAME" != "General" ]]; then
     echo "🔍 Looking for folder: $FOLDER_NAME"
-    FOLDERS_JSON=$(curl -s -H "Authorization: Bearer $GRAFANA_CLOUD_API_KEY" "$GRAFANA_CLOUD_URL/api/folders")
+    FOLDERS_JSON=$(curl -s -H "$AUTH_HEADER" "$API_BASE_URL/api/folders")
 
     # Check if response is an array
     if echo "$FOLDERS_JSON" | jq -e 'type == "array"' > /dev/null 2>&1; then
@@ -88,10 +111,10 @@ if [[ "$FOLDER_NAME" != "General" ]]; then
 
     if [[ -z "$FOLDER_UID" ]] || [[ "$FOLDER_UID" == "null" ]]; then
         echo "📁 Creating folder: $FOLDER_NAME"
-        FOLDER_CREATE=$(curl -s -X POST -H "Authorization: Bearer $GRAFANA_CLOUD_API_KEY" \
+        FOLDER_CREATE=$(curl -s -X POST -H "$AUTH_HEADER" \
             -H "Content-Type: application/json" \
             -d "{\"title\":\"$FOLDER_NAME\"}" \
-            "$GRAFANA_CLOUD_URL/api/folders")
+            "$API_BASE_URL/api/folders")
 
         FOLDER_UID=$(echo "$FOLDER_CREATE" | jq -r '.uid')
 
@@ -126,11 +149,11 @@ API_PAYLOAD=$(jq -n \
     }')
 
 # Create/update dashboard
-echo "🚀 Pushing dashboard to Grafana Cloud..."
-RESPONSE=$(curl -s -X POST -H "Authorization: Bearer $GRAFANA_CLOUD_API_KEY" \
+echo "🚀 Pushing dashboard to Grafana..."
+RESPONSE=$(curl -s -X POST -H "$AUTH_HEADER" \
     -H "Content-Type: application/json" \
     -d "$API_PAYLOAD" \
-    "$GRAFANA_CLOUD_URL/api/dashboards/db")
+    "$API_BASE_URL/api/dashboards/db")
 
 # Check response
 STATUS=$(echo "$RESPONSE" | jq -r '.status // empty')
@@ -141,7 +164,7 @@ if [[ "$STATUS" == "success" ]] && [[ -n "$URL" ]]; then
     echo ""
     echo "✅ Dashboard uploaded successfully!"
     echo "   UID: $DASH_UID"
-    echo "   URL: $GRAFANA_CLOUD_URL$URL"
+    echo "   URL: $API_BASE_URL$URL"
     echo ""
     echo "Dashboard file: $(basename "$DASHBOARD_FILE")"
     echo ""
