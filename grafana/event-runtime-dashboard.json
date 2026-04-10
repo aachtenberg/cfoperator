@@ -31,6 +31,16 @@
           "text": "Loki",
           "value": "Loki"
         }
+      },
+      {
+        "name": "postgres",
+        "type": "datasource",
+        "query": "grafana-postgresql-datasource",
+        "current": {
+          "selected": true,
+          "text": "sre-knowledge",
+          "value": "ffcrf4dsqchz4e"
+        }
       }
     ]
   },
@@ -337,6 +347,38 @@
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "targets": [{"expr": "topk(10, sum by (action) (increase(cfoperator_event_runtime_alert_results_total{status=\"completed\"}[1h])))", "legendFormat": "{{action}}", "refId": "A"}],
       "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "orientation": "horizontal", "displayMode": "gradient"}
+    },
+    {
+      "id": 65,
+      "type": "table",
+      "title": "Scheduled Tasks",
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 120},
+      "datasource": {"type": "grafana-postgresql-datasource", "uid": "${postgres}"},
+      "targets": [
+        {
+          "datasource": {"type": "grafana-postgresql-datasource", "uid": "${postgres}"},
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH latest_schedules AS ( SELECT DISTINCT ON (payload->'result'->'task'->>'task_id') created_at AS scheduled_at, payload->'result'->'task'->>'task_id' AS task_id, COALESCE(payload->'result'->>'scheduler', 'unknown') AS scheduler, payload->'result'->'task'->>'name' AS task_name, payload->'result'->'task'->>'schedule' AS cron, COALESCE(payload->'result'->'task'->>'rationale', '') AS rationale, concat_ws('/', payload->'result'->'task'->'target'->>'kind', payload->'result'->'task'->'target'->>'namespace', payload->'result'->'task'->'target'->>'name') AS target, COALESCE(payload->'result'->'task'->'parameters'->>'requested_action', '') AS action, COALESCE(payload->'result'->'task'->'parameters'->>'check', '') AS check_name FROM event_runtime_events WHERE event_type = 'scheduled_task_created' AND payload->'result'->>'success' = 'true' ORDER BY payload->'result'->'task'->>'task_id', created_at DESC ) SELECT ls.task_name AS name, CASE WHEN aj.id IS NOT NULL THEN 'scheduled' ELSE 'missing' END AS status, ls.scheduler, ls.cron, to_timestamp(aj.next_run_time) AT TIME ZONE 'UTC' AS next_run_at, ls.target, ls.action AS requested_action, ls.check_name AS requested_check, ls.scheduled_at, ls.rationale FROM latest_schedules ls LEFT JOIN apscheduler_jobs aj ON aj.id = ls.task_id ORDER BY next_run_at NULLS LAST, ls.scheduled_at DESC LIMIT 50",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["sum"],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": false,
+            "displayName": "next_run_at"
+          }
+        ]
+      }
     }
   ]
 }

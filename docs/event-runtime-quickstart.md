@@ -47,7 +47,7 @@ flowchart TD
     LogOnly --> Audit
     Fail --> Audit
     Execute --> Audit
-    Schedule --> Scheduler["Scheduler<br/>(JSONL file)"]
+    Schedule --> Scheduler["Scheduler<br/>(JSON fallback or APScheduler backend)"]
 
     subgraph Audit["State Sink (audit trail)"]
         direction LR
@@ -80,7 +80,8 @@ flowchart TD
    - K3s cluster stats (node conditions, pod counts, CPU/memory usage, restart counts via kube-state-metrics + cAdvisor)
 5. **Decision** — the decision engine selects an action, confidence score, reasoning, and optional scheduled follow-up tasks
 6. **Action Execution** — the matched action handler runs (investigate, notify, log_only)
-7. **Audit** — every step emits append-only domain events to the local JSONL outbox, with background replay to PostgreSQL when configured
+7. **Scheduling** — follow-up checks are persisted to the scheduler store and polled back into the runtime as synthetic alerts when they become due
+8. **Audit** — every step emits append-only domain events to the local JSONL outbox, with background replay to PostgreSQL when configured
 
 ## Minimal Setup
 
@@ -111,14 +112,34 @@ By default the runtime stores data under:
 This includes:
 
 - `outbox/` for durable domain events
-- `scheduled/` for agent-requested recurring checks
+- `scheduled/` for agent-requested recurring checks and scheduler state
 
 Portable mode also supports pluggable bare-metal host observability so alerts can be enriched with OS stats from local hosts, configured SSH targets, and discovered Prometheus node exporters.
+
+Scheduled follow-up checks are executed by scheduler-backed synthetic alerts. The default fallback scheduler stores task intents in `scheduled/tasks.jsonl` and tracks execution state in `scheduled/state.json`.
+
+For production, the recommended backend is APScheduler. It persists cron jobs in a durable job store and spools fired runs back into the runtime as alerts.
+
+## Scheduler Backends
+
+- `json-file`: zero-dependency fallback; stores tasks in `scheduled/tasks.jsonl` and next-run state in `scheduled/state.json`
+- `apscheduler`: recommended production backend; stores cron jobs in a SQLAlchemy-backed job store, defaults to the event runtime PostgreSQL DSN when available, and spools fired runs to `scheduled/apscheduler-fired.jsonl`
+
+YAML example:
+
+```yaml
+event_runtime:
+  scheduler:
+    backend: apscheduler
+    # jobstore_url: postgresql://user:password@host:5432/dbname
+    misfire_grace_time_seconds: 300
+```
 
 ## Endpoints
 
 - `GET /health`
 - `GET /history?limit=50`
+- `GET /scheduled?limit=100`
 - `GET /metrics`
 - `POST /alert`
 - `GET /jobs/<job_id>` when background workers are enabled
@@ -169,6 +190,10 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_SCHEDULE_DIR`: override scheduled task storage path
 - `CFOP_EVENT_RUNTIME_PG_DSN`: optional PostgreSQL DSN for remote event persistence
 - `CFOP_EVENT_RUNTIME_REPLAY_INTERVAL_SECONDS`: optional replay interval for syncing outbox events to PostgreSQL
+- `CFOP_EVENT_RUNTIME_SCHEDULER_BACKEND`: scheduler backend selection, `json-file` or `apscheduler`
+- `CFOP_EVENT_RUNTIME_APSCHEDULER_JOBSTORE_URL`: optional explicit APScheduler SQLAlchemy job store URL
+- `CFOP_EVENT_RUNTIME_APSCHEDULER_SPOOL_PATH`: optional path for fired APScheduler runs waiting to be polled into alerts
+- `CFOP_EVENT_RUNTIME_APSCHEDULER_MISFIRE_GRACE_SECONDS`: grace window for delayed APScheduler runs, default `300`
 - `CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS`: duplicate suppression window in seconds, default `300`, set to `0` to disable
 - `CFOP_EVENT_RUNTIME_WORKER_COUNT`: background worker count, default `1`, set to `0` to force synchronous processing
 - `CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE`: max in-memory queued jobs, default `1000`
@@ -318,7 +343,7 @@ Key metric families include:
 - `cfoperator_event_runtime_host_discovered_targets`
 - `cfoperator_event_runtime_host_observation_runs_total`
 
-Import [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json) into Grafana to observe alert throughput, queue health, replay behavior, and end-to-end latency.
+Import [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json) into Grafana to observe alert throughput, queue health, replay behavior, scheduled follow-up tasks, and end-to-end latency.
 
 Prometheus alert rules for runtime health, queue stalls, replay failures, and bare-metal host observability failures are provided in [observability/event-runtime-alert-rules.yml](/home/aachten/repos/cfoperator/observability/event-runtime-alert-rules.yml).
 

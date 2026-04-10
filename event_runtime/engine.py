@@ -191,6 +191,26 @@ class EventRuntime:
         activities = build_activity_feed(self.plugins.state_sink.recent(limit=fetch_limit), limit=fetch_limit)
         return filter_activities(activities, status=status, action=action)[:limit]
 
+    def scheduled_tasks(self, limit: int = 100, *, scheduler_name: str | None = None) -> List[dict]:
+        """Return scheduled tasks known to registered schedulers."""
+        results: List[dict] = []
+        remaining = max(0, limit)
+        if remaining == 0:
+            return results
+
+        for scheduler in self.plugins.schedulers:
+            if scheduler_name and scheduler.name != scheduler_name:
+                continue
+            entries = scheduler.list_tasks(limit=remaining)
+            for entry in entries:
+                payload = dict(entry)
+                payload.setdefault("scheduler", scheduler.name)
+                results.append(payload)
+            remaining = max(0, limit - len(results))
+            if remaining == 0:
+                break
+        return results
+
     def health(self) -> dict:
         """Return runtime health summary."""
         return {

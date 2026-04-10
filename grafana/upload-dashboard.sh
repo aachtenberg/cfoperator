@@ -41,9 +41,11 @@ fi
 FOLDER_NAME="${1:-CFOperator}"
 
 REQUIRE_PG_DATASOURCE="false"
-if [[ "$(basename "$DASHBOARD_FILE")" == "cfoperator-dashboard.json" ]]; then
-    REQUIRE_PG_DATASOURCE="true"
-fi
+case "$(basename "$DASHBOARD_FILE")" in
+    cfoperator-dashboard.json|event-runtime-dashboard.json)
+        REQUIRE_PG_DATASOURCE="true"
+        ;;
+esac
 
 if [[ "$REQUIRE_PG_DATASOURCE" == "true" ]]; then
     # Ensure PostgreSQL datasource for sweep reports exists

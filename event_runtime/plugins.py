@@ -92,6 +92,14 @@ class Scheduler(RuntimePlugin):
     def schedule(self, task: ScheduledTask) -> Dict[str, object]:
         """Create or update a scheduled task."""
 
+    def list_tasks(self, limit: int = 100) -> List[Dict[str, object]]:
+        """Return scheduled tasks known to this backend."""
+        return []
+
+
+class ScheduledAlertSource(AlertSource):
+    """Alert source that emits alerts originating from scheduled tasks."""
+
 
 class NotificationSink(RuntimePlugin):
     """Plugin that delivers outbound notifications when actions complete."""

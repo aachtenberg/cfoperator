@@ -88,6 +88,13 @@ def create_app(runtime=None, worker=None):
             )
         }
 
+    @app.get("/scheduled")
+    def scheduled(
+        limit: int = Query(default=100, ge=1, le=1000),
+        scheduler: str | None = Query(default=None),
+    ) -> dict:
+        return {"scheduled_tasks": runtime.scheduled_tasks(limit=limit, scheduler_name=scheduler)}
+
     @app.get("/activity.html")
     def activity_html(limit: int = Query(default=25, ge=1, le=250)) -> Response:
         payload = render_activity_html(runtime.recent_activity(limit=limit))

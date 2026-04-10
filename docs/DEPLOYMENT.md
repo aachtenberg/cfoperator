@@ -49,6 +49,18 @@ rsync -av --delete --exclude='.git' --exclude='__pycache__' --exclude='.env' \
 	/home/aachten/repos/cfoperator/ aachten@192.168.0.150:/home/aachten/repos/cfoperator/
 ```
 
+### 1b. Rebuild the local k3s image when dependencies change
+
+HostPath sync updates Python source, but it does not add newly required packages to the running image. If `requirements.txt` changes, rebuild the image on the GPU node and import it into k3s containerd before restarting the pod.
+
+```bash
+ssh aachten@192.168.0.150 '
+	cd /home/aachten/repos/cfoperator &&
+	docker build -t cfoperator-cfoperator:latest . &&
+	docker save cfoperator-cfoperator:latest | sudo k3s ctr images import -
+'
+```
+
 ### 2. Sync and apply k3s manifests
 
 Manifest, ConfigMap, deployment, and service changes come from `homelab-infra`.
@@ -95,6 +107,7 @@ ssh aachten@192.168.0.167 \
 - Health endpoint: `GET /health`
 - Metrics endpoint: `GET /metrics`
 - History endpoint: `GET /history`
+- Scheduled tasks endpoint: `GET /scheduled`
 - Activity endpoint: `GET /activity`
 
 The event runtime currently uses:
@@ -102,6 +115,10 @@ The event runtime currently uses:
 - local durable outbox on `/var/lib/cfoperator/event-runtime`
 - PostgreSQL replay/persistence via `cfoperator-config` + `cfoperator-secrets`
 - GitHub integration via `GITHUB_TOKEN` from `cfoperator-secrets`
+- APScheduler as the production scheduler backend, defaulting to the runtime PostgreSQL DSN for durable job storage
+- spool-backed scheduled alert delivery under `/var/lib/cfoperator/event-runtime/scheduled`
+
+When Python dependencies change, hostPath sync is not enough. Rebuild the `cfoperator-cfoperator` image on the GPU node and import it into k3s containerd before the rollout restart so the running pods can import the updated packages.
 
 ## Verify Production
 

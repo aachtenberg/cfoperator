@@ -2,7 +2,7 @@
 
 Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure intelligence.
 
-An additional dashboard for the modular event runtime lives in [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, and runtime error paths.
+An additional dashboard for the modular event runtime lives in [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, runtime error paths, and scheduled follow-up visibility.
 
 ## Dashboard Features
 
@@ -178,7 +178,7 @@ curl -X POST http://<grafana-host>:3000/api/dashboards/db \
 
 ## Required Data Sources
 
-This dashboard requires three data sources configured in Grafana:
+These dashboards require three data sources configured in Grafana:
 
 ### 1. Prometheus
 - **Name**: `prometheus` (lowercase, no spaces)
@@ -194,7 +194,7 @@ This dashboard requires three data sources configured in Grafana:
 - **UID**: `ffcrf4dsqchz4e` (or configure via `SRE_PG_DATASOURCE_UID` env var in upload script)
 - **Host**: `<postgres-host>:5434`
 - **Database**: `sre_knowledge`
-- **Used by**: Sweep Findings, Correlation Analysis, Notification History panels
+- **Used by**: Sweep Findings, Correlation Analysis, Notification History panels, and the event runtime Scheduled Tasks table
 
 ## Metrics Reference
 

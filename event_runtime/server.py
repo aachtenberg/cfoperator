@@ -83,6 +83,16 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                     },
                 )
                 return
+            if parsed.path == "/scheduled":
+                query = parse_qs(parsed.query)
+                limit = int(query.get("limit", ["100"])[0])
+                scheduler = query.get("scheduler", [""])[0] or None
+                _json_response(
+                    self,
+                    HTTPStatus.OK,
+                    {"scheduled_tasks": runtime.scheduled_tasks(limit=limit, scheduler_name=scheduler)},
+                )
+                return
             if parsed.path == "/activity.html":
                 query = parse_qs(parsed.query)
                 limit = int(query.get("limit", ["25"])[0])

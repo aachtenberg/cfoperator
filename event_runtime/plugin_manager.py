@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from .plugins import (
     ActionHandler,
@@ -59,20 +59,26 @@ class PluginManager:
     def register_state_sink(self, plugin: StateSink) -> None:
         self.state_sink = plugin
 
+    def _iter_unique_plugins(self, *groups: Iterable[object]) -> Iterable[object]:
+        seen: set[int] = set()
+        for group in groups:
+            for plugin in group:
+                plugin_id = id(plugin)
+                if plugin_id in seen:
+                    continue
+                seen.add(plugin_id)
+                yield plugin
+
     def start_all(self) -> None:
-        for plugin in self.alert_sources:
-            plugin.start()
-        for plugin in self.alert_policies:
-            plugin.start()
-        for plugin in self.host_observability_providers:
-            plugin.start()
-        for plugin in self.context_providers:
-            plugin.start()
-        for plugin in self.action_handlers.values():
-            plugin.start()
-        for plugin in self.notification_sinks:
-            plugin.start()
-        for plugin in self.schedulers:
+        for plugin in self._iter_unique_plugins(
+            self.alert_sources,
+            self.alert_policies,
+            self.host_observability_providers,
+            self.context_providers,
+            self.action_handlers.values(),
+            self.notification_sinks,
+            self.schedulers,
+        ):
             plugin.start()
         if self.decision_engine:
             self.decision_engine.start()
@@ -84,17 +90,13 @@ class PluginManager:
             self.state_sink.stop()
         if self.decision_engine:
             self.decision_engine.stop()
-        for plugin in self.schedulers:
-            plugin.stop()
-        for plugin in self.action_handlers.values():
-            plugin.stop()
-        for plugin in self.notification_sinks:
-            plugin.stop()
-        for plugin in self.context_providers:
-            plugin.stop()
-        for plugin in self.host_observability_providers:
-            plugin.stop()
-        for plugin in self.alert_policies:
-            plugin.stop()
-        for plugin in self.alert_sources:
+        for plugin in self._iter_unique_plugins(
+            self.schedulers,
+            self.action_handlers.values(),
+            self.notification_sinks,
+            self.context_providers,
+            self.host_observability_providers,
+            self.alert_policies,
+            self.alert_sources,
+        ):
             plugin.stop()

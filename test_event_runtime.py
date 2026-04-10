@@ -25,7 +25,7 @@ from event_runtime.host_observability import (
 )
 from event_runtime.models import Alert, AlertSeverity, ContextEnvelope, Decision, HostObservation, HostTarget, ScheduledTask
 from event_runtime.plugin_manager import PluginManager
-from event_runtime.plugins import ActionHandler, ContextProvider, DecisionEngine, HostObservabilityProvider, Scheduler
+from event_runtime.plugins import ActionHandler, AlertSource, ContextProvider, DecisionEngine, HostObservabilityProvider, Scheduler
 from event_runtime.server import make_handler, serve
 from event_runtime.sources import AlertmanagerAlertSource
 from event_runtime.state.composite import CompositeStateSink
@@ -91,6 +91,30 @@ class MemoryScheduler(Scheduler):
             "message": f"scheduled {task.name}",
             "task": task.to_dict(),
         }
+
+
+class TrackingDualRoleScheduler(Scheduler, AlertSource):
+    name = "tracking-dual-role-scheduler"
+
+    def __init__(self):
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def start(self) -> None:
+        self.start_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+    def schedule(self, task: ScheduledTask) -> dict:
+        return {
+            "success": True,
+            "message": f"scheduled {task.name}",
+            "task": task.to_dict(),
+        }
+
+    def poll(self):
+        return []
 
 
 class ScheduledDecision(DecisionEngine):
@@ -735,6 +759,162 @@ def test_runtime_can_schedule_follow_up_tasks(tmp_path: Path):
     assert scheduler.tasks[0].name == "watch-crashloop-pod"
 
 
+def test_json_file_scheduler_emits_due_follow_up_alert_once(monkeypatch, tmp_path: Path):
+    from event_runtime.defaults import JsonFileScheduler
+
+    scheduler = JsonFileScheduler(directory=str(tmp_path / "scheduled"))
+    task = ScheduledTask(
+        name="watch-crashloop-pod",
+        schedule="*/5 * * * *",
+        rationale="Track repeated restarts until stable",
+        target={"kind": "pod", "namespace": "apps", "name": "api"},
+        parameters={"check": "restart_rate", "requested_action": "investigate"},
+    )
+
+    monkeypatch.setattr("event_runtime.defaults._utc_now", lambda: datetime(2026, 4, 10, 12, 3, 20, tzinfo=timezone.utc))
+    scheduler.schedule(task)
+
+    monkeypatch.setattr("event_runtime.defaults._utc_now", lambda: datetime(2026, 4, 10, 12, 4, 0, tzinfo=timezone.utc))
+    assert list(scheduler.poll()) == []
+
+    monkeypatch.setattr("event_runtime.defaults._utc_now", lambda: datetime(2026, 4, 10, 12, 5, 1, tzinfo=timezone.utc))
+    alerts = list(scheduler.poll())
+    assert len(alerts) == 1
+    assert alerts[0].source == "scheduler"
+    assert alerts[0].summary == "Scheduled check: watch-crashloop-pod (pod/apps/api)"
+    assert alerts[0].details["requested_action"] == "investigate"
+    assert alerts[0].details["requested_checks"] == ["restart_rate"]
+
+    monkeypatch.setattr("event_runtime.defaults._utc_now", lambda: datetime(2026, 4, 10, 12, 5, 30, tzinfo=timezone.utc))
+    assert list(scheduler.poll()) == []
+
+
+def test_json_file_scheduler_lists_scheduled_tasks(monkeypatch, tmp_path: Path):
+    from event_runtime.defaults import JsonFileScheduler
+
+    scheduler = JsonFileScheduler(directory=str(tmp_path / "scheduled"))
+    monkeypatch.setattr("event_runtime.defaults._utc_now", lambda: datetime(2026, 4, 10, 12, 3, 20, tzinfo=timezone.utc))
+    scheduler.schedule(
+        ScheduledTask(
+            name="watch-crashloop-pod",
+            schedule="*/5 * * * *",
+            rationale="Track repeated restarts until stable",
+            target={"kind": "pod", "namespace": "apps", "name": "api"},
+            parameters={"check": "restart_rate", "requested_action": "investigate"},
+        )
+    )
+
+    scheduled = scheduler.list_tasks(limit=10)
+    assert len(scheduled) == 1
+    assert scheduled[0]["scheduler"] == "json-file-scheduler"
+    assert scheduled[0]["name"] == "watch-crashloop-pod"
+    assert scheduled[0]["next_run_at"] == "2026-04-10T12:05:00+00:00"
+
+
+def test_portable_runtime_registers_scheduler_as_alert_source(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DIR", str(tmp_path / "portable-scheduler"))
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS", "0")
+
+    runtime = build_portable_runtime()
+
+    assert any(source.name == "json-file-scheduler" for source in runtime.plugins.alert_sources)
+    assert any(scheduler.name == "json-file-scheduler" for scheduler in runtime.plugins.schedulers)
+
+
+def test_plugin_manager_starts_dual_role_plugin_once():
+    plugins = PluginManager()
+    scheduler = TrackingDualRoleScheduler()
+
+    plugins.register_alert_source(scheduler)
+    plugins.register_scheduler(scheduler)
+
+    plugins.start_all()
+    plugins.stop_all()
+
+    assert scheduler.start_calls == 1
+    assert scheduler.stop_calls == 1
+
+
+def test_apscheduler_scheduler_polls_spooled_alerts(monkeypatch, tmp_path: Path):
+    from event_runtime.scheduler_backends import APSchedulerScheduler, _emit_scheduled_task
+
+    scheduler = APSchedulerScheduler(
+        jobstore_url=f"sqlite:///{tmp_path / 'apscheduler.sqlite'}",
+        spool_path=str(tmp_path / "scheduled" / "apscheduler-fired.jsonl"),
+    )
+    task = ScheduledTask(
+        name="watch-crashloop-pod",
+        schedule="*/5 * * * *",
+        rationale="Track repeated restarts until stable",
+        target={"kind": "pod", "namespace": "apps", "name": "api"},
+        parameters={"check": "restart_rate", "requested_action": "investigate"},
+    )
+
+    scheduled = scheduler.schedule(task)
+    monkeypatch.setattr(
+        "event_runtime.scheduler_backends._utc_now",
+        lambda: datetime(2026, 4, 10, 12, 5, 1, tzinfo=timezone.utc),
+    )
+    _emit_scheduled_task(str(tmp_path / "scheduled" / "apscheduler-fired.jsonl"), scheduled["task"])
+
+    alerts = list(scheduler.poll())
+    assert len(alerts) == 1
+    assert alerts[0].summary == "Scheduled check: watch-crashloop-pod (pod/apps/api)"
+    assert list(scheduler.poll()) == []
+
+
+def test_apscheduler_scheduler_lists_scheduled_tasks(tmp_path: Path):
+    from event_runtime.scheduler_backends import APSchedulerScheduler
+
+    scheduler = APSchedulerScheduler(
+        jobstore_url=f"sqlite:///{tmp_path / 'apscheduler.sqlite'}",
+        spool_path=str(tmp_path / "scheduled" / "apscheduler-fired.jsonl"),
+    )
+    scheduler.start()
+    try:
+        scheduled = scheduler.schedule(
+            ScheduledTask(
+                name="watch-crashloop-pod",
+                schedule="*/5 * * * *",
+                rationale="Track repeated restarts until stable",
+                target={"kind": "pod", "namespace": "apps", "name": "api"},
+                parameters={"check": "restart_rate", "requested_action": "investigate"},
+            )
+        )
+        listed = scheduler.list_tasks(limit=10)
+        assert len(listed) == 1
+        assert listed[0]["scheduler"] == "apscheduler-scheduler"
+        assert listed[0]["task_id"] == scheduled["task"]["task_id"]
+        assert listed[0]["job_id"] == scheduled["task"]["task_id"]
+        assert listed[0]["name"] == "watch-crashloop-pod"
+        assert listed[0]["next_run_at"]
+    finally:
+        scheduler.stop()
+
+
+def test_portable_runtime_can_select_apscheduler_backend(monkeypatch, tmp_path: Path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "event_runtime:",
+                "  scheduler:",
+                "    backend: apscheduler",
+                f"    jobstore_url: sqlite:///{tmp_path / 'portable-apscheduler.sqlite'}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DIR", str(tmp_path / "portable-apscheduler"))
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS", "0")
+
+    runtime = build_portable_runtime(config_path=str(config_path))
+
+    assert any(source.name == "apscheduler-scheduler" for source in runtime.plugins.alert_sources)
+    assert any(scheduler.name == "apscheduler-scheduler" for scheduler in runtime.plugins.schedulers)
+
+
+
 def test_file_backed_cooldown_policy_suppresses_duplicates(tmp_path: Path):
     policy = FileBackedCooldownPolicy(path=str(tmp_path / "dedupe.json"), cooldown_seconds=300)
     alert = Alert(source="test", severity=AlertSeverity.WARNING, summary="same alert")
@@ -1025,6 +1205,78 @@ def test_server_exposes_activity_feed_and_html(tmp_path: Path):
     finally:
         server.shutdown()
         thread.join(timeout=2)
+
+
+def test_server_exposes_scheduled_tasks(monkeypatch, tmp_path: Path):
+    from event_runtime.defaults import JsonFileScheduler
+
+    sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "scheduled-server-outbox"))])
+    scheduler = JsonFileScheduler(directory=str(tmp_path / "scheduled"))
+    monkeypatch.setattr("event_runtime.defaults._utc_now", lambda: datetime(2026, 4, 10, 12, 3, 20, tzinfo=timezone.utc))
+    scheduler.schedule(
+        ScheduledTask(
+            name="watch-crashloop-pod",
+            schedule="*/5 * * * *",
+            rationale="Track repeated restarts until stable",
+            target={"kind": "pod", "namespace": "apps", "name": "api"},
+            parameters={"check": "restart_rate", "requested_action": "investigate"},
+        )
+    )
+    plugins = PluginManager()
+    plugins.register_state_sink(sink)
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_scheduler(scheduler)
+    runtime = EventRuntime(plugins)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(runtime))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, payload = _request_json(server, "GET", "/scheduled?limit=5")
+        assert status == 200
+        assert payload["scheduled_tasks"][0]["name"] == "watch-crashloop-pod"
+        assert payload["scheduled_tasks"][0]["scheduler"] == "json-file-scheduler"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_fastapi_adapter_exposes_scheduled_tasks(monkeypatch, tmp_path: Path):
+    try:
+        from fastapi.testclient import TestClient
+    except (ImportError, RuntimeError):
+        return
+
+    from event_runtime.defaults import JsonFileScheduler
+
+    sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "fastapi-scheduled-outbox"))])
+    scheduler = JsonFileScheduler(directory=str(tmp_path / "scheduled"))
+    monkeypatch.setattr("event_runtime.defaults._utc_now", lambda: datetime(2026, 4, 10, 12, 3, 20, tzinfo=timezone.utc))
+    scheduler.schedule(
+        ScheduledTask(
+            name="watch-crashloop-pod",
+            schedule="*/5 * * * *",
+            rationale="Track repeated restarts until stable",
+            target={"kind": "pod", "namespace": "apps", "name": "api"},
+            parameters={"check": "restart_rate", "requested_action": "investigate"},
+        )
+    )
+    plugins = PluginManager()
+    plugins.register_state_sink(sink)
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_scheduler(scheduler)
+    runtime = EventRuntime(plugins)
+
+    module = __import__("event_runtime.fastapi_app", fromlist=["create_app"])
+    app = module.create_app(runtime=runtime, worker=None)
+    client = TestClient(app)
+
+    response = client.get("/scheduled?limit=5")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scheduled_tasks"][0]["name"] == "watch-crashloop-pod"
+    assert payload["scheduled_tasks"][0]["scheduler"] == "json-file-scheduler"
 
 
 def test_background_worker_processes_job(tmp_path: Path):

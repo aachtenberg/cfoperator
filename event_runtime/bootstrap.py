@@ -17,6 +17,7 @@ from .defaults import (
 from .git_context import GitChangeContextProvider
 from .github_actions import build_github_action_handlers
 from .notifications import SlackNotificationSink, DiscordNotificationSink
+from .plugins import AlertSource
 from .sources import AlertmanagerAlertSource
 from .engine import EventRuntime
 from .plugin_manager import PluginManager
@@ -57,7 +58,10 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
         plugins.register_host_observability_provider(provider)
     if host_context is not None:
         plugins.register_context_provider(host_context)
-    plugins.register_scheduler(JsonFileScheduler(directory=schedule_dir))
+    scheduler = _build_scheduler_plugin(config_path=config_path, schedule_dir=schedule_dir, pg_settings=pg_settings)
+    plugins.register_scheduler(scheduler)
+    if isinstance(scheduler, AlertSource):
+        plugins.register_alert_source(scheduler)
     for handler in build_default_action_handlers().values():
         plugins.register_action_handler(handler)
 
@@ -219,6 +223,72 @@ def _load_postgres_sink_config(config_path: str | None = None) -> dict:
         "dsn": dsn if enabled else "",
         "table_name": table_name,
     }
+
+
+def _build_scheduler_plugin(config_path: str | None, schedule_dir: str, pg_settings: dict):
+    scheduler_cfg = _load_scheduler_config(config_path=config_path, schedule_dir=schedule_dir, pg_settings=pg_settings)
+    backend = scheduler_cfg["backend"]
+    if backend == "apscheduler":
+        from .scheduler_backends import APSchedulerScheduler
+
+        return APSchedulerScheduler(
+            jobstore_url=scheduler_cfg["jobstore_url"],
+            spool_path=scheduler_cfg["spool_path"],
+            misfire_grace_time_seconds=scheduler_cfg["misfire_grace_time_seconds"],
+        )
+    return JsonFileScheduler(directory=schedule_dir)
+
+
+def _load_scheduler_config(config_path: str | None, schedule_dir: str, pg_settings: dict) -> dict:
+    cfg = _load_root_config(config_path)
+    event_runtime_cfg = cfg.get("event_runtime") or {}
+    scheduler_cfg = (event_runtime_cfg.get("scheduler") or {}) if isinstance(event_runtime_cfg, dict) else {}
+
+    raw_backend = str(
+        os.getenv("CFOP_EVENT_RUNTIME_SCHEDULER_BACKEND", "").strip()
+        or scheduler_cfg.get("backend")
+        or "json-file"
+    ).strip().lower()
+    if raw_backend in {"json", "json-file", "json_file"}:
+        backend = "json-file"
+    elif raw_backend == "apscheduler":
+        backend = "apscheduler"
+    else:
+        backend = "json-file"
+
+    default_spool_path = str(Path(schedule_dir) / "apscheduler-fired.jsonl")
+    spool_path = str(
+        os.getenv("CFOP_EVENT_RUNTIME_APSCHEDULER_SPOOL_PATH", "").strip()
+        or scheduler_cfg.get("spool_path")
+        or default_spool_path
+    )
+    default_jobstore_url = _default_scheduler_jobstore_url(schedule_dir=schedule_dir, pg_settings=pg_settings)
+    jobstore_url = str(
+        os.getenv("CFOP_EVENT_RUNTIME_APSCHEDULER_JOBSTORE_URL", "").strip()
+        or scheduler_cfg.get("jobstore_url")
+        or default_jobstore_url
+    )
+    misfire_grace_time_seconds = int(
+        os.getenv("CFOP_EVENT_RUNTIME_APSCHEDULER_MISFIRE_GRACE_SECONDS", "").strip()
+        or scheduler_cfg.get("misfire_grace_time_seconds")
+        or 300
+    )
+
+    return {
+        "backend": backend,
+        "jobstore_url": jobstore_url,
+        "spool_path": spool_path,
+        "misfire_grace_time_seconds": misfire_grace_time_seconds,
+    }
+
+
+def _default_scheduler_jobstore_url(schedule_dir: str, pg_settings: dict) -> str:
+    dsn = str(pg_settings.get("dsn") or "").strip()
+    if dsn:
+        return dsn
+    sqlite_path = Path(schedule_dir) / "apscheduler.sqlite"
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{sqlite_path}"
 
 
 def _load_root_config(config_path: str | None = None) -> dict:
