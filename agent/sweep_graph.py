@@ -40,11 +40,12 @@ SWEEP_PHASES = {
             "Check recent logs across infrastructure services for errors, warnings, or concerning patterns. "
             "Use loki_query with correct LogQL syntax. "
             "CORRECT examples: "
-            "{namespace=\"apps\"} |= \"error\" -- "
-            "{namespace=~\"apps|monitoring\"} |~ \"error|warning\" -- "
-            "{pod=~\"cfoperator.*\"} |= \"error\" -- "
-            "{namespace=\"monitoring\", container=\"prometheus\"} |= \"error\". "
-            "Use =~ for multi-value matching. NEVER use || between {} selectors."
+            '(1) {namespace="apps"} |= "error"  '
+            '(2) {namespace=~"apps|monitoring"} |~ "error|warning"  '
+            '(3) {pod=~"cfoperator.*"} |= "error"  '
+            '(4) {namespace="monitoring", container="prometheus"} |= "error".  '
+            "Use =~ for multi-value matching. NEVER use || or -- between {} selectors. "
+            "Each loki_query call must contain exactly ONE stream selector {}."
         ),
     },
     'containers': {

@@ -125,17 +125,18 @@ class ToolRegistry:
                     'Available labels: host, container_name, compose_service, container, container_id, job, level, source, stream, component, service_name. '
                     'Host values: raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4, headless-gpu. '
                     'CORRECT syntax examples: '
-                    '{host="raspberrypi2"} |= "error"  --  '
-                    '{container_name="immich_server"} |= "error"  --  '
-                    '{host="raspberrypi2", container_name="telegraf"} |= "timeout"  --  '
-                    '{container_name=~"immich.*"} |= "error"  --  '
-                    'To query multiple hosts use regex: {host=~"raspberrypi|raspberrypi2|raspberrypi3"} |= "error".  '
+                    '(1) {host="raspberrypi2"} |= "error"  '
+                    '(2) {container_name="immich_server"} |= "error"  '
+                    '(3) {host="raspberrypi2", container_name="telegraf"} |= "timeout"  '
+                    '(4) {container_name=~"immich.*"} |= "error"  '
+                    '(5) {host=~"raspberrypi|raspberrypi2|raspberrypi3"} |= "error" (regex for multiple hosts).  '
                     'WRONG patterns (DO NOT USE): '
                     '{job="x"} |= "e" and {container_name="y"} is WRONG - combine into {job="x", container_name="y"} |= "e".  '
                     '{host!="x"} |~ "error" is WRONG - negative-only selectors are rejected by Loki.  '
                     '{sel1} || {sel2} or {sel1} -- {sel2} is WRONG - LogQL has no multi-query syntax. Make separate calls.  '
                     '{host="a",b,c} is WRONG - use {host=~"a|b|c"} for multiple values.  '
                     'ALWAYS include at least one positive matcher (= or =~) in the selector. '
+                    'Each call must contain exactly ONE stream selector {}. '
                     'Never use and/or/||/-- between {} selectors. Never quote the selector. Use regex .* not glob *.',
                 'parameters': {
                     'type': 'object',

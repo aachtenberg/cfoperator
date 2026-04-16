@@ -1222,6 +1222,12 @@ Only return the JSON array, no other text."""
         'logql query error',
         'errors prevent log analysis',
         'prevent log retrieval',
+        'invalid logql',
+        'logql queries',
+        'log aggregation fail',
+        'monitoring system is compromised',
+        'monitoring tools',
+        'query configuration',
     ]
 
     def _is_self_referential(self, finding_text: str) -> bool:
@@ -1245,7 +1251,7 @@ Only return the JSON array, no other text."""
                     valid = []
                     # Patterns that indicate tool errors, not infrastructure issues
                     tool_error_patterns = [
-                        'is not found', 'not found in namespace', 'failed with',
+                        'not found', 'failed with',
                         'returned empty', 'no such', 'could not find',
                     ]
                     for f in findings:
@@ -1300,11 +1306,12 @@ Only return the JSON array, no other text."""
             "Check recent logs across infrastructure services for errors, warnings, or concerning patterns. "
             "Use loki_query with correct LogQL syntax. "
             "CORRECT examples: "
-            "{namespace=\"apps\"} |= \"error\" -- "
-            "{namespace=~\"apps|monitoring\"} |~ \"error|warning\" -- "
-            "{pod=~\"cfoperator.*\"} |= \"error\" -- "
-            "{namespace=\"monitoring\", container=\"prometheus\"} |= \"error\". "
-            "Use =~ for multi-value matching. NEVER use || between {} selectors."
+            '(1) {namespace="apps"} |= "error"  '
+            '(2) {namespace=~"apps|monitoring"} |~ "error|warning"  '
+            '(3) {pod=~"cfoperator.*"} |= "error"  '
+            '(4) {namespace="monitoring", container="prometheus"} |= "error".  '
+            "Use =~ for multi-value matching. NEVER use || or -- between {} selectors. "
+            "Each loki_query call must contain exactly ONE stream selector {}."
         )
 
     def _sweep_containers(self) -> List[Dict[str, Any]]:
@@ -1355,7 +1362,10 @@ Only return the JSON array, no other text."""
             "Do not rely only on current pod phase: recovered failures may appear only in recent Kubernetes warning events or Loki logs. "
             "Check for BackOff, Unhealthy/readiness failures, CrashLoopBackOff, and other issues. "
             "IMPORTANT: High restart counts alone are NOT findings if the pod is currently healthy and the last restart was hours/days ago. "
-            "Only report restarts as issues if they are RECENT (last 2 hours) or ONGOING. Stale restart counts from past node reboots are normal."
+            "Only report restarts as issues if they are RECENT (last 2 hours) or ONGOING. Stale restart counts from past node reboots are normal. "
+            "IMPORTANT: Identify workloads by their Deployment/StatefulSet/DaemonSet name, NOT by specific pod names. "
+            "Pod names include random suffixes (e.g., -7b5b6c8d9f-xyz12) that change on every rollout. "
+            "Never report a specific pod name as 'missing' — check the parent Deployment's ready replica count instead."
         )
         findings.extend(llm_findings)
 
