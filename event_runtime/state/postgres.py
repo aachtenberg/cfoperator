@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class PostgresStateSink(BaseStateSink):
     """Persist domain events to PostgreSQL when psycopg2 is available."""
 
-    durable = False
+    durable = True
 
     def __init__(self, dsn: str | None = None, table_name: str = "event_runtime_events"):
         super().__init__(name="postgres")
@@ -104,7 +104,7 @@ class PostgresStateSink(BaseStateSink):
         return {
             "name": self.name,
             "healthy": healthy,
-            "durable": False,
+            "durable": self.durable,
             **details,
         }
 

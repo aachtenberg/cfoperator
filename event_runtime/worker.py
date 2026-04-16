@@ -57,6 +57,7 @@ class WorkerJob:
     completed_at: Optional[str] = None
     result: Optional[dict] = None
     error: Optional[str] = None
+    attempt: int = 0
     _done: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def to_dict(self) -> dict:
@@ -68,6 +69,7 @@ class WorkerJob:
             "completed_at": self.completed_at,
             "result": self.result,
             "error": self.error,
+            "attempt": self.attempt,
             "alert": self.alert.to_dict(),
         }
 
@@ -97,6 +99,7 @@ class WorkerJob:
             completed_at=payload.get("completed_at"),
             result=payload.get("result"),
             error=payload.get("error"),
+            attempt=int(payload.get("attempt") or 0),
         )
         if job.status in {"completed", "failed"}:
             job._done.set()
@@ -182,6 +185,7 @@ class BackgroundAlertWorker:
         worker_count: int = 1,
         max_queue_size: int = 1000,
         max_terminal_jobs: int = 1000,
+        max_retries: int = 2,
         state: FileBackedWorkerState | None = None,
     ):
         if worker_count < 1:
@@ -192,6 +196,7 @@ class BackgroundAlertWorker:
         self.worker_count = worker_count
         self.max_queue_size = max_queue_size
         self.max_terminal_jobs = max_terminal_jobs
+        self.max_retries = max_retries
         self.state = state or FileBackedWorkerState()
         self._queue: queue.Queue[WorkerJob] = queue.Queue(maxsize=max_queue_size)
         self._jobs: Dict[str, WorkerJob] = self.state.load_jobs()
@@ -317,7 +322,9 @@ class BackgroundAlertWorker:
 
             try:
                 job.status = "running"
+                job.attempt += 1
                 job.started_at = _utc_now()
+                job.error = None
                 self.state.save_job(job)
                 observe_job_started(job.queue_delay_seconds())
                 self._update_metrics()
@@ -325,21 +332,40 @@ class BackgroundAlertWorker:
                 job.result = self.runtime.handle_alert(job.alert)
                 job.status = "completed"
             except Exception as exc:
-                job.status = "failed"
                 job.error = str(exc)
-                logger.exception("Background alert job %s failed", job.job_id)
+                if job.attempt < self.max_retries:
+                    job.status = "queued"
+                    job.started_at = None
+                    job.completed_at = None
+                    logger.warning(
+                        "Background alert job %s failed (attempt %d/%d), requeueing: %s",
+                        job.job_id, job.attempt, self.max_retries, exc,
+                    )
+                    self.state.save_job(job)
+                    self._update_metrics()
+                    self.runtime.record_event("alert_job_retrying", job=job.to_dict(), error=str(exc))
+                    try:
+                        self._queue.put_nowait(job)
+                    except queue.Full:
+                        job.status = "failed"
+                        logger.error("Cannot retry job %s: queue full", job.job_id)
+                    self._queue.task_done()
+                    continue
+                job.status = "failed"
+                logger.exception("Background alert job %s failed after %d attempts", job.job_id, job.attempt)
             finally:
-                job.completed_at = _utc_now()
-                self.state.save_job(job)
-                self._prune_terminal_jobs()
-                observe_job_finished(job.status, job.processing_duration_seconds())
-                self._update_metrics()
-                if job.status == "completed":
-                    self.runtime.record_event("alert_job_completed", job=job.to_dict())
-                elif job.status == "failed":
-                    self.runtime.record_event("alert_job_failed", job=job.to_dict(), error=job.error)
-                job._done.set()
-                self._queue.task_done()
+                if job.status in TERMINAL_JOB_STATUSES:
+                    job.completed_at = _utc_now()
+                    self.state.save_job(job)
+                    self._prune_terminal_jobs()
+                    observe_job_finished(job.status, job.processing_duration_seconds())
+                    self._update_metrics()
+                    if job.status == "completed":
+                        self.runtime.record_event("alert_job_completed", job=job.to_dict())
+                    elif job.status == "failed":
+                        self.runtime.record_event("alert_job_failed", job=job.to_dict(), error=job.error)
+                    job._done.set()
+                    self._queue.task_done()
 
     def _update_metrics(self) -> None:
         with self._jobs_lock:

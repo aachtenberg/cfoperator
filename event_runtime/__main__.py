@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 
@@ -10,8 +11,21 @@ from .bootstrap import build_portable_runtime, build_portable_worker
 from .server import serve
 
 
+def _configure_logging() -> None:
+    level = os.getenv("CFOP_EVENT_RUNTIME_LOG_LEVEL", "INFO").upper()
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        stream=sys.stderr,
+    )
+    # Quiet noisy libraries
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+
 def main() -> None:
     """Run the portable event runtime server."""
+    _configure_logging()
     parser = argparse.ArgumentParser(description="Portable CFOperator event runtime")
     subparsers = parser.add_subparsers(dest="command")
     serve_parser = subparsers.add_parser("serve", help="Run the HTTP server")

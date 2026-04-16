@@ -69,7 +69,11 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
     git_config = _load_git_config(config_path)
     git_repos = git_config.get("repos") or []
     github_settings = git_config.get("github") or {}
-    github_token = os.getenv("CFOP_GITHUB_TOKEN", "").strip() or str(github_settings.get("token") or "").strip()
+    github_token = (
+        os.getenv("CFOP_GITHUB_TOKEN", "").strip()
+        or os.getenv("GITHUB_TOKEN", "").strip()
+        or str(github_settings.get("token") or "").strip()
+    )
     github_api_url = os.getenv("CFOP_GITHUB_API_URL", "").strip() or str(github_settings.get("api_url") or "https://api.github.com")
     if git_repos:
         plugins.register_context_provider(
@@ -107,6 +111,7 @@ def build_portable_worker(
         return None
     max_queue_size = int(os.getenv("CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE", "1000"))
     max_terminal_jobs = int(os.getenv("CFOP_EVENT_RUNTIME_MAX_TERMINAL_JOBS", "1000"))
+    max_retries = int(os.getenv("CFOP_EVENT_RUNTIME_MAX_RETRIES", "2"))
     base_dir = Path(os.getenv("CFOP_EVENT_RUNTIME_DIR", str(Path.home() / ".cfoperator" / "event-runtime")))
     queue_path = os.getenv("CFOP_EVENT_RUNTIME_QUEUE_STATE_PATH", str(base_dir / "queue" / "jobs.json"))
     return BackgroundAlertWorker(
@@ -114,6 +119,7 @@ def build_portable_worker(
         worker_count=worker_count,
         max_queue_size=max_queue_size,
         max_terminal_jobs=max_terminal_jobs,
+        max_retries=max_retries,
         state=FileBackedWorkerState(queue_path),
     )
 
