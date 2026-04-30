@@ -858,6 +858,7 @@ class ToolRegistry:
             'k8s_rollout_status': 'rollout_status',
             'k8s_rollout_restart': 'rollout_restart',
             'k8s_get_services': 'get_services',
+            'k8s_get_ingresses': 'get_ingresses',
             'k8s_get_events': 'get_events',
             'k8s_describe': 'describe',
             'k8s_get_nodes': 'get_nodes',

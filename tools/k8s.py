@@ -325,6 +325,58 @@ class K8sTools:
                 return {'success': True, 'raw': result['stdout']}
         return result
 
+    def get_ingresses(self, namespace: str = "default",
+                      all_namespaces: bool = False) -> Dict[str, Any]:
+        """List ingresses with hosts, paths, and backend services."""
+        args = ['get', 'ingresses', '-o', 'json']
+        if all_namespaces:
+            args.append('-A')
+        else:
+            args.extend(['-n', namespace])
+
+        result = self._run_kubectl(args)
+        if result['success']:
+            try:
+                ingresses_json = json.loads(result['stdout'])
+                items = ingresses_json.get('items', [])
+                ingresses = []
+                for ingress in items:
+                    meta = ingress.get('metadata', {})
+                    spec = ingress.get('spec', {})
+                    rules = spec.get('rules', [])
+                    formatted_rules = []
+                    for rule in rules:
+                        host = rule.get('host')
+                        paths = []
+                        http = rule.get('http', {})
+                        for path_rule in http.get('paths', []):
+                            backend = path_rule.get('backend', {}).get('service', {})
+                            paths.append({
+                                'path': path_rule.get('path'),
+                                'pathType': path_rule.get('pathType'),
+                                'service': backend.get('name'),
+                                'port': backend.get('port', {})
+                            })
+                        formatted_rules.append({
+                            'host': host,
+                            'paths': paths
+                        })
+                    ingresses.append({
+                        'name': meta.get('name'),
+                        'namespace': meta.get('namespace'),
+                        'ingressClassName': spec.get('ingressClassName'),
+                        'rules': formatted_rules,
+                        'tls': spec.get('tls', [])
+                    })
+                return {
+                    'success': True,
+                    'ingresses': ingresses,
+                    'count': len(ingresses)
+                }
+            except json.JSONDecodeError:
+                return {'success': True, 'raw': result['stdout']}
+        return result
+
     # =========================================================================
     # Events and Describe
     # =========================================================================
@@ -744,6 +796,17 @@ class K8sTools:
             {
                 'name': 'k8s_get_services',
                 'description': 'List services showing type, cluster IP, ports, and selectors.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'namespace': {'type': 'string', 'description': 'Kubernetes namespace', 'default': 'default'},
+                        'all_namespaces': {'type': 'boolean', 'description': 'List in all namespaces', 'default': False}
+                    }
+                }
+            },
+            {
+                'name': 'k8s_get_ingresses',
+                'description': 'List ingresses showing hosts, paths, and backend services.',
                 'parameters': {
                     'type': 'object',
                     'properties': {
