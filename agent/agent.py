@@ -11,6 +11,7 @@ Version: 1.0.8
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -1845,15 +1846,225 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             logger.info(f"Deduplicated {len(findings)} findings to {len(deduped)}")
         return deduped
 
-    def _verify_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """LLM judge pass to filter hallucinated or unsupported findings.
+    # Tokens that look like real workload identifiers but are too generic to
+    # match safely against pod/deployment names. Kept narrow on purpose — only
+    # words the sweep prompts themselves use as scaffolding, not domain nouns.
+    _GROUND_TRUTH_STOPWORDS = frozenset({
+        'active', 'apparent', 'apps', 'cluster', 'config', 'configuration',
+        'container', 'containers', 'control', 'critical', 'data', 'default',
+        'degraded', 'deploy', 'deployed', 'deployment', 'docker', 'evidence',
+        'expectations', 'expected', 'failed', 'failing', 'feature', 'finding',
+        'found', 'health', 'healthy', 'history', 'image', 'images',
+        'infrastructure', 'ingress', 'ingresses', 'install', 'installed',
+        'instance', 'issue', 'issues', 'kubelet', 'logs', 'master', 'masters',
+        'memory', 'metric', 'metrics', 'missing', 'monitoring', 'name',
+        'namespace', 'namespaces', 'network', 'node', 'nodes', 'normal',
+        'operator', 'overall', 'plane', 'pod', 'pods', 'pressure', 'primary',
+        'production', 'project', 'prometheus', 'ready', 'related', 'remediation',
+        'report', 'restart', 'restarts', 'running', 'scrape', 'service',
+        'services', 'severity', 'should', 'stability', 'stable', 'status',
+        'storage', 'system', 'systems', 'target', 'targets', 'unhealthy',
+        'unstable', 'verify', 'warning', 'workload', 'workloads',
+    })
 
-        Sends each finding with its evidence to the LLM and asks it to return
-        only findings where the evidence actually supports the claim.
+    _MISSING_KEYWORDS = (
+        'not installed', 'not running', 'not present', 'not deployed',
+        'no active', 'no such', 'does not have', "doesn't have",
+        'is missing', 'are missing', 'not found',
+    )
+
+    _NODE_HEALTH_KEYWORDS = (
+        'kubelet', 'service issue', 'service is not', 'service not',
+        'unhealthy', 'unstable', 'pressure', 'degraded', 'stability',
+        'not running', 'not ready', 'down',
+    )
+
+    def _ground_truth_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Pull a single cluster snapshot used to disprove obvious false positives.
+
+        Returns None if K8sTools isn't wired up (tests, partial bootstrap),
+        which makes the suppressor a no-op.
+        """
+        k8s = getattr(getattr(self, 'tools', None), 'k8s_tools', None)
+        if not k8s:
+            return None
+
+        snapshot: Dict[str, Any] = {'nodes': {}, 'workloads': set()}
+
+        try:
+            nodes_result = k8s.get_nodes()
+            if nodes_result.get('success'):
+                for n in nodes_result.get('nodes', []):
+                    name = n.get('name')
+                    if name:
+                        snapshot['nodes'][name.lower()] = n
+        except Exception as e:
+            logger.debug(f"Ground truth: could not load nodes: {e}")
+
+        try:
+            # Single broad lookup covering everything a sweep might claim is "missing".
+            result = k8s._run_kubectl(
+                ['get',
+                 'pods,deployments,daemonsets,statefulsets,cronjobs,jobs,services,ingresses',
+                 '-A', '-o', 'name'],
+                timeout=15,
+            )
+            if result.get('success'):
+                for line in result.get('stdout', '').splitlines():
+                    # Lines look like "pod/river-history-ingest-29625252-8ltx8"
+                    if '/' in line:
+                        name = line.split('/', 1)[1].strip().lower()
+                        if name:
+                            snapshot['workloads'].add(name)
+        except Exception as e:
+            logger.debug(f"Ground truth: could not load workloads: {e}")
+
+        return snapshot
+
+    def _ground_truth_suppress(self,
+                               finding: Dict[str, Any],
+                               snapshot: Dict[str, Any]) -> Optional[str]:
+        """Return a reason string if the cluster snapshot disproves the finding."""
+        if not snapshot:
+            return None
+
+        text = (str(finding.get('finding', '')) + ' '
+                + str(finding.get('evidence', ''))).lower()
+        if not text.strip():
+            return None
+
+        # Pattern 1: claim asserts a node-level health/kubelet problem, but the
+        # node is actually Ready with no pressure. k3s embeds the kubelet, so a
+        # missing kubelet.service is expected and not a real finding.
+        for node_name, node in snapshot['nodes'].items():
+            if node_name in text and any(k in text for k in self._NODE_HEALTH_KEYWORDS):
+                ready = node.get('ready') == 'True'
+                mem_ok = node.get('memoryPressure') in ('False', 'Unknown', None)
+                disk_ok = node.get('diskPressure') in ('False', 'Unknown', None)
+                if ready and mem_ok and disk_ok:
+                    return (
+                        f"node {node_name} reports Ready=True with no pressure "
+                        f"(kubelet {node.get('kubeletVersion','?')}); "
+                        f"k3s embeds the kubelet so a standalone kubelet.service is expected to be absent"
+                    )
+
+        # Pattern 2: claim asserts a workload is missing, but a matching pod /
+        # deployment / cronjob / service / ingress exists in the cluster.
+        if any(k in text for k in self._MISSING_KEYWORDS):
+            tokens: set[str] = set()
+            tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
+            tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
+            tokens -= self._GROUND_TRUTH_STOPWORDS
+
+            for token in tokens:
+                if len(token) < 4:
+                    continue
+                for workload in snapshot['workloads']:
+                    if token == workload or token in workload.split('-'):
+                        return (
+                            f"workload matching '{token}' exists in cluster "
+                            f"({workload})"
+                        )
+
+        return None
+
+    def _verify_single_finding(self,
+                               finding: Dict[str, Any],
+                               provider_type: str,
+                               url: str,
+                               model: str,
+                               max_iterations: int) -> Optional[Dict[str, Any]]:
+        """Actively try to disprove a finding before allowing it to be emitted."""
+        infra = self._get_infra_summary()
+        system_prompt = f"""You are a strict verification agent for infrastructure monitoring findings.
+
+{infra}
+
+Your job is to try to DISPROVE a drafted finding before it is emitted.
+
+Verification procedure:
+1. Read the drafted finding and its current evidence.
+2. Identify the strongest counter-hypothesis that would make the finding false.
+3. Use the available tools to test that counter-hypothesis before deciding. You MUST make at least one tool call before your final answer.
+4. Keep the finding only if the fresh tool results still support it.
+
+Rules:
+- Prefer direct disproof queries over repeating the original evidence.
+- Verify exact Kubernetes namespace, pod, service, ingress, deployment, and container names before trusting a claim.
+- For missing exposure or routing claims, inspect Services and Ingresses in the relevant namespace before keeping the finding.
+- For log-absence or missing-container claims, resolve the real pod/container identity first, then inspect logs or pod status.
+- If the fresh query disproves the claim, if names do not match, if support is ambiguous, or if you cannot verify confidently, return [].
+- Never report tool/query failures as findings.
+
+Return ONLY a JSON array:
+[]
+or
+[{{"severity": "info|warning|critical", "finding": "description", "evidence": "fresh evidence from verification", "remediation": "suggested fix or action"}}]
+
+Only return the JSON array, no other text."""
+
+        user_msg = (
+            "Actively verify this drafted finding before it can be emitted. "
+            "Try to falsify it with fresh tool queries, then return [] if it does not survive verification.\n\n"
+            f"Draft finding JSON:\n{json.dumps(finding, default=str)}"
+        )
+
+        result = self._chat_with_tools(
+            provider_type=provider_type,
+            url=url,
+            model=model,
+            messages=[{'role': 'user', 'content': user_msg}],
+            system_context=system_prompt,
+            max_iterations=max_iterations
+        )
+
+        tool_calls = result.get('tool_calls', 0)
+        if tool_calls <= 0:
+            logger.info(f"Verification dropped finding with no fresh checks: {finding.get('finding', '')[:150]}")
+            return None
+
+        verified = self._parse_sweep_findings(result.get('response', ''))
+        if not verified:
+            return None
+
+        verified_finding = verified[0]
+        if not verified_finding.get('remediation') and finding.get('remediation'):
+            verified_finding['remediation'] = finding['remediation']
+        return verified_finding
+
+    def _verify_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Active verification pass to filter hallucinated or unsupported findings.
+
+        Re-checks each finding individually with tool access and asks the model
+        to actively look for the strongest disconfirming signal before keeping it.
         Graceful degradation: returns original findings if verification fails.
         """
         if not findings:
             return findings
+
+        # Stage 1: deterministic ground-truth suppressor. Cheap, cluster-state
+        # based, and catches the common LLM hallucinations (k3s embeds-kubelet,
+        # CronJob workloads claimed missing). Skipped silently when K8sTools
+        # isn't available (e.g. tests).
+        snapshot = self._ground_truth_snapshot()
+        if snapshot:
+            survivors = []
+            for f in findings:
+                reason = self._ground_truth_suppress(f, snapshot)
+                if reason:
+                    logger.info(
+                        f"Ground-truth suppressed: {str(f.get('finding',''))[:140]} — {reason}"
+                    )
+                    continue
+                survivors.append(f)
+            suppressed = len(findings) - len(survivors)
+            if suppressed:
+                logger.info(
+                    f"Ground-truth filter: {len(findings)} → {len(survivors)} ({suppressed} suppressed)"
+                )
+            findings = survivors
+            if not findings:
+                return findings
 
         resolved = self._resolve_provider()
         if not resolved:
@@ -1861,49 +2072,20 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             return findings
 
         provider_type, url, model = resolved
-
-        # Build the findings list for the judge
-        findings_text = ""
-        for i, f in enumerate(findings, 1):
-            evidence = f.get('evidence', 'No evidence provided')
-            findings_text += (
-                f"\n--- Finding {i} ---\n"
-                f"Severity: {f.get('severity', 'info')}\n"
-                f"Finding: {f['finding']}\n"
-                f"Evidence: {evidence}\n"
-            )
-
-        system_prompt = """You are a strict verification judge for infrastructure monitoring findings.
-For each finding below, check if the evidence actually supports the claim.
-REMOVE findings where:
-- The evidence contradicts the finding
-- The evidence is missing, vague, or says "No evidence provided"
-- The finding describes a tool/query failure, not an actual infrastructure issue (e.g., "pod not found", "query returned empty")
-- Container/service/pod names don't match between finding and evidence
-- The finding merely reports that a lookup or API call failed — this is a monitoring gap, not an outage
-- The pod name looks fabricated or reuses hash suffixes from other pods
-
-Be aggressive about filtering. It is MUCH better to miss a real issue than to report a hallucinated one.
-
-Return ONLY verified findings as a JSON array:
-[{"severity": "info|warning|critical", "finding": "description", "evidence": "the evidence"}]
-
-If no findings survive verification, return [].
-Only return the JSON array, no other text."""
-
-        user_msg = f"Verify these {len(findings)} findings:\n{findings_text}"
+        max_iterations = max(2, min(4, self._get_max_tool_iterations()))
 
         try:
-            result = self._chat_with_tools(
-                provider_type=provider_type,
-                url=url,
-                model=model,
-                messages=[{'role': 'user', 'content': user_msg}],
-                system_context=system_prompt,
-                max_iterations=1
-            )
-            response_text = result.get('response', '')
-            verified = self._parse_sweep_findings(response_text)
+            verified = []
+            for finding in findings:
+                verified_finding = self._verify_single_finding(
+                    finding=finding,
+                    provider_type=provider_type,
+                    url=url,
+                    model=model,
+                    max_iterations=max_iterations,
+                )
+                if verified_finding:
+                    verified.append(verified_finding)
 
             removed = len(findings) - len(verified)
             logger.info(f"Finding verification: {len(findings)} → {len(verified)} ({removed} filtered)")
