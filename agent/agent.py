@@ -1135,6 +1135,35 @@ Return empty array if nothing notable: {{"insights": []}}"""
 
         return "\n".join(lines)
 
+    def _build_sweep_system_prompt(self, task: str) -> str:
+        """Shared system prompt for sweep phases. Rules here apply to every phase.
+
+        The 'no positive observations' rule is load-bearing — without it, models
+        emit "[INFO] All nodes Ready" / "No errors in container X" lines as
+        findings, which produces notification noise even when nothing is wrong.
+        """
+        infra = self._get_infra_summary()
+        return f"""You are CFOperator performing a proactive infrastructure sweep.
+
+{infra}
+
+{task}
+
+A "finding" is a problem that requires attention or action. Healthy state, "no errors found", "all nodes Ready", "no warnings in container X", and similar status statements are NOT findings — they are the expected default. If a sweep phase finds nothing wrong, the correct response is the empty array [].
+
+Severity rules:
+- "critical": active outage, data loss risk, security breach, or imminent failure.
+- "warning": real degradation, recoverable failure, or risk that warrants action soon.
+- "info": ONLY for genuine actionable observations the operator should know about (e.g. a deprecated config still in use, an unusual but non-failing pattern). Do NOT emit "info" for healthy state, absence of errors, or "everything looks fine" reports.
+
+After investigating, respond with your findings as a JSON array:
+[{{"severity": "info|warning|critical", "finding": "description", "evidence": "exact tool output or data supporting this finding", "remediation": "suggested fix or action"}}]
+
+The "evidence" field is REQUIRED — paste the specific metric value, log line, container name, or tool output that proves the finding. Do not make claims without evidence. If your evidence is "no problems detected" or "queries returned no errors", do NOT emit a finding — return [] for that phase instead.
+
+If everything looks healthy, return an empty array: []
+Only return the JSON array, no other text."""
+
     def _sweep_with_llm(self, task: str, max_iterations: int = None) -> List[Dict[str, Any]]:
         """
         Run an LLM-driven sweep phase. The LLM gets the task description,
@@ -1160,21 +1189,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
             return []
 
         provider_type, url, model = resolved
-        infra = self._get_infra_summary()
-
-        system_prompt = f"""You are CFOperator performing a proactive infrastructure sweep.
-
-{infra}
-
-{task}
-
-After investigating, respond with your findings as a JSON array:
-[{{"severity": "info|warning|critical", "finding": "description", "evidence": "exact tool output or data supporting this finding", "remediation": "suggested fix or action"}}]
-
-The "evidence" field is REQUIRED — paste the specific metric value, log line, container name, or tool output that proves the finding. Do not make claims without evidence.
-
-If everything looks healthy, return an empty array: []
-Only return the JSON array, no other text."""
+        system_prompt = self._build_sweep_system_prompt(task)
 
         try:
             result = self._chat_with_tools(
@@ -1411,21 +1426,7 @@ Only return the JSON array, no other text."""
             max_iterations = self._get_max_tool_iterations()
 
         provider_type = 'ollama'
-        infra = self._get_infra_summary()
-
-        system_prompt = f"""You are CFOperator performing a proactive infrastructure sweep.
-
-{infra}
-
-{task}
-
-After investigating, respond with your findings as a JSON array:
-[{{"severity": "info|warning|critical", "finding": "description", "evidence": "exact tool output or data supporting this finding", "remediation": "suggested fix or action"}}]
-
-The "evidence" field is REQUIRED — paste the specific metric value, log line, container name, or tool output that proves the finding. Do not make claims without evidence.
-
-If everything looks healthy, return an empty array: []
-Only return the JSON array, no other text."""
+        system_prompt = self._build_sweep_system_prompt(task)
 
         try:
             result = self._chat_with_tools(
