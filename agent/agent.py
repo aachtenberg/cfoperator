@@ -1879,6 +1879,31 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
         'not running', 'not ready', 'down',
     )
 
+    # Pattern 3: metrics sweep reads an empty prometheus_query result and
+    # concludes the workload is not being scraped, even though the pod/service
+    # exists and is almost certainly a Prometheus target.
+    _SCRAPE_TARGET_KEYWORDS = (
+        'not scraping', 'not being scraped', 'no scrape target', 'missing scrape target',
+        'no metrics for', 'not reporting metrics', 'no active scrape', 'no targets for',
+    )
+
+    # Pattern 4: sweep claims a node is absent/unregistered when it is present
+    # in kubectl get nodes (metrics sweep may read a stale kube_node_info
+    # series as evidence that the node no longer exists).
+    _NODE_ABSENT_KEYWORDS = (
+        'not in cluster', 'not joined', 'missing from cluster', 'not part of cluster',
+        'node missing', 'node not present', 'node not found', 'not registered',
+    )
+
+    # Pattern 5: containers sweep uses k8s_get_ingresses (added 2026-04-30)
+    # and reports a service as unexposed when the tool returns empty for a
+    # name-mismatch query, even though a matching ingress exists.
+    _EXPOSURE_KEYWORDS = (
+        'not exposed', 'has no ingress', 'no ingress for', 'not publicly accessible',
+        'no external access', 'not reachable externally', 'no ingress rule',
+        'not accessible externally',
+    )
+
     def _ground_truth_snapshot(self) -> Optional[Dict[str, Any]]:
         """Pull a single cluster snapshot used to disprove obvious false positives.
 
@@ -1889,7 +1914,7 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
         if not k8s:
             return None
 
-        snapshot: Dict[str, Any] = {'nodes': {}, 'workloads': set()}
+        snapshot: Dict[str, Any] = {'nodes': {}, 'workloads': set(), 'ingresses': set()}
 
         try:
             nodes_result = k8s.get_nodes()
@@ -1913,9 +1938,12 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                 for line in result.get('stdout', '').splitlines():
                     # Lines look like "pod/river-history-ingest-29625252-8ltx8"
                     if '/' in line:
-                        name = line.split('/', 1)[1].strip().lower()
-                        if name:
-                            snapshot['workloads'].add(name)
+                        kind, resource_name = line.split('/', 1)
+                        resource_name = resource_name.strip().lower()
+                        if resource_name:
+                            snapshot['workloads'].add(resource_name)
+                            if kind.strip().lower() == 'ingress':
+                                snapshot['ingresses'].add(resource_name)
         except Exception as e:
             logger.debug(f"Ground truth: could not load workloads: {e}")
 
@@ -1964,6 +1992,58 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                         return (
                             f"workload matching '{token}' exists in cluster "
                             f"({workload})"
+                        )
+
+        # Pattern 3: claim asserts a workload is not being scraped by Prometheus
+        # or has no metrics, but the named pod/service exists. The metrics sweep
+        # commonly reads an empty prometheus_query result as "target absent"
+        # rather than "series has no recent data".
+        if any(k in text for k in self._SCRAPE_TARGET_KEYWORDS):
+            tokens = set()
+            tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
+            tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
+            tokens -= self._GROUND_TRUTH_STOPWORDS
+
+            for token in tokens:
+                if len(token) < 4:
+                    continue
+                for workload in snapshot['workloads']:
+                    if token == workload or token in workload.split('-'):
+                        return (
+                            f"workload matching '{token}' exists in cluster "
+                            f"({workload}); an empty prometheus_query result does not confirm the target is absent"
+                        )
+
+        # Pattern 4: claim asserts a node is absent from / not registered in
+        # the cluster, but the node appears in the snapshot. The metrics sweep
+        # may misread a stale kube_node_info series as "node missing".
+        if any(k in text for k in self._NODE_ABSENT_KEYWORDS):
+            for node_name in snapshot['nodes']:
+                if node_name in text:
+                    return (
+                        f"node '{node_name}' is present in the cluster "
+                        f"(confirmed in kubectl get nodes snapshot)"
+                    )
+
+        # Pattern 5: claim asserts a service has no ingress / is not externally
+        # accessible, but a matching Ingress resource exists. Triggered by
+        # k8s_get_ingresses returning empty on a name-mismatch query, causing
+        # the sweep to conclude the service is unexposed. Only fires on ingress
+        # name matches (not pods/services) to avoid over-suppression.
+        if any(k in text for k in self._EXPOSURE_KEYWORDS):
+            tokens = set()
+            tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
+            tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
+            tokens -= self._GROUND_TRUTH_STOPWORDS
+
+            for token in tokens:
+                if len(token) < 4:
+                    continue
+                for ingress_name in snapshot.get('ingresses', set()):
+                    if token == ingress_name or token in ingress_name.split('-'):
+                        return (
+                            f"ingress matching '{token}' exists in cluster "
+                            f"({ingress_name}); service exposure claim is likely a false positive"
                         )
 
         return None
