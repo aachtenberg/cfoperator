@@ -44,8 +44,12 @@ SWEEP_PHASES = {
             '(2) {namespace=~"apps|monitoring"} |~ "error|warning"  '
             '(3) {pod=~"cfoperator.*"} |= "error"  '
             '(4) {namespace="monitoring", container="prometheus"} |= "error".  '
-            "Use =~ for multi-value matching. NEVER use || or -- between {} selectors. "
-            "Each loki_query call must contain exactly ONE stream selector {}."
+            "Use =~ for multi-value matching. "
+            "Each loki_query call must contain exactly ONE stream selector {}. "
+            "NEVER combine multiple {} selectors with ||, --, OR, AND, or any other word — "
+            "Loki rejects those queries. To match multiple values, use =~ inside a single selector. "
+            'WRONG: {container="traefik"} |= "error" or {container="cloudflared"} |= "error"  '
+            'RIGHT: {container=~"traefik|cloudflared"} |= "error"'
         ),
     },
     'containers': {
