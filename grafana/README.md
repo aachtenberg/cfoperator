@@ -2,6 +2,8 @@
 
 Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure intelligence.
 
+An additional dashboard for the modular event runtime lives in [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, runtime error paths, and scheduled follow-up visibility.
+
 ## Dashboard Features
 
 ### Top Row - Key Metrics (Stats)
@@ -137,19 +139,25 @@ Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure inte
 
 ## Installation
 
-### Option 1: Upload to Grafana Cloud (Recommended)
+### Option 1: Upload to Grafana (Recommended)
 
 ```bash
 cd grafana
 ./upload-dashboard.sh
+./upload-dashboard.sh CFOperator event-runtime-dashboard.json
 ```
 
 This will:
-- Create a "CFOperator" folder in Grafana Cloud
+- Create a "CFOperator" folder in Grafana
 - Upload the dashboard with all panels configured
 - Return a direct URL to the dashboard
 
-**Dashboard URL**: `https://<your-org>.grafana.net/d/cfoperator-fleet/cfoperator-fleet-monitoring`
+The upload helper supports both:
+
+- Grafana Cloud via `GRAFANA_CLOUD_URL` and `GRAFANA_CLOUD_API_KEY`
+- Local k3s Grafana via `GRAFANA_ADMIN_PASSWORD` and optional `GRAFANA_URL`
+
+For this homelab, local Grafana defaults to `http://192.168.0.167:30091`.
 
 ### Option 2: Import via Grafana UI
 
@@ -158,6 +166,8 @@ This will:
 3. Click **Upload JSON file**
 4. Select `cfoperator-dashboard.json`
 5. Click **Import**
+
+For the event runtime dashboard, select `event-runtime-dashboard.json` instead.
 
 ### Option 3: Import via API
 
@@ -173,7 +183,7 @@ curl -X POST http://<grafana-host>:3000/api/dashboards/db \
 
 ## Required Data Sources
 
-This dashboard requires three data sources configured in Grafana:
+These dashboards require three data sources configured in Grafana:
 
 ### 1. Prometheus
 - **Name**: `prometheus` (lowercase, no spaces)
@@ -186,10 +196,10 @@ This dashboard requires three data sources configured in Grafana:
 - **Access**: Server (default)
 
 ### 3. PostgreSQL
-- **UID**: `ffcrf4dsqchz4e` (or configure via `SRE_PG_DATASOURCE_UID` env var in upload script)
+- **UID**: `sre-postgres` on local k3s Grafana, or configure via `SRE_PG_DATASOURCE_UID`
 - **Host**: `<postgres-host>:5434`
 - **Database**: `sre_knowledge`
-- **Used by**: Sweep Findings, Correlation Analysis, Notification History panels
+- **Used by**: Sweep Findings, Correlation Analysis, Notification History panels, and the event runtime Scheduled Tasks table
 
 ## Metrics Reference
 

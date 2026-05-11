@@ -11,6 +11,7 @@ Version: 1.0.8
 """
 
 import os
+import re
 import sys
 import time
 import json
@@ -128,6 +129,9 @@ class CFOperator:
             settings_getter=self._get_agent_settings
         )
 
+        # LLM request timeout (generous default for cold model loads)
+        self.llm_timeout = self.config.get('llm', {}).get('primary', {}).get('timeout', 180)
+
         # Initialize embeddings service for vector search
         embedding_config = self.config.get('llm', {}).get('embeddings', {})
         self.embeddings = EmbeddingService(
@@ -194,6 +198,7 @@ class CFOperator:
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration from YAML file."""
+        self._load_env_file(config_path)
         if not os.path.exists(config_path):
             logger.warning(f"Config file {config_path} not found, using defaults")
             return self._default_config()
@@ -204,6 +209,24 @@ class CFOperator:
         # Expand environment variables
         config = self._expand_env_vars(config)
         return config
+
+    def _load_env_file(self, config_path: str) -> None:
+        """Load a colocated .env file so config.yaml placeholders resolve consistently."""
+        config_dir = Path(config_path).expanduser().resolve().parent
+        env_path = config_dir / ".env"
+        if env_path.exists():
+            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                value = value.strip()
+                if value and value[0] == value[-1] and value[0] in {'"', "'"}:
+                    value = value[1:-1]
+                os.environ.setdefault(key, value)
 
     def _expand_env_vars(self, config: Any) -> Any:
         """Recursively expand ${VAR} references in config."""
@@ -756,6 +779,13 @@ When done, provide a summary of findings and whether the issue is resolved, need
         # 6b. LLM judge — filter hallucinated/unsupported findings
         findings = self._verify_findings(findings)
 
+        # 6c. Post findings to event runtime (if configured)
+        if findings:
+            try:
+                self._post_findings_to_event_runtime(findings)
+            except Exception as e:
+                logger.debug(f"Could not post findings to event runtime: {e}")
+
         # 7. Generate sweep report
         if findings:
             logger.info(f"Sweep found {len(findings)} total issues")
@@ -940,7 +970,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     'temperature': 0.3,
                     'format': 'json'
                 }
-                resp = req.post(f"{url}/api/chat", json=payload, timeout=90)
+                resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
                 text = resp.json().get('message', {}).get('content', '')
             elif provider_type == 'groq':
                 api_key = os.getenv('GROQ_API_KEY', '')
@@ -1105,6 +1135,35 @@ Return empty array if nothing notable: {{"insights": []}}"""
 
         return "\n".join(lines)
 
+    def _build_sweep_system_prompt(self, task: str) -> str:
+        """Shared system prompt for sweep phases. Rules here apply to every phase.
+
+        The 'no positive observations' rule is load-bearing — without it, models
+        emit "[INFO] All nodes Ready" / "No errors in container X" lines as
+        findings, which produces notification noise even when nothing is wrong.
+        """
+        infra = self._get_infra_summary()
+        return f"""You are CFOperator performing a proactive infrastructure sweep.
+
+{infra}
+
+{task}
+
+A "finding" is a problem that requires attention or action. Healthy state, "no errors found", "all nodes Ready", "no warnings in container X", and similar status statements are NOT findings — they are the expected default. If a sweep phase finds nothing wrong, the correct response is the empty array [].
+
+Severity rules:
+- "critical": active outage, data loss risk, security breach, or imminent failure.
+- "warning": real degradation, recoverable failure, or risk that warrants action soon.
+- "info": ONLY for genuine actionable observations the operator should know about (e.g. a deprecated config still in use, an unusual but non-failing pattern). Do NOT emit "info" for healthy state, absence of errors, or "everything looks fine" reports.
+
+After investigating, respond with your findings as a JSON array:
+[{{"severity": "info|warning|critical", "finding": "description", "evidence": "exact tool output or data supporting this finding", "remediation": "suggested fix or action"}}]
+
+The "evidence" field is REQUIRED — paste the specific metric value, log line, container name, or tool output that proves the finding. Do not make claims without evidence. If your evidence is "no problems detected" or "queries returned no errors", do NOT emit a finding — return [] for that phase instead.
+
+If everything looks healthy, return an empty array: []
+Only return the JSON array, no other text."""
+
     def _sweep_with_llm(self, task: str, max_iterations: int = None) -> List[Dict[str, Any]]:
         """
         Run an LLM-driven sweep phase. The LLM gets the task description,
@@ -1130,21 +1189,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
             return []
 
         provider_type, url, model = resolved
-        infra = self._get_infra_summary()
-
-        system_prompt = f"""You are CFOperator performing a proactive infrastructure sweep.
-
-{infra}
-
-{task}
-
-After investigating, respond with your findings as a JSON array:
-[{{"severity": "info|warning|critical", "finding": "description", "evidence": "exact tool output or data supporting this finding", "remediation": "suggested fix or action"}}]
-
-The "evidence" field is REQUIRED — paste the specific metric value, log line, container name, or tool output that proves the finding. Do not make claims without evidence.
-
-If everything looks healthy, return an empty array: []
-Only return the JSON array, no other text."""
+        system_prompt = self._build_sweep_system_prompt(task)
 
         try:
             result = self._chat_with_tools(
@@ -1193,6 +1238,12 @@ Only return the JSON array, no other text."""
         'logql query error',
         'errors prevent log analysis',
         'prevent log retrieval',
+        'invalid logql',
+        'logql queries',
+        'log aggregation fail',
+        'monitoring system is compromised',
+        'monitoring tools',
+        'query configuration',
     ]
 
     def _is_self_referential(self, finding_text: str) -> bool:
@@ -1216,7 +1267,7 @@ Only return the JSON array, no other text."""
                     valid = []
                     # Patterns that indicate tool errors, not infrastructure issues
                     tool_error_patterns = [
-                        'is not found', 'not found in namespace', 'failed with',
+                        'not found', 'failed with',
                         'returned empty', 'no such', 'could not find',
                     ]
                     for f in findings:
@@ -1271,11 +1322,12 @@ Only return the JSON array, no other text."""
             "Check recent logs across infrastructure services for errors, warnings, or concerning patterns. "
             "Use loki_query with correct LogQL syntax. "
             "CORRECT examples: "
-            "{namespace=\"apps\"} |= \"error\" -- "
-            "{namespace=~\"apps|monitoring\"} |~ \"error|warning\" -- "
-            "{pod=~\"cfoperator.*\"} |= \"error\" -- "
-            "{namespace=\"monitoring\", container=\"prometheus\"} |= \"error\". "
-            "Use =~ for multi-value matching. NEVER use || between {} selectors."
+            '(1) {namespace="apps"} |= "error"  '
+            '(2) {namespace=~"apps|monitoring"} |~ "error|warning"  '
+            '(3) {pod=~"cfoperator.*"} |= "error"  '
+            '(4) {namespace="monitoring", container="prometheus"} |= "error".  '
+            "Use =~ for multi-value matching. NEVER use || or -- between {} selectors. "
+            "Each loki_query call must contain exactly ONE stream selector {}."
         )
 
     def _sweep_containers(self) -> List[Dict[str, Any]]:
@@ -1326,7 +1378,10 @@ Only return the JSON array, no other text."""
             "Do not rely only on current pod phase: recovered failures may appear only in recent Kubernetes warning events or Loki logs. "
             "Check for BackOff, Unhealthy/readiness failures, CrashLoopBackOff, and other issues. "
             "IMPORTANT: High restart counts alone are NOT findings if the pod is currently healthy and the last restart was hours/days ago. "
-            "Only report restarts as issues if they are RECENT (last 2 hours) or ONGOING. Stale restart counts from past node reboots are normal."
+            "Only report restarts as issues if they are RECENT (last 2 hours) or ONGOING. Stale restart counts from past node reboots are normal. "
+            "IMPORTANT: Identify workloads by their Deployment/StatefulSet/DaemonSet name, NOT by specific pod names. "
+            "Pod names include random suffixes (e.g., -7b5b6c8d9f-xyz12) that change on every rollout. "
+            "Never report a specific pod name as 'missing' — check the parent Deployment's ready replica count instead."
         )
         findings.extend(llm_findings)
 
@@ -1371,21 +1426,7 @@ Only return the JSON array, no other text."""
             max_iterations = self._get_max_tool_iterations()
 
         provider_type = 'ollama'
-        infra = self._get_infra_summary()
-
-        system_prompt = f"""You are CFOperator performing a proactive infrastructure sweep.
-
-{infra}
-
-{task}
-
-After investigating, respond with your findings as a JSON array:
-[{{"severity": "info|warning|critical", "finding": "description", "evidence": "exact tool output or data supporting this finding", "remediation": "suggested fix or action"}}]
-
-The "evidence" field is REQUIRED — paste the specific metric value, log line, container name, or tool output that proves the finding. Do not make claims without evidence.
-
-If everything looks healthy, return an empty array: []
-Only return the JSON array, no other text."""
+        system_prompt = self._build_sweep_system_prompt(task)
 
         try:
             result = self._chat_with_tools(
@@ -1622,7 +1663,7 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
                     'temperature': 0.3,
                     'format': 'json'
                 }
-                resp = req.post(f"{url}/api/chat", json=payload, timeout=60)
+                resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
                 data = resp.json()
                 text = data.get('message', {}).get('content', '')
             elif provider_type == 'groq':
@@ -1806,15 +1847,305 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             logger.info(f"Deduplicated {len(findings)} findings to {len(deduped)}")
         return deduped
 
-    def _verify_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """LLM judge pass to filter hallucinated or unsupported findings.
+    # Tokens that look like real workload identifiers but are too generic to
+    # match safely against pod/deployment names. Kept narrow on purpose — only
+    # words the sweep prompts themselves use as scaffolding, not domain nouns.
+    _GROUND_TRUTH_STOPWORDS = frozenset({
+        'active', 'apparent', 'apps', 'cluster', 'config', 'configuration',
+        'container', 'containers', 'control', 'critical', 'data', 'default',
+        'degraded', 'deploy', 'deployed', 'deployment', 'docker', 'evidence',
+        'expectations', 'expected', 'failed', 'failing', 'feature', 'finding',
+        'found', 'health', 'healthy', 'history', 'image', 'images',
+        'infrastructure', 'ingress', 'ingresses', 'install', 'installed',
+        'instance', 'issue', 'issues', 'kubelet', 'logs', 'master', 'masters',
+        'memory', 'metric', 'metrics', 'missing', 'monitoring', 'name',
+        'namespace', 'namespaces', 'network', 'node', 'nodes', 'normal',
+        'operator', 'overall', 'plane', 'pod', 'pods', 'pressure', 'primary',
+        'production', 'project', 'prometheus', 'ready', 'related', 'remediation',
+        'report', 'restart', 'restarts', 'running', 'scrape', 'service',
+        'services', 'severity', 'should', 'stability', 'stable', 'status',
+        'storage', 'system', 'systems', 'target', 'targets', 'unhealthy',
+        'unstable', 'verify', 'warning', 'workload', 'workloads',
+    })
 
-        Sends each finding with its evidence to the LLM and asks it to return
-        only findings where the evidence actually supports the claim.
+    _MISSING_KEYWORDS = (
+        'not installed', 'not running', 'not present', 'not deployed',
+        'no active', 'no such', 'does not have', "doesn't have",
+        'is missing', 'are missing', 'not found',
+    )
+
+    _NODE_HEALTH_KEYWORDS = (
+        'kubelet', 'service issue', 'service is not', 'service not',
+        'unhealthy', 'unstable', 'pressure', 'degraded', 'stability',
+        'not running', 'not ready', 'down',
+    )
+
+    # Pattern 3: metrics sweep reads an empty prometheus_query result and
+    # concludes the workload is not being scraped, even though the pod/service
+    # exists and is almost certainly a Prometheus target.
+    _SCRAPE_TARGET_KEYWORDS = (
+        'not scraping', 'not being scraped', 'no scrape target', 'missing scrape target',
+        'no metrics for', 'not reporting metrics', 'no active scrape', 'no targets for',
+    )
+
+    # Pattern 4: sweep claims a node is absent/unregistered when it is present
+    # in kubectl get nodes (metrics sweep may read a stale kube_node_info
+    # series as evidence that the node no longer exists).
+    _NODE_ABSENT_KEYWORDS = (
+        'not in cluster', 'not joined', 'missing from cluster', 'not part of cluster',
+        'node missing', 'node not present', 'node not found', 'not registered',
+    )
+
+    # Pattern 5: containers sweep uses k8s_get_ingresses (added 2026-04-30)
+    # and reports a service as unexposed when the tool returns empty for a
+    # name-mismatch query, even though a matching ingress exists.
+    _EXPOSURE_KEYWORDS = (
+        'not exposed', 'has no ingress', 'no ingress for', 'not publicly accessible',
+        'no external access', 'not reachable externally', 'no ingress rule',
+        'not accessible externally',
+    )
+
+    def _ground_truth_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Pull a single cluster snapshot used to disprove obvious false positives.
+
+        Returns None if K8sTools isn't wired up (tests, partial bootstrap),
+        which makes the suppressor a no-op.
+        """
+        k8s = getattr(getattr(self, 'tools', None), 'k8s_tools', None)
+        if not k8s:
+            return None
+
+        snapshot: Dict[str, Any] = {'nodes': {}, 'workloads': set(), 'ingresses': set()}
+
+        try:
+            nodes_result = k8s.get_nodes()
+            if nodes_result.get('success'):
+                for n in nodes_result.get('nodes', []):
+                    name = n.get('name')
+                    if name:
+                        snapshot['nodes'][name.lower()] = n
+        except Exception as e:
+            logger.debug(f"Ground truth: could not load nodes: {e}")
+
+        try:
+            # Single broad lookup covering everything a sweep might claim is "missing".
+            result = k8s._run_kubectl(
+                ['get',
+                 'pods,deployments,daemonsets,statefulsets,cronjobs,jobs,services,ingresses',
+                 '-A', '-o', 'name'],
+                timeout=15,
+            )
+            if result.get('success'):
+                for line in result.get('stdout', '').splitlines():
+                    # Lines look like "pod/river-history-ingest-29625252-8ltx8"
+                    if '/' in line:
+                        kind, resource_name = line.split('/', 1)
+                        resource_name = resource_name.strip().lower()
+                        if resource_name:
+                            snapshot['workloads'].add(resource_name)
+                            if kind.strip().lower() == 'ingress':
+                                snapshot['ingresses'].add(resource_name)
+        except Exception as e:
+            logger.debug(f"Ground truth: could not load workloads: {e}")
+
+        return snapshot
+
+    def _ground_truth_suppress(self,
+                               finding: Dict[str, Any],
+                               snapshot: Dict[str, Any]) -> Optional[str]:
+        """Return a reason string if the cluster snapshot disproves the finding."""
+        if not snapshot:
+            return None
+
+        text = (str(finding.get('finding', '')) + ' '
+                + str(finding.get('evidence', ''))).lower()
+        if not text.strip():
+            return None
+
+        # Pattern 1: claim asserts a node-level health/kubelet problem, but the
+        # node is actually Ready with no pressure. k3s embeds the kubelet, so a
+        # missing kubelet.service is expected and not a real finding.
+        for node_name, node in snapshot['nodes'].items():
+            if node_name in text and any(k in text for k in self._NODE_HEALTH_KEYWORDS):
+                ready = node.get('ready') == 'True'
+                mem_ok = node.get('memoryPressure') in ('False', 'Unknown', None)
+                disk_ok = node.get('diskPressure') in ('False', 'Unknown', None)
+                if ready and mem_ok and disk_ok:
+                    return (
+                        f"node {node_name} reports Ready=True with no pressure "
+                        f"(kubelet {node.get('kubeletVersion','?')}); "
+                        f"k3s embeds the kubelet so a standalone kubelet.service is expected to be absent"
+                    )
+
+        # Pattern 2: claim asserts a workload is missing, but a matching pod /
+        # deployment / cronjob / service / ingress exists in the cluster.
+        if any(k in text for k in self._MISSING_KEYWORDS):
+            tokens: set[str] = set()
+            tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
+            tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
+            tokens -= self._GROUND_TRUTH_STOPWORDS
+
+            for token in tokens:
+                if len(token) < 4:
+                    continue
+                for workload in snapshot['workloads']:
+                    if token == workload or token in workload.split('-'):
+                        return (
+                            f"workload matching '{token}' exists in cluster "
+                            f"({workload})"
+                        )
+
+        # Pattern 3: claim asserts a workload is not being scraped by Prometheus
+        # or has no metrics, but the named pod/service exists. The metrics sweep
+        # commonly reads an empty prometheus_query result as "target absent"
+        # rather than "series has no recent data".
+        if any(k in text for k in self._SCRAPE_TARGET_KEYWORDS):
+            tokens = set()
+            tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
+            tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
+            tokens -= self._GROUND_TRUTH_STOPWORDS
+
+            for token in tokens:
+                if len(token) < 4:
+                    continue
+                for workload in snapshot['workloads']:
+                    if token == workload or token in workload.split('-'):
+                        return (
+                            f"workload matching '{token}' exists in cluster "
+                            f"({workload}); an empty prometheus_query result does not confirm the target is absent"
+                        )
+
+        # Pattern 4: claim asserts a node is absent from / not registered in
+        # the cluster, but the node appears in the snapshot. The metrics sweep
+        # may misread a stale kube_node_info series as "node missing".
+        if any(k in text for k in self._NODE_ABSENT_KEYWORDS):
+            for node_name in snapshot['nodes']:
+                if node_name in text:
+                    return (
+                        f"node '{node_name}' is present in the cluster "
+                        f"(confirmed in kubectl get nodes snapshot)"
+                    )
+
+        # Pattern 5: claim asserts a service has no ingress / is not externally
+        # accessible, but a matching Ingress resource exists. Triggered by
+        # k8s_get_ingresses returning empty on a name-mismatch query, causing
+        # the sweep to conclude the service is unexposed. Only fires on ingress
+        # name matches (not pods/services) to avoid over-suppression.
+        if any(k in text for k in self._EXPOSURE_KEYWORDS):
+            tokens = set()
+            tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
+            tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
+            tokens -= self._GROUND_TRUTH_STOPWORDS
+
+            for token in tokens:
+                if len(token) < 4:
+                    continue
+                for ingress_name in snapshot.get('ingresses', set()):
+                    if token == ingress_name or token in ingress_name.split('-'):
+                        return (
+                            f"ingress matching '{token}' exists in cluster "
+                            f"({ingress_name}); service exposure claim is likely a false positive"
+                        )
+
+        return None
+
+    def _verify_single_finding(self,
+                               finding: Dict[str, Any],
+                               provider_type: str,
+                               url: str,
+                               model: str,
+                               max_iterations: int) -> Optional[Dict[str, Any]]:
+        """Actively try to disprove a finding before allowing it to be emitted."""
+        infra = self._get_infra_summary()
+        system_prompt = f"""You are a strict verification agent for infrastructure monitoring findings.
+
+{infra}
+
+Your job is to try to DISPROVE a drafted finding before it is emitted.
+
+Verification procedure:
+1. Read the drafted finding and its current evidence.
+2. Identify the strongest counter-hypothesis that would make the finding false.
+3. Use the available tools to test that counter-hypothesis before deciding. You MUST make at least one tool call before your final answer.
+4. Keep the finding only if the fresh tool results still support it.
+
+Rules:
+- Prefer direct disproof queries over repeating the original evidence.
+- Verify exact Kubernetes namespace, pod, service, ingress, deployment, and container names before trusting a claim.
+- For missing exposure or routing claims, inspect Services and Ingresses in the relevant namespace before keeping the finding.
+- For log-absence or missing-container claims, resolve the real pod/container identity first, then inspect logs or pod status.
+- If the fresh query disproves the claim, if names do not match, if support is ambiguous, or if you cannot verify confidently, return [].
+- Never report tool/query failures as findings.
+
+Return ONLY a JSON array:
+[]
+or
+[{{"severity": "info|warning|critical", "finding": "description", "evidence": "fresh evidence from verification", "remediation": "suggested fix or action"}}]
+
+Only return the JSON array, no other text."""
+
+        user_msg = (
+            "Actively verify this drafted finding before it can be emitted. "
+            "Try to falsify it with fresh tool queries, then return [] if it does not survive verification.\n\n"
+            f"Draft finding JSON:\n{json.dumps(finding, default=str)}"
+        )
+
+        result = self._chat_with_tools(
+            provider_type=provider_type,
+            url=url,
+            model=model,
+            messages=[{'role': 'user', 'content': user_msg}],
+            system_context=system_prompt,
+            max_iterations=max_iterations
+        )
+
+        tool_calls = result.get('tool_calls', 0)
+        if tool_calls <= 0:
+            logger.info(f"Verification dropped finding with no fresh checks: {finding.get('finding', '')[:150]}")
+            return None
+
+        verified = self._parse_sweep_findings(result.get('response', ''))
+        if not verified:
+            return None
+
+        verified_finding = verified[0]
+        if not verified_finding.get('remediation') and finding.get('remediation'):
+            verified_finding['remediation'] = finding['remediation']
+        return verified_finding
+
+    def _verify_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Active verification pass to filter hallucinated or unsupported findings.
+
+        Re-checks each finding individually with tool access and asks the model
+        to actively look for the strongest disconfirming signal before keeping it.
         Graceful degradation: returns original findings if verification fails.
         """
         if not findings:
             return findings
+
+        # Stage 1: deterministic ground-truth suppressor. Cheap, cluster-state
+        # based, and catches the common LLM hallucinations (k3s embeds-kubelet,
+        # CronJob workloads claimed missing). Skipped silently when K8sTools
+        # isn't available (e.g. tests).
+        snapshot = self._ground_truth_snapshot()
+        if snapshot:
+            survivors = []
+            for f in findings:
+                reason = self._ground_truth_suppress(f, snapshot)
+                if reason:
+                    logger.info(
+                        f"Ground-truth suppressed: {str(f.get('finding',''))[:140]} — {reason}"
+                    )
+                    continue
+                survivors.append(f)
+            suppressed = len(findings) - len(survivors)
+            if suppressed:
+                logger.info(
+                    f"Ground-truth filter: {len(findings)} → {len(survivors)} ({suppressed} suppressed)"
+                )
+            findings = survivors
+            if not findings:
+                return findings
 
         resolved = self._resolve_provider()
         if not resolved:
@@ -1822,49 +2153,20 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             return findings
 
         provider_type, url, model = resolved
-
-        # Build the findings list for the judge
-        findings_text = ""
-        for i, f in enumerate(findings, 1):
-            evidence = f.get('evidence', 'No evidence provided')
-            findings_text += (
-                f"\n--- Finding {i} ---\n"
-                f"Severity: {f.get('severity', 'info')}\n"
-                f"Finding: {f['finding']}\n"
-                f"Evidence: {evidence}\n"
-            )
-
-        system_prompt = """You are a strict verification judge for infrastructure monitoring findings.
-For each finding below, check if the evidence actually supports the claim.
-REMOVE findings where:
-- The evidence contradicts the finding
-- The evidence is missing, vague, or says "No evidence provided"
-- The finding describes a tool/query failure, not an actual infrastructure issue (e.g., "pod not found", "query returned empty")
-- Container/service/pod names don't match between finding and evidence
-- The finding merely reports that a lookup or API call failed — this is a monitoring gap, not an outage
-- The pod name looks fabricated or reuses hash suffixes from other pods
-
-Be aggressive about filtering. It is MUCH better to miss a real issue than to report a hallucinated one.
-
-Return ONLY verified findings as a JSON array:
-[{"severity": "info|warning|critical", "finding": "description", "evidence": "the evidence"}]
-
-If no findings survive verification, return [].
-Only return the JSON array, no other text."""
-
-        user_msg = f"Verify these {len(findings)} findings:\n{findings_text}"
+        max_iterations = max(2, min(4, self._get_max_tool_iterations()))
 
         try:
-            result = self._chat_with_tools(
-                provider_type=provider_type,
-                url=url,
-                model=model,
-                messages=[{'role': 'user', 'content': user_msg}],
-                system_context=system_prompt,
-                max_iterations=1
-            )
-            response_text = result.get('response', '')
-            verified = self._parse_sweep_findings(response_text)
+            verified = []
+            for finding in findings:
+                verified_finding = self._verify_single_finding(
+                    finding=finding,
+                    provider_type=provider_type,
+                    url=url,
+                    model=model,
+                    max_iterations=max_iterations,
+                )
+                if verified_finding:
+                    verified.append(verified_finding)
 
             removed = len(findings) - len(verified)
             logger.info(f"Finding verification: {len(findings)} → {len(verified)} ({removed} filtered)")
@@ -1901,11 +2203,11 @@ Only return the JSON array, no other text."""
         try:
             if self.metrics:
                 # Node resource usage
-                cpu_result = self.metrics.query('100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle",job="kubernetes-nodes"}[5m])) * 100)')
+                cpu_result = self.metrics.query('100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle",job="node"}[5m])) * 100)')
                 if cpu_result:
                     snapshot['node_cpu_percent'] = {r['metric'].get('instance', '?'): round(float(r['value'][1]), 1) for r in cpu_result}
 
-                mem_result = self.metrics.query('(1 - node_memory_MemAvailable_bytes{job="kubernetes-nodes"} / node_memory_MemTotal_bytes{job="kubernetes-nodes"}) * 100')
+                mem_result = self.metrics.query('(1 - node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"}) * 100')
                 if mem_result:
                     snapshot['node_memory_percent'] = {r['metric'].get('instance', '?'): round(float(r['value'][1]), 1) for r in mem_result}
 
@@ -1952,6 +2254,41 @@ Only return the JSON array, no other text."""
                 'sweep_model': sweep_model or 'default',
             }
         }
+
+    def _post_findings_to_event_runtime(self, findings: List[Dict[str, Any]]) -> None:
+        """Post sweep findings as alerts to the event runtime if configured."""
+        url = os.getenv("CFOP_EVENT_RUNTIME_URL", "").strip()
+        if not url:
+            return
+        from urllib.request import Request, urlopen
+        from urllib.error import URLError
+        endpoint = f"{url.rstrip('/')}/alert?mode=async"
+        for finding in findings:
+            severity = str(finding.get("severity") or "info").lower()
+            if severity not in ("info", "warning", "critical"):
+                severity = "warning"
+            payload = {
+                "source": "cfoperator-sweep",
+                "severity": severity,
+                "summary": str(finding.get("finding") or finding.get("summary") or "sweep finding"),
+                "namespace": finding.get("namespace"),
+                "resource_type": finding.get("resource_type"),
+                "resource_name": finding.get("resource_name") or finding.get("resource"),
+                "details": {
+                    "category": finding.get("category"),
+                    "remediation": finding.get("remediation"),
+                    "evidence": finding.get("evidence"),
+                    "sweep_source": finding.get("source"),
+                },
+            }
+            body = json.dumps(payload, default=str).encode("utf-8")
+            try:
+                req = Request(endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST")
+                with urlopen(req, timeout=5) as resp:
+                    resp.read()
+            except (URLError, TimeoutError, OSError) as exc:
+                logger.debug(f"Failed to post finding to event runtime: {exc}")
+                return  # Stop trying on first failure
 
     def _notify_sweep_findings(self, report: Dict[str, Any]):
         """Send notifications for sweep findings and record in history."""
@@ -2246,7 +2583,7 @@ Only return the JSON array, no other text."""
                         f"{url}/api/chat",
                         json=payload,
                         headers=headers,
-                        timeout=120
+                        timeout=self.llm_timeout
                     )
                     data = response.json()
                     logger.debug(f"[CHAT] LLM status={response.status_code}, tool_calls={bool(data.get('message', {}).get('tool_calls'))}, content_len={len(data.get('message', {}).get('content', ''))}")
@@ -2617,7 +2954,7 @@ Only return the JSON array, no other text."""
                     f"{url}/api/chat",
                     json=payload,
                     headers={'Content-Type': 'application/json'},
-                    timeout=120
+                    timeout=self.llm_timeout
                 )
                 data = response.json()
                 total_input_tokens += data.get('prompt_eval_count', 0)

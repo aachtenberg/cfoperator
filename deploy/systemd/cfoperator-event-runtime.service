@@ -1,0 +1,23 @@
+[Unit]
+Description=CFOperator Event Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cfoperator
+Group=cfoperator
+WorkingDirectory=/opt/cfoperator
+Environment=CONFIG_PATH=/etc/cfoperator/config.yaml
+Environment=CFOP_EVENT_RUNTIME_DIR=/var/lib/cfoperator/event-runtime
+ExecStart=/usr/bin/python3 -m event_runtime --host 0.0.0.0 --port 8080 --config /etc/cfoperator/config.yaml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/var/lib/cfoperator/event-runtime
+
+[Install]
+WantedBy=multi-user.target

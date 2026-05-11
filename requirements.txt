@@ -23,6 +23,7 @@ requests>=2.31.0
 pyyaml>=6.0
 python-dotenv>=1.0.0
 slack-sdk>=3.26.0
+apscheduler>=3.10.4,<4
 
 # For embeddings (Ollama via OpenAI-compat API)
 # numpy for vector operations (used by embedding_service)

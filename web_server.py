@@ -217,9 +217,9 @@ class WebServer:
             setting_key = f'{backend}_selected_model'
             try:
                 # Save model selection for this backend
-                self.operator.kb._kb.set_setting(setting_key, model_name)
+                self.operator.kb.set_setting(setting_key, model_name)
                 # Also set this backend as the system-wide default provider
-                self.operator.kb._kb.set_setting('selected_backend', backend)
+                self.operator.kb.set_setting('selected_backend', backend)
                 logger.info(f"Set default provider to {backend}/{model_name}")
             except Exception as e:
                 logger.warning(f"Could not persist {backend} model selection (DB down?): {e}")
@@ -242,7 +242,7 @@ class WebServer:
             if backend not in ('auto', 'ollama', 'groq', 'anthropic'):
                 return jsonify({'error': f'Invalid backend: {backend}'}), 400
             try:
-                self.operator.kb._kb.set_setting('selected_backend', backend if backend != 'auto' else '')
+                self.operator.kb.set_setting('selected_backend', backend if backend != 'auto' else '')
                 logger.info(f"Set default provider to: {backend}")
             except Exception as e:
                 logger.warning(f"Could not persist provider selection: {e}")
@@ -261,7 +261,7 @@ class WebServer:
             data = request.json
             val = max(1, min(50, int(data.get('max_tool_iterations', 10))))
             try:
-                self.operator.kb._kb.set_setting('max_tool_iterations', str(val))
+                self.operator.kb.set_setting('max_tool_iterations', str(val))
             except Exception as e:
                 logger.warning(f"Could not persist max_tool_iterations (DB down?): {e}")
             return jsonify({'success': True, 'max_tool_iterations': val})
@@ -280,20 +280,25 @@ class WebServer:
             """Persist OODA loop interval settings."""
             data = request.json
             result = {}
+            errors = []
             if 'alert_check_interval' in data:
                 val = max(5, min(300, int(data['alert_check_interval'])))
                 try:
-                    self.operator.kb._kb.set_setting('alert_check_interval', str(val))
+                    self.operator.kb.set_setting('alert_check_interval', str(val))
+                    result['alert_check_interval'] = val
                 except Exception as e:
                     logger.warning(f"Could not persist alert_check_interval: {e}")
-                result['alert_check_interval'] = val
+                    errors.append('alert_check_interval')
             if 'sweep_interval' in data:
                 val = max(60, min(86400, int(data['sweep_interval'])))
                 try:
-                    self.operator.kb._kb.set_setting('sweep_interval', str(val))
+                    self.operator.kb.set_setting('sweep_interval', str(val))
+                    result['sweep_interval'] = val
                 except Exception as e:
                     logger.warning(f"Could not persist sweep_interval: {e}")
-                result['sweep_interval'] = val
+                    errors.append('sweep_interval')
+            if errors:
+                return jsonify({'success': False, 'error': f"Database unavailable, could not save: {', '.join(errors)}", **result}), 503
             return jsonify({'success': True, **result})
 
         @self.app.route('/api/settings/fallback')
@@ -309,7 +314,7 @@ class WebServer:
             data = request.json
             enabled = bool(data.get('allow_paid_escalation', False))
             try:
-                self.operator.kb._kb.set_setting('allow_paid_escalation', 'true' if enabled else 'false')
+                self.operator.kb.set_setting('allow_paid_escalation', 'true' if enabled else 'false')
             except Exception as e:
                 logger.warning(f"Could not persist fallback setting: {e}")
             return jsonify({'success': True, 'allow_paid_escalation': enabled})

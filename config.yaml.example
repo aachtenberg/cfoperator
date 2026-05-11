@@ -48,6 +48,7 @@ llm:
     provider: ollama
     url: http://localhost:11434
     model: qwen3:14b/no_think  # /no_think disables deliberative mode
+    timeout: 180  # seconds; generous default for cold model loads
 
   # Fallback chain (on error/timeout)
   fallback:
@@ -103,10 +104,122 @@ chat:
   port: 8083
   websocket: true
 
+# Event Runtime
+event_runtime:
+  scheduler:
+    backend: json-file  # or apscheduler
+    # jobstore_url: postgresql://user:password@host:5432/dbname  # optional; defaults to event runtime Postgres DSN, else local SQLite
+    # spool_path: /var/lib/cfoperator/event-runtime/apscheduler-fired.jsonl
+    misfire_grace_time_seconds: 300
+  persistence:
+    postgres:
+      enabled: true
+      table_name: event_runtime_events
+      # dsn: ${CFOP_EVENT_RUNTIME_PG_DSN}  # optional override; defaults to top-level database config
+  host_observability:
+    enabled: true
+    refresh_interval_seconds: 300
+    default_to_local: true
+    include_discovered_targets: true
+    providers:
+      - type: local
+      # - type: ssh
+      #   hosts:
+      #     edge-01:
+      #       address: 10.0.0.10
+      #       ssh:
+      #         user: aachten
+      #         key_path: ${HOME}/.ssh/id_ed25519
+      # - type: prometheus
+      #   url: http://prometheus:9090
+      #   discover: true
+      #   job_pattern: node-exporter|node_exporter
+      # - type: k3s
+      #   url: http://prometheus:9090
+      #   discover: true        # auto-discover nodes via kube_node_info
+      #   timeout: 10           # Prometheus query timeout in seconds
+
+# Git & GitHub Integration
+# Maps repositories to infrastructure targets so the agent can correlate
+# code changes with alerts and investigate recent deployments.
+git:
+  github:
+    token: ${GITHUB_TOKEN}
+    # api_url: https://api.github.com  # override for GitHub Enterprise
+  repos:
+    - name: cfoperator
+      github: aachtenberg/cfoperator
+      branch: main
+      # path: ~/repos/cfoperator  # optional: local clone for git blame/diff; GitHub API is the default
+      # ssh:                    # optional: for remote git access when using path on another host
+      #   user: aachten
+      #   address: 10.0.0.5
+      #   key_path: ${HOME}/.ssh/id_ed25519
+      #   known_hosts_path: ${HOME}/.ssh/known_hosts  # enables StrictHostKeyChecking=yes
+      hosts:
+        - headless-gpu
+        - ubuntu-llm-01
+      services:
+        - cfoperator
+        - cfoperator-event-runtime
+    - name: homelab-infra
+      github: aachtenberg/homelab-infra
+      branch: main
+      # path: ~/repos/homelab-infra  # optional local clone
+      hosts:
+        - raspberrypi
+        - raspberrypi2
+        - raspberrypi3
+        - raspberrypi4
+        - headless-gpu
+        - ubuntu-llm-01
+      services:
+        - apps
+        - ai
+        - data
+        - iot
+        - monitoring
+        - infrastructure
+        - daemonsets
+        - k3s
+    - name: luna-voice-assistance
+      github: aachtenberg/luna-voice-assistance
+      branch: main
+      services:
+        - luna-brain
+    - name: esp-sensor-hub
+      github: aachtenberg/esp-sensor-hub
+      branch: main
+      services:
+        - esp-sensor-hub
+        - mosquitto
+        - telegraf
+    - name: esp32-lora-gateway
+      github: aachtenberg/esp32-lora-gateway
+      branch: main
+      services:
+        - esp32-lora-api
+        - mosquitto
+    - name: esp32-lora-sensor
+      github: aachtenberg/esp32-lora-sensor
+      branch: main
+      services:
+        - esp32-lora-api
+        - mosquitto
+    - name: raspberry-pi-camera-control
+      github: aachtenberg/raspberry-pi-camera-control
+      branch: main
+      services:
+        - camera-api
+        - camera-web
+        - camera-postgres
+        - camera-postgres-exporter
+
 # Skills
 skills:
   directory: ./skills
   enabled:
     - investigate-container
+    - investigate-code-change
     - why-restart
     - compare-hosts

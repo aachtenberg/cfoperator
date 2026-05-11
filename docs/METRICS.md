@@ -4,6 +4,90 @@
 
 CFOperator exposes Prometheus metrics at `http://<cfoperator-host>:8083/metrics` for comprehensive observability.
 
+The portable event runtime also exposes Prometheus metrics at `http://<event-runtime-host>:8080/metrics` when running via `python3 -m event_runtime`.
+
+## Event Runtime Metrics
+
+### Runtime Health
+```promql
+cfoperator_event_runtime_up
+cfoperator_event_runtime_info
+```
+
+### Alert Throughput
+```promql
+cfoperator_event_runtime_alerts_received_total{severity="warning",source="manual"}
+cfoperator_event_runtime_alert_results_total{status="completed",action="investigate"}
+cfoperator_event_runtime_alert_processing_seconds
+```
+
+### Queue Performance
+```promql
+cfoperator_event_runtime_queue_size
+cfoperator_event_runtime_queue_capacity
+cfoperator_event_runtime_queue_oldest_age_seconds
+cfoperator_event_runtime_queue_rejected_total
+cfoperator_event_runtime_queue_wait_seconds
+cfoperator_event_runtime_queue_processing_seconds
+cfoperator_event_runtime_jobs{status="queued"}
+cfoperator_event_runtime_job_results_total{status="completed"}
+```
+
+### Replay and Persistence
+```promql
+cfoperator_event_runtime_replay_attempts_total{sink="postgres",result="success"}
+cfoperator_event_runtime_replay_events_total{sink="postgres",result="success"}
+cfoperator_event_runtime_replay_batch_size{sink="postgres"}
+cfoperator_event_runtime_events_recorded_total{event_type="alert_received"}
+```
+
+### Bare-Metal Host Observability
+```promql
+cfoperator_event_runtime_host_discovery_runs_total{provider="local-host-stats",result="success"}
+cfoperator_event_runtime_host_discovered_targets{provider="prometheus-host-stats"}
+cfoperator_event_runtime_host_discovery_timestamp_seconds{provider="prometheus-host-stats"}
+cfoperator_event_runtime_host_observation_runs_total{provider="ssh-host-stats",result="error"}
+```
+
+### Useful Queries
+```promql
+# Alerts per minute
+sum(rate(cfoperator_event_runtime_alerts_received_total[5m])) * 60
+
+# P95 runtime alert latency
+histogram_quantile(0.95,
+  sum by (le) (rate(cfoperator_event_runtime_alert_processing_seconds_bucket[5m]))
+)
+
+# Queue reject rate
+sum(rate(cfoperator_event_runtime_queue_rejected_total[5m]))
+
+# P95 queue wait latency
+histogram_quantile(0.95,
+  sum by (le) (rate(cfoperator_event_runtime_queue_wait_seconds_bucket[5m]))
+)
+
+# Replay activity by sink
+sum by (sink, result) (rate(cfoperator_event_runtime_replay_attempts_total[5m]))
+
+# Host observation failures by provider
+sum by (provider) (rate(cfoperator_event_runtime_host_observation_runs_total{result="error"}[15m]))
+
+# Time since last successful host discovery
+time() - max by (provider) (cfoperator_event_runtime_host_discovery_timestamp_seconds)
+```
+
+### Suggested Alert Rules
+
+Import or adapt [observability/event-runtime-alert-rules.yml](/home/aachten/repos/cfoperator/observability/event-runtime-alert-rules.yml) for the portable runtime. It includes alerts for:
+
+- runtime down
+- queue rejection rate
+- sustained queue age
+- replay failures
+- stale host discovery
+- host observation failures
+
 ## Core Agent Metrics
 
 ### Agent Information
@@ -280,6 +364,21 @@ scrape_configs:
     scrape_interval: 15s
     scrape_timeout: 10s
 ```
+
+Add the event runtime as a separate scrape target:
+
+```yaml
+scrape_configs:
+  - job_name: 'cfoperator-event-runtime'
+    static_configs:
+      - targets: ['<event-runtime-host>:8080']
+    scrape_interval: 15s
+    scrape_timeout: 10s
+```
+
+Repository sample: [observability/prometheus-event-runtime-scrape.yml](/home/aachten/repos/cfoperator/observability/prometheus-event-runtime-scrape.yml)
+
+Load the alert rules from [observability/event-runtime-alert-rules.yml](/home/aachten/repos/cfoperator/observability/event-runtime-alert-rules.yml) into Prometheus or your PrometheusRule flow.
 
 ## Verifying Metrics
 

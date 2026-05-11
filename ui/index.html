@@ -1488,22 +1488,33 @@
             }).catch(() => {});
         }
 
+        function flashInput(el, ok) {
+            el.style.borderColor = ok ? 'var(--accent)' : 'var(--red)';
+            if (!ok) el.title = 'Save failed — database may be offline';
+            else el.title = '';
+            setTimeout(() => { el.style.borderColor = ''; }, 2000);
+        }
+
         function onAlertIntervalChange() {
-            const val = Math.max(5, Math.min(300, parseInt(document.getElementById('alert-interval').value) || 10));
-            document.getElementById('alert-interval').value = val;
+            const el = document.getElementById('alert-interval');
+            const val = Math.max(5, Math.min(300, parseInt(el.value) || 10));
+            el.value = val;
             fetch('/api/settings/ooda', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({alert_check_interval: val})
-            }).catch(() => {});
+            }).then(r => { flashInput(el, r.ok); if (!r.ok) el.value = localStorage.getItem('cfop_alert_interval') || val; else localStorage.setItem('cfop_alert_interval', val); })
+              .catch(() => flashInput(el, false));
         }
 
         function onSweepIntervalChange() {
-            const val = Math.max(1, Math.min(1440, parseInt(document.getElementById('sweep-interval').value) || 30));
-            document.getElementById('sweep-interval').value = val;
+            const el = document.getElementById('sweep-interval');
+            const val = Math.max(1, Math.min(1440, parseInt(el.value) || 30));
+            el.value = val;
             fetch('/api/settings/ooda', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({sweep_interval: val * 60})
-            }).catch(() => {});
+            }).then(r => { flashInput(el, r.ok); if (!r.ok) el.value = localStorage.getItem('cfop_sweep_interval') || val; else localStorage.setItem('cfop_sweep_interval', val); })
+              .catch(() => flashInput(el, false));
         }
 
         function onFallbackToggle() {
@@ -1555,7 +1566,14 @@
             fetch('/api/settings/ooda').then(r => r.json()).then(data => {
                 document.getElementById('alert-interval').value = data.alert_check_interval;
                 document.getElementById('sweep-interval').value = Math.round(data.sweep_interval / 60);
-            }).catch(() => {});
+                localStorage.setItem('cfop_alert_interval', data.alert_check_interval);
+                localStorage.setItem('cfop_sweep_interval', Math.round(data.sweep_interval / 60));
+            }).catch(() => {
+                const ai = localStorage.getItem('cfop_alert_interval');
+                const si = localStorage.getItem('cfop_sweep_interval');
+                if (ai) document.getElementById('alert-interval').value = ai;
+                if (si) document.getElementById('sweep-interval').value = si;
+            });
 
             fetch('/api/settings/fallback').then(r => r.json()).then(data => {
                 document.getElementById('fallback-toggle').checked = data.allow_paid_escalation;

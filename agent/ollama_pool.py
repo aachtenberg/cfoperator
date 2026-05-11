@@ -224,7 +224,7 @@ class OllamaPool:
                     disabled = [i.name for i in self._instances if not i.enabled]
                     if self._kb:
                         try:
-                            self._kb._kb.set_setting('ollama_pool_disabled', ','.join(disabled))
+                            self._kb.set_setting('ollama_pool_disabled', ','.join(disabled))
                         except Exception as e:
                             logger.warning(f"Could not persist pool state: {e}")
                     return True

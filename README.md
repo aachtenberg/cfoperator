@@ -97,7 +97,7 @@ Sweep models sometimes hallucinate findings — e.g., reporting "immich-ml conta
 cp config.yaml.example config.yaml
 # Edit config.yaml with your host IPs
 cp .env.example .env
-# Add POSTGRES_PASSWORD and API keys to .env
+# Add POSTGRES_PASSWORD, GITHUB_TOKEN, and provider/webhook secrets to .env
 docker compose up -d
 # Access UI: http://localhost:8083
 ```

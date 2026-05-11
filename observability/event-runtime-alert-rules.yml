@@ -1,0 +1,140 @@
+groups:
+  - name: cfoperator-event-runtime
+    interval: 30s
+    rules:
+      - alert: CFOperatorEventRuntimeDown
+        expr: max_over_time(cfoperator_event_runtime_up[5m]) < 1
+        for: 5m
+        labels:
+          severity: critical
+          service: cfoperator-event-runtime
+        annotations:
+          summary: CFOperator event runtime is down
+          description: The event runtime has not reported itself up for at least 5 minutes.
+
+      - alert: CFOperatorEventRuntimeQueueRejecting
+        expr: sum(rate(cfoperator_event_runtime_queue_rejected_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: CFOperator event runtime is rejecting queued alerts
+          description: The background worker queue has rejected one or more alerts during the last 10 minutes.
+
+      - alert: CFOperatorEventRuntimeQueueStalled
+        expr: max(cfoperator_event_runtime_queue_oldest_age_seconds) > 300
+        for: 10m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: CFOperator event runtime queue is stalled
+          description: The oldest queued alert has been waiting more than 5 minutes for at least 10 minutes.
+
+      - alert: CFOperatorEventRuntimeReplayErrors
+        expr: sum(rate(cfoperator_event_runtime_replay_attempts_total{result="error"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: CFOperator event runtime replay is failing
+          description: Replay to one or more remote sinks has been failing during the last 15 minutes.
+
+      - alert: CFOperatorEventRuntimeHostDiscoveryStale
+        expr: time() - max(cfoperator_event_runtime_host_discovery_timestamp_seconds) > 900
+        for: 15m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: CFOperator host discovery is stale
+          description: Bare-metal host discovery has not completed successfully for at least 15 minutes.
+
+      - alert: CFOperatorEventRuntimeHostObservationErrors
+        expr: sum(rate(cfoperator_event_runtime_host_observation_runs_total{result="error"}[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: CFOperator bare-metal host observations are failing
+          description: One or more host observability providers have failed to collect host stats during the last 15 minutes.
+
+  - name: cfoperator-k3s-cluster
+    interval: 30s
+    rules:
+      - alert: K3sNodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: cfoperator-event-runtime
+        annotations:
+          summary: "K3s node {{ $labels.node }} is not ready"
+          description: "Node {{ $labels.node }} has been in a NotReady state for at least 5 minutes."
+
+      - alert: K3sNodeMemoryPressure
+        expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: "K3s node {{ $labels.node }} has memory pressure"
+          description: "Node {{ $labels.node }} is reporting MemoryPressure for at least 5 minutes."
+
+      - alert: K3sNodeDiskPressure
+        expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: "K3s node {{ $labels.node }} has disk pressure"
+          description: "Node {{ $labels.node }} is reporting DiskPressure for at least 5 minutes."
+
+      - alert: K3sPodCrashLooping
+        expr: increase(kube_pod_container_status_restarts_total[1h]) > 5
+        for: 10m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping"
+          description: "Container {{ $labels.container }} in {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last hour."
+
+      - alert: K3sNodeCpuHigh
+        expr: |
+          (sum by (node) (rate(container_cpu_usage_seconds_total{container!=""}[5m]))
+          / on(node) kube_node_status_allocatable{resource="cpu"}) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: "K3s node {{ $labels.node }} CPU usage above 90%"
+          description: "Node {{ $labels.node }} has sustained >90% CPU utilization for at least 15 minutes."
+
+      - alert: K3sNodeMemoryHigh
+        expr: |
+          (sum by (node) (container_memory_working_set_bytes{container!=""})
+          / on(node) kube_node_status_allocatable{resource="memory"}) > 0.9
+        for: 15m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: "K3s node {{ $labels.node }} memory usage above 90%"
+          description: "Node {{ $labels.node }} has sustained >90% memory utilization for at least 15 minutes."
+
+      - alert: K3sPodsNotReady
+        expr: count(kube_pod_status_phase{phase=~"Pending|Failed|Unknown"}) > 3
+        for: 10m
+        labels:
+          severity: warning
+          service: cfoperator-event-runtime
+        annotations:
+          summary: "Multiple k3s pods in unhealthy state"
+          description: "{{ $value }} pods are in Pending/Failed/Unknown phase for at least 10 minutes."
