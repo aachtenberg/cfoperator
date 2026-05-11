@@ -83,10 +83,11 @@ def test_verify_findings_returns_original_findings_when_verifier_fails():
 # Ground-truth suppressor (deterministic kubectl-based pre-filter)
 # ---------------------------------------------------------------------------
 
-def _snapshot(nodes=None, workloads=None):
+def _snapshot(nodes=None, workloads=None, ingresses=None):
     return {
         'nodes': {n['name'].lower(): n for n in (nodes or [])},
         'workloads': set(w.lower() for w in (workloads or [])),
+        'ingresses': set(i.lower() for i in (ingresses or [])),
     }
 
 
@@ -180,3 +181,121 @@ def test_ground_truth_snapshot_is_none_without_k8s_tools():
     operator = _make_operator(lambda **kwargs: {'response': '[]', 'tool_calls': 0})
     # _make_operator does not set operator.tools at all
     assert operator._ground_truth_snapshot() is None
+
+
+# ---------------------------------------------------------------------------
+# Pattern 3: phantom scrape-target / "not being scraped" claims
+# ---------------------------------------------------------------------------
+
+def test_ground_truth_suppresses_scrape_target_claim_when_workload_exists():
+    operator = _make_operator(lambda **kwargs: {'response': '[]', 'tool_calls': 0})
+    snapshot = _snapshot(workloads=['node-exporter-xk2p9'])
+
+    finding = {
+        'severity': 'warning',
+        'finding': 'Prometheus has no scrape target for node-exporter; metrics are not being scraped',
+        'evidence': 'prometheus_query kube_pod_info{pod="node-exporter"} returned no data',
+    }
+
+    reason = operator._ground_truth_suppress(finding, snapshot)
+    assert reason is not None
+    assert 'node-exporter' in reason
+    assert 'prometheus_query result' in reason
+
+
+def test_ground_truth_does_not_suppress_scrape_claim_for_truly_absent_workload():
+    operator = _make_operator(lambda **kwargs: {'response': '[]', 'tool_calls': 0})
+    snapshot = _snapshot(workloads=['prometheus-0', 'kube-state-metrics-6744db59c4-rnj8k'])
+
+    finding = {
+        'severity': 'warning',
+        'finding': 'blackbox-exporter is not reporting metrics; no active scrape target found',
+        'evidence': 'prometheus_query up{job="blackbox"} returned empty',
+    }
+
+    assert operator._ground_truth_suppress(finding, snapshot) is None
+
+
+# ---------------------------------------------------------------------------
+# Pattern 4: node-absent claims disproved by node presence in snapshot
+# ---------------------------------------------------------------------------
+
+def test_ground_truth_suppresses_node_absent_claim_when_node_in_snapshot():
+    operator = _make_operator(lambda **kwargs: {'response': '[]', 'tool_calls': 0})
+    snapshot = _snapshot(nodes=[{
+        'name': 'ubuntu-cm5-02',
+        'ready': 'True',
+        'memoryPressure': 'False',
+        'diskPressure': 'False',
+        'kubeletVersion': 'v1.31.4+k3s1',
+    }])
+
+    finding = {
+        'severity': 'critical',
+        'finding': 'ubuntu-cm5-02 is missing from cluster; node not found in kube_node_info',
+        'evidence': 'kube_node_info{node="ubuntu-cm5-02"} returned no series',
+    }
+
+    reason = operator._ground_truth_suppress(finding, snapshot)
+    assert reason is not None
+    assert 'ubuntu-cm5-02' in reason
+    assert 'present in the cluster' in reason
+
+
+def test_ground_truth_does_not_suppress_node_absent_claim_for_unknown_node():
+    operator = _make_operator(lambda **kwargs: {'response': '[]', 'tool_calls': 0})
+    snapshot = _snapshot(nodes=[{
+        'name': 'ubuntu-cm5-01',
+        'ready': 'True',
+        'memoryPressure': 'False',
+        'diskPressure': 'False',
+        'kubeletVersion': 'v1.31.4+k3s1',
+    }])
+
+    finding = {
+        'severity': 'critical',
+        'finding': 'worker-node-99 is not registered in the cluster',
+        'evidence': 'kubectl get nodes shows no worker-node-99',
+    }
+
+    assert operator._ground_truth_suppress(finding, snapshot) is None
+
+
+# ---------------------------------------------------------------------------
+# Pattern 5: phantom ingress/exposure claims
+# ---------------------------------------------------------------------------
+
+def test_ground_truth_suppresses_exposure_claim_when_ingress_exists():
+    operator = _make_operator(lambda **kwargs: {'response': '[]', 'tool_calls': 0})
+    snapshot = _snapshot(
+        workloads=['cfoperator-7d9f8b4c6-xkp2r', 'cfoperator-ingress'],
+        ingresses=['cfoperator-ingress'],
+    )
+
+    finding = {
+        'severity': 'warning',
+        'finding': 'cfoperator is not exposed externally; no ingress rule found for the service',
+        'evidence': 'k8s_get_ingresses returned no entries matching cfoperator',
+    }
+
+    reason = operator._ground_truth_suppress(finding, snapshot)
+    assert reason is not None
+    assert 'cfoperator' in reason
+    assert 'ingress' in reason
+
+
+def test_ground_truth_does_not_suppress_exposure_claim_when_only_pod_exists():
+    # Pod/service exists but no ingress — "not exposed" may be a real finding.
+    operator = _make_operator(lambda **kwargs: {'response': '[]', 'tool_calls': 0})
+    snapshot = _snapshot(
+        workloads=['internal-api-7d9f8b4c6-xkp2r'],
+        ingresses=[],
+    )
+
+    finding = {
+        'severity': 'warning',
+        'finding': 'internal-api is not publicly accessible; no ingress rule found',
+        'evidence': 'k8s_get_ingresses returned no entries for internal-api',
+    }
+
+    assert operator._ground_truth_suppress(finding, snapshot) is None
