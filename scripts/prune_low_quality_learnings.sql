@@ -18,6 +18,13 @@ BEGIN;
 \echo == before ==
 SELECT deprecated, count(*) FROM investigation_learnings GROUP BY 1 ORDER BY 1;
 
+-- Legacy rows predate the `deprecated` column default and have NULL there.
+-- find_learnings() filters `deprecated = false`, which excludes NULL — so these
+-- rows (some of them the best, verified, repeatedly-applied learnings) are
+-- silently invisible to retrieval. Normalise NULL -> false first.
+UPDATE investigation_learnings SET deprecated = false, updated_at = now()
+WHERE deprecated IS NULL;
+
 UPDATE investigation_learnings
 SET deprecated = true,
     updated_at = now()

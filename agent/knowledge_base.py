@@ -2221,7 +2221,7 @@ class KnowledgeBase:
                     FROM investigation_learnings il
                     LEFT JOIN learning_embeddings le ON il.id = le.learning_id
                     WHERE le.learning_id IS NULL
-                    AND il.deprecated = false
+                    AND il.deprecated IS NOT TRUE
                     ORDER BY il.created_at DESC
                     LIMIT :limit
                 """), {'limit': limit}).fetchall()
@@ -2534,9 +2534,11 @@ class KnowledgeBase:
             List of matching learnings
         """
         with self.session_scope() as session:
-            # Build base query
+            # Build base query. `.isnot(True)` (not `== False`) so legacy rows
+            # with a NULL `deprecated` — which predate the column default — are
+            # still treated as active rather than silently dropped from results.
             q = session.query(InvestigationLearning).filter(
-                InvestigationLearning.deprecated == False
+                InvestigationLearning.deprecated.isnot(True)
             )
 
             if verified_only:
@@ -2615,7 +2617,7 @@ class KnowledgeBase:
                                 ts_rank_cd(to_tsvector('english', il.search_text),
                                            plainto_tsquery('english', :query)) as fts_rank
                             FROM investigation_learnings il
-                            WHERE il.deprecated = false
+                            WHERE il.deprecated IS NOT TRUE
                               AND to_tsvector('english', il.search_text) @@ plainto_tsquery('english', :query)
                         )
                         SELECT il.id, il.learning_type, il.title, il.description,
@@ -2628,7 +2630,7 @@ class KnowledgeBase:
                         FROM investigation_learnings il
                         LEFT JOIN vector_scores v ON il.id = v.learning_id
                         LEFT JOIN fts_scores f ON il.id = f.learning_id
-                        WHERE il.deprecated = false
+                        WHERE il.deprecated IS NOT TRUE
                           AND (v.vector_sim IS NOT NULL OR f.fts_rank IS NOT NULL)
                         ORDER BY combined_score * COALESCE(
                             CASE WHEN il.times_applied >= 3 THEN 0.5 + COALESCE(il.success_rate, 0.5)
@@ -2737,7 +2739,7 @@ class KnowledgeBase:
         with self.session_scope() as session:
             learnings = session.query(InvestigationLearning).filter(
                 InvestigationLearning.created_at >= since,
-                InvestigationLearning.deprecated == False
+                InvestigationLearning.deprecated.isnot(True)
             ).order_by(InvestigationLearning.created_at.desc()).limit(limit).all()
             return [self._learning_to_dict(l) for l in learnings]
 
