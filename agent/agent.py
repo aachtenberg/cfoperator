@@ -28,7 +28,7 @@ from pathlib import Path
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
-from knowledge_base import ResilientKnowledgeBase
+from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition
 from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService
 
@@ -915,10 +915,18 @@ When done, provide a summary of findings and whether the issue is resolved, need
         provider_type, url, model = resolved
         logger.info(f"Correlation analysis: sending to {provider_type}/{model} (findings={len(sweep_findings)}, patterns={len(failure_patterns)}, correlated={len(correlated_events)})")
 
+        # Only feed actionable findings into the learning pipeline. Info-severity
+        # findings are typically healthy-state restatements ("X is running fine")
+        # and turning them into "patterns" just pollutes the knowledge base.
+        actionable_findings = [
+            f for f in sweep_findings
+            if isinstance(f, dict) and str(f.get('severity', '')).lower() in ('warning', 'critical')
+        ]
+
         prompt = f"""Analyze this operational data from the last 24 hours and identify patterns, root causes, or concerns.
 
 SWEEP FINDINGS (this cycle):
-{json.dumps(sweep_findings[:10], default=str)[:1500]}
+{json.dumps(actionable_findings[:10], default=str)[:1500]}
 
 OPERATIONAL SUMMARY:
 - Sweeps: {ops.get('sweeps', {}).get('total', 0)} total, avg {ops.get('sweeps', {}).get('avg_findings', 0)} findings/sweep
@@ -941,6 +949,7 @@ Return ONLY valid JSON:
     "learning_type": "pattern",
     "title": "Brief title (max 100 chars)",
     "description": "What pattern was detected and what it means",
+    "applies_when": "The concrete, observable condition under which this learning is relevant (e.g. 'pod X is OOMKilled', 'service Y and Z fail within 5 min of each other'). REQUIRED — an insight with no trigger condition is useless.",
     "services": ["service1"],
     "category": "resource"
   }}
@@ -954,6 +963,11 @@ Focus on:
 - Recurring issues across multiple sweeps
 - Escalation patterns (info → warning → critical over time)
 - Issues that investigations failed to resolve
+
+Do NOT emit an insight for a healthy/normal state, a one-off transient blip, or a
+restatement of a single finding. Only genuine cross-event patterns worth remembering.
+Every insight MUST have a non-empty, specific `applies_when`. Omit any insight you
+cannot give a real trigger condition for.
 Return empty array if nothing notable: {{"insights": []}}"""
 
         messages = [
@@ -1018,8 +1032,15 @@ Return empty array if nothing notable: {{"insights": []}}"""
             insights = result.get('insights', [])
 
             stored = 0
+            skipped = 0
             for insight in insights[:3]:
                 if not insight.get('title') or not insight.get('description'):
+                    continue
+                # Drop insights with no concrete trigger condition — they can
+                # never be retrieved on relevance, so they are pure noise.
+                if not learning_has_trigger_condition(insight):
+                    skipped += 1
+                    logger.info(f"Skipping correlation insight without applies_when: {insight.get('title','')[:60]}")
                     continue
                 insight.setdefault('learning_type', 'insight')
                 insight.setdefault('tags', ['correlation', 'automated'])
@@ -1034,10 +1055,13 @@ Return empty array if nothing notable: {{"insights": []}}"""
                         search_text = ' '.join(filter(None, [
                             insight.get('title', ''),
                             insight.get('description', ''),
+                            str(insight.get('applies_when', '')),
                         ]))
                         self._embed_learning(lid, search_text)
                 except Exception as e:
                     logger.warning(f"Failed to store correlation insight: {e}")
+            if skipped:
+                logger.info(f"Correlation analysis: skipped {skipped} insight(s) lacking a trigger condition")
 
             if stored:
                 logger.info(f"Correlation analysis: {stored} insights stored as learnings")
@@ -1639,7 +1663,7 @@ Return ONLY valid JSON in this exact format:
     "learning_type": "solution",
     "title": "Brief title (max 100 chars)",
     "description": "What was learned and how it was resolved",
-    "applies_when": "Conditions when this learning applies",
+    "applies_when": "The concrete, observable condition that should make a future investigation recall this (e.g. 'pod faster-whisper is OOMKilled', 'cfoperator restart alert with no matching k8s event'). REQUIRED.",
     "services": ["service1"],
     "tags": ["tag1", "tag2"],
     "category": "resource"
@@ -1648,7 +1672,11 @@ Return ONLY valid JSON in this exact format:
 
 learning_type must be one of: solution, pattern, root_cause, antipattern, insight
 category must be one of: resource, network, config, dependency
-Keep learnings specific and actionable. Only extract learnings if there's genuine insight."""
+Keep learnings specific and actionable. Only extract a learning if there is genuine,
+reusable insight — a root cause, a fix, or a non-obvious gotcha. Do NOT extract a
+learning that just restates "X was healthy" or describes a one-off transient blip.
+Every learning MUST have a non-empty, specific `applies_when`; omit any you cannot
+write a real trigger condition for. Return {{"learnings": []}} if nothing qualifies."""
 
             messages = [
                 {'role': 'system', 'content': 'You are a structured data extractor. Return ONLY valid JSON.'},
@@ -1723,9 +1751,14 @@ Keep learnings specific and actionable. Only extract learnings if there's genuin
             learnings = result.get('learnings', [])
 
             stored = 0
+            skipped = 0
             for learning_data in learnings[:3]:  # Cap at 3
                 learning_data['investigation_id'] = inv_id
                 if not learning_data.get('learning_type') or not learning_data.get('title'):
+                    continue
+                if not learning_has_trigger_condition(learning_data):
+                    skipped += 1
+                    logger.info(f"Skipping extracted learning without applies_when: {learning_data.get('title','')[:60]}")
                     continue
                 try:
                     lid = self.kb.store_learning(learning_data)

@@ -92,6 +92,18 @@ def normalize_outcome(outcome: str, default: str = "monitoring") -> str:
     return default
 
 
+def learning_has_trigger_condition(learning_data: Dict[str, Any]) -> bool:
+    """True if a learning has a usable `applies_when` trigger condition.
+
+    A learning with no trigger condition can never be matched on relevance by
+    retrieval, so it is dead weight in the knowledge base. Callers use this to
+    skip such learnings at write time; store_learning() additionally
+    auto-deprecates any that slip through.
+    """
+    aw = learning_data.get("applies_when")
+    return bool(aw and str(aw).strip())
+
+
 # ============================= Schema Models ==================================
 
 class Host(Base):
@@ -2452,19 +2464,31 @@ class KnowledgeBase:
             # Hash for deduplication
             embedding_hash = hashlib.md5(search_text.encode()).hexdigest()
 
+            # Quality gate: a learning with no `applies_when` has no trigger
+            # condition, so retrieval can never match it on relevance — it is
+            # dead weight that only dilutes semantic/FTS search. Store it for
+            # audit but mark it deprecated so find_learnings() never surfaces it.
+            applies_when = learning_data.get('applies_when')
+            born_deprecated = not learning_has_trigger_condition(learning_data)
+            if born_deprecated:
+                _log("warning", "Learning stored without applies_when — auto-deprecated",
+                     learning_type=learning_data.get('learning_type'),
+                     title=str(learning_data.get('title', ''))[:50])
+
             learning = InvestigationLearning(
                 investigation_id=learning_data.get('investigation_id'),
                 host_id=learning_data.get('host_id', self.host_id),
                 learning_type=learning_data['learning_type'],
                 title=learning_data['title'],
                 description=learning_data['description'],
-                applies_when=learning_data.get('applies_when'),
+                applies_when=applies_when,
                 solution_steps=learning_data.get('solution_steps'),
                 services=learning_data.get('services'),
                 tags=learning_data.get('tags'),
                 category=learning_data.get('category'),
                 search_text=search_text,
                 embedding_hash=embedding_hash,
+                deprecated=born_deprecated,
             )
             session.add(learning)
             session.flush()
@@ -2472,7 +2496,8 @@ class KnowledgeBase:
             _log("info", "Learning stored",
                  learning_id=learning_id,
                  learning_type=learning_data['learning_type'],
-                 title=learning_data['title'][:50])
+                 title=learning_data['title'][:50],
+                 deprecated=born_deprecated)
             return learning_id
 
     def get_learning(self, learning_id: int) -> Optional[Dict[str, Any]]:
