@@ -92,6 +92,18 @@ def normalize_outcome(outcome: str, default: str = "monitoring") -> str:
     return default
 
 
+def learning_has_trigger_condition(learning_data: Dict[str, Any]) -> bool:
+    """True if a learning has a usable `applies_when` trigger condition.
+
+    A learning with no trigger condition can never be matched on relevance by
+    retrieval, so it is dead weight in the knowledge base. Callers use this to
+    skip such learnings at write time; store_learning() additionally
+    auto-deprecates any that slip through.
+    """
+    aw = learning_data.get("applies_when")
+    return bool(aw and str(aw).strip())
+
+
 # ============================= Schema Models ==================================
 
 class Host(Base):
@@ -2209,7 +2221,7 @@ class KnowledgeBase:
                     FROM investigation_learnings il
                     LEFT JOIN learning_embeddings le ON il.id = le.learning_id
                     WHERE le.learning_id IS NULL
-                    AND il.deprecated = false
+                    AND il.deprecated IS NOT TRUE
                     ORDER BY il.created_at DESC
                     LIMIT :limit
                 """), {'limit': limit}).fetchall()
@@ -2452,19 +2464,31 @@ class KnowledgeBase:
             # Hash for deduplication
             embedding_hash = hashlib.md5(search_text.encode()).hexdigest()
 
+            # Quality gate: a learning with no `applies_when` has no trigger
+            # condition, so retrieval can never match it on relevance — it is
+            # dead weight that only dilutes semantic/FTS search. Store it for
+            # audit but mark it deprecated so find_learnings() never surfaces it.
+            applies_when = learning_data.get('applies_when')
+            born_deprecated = not learning_has_trigger_condition(learning_data)
+            if born_deprecated:
+                _log("warning", "Learning stored without applies_when — auto-deprecated",
+                     learning_type=learning_data.get('learning_type'),
+                     title=str(learning_data.get('title', ''))[:50])
+
             learning = InvestigationLearning(
                 investigation_id=learning_data.get('investigation_id'),
                 host_id=learning_data.get('host_id', self.host_id),
                 learning_type=learning_data['learning_type'],
                 title=learning_data['title'],
                 description=learning_data['description'],
-                applies_when=learning_data.get('applies_when'),
+                applies_when=applies_when,
                 solution_steps=learning_data.get('solution_steps'),
                 services=learning_data.get('services'),
                 tags=learning_data.get('tags'),
                 category=learning_data.get('category'),
                 search_text=search_text,
                 embedding_hash=embedding_hash,
+                deprecated=born_deprecated,
             )
             session.add(learning)
             session.flush()
@@ -2472,7 +2496,8 @@ class KnowledgeBase:
             _log("info", "Learning stored",
                  learning_id=learning_id,
                  learning_type=learning_data['learning_type'],
-                 title=learning_data['title'][:50])
+                 title=learning_data['title'][:50],
+                 deprecated=born_deprecated)
             return learning_id
 
     def get_learning(self, learning_id: int) -> Optional[Dict[str, Any]]:
@@ -2509,9 +2534,11 @@ class KnowledgeBase:
             List of matching learnings
         """
         with self.session_scope() as session:
-            # Build base query
+            # Build base query. `.isnot(True)` (not `== False`) so legacy rows
+            # with a NULL `deprecated` — which predate the column default — are
+            # still treated as active rather than silently dropped from results.
             q = session.query(InvestigationLearning).filter(
-                InvestigationLearning.deprecated == False
+                InvestigationLearning.deprecated.isnot(True)
             )
 
             if verified_only:
@@ -2590,7 +2617,7 @@ class KnowledgeBase:
                                 ts_rank_cd(to_tsvector('english', il.search_text),
                                            plainto_tsquery('english', :query)) as fts_rank
                             FROM investigation_learnings il
-                            WHERE il.deprecated = false
+                            WHERE il.deprecated IS NOT TRUE
                               AND to_tsvector('english', il.search_text) @@ plainto_tsquery('english', :query)
                         )
                         SELECT il.id, il.learning_type, il.title, il.description,
@@ -2603,7 +2630,7 @@ class KnowledgeBase:
                         FROM investigation_learnings il
                         LEFT JOIN vector_scores v ON il.id = v.learning_id
                         LEFT JOIN fts_scores f ON il.id = f.learning_id
-                        WHERE il.deprecated = false
+                        WHERE il.deprecated IS NOT TRUE
                           AND (v.vector_sim IS NOT NULL OR f.fts_rank IS NOT NULL)
                         ORDER BY combined_score * COALESCE(
                             CASE WHEN il.times_applied >= 3 THEN 0.5 + COALESCE(il.success_rate, 0.5)
@@ -2712,7 +2739,7 @@ class KnowledgeBase:
         with self.session_scope() as session:
             learnings = session.query(InvestigationLearning).filter(
                 InvestigationLearning.created_at >= since,
-                InvestigationLearning.deprecated == False
+                InvestigationLearning.deprecated.isnot(True)
             ).order_by(InvestigationLearning.created_at.desc()).limit(limit).all()
             return [self._learning_to_dict(l) for l in learnings]
 
