@@ -4061,6 +4061,11 @@ class ResilientKnowledgeBase:
             max_total_size_mb=int(os.getenv("SENTINEL_BUFFER_TOTAL_SIZE_MB", "100"))
         )
 
+        # Schema init state — schema creation is deferred and retried by the
+        # sync loop if the database is unreachable at startup.
+        self._schema_initialized = False
+        self._schema_lock = threading.Lock()
+
         # Sync thread
         self._sync_thread = None
         self._stop_sync = threading.Event()
@@ -4084,12 +4089,40 @@ class ResilientKnowledgeBase:
         )
         self._sync_thread.start()
 
+    def initialize_schema(self):
+        """Create the database schema, resiliently.
+
+        If PostgreSQL is unreachable at startup this does NOT raise — it logs a
+        warning and returns False. The agent then runs degraded (writes buffer
+        to the local JSONL outbox) and the background sync loop retries schema
+        creation once the database is healthy again. A transient DB outage must
+        never crash agent startup — that is the whole point of this wrapper.
+        """
+        with self._schema_lock:
+            if self._schema_initialized:
+                return True
+            try:
+                self._kb.initialize_schema()
+                self._schema_initialized = True
+                return True
+            except Exception as e:
+                self._health_monitor.mark_unhealthy()
+                _log("warning",
+                     "Schema init deferred — database unreachable at startup; "
+                     "running degraded (events buffer locally), will retry when DB recovers",
+                     error=str(e))
+                return False
+
     def _sync_loop(self):
         """Background loop that syncs buffered events when connection restored."""
         sync_interval = int(os.getenv("SENTINEL_SYNC_INTERVAL_SECONDS", "30"))
 
         while not self._stop_sync.is_set():
             try:
+                # Retry schema creation if it was deferred (DB down at startup).
+                if not self._schema_initialized and self._health_monitor.is_healthy():
+                    if self.initialize_schema():
+                        _log("info", "Schema init completed after database recovered")
                 if self._health_monitor.is_healthy() and self._buffer.has_pending_events():
                     self._sync_buffered_events()
             except Exception as e:
