@@ -4064,6 +4064,16 @@ def main():
     logger.info("Version: 1.0.8")
     logger.info("="*60)
 
+    # Load a .env file if present, so API keys (XAI_API_KEY, GROQ_API_KEY, ...)
+    # can live in .env. override=False — real environment variables (e.g. k8s
+    # secrets injected into the pod) take precedence; .env only fills the gaps.
+    try:
+        from dotenv import load_dotenv
+        if load_dotenv(override=False):
+            logger.info("Loaded environment from .env")
+    except ImportError:
+        logger.debug("python-dotenv not installed — skipping .env load")
+
     config_path = os.getenv('CONFIG_PATH', 'config.yaml')
     operator = CFOperator(config_path=config_path)
     operator.run()
