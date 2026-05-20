@@ -148,6 +148,14 @@ class WebServer:
                 'available': bool(os.getenv('ANTHROPIC_API_KEY', ''))
             })
 
+            # Check xAI Grok
+            providers.append({
+                'id': 'xai',
+                'name': 'xAI Grok',
+                'description': 'Grok models',
+                'available': bool(os.getenv('XAI_API_KEY', ''))
+            })
+
             return jsonify({'providers': providers})
 
         @self.app.route('/api/models/<backend>')
@@ -182,6 +190,21 @@ class WebServer:
                     data = resp.json()
                     models = sorted([m['id'] for m in data.get('data', []) if m.get('active', True)])
                     selected = self.operator.kb.get_setting('groq_selected_model', '')
+                    return jsonify({'models': models, 'selected': selected})
+
+                elif backend == 'xai':
+                    api_key = os.getenv('XAI_API_KEY', '')
+                    if not api_key:
+                        return jsonify({'error': 'XAI_API_KEY not set', 'models': []}), 500
+                    resp = requests.get(
+                        'https://api.x.ai/v1/models',
+                        headers={'Authorization': f'Bearer {api_key}'},
+                        timeout=5
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    models = sorted([m['id'] for m in data.get('data', [])])
+                    selected = self.operator.kb.get_setting('xai_selected_model', '')
                     return jsonify({'models': models, 'selected': selected})
 
                 elif backend == 'anthropic':
@@ -239,7 +262,7 @@ class WebServer:
             """Set the default LLM provider (without changing model)."""
             data = request.json
             backend = data.get('backend', 'auto')
-            if backend not in ('auto', 'ollama', 'groq', 'anthropic'):
+            if backend not in ('auto', 'ollama', 'groq', 'anthropic', 'xai'):
                 return jsonify({'error': f'Invalid backend: {backend}'}), 400
             try:
                 self.operator.kb.set_setting('selected_backend', backend if backend != 'auto' else '')
