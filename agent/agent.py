@@ -1197,7 +1197,7 @@ Only return the JSON array, no other text."""
         Returns list of findings: [{'severity': ..., 'finding': ...}]
         """
         if max_iterations is None:
-            max_iterations = self._get_max_tool_iterations()
+            max_iterations = self._get_sweep_max_iterations()
 
         # Check for sweep-specific backend/model override (DB settings)
         sweep_backend = self.kb.get_setting('sweep_backend', '')
@@ -1447,7 +1447,7 @@ Only return the JSON array, no other text."""
         instead of resolving via _resolve_provider().
         """
         if max_iterations is None:
-            max_iterations = self._get_max_tool_iterations()
+            max_iterations = self._get_sweep_max_iterations()
 
         provider_type = 'ollama'
         system_prompt = self._build_sweep_system_prompt(task)
@@ -2406,6 +2406,52 @@ Only return the JSON array, no other text."""
             pass
         return self.config.get('chat', {}).get('max_tool_iterations', 10)
 
+    def _get_sweep_max_iterations(self) -> int:
+        """Iteration cap for sweep phases.
+
+        Sweep phases are bounded data-gathering tasks, not open-ended chat — a
+        handful of tool calls is enough to inspect metrics/logs/containers. The
+        global `max_tool_iterations` (used for interactive chat) was letting
+        sweep phases loop up to 50 times, re-ingesting tool output each turn and
+        blowing up token cost. Keep this small and independent.
+        """
+        try:
+            val = self.config.get('ooda', {}).get('sweep', {}).get('max_iterations')
+            if val:
+                return max(2, min(20, int(val)))
+        except Exception:
+            pass
+        return 12
+
+    def _max_tool_result_chars(self) -> int:
+        """Per-tool-result size cap (chars) before it is appended to context.
+
+        Untrimmed tool output (kubectl dumps, Loki log floods) is re-sent on
+        every subsequent iteration, so a single fat result inflates every later
+        turn. Cap each result; the model still sees the head plus a marker.
+        """
+        try:
+            val = self.config.get('chat', {}).get('max_tool_result_chars')
+            if val:
+                return max(500, int(val))
+        except Exception:
+            pass
+        return 6000
+
+    @staticmethod
+    def _serialize_tool_result(result: Any, max_chars: int) -> str:
+        """JSON-serialize a tool result, truncating to max_chars.
+
+        Truncation keeps the head (most tools put the salient summary first) and
+        appends an explicit marker so the model knows output was clipped rather
+        than treating a cut-off payload as the whole picture.
+        """
+        text = json.dumps(result, default=str)
+        if len(text) <= max_chars:
+            return text
+        omitted = len(text) - max_chars
+        return text[:max_chars] + f'\n...[truncated {omitted} chars of tool output]'
+
     def _get_provider_chain(self, backend: str = 'auto', model: str = None) -> List[Tuple[str, str, str]]:
         """
         Get ordered list of providers to try for fallback.
@@ -2591,6 +2637,7 @@ Only return the JSON array, no other text."""
         total_input_tokens = 0
         total_output_tokens = 0
         learnings_used = []  # Track learning IDs consulted during this conversation
+        max_result_chars = self._max_tool_result_chars()
 
         # Get tool schemas
         tools = self.tools.get_schemas()
@@ -2601,15 +2648,23 @@ Only return the JSON array, no other text."""
         for iteration in range(max_iterations):
             try:
                 logger.debug(f"[CHAT] iteration {iteration+1}/{max_iterations}, messages count: {len(full_messages)}")
+                # On the final allowed iteration, withhold tools so the model is
+                # forced to produce a text answer instead of requesting yet more
+                # tool calls and falling off the end of the loop with nothing.
+                is_final_iteration = (iteration == max_iterations - 1)
+                offered_tools = [] if is_final_iteration else tools
+                if is_final_iteration:
+                    logger.info("[CHAT] final iteration — withholding tools to force an answer")
                 # Build payload for Ollama (OpenAI-compatible format)
                 if provider_type == 'ollama':
                     payload = {
                         'model': model,
                         'messages': full_messages,
                         'stream': False,
-                        'tools': tools,
                         'temperature': 0.7
                     }
+                    if offered_tools:
+                        payload['tools'] = offered_tools
                     headers = {'Content-Type': 'application/json'}
                     logger.debug(f"[CHAT] POST to {url}/api/chat, roles={[m.get('role') for m in full_messages]}")
                     response = requests.post(
@@ -2670,10 +2725,10 @@ Only return the JSON array, no other text."""
 
                             TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
 
-                            # Append each tool result
+                            # Append each tool result (size-capped)
                             full_messages.append({
                                 'role': 'tool',
-                                'content': json.dumps(result)
+                                'content': self._serialize_tool_result(result, max_result_chars)
                             })
 
                         # Continue loop for next iteration
@@ -2698,10 +2753,11 @@ Only return the JSON array, no other text."""
                     payload = {
                         'model': model,
                         'messages': full_messages,
-                        'tools': tools,
                         'temperature': 0.7,
                         'max_tokens': 4096
                     }
+                    if offered_tools:
+                        payload['tools'] = offered_tools
                     headers = {
                         'Content-Type': 'application/json',
                         'Authorization': f'Bearer {api_key}'
@@ -2767,11 +2823,11 @@ Only return the JSON array, no other text."""
 
                             TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
 
-                            # Append each tool result as a separate message
+                            # Append each tool result as a separate message (size-capped)
                             full_messages.append({
                                 'role': 'tool',
                                 'tool_call_id': tool_call_id,
-                                'content': json.dumps(result, default=str)
+                                'content': self._serialize_tool_result(result, max_result_chars)
                             })
 
                         continue
@@ -2837,9 +2893,10 @@ Only return the JSON array, no other text."""
                         'max_tokens': 4096,
                         'system': system_context,
                         'messages': converted_messages,
-                        'tools': anthropic_tools,
                         'temperature': 0.7
                     }
+                    if offered_tools:
+                        payload['tools'] = anthropic_tools
                     headers = {
                         'Content-Type': 'application/json',
                         'x-api-key': api_key,
@@ -2903,7 +2960,7 @@ Only return the JSON array, no other text."""
                             tool_results.append({
                                 'type': 'tool_result',
                                 'tool_use_id': tool_use_id,
-                                'content': json.dumps(result, default=str)
+                                'content': self._serialize_tool_result(result, max_result_chars)
                             })
 
                         # Append assistant message with all tool uses

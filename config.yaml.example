@@ -91,6 +91,9 @@ ooda:
     containers: true
     baseline_drift: true
     learning_consolidation: true
+    # Tool-call iterations allowed per sweep phase. Sweeps are bounded
+    # data-gathering, not open-ended chat — keep this small. Default 12.
+    max_iterations: 12
 
   # Morning summary (TPS report style)
   morning_summary:
@@ -103,6 +106,10 @@ chat:
   enabled: true
   port: 8083
   websocket: true
+  # Max chars of a single tool result appended to the LLM context. Oversized
+  # output (kubectl dumps, Loki log floods) is clipped to the head plus a
+  # marker, so one fat result can't inflate every later turn. Default 6000.
+  max_tool_result_chars: 6000
 
 # Event Runtime
 event_runtime:
