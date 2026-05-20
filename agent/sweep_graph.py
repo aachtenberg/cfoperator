@@ -54,6 +54,10 @@ SWEEP_PHASES = {
     },
     'containers': {
         'config_key': 'containers',
+        # Inject the k3s-cluster-health skill as the ordered playbook — without
+        # it the containers phase improvises and re-lists cluster state dozens
+        # of times. The skill is the single source of truth for that procedure.
+        'skill': 'k3s-cluster-health',
         'task': (
             "Review workload health across the fleet — Kubernetes pods, bare-metal services, "
             "and any Docker containers. Use k8s_get_pods, k8s_get_all_unhealthy, and k8s_get_events for k8s workloads across apps, monitoring, data, iot, ai, infrastructure, and kube-system, "
@@ -74,6 +78,7 @@ class SweepState(TypedDict):
     start_time: float
     phase_name: str
     phase_task: str
+    phase_skill: Any
 
 
 def fan_out_sweeps(state: dict) -> list[Send]:
@@ -87,6 +92,7 @@ def fan_out_sweeps(state: dict) -> list[Send]:
                 **state,
                 'phase_name': phase_name,
                 'phase_task': phase_def['task'],
+                'phase_skill': phase_def.get('skill'),
             }))
     logger.info(f"Fan-out: dispatching {len(sends)} sweep phases")
     return sends
@@ -103,6 +109,7 @@ def run_sweep_phase(state: dict) -> dict:
     agent = state['agent_ref']
     phase_name = state['phase_name']
     phase_task = state['phase_task']
+    phase_skill = state.get('phase_skill')
 
     phase_start = time.time()
     instance = pool.checkout()
@@ -114,6 +121,7 @@ def run_sweep_phase(state: dict) -> dict:
                 task=phase_task,
                 url=instance.url,
                 model=instance.model,
+                skill_name=phase_skill,
             )
             duration = time.time() - phase_start
             SWEEP_PHASE_DURATION.labels(phase=phase_name, instance=instance.name).observe(duration)
@@ -128,7 +136,7 @@ def run_sweep_phase(state: dict) -> dict:
         # No pool instance available — fallback to default provider
         logger.warning(f"Phase '{phase_name}': no pool instance available, using default provider")
         try:
-            findings = agent._sweep_with_llm(phase_task)
+            findings = agent._sweep_with_llm(phase_task, skill_name=phase_skill)
             duration = time.time() - phase_start
             SWEEP_PHASE_DURATION.labels(phase=phase_name, instance='default').observe(duration)
             return {'findings': findings}

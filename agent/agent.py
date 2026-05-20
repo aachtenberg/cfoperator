@@ -1159,19 +1159,37 @@ Return empty array if nothing notable: {{"insights": []}}"""
 
         return "\n".join(lines)
 
-    def _build_sweep_system_prompt(self, task: str) -> str:
+    def _build_sweep_system_prompt(self, task: str, skill_name: Optional[str] = None) -> str:
         """Shared system prompt for sweep phases. Rules here apply to every phase.
 
         The 'no positive observations' rule is load-bearing — without it, models
         emit "[INFO] All nodes Ready" / "No errors in container X" lines as
         findings, which produces notification noise even when nothing is wrong.
+
+        When `skill_name` names a loaded skill, that skill's procedure is
+        injected as the step-by-step playbook for the phase. Sweep phases left
+        to improvise re-list cluster state dozens of times and over-fetch logs;
+        an explicit ordered procedure keeps the investigation bounded.
         """
         infra = self._get_infra_summary()
+
+        procedure = ""
+        skill = (self.skills or {}).get(skill_name) if skill_name else None
+        if skill:
+            procedure = f"""
+
+PROCEDURE — follow these steps in order, and do not repeat a step whose data you already have:
+{skill['instructions']}
+"""
+        elif skill_name:
+            logger.warning(f"Sweep requested skill '{skill_name}' but it is not loaded")
+
         return f"""You are CFOperator performing a proactive infrastructure sweep.
 
 {infra}
 
 {task}
+{procedure}
 
 A "finding" is a problem that requires attention or action. Healthy state, "no errors found", "all nodes Ready", "no warnings in container X", and similar status statements are NOT findings — they are the expected default. If a sweep phase finds nothing wrong, the correct response is the empty array [].
 
@@ -1188,11 +1206,15 @@ The "evidence" field is REQUIRED — paste the specific metric value, log line, 
 If everything looks healthy, return an empty array: []
 Only return the JSON array, no other text."""
 
-    def _sweep_with_llm(self, task: str, max_iterations: int = None) -> List[Dict[str, Any]]:
+    def _sweep_with_llm(self, task: str, max_iterations: int = None,
+                        skill_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Run an LLM-driven sweep phase. The LLM gets the task description,
         infrastructure context, and access to all tools (prometheus_query,
         loki_query, docker_list, ssh_execute, etc).
+
+        `skill_name` optionally injects a loaded skill's procedure as the
+        ordered playbook for the phase (see _build_sweep_system_prompt).
 
         Returns list of findings: [{'severity': ..., 'finding': ...}]
         """
@@ -1213,7 +1235,7 @@ Only return the JSON array, no other text."""
             return []
 
         provider_type, url, model = resolved
-        system_prompt = self._build_sweep_system_prompt(task)
+        system_prompt = self._build_sweep_system_prompt(task, skill_name=skill_name)
 
         try:
             result = self._chat_with_tools(
@@ -1229,10 +1251,12 @@ Only return the JSON array, no other text."""
             tool_calls = result.get('tool_calls', 0)
             input_tokens = result.get('input_tokens', 0)
             output_tokens = result.get('output_tokens', 0)
+            cached_hits = result.get('cached_tool_hits', 0)
             hit_limit = tool_calls >= max_iterations
             logger.info(
                 f"Sweep LLM completed: {provider_type}/{model} | "
                 f"{tool_calls}/{max_iterations} tool calls{'(limit hit)' if hit_limit else ''} | "
+                f"{cached_hits} cached | "
                 f"{len(response_text)} chars | "
                 f"tokens: {input_tokens}in/{output_tokens}out"
             )
@@ -1405,7 +1429,8 @@ Only return the JSON array, no other text."""
             "Only report restarts as issues if they are RECENT (last 2 hours) or ONGOING. Stale restart counts from past node reboots are normal. "
             "IMPORTANT: Identify workloads by their Deployment/StatefulSet/DaemonSet name, NOT by specific pod names. "
             "Pod names include random suffixes (e.g., -7b5b6c8d9f-xyz12) that change on every rollout. "
-            "Never report a specific pod name as 'missing' — check the parent Deployment's ready replica count instead."
+            "Never report a specific pod name as 'missing' — check the parent Deployment's ready replica count instead.",
+            skill_name='k3s-cluster-health',
         )
         findings.extend(llm_findings)
 
@@ -1439,7 +1464,8 @@ Only return the JSON array, no other text."""
         return findings
 
     def _sweep_with_llm_on_instance(self, task: str, url: str, model: str,
-                                     max_iterations: int = None) -> List[Dict[str, Any]]:
+                                     max_iterations: int = None,
+                                     skill_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Run an LLM-driven sweep phase on a specific Ollama instance.
 
@@ -1450,7 +1476,7 @@ Only return the JSON array, no other text."""
             max_iterations = self._get_sweep_max_iterations()
 
         provider_type = 'ollama'
-        system_prompt = self._build_sweep_system_prompt(task)
+        system_prompt = self._build_sweep_system_prompt(task, skill_name=skill_name)
 
         try:
             result = self._chat_with_tools(
@@ -1466,10 +1492,12 @@ Only return the JSON array, no other text."""
             tool_calls = result.get('tool_calls', 0)
             input_tokens = result.get('input_tokens', 0)
             output_tokens = result.get('output_tokens', 0)
+            cached_hits = result.get('cached_tool_hits', 0)
             hit_limit = tool_calls >= max_iterations
             logger.info(
                 f"Sweep LLM completed: {provider_type}/{model}@{url} | "
                 f"{tool_calls}/{max_iterations} tool calls{'(limit hit)' if hit_limit else ''} | "
+                f"{cached_hits} cached | "
                 f"{len(response_text)} chars | "
                 f"tokens: {input_tokens}in/{output_tokens}out"
             )
@@ -2452,6 +2480,47 @@ Only return the JSON array, no other text."""
         omitted = len(text) - max_chars
         return text[:max_chars] + f'\n...[truncated {omitted} chars of tool output]'
 
+    # Read-only inspection tools whose result is stable enough to memoize for
+    # the lifetime of one _chat_with_tools call. A repeated identical call
+    # returns a short stub instead of re-running the tool and re-dumping the
+    # payload — this is what stops sweep phases from re-listing pods/deployments
+    # dozens of times. Mutating tools (ssh_execute) are deliberately excluded.
+    _MEMOIZABLE_TOOLS = frozenset({
+        'k8s_get_pods', 'k8s_get_nodes', 'k8s_get_deployments', 'k8s_get_events',
+        'k8s_get_all_unhealthy', 'k8s_get_ingresses', 'k8s_get_services',
+        'k8s_get_pod_status', 'k8s_get_pod_logs', 'loki_query', 'prometheus_query',
+        'ssh_list_services', 'ping_host',
+    })
+
+    def _cached_tool_exec(self, tool_name: str, tool_args: dict, cache: dict,
+                          max_chars: int):
+        """Execute a tool, memoizing read-only inspection tools within one session.
+
+        On a repeated identical (tool, args) call the tool is NOT re-run — a
+        short stub is returned telling the model the result is unchanged and to
+        reuse the earlier output. Caps the redundant re-fetching that bloats
+        sweep phases. Returns (content_str, result_obj, was_cached).
+        """
+        key = None
+        if tool_name in self._MEMOIZABLE_TOOLS:
+            try:
+                key = tool_name + '|' + json.dumps(tool_args, sort_keys=True, default=str)
+            except Exception:
+                key = None
+        if key is not None and key in cache:
+            prior = cache[key]
+            stub = json.dumps({
+                'cached': True,
+                'note': (f"Identical {tool_name} call already made in this session — "
+                         f"result is unchanged. Reuse the earlier {tool_name} output "
+                         f"above instead of re-fetching."),
+            })
+            return stub, prior, True
+        result = self.tools.execute(tool_name, tool_args)
+        if key is not None:
+            cache[key] = result
+        return self._serialize_tool_result(result, max_chars), result, False
+
     def _get_provider_chain(self, backend: str = 'auto', model: str = None) -> List[Tuple[str, str, str]]:
         """
         Get ordered list of providers to try for fallback.
@@ -2634,10 +2703,12 @@ Only return the JSON array, no other text."""
             max_iterations = self._get_max_tool_iterations()
 
         tool_calls_count = 0
+        cached_tool_hits = 0
         total_input_tokens = 0
         total_output_tokens = 0
         learnings_used = []  # Track learning IDs consulted during this conversation
         max_result_chars = self._max_tool_result_chars()
+        tool_cache = {}  # memoizes read-only tool results for this session
 
         # Get tool schemas
         tools = self.tools.get_schemas()
@@ -2708,9 +2779,14 @@ Only return the JSON array, no other text."""
                                     'max': max_iterations
                                 })
 
-                            logger.info(f"Executing tool: {tool_name}")
-                            result = self.tools.execute(tool_name, tool_args)
+                            content, result, was_cached = self._cached_tool_exec(
+                                tool_name, tool_args, tool_cache, max_result_chars)
                             tool_calls_count += 1
+                            if was_cached:
+                                cached_tool_hits += 1
+                                logger.info(f"Tool result reused from cache: {tool_name}")
+                            else:
+                                logger.info(f"Executing tool: {tool_name}")
 
                             if tool_name == 'find_learnings' and isinstance(result, list):
                                 learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
@@ -2725,10 +2801,10 @@ Only return the JSON array, no other text."""
 
                             TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
 
-                            # Append each tool result (size-capped)
+                            # Append each tool result (size-capped, memoized)
                             full_messages.append({
                                 'role': 'tool',
-                                'content': self._serialize_tool_result(result, max_result_chars)
+                                'content': content
                             })
 
                         # Continue loop for next iteration
@@ -2741,7 +2817,7 @@ Only return the JSON array, no other text."""
                         'tool_calls': tool_calls_count,
                         'input_tokens': total_input_tokens,
                         'output_tokens': total_output_tokens,
-                        'learning_ids': learnings_used
+                        'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
                     }
 
                 elif provider_type == 'groq':
@@ -2806,9 +2882,14 @@ Only return the JSON array, no other text."""
                                     'max': max_iterations
                                 })
 
-                            logger.info(f"Executing tool: {tool_name}")
-                            result = self.tools.execute(tool_name, tool_args)
+                            content, result, was_cached = self._cached_tool_exec(
+                                tool_name, tool_args, tool_cache, max_result_chars)
                             tool_calls_count += 1
+                            if was_cached:
+                                cached_tool_hits += 1
+                                logger.info(f"Tool result reused from cache: {tool_name}")
+                            else:
+                                logger.info(f"Executing tool: {tool_name}")
 
                             if tool_name == 'find_learnings' and isinstance(result, list):
                                 learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
@@ -2823,11 +2904,11 @@ Only return the JSON array, no other text."""
 
                             TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
 
-                            # Append each tool result as a separate message (size-capped)
+                            # Append each tool result as a separate message (size-capped, memoized)
                             full_messages.append({
                                 'role': 'tool',
                                 'tool_call_id': tool_call_id,
-                                'content': self._serialize_tool_result(result, max_result_chars)
+                                'content': content
                             })
 
                         continue
@@ -2839,7 +2920,7 @@ Only return the JSON array, no other text."""
                         'tool_calls': tool_calls_count,
                         'input_tokens': total_input_tokens,
                         'output_tokens': total_output_tokens,
-                        'learning_ids': learnings_used
+                        'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
                     }
 
                 elif provider_type == 'anthropic':
@@ -2941,9 +3022,14 @@ Only return the JSON array, no other text."""
                                     'max': max_iterations
                                 })
 
-                            logger.info(f"Executing tool: {tool_name}")
-                            result = self.tools.execute(tool_name, tool_args)
+                            content, result, was_cached = self._cached_tool_exec(
+                                tool_name, tool_args, tool_cache, max_result_chars)
                             tool_calls_count += 1
+                            if was_cached:
+                                cached_tool_hits += 1
+                                logger.info(f"Tool result reused from cache: {tool_name}")
+                            else:
+                                logger.info(f"Executing tool: {tool_name}")
 
                             if tool_name == 'find_learnings' and isinstance(result, list):
                                 learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
@@ -2960,7 +3046,7 @@ Only return the JSON array, no other text."""
                             tool_results.append({
                                 'type': 'tool_result',
                                 'tool_use_id': tool_use_id,
-                                'content': self._serialize_tool_result(result, max_result_chars)
+                                'content': content
                             })
 
                         # Append assistant message with all tool uses
@@ -2984,7 +3070,7 @@ Only return the JSON array, no other text."""
                         'tool_calls': tool_calls_count,
                         'input_tokens': total_input_tokens,
                         'output_tokens': total_output_tokens,
-                        'learning_ids': learnings_used
+                        'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
                     }
 
                 else:
@@ -3001,7 +3087,7 @@ Only return the JSON array, no other text."""
                     'tool_calls': tool_calls_count,
                     'input_tokens': total_input_tokens,
                     'output_tokens': total_output_tokens,
-                    'learning_ids': learnings_used
+                    'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
                 }
 
         # Hit max iterations — do one final no-tools call to get a summary.
@@ -3116,7 +3202,7 @@ Only return the JSON array, no other text."""
                     'tool_calls': tool_calls_count,
                     'input_tokens': total_input_tokens,
                     'output_tokens': total_output_tokens,
-                    'learning_ids': learnings_used
+                    'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
                 }
             else:
                 logger.warning("Summary call returned empty response after iteration limit")
@@ -3129,7 +3215,7 @@ Only return the JSON array, no other text."""
             'tool_calls': tool_calls_count,
             'input_tokens': total_input_tokens,
             'output_tokens': total_output_tokens,
-            'learning_ids': learnings_used
+            'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
         }
 
     def handle_chat_message(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None) -> Dict[str, Any]:
