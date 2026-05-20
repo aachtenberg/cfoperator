@@ -55,6 +55,9 @@ llm:
     - provider: groq
       model: llama-3.3-70b-versatile
       api_key: ${GROQ_API_KEY}
+    - provider: xai          # xAI Grok — OpenAI-compatible API
+      model: grok-3
+      api_key: ${XAI_API_KEY}
     - provider: gemini
       model: gemini-2.0-flash-exp
       api_key: ${GEMINI_API_KEY}

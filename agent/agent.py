@@ -97,6 +97,23 @@ LLM_FALLBACKS = Counter('cfoperator_llm_fallbacks_total', 'LLM fallback chain ac
 EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding generation requests', ['result'])
 EMBEDDING_CACHE_HITS = Counter('cfoperator_embedding_cache_hits_total', 'Embedding cache hits vs misses', ['result'])
 
+# OpenAI-compatible cloud LLM providers. They share an identical request /
+# response shape (chat/completions, OpenAI-style tool calling) and differ only
+# in base URL and API-key env var, so one code path serves all of them.
+OPENAI_COMPAT_PROVIDERS = {
+    'groq': {
+        'label': 'Groq',
+        'base_url': 'https://api.groq.com/openai/v1',
+        'key_env': 'GROQ_API_KEY',
+    },
+    'xai': {
+        'label': 'xAI Grok',
+        'base_url': 'https://api.x.ai/v1',
+        'key_env': 'XAI_API_KEY',
+    },
+}
+
+
 class CFOperator:
     """
     Continuous Feedback Operator
@@ -986,8 +1003,8 @@ Return empty array if nothing notable: {{"insights": []}}"""
                 }
                 resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
                 text = resp.json().get('message', {}).get('content', '')
-            elif provider_type == 'groq':
-                api_key = os.getenv('GROQ_API_KEY', '')
+            elif provider_type in OPENAI_COMPAT_PROVIDERS:
+                api_key, endpoint = self._openai_compat_request_config(provider_type)
                 if not api_key:
                     return
                 payload = {
@@ -998,7 +1015,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     'response_format': {'type': 'json_object'}
                 }
                 resp = req.post(
-                    'https://api.groq.com/openai/v1/chat/completions',
+                    endpoint,
                     json=payload,
                     headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'},
                     timeout=60
@@ -1722,10 +1739,11 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                 resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
                 data = resp.json()
                 text = data.get('message', {}).get('content', '')
-            elif provider_type == 'groq':
-                api_key = os.getenv('GROQ_API_KEY', '')
+            elif provider_type in OPENAI_COMPAT_PROVIDERS:
+                api_key, endpoint = self._openai_compat_request_config(provider_type)
                 if not api_key:
-                    logger.warning("GROQ_API_KEY not set for learning extraction")
+                    key_env = OPENAI_COMPAT_PROVIDERS[provider_type]['key_env']
+                    logger.warning(f"{key_env} not set for learning extraction")
                     return
                 payload = {
                     'model': model,
@@ -1739,7 +1757,7 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                     'Authorization': f'Bearer {api_key}'
                 }
                 resp = req.post(
-                    'https://api.groq.com/openai/v1/chat/completions',
+                    endpoint,
                     json=payload, headers=headers, timeout=60
                 )
                 data = resp.json()
@@ -2521,6 +2539,18 @@ Only return the JSON array, no other text."""
             cache[key] = result
         return self._serialize_tool_result(result, max_chars), result, False
 
+    @staticmethod
+    def _openai_compat_request_config(provider_type: str):
+        """Resolve (api_key, chat_completions_url) for an OpenAI-compatible provider.
+
+        Returns (None, None) for an unknown provider. The api_key may be '' if
+        the provider's key env var is unset — callers check and raise.
+        """
+        cfg = OPENAI_COMPAT_PROVIDERS.get(provider_type)
+        if not cfg:
+            return None, None
+        return os.getenv(cfg['key_env'], ''), cfg['base_url'].rstrip('/') + '/chat/completions'
+
     def _get_provider_chain(self, backend: str = 'auto', model: str = None) -> List[Tuple[str, str, str]]:
         """
         Get ordered list of providers to try for fallback.
@@ -2547,8 +2577,8 @@ Only return the JSON array, no other text."""
         if allow_fallback == 'false':
             return providers
 
-        # Define fallback order: ollama -> groq -> anthropic
-        fallback_order = ['ollama', 'groq', 'anthropic']
+        # Define fallback order: ollama -> groq -> xai -> anthropic
+        fallback_order = ['ollama', 'groq', 'xai', 'anthropic']
 
         # Add other providers as fallbacks (skip the primary)
         primary_type = primary[0] if primary else None
@@ -2559,7 +2589,8 @@ Only return the JSON array, no other text."""
             fb_provider = self._resolve_provider(fb_type, None)
             if fb_provider and fb_provider not in providers:
                 # Verify the provider has required config (API keys, etc.)
-                if fb_type == 'groq' and not os.getenv('GROQ_API_KEY'):
+                if fb_type in OPENAI_COMPAT_PROVIDERS and not os.getenv(
+                        OPENAI_COMPAT_PROVIDERS[fb_type]['key_env']):
                     continue
                 if fb_type == 'anthropic' and not os.getenv('ANTHROPIC_API_KEY'):
                     continue
@@ -2592,7 +2623,7 @@ Only return the JSON array, no other text."""
         # For 'auto', check if user has selected a preferred backend in UI
         if backend == 'auto':
             db_backend = self.kb.get_setting('selected_backend', '')
-            if db_backend and db_backend in ('ollama', 'groq', 'anthropic'):
+            if db_backend and db_backend in ('ollama', 'groq', 'anthropic', 'xai'):
                 backend = db_backend
                 logger.info(f"[PROVIDER] Using UI-selected backend: {backend}")
             else:
@@ -2629,7 +2660,7 @@ Only return the JSON array, no other text."""
                 source = 'explicit-override'
             logger.debug(f"[PROVIDER] Resolved ollama: {model} (source={source})")
             return (provider_type, url, model)
-        elif backend in ('groq', 'anthropic'):
+        elif backend in ('groq', 'anthropic', 'xai'):
             url = None
             if not model:
                 # Check DB for user's model selection, fall back to config
@@ -2709,6 +2740,7 @@ Only return the JSON array, no other text."""
         learnings_used = []  # Track learning IDs consulted during this conversation
         max_result_chars = self._max_tool_result_chars()
         tool_cache = {}  # memoizes read-only tool results for this session
+        final_answer_forced = False  # final-iteration nudge sent only once
 
         # Get tool schemas
         tools = self.tools.get_schemas()
@@ -2719,13 +2751,25 @@ Only return the JSON array, no other text."""
         for iteration in range(max_iterations):
             try:
                 logger.debug(f"[CHAT] iteration {iteration+1}/{max_iterations}, messages count: {len(full_messages)}")
-                # On the final allowed iteration, withhold tools so the model is
-                # forced to produce a text answer instead of requesting yet more
-                # tool calls and falling off the end of the loop with nothing.
+                # Force a final answer on the last iteration instead of falling
+                # off the end of the loop empty-handed. Ollama/Anthropic: simply
+                # withhold tools — they then return text cleanly. OpenAI-compatible
+                # providers (groq, xai) hard-error ("tool_use_failed") if a
+                # reasoning model emits a tool call while tools are absent — so
+                # for those, keep tools available and nudge with a message.
                 is_final_iteration = (iteration == max_iterations - 1)
-                offered_tools = [] if is_final_iteration else tools
-                if is_final_iteration:
-                    logger.info("[CHAT] final iteration — withholding tools to force an answer")
+                is_openai_compat = provider_type in OPENAI_COMPAT_PROVIDERS
+                offered_tools = [] if (is_final_iteration and not is_openai_compat) else tools
+                if is_final_iteration and not final_answer_forced:
+                    final_answer_forced = True
+                    if is_openai_compat:
+                        full_messages.append({
+                            'role': 'user',
+                            'content': ("FINAL STEP — you have gathered enough data. Do NOT "
+                                        "call any more tools. Respond now with your findings "
+                                        "as the JSON array described above."),
+                        })
+                    logger.info("[CHAT] final iteration — forcing an answer")
                 # Build payload for Ollama (OpenAI-compatible format)
                 if provider_type == 'ollama':
                     payload = {
@@ -2820,11 +2864,12 @@ Only return the JSON array, no other text."""
                         'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
                     }
 
-                elif provider_type == 'groq':
-                    # Groq API (OpenAI-compatible) with tool use
-                    api_key = os.getenv('GROQ_API_KEY', '')
+                elif provider_type in OPENAI_COMPAT_PROVIDERS:
+                    # OpenAI-compatible cloud provider (Groq, xAI Grok) with tool use
+                    api_key, endpoint = self._openai_compat_request_config(provider_type)
+                    key_env = OPENAI_COMPAT_PROVIDERS[provider_type]['key_env']
                     if not api_key:
-                        raise ValueError("GROQ_API_KEY not set")
+                        raise ValueError(f"{key_env} not set")
 
                     payload = {
                         'model': model,
@@ -2840,7 +2885,7 @@ Only return the JSON array, no other text."""
                     }
 
                     response = requests.post(
-                        'https://api.groq.com/openai/v1/chat/completions',
+                        endpoint,
                         json=payload,
                         headers=headers,
                         timeout=120
@@ -2848,7 +2893,8 @@ Only return the JSON array, no other text."""
                     data = response.json()
 
                     if data.get('error'):
-                        raise ValueError(f"Groq API error: {data['error']}")
+                        label = OPENAI_COMPAT_PROVIDERS[provider_type]['label']
+                        raise ValueError(f"{label} API error: {data['error']}")
 
                     # Extract tokens
                     usage = data.get('usage', {})
@@ -3136,8 +3182,8 @@ Only return the JSON array, no other text."""
                 total_input_tokens += data.get('prompt_eval_count', 0)
                 total_output_tokens += data.get('eval_count', 0)
                 summary_text = data.get('message', {}).get('content', '')
-            elif provider_type == 'groq':
-                api_key = os.getenv('GROQ_API_KEY', '')
+            elif provider_type in OPENAI_COMPAT_PROVIDERS:
+                api_key, endpoint = self._openai_compat_request_config(provider_type)
                 payload = {
                     'model': model,
                     'messages': summary_messages,
@@ -3149,7 +3195,7 @@ Only return the JSON array, no other text."""
                     'Authorization': f'Bearer {api_key}'
                 }
                 response = requests.post(
-                    'https://api.groq.com/openai/v1/chat/completions',
+                    endpoint,
                     json=payload,
                     headers=headers,
                     timeout=120
@@ -4017,6 +4063,16 @@ def main():
     logger.info("CFOperator - Continuous Feedback Operator")
     logger.info("Version: 1.0.8")
     logger.info("="*60)
+
+    # Load a .env file if present, so API keys (XAI_API_KEY, GROQ_API_KEY, ...)
+    # can live in .env. override=False — real environment variables (e.g. k8s
+    # secrets injected into the pod) take precedence; .env only fills the gaps.
+    try:
+        from dotenv import load_dotenv
+        if load_dotenv(override=False):
+            logger.info("Loaded environment from .env")
+    except ImportError:
+        logger.debug("python-dotenv not installed — skipping .env load")
 
     config_path = os.getenv('CONFIG_PATH', 'config.yaml')
     operator = CFOperator(config_path=config_path)
