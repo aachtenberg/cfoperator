@@ -91,7 +91,14 @@ ERROR_RATE = Counter('cfoperator_errors_total', 'Total errors')
 # LLM Observability metrics
 LLM_REQUESTS = Counter('cfoperator_llm_requests_total', 'Total LLM requests', ['provider', 'model', 'result'])
 LLM_TOKENS = Counter('cfoperator_llm_tokens_total', 'Total tokens used', ['provider', 'model', 'type'])  # type: prompt/completion
-LLM_LATENCY = Histogram('cfoperator_llm_latency_seconds', 'LLM request latency', ['provider', 'model'])
+# Buckets span 1s..600s: LLM chat turns (incl. tool-calling iterations) routinely
+# run tens of seconds and reasoning models reach several minutes. The Histogram
+# default buckets top out at 10s, so every real request landed in +Inf and
+# histogram_quantile() reported a flat 10.0 for every percentile.
+LLM_LATENCY = Histogram(
+    'cfoperator_llm_latency_seconds', 'LLM request latency', ['provider', 'model'],
+    buckets=(1, 2.5, 5, 10, 20, 30, 45, 60, 90, 120, 180, 300, 450, 600, float('inf')),
+)
 LLM_ERRORS = Counter('cfoperator_llm_errors_total', 'LLM errors by provider', ['provider', 'error_type'])
 LLM_FALLBACKS = Counter('cfoperator_llm_fallbacks_total', 'LLM fallback chain activations', ['from_provider', 'to_provider'])
 EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding generation requests', ['result'])
