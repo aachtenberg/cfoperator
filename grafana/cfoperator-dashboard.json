@@ -3722,7 +3722,7 @@
             "type": "prometheus",
             "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "rate(cfoperator_embedding_cache_hits_total{result=\"hit\"}[5m]) / (rate(cfoperator_embedding_cache_hits_total{result=\"hit\"}[5m]) + rate(cfoperator_embedding_cache_hits_total{result=\"miss\"}[5m]))",
+          "expr": "(sum(rate(cfoperator_embedding_cache_hits_total{result=\"hit\"}[5m])) or vector(0)) / sum(rate(cfoperator_embedding_cache_hits_total[5m]))",
           "refId": "A"
         }
       ],
@@ -4887,6 +4887,6 @@
   "timezone": "",
   "title": "CFOperator Fleet Monitoring",
   "uid": "cfoperator-fleet",
-  "version": 4,
+  "version": 5,
   "weekStart": ""
 }
