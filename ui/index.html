@@ -877,6 +877,8 @@
         }
         #send-button:hover { opacity: 0.85; }
         #send-button:disabled { background: var(--border); color: var(--text-muted); cursor: not-allowed; }
+        #send-button.stop { background: var(--red); color: #fff; }
+        #send-button.stop:disabled { background: var(--border); color: var(--text-muted); }
 
         /* ── Status bar ── */
         .status-bar {
@@ -1026,6 +1028,22 @@
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
         let chatSessionId = null;  // Current DB session ID
+        let inFlightChatId = null;  // chat_id of the in-flight /api/chat request, if any
+
+        // Toggle the send button between "Send" and "Stop" depending on whether
+        // a chat is streaming. While in-flight the button is an enabled Stop button.
+        function setChatInFlight(chatId) {
+            inFlightChatId = chatId;
+            const btn = document.getElementById('send-button');
+            btn.disabled = false;
+            if (chatId) {
+                btn.textContent = 'Stop';
+                btn.classList.add('stop');
+            } else {
+                btn.textContent = 'Send';
+                btn.classList.remove('stop');
+            }
+        }
 
         // ── Chat session persistence (fire-and-forget, never blocks UI) ──
         function createChatSession() {
@@ -1323,6 +1341,7 @@
         }
 
         function sendMessage() {
+            if (inFlightChatId) return;  // a chat is already streaming
             const input = document.getElementById('message-input');
             const message = input.value.trim();
             if (!message) return;
@@ -1352,25 +1371,42 @@
             .then(r => r.json())
             .then(data => {
                 if (data.chat_id) {
+                    setChatInFlight(data.chat_id);
                     pollChatEvents(data.chat_id, 0);
                 } else {
                     document.getElementById('thinking').classList.remove('active');
-                    document.getElementById('send-button').disabled = false;
+                    setChatInFlight(null);
                     addMessage('agent', data.error || 'Unknown error', 'error', 'none');
                 }
             })
             .catch(err => {
                 document.getElementById('thinking').classList.remove('active');
                 addMessage('agent', `Error: ${err.message}`, 'error', 'none');
-                document.getElementById('send-button').disabled = false;
+                setChatInFlight(null);
             });
+        }
+
+        // Stop the in-flight chat. The server stops at its next event boundary;
+        // we reset the UI optimistically so the user gets immediate feedback.
+        function stopChat() {
+            if (!inFlightChatId) return;
+            fetch(`/api/chat/${inFlightChatId}/stop`, {method: 'POST'}).catch(() => {});
+            document.getElementById('thinking').classList.remove('active');
+            currentToolLog = null; currentToolCard = null; toolCallCount = 0;
+            addMessage('agent', 'Stopped.', 'error', 'none');
+            setChatInFlight(null);
         }
 
         function pollChatEvents(chatId, cursor) {
             fetch(`/api/chat/events/${chatId}?cursor=${cursor}`)
             .then(r => r.json())
             .then(data => {
-                for (const evt of (data.events || [])) handleChatEvent(evt);
+                // Only render while this chat is still the active one. After a
+                // Stop the worker may emit a few more events before it notices;
+                // we keep polling (so the session is cleaned up) but drop them.
+                if (chatId === inFlightChatId) {
+                    for (const evt of (data.events || [])) handleChatEvent(evt);
+                }
                 if (!data.done) setTimeout(() => pollChatEvents(chatId, data.cursor), 1000);
             })
             .catch(() => setTimeout(() => pollChatEvents(chatId, cursor), 2000));
@@ -1390,7 +1426,7 @@
                 document.getElementById('thinking').classList.add('active');
             } else if (type === 'done') {
                 document.getElementById('thinking').classList.remove('active');
-                document.getElementById('send-button').disabled = false;
+                setChatInFlight(null);
                 currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                 if (data.response) {
                     const msgEl = addMessage('agent', data.response, data.backend, data.model);
@@ -1414,7 +1450,7 @@
                 }
             } else if (type === 'error') {
                 document.getElementById('thinking').classList.remove('active');
-                document.getElementById('send-button').disabled = false;
+                setChatInFlight(null);
                 currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                 addMessage('agent', `Error: ${data.error}`, 'error', 'none');
             }
@@ -1693,7 +1729,9 @@
         document.getElementById('max-iterations').addEventListener('change', onMaxIterationsChange);
         document.getElementById('alert-interval').addEventListener('change', onAlertIntervalChange);
         document.getElementById('sweep-interval').addEventListener('change', onSweepIntervalChange);
-        document.getElementById('send-button').addEventListener('click', sendMessage);
+        document.getElementById('send-button').addEventListener('click', () => {
+            if (inFlightChatId) stopChat(); else sendMessage();
+        });
 
         document.getElementById('message-input').addEventListener('keydown', (e) => {
             if (handleSlashKeydown(e)) return;
