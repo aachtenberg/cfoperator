@@ -156,6 +156,7 @@
         }
       ],
       "title": "Agent Status",
+      "description": "Prometheus scrape health for the cfoperator pod (namespace=apps, app=cfoperator). UP means the /metrics endpoint was reachable on the last scrape.",
       "type": "stat"
     },
     {
@@ -309,7 +310,8 @@
                 "value": 5
               }
             ]
-          }
+          },
+          "unit": "ops"
         },
         "overrides": []
       },
@@ -346,6 +348,7 @@
         }
       ],
       "title": "Error Rate (5m)",
+      "description": "Per-second rate of cfoperator_errors_total, averaged over the last 5 minutes.",
       "type": "stat"
     },
     {
@@ -498,7 +501,7 @@
             "type": "prometheus",
             "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "rate(cfoperator_sweeps_total{mode=\"reactive\"}[5m])",
+          "expr": "rate(cfoperator_sweeps_total{mode=\"reactive\"}[5m]) or on() vector(0)",
           "legendFormat": "Reactive Sweeps/sec",
           "refId": "B"
         },
@@ -1250,7 +1253,7 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "red",
                 "value": null
               },
               {
@@ -1258,8 +1261,8 @@
                 "value": 50
               },
               {
-                "color": "red",
-                "value": 25
+                "color": "green",
+                "value": 95
               }
             ]
           },
@@ -1297,11 +1300,12 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT LEAST(100.0, ROUND(100.0 * (SELECT COUNT(*) FROM investigation_embeddings) / NULLIF((SELECT COUNT(*) FROM investigations WHERE outcome IN ('resolved','escalated','failed','monitoring')), 0), 1)) AS pct",
+          "rawSql": "SELECT ROUND(100.0 * (SELECT COUNT(*) FROM investigation_embeddings ie JOIN investigations i ON i.id = ie.investigation_id WHERE i.outcome IN ('resolved','escalated','failed','monitoring')) / NULLIF((SELECT COUNT(*) FROM investigations WHERE outcome IN ('resolved','escalated','failed','monitoring')), 0), 1) AS pct",
           "refId": "A"
         }
       ],
       "title": "Embedding Coverage",
+      "description": "Percent of completed investigations (outcome resolved/escalated/failed/monitoring) that have a stored embedding for semantic search.",
       "type": "stat"
     },
     {
@@ -1369,6 +1373,7 @@
         }
       ],
       "title": "Tool Success Rate",
+      "description": "Share of tool executions with result=success, all-time. Green at ≥ 95%, yellow at ≥ 80%.",
       "type": "stat"
     },
     {
@@ -3863,8 +3868,8 @@
             "type": "prometheus",
             "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "sum(rate(log_messages_total{level=\"WARN\"}[5m]))",
-          "legendFormat": "WARN",
+          "expr": "sum(rate(log_messages_total{level=\"WARNING\"}[5m]))",
+          "legendFormat": "WARNING",
           "refId": "B"
         },
         {
@@ -4882,6 +4887,6 @@
   "timezone": "",
   "title": "CFOperator Fleet Monitoring",
   "uid": "cfoperator-fleet",
-  "version": 3,
+  "version": 4,
   "weekStart": ""
 }
