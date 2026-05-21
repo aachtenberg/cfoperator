@@ -364,19 +364,32 @@ class WebServer:
                     'events': [],
                     'cursor': 0,
                     'done': False,
+                    'cancelled': False,
                     'created': time.time()
                 }
 
             def run_chat():
+                stream = self.operator.handle_chat_message_stream(
+                    message, history, backend, model=model
+                )
                 try:
                     logger.debug(f"Chat {chat_id} started")
-                    for evt in self.operator.handle_chat_message_stream(message, history, backend, model=model):
+                    for evt in stream:
                         with self._sessions_lock:
                             session = self._chat_sessions.get(chat_id)
-                            if session:
-                                session['events'].append(evt)
-                                if evt['event'] in ('done', 'error'):
-                                    session['done'] = True
+                            if session is None:
+                                return
+                            if session['cancelled']:
+                                session['events'].append({
+                                    'event': 'done',
+                                    'data': {'response': '', 'stopped': True}
+                                })
+                                session['done'] = True
+                                logger.info(f"Chat {chat_id} stopped by user")
+                                return
+                            session['events'].append(evt)
+                            if evt['event'] in ('done', 'error'):
+                                session['done'] = True
                 except Exception as e:
                     logger.error(f"Chat session {chat_id} failed: {e}", exc_info=True)
                     with self._sessions_lock:
@@ -384,6 +397,11 @@ class WebServer:
                         if session:
                             session['events'].append({'event': 'error', 'data': {'error': str(e)}})
                             session['done'] = True
+                finally:
+                    # Closing the generator raises GeneratorExit at its current
+                    # yield point, unwinding the tool-iteration loop so a stopped
+                    # chat stops calling the LLM instead of running to completion.
+                    stream.close()
 
             thread = threading.Thread(target=run_chat, daemon=True)
             thread.start()
@@ -415,6 +433,24 @@ class WebServer:
                 'cursor': new_cursor,
                 'done': done
             })
+
+        # Stop an in-flight chat
+        @self.app.route('/api/chat/<chat_id>/stop', methods=['POST'])
+        def api_chat_stop(chat_id):
+            """
+            Signal an in-flight chat to stop. The worker thread checks the flag
+            at the next streamed event, closes the LLM stream, and emits a final
+            'done' event with stopped=True.
+            """
+            with self._sessions_lock:
+                session = self._chat_sessions.get(chat_id)
+                if not session:
+                    return jsonify({'error': 'Unknown chat_id'}), 404
+                if session['done']:
+                    return jsonify({'status': 'already_done'})
+                session['cancelled'] = True
+            logger.info(f"Chat {chat_id} stop requested")
+            return jsonify({'status': 'stopping'})
 
         # Chat sessions API
         @self.app.route('/api/chat-sessions')
