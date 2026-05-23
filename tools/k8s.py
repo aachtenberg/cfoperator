@@ -9,9 +9,39 @@ for troubleshooting, log retrieval, service management, etc.
 import subprocess
 import json
 import logging
+import re
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger("cfoperator.tools.k8s")
+
+
+# Mosquitto logs raw-TCP probes (no MQTT CONNECT received) as
+# "Client <IP> [<IP>:port] disconnected:" — the client-name field is the
+# source IP itself. Real MQTT clients log their client-id, not their IP, so
+# this matches only probe noise. Kubelet tcpSocket probes generate one such
+# disconnect per probe interval per node; the sweep skill has misattributed
+# this volume as IoT-device instability (sweep #1001, learning #1456 dep.).
+_MOSQUITTO_PROBE_DISCONNECT_RE = re.compile(
+    r'Client\s+(\S+)\s+\[(\d{1,3}(?:\.\d{1,3}){3}):\d+\]\s+disconnected:'
+)
+
+
+def _collapse_probe_disconnects(logs: str) -> tuple[str, int]:
+    """Drop lines that look like raw-TCP probe disconnects.
+
+    Returns the filtered log text and the number of lines removed. Pattern
+    set is intentionally narrow — extend when other services surface as
+    false-positive sources in sweep reports.
+    """
+    kept: List[str] = []
+    suppressed = 0
+    for line in logs.splitlines():
+        m = _MOSQUITTO_PROBE_DISCONNECT_RE.search(line)
+        if m and m.group(1) == m.group(2):
+            suppressed += 1
+            continue
+        kept.append(line)
+    return '\n'.join(kept), suppressed
 
 
 class K8sTools:
@@ -178,15 +208,44 @@ class K8sTools:
 
         result = self._run_kubectl(args, timeout=60)
         if result['success']:
+            logs = result['stdout']
+            if self._get_tcp_probe_ports(namespace, pod_name):
+                logs, suppressed = _collapse_probe_disconnects(logs)
+                if suppressed:
+                    logs += (
+                        f"\n[{suppressed} probe-noise disconnect lines suppressed "
+                        f"— kubelet tcpSocket probes on this pod]"
+                    )
             return {
                 'success': True,
-                'logs': result['stdout'],
+                'logs': logs,
                 'pod': pod_name,
                 'namespace': namespace,
                 'container': container,
                 'lines': lines
             }
         return result
+
+    def _get_tcp_probe_ports(self, namespace: str, pod_name: str) -> set[int]:
+        """Return the set of ports with tcpSocket liveness/readiness probes."""
+        result = self._run_kubectl(
+            ['get', 'pod', pod_name, '-n', namespace, '-o', 'json']
+        )
+        if not result.get('success'):
+            return set()
+        try:
+            spec = json.loads(result['stdout']).get('spec', {})
+        except (ValueError, KeyError):
+            return set()
+        ports: set[int] = set()
+        for container in spec.get('containers', []):
+            for probe_key in ('livenessProbe', 'readinessProbe'):
+                probe = container.get(probe_key) or {}
+                tcp = probe.get('tcpSocket') or {}
+                port = tcp.get('port')
+                if isinstance(port, int):
+                    ports.add(port)
+        return ports
 
     # =========================================================================
     # Deployment Operations
