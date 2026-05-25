@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 from datetime import timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable
+
+logger = logging.getLogger(__name__)
 
 from .defaults import _parse_timestamp, _scheduled_alert_from_task, _scheduled_task_id, _scheduled_task_view, _utc_now
 from .models import Alert, ScheduledTask
@@ -99,12 +102,38 @@ class APSchedulerScheduler(Scheduler, AlertSource):
             return
         self._scheduler.start()
         self._started = True
+        logger.info(
+            "apscheduler-scheduler started: jobstore=%s misfire_grace_seconds=%d spool=%s",
+            self.jobstore_url, self.misfire_grace_time_seconds, self.spool_path,
+        )
 
     def stop(self) -> None:
         if not self._started:
             return
         self._scheduler.shutdown(wait=False)
         self._started = False
+
+    def health(self) -> Dict[str, object]:
+        jobs_count = 0
+        next_fire_at: str | None = None
+        if self._started:
+            try:
+                jobs = self._scheduler.get_jobs()
+                jobs_count = len(jobs)
+                upcoming = [j.next_run_time for j in jobs if getattr(j, "next_run_time", None) is not None]
+                if upcoming:
+                    next_fire_at = min(upcoming).isoformat()
+            except Exception:
+                logger.warning("apscheduler health check failed", exc_info=True)
+        return {
+            "name": self.name,
+            "type": type(self).__name__,
+            "started": self._started,
+            "jobs_count": jobs_count,
+            "next_fire_at": next_fire_at,
+            "jobstore_url_configured": bool(self.jobstore_url),
+            "misfire_grace_seconds": self.misfire_grace_time_seconds,
+        }
 
     def schedule(self, task: ScheduledTask) -> Dict[str, object]:
         payload = task.to_dict()

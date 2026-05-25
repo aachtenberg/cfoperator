@@ -197,6 +197,7 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS`: duplicate suppression window in seconds, default `300`, set to `0` to disable
 - `CFOP_EVENT_RUNTIME_WORKER_COUNT`: background worker count, default `1`, set to `0` to force synchronous processing
 - `CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE`: max in-memory queued jobs, default `1000`
+- `CFOP_EVENT_RUNTIME_MAX_TERMINAL_JOBS`: how many completed/failed jobs to retain in the persisted state file for `GET /jobs/<id>` lookups, default `100`; older terminal jobs are pruned. Increase for richer post-mortem debugging at the cost of a larger state file
 - `CFOP_EVENT_RUNTIME_QUEUE_STATE_PATH`: persisted worker job state path, default `~/.cfoperator/event-runtime/queue/jobs.json`
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_ENABLED`: enable bare-metal host observability plugins, default `1`
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_JSON`: inline JSON config for bare-metal observability providers
@@ -305,14 +306,42 @@ curl -X POST 'http://127.0.0.1:8080/alert?mode=async' \
 
 ## Optional PostgreSQL Persistence
 
-Portable mode does not require PostgreSQL. If you want remote event persistence in addition to the local outbox, set:
+Portable mode does not require PostgreSQL. If you want remote event persistence in addition to the local outbox, you can enable it via env var or via `config.yaml`.
 
-```bash
-export CFOP_EVENT_RUNTIME_PG_DSN='postgresql://cfoperator:pass@db:5432/cfoperator'
-python3 -m event_runtime --host 0.0.0.0 --port 8080
-```
+The runtime resolves persistence settings in this order:
 
-Behavior:
+1. **Env var DSN (highest priority):**
+   ```bash
+   export CFOP_EVENT_RUNTIME_PG_DSN='postgresql://cfoperator:pass@db:5432/cfoperator'
+   ```
+2. **Explicit DSN in `config.yaml`:**
+   ```yaml
+   event_runtime:
+     persistence:
+       postgres:
+         enabled: true
+         dsn: postgresql://cfoperator:pass@db:5432/cfoperator
+         table_name: event_runtime_events   # optional, defaults to event_runtime_events
+   ```
+3. **Built from the top-level `database:` block when `enabled: true` and no explicit DSN is set.** This is the path the in-cluster Kubernetes deployment uses, where credentials are injected via env vars into the shared `database:` config:
+   ```yaml
+   database:
+     host: ${POSTGRES_HOST}
+     port: ${POSTGRES_PORT}
+     database: ${POSTGRES_DB}
+     user: ${POSTGRES_USER}
+     password: ${POSTGRES_PASSWORD}
+
+   event_runtime:
+     persistence:
+       postgres:
+         enabled: true
+         table_name: event_runtime_events
+   ```
+
+Persistence is implicitly enabled if any of `CFOP_EVENT_RUNTIME_PG_DSN`, `event_runtime.persistence.postgres.dsn`, or `event_runtime.persistence.postgres.enabled: true` is set. Override with `CFOP_EVENT_RUNTIME_PG_ENABLED=0` to force-disable.
+
+Behavior once enabled:
 
 - the local outbox remains the success boundary for writes
 - PostgreSQL is best-effort at ingest time

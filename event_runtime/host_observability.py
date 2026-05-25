@@ -8,6 +8,7 @@ import platform
 import shutil
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -614,22 +615,61 @@ class BareMetalHostContextProvider(ContextProvider):
         self._provider_by_name = {provider.name: provider for provider in self.providers}
         self._discovered_targets: List[HostTarget] = []
         self._last_refresh_monotonic: float | None = None
+        self._last_refresh_wall: float | None = None
+        self._stop_event: threading.Event | None = None
+        self._refresh_thread: threading.Thread | None = None
 
     def start(self) -> None:
+        provider_names = [p.name for p in self.providers]
+        logger.info(
+            "baremetal-host-context starting: providers=%s refresh_interval_seconds=%d",
+            provider_names, self.refresh_interval_seconds,
+        )
         self.refresh_targets(force=True)
+        if self.refresh_interval_seconds > 0 and self._refresh_thread is None:
+            self._stop_event = threading.Event()
+            self._refresh_thread = threading.Thread(
+                target=self._background_refresh_loop,
+                daemon=True,
+                name="event-runtime-host-discovery",
+            )
+            self._refresh_thread.start()
+
+    def stop(self) -> None:
+        if self._stop_event is not None:
+            self._stop_event.set()
+        thread = self._refresh_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2)
+        self._refresh_thread = None
+        self._stop_event = None
+
+    def _background_refresh_loop(self) -> None:
+        stop_event = self._stop_event
+        if stop_event is None:
+            return
+        interval = max(1, self.refresh_interval_seconds)
+        while not stop_event.wait(interval):
+            try:
+                self.refresh_targets(force=True)
+            except Exception:
+                logger.exception("Background host discovery refresh failed")
 
     def refresh_targets(self, force: bool = False) -> None:
         if not force and not self._needs_refresh():
             return
         targets: List[HostTarget] = []
+        provider_counts: Dict[str, int] = {}
         for provider in self.providers:
             try:
                 discovered = provider.discover_targets()
             except Exception:
                 logger.warning("Host discovery failed for provider %s", provider.name, exc_info=True)
                 observe_host_discovery(provider.name, "error", targets=0)
+                provider_counts[provider.name] = -1
                 continue
             observe_host_discovery(provider.name, "success", targets=len(discovered), timestamp_seconds=time.time())
+            provider_counts[provider.name] = len(discovered)
             for target in discovered:
                 if not any(
                     existing.provider == target.provider and existing.name == target.name and existing.address == target.address
@@ -638,6 +678,11 @@ class BareMetalHostContextProvider(ContextProvider):
                     targets.append(target)
         self._discovered_targets = targets
         self._last_refresh_monotonic = time.monotonic()
+        self._last_refresh_wall = time.time()
+        logger.info(
+            "host discovery refresh complete: total_targets=%d per_provider=%s",
+            len(targets), provider_counts,
+        )
 
     def provide(self, alert: Alert, envelope: ContextEnvelope) -> ContextEnvelope:
         if not self._discovered_targets or self._needs_refresh():
@@ -687,6 +732,23 @@ class BareMetalHostContextProvider(ContextProvider):
         if self.refresh_interval_seconds == 0:
             return True
         return (time.monotonic() - self._last_refresh_monotonic) >= self.refresh_interval_seconds
+
+    def health(self) -> Dict[str, Any]:
+        last_refresh_age: float | None = None
+        if self._last_refresh_monotonic is not None:
+            last_refresh_age = max(0.0, time.monotonic() - self._last_refresh_monotonic)
+        last_refresh_at: str | None = None
+        if self._last_refresh_wall is not None:
+            from datetime import datetime, timezone as _tz
+            last_refresh_at = datetime.fromtimestamp(self._last_refresh_wall, _tz.utc).isoformat()
+        return {
+            "refresh_interval_seconds": self.refresh_interval_seconds,
+            "background_thread_alive": bool(self._refresh_thread and self._refresh_thread.is_alive()),
+            "providers": [p.name for p in self.providers],
+            "discovered_targets_count": len(self._discovered_targets),
+            "last_refresh_age_seconds": round(last_refresh_age, 1) if last_refresh_age is not None else None,
+            "last_refresh_at": last_refresh_at,
+        }
 
     def _host_hints(self, alert: Alert) -> List[str]:
         details = alert.details

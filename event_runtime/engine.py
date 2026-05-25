@@ -213,6 +213,21 @@ class EventRuntime:
 
     def health(self) -> dict:
         """Return runtime health summary."""
+        host_discovery_state = None
+        for provider in self.plugins.context_providers:
+            if hasattr(provider, "health") and callable(provider.health):
+                state = provider.health()
+                if isinstance(state, dict) and "discovered_targets_count" in state:
+                    host_discovery_state = state
+                    break
+
+        scheduler_states = []
+        for scheduler in self.plugins.schedulers:
+            try:
+                scheduler_states.append(scheduler.health())
+            except Exception:
+                scheduler_states.append({"name": scheduler.name, "error": "health check failed"})
+
         return {
             "sources": [plugin.name for plugin in self.plugins.alert_sources],
             "policies": [plugin.name for plugin in self.plugins.alert_policies],
@@ -221,6 +236,8 @@ class EventRuntime:
             "actions": sorted(self.plugins.action_handlers.keys()),
             "notification_sinks": [plugin.name for plugin in self.plugins.notification_sinks],
             "schedulers": [plugin.name for plugin in self.plugins.schedulers],
+            "scheduler": scheduler_states,
+            "host_discovery": host_discovery_state,
             "sink": self.plugins.state_sink.health(),
         }
 

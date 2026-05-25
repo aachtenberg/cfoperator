@@ -184,7 +184,7 @@ class BackgroundAlertWorker:
         runtime: EventRuntime,
         worker_count: int = 1,
         max_queue_size: int = 1000,
-        max_terminal_jobs: int = 1000,
+        max_terminal_jobs: int = 100,
         max_retries: int = 2,
         state: FileBackedWorkerState | None = None,
     ):

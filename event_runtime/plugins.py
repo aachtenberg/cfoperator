@@ -96,6 +96,10 @@ class Scheduler(RuntimePlugin):
         """Return scheduled tasks known to this backend."""
         return []
 
+    def health(self) -> Dict[str, object]:
+        """Return scheduler health metadata.  Overridable for richer state."""
+        return {"name": self.name, "type": type(self).__name__}
+
 
 class ScheduledAlertSource(AlertSource):
     """Alert source that emits alerts originating from scheduled tasks."""
