@@ -247,11 +247,27 @@ class EventRuntime:
         self.plugins.state_sink.append([event.to_dict()])
         observe_event_recorded(event_type)
 
+    def record_external_action_completion(self, alert: Alert, action_result: ActionResult) -> None:
+        """Record + notify for an action completed by an external executor.
+
+        Used by the HTTP completion endpoint when the agent posts back the
+        result of an investigation it ran asynchronously. Mirrors the
+        in-process action_completed flow so the activity feed and
+        notification path are identical regardless of executor.
+        """
+        self.record_event(
+            "action_completed",
+            alert=alert.to_dict(),
+            result=action_result.to_dict(),
+            source="external",
+        )
+        self._notify_action_completed(alert, action_result)
+
     def _notify_action_completed(self, alert: Alert, action_result: ActionResult) -> None:
         """Best-effort notification dispatch after an action completes."""
         if not self.plugins.notification_sinks:
             return
-        if not should_notify(action_result.action, action_result.success):
+        if not should_notify(action_result.action, action_result.success, quiet=action_result.quiet):
             return
 
         severity = alert.severity.value if hasattr(alert.severity, "value") else str(alert.severity)

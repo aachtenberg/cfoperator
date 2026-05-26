@@ -29,16 +29,29 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
             parts.append(f"Action: {action}")
         if result_message:
             parts.append(f"Result: {result_message}")
-        # Surface key result details (e.g. PR URL, issue number)
+        # Surface key result details (e.g. PR URL, issue number, investigation link)
         result_details = details.get("result_details") or {}
-        for key in ("html_url", "pr_number", "issue_number", "url"):
+        for key in ("html_url", "pr_number", "issue_number", "url", "investigation_url", "investigation_id"):
             if key in result_details:
                 parts.append(f"{key}: {result_details[key]}")
     return "\n".join(parts)
 
 
-def should_notify(action: str, success: bool, *, skip_actions: frozenset[str] = _DEFAULT_SKIP_ACTIONS) -> bool:
-    """Return whether this completed action warrants a notification."""
+def should_notify(
+    action: str,
+    success: bool,
+    *,
+    quiet: bool = False,
+    skip_actions: frozenset[str] = _DEFAULT_SKIP_ACTIONS,
+) -> bool:
+    """Return whether this completed action warrants a notification.
+
+    ``quiet`` lets a handler suppress its own notification (used for interim
+    states like 'investigation queued' where the real completion notification
+    comes from a separate post-back path).
+    """
+    if quiet:
+        return False
     if action in skip_actions:
         return False
     return True

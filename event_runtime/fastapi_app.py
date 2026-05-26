@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from .activity import render_activity_html
 from .bootstrap import build_portable_runtime, build_portable_worker
-from .models import Alert
+from .models import ActionResult, Alert
 from .worker import QueueFullError
 
 
@@ -130,6 +130,24 @@ def create_app(runtime=None, worker=None):
             except QueueFullError as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
         return runtime.handle_alert(normalized)
+
+    @app.post("/v1/investigations/{alert_id}/complete")
+    def investigation_complete(alert_id: str, payload: Dict[str, Any]) -> dict:
+        """Receive a completed ActionResult from an external executor (the agent)."""
+        if not isinstance(payload, dict) or "alert" not in payload or "result" not in payload:
+            raise HTTPException(status_code=400, detail="Body must contain 'alert' and 'result'")
+        try:
+            alert = Alert.from_dict(payload["alert"])
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if alert.alert_id != alert_id:
+            raise HTTPException(
+                status_code=400,
+                detail="alert_id in path does not match alert.alert_id in body",
+            )
+        action_result = ActionResult.from_dict(payload["result"])
+        runtime.record_external_action_completion(alert, action_result)
+        return {"status": "recorded", "alert_id": alert_id}
 
     return app
 

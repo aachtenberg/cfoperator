@@ -193,12 +193,35 @@ class ActionResult:
     message: str
     details: Dict[str, Any] = field(default_factory=dict)
     executed_at: datetime = field(default_factory=utc_now)
+    quiet: bool = False  # When True, notification sinks skip this result (e.g. interim "queued" states)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the result for sinks or transport."""
         payload = asdict(self)
         payload["executed_at"] = self.executed_at.isoformat()
         return payload
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "ActionResult":
+        """Rebuild from wire payload (e.g. the agent's investigation post-back)."""
+        executed_at_raw = payload.get("executed_at")
+        if isinstance(executed_at_raw, str) and executed_at_raw:
+            try:
+                executed_at = datetime.fromisoformat(executed_at_raw)
+            except ValueError:
+                executed_at = utc_now()
+        elif isinstance(executed_at_raw, datetime):
+            executed_at = executed_at_raw
+        else:
+            executed_at = utc_now()
+        return cls(
+            action=str(payload.get("action") or ""),
+            success=bool(payload.get("success")),
+            message=str(payload.get("message") or ""),
+            details=dict(payload.get("details") or {}),
+            executed_at=executed_at,
+            quiet=bool(payload.get("quiet") or False),
+        )
 
 
 @dataclass(slots=True)

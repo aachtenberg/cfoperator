@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .activity import render_activity_html
 from .engine import EventRuntime
-from .models import Alert
+from .models import ActionResult, Alert
 from .telemetry import render_metrics
 from .worker import BackgroundAlertWorker, QueueFullError
 
@@ -20,6 +20,20 @@ from .worker import BackgroundAlertWorker, QueueFullError
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]) -> None:
     data = json.dumps(payload, ensure_ascii=True, default=str).encode("utf-8")
     _bytes_response(handler, status, data, "application/json")
+
+
+_COMPLETION_PATH_PREFIX = "/v1/investigations/"
+_COMPLETION_PATH_SUFFIX = "/complete"
+
+
+def _match_completion_path(path: str) -> str | None:
+    """Return the alert_id if ``path`` matches ``/v1/investigations/{alert_id}/complete``."""
+    if not path.startswith(_COMPLETION_PATH_PREFIX) or not path.endswith(_COMPLETION_PATH_SUFFIX):
+        return None
+    middle = path[len(_COMPLETION_PATH_PREFIX) : -len(_COMPLETION_PATH_SUFFIX)]
+    if not middle or "/" in middle:
+        return None
+    return middle
 
 
 def _bytes_response(handler: BaseHTTPRequestHandler, status: int, payload: bytes, content_type: str) -> None:
@@ -120,10 +134,19 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
-            if parsed.path != "/alert":
-                _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+            if parsed.path == "/alert":
+                self._handle_alert_post(parsed)
                 return
 
+            completion_alert_id = _match_completion_path(parsed.path)
+            if completion_alert_id is not None:
+                self._handle_investigation_completion(parsed, completion_alert_id)
+                return
+
+            _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+        def _handle_alert_post(self, parsed) -> None:
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length) if length > 0 else b"{}"
@@ -141,6 +164,37 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                 _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"})
             except QueueFullError as exc:
                 _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+            except ValueError as exc:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except Exception as exc:
+                _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
+
+        def _handle_investigation_completion(self, parsed, alert_id: str) -> None:
+            """Receive an ActionResult posted back by an external executor (e.g. the agent)."""
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                body = self.rfile.read(length) if length > 0 else b"{}"
+                payload = json.loads(body.decode("utf-8"))
+                if not isinstance(payload, dict) or "alert" not in payload or "result" not in payload:
+                    _json_response(
+                        self,
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "Body must be a JSON object with 'alert' and 'result' fields"},
+                    )
+                    return
+                alert = Alert.from_dict(payload["alert"])
+                if alert.alert_id != alert_id:
+                    _json_response(
+                        self,
+                        HTTPStatus.BAD_REQUEST,
+                        {"error": "alert_id in path does not match alert.alert_id in body"},
+                    )
+                    return
+                action_result = ActionResult.from_dict(payload["result"])
+                runtime.record_external_action_completion(alert, action_result)
+                _json_response(self, HTTPStatus.OK, {"status": "recorded", "alert_id": alert_id})
+            except json.JSONDecodeError:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"})
             except ValueError as exc:
                 _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             except Exception as exc:
