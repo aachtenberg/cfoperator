@@ -1600,6 +1600,371 @@
       "type": "timeseries"
     },
     {
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cf6z7j8gxto1sc"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 37
+      },
+      "id": 77,
+      "panels": [],
+      "title": "HTTP Investigation Pipeline",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cf6z7j8gxto1sc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 8
+              },
+              {
+                "color": "red",
+                "value": 24
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 38
+      },
+      "id": 78,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cf6z7j8gxto1sc"
+          },
+          "expr": "cfoperator_investigation_queue_depth",
+          "refId": "A"
+        }
+      ],
+      "title": "Investigation Queue Depth",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cf6z7j8gxto1sc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 38
+      },
+      "id": 79,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cf6z7j8gxto1sc"
+          },
+          "expr": "sum(increase(cfoperator_investigation_queue_rejected_total[1h]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Queue Rejections (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cf6z7j8gxto1sc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 38
+      },
+      "id": 80,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cf6z7j8gxto1sc"
+          },
+          "expr": "sum(increase(cfoperator_investigation_postback_total{status=\"ok\"}[1h]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Post-back Success (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cf6z7j8gxto1sc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 38
+      },
+      "id": 81,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cf6z7j8gxto1sc"
+          },
+          "expr": "sum(increase(cfoperator_investigation_postback_total{status!=\"ok\"}[1h]))",
+          "refId": "A"
+        }
+      ],
+      "title": "Post-back Failures (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cf6z7j8gxto1sc"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 42
+      },
+      "id": 82,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cf6z7j8gxto1sc"
+          },
+          "expr": "cfoperator_investigation_queue_depth",
+          "legendFormat": "queue depth",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "cf6z7j8gxto1sc"
+          },
+          "expr": "sum by (status) (rate(cfoperator_investigation_postback_total[5m])) * 60",
+          "legendFormat": "post-back {{status}} /min",
+          "refId": "B"
+        }
+      ],
+      "title": "HTTP Investigation Pipeline (queue depth + post-back outcomes per minute)",
+      "type": "timeseries"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "cf6z7j8gxto1sc"
@@ -1668,7 +2033,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 37
+        "y": 50
       },
       "id": 9,
       "options": {
@@ -1771,7 +2136,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 37
+        "y": 50
       },
       "id": 10,
       "options": {
@@ -1815,7 +2180,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 58
       },
       "id": 11,
       "options": {
@@ -1851,7 +2216,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 57
+        "y": 70
       },
       "id": 14,
       "options": {
@@ -1887,7 +2252,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 67
+        "y": 80
       },
       "id": 12,
       "options": {
@@ -1923,7 +2288,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 67
+        "y": 80
       },
       "id": 15,
       "options": {
@@ -1955,7 +2320,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 77
+        "y": 90
       },
       "id": 30,
       "panels": [],
@@ -1997,7 +2362,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 78
+        "y": 91
       },
       "id": 31,
       "options": {
@@ -2078,7 +2443,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 78
+        "y": 91
       },
       "id": 32,
       "options": {
@@ -2146,7 +2511,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 78
+        "y": 91
       },
       "id": 33,
       "options": {
@@ -2207,7 +2572,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 78
+        "y": 91
       },
       "id": 34,
       "options": {
@@ -2447,7 +2812,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 82
+        "y": 95
       },
       "id": 35,
       "options": {
@@ -2588,7 +2953,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 92
+        "y": 105
       },
       "id": 36,
       "options": {
@@ -2627,7 +2992,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 102
+        "y": 115
       },
       "id": 50,
       "panels": [],
@@ -2681,7 +3046,7 @@
         "h": 5,
         "w": 8,
         "x": 0,
-        "y": 103
+        "y": 116
       },
       "id": 51,
       "options": {
@@ -2740,7 +3105,7 @@
         "h": 5,
         "w": 4,
         "x": 8,
-        "y": 103
+        "y": 116
       },
       "id": 52,
       "options": {
@@ -2819,7 +3184,7 @@
         "h": 5,
         "w": 4,
         "x": 12,
-        "y": 103
+        "y": 116
       },
       "id": 53,
       "options": {
@@ -2909,7 +3274,7 @@
         "h": 5,
         "w": 8,
         "x": 16,
-        "y": 103
+        "y": 116
       },
       "id": 54,
       "options": {
@@ -3009,7 +3374,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 108
+        "y": 121
       },
       "id": 55,
       "options": {
@@ -3101,7 +3466,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 108
+        "y": 121
       },
       "id": 56,
       "options": {
@@ -3153,7 +3518,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 116
+        "y": 129
       },
       "id": 57,
       "options": {
@@ -3185,7 +3550,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 127
+        "y": 140
       },
       "id": 58,
       "panels": [],
@@ -3250,7 +3615,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 128
+        "y": 141
       },
       "id": 59,
       "options": {
@@ -3328,7 +3693,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 128
+        "y": 141
       },
       "id": 60,
       "options": {
@@ -3464,7 +3829,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 128
+        "y": 141
       },
       "id": 61,
       "options": {
@@ -3521,7 +3886,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 141
+        "y": 154
       },
       "id": 62,
       "panels": [],
@@ -3557,7 +3922,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 142
+        "y": 155
       },
       "id": 63,
       "options": {
@@ -3620,7 +3985,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 142
+        "y": 155
       },
       "id": 64,
       "options": {
@@ -3691,7 +4056,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 142
+        "y": 155
       },
       "id": 65,
       "options": {
@@ -3754,7 +4119,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 142
+        "y": 155
       },
       "id": 66,
       "options": {
@@ -3822,7 +4187,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 146
+        "y": 159
       },
       "id": 67,
       "options": {
@@ -3852,7 +4217,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT service_a, service_b, correlation_type, CASE correlation_type WHEN 'co_failure' THEN 'Both failed simultaneously (≤30s apart)' WHEN 'cascade_failure' THEN 'One failed, then the other followed (>30s apart)' WHEN 'dependency' THEN 'Service B depends on Service A' WHEN 'resource_contention' THEN 'Competing for same resource' END AS description, occurrence_count, ROUND(avg_time_delta_seconds::numeric, 1) AS avg_delta_sec, last_seen FROM service_correlations ORDER BY occurrence_count DESC LIMIT 20",
+          "rawSql": "SELECT service_a, service_b, correlation_type, CASE correlation_type WHEN 'co_failure' THEN 'Both failed simultaneously (\u226430s apart)' WHEN 'cascade_failure' THEN 'One failed, then the other followed (>30s apart)' WHEN 'dependency' THEN 'Service B depends on Service A' WHEN 'resource_contention' THEN 'Competing for same resource' END AS description, occurrence_count, ROUND(avg_time_delta_seconds::numeric, 1) AS avg_delta_sec, last_seen FROM service_correlations ORDER BY occurrence_count DESC LIMIT 20",
           "refId": "A"
         }
       ],
@@ -3918,7 +4283,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 156
+        "y": 169
       },
       "id": 68,
       "options": {
@@ -3985,7 +4350,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 156
+        "y": 169
       },
       "id": 69,
       "options": {
@@ -4029,7 +4394,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 164
+        "y": 177
       },
       "id": 70,
       "panels": [],
@@ -4065,7 +4430,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 165
+        "y": 178
       },
       "id": 71,
       "options": {
@@ -4135,7 +4500,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 165
+        "y": 178
       },
       "id": 72,
       "options": {
@@ -4206,7 +4571,7 @@
         "h": 4,
         "w": 8,
         "x": 16,
-        "y": 165
+        "y": 178
       },
       "id": 76,
       "options": {
@@ -4344,7 +4709,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 169
+        "y": 182
       },
       "id": 73,
       "options": {
@@ -4411,7 +4776,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 169
+        "y": 182
       },
       "id": 74,
       "options": {

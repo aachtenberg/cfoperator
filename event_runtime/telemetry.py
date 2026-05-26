@@ -145,6 +145,11 @@ if PROMETHEUS_AVAILABLE:
         "Notification delivery attempts by sink and result.",
         ["sink", "result"],
     )
+    COMPLETION_REQUESTS = Counter(
+        "cfoperator_event_runtime_completion_requests_total",
+        "Requests to POST /v1/investigations/{alert_id}/complete by outcome.",
+        ["outcome"],
+    )
 else:
     RUNTIME_INFO = None
     RUNTIME_UP = None
@@ -282,6 +287,20 @@ def observe_notification(sink: object, result: object) -> None:
             sink=_sanitize_label(sink, "unknown"),
             result=_sanitize_label(result, "unknown"),
         ).inc()
+
+
+def observe_completion_request(outcome: str) -> None:
+    """Record a request to /v1/investigations/{alert_id}/complete.
+
+    ``outcome`` is one of:
+      - "recorded": auth + payload OK; ActionResult was recorded and notified
+      - "auth_missing": secret enforced, no X-CFOP-Token header
+      - "auth_invalid": secret enforced, X-CFOP-Token mismatch
+      - "bad_request": malformed body / shape / alert_id mismatch
+      - "error": unexpected server error
+    """
+    if PROMETHEUS_AVAILABLE:
+        COMPLETION_REQUESTS.labels(outcome=_sanitize_label(outcome, "unknown")).inc()
 
 
 def render_metrics() -> tuple[bytes, str]:

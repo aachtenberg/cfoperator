@@ -802,3 +802,97 @@ def test_fastapi_completion_endpoint_enforces_auth(tmp_path, monkeypatch):
     )
     assert right.status_code == 200
     assert len(sink.calls) == 1
+
+
+# ---- completion_requests metric ------------------------------------------
+
+
+def _counter_value(counter, **labels) -> float:
+    """Read a labeled Counter value via the public collect() API."""
+    for metric in counter.collect():
+        for sample in metric.samples:
+            if not sample.name.endswith("_total"):
+                continue
+            if all(sample.labels.get(k) == v for k, v in labels.items()):
+                return float(sample.value)
+    return 0.0
+
+
+def test_completion_endpoint_increments_recorded_metric(tmp_path):
+    from event_runtime.telemetry import COMPLETION_REQUESTS
+    runtime, sink = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        before = _counter_value(COMPLETION_REQUESTS, outcome="recorded")
+        payload = {
+            "alert": _alert("mp1").to_dict(),
+            "result": {"action": "investigate", "success": True, "message": "ok"},
+        }
+        status, _ = _post(server, "/v1/investigations/mp1/complete", payload)
+        assert status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+    assert _counter_value(COMPLETION_REQUESTS, outcome="recorded") == before + 1
+
+
+def test_completion_endpoint_increments_auth_missing_metric(tmp_path, monkeypatch):
+    from event_runtime.telemetry import COMPLETION_REQUESTS
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "abc")
+    runtime, _ = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        before = _counter_value(COMPLETION_REQUESTS, outcome="auth_missing")
+        payload = {
+            "alert": _alert("mp2").to_dict(),
+            "result": {"action": "investigate", "success": True, "message": "ok"},
+        }
+        status, _ = _post(server, "/v1/investigations/mp2/complete", payload)
+        assert status == 401
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+    assert _counter_value(COMPLETION_REQUESTS, outcome="auth_missing") == before + 1
+
+
+def test_completion_endpoint_increments_auth_invalid_metric(tmp_path, monkeypatch):
+    from event_runtime.telemetry import COMPLETION_REQUESTS
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "abc")
+    runtime, _ = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        before = _counter_value(COMPLETION_REQUESTS, outcome="auth_invalid")
+        payload = {
+            "alert": _alert("mp3").to_dict(),
+            "result": {"action": "investigate", "success": True, "message": "ok"},
+        }
+        status, _ = _post(
+            server,
+            "/v1/investigations/mp3/complete",
+            payload,
+            extra_headers={COMPLETION_AUTH_HEADER: "wrong"},
+        )
+        assert status == 401
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+    assert _counter_value(COMPLETION_REQUESTS, outcome="auth_invalid") == before + 1
+
+
+def test_completion_endpoint_increments_bad_request_metric(tmp_path):
+    from event_runtime.telemetry import COMPLETION_REQUESTS
+    runtime, _ = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        before = _counter_value(COMPLETION_REQUESTS, outcome="bad_request")
+        # Malformed JSON triggers the JSONDecodeError branch.
+        status, _ = _post(server, "/v1/investigations/mp4/complete", "{not json")
+        assert status == 400
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+    assert _counter_value(COMPLETION_REQUESTS, outcome="bad_request") == before + 1

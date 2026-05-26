@@ -17,6 +17,7 @@ from .http_actions import (
     verify_completion_auth,
 )
 from .models import Alert
+from .telemetry import observe_completion_request
 from .worker import QueueFullError
 
 
@@ -141,12 +142,16 @@ def create_app(runtime=None, worker=None):
         """Receive a completed ActionResult from an external executor (the agent)."""
         auth_error = verify_completion_auth(request.headers.get(COMPLETION_AUTH_HEADER))
         if auth_error is not None:
+            outcome = "auth_missing" if "Missing" in auth_error else "auth_invalid"
+            observe_completion_request(outcome)
             raise HTTPException(status_code=401, detail=auth_error)
         try:
             alert, action_result = parse_completion_payload(payload, alert_id)
         except ValueError as exc:
+            observe_completion_request("bad_request")
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         runtime.record_external_action_completion(alert, action_result)
+        observe_completion_request("recorded")
         return {"status": "recorded", "alert_id": alert_id}
 
     return app
