@@ -16,19 +16,34 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_alert_timestamp(raw: Any) -> datetime:
+def _parse_iso_timestamp(raw: Any, *, field_name: str) -> datetime:
+    """Parse an ISO-8601 timestamp, normalizing naive datetimes and ``Z`` suffix to UTC.
+
+    Empty / missing input returns ``utc_now()``. Used by both ``Alert.from_dict``
+    and ``ActionResult.from_dict`` to keep timestamp handling consistent.
+    """
     if raw in (None, ""):
         return utc_now()
     if isinstance(raw, datetime):
         value = raw
     else:
+        text = str(raw)
+        # datetime.fromisoformat in 3.11+ handles trailing Z, but be explicit
+        # so behavior doesn't silently change across Python versions.
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
         try:
-            value = datetime.fromisoformat(str(raw))
+            value = datetime.fromisoformat(text)
         except ValueError as exc:
-            raise ValueError(f"Invalid occurred_at timestamp: {raw}") from exc
+            raise ValueError(f"Invalid {field_name} timestamp: {raw}") from exc
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value
+
+
+def _parse_alert_timestamp(raw: Any) -> datetime:
+    """Compatibility shim: forwards to the shared parser with the legacy field name."""
+    return _parse_iso_timestamp(raw, field_name="occurred_at")
 
 
 class AlertSeverity(str, Enum):
@@ -193,12 +208,70 @@ class ActionResult:
     message: str
     details: Dict[str, Any] = field(default_factory=dict)
     executed_at: datetime = field(default_factory=utc_now)
+    quiet: bool = False  # When True, notification sinks skip this result (e.g. interim "queued" states)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize the result for sinks or transport."""
         payload = asdict(self)
         payload["executed_at"] = self.executed_at.isoformat()
         return payload
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "ActionResult":
+        """Rebuild from a wire payload (e.g. the agent's investigation post-back).
+
+        Wire-facing — bad input must raise ``ValueError`` so callers can surface a
+        400, not crash with ``AttributeError`` and bubble up as a 500.
+        """
+        if not isinstance(payload, dict):
+            raise ValueError("ActionResult payload must be a JSON object")
+
+        action = payload.get("action")
+        if not isinstance(action, str) or not action:
+            raise ValueError("Field action must be a non-empty string")
+
+        message = payload.get("message", "")
+        if not isinstance(message, str):
+            raise ValueError("Field message must be a string")
+
+        raw_success = payload.get("success")
+        if isinstance(raw_success, bool):
+            success = raw_success
+        elif raw_success is None:
+            raise ValueError("Missing required field: success")
+        else:
+            # Reject truthy strings like "false" that bool() would silently invert.
+            raise ValueError(
+                f"Field success must be a JSON boolean (got {type(raw_success).__name__})"
+            )
+
+        raw_details = payload.get("details")
+        if raw_details is None:
+            details = {}
+        elif isinstance(raw_details, dict):
+            details = dict(raw_details)
+        else:
+            # Falsy non-dicts (e.g. []) would silently coalesce via `or {}`; reject explicitly.
+            raise ValueError("Field details must be a JSON object")
+
+        raw_quiet = payload.get("quiet", False)
+        if isinstance(raw_quiet, bool):
+            quiet = raw_quiet
+        else:
+            raise ValueError(
+                f"Field quiet must be a JSON boolean (got {type(raw_quiet).__name__})"
+            )
+
+        executed_at = _parse_iso_timestamp(payload.get("executed_at"), field_name="executed_at")
+
+        return cls(
+            action=action,
+            success=success,
+            message=message,
+            details=details,
+            executed_at=executed_at,
+            quiet=quiet,
+        )
 
 
 @dataclass(slots=True)

@@ -44,9 +44,16 @@ flowchart TD
         Execute --> Schedule["Schedule Follow-up<br/>Tasks (optional)"]
     end
 
+    Execute -.->|investigate +<br/>CFOP_AGENT_URL set| AgentDispatch["POST /v1/investigate<br/>to CFOperator agent<br/>(HTTPInvestigateActionHandler)"]
+    AgentDispatch -.-> AgentLoop["Agent runs LLM<br/>investigation"]
+    AgentLoop -.->|POST /v1/investigations/<br/>{alert_id}/complete<br/>(X-CFOP-Token)| Completion["record_external_<br/>action_completion()"]
+    Completion --> Audit
+    Completion --> Notify["Notification Sinks<br/>(Slack, Discord)"]
+
     LogOnly --> Audit
     Fail --> Audit
     Execute --> Audit
+    Execute -->|notify, in-process<br/>actions, or stub| Notify
     Schedule --> Scheduler["Scheduler<br/>(JSON fallback or APScheduler backend)"]
 
     subgraph Audit["State Sink (audit trail)"]
@@ -80,8 +87,10 @@ flowchart TD
    - K3s cluster stats (node conditions, pod counts, CPU/memory usage, restart counts via kube-state-metrics + cAdvisor)
 5. **Decision** — the decision engine selects an action, confidence score, reasoning, and optional scheduled follow-up tasks
 6. **Action Execution** — the matched action handler runs (investigate, notify, log_only)
+   - For `investigate`: with `CFOP_AGENT_URL` set, `HTTPInvestigateActionHandler` POSTs the alert to the CFOperator agent's `/v1/investigate` and returns a quiet (non-notifying) `ActionResult`. Without it, the default stub handler runs (records intent only).
 7. **Scheduling** — follow-up checks are persisted to the scheduler store and polled back into the runtime as synthetic alerts when they become due
 8. **Audit** — every step emits append-only domain events to the local JSONL outbox, with background replay to PostgreSQL when configured
+9. **Completion Post-Back (delegated investigations only)** — when the agent finishes its LLM investigation, it POSTs the completed `ActionResult` to `/v1/investigations/{alert_id}/complete` with the `X-CFOP-Token` header. The runtime records an `action_completed` event tagged `source=external` and fires the single Slack/Discord notification with the real outcome.
 
 ## Minimal Setup
 
@@ -143,6 +152,7 @@ event_runtime:
 - `GET /metrics`
 - `POST /alert`
 - `GET /jobs/<job_id>` when background workers are enabled
+- `POST /v1/investigations/<alert_id>/complete` — receive a completed `ActionResult` from an external executor (the agent). Body shape: `{"alert": <Alert>, "result": <ActionResult>}`. Requires `X-CFOP-Token` header when `CFOP_COMPLETION_SHARED_SECRET` is set.
 
 ## Optional ASGI Mode
 
@@ -202,6 +212,8 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_ENABLED`: enable bare-metal host observability plugins, default `1`
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_JSON`: inline JSON config for bare-metal observability providers
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_CONFIG_PATH`: path to a JSON config file for bare-metal observability providers
+- `CFOP_AGENT_URL`: base URL of the CFOperator agent (e.g. `http://cfoperator.apps.svc.cluster.local:8083`). When set, the runtime registers `HTTPInvestigateActionHandler` in place of the default stub for the `investigate` action, so every `investigate` decision is dispatched to the agent over HTTP. Unsetting it falls back to the stub.
+- `CFOP_COMPLETION_SHARED_SECRET`: shared secret enforced on `POST /v1/investigations/{alert_id}/complete`. Callers must send a matching `X-CFOP-Token` header. When unset, the endpoint accepts unauthenticated posts (portable deployments without an agent stay runnable) and logs a warning at startup. Compared via `secrets.compare_digest` to avoid timing attacks.
 
 The runtime also reads bare-metal host observability config from `config.yaml` when PyYAML is available. It looks for `event_runtime.host_observability` first, then `observability.host_observability`. You can point the runtime at a specific file with `CONFIG_PATH=/path/to/config.yaml` or `python3 -m event_runtime --config /path/to/config.yaml`.
 

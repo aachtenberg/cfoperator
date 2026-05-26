@@ -11,6 +11,11 @@ from typing import Any, Dict
 
 from .activity import render_activity_html
 from .bootstrap import build_portable_runtime, build_portable_worker
+from .http_actions import (
+    COMPLETION_AUTH_HEADER,
+    parse_completion_payload,
+    verify_completion_auth,
+)
 from .models import Alert
 from .worker import QueueFullError
 
@@ -24,7 +29,7 @@ def create_app(runtime=None, worker=None):
     """
 
     try:
-        from fastapi import FastAPI, HTTPException, Query, Response
+        from fastapi import FastAPI, HTTPException, Query, Request, Response
     except ImportError as exc:
         raise RuntimeError(
             "FastAPI is not installed. Install 'fastapi' and 'uvicorn' to use the ASGI adapter."
@@ -130,6 +135,19 @@ def create_app(runtime=None, worker=None):
             except QueueFullError as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
         return runtime.handle_alert(normalized)
+
+    @app.post("/v1/investigations/{alert_id}/complete")
+    def investigation_complete(alert_id: str, payload: Dict[str, Any], request: Request) -> dict:
+        """Receive a completed ActionResult from an external executor (the agent)."""
+        auth_error = verify_completion_auth(request.headers.get(COMPLETION_AUTH_HEADER))
+        if auth_error is not None:
+            raise HTTPException(status_code=401, detail=auth_error)
+        try:
+            alert, action_result = parse_completion_payload(payload, alert_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        runtime.record_external_action_completion(alert, action_result)
+        return {"status": "recorded", "alert_id": alert_id}
 
     return app
 

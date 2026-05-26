@@ -157,6 +157,11 @@ Remote persistence should be layered behind a replay-capable sink wrapper:
 - Add CronJob alert producers
 - Add destructive action plugins behind explicit allowlists and feature flags
 - Retire or reduce the legacy sweep loop to a slow safety net
+- Replace the safe `investigate` stub with `HTTPInvestigateActionHandler` that
+  delegates to the CFOperator agent over HTTP and accepts the completed
+  `ActionResult` back via `POST /v1/investigations/{alert_id}/complete`. Gated
+  on `CFOP_AGENT_URL`; portable deployments without an agent keep the stub.
+  See [event-runtime-quickstart.md](event-runtime-quickstart.md) for the flow.
 
 ### Milestone 6
 

@@ -6,10 +6,29 @@ CFOperator runs continuously in the background, monitoring your fleet via an OOD
 
 ## Architecture
 
+The deployed system runs as two processes that split responsibilities along a clean HTTP boundary:
+
+- **`event_runtime`** (separate process / pod) — ingests alerts from Alertmanager, applies dedupe/cooldown policies, runs the decision engine, dispatches actions, and owns the notification surface (Slack, Discord).
+- **`agent`** (this codebase's main process) — runs LLM-driven investigations, owns the knowledge base + embeddings, runs the proactive deep sweep, and serves the chat UI.
+
+When `event_runtime` decides to `investigate`, it POSTs the alert to the agent's `/v1/investigate` endpoint. The agent enqueues, runs the LLM investigation with tools, and POSTs the completed `ActionResult` back to `event_runtime` at `/v1/investigations/{alert_id}/complete`, which fires the single Slack notification with the real outcome. See [docs/event-runtime-quickstart.md](docs/event-runtime-quickstart.md) for the full flow + env vars (`CFOP_AGENT_URL`, `CFOP_COMPLETION_SHARED_SECRET`).
+
 ```
-CFOperator (Docker container)
-├── OODA Loop (Dual-Mode)
-│   ├── Reactive: Monitor Alertmanager every 10s
+Alertmanager
+    │
+    ▼
+event_runtime  ──(POST /v1/investigate)──►  agent (LLM investigation)
+    ▲                                          │
+    └──(POST /v1/investigations/<id>/complete)─┘
+    │
+    ▼
+Slack / Discord  (one notification per alert, with real outcome)
+```
+
+```
+CFOperator agent (Docker container)
+├── OODA Loop
+│   ├── HTTP-driven investigations: POST /v1/investigate from event_runtime
 │   ├── Proactive: Deep sweeps every 30min
 │   ├── LLM Judge: Verify findings before reporting
 │   └── Morning: TPS reports at 7-9 AM
@@ -22,9 +41,9 @@ CFOperator (Docker container)
 ├── Observability (Pluggable)
 │   ├── Metrics: Prometheus / Victoria Metrics / Datadog / InfluxDB
 │   ├── Logs: Loki / Elasticsearch / Splunk / CloudWatch
-│   ├── Alerts: Alertmanager / PagerDuty / OpsGenie
+│   ├── Alerts: handled by event_runtime (Alertmanager → /v1/investigate)
 │   ├── Containers: Kubernetes + Docker (multi-runtime)
-│   └── Notifications: Slack + Discord
+│   └── Notifications: handled by event_runtime (Slack + Discord)
 │
 ├── LLM Fallback Chain
 │   └── Ollama (local) → Groq → Gemini → Anthropic
@@ -128,6 +147,7 @@ docker compose up -d
 | `/api/ollama/models` | List available Ollama models |
 | `/api/ollama/models/select` | Persist model selection (POST) |
 | `/api/qa` | Pending questions (GET/POST) |
+| `/v1/investigate` | POST — async investigation entry point called by event_runtime |
 | `/metrics` | Prometheus metrics |
 | `/ws` | WebSocket chat |
 
@@ -203,8 +223,10 @@ make all            # all platforms
 
 | File | Purpose |
 |------|---------|
-| `agent/agent.py` | Main OODA loop, chat handler, tool registry |
-| `web_server.py` | Flask + Waitress, REST + WebSocket APIs |
+| `agent/agent.py` | OODA loop (proactive sweep + HTTP-driven `run_investigation`), chat handler, tool registry |
+| `web_server.py` | Flask + Waitress; REST + WebSocket APIs + `POST /v1/investigate` for event_runtime delegation |
+| `event_runtime/` | Standalone process: alert ingest, dedupe, decisions, action dispatch, Slack/Discord |
+| `event_runtime/http_actions.py` | `HTTPInvestigateActionHandler` + completion endpoint auth/validation helpers |
 | `ui/index.html` | Single-page chat UI (dark theme, sidebar layout) |
 | `agent/knowledge_base.py` | ResilientKnowledgeBase wrapping PostgreSQL + pgvector |
 | `agent/embedding_service.py` | Embedding generation via Ollama with LRU + DB cache |

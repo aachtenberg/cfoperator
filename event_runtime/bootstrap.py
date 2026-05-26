@@ -16,6 +16,7 @@ from .defaults import (
 )
 from .git_context import GitChangeContextProvider
 from .github_actions import build_github_action_handlers
+from .http_actions import build_http_investigate_handler
 from .notifications import SlackNotificationSink, DiscordNotificationSink
 from .plugins import AlertSource
 from .sources import AlertmanagerAlertSource
@@ -64,6 +65,15 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
         plugins.register_alert_source(scheduler)
     for handler in build_default_action_handlers().values():
         plugins.register_action_handler(handler)
+
+    # HTTP-backed investigate handler — replaces the stub when an agent URL
+    # is configured (CFOP_AGENT_URL). PluginManager keys by action_name, so
+    # registering this overwrites the default. Without an agent URL we keep
+    # the stub so portable deployments still work.
+    agent_url = os.getenv("CFOP_AGENT_URL", "").strip()
+    http_investigate = build_http_investigate_handler(agent_url or None)
+    if http_investigate is not None:
+        plugins.register_action_handler(http_investigate)
 
     # Git / GitHub integration (gated on config or env vars)
     git_config = _load_git_config(config_path)
