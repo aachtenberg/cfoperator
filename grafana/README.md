@@ -2,7 +2,7 @@
 
 Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure intelligence.
 
-An additional dashboard for the modular event runtime lives in [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, runtime error paths, and scheduled follow-up visibility.
+An additional dashboard for the modular event runtime lives in [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, runtime error paths, scheduled follow-up visibility, and (new) the completion endpoint that receives ActionResult post-backs from the agent.
 
 ## Dashboard Features
 
@@ -31,6 +31,14 @@ An additional dashboard for the modular event runtime lives in [grafana/event-ru
 - **Token Usage by Provider** - Stacked area chart showing prompt and completion tokens
 - **LLM Latency Heatmap** - P50, P90, P99 latency by provider
 - **Fallback Chain Activity** - Which fallbacks are activating (Ollama → Groq, etc.)
+
+### HTTP Investigation Pipeline
+Surfaces the path from event_runtime → agent for alert-driven investigations. Useful when `ooda.reactive_poll: false` and the agent is being driven over HTTP.
+- **Investigation Queue Depth** - Pending HTTP investigations on the agent worker. Green < 8, yellow < 24, red ≥ 24 (default queue size is 32). Rising values mean the agent's single worker thread is falling behind the LLM throughput it can sustain.
+- **Queue Rejections (1h)** - 503s when the queue was full. event_runtime's worker retries with backoff, so non-zero here is operationally tolerable but indicates sustained saturation.
+- **Post-back Success (1h)** - `cfoperator_investigation_postback_total{status="ok"}` over the last hour. Should track the investigation completion rate.
+- **Post-back Failures (1h)** - Any status other than `ok` (`http_401`, `http_5xx`, `transport_error`, ...). Non-zero means the agent finished an investigation but couldn't durably hand the result back to event_runtime.
+- **Pipeline Time Series** - Queue depth as a line plus post-back outcomes per minute split by status label, so you can see where the bottleneck or failure pattern is over time.
 
 ### Fifth Row - Infrastructure Health
 - **CPU Usage by Host** - CPU % for each host in your fleet
@@ -355,6 +363,22 @@ Feel free to customize this dashboard:
 - Add alert annotations
 - Change refresh intervals
 - Add more variables (e.g., $host filter)
+
+## Event Runtime — Completion Endpoint
+
+New section in [event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json) that surfaces health of `POST /v1/investigations/{alert_id}/complete` — the endpoint event_runtime exposes for the agent to post completed ActionResults back through.
+
+Powered by a single labeled counter:
+```promql
+cfoperator_event_runtime_completion_requests_total{outcome="recorded|auth_missing|auth_invalid|bad_request|error"}
+```
+
+Panels:
+- **Completion Requests (1h)** - Total inbound to the endpoint. Should track investigation completions.
+- **Recorded (1h)** - Successful recordings. Each one fires the single Slack/Discord notification with the real outcome.
+- **Auth Failures (1h)** - `auth_missing` + `auth_invalid` combined. Non-zero is a security signal: it means something on the cluster network tried to hit the endpoint without (or with the wrong) X-CFOP-Token. With `CFOP_COMPLETION_SHARED_SECRET` properly set on both pods this should be flat zero. Sustained non-zero values warrant investigation.
+- **Bad Requests (1h)** - Malformed body, alert_id mismatch, or invalid JSON. Non-zero usually means the agent and event_runtime have drifted on the wire shape (`{"alert": ..., "result": ...}`).
+- **Completion Requests by Outcome (per minute)** - Time series with one line per outcome label so you can see when a regression started.
 
 ## Related Dashboards
 

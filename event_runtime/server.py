@@ -18,7 +18,7 @@ from .http_actions import (
     verify_completion_auth,
 )
 from .models import Alert
-from .telemetry import render_metrics
+from .telemetry import observe_completion_request, render_metrics
 from .worker import BackgroundAlertWorker, QueueFullError
 
 
@@ -178,6 +178,8 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
             """Receive an ActionResult posted back by an external executor (e.g. the agent)."""
             auth_error = verify_completion_auth(self.headers.get(COMPLETION_AUTH_HEADER))
             if auth_error is not None:
+                outcome = "auth_missing" if "Missing" in auth_error else "auth_invalid"
+                observe_completion_request(outcome)
                 _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": auth_error})
                 return
             try:
@@ -186,12 +188,16 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                 payload = json.loads(body.decode("utf-8"))
                 alert, action_result = parse_completion_payload(payload, alert_id)
                 runtime.record_external_action_completion(alert, action_result)
+                observe_completion_request("recorded")
                 _json_response(self, HTTPStatus.OK, {"status": "recorded", "alert_id": alert_id})
             except json.JSONDecodeError:
+                observe_completion_request("bad_request")
                 _json_response(self, HTTPStatus.BAD_REQUEST, {"error": "Invalid JSON"})
             except ValueError as exc:
+                observe_completion_request("bad_request")
                 _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             except Exception as exc:
+                observe_completion_request("error")
                 _json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
         def log_message(self, format: str, *args: Tuple[Any, ...]) -> None:
