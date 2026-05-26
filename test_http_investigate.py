@@ -22,7 +22,14 @@ import pytest
 from event_runtime.bootstrap import build_portable_runtime
 from event_runtime.defaults import InvestigateActionHandler
 from event_runtime.engine import EventRuntime
-from event_runtime.http_actions import HTTPInvestigateActionHandler, build_http_investigate_handler
+from event_runtime.http_actions import (
+    COMPLETION_AUTH_HEADER,
+    COMPLETION_SECRET_ENV,
+    HTTPInvestigateActionHandler,
+    build_http_investigate_handler,
+    parse_completion_payload,
+    verify_completion_auth,
+)
 from event_runtime.models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, Decision
 from event_runtime.notifications import _format_message, should_notify
 from event_runtime.plugin_manager import PluginManager
@@ -101,6 +108,66 @@ def test_action_result_quiet_round_trips_through_to_dict():
 def test_action_result_from_dict_tolerates_missing_quiet():
     rebuilt = ActionResult.from_dict({"action": "investigate", "success": True, "message": "x"})
     assert rebuilt.quiet is False
+
+
+def test_action_result_from_dict_rejects_non_object_payload():
+    with pytest.raises(ValueError, match="JSON object"):
+        ActionResult.from_dict([])  # type: ignore[arg-type]
+
+
+def test_action_result_from_dict_rejects_string_success():
+    """`bool('false') is True` — must reject so wire callers can't invert outcomes."""
+    with pytest.raises(ValueError, match="success"):
+        ActionResult.from_dict(
+            {"action": "investigate", "success": "false", "message": "x"}
+        )
+
+
+def test_action_result_from_dict_requires_success_present():
+    with pytest.raises(ValueError, match="success"):
+        ActionResult.from_dict({"action": "investigate", "message": "x"})
+
+
+def test_action_result_from_dict_rejects_non_string_action():
+    with pytest.raises(ValueError, match="action"):
+        ActionResult.from_dict({"action": 7, "success": True, "message": "x"})
+
+
+def test_action_result_from_dict_rejects_non_dict_details():
+    with pytest.raises(ValueError, match="details"):
+        ActionResult.from_dict(
+            {"action": "investigate", "success": True, "message": "x", "details": []}
+        )
+
+
+def test_action_result_from_dict_rejects_non_bool_quiet():
+    with pytest.raises(ValueError, match="quiet"):
+        ActionResult.from_dict(
+            {"action": "investigate", "success": True, "message": "x", "quiet": "true"}
+        )
+
+
+def test_action_result_from_dict_accepts_zulu_timestamp():
+    rebuilt = ActionResult.from_dict(
+        {"action": "investigate", "success": True, "message": "x", "executed_at": "2026-05-26T12:00:00Z"}
+    )
+    assert rebuilt.executed_at.tzinfo is not None
+    assert rebuilt.executed_at.utcoffset().total_seconds() == 0
+
+
+def test_action_result_from_dict_normalizes_naive_timestamp_to_utc():
+    rebuilt = ActionResult.from_dict(
+        {"action": "investigate", "success": True, "message": "x", "executed_at": "2026-05-26T12:00:00"}
+    )
+    assert rebuilt.executed_at.tzinfo is not None
+    assert rebuilt.executed_at.utcoffset().total_seconds() == 0
+
+
+def test_action_result_from_dict_raises_on_garbage_timestamp():
+    with pytest.raises(ValueError, match="executed_at"):
+        ActionResult.from_dict(
+            {"action": "investigate", "success": True, "message": "x", "executed_at": "not-a-date"}
+        )
 
 
 # ---- should_notify --------------------------------------------------------
@@ -328,10 +395,13 @@ def _serve(runtime: EventRuntime):
     return server, thread
 
 
-def _post(server, path: str, payload):
+def _post(server, path: str, payload, *, extra_headers: dict | None = None):
     conn = HTTPConnection(server.server_address[0], server.server_address[1], timeout=2)
     body = payload if isinstance(payload, (str, bytes)) else json.dumps(payload)
-    conn.request("POST", path, body=body, headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+    conn.request("POST", path, body=body, headers=headers)
     resp = conn.getresponse()
     data = resp.read().decode("utf-8")
     conn.close()
@@ -416,6 +486,183 @@ def test_completion_endpoint_400_on_invalid_json(tmp_path):
         server.server_close()
 
 
+def test_completion_endpoint_400_when_alert_field_not_dict(tmp_path):
+    runtime, _ = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        status, body = _post(
+            server,
+            "/v1/investigations/aid/complete",
+            {"alert": "not-a-dict", "result": {"action": "investigate", "success": True, "message": "x"}},
+        )
+        assert status == 400
+        assert "alert" in body["error"].lower()
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+def test_completion_endpoint_400_when_result_field_not_dict(tmp_path):
+    runtime, _ = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        status, body = _post(
+            server,
+            "/v1/investigations/aid/complete",
+            {"alert": _alert("aid").to_dict(), "result": "not-a-dict"},
+        )
+        assert status == 400
+        assert "result" in body["error"].lower()
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
+# ---- parse_completion_payload (used by both transports) ------------------
+
+
+def test_parse_completion_payload_happy_path():
+    alert_dict = _alert("aid").to_dict()
+    result_dict = {"action": "investigate", "success": True, "message": "ok"}
+    alert, result = parse_completion_payload({"alert": alert_dict, "result": result_dict}, "aid")
+    assert alert.alert_id == "aid"
+    assert result.action == "investigate"
+
+
+@pytest.mark.parametrize("bad_body,expected_msg", [
+    ([], "JSON object"),
+    ({}, "alert"),
+    ({"alert": {}}, "result"),
+    ({"alert": "x", "result": {}}, "alert"),
+    ({"alert": {}, "result": "x"}, "result"),
+])
+def test_parse_completion_payload_rejects_bad_shapes(bad_body, expected_msg):
+    with pytest.raises(ValueError, match=expected_msg):
+        parse_completion_payload(bad_body, "aid")
+
+
+def test_parse_completion_payload_rejects_alert_id_mismatch():
+    alert_dict = _alert("real").to_dict()
+    with pytest.raises(ValueError, match="alert_id"):
+        parse_completion_payload(
+            {"alert": alert_dict, "result": {"action": "investigate", "success": True, "message": "x"}},
+            "different",
+        )
+
+
+# ---- verify_completion_auth ----------------------------------------------
+
+
+def test_verify_completion_auth_allows_when_secret_unset(monkeypatch):
+    monkeypatch.delenv(COMPLETION_SECRET_ENV, raising=False)
+    assert verify_completion_auth(None) is None
+    assert verify_completion_auth("anything") is None
+
+
+def test_verify_completion_auth_rejects_missing_header_when_secret_set(monkeypatch):
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "supersecret")
+    err = verify_completion_auth(None)
+    assert err is not None and "Missing" in err
+
+
+def test_verify_completion_auth_rejects_wrong_header(monkeypatch):
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "supersecret")
+    err = verify_completion_auth("wrong")
+    assert err is not None and "Invalid" in err
+
+
+def test_verify_completion_auth_accepts_matching_header(monkeypatch):
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "supersecret")
+    assert verify_completion_auth("supersecret") is None
+
+
+# ---- completion endpoint auth integration --------------------------------
+
+
+def test_completion_endpoint_401_without_token_when_secret_set(tmp_path, monkeypatch):
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "abc")
+    runtime, sink = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        payload = {
+            "alert": _alert("aid").to_dict(),
+            "result": {"action": "investigate", "success": True, "message": "x"},
+        }
+        status, _ = _post(server, "/v1/investigations/aid/complete", payload)
+        assert status == 401
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+    assert sink.calls == []
+
+
+def test_completion_endpoint_401_with_wrong_token_when_secret_set(tmp_path, monkeypatch):
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "abc")
+    runtime, sink = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        payload = {
+            "alert": _alert("aid").to_dict(),
+            "result": {"action": "investigate", "success": True, "message": "x"},
+        }
+        status, _ = _post(
+            server,
+            "/v1/investigations/aid/complete",
+            payload,
+            extra_headers={COMPLETION_AUTH_HEADER: "wrong"},
+        )
+        assert status == 401
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+    assert sink.calls == []
+
+
+def test_completion_endpoint_200_with_matching_token(tmp_path, monkeypatch):
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "abc")
+    runtime, sink = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        payload = {
+            "alert": _alert("aid").to_dict(),
+            "result": {"action": "investigate", "success": True, "message": "x"},
+        }
+        status, _ = _post(
+            server,
+            "/v1/investigations/aid/complete",
+            payload,
+            extra_headers={COMPLETION_AUTH_HEADER: "abc"},
+        )
+        assert status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+    assert len(sink.calls) == 1
+
+
+def test_completion_endpoint_allows_when_secret_unset(tmp_path, monkeypatch):
+    """Portable deployments without an agent must remain runnable."""
+    monkeypatch.delenv(COMPLETION_SECRET_ENV, raising=False)
+    runtime, sink = _runtime(tmp_path)
+    server, thread = _serve(runtime)
+    try:
+        payload = {
+            "alert": _alert("aid").to_dict(),
+            "result": {"action": "investigate", "success": True, "message": "x"},
+        }
+        status, _ = _post(server, "/v1/investigations/aid/complete", payload)
+        assert status == 200
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+
+
 def test_completion_endpoint_quiet_result_records_but_skips_notification(tmp_path):
     """Agent could in theory post quiet=True; verify it's honored."""
     runtime, sink = _runtime(tmp_path)
@@ -464,3 +711,44 @@ def test_fastapi_completion_endpoint_parity(tmp_path, monkeypatch):
 
     missing = client.post("/v1/investigations/fapi-1/complete", json={"alert": alert.to_dict()})
     assert missing.status_code == 400
+
+    # alert / result must be dicts — parity with the stdlib server.
+    not_a_dict = client.post(
+        "/v1/investigations/fapi-1/complete",
+        json={"alert": "x", "result": {"action": "investigate", "success": True, "message": "x"}},
+    )
+    assert not_a_dict.status_code == 400
+
+
+def test_fastapi_completion_endpoint_enforces_auth(tmp_path, monkeypatch):
+    pytest.importorskip("fastapi")
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "abc")
+    from fastapi.testclient import TestClient
+    from event_runtime.fastapi_app import create_app
+
+    runtime, sink = _runtime(tmp_path)
+    app = create_app(runtime=runtime, worker=None)
+    client = TestClient(app)
+    alert = _alert("fapi-a")
+    payload = {
+        "alert": alert.to_dict(),
+        "result": {"action": "investigate", "success": True, "message": "done"},
+    }
+
+    no_token = client.post("/v1/investigations/fapi-a/complete", json=payload)
+    assert no_token.status_code == 401
+
+    wrong = client.post(
+        "/v1/investigations/fapi-a/complete",
+        json=payload,
+        headers={COMPLETION_AUTH_HEADER: "nope"},
+    )
+    assert wrong.status_code == 401
+
+    right = client.post(
+        "/v1/investigations/fapi-a/complete",
+        json=payload,
+        headers={COMPLETION_AUTH_HEADER: "abc"},
+    )
+    assert right.status_code == 200
+    assert len(sink.calls) == 1

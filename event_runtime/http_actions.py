@@ -18,14 +18,75 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import secrets
 import urllib.error
 import urllib.request
-from typing import Optional
+from typing import Optional, Tuple
 
-from .models import ActionRequest, ActionResult
+from .models import ActionRequest, ActionResult, Alert
 from .plugins import ActionHandler
 
 logger = logging.getLogger(__name__)
+
+
+# ---- completion endpoint helpers -----------------------------------------
+#
+# Exposed here (next to the dispatch handler) so server.py and the FastAPI
+# adapter share the same validation + auth path. Without this, each
+# transport would re-implement the checks slightly differently.
+
+
+COMPLETION_AUTH_HEADER = "X-CFOP-Token"
+COMPLETION_SECRET_ENV = "CFOP_COMPLETION_SHARED_SECRET"  # noqa: S105 - env var name, not a secret
+
+
+def _expected_completion_secret() -> Optional[str]:
+    value = os.getenv(COMPLETION_SECRET_ENV, "").strip()
+    return value or None
+
+
+def verify_completion_auth(token_header: Optional[str]) -> Optional[str]:
+    """Validate the auth header on a completion request.
+
+    Returns ``None`` when the request is authorized; otherwise an error
+    string suitable for a 401 response body. When the shared secret env var
+    is unset, requests are accepted — portable deployments without an agent
+    must remain runnable. Production deployments should set the env var; a
+    warning is logged in that case so operators see the gap.
+    """
+    expected = _expected_completion_secret()
+    if expected is None:
+        return None
+    if not token_header:
+        return f"Missing {COMPLETION_AUTH_HEADER} header"
+    if not secrets.compare_digest(token_header, expected):
+        return f"Invalid {COMPLETION_AUTH_HEADER} header"
+    return None
+
+
+def parse_completion_payload(payload: object, alert_id: str) -> Tuple[Alert, ActionResult]:
+    """Validate the wire shape of a completion POST and rebuild domain objects.
+
+    Raises ``ValueError`` with a caller-safe message on any malformed input
+    so HTTP transports can map it to a 400 instead of letting an
+    ``AttributeError`` bubble up as a 500.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("Body must be a JSON object")
+    if "alert" not in payload or "result" not in payload:
+        raise ValueError("Body must contain 'alert' and 'result' fields")
+    raw_alert = payload["alert"]
+    raw_result = payload["result"]
+    if not isinstance(raw_alert, dict):
+        raise ValueError("Field 'alert' must be a JSON object")
+    if not isinstance(raw_result, dict):
+        raise ValueError("Field 'result' must be a JSON object")
+    alert = Alert.from_dict(raw_alert)
+    if alert.alert_id != alert_id:
+        raise ValueError("alert_id in path does not match alert.alert_id in body")
+    action_result = ActionResult.from_dict(raw_result)
+    return alert, action_result
 
 
 class HTTPInvestigateActionHandler(ActionHandler):

@@ -12,7 +12,12 @@ from urllib.parse import parse_qs, urlparse
 
 from .activity import render_activity_html
 from .engine import EventRuntime
-from .models import ActionResult, Alert
+from .http_actions import (
+    COMPLETION_AUTH_HEADER,
+    parse_completion_payload,
+    verify_completion_auth,
+)
+from .models import Alert
 from .telemetry import render_metrics
 from .worker import BackgroundAlertWorker, QueueFullError
 
@@ -171,26 +176,15 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
 
         def _handle_investigation_completion(self, parsed, alert_id: str) -> None:
             """Receive an ActionResult posted back by an external executor (e.g. the agent)."""
+            auth_error = verify_completion_auth(self.headers.get(COMPLETION_AUTH_HEADER))
+            if auth_error is not None:
+                _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": auth_error})
+                return
             try:
                 length = int(self.headers.get("Content-Length", "0"))
                 body = self.rfile.read(length) if length > 0 else b"{}"
                 payload = json.loads(body.decode("utf-8"))
-                if not isinstance(payload, dict) or "alert" not in payload or "result" not in payload:
-                    _json_response(
-                        self,
-                        HTTPStatus.BAD_REQUEST,
-                        {"error": "Body must be a JSON object with 'alert' and 'result' fields"},
-                    )
-                    return
-                alert = Alert.from_dict(payload["alert"])
-                if alert.alert_id != alert_id:
-                    _json_response(
-                        self,
-                        HTTPStatus.BAD_REQUEST,
-                        {"error": "alert_id in path does not match alert.alert_id in body"},
-                    )
-                    return
-                action_result = ActionResult.from_dict(payload["result"])
+                alert, action_result = parse_completion_payload(payload, alert_id)
                 runtime.record_external_action_completion(alert, action_result)
                 _json_response(self, HTTPStatus.OK, {"status": "recorded", "alert_id": alert_id})
             except json.JSONDecodeError:
