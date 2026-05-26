@@ -104,7 +104,11 @@ cfoperator_uptime_seconds
 # Total OODA cycles executed (observe → orient → decide → act)
 cfoperator_ooda_cycles_total
 
-# Sweeps by mode (reactive = alerts, proactive = scheduled)
+# Sweeps by mode (reactive = alert-driven, proactive = scheduled)
+# `reactive` increments per Alertmanager poll cycle that found alerts when
+# ooda.reactive_poll: true. With reactive_poll: false (event_runtime drives
+# investigations over HTTP), this counter stays flat — see
+# cfoperator_investigation_queue_depth / postback metrics below.
 cfoperator_sweeps_total{mode="reactive"}
 cfoperator_sweeps_total{mode="proactive"}
 ```
@@ -133,6 +137,22 @@ cfoperator_tool_calls_total{tool_name="ssh_execute", result="error"}
 # Investigations by outcome (resolved/escalated/monitoring/failed/in_progress)
 cfoperator_investigations_total{outcome="resolved"}
 cfoperator_investigations_total{outcome="escalated"}
+
+# Pending HTTP-driven investigations (POST /v1/investigate, called by event_runtime).
+# Gauge; rising values mean the agent's single worker thread is falling behind
+# the LLM throughput it can sustain.
+cfoperator_investigation_queue_depth
+
+# Cumulative rejections when the in-process queue is full and the endpoint
+# returns 503. event_runtime's worker retries with backoff on 5xx.
+cfoperator_investigation_queue_rejected_total
+
+# Outcome of posting the completed ActionResult back to event_runtime
+# (/v1/investigations/{alert_id}/complete). Status label: 'ok', 'http_<code>',
+# or 'transport_error'.
+cfoperator_investigation_postback_total{status="ok"}
+cfoperator_investigation_postback_total{status="http_401"}
+cfoperator_investigation_postback_total{status="transport_error"}
 ```
 
 ### Error Tracking
