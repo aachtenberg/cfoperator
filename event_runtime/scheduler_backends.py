@@ -12,6 +12,25 @@ from typing import Any, Dict, Iterable
 
 logger = logging.getLogger(__name__)
 
+
+def _redact_dsn(dsn: str) -> str:
+    """Strip credentials from a SQLAlchemy/PostgreSQL DSN for safe logging."""
+    if not dsn:
+        return ""
+    try:
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(dsn)
+        if parsed.username or parsed.password:
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            if parsed.username:
+                netloc = f"{parsed.username}:***@{netloc}"
+            return urlunparse(parsed._replace(netloc=netloc))
+        return dsn
+    except Exception:
+        return "<redacted>"
+
 from .defaults import _parse_timestamp, _scheduled_alert_from_task, _scheduled_task_id, _scheduled_task_view, _utc_now
 from .models import Alert, ScheduledTask
 from .plugins import AlertSource, Scheduler
@@ -104,7 +123,7 @@ class APSchedulerScheduler(Scheduler, AlertSource):
         self._started = True
         logger.info(
             "apscheduler-scheduler started: jobstore=%s misfire_grace_seconds=%d spool=%s",
-            self.jobstore_url, self.misfire_grace_time_seconds, self.spool_path,
+            _redact_dsn(self.jobstore_url), self.misfire_grace_time_seconds, self.spool_path,
         )
 
     def stop(self) -> None:
