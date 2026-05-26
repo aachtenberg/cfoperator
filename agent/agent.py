@@ -188,6 +188,10 @@ class CFOperator:
         queue_size = max(1, int(ooda_cfg.get('investigation_queue_size', 32)))
         self._investigation_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=queue_size)
         self._investigation_worker_thread: Optional[threading.Thread] = None
+        # Serializes investigations across the reactive poll (main thread)
+        # and the HTTP worker thread. Without this, both paths could race
+        # on self.current_investigation and other non-thread-safe state.
+        self._investigation_lock = threading.Lock()
         # Reactive Alertmanager poll is preserved by default; PR C flips this to false.
         self._reactive_poll_enabled = bool(ooda_cfg.get('reactive_poll', True))
 
@@ -541,11 +545,21 @@ class CFOperator:
             logger.exception("Reactive investigation failed")
 
     def _observe_alert(self, alert: Dict[str, Any]) -> Dict[str, Any]:
-        """OBSERVE phase: Gather context about the alert."""
+        """OBSERVE phase: Gather context about the alert.
+
+        Accepts both event_runtime Alert dicts (top-level ``summary``) and
+        raw Alertmanager payloads (``annotations.summary``). Without this
+        fallback, HTTP-driven investigations ran with trigger='Unknown alert'.
+        """
+        trigger = (
+            alert.get('summary')
+            or alert.get('annotations', {}).get('summary')
+            or 'Unknown alert'
+        )
         return {
             'alert': alert,
             'timestamp': datetime.now(),
-            'trigger': alert.get('annotations', {}).get('summary', 'Unknown alert')
+            'trigger': trigger,
         }
 
     def _orient(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -607,11 +621,14 @@ class CFOperator:
 
         Wraps observe + orient + act so it can be invoked from either the
         reactive Alertmanager poll loop or the HTTP /v1/investigate path.
+        Held under ``_investigation_lock`` so the two paths can't race on
+        shared state (``current_investigation``, KB session, embeddings).
         Returns an ActionResult-shaped dict (see event_runtime.models.ActionResult).
         """
-        context = self._observe_alert(alert)
-        context = self._orient(context)
-        return self._act(context)
+        with self._investigation_lock:
+            context = self._observe_alert(alert)
+            context = self._orient(context)
+            return self._act(context)
 
     def enqueue_investigation(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """Non-blocking enqueue for an HTTP-triggered investigation.

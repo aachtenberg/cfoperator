@@ -25,10 +25,12 @@ from agent import CFOperator
 
 def _operator(*, queue_size: int = 4, reactive_poll: bool = True) -> CFOperator:
     """Build a CFOperator with only the attributes the tested methods touch."""
+    import threading as _t
     op = CFOperator.__new__(CFOperator)
     op.config = {'ooda': {'investigation_queue_size': queue_size, 'reactive_poll': reactive_poll}}
     op._investigation_queue = queue.Queue(maxsize=queue_size)
     op._investigation_worker_thread = None
+    op._investigation_lock = _t.Lock()
     op._reactive_poll_enabled = reactive_poll
     op.current_investigation = None
     return op
@@ -66,17 +68,83 @@ def test_enqueue_raises_queue_full_when_capacity_exhausted():
         op.enqueue_investigation(_alert(alert_id='c'))
 
 
+def _counter_value(counter) -> float:
+    """Read a Counter's current value via its public collect() API.
+
+    Avoids `Counter._value.get()` which depends on prometheus_client internals.
+    """
+    for metric in counter.collect():
+        for sample in metric.samples:
+            if sample.name.endswith('_total'):
+                return float(sample.value)
+    return 0.0
+
+
 def test_enqueue_rejection_increments_counter():
     from agent.agent import INVESTIGATION_QUEUE_REJECTED
     op = _operator(queue_size=1)
     op.enqueue_investigation(_alert(alert_id='a'))
-    before = INVESTIGATION_QUEUE_REJECTED._value.get()
+    before = _counter_value(INVESTIGATION_QUEUE_REJECTED)
     with pytest.raises(queue.Full):
         op.enqueue_investigation(_alert(alert_id='b'))
-    assert INVESTIGATION_QUEUE_REJECTED._value.get() == before + 1
+    assert _counter_value(INVESTIGATION_QUEUE_REJECTED) == before + 1
 
 
 # ---- run_investigation orchestration --------------------------------------
+
+
+def test_observe_alert_prefers_top_level_summary_for_event_runtime_payload():
+    """event_runtime Alert dicts carry top-level `summary`, not `annotations.summary`."""
+    op = _operator()
+    ctx = op._observe_alert({'summary': 'Pod foo not ready', 'severity': 'warning'})
+    assert ctx['trigger'] == 'Pod foo not ready'
+
+
+def test_observe_alert_falls_back_to_annotations_for_alertmanager_payload():
+    """Raw Alertmanager payloads (used by the reactive poll) put summary under annotations."""
+    op = _operator()
+    ctx = op._observe_alert({'annotations': {'summary': 'Pod legacy alert'}})
+    assert ctx['trigger'] == 'Pod legacy alert'
+
+
+def test_observe_alert_uses_unknown_when_no_summary_present():
+    op = _operator()
+    ctx = op._observe_alert({'labels': {'alertname': 'X'}})
+    assert ctx['trigger'] == 'Unknown alert'
+
+
+def test_investigation_lock_serializes_concurrent_paths():
+    """Two threads calling run_investigation must not overlap inside _act."""
+    import threading as _t
+    op = _operator()
+    op._observe_alert = lambda alert: {'alert': alert, 'trigger': alert['summary']}
+    op._orient = lambda ctx: ctx
+
+    in_flight = []
+    max_in_flight = []
+    enter_barrier = _t.Barrier(2)
+
+    def slow_act(ctx):
+        in_flight.append(1)
+        max_in_flight.append(sum(in_flight))
+        # Give the other thread a chance to race; the lock should keep it out.
+        _t.Event().wait(0.05)
+        in_flight.pop()
+        return {'action': 'investigate', 'success': True, 'message': 'ok', 'details': {}, 'executed_at': 'x'}
+
+    op._act = slow_act
+
+    def worker():
+        enter_barrier.wait(timeout=2)
+        op.run_investigation(_alert())
+
+    threads = [_t.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert max(max_in_flight) == 1, "two investigations ran concurrently — lock not held"
 
 
 def test_run_investigation_chains_observe_orient_act_and_returns_act_result():
