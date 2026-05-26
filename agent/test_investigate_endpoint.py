@@ -172,17 +172,22 @@ def test_post_action_result_posts_to_completion_endpoint(monkeypatch):
         captured['content_type'] = req.headers.get('Content-type')
         return _FakeResp()
 
+    alert_payload = _alert(alert_id='abc-123')
     with patch('urllib.request.urlopen', side_effect=fake_urlopen):
         op._post_action_result_to_event_runtime(
-            _alert(alert_id='abc-123'),
+            alert_payload,
             {'action': 'investigate', 'success': True, 'message': 'Resolved: x', 'details': {}},
         )
     assert captured['url'] == 'http://er.local:8080/v1/investigations/abc-123/complete'
     assert captured['method'] == 'POST'
     assert captured['content_type'] == 'application/json'
     decoded = json.loads(captured['body'])
-    assert decoded['action'] == 'investigate'
-    assert decoded['success'] is True
+    # Wire shape is {alert, result} so the completion endpoint can rebuild
+    # an Alert and fire its notification with the original severity/summary.
+    assert decoded['alert']['alert_id'] == 'abc-123'
+    assert decoded['alert']['summary'] == alert_payload['summary']
+    assert decoded['result']['action'] == 'investigate'
+    assert decoded['result']['success'] is True
 
 
 def test_post_action_result_swallows_transport_errors(monkeypatch):

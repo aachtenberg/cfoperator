@@ -666,8 +666,11 @@ class CFOperator:
     def _post_action_result_to_event_runtime(self, alert: Dict[str, Any], result: Dict[str, Any]) -> None:
         """Best-effort post-back of completed ActionResult to event_runtime.
 
-        No-op when CFOP_EVENT_RUNTIME_URL is unset or the completion endpoint
-        is unavailable (it ships in a follow-up PR). Failures are logged at
+        Sends ``{"alert": <alert>, "result": <ActionResult>}`` so the
+        completion endpoint can fire its Slack notification with the
+        original alert's severity and summary. No-op when
+        CFOP_EVENT_RUNTIME_URL is unset or the completion endpoint is
+        unavailable (it ships in a follow-up PR). Failures are logged at
         debug — durability lives in the agent's investigation row, not here.
         """
         url = os.getenv('CFOP_EVENT_RUNTIME_URL', '').strip()
@@ -677,7 +680,7 @@ class CFOperator:
         if not alert_id:
             return
         endpoint = f"{url.rstrip('/')}/v1/investigations/{alert_id}/complete"
-        body = json.dumps(result, default=str).encode('utf-8')
+        body = json.dumps({'alert': alert, 'result': result}, default=str).encode('utf-8')
         from urllib.request import Request, urlopen
         from urllib.error import URLError, HTTPError
         req = Request(endpoint, data=body, headers={'Content-Type': 'application/json'}, method='POST')
