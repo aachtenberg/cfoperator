@@ -27,6 +27,7 @@ from event_runtime.http_actions import (
     COMPLETION_SECRET_ENV,
     HTTPInvestigateActionHandler,
     build_http_investigate_handler,
+    log_completion_endpoint_status,
     parse_completion_payload,
     verify_completion_auth,
 )
@@ -576,6 +577,55 @@ def test_verify_completion_auth_rejects_wrong_header(monkeypatch):
 def test_verify_completion_auth_accepts_matching_header(monkeypatch):
     monkeypatch.setenv(COMPLETION_SECRET_ENV, "supersecret")
     assert verify_completion_auth("supersecret") is None
+
+
+# ---- log_completion_endpoint_status --------------------------------------
+
+
+def test_log_completion_endpoint_status_warns_when_secret_unset(monkeypatch, caplog):
+    """Operator-visible warning fires when the completion endpoint is open."""
+    monkeypatch.delenv(COMPLETION_SECRET_ENV, raising=False)
+    with caplog.at_level("WARNING", logger="event_runtime.http_actions"):
+        log_completion_endpoint_status()
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert COMPLETION_SECRET_ENV in warnings[0].getMessage()
+    assert "unauthenticated" in warnings[0].getMessage()
+
+
+def test_log_completion_endpoint_status_info_when_secret_set(monkeypatch, caplog):
+    """When auth is enabled, an INFO line confirms it instead of warning."""
+    monkeypatch.setenv(COMPLETION_SECRET_ENV, "abc")
+    with caplog.at_level("INFO", logger="event_runtime.http_actions"):
+        log_completion_endpoint_status()
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    infos = [r for r in caplog.records if r.levelname == "INFO"]
+    assert warnings == []
+    assert len(infos) == 1
+    assert "X-CFOP-Token" in infos[0].getMessage()
+
+
+def test_bootstrap_logs_completion_endpoint_status_after_logging_configured(
+    monkeypatch, tmp_path, caplog
+):
+    """The warning must fire from build_portable_runtime, not at module import.
+
+    Module-level logging in http_actions runs before __main__ calls
+    logging.basicConfig and gets swallowed. Tying the log to bootstrap
+    guarantees operators see it.
+    """
+    monkeypatch.setenv("CFOP_EVENT_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.delenv(COMPLETION_SECRET_ENV, raising=False)
+    monkeypatch.delenv("CFOP_AGENT_URL", raising=False)
+    monkeypatch.delenv("CFOP_EVENT_RUNTIME_PG_DSN", raising=False)
+
+    with caplog.at_level("WARNING", logger="event_runtime.http_actions"):
+        build_portable_runtime()
+    warnings = [
+        r for r in caplog.records
+        if r.levelname == "WARNING" and COMPLETION_SECRET_ENV in r.getMessage()
+    ]
+    assert len(warnings) == 1
 
 
 # ---- completion endpoint auth integration --------------------------------

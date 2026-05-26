@@ -52,8 +52,8 @@ def verify_completion_auth(token_header: Optional[str]) -> Optional[str]:
     Returns ``None`` when the request is authorized; otherwise an error
     string suitable for a 401 response body. When the shared secret env var
     is unset, requests are accepted — portable deployments without an agent
-    must remain runnable. Production deployments should set the env var; a
-    warning is logged in that case so operators see the gap.
+    must remain runnable. ``log_completion_endpoint_status()`` is called once
+    at startup so operators see the gap.
     """
     expected = _expected_completion_secret()
     if expected is None:
@@ -63,6 +63,29 @@ def verify_completion_auth(token_header: Optional[str]) -> Optional[str]:
     if not secrets.compare_digest(token_header, expected):
         return f"Invalid {COMPLETION_AUTH_HEADER} header"
     return None
+
+
+def log_completion_endpoint_status() -> None:
+    """Emit a startup status line about completion endpoint auth.
+
+    Called from ``build_portable_runtime`` rather than at module import time,
+    so the message reaches the configured logging handlers. (Module-level
+    logging fires before ``__main__.py`` runs ``logging.basicConfig`` and
+    gets swallowed by the default root logger.)
+    """
+    if _expected_completion_secret() is None:
+        logger.warning(
+            "%s is not set; POST /v1/investigations/{alert_id}/complete will "
+            "accept unauthenticated posts. Set this env var in production so "
+            "completions can't be spoofed by other cluster pods.",
+            COMPLETION_SECRET_ENV,
+        )
+    else:
+        logger.info(
+            "%s is set; POST /v1/investigations/{alert_id}/complete enforces "
+            "X-CFOP-Token via constant-time comparison.",
+            COMPLETION_SECRET_ENV,
+        )
 
 
 def parse_completion_payload(payload: object, alert_id: str) -> Tuple[Alert, ActionResult]:
