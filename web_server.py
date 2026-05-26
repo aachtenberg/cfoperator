@@ -14,6 +14,7 @@ Runs in separate thread alongside OODA loop.
 import json
 import logging
 import os
+import queue
 import threading
 import uuid
 from typing import Dict, Any, Optional
@@ -107,6 +108,27 @@ class WebServer:
                 'status': 'ok',
                 'message': 'Deep system sweep triggered',
             })
+
+        # Async investigation entry point — called by event_runtime's HTTP
+        # investigate handler (see issue #15 + alert pipeline unification).
+        # Accepts an event_runtime Alert dict (severity, summary, details,
+        # alert_id), enqueues for the in-process worker, returns 202.
+        @self.app.route('/v1/investigate', methods=['POST'])
+        def http_investigate():
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({'error': 'JSON object body required'}), 400
+            if not payload.get('summary'):
+                return jsonify({'error': 'Field summary is required'}), 400
+            try:
+                enqueued = self.operator.enqueue_investigation(payload)
+            except queue.Full:
+                return jsonify({'error': 'investigation queue full'}), 503
+            return jsonify({
+                'status': 'accepted',
+                'alert_id': enqueued.get('alert_id'),
+                'queue_depth': enqueued.get('queue_depth'),
+            }), 202
 
         # Prometheus metrics endpoint
         @self.app.route('/metrics')

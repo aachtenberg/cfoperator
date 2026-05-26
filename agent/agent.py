@@ -19,8 +19,9 @@ import yaml
 import logging
 import hashlib
 import subprocess
-from datetime import datetime
+from datetime import datetime, timezone
 import queue
+import threading
 from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 
@@ -68,6 +69,9 @@ TOOL_CALLS = Counter('cfoperator_tool_calls_total', 'Tool executions', ['tool_na
 TOOLS_REGISTERED = Gauge('cfoperator_tools_registered', 'Number of registered tools')
 INVESTIGATIONS = Counter('cfoperator_investigations_total', 'Total investigations', ['outcome'])
 LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'component'])
+INVESTIGATION_QUEUE_DEPTH = Gauge('cfoperator_investigation_queue_depth', 'Pending HTTP-triggered investigations')
+INVESTIGATION_QUEUE_REJECTED = Counter('cfoperator_investigation_queue_rejected_total', 'HTTP investigations rejected because queue was full')
+INVESTIGATION_POSTBACK = Counter('cfoperator_investigation_postback_total', 'Investigation completions posted back to event_runtime', ['status'])
 
 
 class _MetricsLogHandler(logging.Handler):
@@ -177,6 +181,15 @@ class CFOperator:
         self.current_investigation = None
         self.last_sweep = 0
         self.start_time = time.time()
+
+        # HTTP-driven investigation queue (POST /v1/investigate).
+        # Bounded; full queue rejects with 503 so event_runtime's worker retries.
+        ooda_cfg = self.config.get('ooda', {})
+        queue_size = max(1, int(ooda_cfg.get('investigation_queue_size', 32)))
+        self._investigation_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=queue_size)
+        self._investigation_worker_thread: Optional[threading.Thread] = None
+        # Reactive Alertmanager poll is preserved by default; PR C flips this to false.
+        self._reactive_poll_enabled = bool(ooda_cfg.get('reactive_poll', True))
 
         # Initialize web server
         chat_config = self.config.get('chat', {})
@@ -451,9 +464,13 @@ class CFOperator:
         logger.info("Starting CFOperator OODA loop")
         alert_interval = self._get_alert_check_interval()
         sweep_interval = self._get_sweep_interval()
-        logger.info(f"Reactive: check alerts every {alert_interval}s")
+        logger.info(f"Reactive poll: {'enabled' if self._reactive_poll_enabled else 'disabled'} (check alerts every {alert_interval}s)")
         logger.info(f"Proactive: deep sweep every {sweep_interval}s ({sweep_interval//60} minutes)")
         logger.info("="*60)
+
+        # Start the HTTP investigation worker before the web server so the
+        # POST /v1/investigate endpoint has something to drain into.
+        self._start_investigation_worker()
 
         # Start web server in background thread
         if self.web_server:
@@ -467,7 +484,7 @@ class CFOperator:
                 OODA_CYCLES.inc()
 
                 # MODE 1: Reactive - handle alerts immediately
-                if self.alerts:
+                if self._reactive_poll_enabled and self.alerts:
                     alerts = self._check_alerts()
                     if alerts:
                         logger.info(f"Alerts detected: {len(alerts)}")
@@ -510,29 +527,18 @@ class CFOperator:
 
     def _handle_alert_reactive(self, alert: Dict[str, Any]):
         """
-        Reactive mode: Handle a firing alert using OODA loop.
+        Reactive mode: Handle a firing alert by running an investigation.
 
-        Steps:
-        1. OBSERVE: Gather context about the alert
-        2. ORIENT: Search for similar past issues and learnings
-        3. DECIDE: Triage (investigate, ignore, escalate)
-        4. ACT: Run investigation with LLM + tools
+        The orient/decide/act split lives inside run_investigation. This path
+        ignores the returned ActionResult — Slack notification is owned by the
+        agent's own notifier today. When event_runtime drives investigations
+        over HTTP, the result is posted back instead.
         """
         logger.info(f"REACTIVE MODE: Handling alert: {alert.get('labels', {}).get('alertname', 'unknown')}")
-
-        # OBSERVE
-        context = self._observe_alert(alert)
-
-        # ORIENT
-        context = self._orient(context)
-
-        # DECIDE
-        decision = self._decide(context)
-        logger.info(f"Triage decision: {decision}")
-
-        if decision == 'investigate':
-            # ACT
-            self._act(context)
+        try:
+            self.run_investigation(alert)
+        except Exception:
+            logger.exception("Reactive investigation failed")
 
     def _observe_alert(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """OBSERVE phase: Gather context about the alert."""
@@ -596,26 +602,107 @@ class CFOperator:
 
         return context
 
-    def _decide(self, context: Dict[str, Any]) -> str:
+    def run_investigation(self, alert: Dict[str, Any]) -> Dict[str, Any]:
+        """Run one investigation end-to-end for a single alert dict.
+
+        Wraps observe + orient + act so it can be invoked from either the
+        reactive Alertmanager poll loop or the HTTP /v1/investigate path.
+        Returns an ActionResult-shaped dict (see event_runtime.models.ActionResult).
         """
-        DECIDE phase: Should we investigate?
+        context = self._observe_alert(alert)
+        context = self._orient(context)
+        return self._act(context)
 
-        Uses LLM to triage with low temperature for consistency.
+    def enqueue_investigation(self, alert: Dict[str, Any]) -> Dict[str, Any]:
+        """Non-blocking enqueue for an HTTP-triggered investigation.
 
-        Returns:
-            'investigate', 'ignore', or 'escalate'
+        Raises queue.Full when the queue has no slot; caller should map that
+        to HTTP 503 so the event_runtime worker retries with backoff. The
+        rejection counter is incremented here so callers don't reach into
+        module-level metrics.
         """
-        # TODO: Implement LLM triage
-        # For now, always investigate
-        return 'investigate'
+        try:
+            self._investigation_queue.put_nowait(alert)
+        except queue.Full:
+            INVESTIGATION_QUEUE_REJECTED.inc()
+            raise
+        INVESTIGATION_QUEUE_DEPTH.set(self._investigation_queue.qsize())
+        return {
+            'status': 'queued',
+            'queue_depth': self._investigation_queue.qsize(),
+            'alert_id': alert.get('alert_id'),
+        }
 
-    def _act(self, context: Dict[str, Any]):
+    def _start_investigation_worker(self) -> None:
+        """Spawn the single background thread that drains the investigation queue."""
+        if self._investigation_worker_thread and self._investigation_worker_thread.is_alive():
+            return
+        thread = threading.Thread(
+            target=self._investigation_worker_loop,
+            daemon=True,
+            name='cfoperator-investigation-worker',
+        )
+        thread.start()
+        self._investigation_worker_thread = thread
+        logger.info("Investigation worker thread started")
+
+    def _investigation_worker_loop(self) -> None:
+        """Drain the investigation queue. One request at a time — LLM throughput is the bottleneck."""
+        while True:
+            try:
+                alert = self._investigation_queue.get()
+            except Exception:
+                logger.exception("Investigation queue read failed; worker exiting")
+                return
+            try:
+                INVESTIGATION_QUEUE_DEPTH.set(self._investigation_queue.qsize())
+                result = self.run_investigation(alert)
+                self._post_action_result_to_event_runtime(alert, result)
+            except Exception:
+                logger.exception("HTTP-triggered investigation failed")
+            finally:
+                self._investigation_queue.task_done()
+
+    def _post_action_result_to_event_runtime(self, alert: Dict[str, Any], result: Dict[str, Any]) -> None:
+        """Best-effort post-back of completed ActionResult to event_runtime.
+
+        No-op when CFOP_EVENT_RUNTIME_URL is unset or the completion endpoint
+        is unavailable (it ships in a follow-up PR). Failures are logged at
+        debug — durability lives in the agent's investigation row, not here.
+        """
+        url = os.getenv('CFOP_EVENT_RUNTIME_URL', '').strip()
+        if not url:
+            return
+        alert_id = alert.get('alert_id')
+        if not alert_id:
+            return
+        endpoint = f"{url.rstrip('/')}/v1/investigations/{alert_id}/complete"
+        body = json.dumps(result, default=str).encode('utf-8')
+        from urllib.request import Request, urlopen
+        from urllib.error import URLError, HTTPError
+        req = Request(endpoint, data=body, headers={'Content-Type': 'application/json'}, method='POST')
+        try:
+            with urlopen(req, timeout=5) as resp:
+                status = 'ok' if 200 <= resp.status < 300 else f'http_{resp.status}'
+        except HTTPError as exc:
+            status = f'http_{exc.code}'
+            logger.debug(f"Post-back to event_runtime returned {exc.code}: {endpoint}")
+        except (URLError, TimeoutError, OSError) as exc:
+            status = 'transport_error'
+            logger.debug(f"Post-back to event_runtime failed ({type(exc).__name__}): {endpoint}")
+        INVESTIGATION_POSTBACK.labels(status=status).inc()
+
+    def _act(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         ACT phase: Investigate and fix.
 
         - Create investigation record
         - Run LLM investigation loop with tools
         - Extract learnings from resolved investigations
+
+        Returns an ActionResult-shaped dict so callers (HTTP path, future
+        event_runtime post-back) can surface the real outcome rather than
+        a stub success message.
         """
         trigger = context.get('trigger', 'Unknown trigger')
         logger.info(f"Starting investigation: {trigger[:100]}")
@@ -624,6 +711,9 @@ class CFOperator:
         inv_id = self.kb.start_investigation(trigger=trigger)
         self.current_investigation = inv_id
         start_time = time.time()
+        outcome = 'failed'
+        message = f"Investigation failed: {trigger[:200]}"
+        details: Dict[str, Any] = {'investigation_id': inv_id, 'outcome': outcome}
 
         try:
             # Build investigation prompt with learnings and similar investigations context
@@ -654,15 +744,21 @@ When done, provide a summary of findings and whether the issue is resolved, need
             resolved = self._resolve_provider()
             if not resolved:
                 logger.error("No LLM provider available for investigation")
+                duration = time.time() - start_time
                 self.kb.update_investigation(
                     investigation_id=inv_id,
                     completed_at=datetime.now(),
                     findings={'error': 'No LLM provider available'},
                     outcome='failed',
-                    duration_seconds=time.time() - start_time
+                    duration_seconds=duration
                 )
                 INVESTIGATIONS.labels(outcome='failed').inc()
-                return
+                details.update({'duration_s': round(duration, 1), 'error': 'no_llm_provider'})
+                return self._build_action_result(
+                    success=False,
+                    message=f"Investigation failed (no LLM provider): {trigger[:200]}",
+                    details=details,
+                )
 
             provider_type, url, model = resolved
 
@@ -713,6 +809,20 @@ When done, provide a summary of findings and whether the issue is resolved, need
             # Generate embedding for this investigation (async, non-blocking)
             self._embed_investigation(inv_id, trigger, findings, outcome)
 
+            message = self._action_message(outcome, trigger, duration, tool_calls_count)
+            details.update({
+                'outcome': outcome,
+                'duration_s': round(duration, 1),
+                'tool_calls': tool_calls_count,
+                'provider': f"{provider_type}/{model}",
+                'findings_snippet': response_text[:500],
+            })
+            return self._build_action_result(
+                success=outcome != 'failed',
+                message=message,
+                details=details,
+            )
+
         except Exception as e:
             logger.error(f"Investigation #{inv_id} failed: {e}", exc_info=True)
             duration = time.time() - start_time
@@ -727,8 +837,39 @@ When done, provide a summary of findings and whether the issue is resolved, need
             except Exception:
                 pass
             INVESTIGATIONS.labels(outcome='failed').inc()
+            details.update({
+                'outcome': 'failed',
+                'duration_s': round(duration, 1),
+                'error': str(e)[:500],
+            })
+            return self._build_action_result(
+                success=False,
+                message=f"Investigation failed: {type(e).__name__}: {str(e)[:200]}",
+                details=details,
+            )
         finally:
             self.current_investigation = None
+
+    @staticmethod
+    def _action_message(outcome: str, trigger: str, duration: float, tool_calls: int) -> str:
+        """One-line ActionResult.message summarising an investigation outcome."""
+        verb = {
+            'resolved': 'Resolved',
+            'escalated': 'Escalated',
+            'monitoring': 'Monitoring',
+            'failed': 'Investigation failed',
+        }.get(outcome, outcome.title())
+        return f"{verb}: {trigger[:160]} ({duration:.1f}s, {tool_calls} tool calls)"
+
+    def _build_action_result(self, *, success: bool, message: str, details: Dict[str, Any]) -> Dict[str, Any]:
+        """Shape a result dict matching event_runtime.models.ActionResult.to_dict()."""
+        return {
+            'action': 'investigate',
+            'success': bool(success),
+            'message': str(message),
+            'details': dict(details),
+            'executed_at': datetime.now(timezone.utc).isoformat(),
+        }
 
     def _deep_system_sweep(self):
         """
