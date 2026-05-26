@@ -238,6 +238,7 @@ def test_post_action_result_posts_to_completion_endpoint(monkeypatch):
         captured['body'] = req.data
         captured['method'] = req.get_method()
         captured['content_type'] = req.headers.get('Content-type')
+        captured['auth_token'] = req.headers.get('X-cfop-token')
         return _FakeResp()
 
     alert_payload = _alert(alert_id='abc-123')
@@ -249,6 +250,8 @@ def test_post_action_result_posts_to_completion_endpoint(monkeypatch):
     assert captured['url'] == 'http://er.local:8080/v1/investigations/abc-123/complete'
     assert captured['method'] == 'POST'
     assert captured['content_type'] == 'application/json'
+    # No CFOP_COMPLETION_SHARED_SECRET set, so no auth header sent.
+    assert captured['auth_token'] is None
     decoded = json.loads(captured['body'])
     # Wire shape is {alert, result} so the completion endpoint can rebuild
     # an Alert and fire its notification with the original severity/summary.
@@ -256,6 +259,57 @@ def test_post_action_result_posts_to_completion_endpoint(monkeypatch):
     assert decoded['alert']['summary'] == alert_payload['summary']
     assert decoded['result']['action'] == 'investigate'
     assert decoded['result']['success'] is True
+
+
+def test_post_action_result_sends_auth_header_when_secret_set(monkeypatch):
+    monkeypatch.setenv('CFOP_EVENT_RUNTIME_URL', 'http://er.local:8080')
+    monkeypatch.setenv('CFOP_COMPLETION_SHARED_SECRET', 'shh-secret')
+    op = _operator()
+
+    captured = {}
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b''
+
+    def fake_urlopen(req, timeout=None):
+        captured['auth_token'] = req.headers.get('X-cfop-token')
+        return _Resp()
+
+    with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        op._post_action_result_to_event_runtime(
+            _alert(alert_id='abc'),
+            {'action': 'investigate', 'success': True, 'message': 'ok'},
+        )
+    assert captured['auth_token'] == 'shh-secret'
+
+
+def test_post_action_result_omits_auth_header_when_secret_blank(monkeypatch):
+    """Whitespace-only secret should not produce an auth header."""
+    monkeypatch.setenv('CFOP_EVENT_RUNTIME_URL', 'http://er.local:8080')
+    monkeypatch.setenv('CFOP_COMPLETION_SHARED_SECRET', '   ')
+    op = _operator()
+
+    captured = {}
+
+    class _Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b''
+
+    def fake_urlopen(req, timeout=None):
+        captured['auth_token'] = req.headers.get('X-cfop-token')
+        return _Resp()
+
+    with patch('urllib.request.urlopen', side_effect=fake_urlopen):
+        op._post_action_result_to_event_runtime(
+            _alert(alert_id='abc'),
+            {'action': 'investigate', 'success': True, 'message': 'ok'},
+        )
+    assert captured['auth_token'] is None
 
 
 def test_post_action_result_swallows_transport_errors(monkeypatch):

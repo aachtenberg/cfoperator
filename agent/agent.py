@@ -698,9 +698,16 @@ class CFOperator:
             return
         endpoint = f"{url.rstrip('/')}/v1/investigations/{alert_id}/complete"
         body = json.dumps({'alert': alert, 'result': result}, default=str).encode('utf-8')
+        headers = {'Content-Type': 'application/json'}
+        # Shared secret matches event_runtime's CFOP_COMPLETION_SHARED_SECRET.
+        # Without the header, event_runtime returns 401 (when its secret is set)
+        # so completion notifications can't be spoofed by other cluster pods.
+        secret = os.getenv('CFOP_COMPLETION_SHARED_SECRET', '').strip()
+        if secret:
+            headers['X-CFOP-Token'] = secret
         from urllib.request import Request, urlopen
         from urllib.error import URLError, HTTPError
-        req = Request(endpoint, data=body, headers={'Content-Type': 'application/json'}, method='POST')
+        req = Request(endpoint, data=body, headers=headers, method='POST')
         try:
             with urlopen(req, timeout=5) as resp:
                 status = 'ok' if 200 <= resp.status < 300 else f'http_{resp.status}'
