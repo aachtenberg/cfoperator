@@ -16,7 +16,7 @@ from .defaults import (
 )
 from .git_context import GitChangeContextProvider
 from .github_actions import build_github_action_handlers
-from .http_actions import build_http_investigate_handler
+from .http_actions import build_http_investigate_handler, log_completion_endpoint_status
 from .notifications import SlackNotificationSink, DiscordNotificationSink
 from .plugins import AlertSource
 from .sources import AlertmanagerAlertSource
@@ -74,6 +74,11 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
     http_investigate = build_http_investigate_handler(agent_url or None)
     if http_investigate is not None:
         plugins.register_action_handler(http_investigate)
+    # Logging is configured by the time this runs (both __main__ and the
+    # FastAPI adapter call _configure_logging / uvicorn's setup before
+    # build_portable_runtime). Module-level logging at import time would
+    # fire too early and get swallowed.
+    log_completion_endpoint_status()
 
     # Git / GitHub integration (gated on config or env vars)
     git_config = _load_git_config(config_path)
