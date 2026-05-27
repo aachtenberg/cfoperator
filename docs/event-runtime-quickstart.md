@@ -37,23 +37,28 @@ flowchart TD
             K3sCtx["K3s Cluster Stats<br/>(kube-state-metrics,<br/>cAdvisor)"]
         end
 
-        Context --> Decision["Decision Engine<br/>(open-reasoning)"]
-        Decision --> Handler{"Action<br/>Handler?"}
+        Context --> Decision["HTTPTriageDecisionEngine<br/>(POST /v1/triage to agent)"]
+        Decision --> TriageCache["Triage result cache<br/>(per-alert TTL)"]
+        Decision --> Route{"Triage action"}
+        Route -->|log_only| LogOnly
+        Route -->|notify| NotifyOnly["notify handler<br/>(no investigation)"]
+        Route -->|investigate / escalate| Handler{"Action<br/>Handler?"}
         Handler -->|missing| Fail["Record action_missing"]
-        Handler -->|found| Execute["Execute Action<br/>(investigate, notify,<br/>log_only)"]
+        Handler -->|found| Execute["Execute Action<br/>(HTTPInvestigateActionHandler<br/>or stub)"]
         Execute --> Schedule["Schedule Follow-up<br/>Tasks (optional)"]
     end
 
-    Execute -.->|investigate +<br/>CFOP_AGENT_URL set| AgentDispatch["POST /v1/investigate<br/>to CFOperator agent<br/>(HTTPInvestigateActionHandler)"]
-    AgentDispatch -.-> AgentLoop["Agent runs LLM<br/>investigation"]
+    Execute -.->|CFOP_AGENT_URL set| AgentDispatch["POST /v1/investigate<br/>to CFOperator agent<br/>(HTTPInvestigateActionHandler)"]
+    AgentDispatch -.-> AgentLoop["Agent runs LLM<br/>investigation with tools"]
     AgentLoop -.->|POST /v1/investigations/<br/>{alert_id}/complete<br/>(X-CFOP-Token)| Completion["record_external_<br/>action_completion()"]
     Completion --> Audit
-    Completion --> Notify["Notification Sinks<br/>(Slack, Discord)"]
+    Completion --> Notify["Notification Sinks<br/>(Slack, Discord)<br/><i>tagged 'triaged by &lt;backend&gt;/&lt;model&gt;'</i>"]
 
     LogOnly --> Audit
     Fail --> Audit
     Execute --> Audit
-    Execute -->|notify, in-process<br/>actions, or stub| Notify
+    NotifyOnly --> Audit
+    NotifyOnly --> Notify
     Schedule --> Scheduler["Scheduler<br/>(JSON fallback or APScheduler backend)"]
 
     subgraph Audit["State Sink (audit trail)"]
@@ -85,12 +90,14 @@ flowchart TD
    - Host context (hostname, PID)
    - Bare-metal OS stats (local `/proc`, SSH, Prometheus node-exporter)
    - K3s cluster stats (node conditions, pod counts, CPU/memory usage, restart counts via kube-state-metrics + cAdvisor)
-5. **Decision** — the decision engine selects an action, confidence score, reasoning, and optional scheduled follow-up tasks
-6. **Action Execution** — the matched action handler runs (investigate, notify, log_only)
-   - For `investigate`: with `CFOP_AGENT_URL` set, `HTTPInvestigateActionHandler` POSTs the alert to the CFOperator agent's `/v1/investigate` and returns a quiet (non-notifying) `ActionResult`. Without it, the default stub handler runs (records intent only).
+5. **Triage Decision** — `HTTPTriageDecisionEngine` POSTs the alert to the agent's `/v1/triage` so the LLM classifies it into one of `log_only` / `notify` / `investigate` / `escalate`. The agent's response includes which provider actually served the classification (`triage_backend` + `triage_model`), which is stored in `Decision.params` for downstream attribution. Results are cached per-alert with a short TTL so duplicate firings don't re-call the LLM.
+6. **Action Execution** — the runtime routes by triage action:
+   - `log_only` — record-only; no notification, no investigation.
+   - `notify` — single-line Slack/Discord notification, no LLM investigation. The notification renders `triaged by <backend>/<model>` so operators can see which LLM made the call.
+   - `investigate` / `escalate` — dispatched to the matched action handler. With `CFOP_AGENT_URL` set, `HTTPInvestigateActionHandler` POSTs the alert to the CFOperator agent's `/v1/investigate` and returns a quiet (non-notifying) `ActionResult`. Without it, the default stub handler runs (records intent only).
 7. **Scheduling** — follow-up checks are persisted to the scheduler store and polled back into the runtime as synthetic alerts when they become due
 8. **Audit** — every step emits append-only domain events to the local JSONL outbox, with background replay to PostgreSQL when configured
-9. **Completion Post-Back (delegated investigations only)** — when the agent finishes its LLM investigation, it POSTs the completed `ActionResult` to `/v1/investigations/{alert_id}/complete` with the `X-CFOP-Token` header. The runtime records an `action_completed` event tagged `source=external` and fires the single Slack/Discord notification with the real outcome.
+9. **Completion Post-Back (delegated investigations only)** — when the agent finishes its LLM investigation, it POSTs the completed `ActionResult` to `/v1/investigations/{alert_id}/complete` with the `X-CFOP-Token` header. The runtime records an `action_completed` event tagged `source=external` and fires the single Slack/Discord notification with the real outcome, including the `triaged by …` attribution line carried through from the original triage decision.
 
 ## Minimal Setup
 

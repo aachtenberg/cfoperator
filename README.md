@@ -11,18 +11,16 @@ The deployed system runs as two processes that split responsibilities along a cl
 - **`event_runtime`** (separate process / pod) — ingests alerts from Alertmanager, applies dedupe/cooldown policies, runs the decision engine, dispatches actions, and owns the notification surface (Slack, Discord).
 - **`agent`** (this codebase's main process) — runs LLM-driven investigations, owns the knowledge base + embeddings, runs the proactive deep sweep, and serves the chat UI.
 
-When `event_runtime` decides to `investigate`, it POSTs the alert to the agent's `/v1/investigate` endpoint. The agent enqueues, runs the LLM investigation with tools, and POSTs the completed `ActionResult` back to `event_runtime` at `/v1/investigations/{alert_id}/complete`, which fires the single Slack notification with the real outcome. See [docs/event-runtime-quickstart.md](docs/event-runtime-quickstart.md) for the full flow + env vars (`CFOP_AGENT_URL`, `CFOP_COMPLETION_SHARED_SECRET`).
+When an alert arrives, `event_runtime` asks the agent's LLM to **triage** it into `log_only` / `notify` / `investigate` / `escalate`. Only `investigate` and `escalate` trigger a full LLM investigation: the runtime POSTs the alert to the agent's `/v1/investigate`, the agent enqueues, runs the LLM investigation with tools, and POSTs the completed `ActionResult` back to `event_runtime` at `/v1/investigations/{alert_id}/complete`, which fires the single Slack notification with the real outcome (tagged with the LLM that triaged it, e.g. `triaged by ollama/qwen3-coder:latest`). See [docs/event-runtime-quickstart.md](docs/event-runtime-quickstart.md) for the full flow + env vars (`CFOP_AGENT_URL`, `CFOP_COMPLETION_SHARED_SECRET`).
 
-```
-Alertmanager
-    │
-    ▼
-event_runtime  ──(POST /v1/investigate)──►  agent (LLM investigation)
-    ▲                                          │
-    └──(POST /v1/investigations/<id>/complete)─┘
-    │
-    ▼
-Slack / Discord  (one notification per alert, with real outcome)
+```mermaid
+flowchart LR
+    AM[Alertmanager] --> ER[event_runtime]
+    ER -- "POST /v1/triage" --> Agent
+    Agent -- "log_only / notify /<br/>investigate / escalate" --> ER
+    ER -- "POST /v1/investigate<br/>(only when investigate/escalate)" --> Agent
+    Agent -- "POST /v1/investigations/&lt;id&gt;/complete" --> ER
+    ER --> Slack["Slack / Discord<br/>(one notification per alert,<br/>tagged with triaging LLM)"]
 ```
 
 ```
@@ -46,7 +44,8 @@ CFOperator agent (Docker container)
 │   └── Notifications: handled by event_runtime (Slack + Discord)
 │
 ├── LLM Fallback Chain
-│   └── Ollama (local) → Groq → Gemini → Anthropic
+│   └── Configured Ollama instances (in priority order) → optional paid escalation
+│       (one of: Groq, xAI Grok, Anthropic) when allow_paid_escalation=true
 │
 ├── Tools
 │   ├── Core: prometheus_query (auto-corrects common PromQL), loki_query
@@ -73,6 +72,24 @@ CFOperator agent (Docker container)
     ├── LLM backend/model selector with provider fallback toggle
     ├── Sweep findings panel with severity badges
     └── Status bar (connection, uptime, last sweep)
+```
+
+### LLM Fallback Chain
+
+Every LLM-driven action (triage, investigation, learning extraction, …) routes through a fallback manager keyed on the `llm_fallback_chain` setting in the DB. The chain is an ordered list of Ollama hosts; failure or active cooldown advances to the next entry. If every local provider is exhausted *and* `allow_paid_escalation=true`, the single configured `paid_llm_escalation` provider is tried last. Cooldowns are persisted in `llm_provider_state` (Postgres) with exponential backoff, so a flapping Ollama host won't be re-hit every alert. The provider that actually served each call is surfaced back into Slack notifications (`triaged by …`).
+
+```mermaid
+flowchart TD
+    Start([LLM call needed]) --> Local{Try next<br/>Ollama in chain}
+    Local -->|success| Done([Return response<br/>+ backend/model])
+    Local -->|HTTP error<br/>or timeout| Cooldown[Set cooldown<br/>exponential backoff,<br/>persisted in Postgres]
+    Cooldown --> More{More Ollama<br/>in chain?}
+    More -->|yes| Local
+    More -->|no| Gate{allow_paid_escalation<br/>= true?}
+    Gate -->|no| Fail([Return None<br/>caller fails gracefully])
+    Gate -->|yes| Paid[Try paid_llm_escalation:<br/>Groq / xAI / Anthropic]
+    Paid -->|success| Done
+    Paid -->|fail| Fail
 ```
 
 ## Knowledge Base & Semantic Search
