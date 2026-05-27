@@ -18,9 +18,13 @@ def _make_operator(chat_stub):
     operator = CFOperator.__new__(CFOperator)
     operator.config = {'chat': {'max_tool_iterations': 6}}
     operator.kb = _StubKB()
-    operator._resolve_provider = lambda: ('ollama', 'http://localhost:11434', 'test-model')
+    operator._resolve_provider = lambda *_a, **_kw: ('ollama', 'http://localhost:11434', 'test-model')
     operator._get_infra_summary = lambda: 'Cluster namespaces: apps, monitoring, data'
-    operator._chat_with_tools = chat_stub
+    # The verifier now routes through _chat_with_tools_with_fallback so a
+    # transient Ollama timeout falls over to a paid provider. These tests
+    # don't care about the chain iteration — they verify the verifier's
+    # behavior given an LLM response — so mock at the higher level.
+    operator._chat_with_tools_with_fallback = chat_stub
     return operator
 
 
