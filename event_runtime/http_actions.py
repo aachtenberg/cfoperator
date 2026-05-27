@@ -24,8 +24,8 @@ import urllib.error
 import urllib.request
 from typing import Optional, Tuple
 
-from .models import ActionRequest, ActionResult, Alert
-from .plugins import ActionHandler
+from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision
+from .plugins import ActionHandler, DecisionEngine
 
 logger = logging.getLogger(__name__)
 
@@ -199,3 +199,130 @@ def build_http_investigate_handler(agent_url: Optional[str]) -> Optional[HTTPInv
     if not agent_url:
         return None
     return HTTPInvestigateActionHandler(agent_url=agent_url)
+
+
+# ---- LLM-driven triage decision engine -----------------------------------
+
+
+_TRIAGE_VALID_ACTIONS = frozenset({"log_only", "notify", "investigate", "escalate"})
+
+
+class HTTPTriageDecisionEngine(DecisionEngine):
+    """Decision engine that delegates triage classification to the agent.
+
+    Replaces ``OpenReasoningDecisionEngine`` when ``CFOP_AGENT_URL`` is set.
+    POSTs each alert to the agent's ``/v1/triage`` endpoint, which runs a
+    short LLM call (~1-2s on a warm path, falls back through providers on
+    Ollama cold-start) and returns one of: log_only, notify, investigate,
+    escalate.
+
+    Designed to never lose an alert: on any failure (agent unreachable,
+    non-200, JSON parse error, invalid action label) it falls back to the
+    safe default of ``investigate``. The whole point of triage is to skip
+    work, so a triage outage just temporarily reverts to "investigate
+    everything" rather than dropping alerts.
+
+    Caches decisions by alert fingerprint for ``cache_ttl_seconds`` (default
+    300s / 5 min) so repeat fires within the window skip the LLM round-trip.
+    """
+
+    name = "http-triage"
+
+    def __init__(self, agent_url: str, *, timeout: float = 5.0, cache_ttl_seconds: int = 300):
+        if not agent_url:
+            raise ValueError("agent_url is required")
+        self._agent_url = agent_url.rstrip("/")
+        self._timeout = float(timeout)
+        self._cache_ttl = int(cache_ttl_seconds)
+        # fingerprint -> (action, reason, confidence, expires_at_unix)
+        self._cache: dict[str, tuple[str, str, float, float]] = {}
+
+    @property
+    def agent_url(self) -> str:
+        return self._agent_url
+
+    def decide(self, envelope: ContextEnvelope) -> Decision:
+        alert = envelope.alert
+        fingerprint = alert.effective_fingerprint()
+
+        # Cache lookup. Repeat alerts with the same labels within 5m skip
+        # the LLM call entirely — important because event_runtime polls
+        # Alertmanager on a 30s interval and the same alert can appear in
+        # many polls before it resolves.
+        cached = self._cache.get(fingerprint)
+        if cached is not None:
+            action, reason, confidence, expires_at = cached
+            if expires_at > _now_unix():
+                return Decision(
+                    action=action,
+                    confidence=confidence,
+                    reasoning=f"{reason} (cached)",
+                )
+            self._cache.pop(fingerprint, None)
+
+        decision_dict = self._call_triage(alert)
+        action = decision_dict.get("action", "investigate")
+        if action not in _TRIAGE_VALID_ACTIONS:
+            logger.warning(
+                "Triage returned invalid action %r for alert %s; defaulting to investigate",
+                action, alert.alert_id,
+            )
+            action = "investigate"
+        reason = str(decision_dict.get("reason", ""))[:280]
+        try:
+            confidence = float(decision_dict.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        confidence = max(0.0, min(1.0, confidence))
+
+        # Cache successful decisions only. Failed calls produce
+        # action="investigate" with confidence=0 — don't cache those, so a
+        # transient triage outage doesn't lock in "investigate everything"
+        # for 5 minutes.
+        if confidence > 0:
+            self._cache[fingerprint] = (action, reason, confidence, _now_unix() + self._cache_ttl)
+
+        return Decision(action=action, confidence=confidence, reasoning=reason)
+
+    def _call_triage(self, alert: Alert) -> dict:
+        """POST to the agent's /v1/triage. Returns the decision dict.
+
+        On any error, returns a safe-default dict that decide() will
+        translate into action="investigate" with confidence=0.
+        """
+        endpoint = f"{self._agent_url}/v1/triage"
+        body = json.dumps(alert.to_dict(), default=str).encode("utf-8")
+        req = urllib.request.Request(
+            endpoint,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("triage response not a JSON object")
+            return payload
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Triage call failed for alert %s, defaulting to investigate: %s",
+                alert.alert_id, exc,
+            )
+            return {"action": "investigate", "reason": f"triage call failed ({type(exc).__name__})", "confidence": 0.0}
+
+
+def _now_unix() -> float:
+    import time
+    return time.time()
+
+
+def build_http_triage_engine(agent_url: Optional[str]) -> Optional[HTTPTriageDecisionEngine]:
+    """Construct the HTTP triage decision engine when an agent URL is configured.
+
+    Returns None when ``agent_url`` is missing or empty, so the portable
+    OpenReasoningDecisionEngine stays in place.
+    """
+    if not agent_url:
+        return None
+    return HTTPTriageDecisionEngine(agent_url=agent_url)

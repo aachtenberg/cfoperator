@@ -16,7 +16,11 @@ from .defaults import (
 )
 from .git_context import GitChangeContextProvider
 from .github_actions import build_github_action_handlers
-from .http_actions import build_http_investigate_handler, log_completion_endpoint_status
+from .http_actions import (
+    build_http_investigate_handler,
+    build_http_triage_engine,
+    log_completion_endpoint_status,
+)
 from .notifications import SlackNotificationSink, DiscordNotificationSink
 from .plugins import AlertSource
 from .sources import AlertmanagerAlertSource
@@ -50,7 +54,14 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
 
     plugins = PluginManager()
     plugins.register_state_sink(sink)
-    plugins.register_decision_engine(OpenReasoningDecisionEngine())
+    # Decision engine: when CFOP_AGENT_URL is set, route triage through the
+    # agent's /v1/triage endpoint so the LLM classifies each alert into
+    # log_only / notify / investigate / escalate. Falls back to the
+    # portable OpenReasoningDecisionEngine (which always returns
+    # 'investigate') when no agent is configured.
+    agent_url_for_triage = os.getenv("CFOP_AGENT_URL", "").strip()
+    triage_engine = build_http_triage_engine(agent_url_for_triage or None)
+    plugins.register_decision_engine(triage_engine or OpenReasoningDecisionEngine())
     for policy in build_default_alert_policies(str(base_dir)):
         plugins.register_alert_policy(policy)
     plugins.register_context_provider(HostContextProvider())

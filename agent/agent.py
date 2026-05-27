@@ -639,6 +639,152 @@ class CFOperator:
             context = self._orient(context)
             return self._act(context)
 
+    def run_triage(self, alert: Dict[str, Any]) -> Dict[str, Any]:
+        """Classify an alert without running a full investigation.
+
+        Called from event_runtime's HTTPTriageDecisionEngine before it
+        decides whether to dispatch the alert to /v1/investigate. The LLM
+        sees the alert plus the top 3 similar past investigations from the
+        embeddings index, and returns one of four actions:
+
+          - log_only:    known noise; record and move on
+          - notify:      operator should see the alert but no LLM dive needed
+          - investigate: novel pattern, do a full LLM investigation
+          - escalate:    page-worthy, severity is high and pattern is bad
+
+        Returns ``{"action": ..., "reason": ..., "confidence": ...}``. On
+        any failure (LLM unreachable, parse error, etc.) returns
+        ``action="investigate"`` so we err on the side of investigating
+        rather than dropping an alert. Tight prompt + max_iterations=1 +
+        cheap-model preference keeps this fast.
+        """
+        # Build a one-shot classification prompt. No tools — the LLM should
+        # not actually investigate; it should decide whether to.
+        trigger = (
+            alert.get('summary')
+            or alert.get('annotations', {}).get('summary')
+            or 'Unknown alert'
+        )
+        severity = alert.get('severity', 'unknown')
+        labels = alert.get('labels') or alert.get('details', {}).get('labels', {}) or {}
+
+        similar_context = ""
+        try:
+            if self.embeddings.is_available():
+                query_embedding = self.embeddings.generate_embedding(trigger)
+                similar = self.kb._kb.find_similar_investigations_hybrid(
+                    query_text=trigger,
+                    query_embedding=query_embedding,
+                    limit=3,
+                )
+                if similar:
+                    lines = []
+                    for inv in similar:
+                        sim = inv.get('similarity') or inv.get('vector_similarity', 0)
+                        lines.append(
+                            f"- [{inv.get('outcome','?'):10}] "
+                            f"{inv.get('trigger','')[:100]} (similarity: {sim:.2f})"
+                        )
+                    similar_context = "\n\nSimilar past investigations:\n" + "\n".join(lines)
+        except Exception:
+            pass  # Best-effort; missing context is not a triage blocker.
+
+        system_prompt = """You are a triage classifier for infrastructure alerts.
+Decide the cheapest correct response. Respond ONLY with a JSON object,
+no other text:
+{
+  "action":     "log_only" | "notify" | "investigate" | "escalate",
+  "reason":     "<one short sentence>",
+  "confidence": <0.0 to 1.0>
+}
+
+Action rubric:
+  log_only    Known noise. Test pods (smoke-test-*, tmp-*), Alertmanager
+              Watchdog, intentionally-failing canaries.
+  notify      Operator should see this, but a full LLM investigation is
+              waste. Use when a similar past investigation resolved with
+              little effort, when severity=info, or when the pattern is
+              one the operator already understands (e.g. raspberrypi
+              SD-card warning that's been known for weeks).
+  investigate Novel pattern, no similar resolved precedent, or pattern
+              that previous investigations classified as 'monitoring'.
+              Default if uncertain.
+  escalate    Severity=critical AND impact is broad (NodeNotReady on a
+              control plane, data-loss patterns, multiple correlated
+              services down). Operator should page in.
+
+Prefer notify and log_only when there is a clear precedent. Prefer
+investigate when uncertain. Use escalate only for genuinely urgent."""
+
+        user_msg = (
+            f"Alert severity: {severity}\n"
+            f"Alert summary: {trigger}\n"
+            f"Labels: {json.dumps(labels, default=str)[:500]}"
+            f"{similar_context}\n\n"
+            "Classify."
+        )
+
+        try:
+            result = self._chat_with_tools_with_fallback(
+                messages=[{'role': 'user', 'content': user_msg}],
+                system_context=system_prompt,
+                max_iterations=1,  # one-shot classification — no tool loop
+            )
+        except Exception as e:
+            logger.warning(f"Triage LLM unavailable, defaulting to investigate: {e}")
+            return {
+                'action': 'investigate',
+                'reason': f'triage LLM unavailable ({type(e).__name__})',
+                'confidence': 0.0,
+            }
+
+        response_text = result.get('response', '').strip()
+        # The LLM sometimes wraps JSON in fenced code blocks or prose; pull
+        # the first JSON object out instead of relying on perfect output.
+        decision = self._parse_triage_response(response_text)
+        if decision is None:
+            logger.warning(f"Triage LLM returned unparseable response, defaulting to investigate: {response_text[:200]}")
+            return {
+                'action': 'investigate',
+                'reason': 'triage response unparseable',
+                'confidence': 0.0,
+            }
+        return decision
+
+    @staticmethod
+    def _parse_triage_response(response_text: str) -> Optional[Dict[str, Any]]:
+        """Extract a valid triage decision dict from raw LLM output.
+
+        Returns None if no valid JSON with the required fields is found.
+        Tolerates markdown code fences and trailing prose.
+        """
+        if not response_text:
+            return None
+        # Strip optional markdown code fence (```json ... ``` or ``` ... ```).
+        text = response_text.strip()
+        if text.startswith("```"):
+            # Drop the first line (fence + optional language) and trailing fence.
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+            if text.rstrip().endswith("```"):
+                text = text.rstrip()[:-3]
+        # Find the first {...} JSON object in the text.
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        try:
+            payload = json.loads(text[start:end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return None
+        action = payload.get("action")
+        if action not in {"log_only", "notify", "investigate", "escalate"}:
+            return None
+        return {
+            "action": action,
+            "reason": str(payload.get("reason", ""))[:280],
+            "confidence": float(payload.get("confidence", 0.5)),
+        }
+
     def enqueue_investigation(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """Non-blocking enqueue for an HTTP-triggered investigation.
 
