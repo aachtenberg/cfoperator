@@ -181,6 +181,10 @@ class CFOperator:
         self.current_investigation = None
         self.last_sweep = 0
         self.start_time = time.time()
+        # Initialized to start_time so the first heartbeat fires after the
+        # configured interval rather than immediately after the bootstrap
+        # banner — avoids redundant chatter on the first cycle.
+        self.last_heartbeat = self.start_time
 
         # HTTP-driven investigation queue (POST /v1/investigate).
         # Bounded; full queue rejects with 503 so event_runtime's worker retries.
@@ -486,6 +490,11 @@ class CFOperator:
                 # Update uptime metric
                 AGENT_UPTIME.set(time.time() - self.start_time)
                 OODA_CYCLES.inc()
+
+                # Heartbeat — proves the loop is alive between events.
+                if time.time() - self.last_heartbeat >= self._get_heartbeat_interval():
+                    logger.info(self._format_heartbeat())
+                    self.last_heartbeat = time.time()
 
                 # MODE 1: Reactive - handle alerts immediately
                 if self._reactive_poll_enabled and self.alerts:
@@ -2591,6 +2600,41 @@ Only return the JSON array, no other text."""
         except Exception:
             pass
         return self.config.get('ooda', {}).get('sweep_interval', 1800)
+
+    def _format_heartbeat(self) -> str:
+        """Build a one-line OODA heartbeat summary for periodic log emission.
+
+        Single grep target ("OODA heartbeat:") plus the key fields an operator
+        wants when checking "is the agent alive between events": uptime, the
+        HTTP investigation queue depth (rising → worker saturated), minutes
+        since last proactive sweep, and whether the reactive Alertmanager
+        poll is on (true means the agent is independent of event_runtime).
+        """
+        uptime_min = (time.time() - self.start_time) / 60.0
+        sweep_age = time.time() - self.last_sweep if self.last_sweep else None
+        sweep_label = f"{sweep_age/60:.0f}m ago" if sweep_age is not None else "never"
+        queue_depth = self._investigation_queue.qsize() if getattr(self, "_investigation_queue", None) else 0
+        return (
+            f"OODA heartbeat: uptime={uptime_min:.0f}m "
+            f"queue_depth={queue_depth} "
+            f"last_sweep={sweep_label} "
+            f"reactive_poll={'on' if self._reactive_poll_enabled else 'off'}"
+        )
+
+    def _get_heartbeat_interval(self) -> int:
+        """Get OODA-loop heartbeat interval: DB setting → config.yaml → default 300 (5 min).
+
+        Heartbeats prove the loop is alive when nothing else is logging — with
+        ``reactive_poll: false`` the agent can otherwise go silent for the
+        full sweep interval (30 min by default) between HTTP investigations.
+        """
+        try:
+            val = self.kb.get_setting('heartbeat_interval', '')
+            if val:
+                return max(30, min(3600, int(val)))
+        except Exception:
+            pass
+        return self.config.get('ooda', {}).get('heartbeat_interval_seconds', 300)
 
     # Slash shortcut expansions — map short commands to natural language prompts
     _SLASH_SHORTCUTS = {
