@@ -776,9 +776,17 @@ Alert details: {json.dumps(alert_info, default=str)[:1000]}
 Investigate this alert using the available tools. Check metrics, logs, and container/service status.
 When done, provide a summary of findings and whether the issue is resolved, needs monitoring, or should be escalated."""
 
-            # Get LLM provider (respects user's UI model selection)
-            resolved = self._resolve_provider()
-            if not resolved:
+            # Run LLM investigation with tools, with provider fallback so a
+            # transient Ollama timeout (e.g. GPU cold-start) doesn't abort
+            # the investigation.
+            try:
+                result = self._chat_with_tools_with_fallback(
+                    messages=[{'role': 'user', 'content': f'Investigate this alert: {trigger}'}],
+                    system_context=system_prompt,
+                )
+            except RuntimeError as e:
+                if "No LLM providers available" not in str(e):
+                    raise
                 logger.error("No LLM provider available for investigation")
                 duration = time.time() - start_time
                 self.kb.update_investigation(
@@ -796,16 +804,8 @@ When done, provide a summary of findings and whether the issue is resolved, need
                     details=details,
                 )
 
-            provider_type, url, model = resolved
-
-            # Run LLM investigation with tools
-            result = self._chat_with_tools(
-                provider_type=provider_type,
-                url=url,
-                model=model,
-                messages=[{'role': 'user', 'content': f'Investigate this alert: {trigger}'}],
-                system_context=system_prompt
-            )
+            provider_type = result.get('backend', 'unknown')
+            model = result.get('model', 'unknown')
 
             response_text = result.get('response', '')
             tool_calls_count = result.get('tool_calls', 0)
@@ -1426,28 +1426,19 @@ Only return the JSON array, no other text."""
         sweep_backend = self.kb.get_setting('sweep_backend', '')
         sweep_model = self.kb.get_setting('sweep_model', '')
 
-        if sweep_backend:
-            resolved = self._resolve_provider(backend=sweep_backend, model=sweep_model or None)
-        else:
-            resolved = self._resolve_provider()
-
-        if not resolved:
-            logger.warning("No LLM provider available for sweep — skipping")
-            return []
-
-        provider_type, url, model = resolved
         system_prompt = self._build_sweep_system_prompt(task, skill_name=skill_name)
 
         try:
-            result = self._chat_with_tools(
-                provider_type=provider_type,
-                url=url,
-                model=model,
+            result = self._chat_with_tools_with_fallback(
                 messages=[{'role': 'user', 'content': task}],
                 system_context=system_prompt,
-                max_iterations=max_iterations
+                backend=sweep_backend or 'auto',
+                model=sweep_model or None,
+                max_iterations=max_iterations,
             )
 
+            provider_type = result.get('backend', 'unknown')
+            model = result.get('model', 'unknown')
             response_text = result.get('response', '')
             tool_calls = result.get('tool_calls', 0)
             input_tokens = result.get('input_tokens', 0)
@@ -1465,8 +1456,16 @@ Only return the JSON array, no other text."""
             # Parse findings from response
             return self._parse_sweep_findings(response_text)
 
-        except Exception as e:
+        except RuntimeError as e:
+            if "No LLM providers available" in str(e):
+                logger.warning("No LLM provider available for sweep — skipping")
+                return []
             logger.error(f"Sweep LLM failed: {e}")
+            ERROR_RATE.inc()
+            return []
+        except Exception as e:
+            # All providers in the fallback chain exhausted with this exception.
+            logger.error(f"Sweep LLM failed (all providers exhausted): {e}")
             ERROR_RATE.inc()
             return []
 
@@ -2314,9 +2313,6 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
 
     def _verify_single_finding(self,
                                finding: Dict[str, Any],
-                               provider_type: str,
-                               url: str,
-                               model: str,
                                max_iterations: int) -> Optional[Dict[str, Any]]:
         """Actively try to disprove a finding before allowing it to be emitted."""
         infra = self._get_infra_summary()
@@ -2353,14 +2349,15 @@ Only return the JSON array, no other text."""
             f"Draft finding JSON:\n{json.dumps(finding, default=str)}"
         )
 
-        result = self._chat_with_tools(
-            provider_type=provider_type,
-            url=url,
-            model=model,
-            messages=[{'role': 'user', 'content': user_msg}],
-            system_context=system_prompt,
-            max_iterations=max_iterations
-        )
+        try:
+            result = self._chat_with_tools_with_fallback(
+                messages=[{'role': 'user', 'content': user_msg}],
+                system_context=system_prompt,
+                max_iterations=max_iterations,
+            )
+        except Exception as e:
+            logger.warning(f"Verification skipped (LLM unavailable): {e}")
+            return finding  # don't filter on a failed verification step
 
         tool_calls = result.get('tool_calls', 0)
         if tool_calls <= 0:
@@ -2410,12 +2407,6 @@ Only return the JSON array, no other text."""
             if not findings:
                 return findings
 
-        resolved = self._resolve_provider()
-        if not resolved:
-            logger.warning("No LLM provider for finding verification — skipping")
-            return findings
-
-        provider_type, url, model = resolved
         max_iterations = max(2, min(4, self._get_max_tool_iterations()))
 
         try:
@@ -2423,9 +2414,6 @@ Only return the JSON array, no other text."""
             for finding in findings:
                 verified_finding = self._verify_single_finding(
                     finding=finding,
-                    provider_type=provider_type,
-                    url=url,
-                    model=model,
                     max_iterations=max_iterations,
                 )
                 if verified_finding:
@@ -2895,6 +2883,88 @@ Only return the JSON array, no other text."""
             return (provider_type, url, model)
         else:
             return None
+
+    def _chat_with_tools_with_fallback(
+        self,
+        messages: List[Dict[str, str]],
+        system_context: str = '',
+        backend: str = 'auto',
+        model: str = None,
+        max_iterations: int = None,
+        event_callback=None,
+    ) -> Dict[str, Any]:
+        """Run _chat_with_tools across the configured provider fallback chain.
+
+        On ANY exception from one provider, record the failure for cooldown,
+        log it, and try the next provider in the chain. The chain is
+        primary (user-selected) → other locals → paid escalation, gated by
+        the existing ``allow_paid_escalation`` setting.
+
+        Use this for OODA-internal paths (sweep, investigation, morning
+        summary, learning extraction, etc.) where a transient Ollama
+        timeout (e.g. cold-start after GPU unload) should not fail the
+        whole operation. The chat handler also uses this so all paths
+        share the same fallback semantics.
+
+        Returns the same shape as _chat_with_tools, plus:
+          - ``backend``: provider type that actually succeeded
+          - ``model``: model that actually succeeded
+          - ``fallback_used``: True iff a non-primary provider was used
+
+        Raises the last provider's exception if all providers in the chain
+        fail, or ``RuntimeError`` if the chain is empty.
+        """
+        provider_chain = self._get_provider_chain(backend, model)
+        if not provider_chain:
+            raise RuntimeError("No LLM providers available")
+
+        last_error = None
+        prev_provider = None
+        for idx, (provider_type, url, model_name) in enumerate(provider_chain):
+            try:
+                if idx > 0 and event_callback and prev_provider:
+                    event_callback('fallback', {
+                        'from': prev_provider,
+                        'to': f"{provider_type}/{model_name}",
+                        'reason': str(last_error)[:100] if last_error else 'unknown',
+                    })
+                logger.info(
+                    f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: "
+                    f"{provider_type}/{model_name}"
+                )
+                result = self._chat_with_tools(
+                    provider_type=provider_type, url=url, model=model_name,
+                    messages=messages, system_context=system_context,
+                    max_iterations=max_iterations, event_callback=event_callback,
+                )
+                provider_key = (
+                    f"{provider_type}/{url}/{model_name}" if url
+                    else f"{provider_type}/{model_name}"
+                )
+                self.llm.record_success(provider_key)
+                result['backend'] = provider_type
+                result['model'] = model_name
+                result['fallback_used'] = idx > 0
+                return result
+            except Exception as e:
+                last_error = e
+                prev_provider = f"{provider_type}/{model_name}"
+                provider_key = (
+                    f"{provider_type}/{url}/{model_name}" if url
+                    else f"{provider_type}/{model_name}"
+                )
+                logger.warning(
+                    f"[FALLBACK] Provider {provider_type}/{model_name} failed: "
+                    f"{type(e).__name__}: {e}"
+                )
+                self.llm.record_failure(provider_key, str(e))
+                continue
+
+        logger.error(
+            f"[FALLBACK] All {len(provider_chain)} providers failed. "
+            f"Last error: {last_error}"
+        )
+        raise last_error or RuntimeError("All LLM providers exhausted")
 
     def _chat_with_tools(self, provider_type: str, url: str, model: str,
                          messages: List[Dict[str, str]], system_context: str,
@@ -3580,55 +3650,22 @@ Be concise and infrastructure-focused.
         tool_calls_count = 0
 
         try:
-            resolved = self._resolve_provider(backend, model)
-            if not resolved:
-                return {
-                    'response': f'LLM provider unavailable: {backend}',
-                    'backend': 'none',
-                    'model': 'none',
-                    'tool_calls': 0
-                }
-            provider_type, url, model = resolved
-
             # Build messages
-            messages = []
-            for msg in history:
-                messages.append(msg)
-            messages.append({'role': 'user', 'content': message})
+            messages = list(history) + [{'role': 'user', 'content': message}]
 
-            # Call LLM with tools
-            result = self._chat_with_tools(
-                provider_type=provider_type,
-                url=url,
-                model=model,
+            result = self._chat_with_tools_with_fallback(
                 messages=messages,
-                system_context=system_context
+                system_context=system_context,
+                backend=backend,
+                model=model,
             )
 
-            tool_calls_count = result.get('tool_calls', 0)
-            response_text = result.get('response', '')
-
-            # Track successful LLM request
-            latency = time.time() - start_time
-            LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
-            LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
-
-            # Track tokens if available
-            if result.get('input_tokens'):
-                LLM_TOKENS.labels(provider=provider_type, model=model, type='input').inc(result['input_tokens'])
-            if result.get('output_tokens'):
-                LLM_TOKENS.labels(provider=provider_type, model=model, type='output').inc(result['output_tokens'])
-
-            # Record success in fallback manager
-            provider_key = f"{provider_type}/{url}/{model}" if url else f"{provider_type}/{model}"
-            self.llm.record_success(provider_key)
-
             return {
-                'response': response_text,
-                'backend': provider_type,
-                'model': model,
-                'tool_calls': tool_calls_count,
-                'learning_ids': result.get('learning_ids', [])
+                'response': result.get('response', ''),
+                'backend': result.get('backend', 'unknown'),
+                'model': result.get('model', 'unknown'),
+                'tool_calls': result.get('tool_calls', 0),
+                'learning_ids': result.get('learning_ids', []),
             }
 
         except Exception as e:
@@ -3754,69 +3791,29 @@ Be concise and infrastructure-focused.
         start_time = time.time()
         tool_calls_count = 0
 
-        # Get provider chain for fallback
-        provider_chain = self._get_provider_chain(backend, model)
-        if not provider_chain:
-            return {'response': 'No LLM providers available', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
-
         messages = list(history) + [{'role': 'user', 'content': message}]
-        last_error = None
-        prev_provider = None
 
-        for idx, (provider_type, url, model_name) in enumerate(provider_chain):
-            try:
-                # Notify UI if falling back to a different provider
-                if idx > 0 and event_callback and prev_provider:
-                    event_callback('fallback', {
-                        'from': prev_provider,
-                        'to': f"{provider_type}/{model_name}",
-                        'reason': str(last_error)[:100] if last_error else 'unknown'
-                    })
+        try:
+            result = self._chat_with_tools_with_fallback(
+                messages=messages,
+                system_context=system_context,
+                backend=backend,
+                model=model,
+                event_callback=event_callback,
+            )
+        except RuntimeError as e:
+            if "No LLM providers available" in str(e):
+                return {'response': 'No LLM providers available', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
+            raise
 
-                logger.info(f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: {provider_type}/{model_name}")
-
-                result = self._chat_with_tools(
-                    provider_type=provider_type, url=url, model=model_name,
-                    messages=messages, system_context=system_context,
-                    event_callback=event_callback
-                )
-
-                # Success!
-                tool_calls_count = result.get('tool_calls', 0)
-                latency = time.time() - start_time
-                LLM_REQUESTS.labels(provider=provider_type, model=model_name, result='success').inc()
-                LLM_LATENCY.labels(provider=provider_type, model=model_name).observe(latency)
-                if result.get('input_tokens'):
-                    LLM_TOKENS.labels(provider=provider_type, model=model_name, type='input').inc(result['input_tokens'])
-                if result.get('output_tokens'):
-                    LLM_TOKENS.labels(provider=provider_type, model=model_name, type='output').inc(result['output_tokens'])
-
-                provider_key = f"{provider_type}/{url}/{model_name}" if url else f"{provider_type}/{model_name}"
-                self.llm.record_success(provider_key)
-
-                return {
-                    'response': result.get('response', ''),
-                    'backend': provider_type,
-                    'model': model_name,
-                    'tool_calls': tool_calls_count,
-                    'learning_ids': result.get('learning_ids', []),
-                    'fallback_used': idx > 0  # Indicate if fallback was used
-                }
-
-            except Exception as e:
-                last_error = e
-                prev_provider = f"{provider_type}/{model_name}"
-                provider_key = f"{provider_type}/{url}/{model_name}" if url else f"{provider_type}/{model_name}"
-
-                logger.warning(f"[FALLBACK] Provider {provider_type}/{model_name} failed: {e}")
-                self.llm.record_failure(provider_key, str(e))
-                LLM_REQUESTS.labels(provider=provider_type, model=model_name, result='error').inc()
-                LLM_ERRORS.labels(provider=provider_type, error_type=type(e).__name__).inc()
-                continue  # Try next provider
-
-        # All providers failed
-        logger.error(f"[FALLBACK] All {len(provider_chain)} providers failed. Last error: {last_error}")
-        raise last_error or RuntimeError("All LLM providers exhausted")
+        return {
+            'response': result.get('response', ''),
+            'backend': result.get('backend', 'unknown'),
+            'model': result.get('model', 'unknown'),
+            'tool_calls': result.get('tool_calls', 0),
+            'learning_ids': result.get('learning_ids', []),
+            'fallback_used': result.get('fallback_used', False),
+        }
 
     def _execute_skill_stream(self, message: str, backend: str = 'auto', model: str = None, event_callback=None) -> Dict[str, Any]:
         """Execute a skill with streaming events."""
@@ -3853,27 +3850,24 @@ IMPORTANT:
         start_time = time.time()
 
         try:
-            resolved = self._resolve_provider(backend, model)
-            if not resolved:
-                return {'response': f'LLM provider unavailable: {backend}', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
-            provider_type, url, model = resolved
-
-            result = self._chat_with_tools(
-                provider_type=provider_type, url=url, model=model,
+            result = self._chat_with_tools_with_fallback(
                 messages=[{'role': 'user', 'content': user_message}],
                 system_context=system_context,
-                max_iterations=None,
-                event_callback=event_callback
+                backend=backend,
+                model=model,
+                event_callback=event_callback,
             )
-
-            duration = time.time() - start_time
-            LLM_LATENCY.labels(provider=provider_type, model=model).observe(duration)
-            LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
-            LLM_TOKENS.labels(provider=provider_type, model=model, type='prompt').inc(result.get('input_tokens', 0))
-            LLM_TOKENS.labels(provider=provider_type, model=model, type='completion').inc(result.get('output_tokens', 0))
-
-            return {'response': result.get('response', ''), 'backend': provider_type, 'model': model, 'tool_calls': result.get('tool_calls', 0)}
-
+            return {
+                'response': result.get('response', ''),
+                'backend': result.get('backend', 'unknown'),
+                'model': result.get('model', 'unknown'),
+                'tool_calls': result.get('tool_calls', 0),
+            }
+        except RuntimeError as e:
+            if "No LLM providers available" in str(e):
+                return {'response': f'LLM provider unavailable: {backend}', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
+            logger.error(f"Skill execution (stream) failed (all providers exhausted): {e}", exc_info=True)
+            return {'response': f"Skill execution failed: {str(e)}", 'backend': 'error', 'model': 'N/A', 'tool_calls': 0}
         except Exception as e:
             logger.error(f"Skill execution (stream) failed: {e}", exc_info=True)
             return {'response': f"Skill execution failed: {str(e)}", 'backend': 'error', 'model': 'N/A', 'tool_calls': 0}
@@ -3936,58 +3930,33 @@ IMPORTANT:
         start_time = time.time()
 
         try:
-            resolved = self._resolve_provider(backend, model)
-            if not resolved:
+            result = self._chat_with_tools_with_fallback(
+                messages=[{'role': 'user', 'content': user_message}],
+                system_context=system_context,
+                backend=backend,
+                model=model,
+            )
+            return {
+                'response': result.get('response', ''),
+                'backend': result.get('backend', 'unknown'),
+                'model': result.get('model', 'unknown'),
+                'tool_calls': result.get('tool_calls', 0),
+            }
+        except RuntimeError as e:
+            if "No LLM providers available" in str(e):
                 return {
                     'response': f'LLM provider unavailable: {backend}',
                     'backend': 'none',
                     'model': 'none',
                     'tool_calls': 0
                 }
-            provider_type, url, model = resolved
-
-            # Call LLM with tools
-            result = self._chat_with_tools(
-                provider_type=provider_type,
-                url=url,
-                model=model,
-                messages=[{'role': 'user', 'content': user_message}],
-                system_context=system_context,
-                max_iterations=None  # Uses DB/config setting
-            )
-
-            # Track metrics
-            duration = time.time() - start_time
-            LLM_LATENCY.labels(
-                provider=provider_type,
-                model=model
-            ).observe(duration)
-
-            LLM_REQUESTS.labels(
-                provider=provider_type,
-                model=model,
-                result='success'
-            ).inc()
-
-            LLM_TOKENS.labels(
-                provider=provider_type,
-                model=model,
-                type='prompt'
-            ).inc(result.get('input_tokens', 0))
-
-            LLM_TOKENS.labels(
-                provider=provider_type,
-                model=model,
-                type='completion'
-            ).inc(result.get('output_tokens', 0))
-
+            logger.error(f"Skill execution failed (all providers exhausted): {e}", exc_info=True)
             return {
-                'response': result.get('response', ''),
-                'backend': provider_type,
-                'model': model,
-                'tool_calls': result.get('tool_calls', 0)
+                'response': f"Skill execution failed: {str(e)}",
+                'backend': 'error',
+                'model': 'N/A',
+                'tool_calls': 0
             }
-
         except Exception as e:
             logger.error(f"Skill execution failed: {e}", exc_info=True)
             return {
@@ -4193,31 +4162,28 @@ IMPORTANT:
             f"Be concise and practical. Use markdown formatting."
         )
 
-        resolved = self._resolve_provider()
-        if resolved:
-            provider_type, url, model = resolved
-            try:
-                result = self._chat_with_tools(
-                    provider_type=provider_type,
-                    url=url,
-                    model=model,
-                    messages=[{'role': 'user', 'content': task}],
-                    system_context=(
-                        f"You are CFOperator generating a morning infrastructure summary. "
-                        f"You have tools to check live infrastructure. Be concise and actionable.\n\n"
-                        f"{infra}"
-                    ),
-                    max_iterations=15
-                )
-                summary_text = result.get('response', '')
-                if summary_text and 'Maximum tool iterations' not in summary_text:
-                    return {
-                        'text': summary_text,
-                        'timestamp': now,
-                        'severity': 'info'
-                    }
-            except Exception as e:
-                logger.error(f"LLM morning summary failed: {e}")
+        try:
+            result = self._chat_with_tools_with_fallback(
+                messages=[{'role': 'user', 'content': task}],
+                system_context=(
+                    f"You are CFOperator generating a morning infrastructure summary. "
+                    f"You have tools to check live infrastructure. Be concise and actionable.\n\n"
+                    f"{infra}"
+                ),
+                max_iterations=15,
+            )
+            summary_text = result.get('response', '')
+            if summary_text and 'Maximum tool iterations' not in summary_text:
+                return {
+                    'text': summary_text,
+                    'timestamp': now,
+                    'severity': 'info'
+                }
+        except RuntimeError as e:
+            if "No LLM providers available" not in str(e):
+                logger.error(f"LLM morning summary failed (all providers exhausted): {e}")
+        except Exception as e:
+            logger.error(f"LLM morning summary failed: {e}")
 
         # Fallback: return the raw data if LLM is unavailable
         summary_text = (
