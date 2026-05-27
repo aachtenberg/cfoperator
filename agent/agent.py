@@ -3077,6 +3077,12 @@ Only return the JSON array, no other text."""
                         headers=headers,
                         timeout=self.llm_timeout
                     )
+                    # Convert 4xx/5xx into an exception so the fallback chain
+                    # picks it up. Without this, Ollama's `{"error": "model
+                    # not found"}` 404 body parses cleanly as JSON, data.get(
+                    # "message", {}) is empty, and we silently return an
+                    # empty response — bypassing fallback entirely.
+                    response.raise_for_status()
                     data = response.json()
                     logger.debug(f"[CHAT] LLM status={response.status_code}, tool_calls={bool(data.get('message', {}).get('tool_calls'))}, content_len={len(data.get('message', {}).get('content', ''))}")
 
@@ -3179,6 +3185,7 @@ Only return the JSON array, no other text."""
                         headers=headers,
                         timeout=120
                     )
+                    response.raise_for_status()
                     data = response.json()
 
                     if data.get('error'):
@@ -3325,6 +3332,7 @@ Only return the JSON array, no other text."""
                         headers=headers,
                         timeout=120
                     )
+                    response.raise_for_status()
                     data = response.json()
 
                     if data.get('error'):
@@ -3467,6 +3475,7 @@ Only return the JSON array, no other text."""
                     headers={'Content-Type': 'application/json'},
                     timeout=self.llm_timeout
                 )
+                response.raise_for_status()
                 data = response.json()
                 total_input_tokens += data.get('prompt_eval_count', 0)
                 total_output_tokens += data.get('eval_count', 0)
@@ -3489,6 +3498,7 @@ Only return the JSON array, no other text."""
                     headers=headers,
                     timeout=120
                 )
+                response.raise_for_status()
                 data = response.json()
                 usage = data.get('usage', {})
                 total_input_tokens += usage.get('prompt_tokens', 0)
@@ -3522,6 +3532,7 @@ Only return the JSON array, no other text."""
                     'anthropic-version': '2023-06-01'
                 }
                 response = requests.post('https://api.anthropic.com/v1/messages', json=payload, headers=headers, timeout=120)
+                response.raise_for_status()
                 data = response.json()
                 usage = data.get('usage', {})
                 total_input_tokens += usage.get('input_tokens', 0)
