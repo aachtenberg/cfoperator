@@ -151,7 +151,7 @@
             "type": "prometheus",
             "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "up{job=\"cfoperator\"}",
+          "expr": "max(up{namespace=\"apps\", app=\"cfoperator\"})",
           "refId": "A"
         }
       ],
@@ -1297,7 +1297,7 @@
           },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT ROUND(100.0 * (SELECT COUNT(*) FROM investigation_embeddings) / NULLIF((SELECT COUNT(*) FROM investigations WHERE outcome IN ('resolved','escalated','failed')), 0), 1) AS pct",
+          "rawSql": "SELECT LEAST(100.0, ROUND(100.0 * (SELECT COUNT(*) FROM investigation_embeddings) / NULLIF((SELECT COUNT(*) FROM investigations WHERE outcome IN ('resolved','escalated','failed','monitoring')), 0), 1)) AS pct",
           "refId": "A"
         }
       ],
@@ -1324,11 +1324,11 @@
               },
               {
                 "color": "yellow",
-                "value": 80
+                "value": 0.8
               },
               {
                 "color": "green",
-                "value": 95
+                "value": 0.95
               }
             ]
           },
@@ -1737,7 +1737,7 @@
             "type": "prometheus",
             "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "sum(increase(cfoperator_investigation_queue_rejected_total[1h]))",
+          "expr": "sum(increase(cfoperator_investigation_queue_rejected_total[1h])) or vector(0)",
           "refId": "A"
         }
       ],
@@ -1795,7 +1795,7 @@
             "type": "prometheus",
             "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "sum(increase(cfoperator_investigation_postback_total{status=\"ok\"}[1h]))",
+          "expr": "sum(increase(cfoperator_investigation_postback_total{status=\"ok\"}[1h])) or vector(0)",
           "refId": "A"
         }
       ],
@@ -1861,7 +1861,7 @@
             "type": "prometheus",
             "uid": "cf6z7j8gxto1sc"
           },
-          "expr": "sum(increase(cfoperator_investigation_postback_total{status!=\"ok\"}[1h]))",
+          "expr": "sum(increase(cfoperator_investigation_postback_total{status!=\"ok\"}[1h])) or vector(0)",
           "refId": "A"
         }
       ],
@@ -2199,7 +2199,7 @@
             "type": "loki",
             "uid": "cfawbn0oyoqv4f"
           },
-          "expr": "{container=\"cfoperator\"} |~ \"$level\" | json | line_format `{{.ts}} [{{.level}}] {{.component}}: {{.msg}}`",
+          "expr": "{namespace=\"apps\", container=\"cfoperator\"} |~ \"$level\" | json | line_format `{{.ts}} [{{.level}}] {{.component}}: {{.msg}}`",
           "refId": "A"
         }
       ],
@@ -2235,7 +2235,7 @@
             "type": "loki",
             "uid": "cfawbn0oyoqv4f"
           },
-          "expr": "{container=\"cfoperator\"} | json | level=~\"error|warn|ERROR|WARN\" | line_format `[{{.level}}] {{.component}}: {{.msg}}`",
+          "expr": "{namespace=\"apps\", container=\"cfoperator\"} | json | level=~\"error|warn|ERROR|WARN\" | line_format `[{{.level}}] {{.component}}: {{.msg}}`",
           "refId": "A"
         }
       ],
@@ -2271,7 +2271,7 @@
             "type": "loki",
             "uid": "cfawbn0oyoqv4f"
           },
-          "expr": "{container=\"cfoperator\"} | json | component=~\"cfoperator|tools|embedding_service\" | line_format `[{{.component}}] {{.msg}}`",
+          "expr": "{namespace=\"apps\", container=\"cfoperator\"} | json | component=~\"cfoperator|tools|embedding_service\" | line_format `[{{.component}}] {{.msg}}`",
           "refId": "A"
         }
       ],
@@ -2307,7 +2307,7 @@
             "type": "loki",
             "uid": "cfawbn0oyoqv4f"
           },
-          "expr": "{container=\"cfoperator\"} | json | component=~\"llm_fallback|knowledge_base|embedding_service\" | line_format `[{{.component}}] {{.msg}}`",
+          "expr": "{namespace=\"apps\", container=\"cfoperator\"} | json | component=~\"llm_fallback|knowledge_base|embedding_service\" | line_format `[{{.component}}] {{.msg}}`",
           "refId": "A"
         }
       ],
