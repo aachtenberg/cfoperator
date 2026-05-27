@@ -117,9 +117,45 @@ def test_run_triage_happy_path_returns_llm_decision():
     op._chat_with_tools_with_fallback = MagicMock(return_value={
         "response": '{"action": "notify", "reason": "kubelet self-heals", "confidence": 0.8}',
         "tool_calls": 0,
+        "backend": "ollama",
+        "model": "qwen3-coder:latest",
     })
     result = op.run_triage(_alert())
-    assert result == {"action": "notify", "reason": "kubelet self-heals", "confidence": 0.8}
+    assert result["action"] == "notify"
+    assert result["reason"] == "kubelet self-heals"
+    assert result["confidence"] == 0.8
+    # Triage now surfaces which LLM actually served the call so downstream
+    # Slack formatting can show "triaged by ollama/qwen3-coder:latest".
+    assert result["backend"] == "ollama"
+    assert result["model"] == "qwen3-coder:latest"
+
+
+def test_run_triage_surfaces_fallback_chain_winner():
+    """When primary fails and the chain falls over to Groq, the triage
+    response must report Groq — not the configured primary — so operators
+    see the model that actually classified the alert."""
+    op = _operator()
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": '{"action": "investigate", "reason": "novel", "confidence": 0.6}',
+        "tool_calls": 0,
+        "backend": "groq",
+        "model": "openai/gpt-oss-120b",
+        "fallback_used": True,
+    })
+    result = op.run_triage(_alert())
+    assert result["backend"] == "groq"
+    assert result["model"] == "openai/gpt-oss-120b"
+
+
+def test_run_triage_returns_none_backend_when_llm_unavailable():
+    """Safe-default path: no LLM ran, so no model to attribute. Downstream
+    formatter must handle None gracefully (renders nothing)."""
+    op = _operator()
+    op._chat_with_tools_with_fallback = MagicMock(side_effect=RuntimeError("all exhausted"))
+    result = op.run_triage(_alert())
+    assert result["action"] == "investigate"
+    assert result["backend"] is None
+    assert result["model"] is None
 
 
 def test_run_triage_falls_back_to_investigate_on_llm_failure():

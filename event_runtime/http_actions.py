@@ -234,8 +234,8 @@ class HTTPTriageDecisionEngine(DecisionEngine):
         self._agent_url = agent_url.rstrip("/")
         self._timeout = float(timeout)
         self._cache_ttl = int(cache_ttl_seconds)
-        # fingerprint -> (action, reason, confidence, expires_at_unix)
-        self._cache: dict[str, tuple[str, str, float, float]] = {}
+        # fingerprint -> (action, reason, confidence, backend, model, expires_at_unix)
+        self._cache: dict[str, tuple[str, str, float, Optional[str], Optional[str], float]] = {}
 
     @property
     def agent_url(self) -> str:
@@ -251,12 +251,14 @@ class HTTPTriageDecisionEngine(DecisionEngine):
         # many polls before it resolves.
         cached = self._cache.get(fingerprint)
         if cached is not None:
-            action, reason, confidence, expires_at = cached
+            action, reason, confidence, backend, model, expires_at = cached
             if expires_at > _now_unix():
-                return Decision(
+                return _build_decision(
                     action=action,
                     confidence=confidence,
-                    reasoning=f"{reason} (cached)",
+                    reason=f"{reason} (cached)",
+                    backend=backend,
+                    model=model,
                 )
             self._cache.pop(fingerprint, None)
 
@@ -274,15 +276,29 @@ class HTTPTriageDecisionEngine(DecisionEngine):
         except (TypeError, ValueError):
             confidence = 0.5
         confidence = max(0.0, min(1.0, confidence))
+        # Which LLM actually served the triage. May be None on the safe-
+        # default path (agent unreachable / bad JSON), and stays empty on
+        # cached entries that pre-date this field — both render as "unknown"
+        # downstream rather than crashing the formatter.
+        backend = decision_dict.get("backend")
+        model = decision_dict.get("model")
 
         # Cache successful decisions only. Failed calls produce
         # action="investigate" with confidence=0 — don't cache those, so a
         # transient triage outage doesn't lock in "investigate everything"
         # for 5 minutes.
         if confidence > 0:
-            self._cache[fingerprint] = (action, reason, confidence, _now_unix() + self._cache_ttl)
+            self._cache[fingerprint] = (
+                action, reason, confidence, backend, model, _now_unix() + self._cache_ttl,
+            )
 
-        return Decision(action=action, confidence=confidence, reasoning=reason)
+        return _build_decision(
+            action=action,
+            confidence=confidence,
+            reason=reason,
+            backend=backend,
+            model=model,
+        )
 
     def _call_triage(self, alert: Alert) -> dict:
         """POST to the agent's /v1/triage. Returns the decision dict.
@@ -310,6 +326,22 @@ class HTTPTriageDecisionEngine(DecisionEngine):
                 alert.alert_id, exc,
             )
             return {"action": "investigate", "reason": f"triage call failed ({type(exc).__name__})", "confidence": 0.0}
+
+
+def _build_decision(*, action: str, confidence: float, reason: str,
+                    backend: Optional[str], model: Optional[str]) -> Decision:
+    """Construct a Decision with triage attribution preserved in params.
+
+    Slack notifications read these keys via the engine's notification path
+    so operators can see which LLM actually classified each alert (Ollama
+    vs Groq vs etc.) without digging through audit events.
+    """
+    params: dict = {}
+    if backend:
+        params["triage_backend"] = str(backend)
+    if model:
+        params["triage_model"] = str(model)
+    return Decision(action=action, confidence=confidence, reasoning=reason, params=params)
 
 
 def _now_unix() -> float:
