@@ -364,6 +364,28 @@ Feel free to customize this dashboard:
 - Change refresh intervals
 - Add more variables (e.g., $host filter)
 
+## Event Runtime — Alert Triage
+
+New section in [event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json) that surfaces the LLM-driven triage classifier (closes [#15](https://github.com/aachtenberg/cfoperator/issues/15)). With triage enabled (`CFOP_AGENT_URL` set, `HTTPTriageDecisionEngine` registered), every alert flows through `POST /v1/triage` on the agent before any investigation runs. The classifier returns one of four actions; this section is the operational view of that decision stream.
+
+Powered by the existing labeled counter:
+```promql
+cfoperator_event_runtime_decisions_total{action="log_only|notify|investigate|escalate"}
+```
+
+Panels:
+- **Investigated (1h)** — full LLM-investigation alerts. This is the current "expensive" path.
+- **Notify Only (1h)** — alerts the LLM judged operator-relevant but not investigation-worthy. Slack gets a single-line `[severity] <summary>` notification, no LLM investigation.
+- **Log Only (1h)** — known noise (test pods, Alertmanager Watchdog, etc.). Silent — recorded but no Slack.
+- **Escalated (1h)** — high-impact alerts. Threshold-colored: green=0, yellow≥1, red≥3 since sustained escalations mean ongoing impact.
+- **% Triaged Away (1h)** — `(notify + log_only + escalate) / total * 100`. The efficacy headline: higher means triage is saving more LLM work. Green ≥ 20%, blue ≥ 50% (very high — sanity-check the rubric if you see this for long).
+- **Triage Decisions by Action (per minute)** — Time series, one line per action. Shows the live mix and where it's drifting over time.
+
+Operational signals:
+- If `Investigated (1h)` ≈ total decisions, triage is being conservative (or there's no precedent yet in the embeddings index). Acceptable in the first day after deployment.
+- If `Log Only (1h)` is non-zero and growing while real incidents are getting paged, the LLM might be over-classifying. Tune the rubric in `agent/agent.py` → `run_triage` → `system_prompt`.
+- If `Escalated (1h)` is non-zero, treat as the most urgent signal regardless of other panels.
+
 ## Event Runtime — Completion Endpoint
 
 New section in [event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json) that surfaces health of `POST /v1/investigations/{alert_id}/complete` — the endpoint event_runtime exposes for the agent to post completed ActionResults back through.

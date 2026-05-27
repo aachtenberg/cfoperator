@@ -376,6 +376,417 @@
         "x": 0,
         "y": 36
       },
+      "id": 72,
+      "panels": [],
+      "title": "Alert Triage (LLM-driven action classification)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 0,
+        "y": 37
+      },
+      "id": 73,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(cfoperator_event_runtime_decisions_total{action=\"investigate\"}[1h])) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Investigated (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 5,
+        "y": 37
+      },
+      "id": 74,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(cfoperator_event_runtime_decisions_total{action=\"notify\"}[1h])) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Notify Only (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 10,
+        "y": 37
+      },
+      "id": 75,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(cfoperator_event_runtime_decisions_total{action=\"log_only\"}[1h])) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Log Only (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 5,
+        "x": 15,
+        "y": 37
+      },
+      "id": 76,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(cfoperator_event_runtime_decisions_total{action=\"escalate\"}[1h])) or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "Escalated (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "yellow",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 20
+              },
+              {
+                "color": "blue",
+                "value": 50
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 37
+      },
+      "id": 77,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(sum(increase(cfoperator_event_runtime_decisions_total{action!=\"investigate\"}[1h])) / sum(increase(cfoperator_event_runtime_decisions_total[1h]))) * 100 or vector(0)",
+          "refId": "A"
+        }
+      ],
+      "title": "% Triaged Away (1h)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "id": 78,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "10.0.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (action) (rate(cfoperator_event_runtime_decisions_total[5m])) * 60",
+          "legendFormat": "{{action}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Triage Decisions by Action (per minute, 5m rate)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
       "id": 66,
       "panels": [],
       "title": "Completion Endpoint (POST /v1/investigations/{alert_id}/complete)",
@@ -408,7 +819,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 37
+        "y": 50
       },
       "id": 67,
       "options": {
@@ -466,7 +877,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 37
+        "y": 50
       },
       "id": 68,
       "options": {
@@ -532,7 +943,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 37
+        "y": 50
       },
       "id": 69,
       "options": {
@@ -598,7 +1009,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 37
+        "y": 50
       },
       "id": 70,
       "options": {
@@ -686,7 +1097,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 54
       },
       "id": 71,
       "options": {
@@ -724,7 +1135,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 49
+        "y": 62
       },
       "collapsed": false
     },
@@ -736,7 +1147,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 50
+        "y": 63
       },
       "datasource": {
         "type": "prometheus",
@@ -758,7 +1169,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 50
+        "y": 63
       },
       "datasource": {
         "type": "prometheus",
@@ -790,7 +1201,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 50
+        "y": 63
       },
       "datasource": {
         "type": "prometheus",
@@ -812,7 +1223,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 58
+        "y": 71
       },
       "collapsed": false
     },
@@ -824,7 +1235,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 59
+        "y": 72
       },
       "datasource": {
         "type": "prometheus",
@@ -869,7 +1280,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 59
+        "y": 72
       },
       "datasource": {
         "type": "prometheus",
@@ -891,7 +1302,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 67
+        "y": 80
       },
       "datasource": {
         "type": "prometheus",
@@ -926,7 +1337,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 67
+        "y": 80
       },
       "datasource": {
         "type": "prometheus",
@@ -961,7 +1372,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 75
+        "y": 88
       },
       "datasource": {
         "type": "prometheus",
@@ -983,7 +1394,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 75
+        "y": 88
       },
       "datasource": {
         "type": "prometheus",
@@ -1014,7 +1425,7 @@
         "h": 4,
         "w": 8,
         "x": 0,
-        "y": 83
+        "y": 96
       },
       "datasource": {
         "type": "prometheus",
@@ -1066,7 +1477,7 @@
         "h": 4,
         "w": 8,
         "x": 8,
-        "y": 83
+        "y": 96
       },
       "datasource": {
         "type": "prometheus",
@@ -1114,7 +1525,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 83
+        "y": 96
       },
       "datasource": {
         "type": "prometheus",
@@ -1136,7 +1547,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 91
+        "y": 104
       },
       "collapsed": false
     },
@@ -1148,7 +1559,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 92
+        "y": 105
       },
       "datasource": {
         "type": "loki",
@@ -1179,7 +1590,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 104
+        "y": 117
       },
       "datasource": {
         "type": "loki",
@@ -1210,7 +1621,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 116
+        "y": 129
       },
       "collapsed": false
     },
@@ -1222,7 +1633,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 117
+        "y": 130
       },
       "datasource": {
         "type": "prometheus",
@@ -1244,7 +1655,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 117
+        "y": 130
       },
       "datasource": {
         "type": "prometheus",
@@ -1289,7 +1700,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 125
+        "y": 138
       },
       "datasource": {
         "type": "prometheus",
@@ -1311,7 +1722,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 125
+        "y": 138
       },
       "datasource": {
         "type": "prometheus",
@@ -1342,7 +1753,7 @@
         "h": 12,
         "w": 24,
         "x": 0,
-        "y": 133
+        "y": 146
       },
       "datasource": {
         "type": "grafana-postgresql-datasource",
