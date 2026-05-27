@@ -16,6 +16,23 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SKIP_ACTIONS = frozenset({"log_only"})
 
 
+def _triage_attribution(details: Dict | None) -> str:
+    """Return e.g. 'ollama/qwen3-coder:latest', or empty string.
+
+    Used to mark which LLM actually executed the triage classification.
+    Backend-only or model-only renderings degrade gracefully if only one
+    field was populated (e.g. safe-default path on agent unreachable).
+    """
+    if not details:
+        return ""
+    params = details.get("decision_params") or {}
+    backend = params.get("triage_backend") or ""
+    model = params.get("triage_model") or ""
+    if backend and model:
+        return f"{backend}/{model}"
+    return backend or model
+
+
 def _format_message(summary: str, *, severity: str, details: Dict | None) -> str:
     """Build a plain-text notification body from an action result.
 
@@ -26,10 +43,20 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
 
     All other actions get the long form with Alert/Action/Result and any
     result_details whitelist keys.
+
+    When the decision came from an LLM triage step, the LLM that served
+    the classification is surfaced in both formats so operators can see
+    which model triaged each alert (cost attribution + debugging when
+    different LLMs disagree).
     """
+    triage = _triage_attribution(details)
+
     if details and details.get("action") == "notify":
         alert_summary = details.get("alert_summary", "") or summary
-        return f"[{severity}] {alert_summary}"
+        line = f"[{severity}] {alert_summary}"
+        if triage:
+            line += f"  ·  triaged by {triage}"
+        return line
 
     parts = [summary]
     if details:
@@ -42,6 +69,8 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
             parts.append(f"Action: {action}")
         if result_message:
             parts.append(f"Result: {result_message}")
+        if triage:
+            parts.append(f"Triaged by: {triage}")
         # Surface key result details (e.g. PR URL, issue number, investigation link)
         result_details = details.get("result_details") or {}
         for key in ("html_url", "pr_number", "issue_number", "url", "investigation_url", "investigation_id"):

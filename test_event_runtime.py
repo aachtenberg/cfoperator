@@ -949,6 +949,11 @@ def test_runtime_suppresses_duplicate_alerts(tmp_path: Path):
 def test_portable_runtime_bootstrap_uses_local_paths(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("CFOP_EVENT_RUNTIME_DIR", str(tmp_path / "portable"))
     monkeypatch.setenv("CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS", "0")
+    # Defensive: this test fires a real alert through the runtime, which
+    # registers notification sinks from env. A leaked SLACK_WEBHOOK_URL in
+    # the developer's shell would page production Slack with "portable run".
+    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
+    monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
     runtime = build_portable_runtime()
 
     health = runtime.health()
@@ -2153,6 +2158,56 @@ def test_discord_notification_sink_format():
 
     sink2 = DiscordNotificationSink(webhook_url="https://discord.com/api/webhooks/test")
     assert sink2.name == "discord-notification"
+
+
+def test_format_message_includes_triage_attribution_for_notify():
+    """notify is the single-line format; triage attribution gets appended with a separator."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "summary unused",
+        severity="warning",
+        details={
+            "action": "notify",
+            "alert_summary": "Pod kube-system/coredns-foo not ready",
+            "decision_params": {"triage_backend": "ollama", "triage_model": "qwen3-coder:latest"},
+        },
+    )
+    assert "[warning] Pod kube-system/coredns-foo not ready" in text
+    assert "triaged by ollama/qwen3-coder:latest" in text
+
+
+def test_format_message_includes_triage_attribution_for_investigate():
+    """Investigate (multi-line) format gets a dedicated 'Triaged by:' line."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "Action completed: investigate",
+        severity="warning",
+        details={
+            "action": "investigate",
+            "alert_summary": "PodCrashLooping",
+            "result_message": "Investigation completed",
+            "decision_params": {"triage_backend": "groq", "triage_model": "openai/gpt-oss-120b"},
+        },
+    )
+    assert "Triaged by: groq/openai/gpt-oss-120b" in text
+
+
+def test_format_message_omits_triage_line_when_attribution_missing():
+    """If the agent never ran (safe-default path) we have no model — render cleanly without the line."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "Action completed: investigate",
+        severity="warning",
+        details={
+            "action": "investigate",
+            "alert_summary": "X",
+            "result_message": "y",
+        },
+    )
+    assert "Triaged by" not in text
 
 
 def test_notification_details_surfaces_pr_info(tmp_path):

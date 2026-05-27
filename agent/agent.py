@@ -736,7 +736,18 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
                 'action': 'investigate',
                 'reason': f'triage LLM unavailable ({type(e).__name__})',
                 'confidence': 0.0,
+                'backend': None,
+                'model': None,
             }
+
+        # The fallback chain reports which provider actually served the call,
+        # not just the configured primary — surface it so Slack can show
+        # "triaged by groq/openai/gpt-oss-120b" when Ollama cold-started and
+        # we fell over. Without this, operators can't tell which LLM
+        # classified an alert (matters for cost attribution + debugging
+        # disagreements between models).
+        served_backend = result.get('backend')
+        served_model = result.get('model')
 
         response_text = result.get('response', '').strip()
         # The LLM sometimes wraps JSON in fenced code blocks or prose; pull
@@ -748,7 +759,11 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
                 'action': 'investigate',
                 'reason': 'triage response unparseable',
                 'confidence': 0.0,
+                'backend': served_backend,
+                'model': served_model,
             }
+        decision['backend'] = served_backend
+        decision['model'] = served_model
         return decision
 
     @staticmethod
