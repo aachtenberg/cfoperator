@@ -17,7 +17,20 @@ _DEFAULT_SKIP_ACTIONS = frozenset({"log_only"})
 
 
 def _format_message(summary: str, *, severity: str, details: Dict | None) -> str:
-    """Build a plain-text notification body from an action result."""
+    """Build a plain-text notification body from an action result.
+
+    For ``notify`` actions (the triage outcome that means "operator should
+    see this but no LLM dive needed"), collapse to a single line. The whole
+    point of triage routing to notify is to reduce Slack volume; emitting
+    four lines of Action/Alert/Result here would defeat that.
+
+    All other actions get the long form with Alert/Action/Result and any
+    result_details whitelist keys.
+    """
+    if details and details.get("action") == "notify":
+        alert_summary = details.get("alert_summary", "") or summary
+        return f"[{severity}] {alert_summary}"
+
     parts = [summary]
     if details:
         action = details.get("action", "")

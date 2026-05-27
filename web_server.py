@@ -130,6 +130,22 @@ class WebServer:
                 'queue_depth': enqueued.get('queue_depth'),
             }), 202
 
+        # Synchronous triage classifier. Called by event_runtime's
+        # HTTPTriageDecisionEngine before it decides whether to route an
+        # alert to /v1/investigate. Returns {action, reason, confidence}
+        # in <2s (fallback chain handles slow primary providers). On any
+        # internal failure run_triage() returns action="investigate" so
+        # callers never need to handle a non-200 path differently.
+        @self.app.route('/v1/triage', methods=['POST'])
+        def http_triage():
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({'error': 'JSON object body required'}), 400
+            if not payload.get('summary'):
+                return jsonify({'error': 'Field summary is required'}), 400
+            decision = self.operator.run_triage(payload)
+            return jsonify(decision), 200
+
         # Prometheus metrics endpoint
         @self.app.route('/metrics')
         def metrics():
