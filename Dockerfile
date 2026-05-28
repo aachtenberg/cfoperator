@@ -25,6 +25,7 @@ COPY observability/ ./observability/
 COPY tools/ ./tools/
 COPY skills/ ./skills/
 COPY ui/ ./ui/
+COPY event_runtime/ ./event_runtime/
 COPY config.yaml.example ./config.yaml.example
 
 # agent.py uses bare imports (knowledge_base, llm_fallback, etc.)
