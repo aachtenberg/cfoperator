@@ -51,6 +51,9 @@ type model struct {
 	completions   []string
 	completionIdx int
 	lastInput     string
+	// modelCache holds the list of available models per provider name,
+	// populated lazily on first /model tab completion.
+	modelCache map[string][]string
 }
 
 // slashCommands is the list of available commands for tab completion.
@@ -117,6 +120,7 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 		mdStyle:        mdStyle,
 		providers:      providers,
 		activeProvider: activeProvider,
+		modelCache:     make(map[string][]string),
 	}
 
 	// Build welcome banner
@@ -321,10 +325,30 @@ func (m *model) handleTabCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Add model names for /model
+		// Add model names for /model — fetch from provider on first use, cached per provider
 		if strings.HasPrefix(prefix, "/model ") || prefix == "/model" {
-			// Current model as suggestion
-			if m.llm.Model != "" {
+			modelPrefix := ""
+			if len(text) > 7 {
+				modelPrefix = strings.ToLower(text[7:])
+			}
+
+			models, ok := m.modelCache[m.activeProvider]
+			if !ok {
+				if fetched, err := m.llm.ListModels(); err == nil {
+					sort.Strings(fetched)
+					models = fetched
+					m.modelCache[m.activeProvider] = fetched
+				}
+			}
+
+			if len(models) > 0 {
+				for _, name := range models {
+					if modelPrefix == "" || strings.HasPrefix(strings.ToLower(name), modelPrefix) {
+						m.completions = append(m.completions, "/model "+name)
+					}
+				}
+			} else if m.llm.Model != "" {
+				// Fallback: suggest the current model when the provider can't be queried
 				m.completions = append(m.completions, "/model "+m.llm.Model)
 			}
 		}
