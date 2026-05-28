@@ -1,217 +1,107 @@
 # CFOperator Deployment Guide
 
-**Version**: 1.0.8
+Production is k3s + ArgoCD GitOps. **A single `git push` is the deploy path** — no rsync, no SSH, no manual `kubectl apply` for application code or manifests.
 
-## Production Deployment
+## Production Layout
 
-Production deployment is k3s-based. Docker Compose is for local development only.
+| Workload | Manifest | Image | Port |
+|----------|----------|-------|------|
+| `cfoperator` (agent + chat UI) | [k3s/base/apps/cfoperator.yml](../../homelab-infra/k3s/base/apps/cfoperator.yml) | `ghcr.io/aachtenberg/cfoperator:main-<sha7>` | `8083` (hostNetwork) |
+| `cfoperator-event-runtime` | [k3s/base/apps/cfoperator-event-runtime.yml](../../homelab-infra/k3s/base/apps/cfoperator-event-runtime.yml) | `ghcr.io/aachtenberg/cfoperator:main-<sha7>` (same image, different `command`) | `8080` (ClusterIP) |
 
-- Control plane: `raspberrypi` (`192.168.0.167`)
-- CFOperator node: `ubuntu-llm-01` / `headless-gpu`
-- Namespace: `apps`
-- Infra source of truth: [k3s/base/apps/cfoperator.yml](/home/aachten/repos/homelab-infra/k3s/base/apps/cfoperator.yml)
-- Event runtime manifest: [k3s/base/apps/cfoperator-event-runtime.yml](/home/aachten/repos/homelab-infra/k3s/base/apps/cfoperator-event-runtime.yml)
+Both pods are scheduled on `headless-gpu` (k3s name) = `ubuntu-llm-01` = 192.168.0.150. Namespace: `apps`. Control plane runs `kubectl` locally — no SSH needed.
 
-## Runtime Layout
+## How a Code Change Reaches Production
 
-Two workloads are deployed in production:
+1. **Push to `main` on cfoperator.** This triggers [`.github/workflows/build-cfoperator-main.yml`](../.github/workflows/build-cfoperator-main.yml), which builds `ghcr.io/aachtenberg/cfoperator:main-<sha7>` for `linux/amd64` and pushes to ghcr.
+2. **Auto-bump PR opens** on homelab-infra (branch `auto/bump-cfoperator-image`), editing `k3s/overlays/production/kustomization.yml`'s image override to the new immutable tag. Same PR is updated in place if it's still open from a previous push.
+3. **Merge that PR.** ArgoCD picks it up within ~3 min (`selfHeal: true` reverts manual `kubectl edit`s).
+4. **Both pods roll** with the new image, since the production overlay's image transformer rewrites `ghcr.io/aachtenberg/cfoperator` for any container that uses that name.
 
-| Workload | Deployment | Service | Port |
-|------|---------|---------|------|
-| CFOperator API/UI | `cfoperator` | host network | `8083` |
-| Event Runtime | `cfoperator-event-runtime` | `cfoperator-event-runtime` | `8080` |
-
-The event runtime runs as a dedicated k3s deployment, not as a Docker Compose service and not as the primary production systemd path.
-
-## How Production Works
-
-Both workloads use a hostPath mount of the checked-out repository on the GPU node, so code changes are picked up from the node filesystem rather than a rebuilt image.
-
-- Repo hostPath: `/home/aachten/repos/cfoperator`
-- Shared config source: `cfoperator-config` ConfigMap
-- Shared secret source: `cfoperator-secrets`
-- Event runtime durable state: `/var/lib/cfoperator/event-runtime`
-
-The live event runtime command is:
-
-```bash
-python3 -m event_runtime --host 0.0.0.0 --port 8080 --config /app/config.yaml --poll-interval 30
+```
+git push cfoperator → build workflow → ghcr image → auto-bump PR on homelab-infra
+  → merge → ArgoCD sync → both pods restart with new code + deps
 ```
 
-## Production Deploy Flow
-
-### 1. Sync code to the GPU node
-
-Because both deployments mount the repo from the node filesystem, application code changes need to be synced to `ubuntu-llm-01`.
+Force a sync instead of waiting for the 3-min poll:
 
 ```bash
-rsync -av --delete --exclude='.git' --exclude='__pycache__' --exclude='.env' \
-	/home/aachten/repos/cfoperator/ aachten@192.168.0.150:/home/aachten/repos/cfoperator/
+kubectl -n argocd annotate application homelab-root \
+  argocd.argoproj.io/refresh=hard --overwrite
+kubectl -n argocd get application homelab-root  # check Sync + Health
 ```
 
-### 1b. Rebuild the local k3s image when dependencies change
+### Workflow `paths-ignore`
 
-HostPath sync updates Python source, but it does not add newly required packages to the running image. If `requirements.txt` changes, rebuild the image on the GPU node and import it into k3s containerd before restarting the pod.
+The build workflow skips on pushes that only touch: `**.md`, `docs/**`, `benchmarks/**`, `cfassist/**`, `cfassist-go/**`, `cfshared/**`, `llm-gateway/**`, `grafana/**`, `observability/**`. Pushes that ONLY touch those paths won't produce a new image — that's intentional (they don't affect what runs in the cluster), but be aware of it if you expect a new tag and none appears.
+
+## Common Change Types
+
+| Change | What ships | What you do |
+|--------|------------|-------------|
+| Python code in `agent/`, `tools/`, `skills/`, `ui/`, `event_runtime/`, `web_server.py`, `observability/` | New image tag | Push to cfoperator/main → merge auto-bump PR on homelab-infra. |
+| `requirements.txt` | New image tag | Same — push to cfoperator/main. |
+| `Dockerfile` | New image tag | Same. |
+| YAML manifest in homelab-infra | ArgoCD apply | Push to homelab-infra/main. Force-sync if impatient. |
+| Grafana dashboard JSON | Provisioned ConfigMap | Edit `homelab-infra/k3s/base/monitoring/files/grafana-dashboards/cfoperator-dashboard.json`, push to homelab-infra/main. |
+| Secret value | Re-sealed SealedSecret | Edit `homelab-infra/secrets/.env.secrets`, run `./scripts/seal-secrets.sh`, push. |
+
+## Before Manually Bumping an Image Tag
+
+**Check first whether the auto-bump PR is already open:**
 
 ```bash
-ssh aachten@192.168.0.150 '
-	cd /home/aachten/repos/cfoperator &&
-	docker build -t cfoperator-cfoperator:latest . &&
-	docker save cfoperator-cfoperator:latest | sudo k3s ctr images import -
-'
+gh pr list --repo aachtenberg/homelab-infra --search "cfoperator in:title" --state open
 ```
 
-### 2. Sync and apply k3s manifests
+If a `chore(deploy): bump cfoperator to main-<sha>` PR is open, it's the latest available image. Merge it instead of writing manifest edits by hand.
 
-Manifest, ConfigMap, deployment, and service changes come from `homelab-infra`.
-
-```bash
-rsync -av --delete /home/aachten/repos/homelab-infra/k3s/ \
-	aachten@192.168.0.167:~/repos/homelab-infra/k3s/
-
-ssh aachten@192.168.0.167 \
-	'sudo kubectl apply -k ~/repos/homelab-infra/k3s/overlays/production/'
-```
-
-### 3. Regenerate secrets when secret inputs change
-
-Cluster secrets are managed from `homelab-infra/secrets/.env.secrets` via Ansible.
-
-```bash
-cd /home/aachten/repos/homelab-infra/ansible
-ansible-playbook deploy-k3s-secrets.yml --skip-tags ghcr
-```
-
-Use this when changing values like:
-
-- `POSTGRES_PASSWORD`
-- `GITHUB_TOKEN`
-- `SLACK_WEBHOOK_URL`
-- `DISCORD_WEBHOOK_URL`
-- LLM API keys
-
-### 4. Restart the workloads
-
-Code-only changes usually require a rollout restart because the deployments mount source from hostPath.
-
-```bash
-ssh aachten@192.168.0.167 \
-	'sudo kubectl rollout restart deployment/cfoperator -n apps && \
-	 sudo kubectl rollout restart deployment/cfoperator-event-runtime -n apps'
-```
-
-## Event Runtime Production Details
-
-- Deployment manifest: [k3s/base/apps/cfoperator-event-runtime.yml](/home/aachten/repos/homelab-infra/k3s/base/apps/cfoperator-event-runtime.yml)
-- Service name: `cfoperator-event-runtime`
-- Health endpoint: `GET /health`
-- Metrics endpoint: `GET /metrics`
-- History endpoint: `GET /history`
-- Scheduled tasks endpoint: `GET /scheduled`
-- Activity endpoint: `GET /activity`
-
-The event runtime currently uses:
-
-- local durable outbox on `/var/lib/cfoperator/event-runtime`
-- PostgreSQL replay/persistence via `cfoperator-config` + `cfoperator-secrets`
-- GitHub integration via `GITHUB_TOKEN` from `cfoperator-secrets`
-- APScheduler as the production scheduler backend, defaulting to the runtime PostgreSQL DSN for durable job storage
-- spool-backed scheduled alert delivery under `/var/lib/cfoperator/event-runtime/scheduled`
-
-When Python dependencies change, hostPath sync is not enough. Rebuild the `cfoperator-cfoperator` image on the GPU node and import it into k3s containerd before the rollout restart so the running pods can import the updated packages.
-
-## Verify Production
+## Verification
 
 ```bash
 # Pods
-ssh aachten@192.168.0.167 \
-	'sudo kubectl get pods -n apps -l app.kubernetes.io/name=cfoperator && \
-	 sudo kubectl get pods -n apps -l app.kubernetes.io/name=cfoperator-event-runtime'
+kubectl get pods -n apps -l 'app.kubernetes.io/name in (cfoperator,cfoperator-event-runtime)'
 
-# CFOperator logs
-ssh aachten@192.168.0.167 \
-	'sudo kubectl logs -n apps deployment/cfoperator -f'
+# What image is actually running
+kubectl get deploy -n apps cfoperator cfoperator-event-runtime \
+  -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.template.spec.containers[*].image}{"\n"}{end}'
 
-# Event runtime logs
-ssh aachten@192.168.0.167 \
-	'sudo kubectl logs -n apps deployment/cfoperator-event-runtime -f'
-```
+# Logs
+kubectl logs -n apps deploy/cfoperator -f
+kubectl logs -n apps deploy/cfoperator-event-runtime -f
 
-For runtime endpoint checks from the control plane:
-
-```bash
-ssh aachten@192.168.0.167 '
-	pod_ip=$(sudo kubectl get pod -n apps -l app.kubernetes.io/name=cfoperator-event-runtime -o jsonpath="{.items[0].status.podIP}") &&
-	curl -fsS "http://${pod_ip}:8080/health" && echo &&
-	curl -fsS "http://${pod_ip}:8080/metrics" | grep cfoperator_event_runtime
-'
+# event-runtime endpoints (cluster DNS; or via pod IP if hostNetwork)
+pod_ip=$(kubectl get pod -n apps -l app.kubernetes.io/name=cfoperator-event-runtime \
+  -o jsonpath='{.items[0].status.podIP}')
+curl -fsS "http://${pod_ip}:8080/health"
+curl -fsS "http://${pod_ip}:8080/metrics" | grep cfoperator_event_runtime
 ```
 
 ## Local / Non-Production Modes
 
-### Docker Compose
-
-Docker Compose is still available for local development of the legacy CFOperator service.
-
 ```bash
-cd /path/to/cfoperator
-docker compose down && docker compose build && docker compose up -d
-```
+# Docker Compose for local agent development
+docker compose up -d
 
-### Direct Event Runtime Launch
-
-For local runtime development:
-
-```bash
+# Direct event_runtime launch
 python3 -m event_runtime --host 0.0.0.0 --port 8080
 ```
 
-See [docs/event-runtime-quickstart.md](/home/aachten/repos/cfoperator/docs/event-runtime-quickstart.md) for local runtime usage.
-
-### Systemd
-
-There is also a non-k8s systemd unit template for host installs:
-
-- [deploy/systemd/cfoperator-event-runtime.service](/home/aachten/repos/cfoperator/deploy/systemd/cfoperator-event-runtime.service)
-
-That unit is useful for standalone or portable host deployment, but it is not the current production deployment path.
+See [docs/event-runtime-quickstart.md](event-runtime-quickstart.md) for local runtime usage.
 
 ## Prerequisites
 
-### Files and inputs
-
 | File | Purpose |
 |------|---------|
-| `config.yaml` | local/development config |
-| `.env` | local/development secrets |
+| `config.yaml` | local dev config |
+| `.env` | local dev secrets |
 | `homelab-infra/secrets/.env.secrets` | source of truth for cluster secrets |
 | `~/.ssh/id_rsa` | SSH access for fleet operations |
 
-### Infrastructure dependencies
-
-| Service | Default Port | Required |
-|---------|-------------|----------|
+| Infra service | Default port | Required? |
+|---------------|--------------|-----------|
 | PostgreSQL | 5432 | Yes |
 | Prometheus | 9090 | Yes |
 | Loki | 3100 | Yes |
 | Alertmanager | 9093 | Optional |
 | Ollama | 11434 | Yes (or configure cloud LLM) |
-
-## Quick Commands
-
-```bash
-# Reload manifests
-ssh aachten@192.168.0.167 \
-	'sudo kubectl apply -k ~/repos/homelab-infra/k3s/overlays/production/'
-
-# Restart only event runtime
-ssh aachten@192.168.0.167 \
-	'sudo kubectl rollout restart deployment/cfoperator-event-runtime -n apps'
-
-# Restart only CFOperator
-ssh aachten@192.168.0.167 \
-	'sudo kubectl rollout restart deployment/cfoperator -n apps'
-
-# Upload Grafana dashboard
-/home/aachten/repos/cfoperator/grafana/upload-dashboard.sh
-```
