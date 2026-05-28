@@ -48,12 +48,30 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
     the classification is surfaced in both formats so operators can see
     which model triaged each alert (cost attribution + debugging when
     different LLMs disagree).
+
+    Two extra fields the engine can hoist out of ``Alert.details`` change
+    the rendering shape:
+      - ``recommendation``: operator-facing next step (rendered as a
+        ``Recommendation:`` line, or ``recommend: …`` inline for notify).
+      - ``resolution``: when truthy, the alert announces that a previously
+        reported finding is now clear — replaces the ``[severity]`` prefix
+        with ``:white_check_mark: Resolved:``.
     """
     triage = _triage_attribution(details)
+    recommendation = ""
+    resolution = False
+    if details:
+        recommendation = str(details.get("recommendation") or "").strip()
+        resolution = bool(details.get("resolution"))
 
     if details and details.get("action") == "notify":
         alert_summary = details.get("alert_summary", "") or summary
-        line = f"[{severity}] {alert_summary}"
+        if resolution:
+            line = f":white_check_mark: Resolved: {alert_summary}"
+        else:
+            line = f"[{severity}] {alert_summary}"
+        if recommendation:
+            line += f"  ·  recommend: {recommendation}"
         if triage:
             line += f"  ·  triaged by {triage}"
         return line
@@ -64,11 +82,14 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
         alert_summary = details.get("alert_summary", "")
         result_message = details.get("result_message", "")
         if alert_summary:
-            parts.append(f"Alert: {alert_summary}")
+            label = "Resolved" if resolution else "Alert"
+            parts.append(f"{label}: {alert_summary}")
         if action:
             parts.append(f"Action: {action}")
         if result_message:
             parts.append(f"Result: {result_message}")
+        if recommendation:
+            parts.append(f"Recommendation: {recommendation}")
         if triage:
             parts.append(f"Triaged by: {triage}")
         # Surface key result details (e.g. PR URL, issue number, investigation link)

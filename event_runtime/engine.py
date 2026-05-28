@@ -88,7 +88,13 @@ class EventRuntime:
                     }
                     return result
 
-            if alert.severity is AlertSeverity.INFO:
+            # INFO-severity alerts normally bypass the decision flow as noise
+            # control. Resolution alerts are an exception: they are synthesized
+            # by sweep (info by definition — a resolution is not a firing alert)
+            # but operators still want to see them in Slack with a clear
+            # "Resolved:" prefix. The triage short-circuit on the agent side
+            # makes this cheap (no LLM call).
+            if alert.severity is AlertSeverity.INFO and not alert.details.get("resolution"):
                 self.record_event("alert_skipped", alert=alert.to_dict(), reason="severity_gate")
                 result = {
                     "alert_id": alert.alert_id,
@@ -293,6 +299,15 @@ class EventRuntime:
         }
         if decision is not None and decision.params:
             details["decision_params"] = dict(decision.params)
+        # Hoist operator-facing hints out of the Alert so the notification
+        # formatter can render them. ``remediation`` becomes the
+        # "Recommendation:" line; ``resolution`` flips the prefix from
+        # "[severity]"/"Alert:" to ":white_check_mark: Resolved:".
+        remediation = alert.details.get("remediation")
+        if remediation:
+            details["recommendation"] = str(remediation)
+        if alert.details.get("resolution"):
+            details["resolution"] = True
 
         for sink in self.plugins.notification_sinks:
             try:

@@ -952,8 +952,16 @@ def test_portable_runtime_bootstrap_uses_local_paths(monkeypatch, tmp_path: Path
     # Defensive: this test fires a real alert through the runtime, which
     # registers notification sinks from env. A leaked SLACK_WEBHOOK_URL in
     # the developer's shell would page production Slack with "portable run".
-    monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
-    monkeypatch.delenv("DISCORD_WEBHOOK_URL", raising=False)
+    #
+    # Set to empty rather than deleting and unset CONFIG_PATH — bootstrap's
+    # _load_env_file reads the repo-root .env via os.environ.setdefault, so
+    # a deleted var gets re-populated from .env (which contains the prod
+    # webhook). Empty-string monkeypatch wins because setdefault treats an
+    # empty string as "already set" and leaves it alone, and the sinks
+    # short-circuit on empty webhook_url.
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", "")
+    monkeypatch.setenv("DISCORD_WEBHOOK_URL", "")
+    monkeypatch.delenv("CONFIG_PATH", raising=False)
     runtime = build_portable_runtime()
 
     health = runtime.health()
@@ -2208,6 +2216,142 @@ def test_format_message_omits_triage_line_when_attribution_missing():
         },
     )
     assert "Triaged by" not in text
+
+
+def test_format_message_renders_recommendation_for_notify():
+    """The notify single-line format appends 'recommend:' when a remediation hint was supplied."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "summary unused",
+        severity="warning",
+        details={
+            "action": "notify",
+            "alert_summary": "Pod stuck in CrashLoopBackOff",
+            "recommendation": "kubectl rollout restart deployment/foo",
+            "decision_params": {"triage_backend": "ollama", "triage_model": "qwen3-coder:latest"},
+        },
+    )
+    assert "[warning] Pod stuck in CrashLoopBackOff" in text
+    assert "recommend: kubectl rollout restart deployment/foo" in text
+    assert "triaged by ollama/qwen3-coder:latest" in text
+
+
+def test_format_message_renders_recommendation_for_investigate():
+    """The multi-line format adds a dedicated 'Recommendation:' line."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "Action completed: investigate",
+        severity="warning",
+        details={
+            "action": "investigate",
+            "alert_summary": "PodCrashLooping",
+            "result_message": "Investigation completed",
+            "recommendation": "check ConfigMap drift",
+        },
+    )
+    assert "Recommendation: check ConfigMap drift" in text
+
+
+def test_format_message_renders_resolution_prefix_for_notify():
+    """A resolution alert replaces [severity] with the check-mark prefix."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "summary unused",
+        severity="info",
+        details={
+            "action": "notify",
+            "alert_summary": "Pod stuck in CrashLoopBackOff",
+            "resolution": True,
+            "decision_params": {"triage_backend": "ollama", "triage_model": "qwen3-coder:latest"},
+        },
+    )
+    assert ":white_check_mark: Resolved: Pod stuck in CrashLoopBackOff" in text
+    # [severity] prefix must not appear when this is a resolution
+    assert "[info]" not in text
+    assert "triaged by ollama/qwen3-coder:latest" in text
+
+
+def test_format_message_resolution_uses_resolved_label_in_long_form():
+    """In the multi-line format the alert line becomes 'Resolved:' instead of 'Alert:'."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "Action completed: log_only",
+        severity="info",
+        details={
+            "action": "log_only",
+            "alert_summary": "ServiceX flapping",
+            "resolution": True,
+        },
+    )
+    assert "Resolved: ServiceX flapping" in text
+    assert "Alert: ServiceX flapping" not in text
+
+
+def test_dispatch_notifications_hoists_remediation_and_resolution(tmp_path):
+    """Engine copies Alert.details.remediation and .resolution into the notification details."""
+
+    class NotifyDecision(DecisionEngine):
+        name = "notify-decision"
+
+        def decide(self, envelope):
+            return Decision(action="notify", confidence=1.0, reasoning="surface-only")
+
+    class NotifyHandler(ActionHandler):
+        name = "notify-handler"
+        action_name = "notify"
+
+        def execute(self, request):
+            from event_runtime.models import ActionResult
+            return ActionResult(action="notify", success=True, message="noted")
+
+    sink = TrackingNotificationSink()
+    plugins = PluginManager()
+    plugins.register_state_sink(CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "outbox"))]))
+    plugins.register_decision_engine(NotifyDecision())
+    plugins.register_action_handler(NotifyHandler())
+    plugins.register_notification_sink(sink)
+
+    runtime = EventRuntime(plugins)
+    runtime.handle_alert(
+        Alert(
+            source="cfoperator-sweep",
+            severity=AlertSeverity.WARNING,
+            summary="Pod stuck in CrashLoopBackOff",
+            details={
+                "remediation": "kubectl rollout restart deployment/foo",
+                "resolution": False,
+            },
+        )
+    )
+
+    assert len(sink.calls) == 1
+    details = sink.calls[0]["details"]
+    assert details["recommendation"] == "kubectl rollout restart deployment/foo"
+    # resolution=False should not be promoted into the notification details —
+    # the formatter would otherwise mistakenly add the resolved prefix.
+    assert "resolution" not in details
+
+    sink2 = TrackingNotificationSink()
+    plugins2 = PluginManager()
+    plugins2.register_state_sink(CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "outbox2"))]))
+    plugins2.register_decision_engine(NotifyDecision())
+    plugins2.register_action_handler(NotifyHandler())
+    plugins2.register_notification_sink(sink2)
+
+    runtime2 = EventRuntime(plugins2)
+    runtime2.handle_alert(
+        Alert(
+            source="cfoperator-sweep",
+            severity=AlertSeverity.INFO,
+            summary="ServiceX recovered",
+            details={"resolution": True},
+        )
+    )
+    assert sink2.calls[0]["details"]["resolution"] is True
 
 
 def test_notification_details_surfaces_pr_info(tmp_path):
