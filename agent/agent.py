@@ -668,6 +668,20 @@ class CFOperator:
         severity = alert.get('severity', 'unknown')
         labels = alert.get('labels') or alert.get('details', {}).get('labels', {}) or {}
 
+        # Resolution alerts ("finding X has cleared since last sweep") are
+        # synthesized by the sweep, not externally observed — there is no
+        # classification to make. Short-circuit to notify so Slack gets the
+        # ":white_check_mark: Resolved: …" line without spending an LLM call.
+        details = alert.get('details') or {}
+        if isinstance(details, dict) and details.get('resolution'):
+            return {
+                'action': 'notify',
+                'reason': 'finding cleared since previous sweep',
+                'confidence': 1.0,
+                'backend': None,
+                'model': None,
+            }
+
         similar_context = ""
         try:
             if self.embeddings.is_available():
@@ -1147,6 +1161,17 @@ When done, provide a summary of findings and whether the issue is resolved, need
                 self._post_findings_to_event_runtime(findings)
             except Exception as e:
                 logger.debug(f"Could not post findings to event runtime: {e}")
+
+        # 6d. Emit resolutions for findings that cleared since last sweep
+        # so Slack/Discord see explicit "Resolved: …" notifications instead
+        # of silently dropping previously-fired alerts.
+        try:
+            resolved = self._get_resolved_findings(findings)
+            if resolved:
+                logger.info(f"Sweep: {len(resolved)} finding(s) resolved since last sweep")
+                self._post_resolutions_to_event_runtime(resolved)
+        except Exception as e:
+            logger.debug(f"Could not emit resolutions: {e}")
 
         # 7. Generate sweep report
         if findings:
@@ -2609,6 +2634,25 @@ Only return the JSON array, no other text."""
             logger.debug(f"Could not check previous sweep for dedup: {e}")
             return findings  # On error, notify for everything
 
+    def _get_resolved_findings(self, current_findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return findings present in the previous sweep that are now gone.
+
+        Used to emit "Resolved: …" notifications so operators see clear
+        outcomes, not just the firing edge. Returns empty on first sweep
+        (no baseline to diff against) or when the previous-sweep lookup
+        fails — both cases are safer than emitting bogus resolutions.
+        """
+        try:
+            prev_reports = self.kb.get_recent_sweep_reports(limit=1)
+            if not prev_reports:
+                return []
+            prev_findings = prev_reports[0].get('findings', []) or []
+            current_keys = {self._finding_key(f) for f in current_findings}
+            return [f for f in prev_findings if self._finding_key(f) not in current_keys]
+        except Exception as e:
+            logger.debug(f"Could not compute resolved findings: {e}")
+            return []
+
     def _capture_metric_snapshot(self) -> Optional[Dict[str, Any]]:
         """Capture key cluster metrics for correlation baseline."""
         snapshot = {}
@@ -2702,8 +2746,78 @@ Only return the JSON array, no other text."""
                 logger.debug(f"Failed to post finding to event runtime: {exc}")
                 return  # Stop trying on first failure
 
+    def _post_resolutions_to_event_runtime(self, resolved: List[Dict[str, Any]]) -> None:
+        """Post 'finding cleared' notifications to the event runtime.
+
+        These ride the same /alert path as live findings but are tagged
+        with ``details.resolution=True`` so:
+          - run_triage short-circuits to action=notify (no LLM spend),
+          - the Slack formatter renders ":white_check_mark: Resolved: …"
+            instead of the "[severity]" prefix.
+        Severity is forced to info — a resolution is by definition not
+        a firing alert.
+        """
+        url = os.getenv("CFOP_EVENT_RUNTIME_URL", "").strip()
+        if not url or not resolved:
+            return
+        from urllib.request import Request, urlopen
+        from urllib.error import URLError
+        endpoint = f"{url.rstrip('/')}/alert?mode=async"
+        for finding in resolved:
+            payload = {
+                "source": "cfoperator-sweep",
+                "severity": "info",
+                "summary": str(finding.get("finding") or finding.get("summary") or "sweep finding"),
+                "namespace": finding.get("namespace"),
+                "resource_type": finding.get("resource_type"),
+                "resource_name": finding.get("resource_name") or finding.get("resource"),
+                "details": {
+                    "resolution": True,
+                    "requested_action": "notify",
+                    "category": finding.get("category"),
+                    "sweep_source": finding.get("source"),
+                },
+            }
+            body = json.dumps(payload, default=str).encode("utf-8")
+            try:
+                req = Request(endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST")
+                with urlopen(req, timeout=5) as resp:
+                    resp.read()
+            except (URLError, TimeoutError, OSError) as exc:
+                logger.debug(f"Failed to post resolution to event runtime: {exc}")
+                return
+
     def _notify_sweep_findings(self, report: Dict[str, Any]):
-        """Send notifications for sweep findings and record in history."""
+        """Send notifications for sweep findings and record in history.
+
+        When CFOP_EVENT_RUNTIME_URL is set, the event runtime is the sole
+        owner of Slack/Discord for sweep findings: each finding is already
+        forwarded to /alert by _post_findings_to_event_runtime and triaged
+        individually, so emitting a roll-up here would produce duplicate
+        (and lower-fidelity) Slack messages. We still record one
+        notification_history row so audit/UI counters reflect that the
+        sweep produced operator-visible output.
+        """
+        event_runtime_url = os.getenv("CFOP_EVENT_RUNTIME_URL", "").strip()
+        if event_runtime_url:
+            try:
+                self.kb._kb.record_notification_history(
+                    channel_id=0,
+                    channel_type='event-runtime',
+                    severity=report['severity'],
+                    title=report['summary'][:200],
+                    message=report['summary'],
+                    success=True,
+                    context={
+                        'findings_count': len(report.get('findings', [])),
+                        'delegated_to': 'event_runtime',
+                    },
+                    error_message=None,
+                )
+            except Exception as e:
+                logger.debug(f"Could not record notification history: {e}")
+            return
+
         for notif in self.notifications:
             success = False
             error_msg = None
