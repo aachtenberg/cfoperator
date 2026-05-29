@@ -2218,6 +2218,66 @@ def test_format_message_omits_triage_line_when_attribution_missing():
     assert "Triaged by" not in text
 
 
+def test_format_message_includes_investigated_by_for_investigate():
+    """The model that ran the investigation is surfaced as 'Investigated by:'.
+
+    This is the attribution that survives the external completion post-back
+    (the agent records it as result_details['provider']), where the triage
+    Decision is no longer in scope.
+    """
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "Action completed: investigate",
+        severity="warning",
+        details={
+            "action": "investigate",
+            "alert_summary": "sre-postgres value too long for type character varying(50)",
+            "result_message": "Resolved: schema mismatch",
+            "result_details": {"provider": "ollama/qwen3-coder:latest", "investigation_id": 1647},
+        },
+    )
+    assert "Investigated by: ollama/qwen3-coder:latest" in text
+    # The investigation_id whitelist key still renders alongside it.
+    assert "investigation_id: 1647" in text
+
+
+def test_format_message_renders_both_investigated_and_triaged_by():
+    """When both attributions are present, both lines render independently."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "Action completed: investigate",
+        severity="warning",
+        details={
+            "action": "investigate",
+            "alert_summary": "PodCrashLooping",
+            "result_message": "done",
+            "result_details": {"provider": "groq/openai/gpt-oss-120b"},
+            "decision_params": {"triage_backend": "ollama", "triage_model": "qwen3-coder:latest"},
+        },
+    )
+    assert "Investigated by: groq/openai/gpt-oss-120b" in text
+    assert "Triaged by: ollama/qwen3-coder:latest" in text
+
+
+def test_format_message_omits_investigated_by_when_provider_missing():
+    """No provider in result_details (e.g. failed before any LLM ran) → no line."""
+    from event_runtime.notifications import _format_message
+
+    text = _format_message(
+        "Action completed: investigate",
+        severity="warning",
+        details={
+            "action": "investigate",
+            "alert_summary": "X",
+            "result_message": "y",
+            "result_details": {"investigation_id": 9},
+        },
+    )
+    assert "Investigated by" not in text
+
+
 def test_format_message_renders_recommendation_for_notify():
     """The notify single-line format appends 'recommend:' when a remediation hint was supplied."""
     from event_runtime.notifications import _format_message

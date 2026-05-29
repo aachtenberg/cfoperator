@@ -33,6 +33,23 @@ def _triage_attribution(details: Dict | None) -> str:
     return backend or model
 
 
+def _served_attribution(details: Dict | None) -> str:
+    """Return the LLM that actually executed the action's work, e.g.
+    'ollama/qwen3-coder:latest', or empty string.
+
+    Distinct from ``_triage_attribution``: triage is the cheap classifier
+    that *routed* the alert, while this is the model that did the heavy
+    lifting (e.g. the multi-tool investigation loop). The agent records it
+    as ``result_details['provider']`` (see agent._build_action_result), and
+    it survives the external completion post-back where the triage Decision
+    is no longer in scope — so it's often the only attribution available.
+    """
+    if not details:
+        return ""
+    result_details = details.get("result_details") or {}
+    return str(result_details.get("provider") or "").strip()
+
+
 def _format_message(summary: str, *, severity: str, details: Dict | None) -> str:
     """Build a plain-text notification body from an action result.
 
@@ -44,10 +61,16 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
     All other actions get the long form with Alert/Action/Result and any
     result_details whitelist keys.
 
-    When the decision came from an LLM triage step, the LLM that served
-    the classification is surfaced in both formats so operators can see
-    which model triaged each alert (cost attribution + debugging when
-    different LLMs disagree).
+    Two layers of LLM attribution are surfaced in both formats so operators
+    can see which model did what (cost attribution + debugging when
+    different LLMs disagree):
+      - ``Investigated by:`` — the model that ran the action's work (the
+        multi-tool investigation loop), read from
+        ``result_details['provider']``. Survives the external completion
+        post-back, so it's usually present even when triage attribution is
+        not.
+      - ``Triaged by:`` — the cheap classifier that routed the alert, read
+        from the Decision's ``decision_params``.
 
     Two extra fields the engine can hoist out of ``Alert.details`` change
     the rendering shape:
@@ -58,6 +81,7 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
         with ``:white_check_mark: Resolved:``.
     """
     triage = _triage_attribution(details)
+    served = _served_attribution(details)
     recommendation = ""
     resolution = False
     if details:
@@ -72,6 +96,8 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
             line = f"[{severity}] {alert_summary}"
         if recommendation:
             line += f"  ·  recommend: {recommendation}"
+        if served:
+            line += f"  ·  investigated by {served}"
         if triage:
             line += f"  ·  triaged by {triage}"
         return line
@@ -90,6 +116,8 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
             parts.append(f"Result: {result_message}")
         if recommendation:
             parts.append(f"Recommendation: {recommendation}")
+        if served:
+            parts.append(f"Investigated by: {served}")
         if triage:
             parts.append(f"Triaged by: {triage}")
         # Surface key result details (e.g. PR URL, issue number, investigation link)
