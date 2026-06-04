@@ -972,7 +972,9 @@ Alert details: {json.dumps(alert_info, default=str)[:1000]}
 {learnings_text}{similar_text}
 
 Investigate this alert using the available tools. Check metrics, logs, and container/service status.
-When done, provide a summary of findings and whether the issue is resolved, needs monitoring, or should be escalated."""
+When done, provide:
+1. A summary of findings and whether the issue is resolved, needs monitoring, or should be escalated.
+2. On a final line by itself, the single most useful operator-facing next step, prefixed exactly with "RECOMMENDATION:" — a concrete action (a command, a config change, or "No action needed" when the resource is genuinely healthy). Keep it to one or two sentences."""
 
             # Run LLM investigation with tools, with provider fallback so a
             # transient Ollama timeout (e.g. GPU cold-start) doesn't abort
@@ -1018,10 +1020,17 @@ When done, provide a summary of findings and whether the issue is resolved, need
             else:
                 outcome = 'monitoring'
 
+            # The investigation prompt asks the LLM to end with a
+            # "RECOMMENDATION:" line; surface it as the operator-facing next
+            # step so a direct /investigate carries actionable guidance (not
+            # just a bare "Resolved"), matching what the sweep path already does.
+            recommendation = self._extract_recommendation(response_text)
+
             findings = {
                 'response': response_text[:5000],
                 'tool_calls': tool_calls_count,
-                'provider': f"{provider_type}/{model}"
+                'provider': f"{provider_type}/{model}",
+                'recommendation': recommendation,
             }
 
             # Update investigation record
@@ -1051,6 +1060,10 @@ When done, provide a summary of findings and whether the issue is resolved, need
                 'provider': f"{provider_type}/{model}",
                 'findings_snippet': response_text[:500],
             })
+            # event_runtime renders details['remediation'] as the
+            # "Recommendation:" line on the completion notification.
+            if recommendation:
+                details['remediation'] = recommendation
             return self._build_action_result(
                 success=outcome != 'failed',
                 message=message,
@@ -1083,6 +1096,27 @@ When done, provide a summary of findings and whether the issue is resolved, need
             )
         finally:
             self.current_investigation = None
+
+    @staticmethod
+    def _extract_recommendation(response_text: str) -> str:
+        """Pull the operator-facing next step out of an investigation response.
+
+        The investigation prompt asks the LLM to end with a line prefixed
+        ``RECOMMENDATION:``. We surface that as the notification's
+        "Recommendation:" line. Uses the *last* occurrence so a passing
+        mention earlier in the reasoning doesn't win over the final verdict.
+        Returns "" when absent so callers can omit the field entirely.
+        """
+        if not response_text:
+            return ""
+        marker = 'recommendation:'
+        idx = response_text.lower().rfind(marker)
+        if idx == -1:
+            return ""
+        tail = response_text[idx + len(marker):].strip()
+        # Stop at the first blank line so we capture just the recommendation
+        # paragraph, then cap length for a one-line notification.
+        return tail.split('\n\n')[0].strip()[:400]
 
     @staticmethod
     def _action_message(outcome: str, trigger: str, duration: float, tool_calls: int) -> str:

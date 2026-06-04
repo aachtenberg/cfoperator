@@ -299,11 +299,18 @@ class EventRuntime:
         }
         if decision is not None and decision.params:
             details["decision_params"] = dict(decision.params)
-        # Hoist operator-facing hints out of the Alert so the notification
-        # formatter can render them. ``remediation`` becomes the
-        # "Recommendation:" line; ``resolution`` flips the prefix from
-        # "[severity]"/"Alert:" to ":white_check_mark: Resolved:".
-        remediation = alert.details.get("remediation")
+        # Hoist operator-facing hints so the notification formatter can render
+        # them. ``remediation`` becomes the "Recommendation:" line; ``resolution``
+        # flips the prefix from "[severity]"/"Alert:" to
+        # ":white_check_mark: Resolved:". A sweep finding carries its remediation
+        # on the original Alert; a direct /investigate carries it on the
+        # returned ActionResult details, so check both (Alert wins).
+        result_details = action_result.details if isinstance(action_result.details, dict) else {}
+        remediation = (
+            alert.details.get("remediation")
+            or result_details.get("remediation")
+            or result_details.get("recommendation")
+        )
         if remediation:
             details["recommendation"] = str(remediation)
         if alert.details.get("resolution"):
