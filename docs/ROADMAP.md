@@ -37,7 +37,10 @@ correlation purge needs one sweep to clean the table):
   the container baseline + correlation. _(live: main-0b633cc)_
 - **Gap-fixes (#16)** — Tier 1 extended to the **sweep path** (suppress recovered
   restart findings) + **persisted-correlation purge** (clean false rows #15
-  couldn't reach). _(deploy: main-c6712af, rolling out)_
+  couldn't reach). _(live: main-c6712af — verified: purged 15 false rows, sweep clean)_
+- **Tier 2c (severity→channel)** — real-time Slack only for act-now classes;
+  resolutions/monitoring/resolved/info + correlation insights → digest.
+  _(deploy: main-034e6e0, rolling out)_
 
 ### Remediation pipeline → [docs/remediation-pipeline.md](remediation-pipeline.md)
 - **B2 dry-run** proposer: unschedulable pod → patch candidate or precise decline
@@ -57,7 +60,7 @@ correlation purge needs one sweep to clean the table):
 | ID | Item | Notes | Priority |
 |----|------|-------|----------|
 | #11 | Flip remediation `open_prs` | After observation. Needs: one throwaway-PR write smoke test, a global cap on open remediation PRs. Token already capable. | after observe |
-| #13 | **Tier 2 noise** — severity→channel + recurrence suppression | Real-time red only for `escalate`/broken-now; route `monitoring`/info/resolved → morning digest. Recurring identical findings notify once until state-change/escalation; honor `acknowledged`/`false_positive`. **This is what stops the real-time pings.** | next build |
+| #13 | **Tier 2d** — recurrence suppression | _(2c severity→channel shipped — main-034e6e0.)_ Remaining: a recurring identical finding notifies once, then quiet until its state changes / severity escalates; honor `acknowledged`/`false_positive` finding status. | next build |
 | #14 | **Tier 3 noise** — learn endemic noise | Feed `acknowledged`/`false_positive` findings into the KB so the agent pre-classifies known-benign patterns. | later |
 | — | Remediation: more fix classes | Resource-limit bumps, image pins (Phase C). Currently only add-toleration. | later |
 | — | Remediation: wire `open_pr` into event-runtime decision vocabulary | `_TRIAGE_VALID_ACTIONS` is frozen to 4; not needed while the agent drives off the investigation result. | optional |
