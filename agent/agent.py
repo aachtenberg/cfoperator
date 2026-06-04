@@ -1850,7 +1850,17 @@ Return empty array if nothing notable: {{"insights": []}}"""
             if skipped:
                 logger.info(f"Correlation analysis: skipped {skipped} insight(s) lacking a trigger condition")
 
-            if stored:
+            # Tier-2 noise routing: correlation insights are informational, not
+            # actionable-now. By default they're stored as learnings (and rolled
+            # into the morning summary) rather than paged real-time. Set
+            # notifications.realtime_correlation_insights=true to page them.
+            realtime_insights = bool(
+                (self.config.get('notifications', {}) or {}).get('realtime_correlation_insights', False)
+            ) if isinstance(self.config, dict) else False
+            if stored and not realtime_insights:
+                logger.info(f"Correlation analysis: {stored} insight(s) stored as learnings; "
+                            f"real-time notification suppressed (digest)")
+            elif stored:
                 logger.info(f"Correlation analysis: {stored} insights stored as learnings")
                 # Notify about correlation insights
                 titles = [i.get('title', '') for i in insights[:3] if i.get('title')]

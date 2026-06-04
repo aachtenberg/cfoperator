@@ -69,8 +69,19 @@ here — power-outage aftermath, SD flakiness).
   baseline (`_update_baselines`) and at correlation read-time
   (`find_service_failure_patterns`) via `is_ephemeral_job_pod()`. A completed
   job is success, not drift.
-- Tier 2 (severity→channel, recurrence suppression), Tier 3 (learn known noise):
-  not started.
+- **Tier 2c (severity→channel): shipped.** Real-time Slack now only for act-now
+  classes (critical, escalated, needs_action, failed, and plain warning
+  findings). Routed to the digest (suppressed real-time, still in
+  activity/history + morning summary): resolutions, recovered `monitoring`,
+  `resolved`, and `info`. Two surfaces gated:
+  - event_runtime completions/findings — `_is_realtime_worthy()`; toggle with
+    `CFOP_DIGEST_LOW_SEVERITY=0` (default on).
+  - agent correlation insights — stored as learnings, suppressed real-time;
+    re-enable with `notifications.realtime_correlation_insights: true`.
+  Caveat: the "digest" is the existing morning summary + queryable history; a
+  richer real-time-suppressed roll-up can come later. **2d (recurrence
+  suppression) not yet done.**
+- Tier 3 (learn known noise): not started.
 
 ## Notes
 - 1b doubles as the long-wanted **early-exit guard** for over-investigation.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import logging
+import os
 from time import perf_counter
 from typing import Dict, List, Optional
 
@@ -11,6 +12,28 @@ from .activity import build_activity_feed, filter_activities, filter_events
 from .models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, Decision, DomainEvent, ScheduledTask
 from .notifications import should_notify
 from .plugin_manager import PluginManager
+
+
+def _digest_low_severity() -> bool:
+    """Whether Tier-2 routing is on (default yes). Set CFOP_DIGEST_LOW_SEVERITY=0
+    to send every completion in real time (the old behaviour)."""
+    return os.getenv("CFOP_DIGEST_LOW_SEVERITY", "true").strip().lower() not in ("0", "false", "no")
+
+
+def _is_realtime_worthy(severity: str, outcome: str, is_resolution: bool) -> bool:
+    """Tier-2 severity→channel: real-time red only for things needing attention
+    now. Routine resolutions / recovered-monitoring / info go to the digest
+    (the morning summary), not an instant page. Warnings and above that aren't a
+    quiet outcome still page — we only divert the clearly-low-signal classes."""
+    if severity == "critical":
+        return True
+    if outcome in ("escalated", "failed", "needs_action"):
+        return True
+    if is_resolution or outcome in ("resolved", "monitoring"):
+        return False
+    if severity == "info":
+        return False
+    return True
 from .telemetry import (
     initialize_runtime_info,
     mark_runtime_down,
@@ -315,6 +338,21 @@ class EventRuntime:
             details["recommendation"] = str(remediation)
         if alert.details.get("resolution"):
             details["resolution"] = True
+
+        # Tier-2 noise routing: divert low-signal completions (resolutions,
+        # recovered-monitoring, info) to the digest instead of paging real time.
+        # The item is still recorded in activity/history; the morning summary
+        # surfaces it. Critical/escalated/needs_action/failed/warnings still page.
+        outcome = str(result_details.get("outcome") or "")
+        if _digest_low_severity() and not _is_realtime_worthy(
+            severity, outcome, bool(alert.details.get("resolution"))
+        ):
+            observe_notification("digest", "suppressed")
+            logger.info(
+                "Tier-2 digest (suppressed real-time): severity=%s outcome=%s :: %s",
+                severity, outcome or "-", (alert.summary or "")[:80],
+            )
+            return
 
         for sink in self.plugins.notification_sinks:
             try:
