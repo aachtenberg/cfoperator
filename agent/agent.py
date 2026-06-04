@@ -972,9 +972,14 @@ Alert details: {json.dumps(alert_info, default=str)[:1000]}
 {learnings_text}{similar_text}
 
 Investigate this alert using the available tools. Check metrics, logs, and container/service status.
-When done, provide:
-1. A summary of findings and whether the issue is resolved, needs monitoring, or should be escalated.
-2. On a final line by itself, the single most useful operator-facing next step, prefixed exactly with "RECOMMENDATION:" — a concrete action (a command, a config change, or "No action needed" when the resource is genuinely healthy). Keep it to one or two sentences."""
+First give a short summary of what you found. Then end your response with exactly these two lines:
+
+STATUS: <one of: resolved | needs_action | monitoring | escalate>
+  - resolved: the resource is healthy RIGHT NOW — the problem is gone, or you fixed it during this investigation. Do NOT use resolved just because you identified a fix that someone still has to apply.
+  - needs_action: you found the problem but it needs a change you could not make yourself; your RECOMMENDATION says what to do.
+  - monitoring: transient or inconclusive; worth watching, no action yet.
+  - escalate: urgent; a human should look now.
+RECOMMENDATION: <the single most useful operator-facing next step — a concrete command or config change, or "No action needed" when the resource is genuinely healthy>"""
 
             # Run LLM investigation with tools, with provider fallback so a
             # transient Ollama timeout (e.g. GPU cold-start) doesn't abort
@@ -1011,14 +1016,18 @@ When done, provide:
             tool_calls_count = result.get('tool_calls', 0)
             duration = time.time() - start_time
 
-            # Determine outcome from response
-            response_lower = response_text.lower()
-            if any(w in response_lower for w in ['resolved', 'fixed', 'no issue', 'healthy', 'normal']):
-                outcome = 'resolved'
-            elif any(w in response_lower for w in ['escalat', 'critical', 'urgent']):
-                outcome = 'escalated'
-            else:
-                outcome = 'monitoring'
+            # Classify outcome from the model's explicit STATUS verdict rather
+            # than keyword-sniffing the whole response. The old heuristic matched
+            # 'resolved'/'healthy'/'normal' anywhere in the text, so any thorough
+            # investigation ("CPU is normal", "can be resolved by...") was
+            # mislabeled resolved — even for a pod still stuck Pending.
+            outcome = self._extract_status(response_text)
+
+            # B1: don't take "resolved" on faith — confirm against live cluster
+            # state. If the alert pins to a pod that is still Pending/CrashLoop,
+            # downgrade resolved -> needs_action so we never announce a fix that
+            # didn't happen.
+            outcome, verify_note = self._verify_investigation_outcome(outcome, alert_info, trigger)
 
             # The investigation prompt asks the LLM to end with a
             # "RECOMMENDATION:" line; surface it as the operator-facing next
@@ -1032,6 +1041,8 @@ When done, provide:
                 'provider': f"{provider_type}/{model}",
                 'recommendation': recommendation,
             }
+            if verify_note:
+                findings['outcome_verification'] = verify_note
 
             # Update investigation record
             self.kb.update_investigation(
@@ -1119,10 +1130,115 @@ When done, provide:
         return tail.split('\n\n')[0].strip()[:400]
 
     @staticmethod
+    def _extract_status(response_text: str) -> str:
+        """Classify the investigation outcome from the model's explicit verdict.
+
+        The prompt requires a final ``STATUS:`` line with one of
+        resolved | needs_action | monitoring | escalate. We parse that line
+        instead of keyword-sniffing the whole response — the old heuristic
+        marked anything mentioning "resolved"/"healthy"/"normal" as resolved,
+        which falsely cleared issues that were still broken (e.g. a pod stuck
+        Pending whose fix the model only *recommended*).
+
+        Non-resolved tokens are checked first so a line like
+        "needs_action — can be resolved by ..." classifies as needs_action,
+        not resolved. Falls back to a conservative heuristic (never resolved
+        on loose keywords) when the model omits the line.
+        """
+        text = response_text or ""
+        idx = text.lower().rfind('status:')
+        if idx != -1:
+            line = text[idx + len('status:'):].split('\n', 1)[0].lower()
+            if any(k in line for k in ('needs_action', 'needs-action', 'needs action', 'unresolved', 'action needed')):
+                return 'needs_action'
+            if any(k in line for k in ('escalate', 'escalated', 'urgent')):
+                return 'escalated'
+            if 'monitor' in line:
+                return 'monitoring'
+            if any(k in line for k in ('resolved', 'fixed', 'healthy', 'no action', 'no issue')):
+                return 'resolved'
+        # No usable STATUS line — be conservative. Escalation signals win;
+        # otherwise default to monitoring. Never infer 'resolved' here.
+        low = text.lower()
+        if any(w in low for w in ('escalat', 'urgent')):
+            return 'escalated'
+        return 'monitoring'
+
+    @staticmethod
+    def _identify_pod(alert_info: Dict[str, Any], trigger: str) -> Optional[tuple]:
+        """Best-effort (namespace, pod_name) from an alert, or None.
+
+        Tries structured alert fields first, then known trigger shapes:
+          - "Pod <ns>/<pod> not ready ..."   (alertmanager)
+          - "<pod> on <ns>: status=..."       (sweep finding)
+        Returns None when it can't confidently pin a single pod.
+        """
+        ai = alert_info or {}
+        ns = ai.get('namespace') or ai.get('ns')
+        name = ai.get('resource_name') or ai.get('pod') or ai.get('pod_name')
+        rtype = str(ai.get('resource_type') or '').lower()
+        if ns and name and rtype in ('', 'pod', 'pods'):
+            return (str(ns), str(name))
+        text = trigger or ai.get('summary') or ''
+        m = re.search(r'\bPod\s+([a-z0-9-]+)/([a-z0-9][a-z0-9.-]*)', text, re.I)
+        if m:
+            return (m.group(1), m.group(2))
+        m = re.search(r'\b([a-z0-9][a-z0-9.-]*-[a-z0-9]+)\s+on\s+([a-z0-9-]+)\s*:', text, re.I)
+        if m:
+            return (m.group(2), m.group(1))
+        return None
+
+    @staticmethod
+    def _pod_is_healthy(status: Dict[str, Any]) -> bool:
+        """True only if a pod is actually up right now (Running+Ready, or Succeeded)."""
+        phase = status.get('phase')
+        if phase == 'Succeeded':
+            return True
+        if phase != 'Running':
+            return False
+        for c in status.get('conditions', []):
+            if c.get('type') == 'Ready':
+                return c.get('status') == 'True'
+        return False
+
+    def _verify_investigation_outcome(self, outcome: str, alert_info: Dict[str, Any],
+                                      trigger: str) -> tuple:
+        """Deterministically check a 'resolved' verdict against live cluster state.
+
+        The investigation LLM can claim 'resolved' while the resource is still
+        broken (it only *recommended* a fix). When the alert pins to a specific
+        k8s pod, re-query its real status; if it isn't actually healthy,
+        downgrade 'resolved' -> 'needs_action'. Conservative: only downgrades,
+        and no-ops when the resource can't be identified, the pod is gone, or
+        K8sTools is unavailable. Returns (outcome, note_or_None).
+        """
+        if outcome != 'resolved':
+            return outcome, None
+        k8s = getattr(self.tools, 'k8s_tools', None)
+        if not k8s:
+            return outcome, None
+        ident = self._identify_pod(alert_info, trigger)
+        if not ident:
+            return outcome, None
+        namespace, pod_name = ident
+        try:
+            status = k8s.get_pod_status(namespace, pod_name)
+        except Exception as e:
+            logger.debug(f"Outcome verify skipped (status query failed): {e}")
+            return outcome, None
+        # Pod not found could mean it was replaced/cleaned up — don't assume broken.
+        if not status.get('success') or self._pod_is_healthy(status):
+            return outcome, None
+        note = f"claimed resolved but {namespace}/{pod_name} is {status.get('phase', 'unknown')}"
+        logger.info(f"Outcome verify downgraded resolved -> needs_action: {note}")
+        return 'needs_action', note
+
+    @staticmethod
     def _action_message(outcome: str, trigger: str, duration: float, tool_calls: int) -> str:
         """One-line ActionResult.message summarising an investigation outcome."""
         verb = {
             'resolved': 'Resolved',
+            'needs_action': 'Action needed',
             'escalated': 'Escalated',
             'monitoring': 'Monitoring',
             'failed': 'Investigation failed',
