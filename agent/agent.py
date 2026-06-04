@@ -1274,6 +1274,63 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                        default=0)
         return (True, f"{namespace}/{pod_name} healthy now ({restarts} restart(s), recovered)", restarts)
 
+    def _ephemeral_service_names(self) -> set:
+        """Normalized service names of ephemeral Job/CronJob pods in the cluster.
+        Used to keep their scheduled churn out of failure correlations (and to
+        purge any that were persisted before the baseline filter landed)."""
+        k8s = getattr(self.tools, 'k8s_tools', None)
+        if not k8s:
+            return set()
+        try:
+            res = k8s.get_pods(all_namespaces=True)
+        except Exception:
+            return set()
+        names = set()
+        for p in res.get('pods', []):
+            pod_name = (p.get('metadata') or {}).get('name', '')
+            if pod_name and is_ephemeral_job_pod(pod_name):
+                names.add(self.kb._kb._normalize_service_name(pod_name))
+        return names
+
+    def _restart_finding_is_noise(self, finding_text: str, threshold: int) -> Optional[str]:
+        """Reason if a 'container restarted N times' sweep finding is recovered
+        noise — the pod is healthy now with <= threshold restarts. None otherwise.
+
+        Mirrors the Tier-1 alert-path filter for the *sweep* path, which
+        generates these findings independently (e.g. faster-whisper: healthy
+        21h, restartCount 1, re-flagged every sweep)."""
+        text = (finding_text or "").lower()
+        if 'restart' not in text:
+            return None
+        cm = re.search(r"container ['\"]([a-z0-9._-]+)['\"]", text)
+        nm = re.search(r"namespace ['\"]([a-z0-9-]+)['\"]", text)
+        if not (cm and nm):
+            return None
+        name, ns = cm.group(1), nm.group(1)
+        k8s = getattr(self.tools, 'k8s_tools', None)
+        if not k8s:
+            return None
+        try:
+            res = k8s.get_pods(namespace=ns)
+        except Exception:
+            return None
+        matched = [p for p in res.get('pods', [])
+                   if (p.get('metadata') or {}).get('name', '').startswith(name)]
+        if not matched:
+            return None
+        worst = 0
+        for p in matched:
+            st = p.get('status', {})
+            if not self._pod_is_healthy({'phase': st.get('phase'),
+                                         'conditions': st.get('conditions', [])}):
+                return None  # something still unhealthy — keep the finding
+            worst = max(worst, max((c.get('restartCount', 0)
+                                    for c in st.get('containerStatuses', [])), default=0))
+        if worst > threshold:
+            return None  # flapping — keep the finding
+        return (f"container '{name}' in {ns} is healthy now with <= {threshold} "
+                f"restart(s) — recovered transient, not actionable")
+
     def _early_exit_monitoring(self, inv_id: int, trigger: str, start_time: float,
                                note: str) -> Dict[str, Any]:
         """Record a lightweight 'monitoring' result without running the LLM loop
@@ -1559,12 +1616,20 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         # 8. Correlation analysis — detect patterns AND have LLM analyze them
         logger.info("Starting correlation analysis...")
         try:
+            # Keep ephemeral Job/CronJob services out of correlations: clean any
+            # previously-persisted false rows (recorded before the baseline
+            # filter), and guard against recording new ones.
+            ephemeral = self._ephemeral_service_names()
+            if ephemeral:
+                purged = self.kb._kb.purge_correlations_for_services(ephemeral)
+                if purged:
+                    logger.info(f"Purged {purged} false correlation(s) for ephemeral job services")
             patterns = self.kb._kb.find_service_failure_patterns(days=30)
             if patterns:
                 for p in patterns:
                     svc_a = p.get('service_a', '')
                     svc_b = p.get('service_b', '')
-                    if svc_a and svc_b:
+                    if svc_a and svc_b and svc_a not in ephemeral and svc_b not in ephemeral:
                         ctype = p.get('correlation_type', 'co_failure')
                         self.kb._kb.record_service_correlation(
                             service_a=svc_a,
@@ -2840,6 +2905,15 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                             f"ingress matching '{token}' exists in cluster "
                             f"({ingress_name}); service exposure claim is likely a false positive"
                         )
+
+        # Pattern 6: a "container restarted N times" finding where the pod is
+        # healthy now with few restarts is recovered noise, not a real finding.
+        # (The sweep-path analogue of the Tier-1 alert filter.)
+        noise_cfg = (self.config.get('ooda', {}) or {}).get('noise', {}) if isinstance(self.config, dict) else {}
+        if noise_cfg.get('enabled', True):
+            reason = self._restart_finding_is_noise(text, int(noise_cfg.get('recovered_restart_threshold', 3)))
+            if reason:
+                return reason
 
         return None
 

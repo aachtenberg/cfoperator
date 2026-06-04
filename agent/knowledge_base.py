@@ -23,7 +23,7 @@ from contextlib import contextmanager
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Text, Boolean,
-    DateTime, Index, CheckConstraint, text, func, cast
+    DateTime, Index, CheckConstraint, text, func, cast, or_
 )
 from sqlalchemy.types import Text as SQLText
 from sqlalchemy.dialects.postgresql import JSONB
@@ -3754,6 +3754,22 @@ class KnowledgeBase:
         import re
         # Match k8s ReplicaSet hash + pod hash suffix: -<rs-hash>-<pod-hash>
         return re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', name)
+
+    def purge_correlations_for_services(self, service_names) -> int:
+        """Delete persisted service correlations involving any of these services.
+
+        Used to clean out false correlations whose services turned out to be
+        ephemeral Job/CronJob runs (their scheduled churn was misread as
+        co-failure before the baseline filter landed). Returns rows deleted.
+        """
+        names = [n for n in (service_names or []) if n]
+        if not names:
+            return 0
+        with self.session_scope() as session:
+            return session.query(ServiceCorrelation).filter(
+                or_(ServiceCorrelation.service_a.in_(names),
+                    ServiceCorrelation.service_b.in_(names))
+            ).delete(synchronize_session=False)
 
     def find_service_failure_patterns(self, days: int = 30) -> List[Dict[str, Any]]:
         """Find patterns of which services fail together or in sequence."""

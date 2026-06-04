@@ -52,6 +52,15 @@ here — power-outage aftermath, SD flakiness).
   `agent/test_noise_filter.py`. faster-whisper-class alerts now early-exit to
   `monitoring`; flapping (restarts > threshold) and still-broken pods still
   investigate.
+- **Tier-1 coverage extended to the sweep + correlation paths** (the gaps
+  observation exposed): the noise filter only covered the alert/investigation
+  path, so the *sweep* kept re-flagging recovered restarts (faster-whisper) and
+  *previously-persisted* false correlations kept generating insights.
+  - Sweep findings: ground-truth suppressor drops "container restarted ≤
+    threshold + pod healthy now" findings (`_restart_finding_is_noise`).
+  - Correlations: purge previously-persisted false rows for ephemeral CronJob
+    services + guard against recording new ones
+    (`purge_correlations_for_services`, runs each sweep).
 - **Correctness fix (feeds every tier): Job/CronJob churn no longer read as
   failure.** Ephemeral CronJob-run pods (`<name>-<timestamp>-<hash>`) come and go
   by schedule; the container-baseline diff was recording their disappearance as
