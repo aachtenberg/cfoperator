@@ -6,15 +6,19 @@ design docs; this file is the index + open-TODO list.
 _Last updated: 2026-06-04._
 
 ## Currently: observation window
-Three behaviors went live this cycle (noise filter, Job-awareness, dry-run
-remediation). **We're observing them against real traffic before building more.**
-Watch for:
-- faster-whisper / "Unknown restart" class going quiet (Tier-1 working).
-- freshet-alerter ↔ ingest "co-failure" insight stops recurring (Job-fix working).
+Noise filtering, Job-awareness, and dry-run remediation are live. Observation
+exposed that Tier 1 and #15 each missed a parallel code path; those gaps are now
+closed (#16). **Back to observing against real traffic.**
+
+Watch for (effects land on the **next sweep after the c6712af deploy**; the
+correlation purge needs one sweep to clean the table):
+- faster-whisper / "restarted once" class goes quiet on the sweep path too.
+- freshet-alerter ↔ ingest "co-failure" insight stops recurring (may appear once
+  more if a sweep is mid-flight, then clears after the purge runs).
 - remediation dry-run proposals are sensible (good declines, plausible patches) —
-  this is the trust data for the `open_prs` decision.
-- anything *over*-suppressed (a real issue downgraded to monitoring) → tune the
-  restart threshold.
+  the trust data for the `open_prs` decision.
+- anything *over*-suppressed (a real issue downgraded to monitoring / a real
+  finding suppressed) → tune `ooda.noise.recovered_restart_threshold`.
 
 ## Shipped (live in prod)
 
@@ -27,9 +31,13 @@ Watch for:
 
 ### Noise reduction → [docs/noise-reduction.md](noise-reduction.md)
 - **Tier 1** (`ooda.noise`, default-on): early-exit + downgrade for
-  recovered-and-healthy runtime alerts. Doubles as the over-investigation guard.
-- **Job/CronJob churn no longer read as failure** — kills false "stopped" findings
-  and false "co-failure" correlations. _(live: main-0b633cc)_
+  recovered-and-healthy runtime alerts (alert path). Doubles as the
+  over-investigation guard. _(live: main-8ee2ea4)_
+- **Job/CronJob churn no longer read as failure** — ephemeral pods filtered from
+  the container baseline + correlation. _(live: main-0b633cc)_
+- **Gap-fixes (#16)** — Tier 1 extended to the **sweep path** (suppress recovered
+  restart findings) + **persisted-correlation purge** (clean false rows #15
+  couldn't reach). _(deploy: main-c6712af, rolling out)_
 
 ### Remediation pipeline → [docs/remediation-pipeline.md](remediation-pipeline.md)
 - **B2 dry-run** proposer: unschedulable pod → patch candidate or precise decline
