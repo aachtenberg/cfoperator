@@ -1,9 +1,11 @@
 # Remediation Pipeline (design)
 
-**Status:** Phase B implemented behind a default-off flag (`remediation.enabled`,
-`remediation.open_prs`). Dry-run proposer + live PR path are built and unit-tested
-with mocks; **not yet exercised against the real cluster/GitHub** (see
-"Before enabling" below).
+**Status:** Phase B implemented. Dry-run proposer is **enabled in prod**
+(`remediation.enabled: true`, `open_prs: false`) — it surfaces patch/decline
+proposals on `needs_action` investigations without writing to GitHub. The live
+PR path is built, mock-tested, and **read-path smoke-tested against real
+homelab-infra** (locate + patch). `open_prs` stays off pending one live PR test
+and a deliberate go-ahead (autonomous outward action).
 
 ## Progress
 
@@ -19,12 +21,13 @@ with mocks; **not yet exercised against the real cluster/GitHub** (see
 
 ### Before enabling `open_prs` (what still needs checking/modifying)
 
-- **GitHub token + scope.** `_github_write_client()` uses `GITHUB_TOKEN`; it must
-  have `contents:write` + `pull-requests:write` on the manifest repo. The
-  existing `DEPLOY_PAT` is scoped to `cfoperator-deploy`, **not** `homelab-infra`
-  — a new/broader token is required, or point remediation at `cfoperator-deploy`.
-- **One smoke test against a real repo** (a throwaway branch) — the live path is
-  only mock-tested so far.
+- **GitHub token + scope — DONE.** The agent's runtime `GITHUB_TOKEN`
+  (`cfoperator-secrets`, distinct from the CI `DEPLOY_PAT`) has full `repo`
+  scope with `push: true` on `homelab-infra`. No new credential needed to flip
+  `open_prs`.
+- **One *write* smoke test against a real repo** (throwaway branch, then close +
+  delete) — still pending. The read path (locate + patch) is verified against
+  real homelab-infra manifests; the branch/commit/PR calls are only mock-tested.
 - **`apply_toleration` is intentionally narrow** — single-doc workload, inserts a
   toleration as a sibling of the pod-spec `containers:`. It declines multi-`containers:`
   ambiguity and existing tolerations. Other fix classes (resource limits, image
