@@ -52,6 +52,14 @@ here — power-outage aftermath, SD flakiness).
   `agent/test_noise_filter.py`. faster-whisper-class alerts now early-exit to
   `monitoring`; flapping (restarts > threshold) and still-broken pods still
   investigate.
+- **Correctness fix (feeds every tier): Job/CronJob churn no longer read as
+  failure.** Ephemeral CronJob-run pods (`<name>-<timestamp>-<hash>`) come and go
+  by schedule; the container-baseline diff was recording their disappearance as
+  `container_change` drift, which surfaced as false "stopped" findings and false
+  "co-failure" correlations (e.g. freshet-alerter ↔ ingest). Now filtered at the
+  baseline (`_update_baselines`) and at correlation read-time
+  (`find_service_failure_patterns`) via `is_ephemeral_job_pod()`. A completed
+  job is success, not drift.
 - Tier 2 (severity→channel, recurrence suppression), Tier 3 (learn known noise):
   not started.
 

@@ -29,7 +29,7 @@ from pathlib import Path
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
-from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition
+from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod
 from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService
 
@@ -2313,6 +2313,13 @@ Only return the JSON array, no other text."""
 
     def _update_baselines(self, actual_containers: Dict[str, set]):
         """Update stored baselines with current state."""
+        # Ephemeral Job/CronJob pods churn by schedule — strip them so they
+        # never enter the baseline or register as container_change drift (which
+        # would surface as false "stopped"/co-failure findings).
+        actual_containers = {
+            host: {c for c in containers if not is_ephemeral_job_pod(c)}
+            for host, containers in (actual_containers or {}).items()
+        }
         try:
             stored = self.kb.get_baseline()
 

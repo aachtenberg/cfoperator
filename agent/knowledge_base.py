@@ -14,6 +14,7 @@ Stores system profiles, baselines, drift events, and investigation learnings.
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -102,6 +103,20 @@ def learning_has_trigger_condition(learning_data: Dict[str, Any]) -> bool:
     """
     aw = learning_data.get("applies_when")
     return bool(aw and str(aw).strip())
+
+
+# CronJob-run pod names look like '<cronjob>-<unix-minute-timestamp>-<podhash>',
+# e.g. 'freshet-alerter-29676615-6slrn'. The all-digit middle segment is the
+# distinguishing signal vs a Deployment pod ('searxng-c55b97cbb-ccnj6', hash has
+# letters). These pods come and go on a schedule, so their churn must never be
+# read as a service failure / container drift.
+_EPHEMERAL_JOB_POD = re.compile(r'-\d{8,}-[a-z0-9]{5}$')
+
+
+def is_ephemeral_job_pod(name: str) -> bool:
+    """True for CronJob-run pods, whose appearance/disappearance is by design
+    (a completed job is success, not a failure or drift)."""
+    return bool(name and _EPHEMERAL_JOB_POD.search(name))
 
 
 # ============================= Schema Models ==================================
@@ -3758,29 +3773,28 @@ class KnowledgeBase:
             service_events = []
             for drift in drift_events:
                 details = drift.drift_details or {}
-                services = set()
+                raw_names: List[str] = []
 
                 # Direct service/container keys
                 for key in ('service', 'container', 'service_name'):
                     if details.get(key):
-                        services.add(self._normalize_service_name(details[key]))
-
+                        raw_names.append(details[key])
                 # container_change events: added/removed lists
                 for key in ('added', 'removed'):
-                    for svc in (details.get(key) or []):
-                        if isinstance(svc, str):
-                            services.add(self._normalize_service_name(svc))
-
+                    raw_names.extend(details.get(key) or [])
                 # state_change events: affected_services list
-                for svc in (details.get('affected_services') or []):
-                    if isinstance(svc, str):
-                        services.add(self._normalize_service_name(svc))
-
+                raw_names.extend(details.get('affected_services') or [])
                 # state_change events: current_state dict with service->status
                 cs = details.get('current_state')
                 if isinstance(cs, dict):
-                    for svc in cs:
-                        services.add(self._normalize_service_name(svc))
+                    raw_names.extend(cs.keys())
+
+                # Drop ephemeral Job/CronJob pods — their scheduled churn isn't a
+                # failure and would manufacture false co-failure correlations.
+                services = {
+                    self._normalize_service_name(n) for n in raw_names
+                    if isinstance(n, str) and n and not is_ephemeral_job_pod(n)
+                }
 
                 for svc in services:
                     service_events.append({
