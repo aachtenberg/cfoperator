@@ -25,9 +25,17 @@ See docs/remediation-pipeline.md for the full design.
 
 from __future__ import annotations
 
+import base64
+import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+import yaml
+
+logger = logging.getLogger("cfoperator.remediation")
+
+WORKLOAD_KINDS = ("Deployment", "StatefulSet", "DaemonSet")
 
 
 @dataclass
@@ -46,8 +54,10 @@ class Proposal:
     fix_class: str = ""           # e.g. 'add_toleration'
     repo: str = ""                # github slug, e.g. 'aachtenberg/homelab-infra'
     patch_yaml: str = ""          # the snippet we propose to add
+    taint_detail: str = ""        # 'key: value' that drives the toleration
     pr_title: str = ""
     pr_body: str = ""
+    pr_result: Optional[Dict[str, Any]] = None   # set after a live open_pr()
 
     @property
     def is_patch(self) -> bool:
@@ -62,6 +72,8 @@ class Proposal:
                 "remediation_repo": self.repo,
                 "remediation_pr_title": self.pr_title,
             })
+        if self.pr_result:
+            d["remediation_pr"] = self.pr_result
         return d
 
 
@@ -177,8 +189,141 @@ def build_proposal(
     )
     return Proposal(
         kind="patch", reason=reason, confidence=0.7, fix_class="add_toleration",
-        repo=repo, patch_yaml=patch, pr_title=title, pr_body=body,
+        repo=repo, patch_yaml=patch, taint_detail=reasons.get("taint_detail") or "",
+        pr_title=title, pr_body=body,
     )
+
+
+# --- manifest location + patching (live PR path) -----------------------------
+
+_SECRET_PATH = re.compile(r"(sealed|secret|\.env|credential|token)", re.I)
+
+
+def _is_secret_path(path: str) -> bool:
+    """Refuse to patch anything that looks secret-bearing."""
+    return bool(_SECRET_PATH.search(path or ""))
+
+
+def _manifest_matches(text: str, workload: str, namespace: str, kinds=WORKLOAD_KINDS) -> bool:
+    try:
+        docs = list(yaml.safe_load_all(text))
+    except Exception:
+        return False
+    for d in docs:
+        if not isinstance(d, dict):
+            continue
+        if d.get("kind") not in kinds:
+            continue
+        meta = d.get("metadata") or {}
+        if meta.get("name") != workload:
+            continue
+        ns = meta.get("namespace")
+        if ns and namespace and ns != namespace:
+            continue
+        return True
+    return False
+
+
+def _find_pod_containers(lines: List[str]) -> tuple:
+    """Locate the pod-spec ``containers:`` line; return (index, indent_str)."""
+    cands = []
+    for i, ln in enumerate(lines):
+        m = re.match(r"^(\s+)containers:\s*$", ln)
+        if m:
+            cands.append((len(m.group(1)), i, m.group(1)))
+    if not cands:
+        return (None, None)
+    # Deepest indentation = the pod template's spec.containers (not a sibling map).
+    cands.sort(reverse=True)
+    _, idx, indent = cands[0]
+    return (idx, indent)
+
+
+def apply_toleration(text: str, taint_detail: Optional[str]) -> Optional[str]:
+    """Return ``text`` with a toleration added as a sibling of the pod spec's
+    ``containers:`` (preserving formatting/comments), or None if it can't be
+    done safely. Declines when tolerations already exist, the structure isn't a
+    workload, or the result wouldn't parse."""
+    key = (taint_detail or "").split(":", 1)[0].strip()
+    if not key:
+        return None
+    try:
+        docs = [d for d in yaml.safe_load_all(text) if isinstance(d, dict)]
+    except Exception:
+        return None
+    wd = next((d for d in docs if d.get("kind") in WORKLOAD_KINDS), None)
+    if not wd:
+        return None
+    podspec = (((wd.get("spec") or {}).get("template") or {}).get("spec") or {})
+    if not podspec.get("containers"):
+        return None
+    if podspec.get("tolerations"):
+        return None  # already tolerates something — don't clobber, decline
+
+    lines = text.splitlines()
+    cidx, indent = _find_pod_containers(lines)
+    if cidx is None:
+        return None
+    block = [
+        f"{indent}tolerations:",
+        f'{indent}  - key: "{key}"',
+        f'{indent}    operator: "Exists"',
+        f'{indent}    effect: "NoSchedule"',
+    ]
+    new_lines = lines[:cidx] + block + lines[cidx:]
+    new_text = "\n".join(new_lines) + ("\n" if text.endswith("\n") else "")
+    # Validate: parses, and the toleration actually landed on the pod spec.
+    try:
+        nd = [d for d in yaml.safe_load_all(new_text) if isinstance(d, dict)]
+    except Exception:
+        return None
+    nw = next((d for d in nd if d.get("kind") in WORKLOAD_KINDS), {})
+    tols = (((nw.get("spec") or {}).get("template") or {}).get("spec") or {}).get("tolerations")
+    if not tols or not any(t.get("key") == key for t in tols if isinstance(t, dict)):
+        return None
+    return new_text
+
+
+def locate_manifest(client: Any, repo: str, workload: str, namespace: str,
+                    base_branch: str, max_candidates: int = 8) -> Optional[tuple]:
+    """Find the manifest file that defines ``workload`` in ``repo`` via the
+    GitHub API. Returns (path, text, file_sha) or None."""
+    br = client.request("GET", f"/repos/{repo}/branches/{base_branch}")
+    if not br.get("success"):
+        return None
+    tree_sha = ((((br.get("data") or {}).get("commit") or {}).get("commit") or {})
+                .get("tree") or {}).get("sha")
+    if not tree_sha:
+        return None
+    tr = client.request("GET", f"/repos/{repo}/git/trees/{tree_sha}", params={"recursive": "1"})
+    if not tr.get("success"):
+        return None
+    paths = [t["path"] for t in (tr.get("data") or {}).get("tree", [])
+             if t.get("type") == "blob" and re.search(r"\.ya?ml$", t.get("path", ""))]
+    wl = workload.lower()
+    ranked = sorted(paths, key=lambda p: (
+        0 if wl in p.rsplit("/", 1)[-1].lower() else (1 if wl in p.lower() else 2)))
+    for path in ranked[:max_candidates]:
+        if wl not in path.lower():
+            break  # ranked: once we leave name-matching paths, stop
+        got = _get_file(client, repo, path, base_branch)
+        if not got:
+            continue
+        text, sha = got
+        if _manifest_matches(text, workload, namespace):
+            return (path, text, sha)
+    return None
+
+
+def _get_file(client: Any, repo: str, path: str, ref: str) -> Optional[tuple]:
+    r = client.request("GET", f"/repos/{repo}/contents/{path}", params={"ref": ref})
+    if not r.get("success"):
+        return None
+    data = r.get("data") or {}
+    if data.get("encoding") == "base64" and data.get("content"):
+        text = base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+        return (text, data.get("sha"))
+    return None
 
 
 class RemediationProposer:
@@ -188,17 +333,85 @@ class RemediationProposer:
     """
 
     def __init__(self, k8s_tools: Any, repos: Optional[List[Dict[str, Any]]] = None,
-                 *, open_prs: bool = False, default_repo_name: str = "homelab-infra"):
+                 *, open_prs: bool = False, default_repo_name: str = "homelab-infra",
+                 github: Any = None):
         self.k8s = k8s_tools
         self.repos = repos or []
         self.open_prs = bool(open_prs)
         self.default_repo_name = default_repo_name
+        self.github = github  # a GitHubApiClient-like object with .request(); None => dry-run
 
     def _repo_slug(self, name: str) -> str:
         for r in self.repos:
             if r.get("name") == name:
                 return r.get("github", "")
         return ""
+
+    def _base_branch(self, name: str) -> str:
+        for r in self.repos:
+            if r.get("name") == name:
+                return r.get("branch") or "main"
+        return "main"
+
+    @staticmethod
+    def _branch_name(namespace: str, workload: str) -> str:
+        slug = re.sub(r"[^a-z0-9-]+", "-", f"{namespace}-{workload}".lower()).strip("-")
+        return f"cfop/remediate-{slug}"
+
+    def open_pr(self, proposal: Proposal, namespace: str, workload: str) -> Optional[Dict[str, Any]]:
+        """Open a real PR for a patch proposal. No-op (returns None) unless
+        ``open_prs`` is set and a GitHub client is present. Idempotent: skips if
+        the remediation branch already exists. Refuses secret-bearing files."""
+        if not (self.open_prs and self.github and proposal.is_patch):
+            return None
+        repo = proposal.repo
+        if not repo:
+            return {"status": "error", "detail": "no repo configured for patch"}
+        base = self._base_branch(self.default_repo_name)
+        branch = self._branch_name(namespace, workload)
+
+        # Dedupe: one open remediation branch per workload.
+        existing = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{branch}")
+        if existing.get("success"):
+            return {"status": "skipped", "detail": "remediation branch already exists", "branch": branch}
+
+        located = locate_manifest(self.github, repo, workload, namespace, base)
+        if not located:
+            return {"status": "declined", "detail": "could not locate the owning manifest"}
+        path, text, file_sha = located
+        if _is_secret_path(path):
+            return {"status": "refused", "detail": f"won't patch secret-bearing file: {path}"}
+
+        patched = apply_toleration(text, proposal.taint_detail)
+        if not patched or patched == text:
+            return {"status": "declined", "detail": "could not generate a safe patch"}
+
+        head = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{base}")
+        head_sha = ((head.get("data") or {}).get("object") or {}).get("sha") if head.get("success") else None
+        if not head_sha:
+            return {"status": "error", "detail": f"could not read base ref {base}"}
+
+        cr = self.github.request("POST", f"/repos/{repo}/git/refs",
+                                 body={"ref": f"refs/heads/{branch}", "sha": head_sha})
+        if not cr.get("success"):
+            return {"status": "error", "detail": f"branch create failed ({cr.get('status')})"}
+
+        commit = self.github.request("PUT", f"/repos/{repo}/contents/{path}", body={
+            "message": proposal.pr_title,
+            "content": base64.b64encode(patched.encode("utf-8")).decode("ascii"),
+            "branch": branch,
+            "sha": file_sha,
+        })
+        if not commit.get("success"):
+            return {"status": "error", "detail": f"commit failed ({commit.get('status')})"}
+
+        pr = self.github.request("POST", f"/repos/{repo}/pulls", body={
+            "title": proposal.pr_title, "body": proposal.pr_body, "head": branch, "base": base})
+        if not pr.get("success"):
+            return {"status": "error", "detail": f"PR create failed ({pr.get('status')})"}
+        data = pr.get("data") or {}
+        return {"status": "opened", "pr_number": data.get("number"),
+                "html_url": data.get("html_url"), "branch": branch, "path": path}
 
     def _scheduler_message(self, namespace: str, pod_name: str) -> str:
         """Best-effort FailedScheduling message from the pod's events."""

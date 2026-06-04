@@ -1,7 +1,40 @@
 # Remediation Pipeline (design)
 
-**Status:** draft / in progress. Phase B (the first end-to-end slice) is being
-built behind a default-off flag.
+**Status:** Phase B implemented behind a default-off flag (`remediation.enabled`,
+`remediation.open_prs`). Dry-run proposer + live PR path are built and unit-tested
+with mocks; **not yet exercised against the real cluster/GitHub** (see
+"Before enabling" below).
+
+## Progress
+
+| Item | State |
+|---|---|
+| Phase A — `STATUS` + `RECOMMENDATION`, `needs_action`, recommendation in notifications | ✅ shipped (live) |
+| B1 — verify a `resolved` verdict against live pod state (downgrade false resolved) | ✅ shipped (live) |
+| B2 (dry-run) — classify unschedulable → patch candidate or precise decline | ✅ shipped (flag off) |
+| B2-live (#9) — locate manifest (GitHub tree), generate diff, branch+commit, open PR | ✅ built + mock-tested (flag off) |
+| Risk gate — secret-path refusal, decline-on-ambiguity, one-PR-per-branch dedupe | ✅ in `open_pr` / `apply_toleration` |
+| Wiring vocabulary in event-runtime (`open_pr` selectable by the decision engine) | ⬜ not needed yet (agent drives off the investigation result) |
+| Close-the-loop (watch PR merge → confirm finding clears) | ⬜ Phase C |
+
+### Before enabling `open_prs` (what still needs checking/modifying)
+
+- **GitHub token + scope.** `_github_write_client()` uses `GITHUB_TOKEN`; it must
+  have `contents:write` + `pull-requests:write` on the manifest repo. The
+  existing `DEPLOY_PAT` is scoped to `cfoperator-deploy`, **not** `homelab-infra`
+  — a new/broader token is required, or point remediation at `cfoperator-deploy`.
+- **One smoke test against a real repo** (a throwaway branch) — the live path is
+  only mock-tested so far.
+- **`apply_toleration` is intentionally narrow** — single-doc workload, inserts a
+  toleration as a sibling of the pod-spec `containers:`. It declines multi-`containers:`
+  ambiguity and existing tolerations. Other fix classes (resource limits, image
+  pins) are not implemented.
+- **Rate/volume guard** — currently one branch per `{namespace, workload}`; consider
+  a global cap on open remediation PRs before enabling cluster-wide.
+
+---
+
+**Original design follows.**
 
 ## Motivation
 

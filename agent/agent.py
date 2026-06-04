@@ -1235,22 +1235,48 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             return None
         namespace, pod_name = ident
         try:
+            open_prs = bool(rcfg.get('open_prs'))
             proposer = RemediationProposer(
                 k8s,
                 repos=self.config.get('git', {}).get('repos', []),
-                open_prs=bool(rcfg.get('open_prs')),
+                open_prs=open_prs,
                 default_repo_name=rcfg.get('default_repo', 'homelab-infra'),
+                github=self._github_write_client() if open_prs else None,
             )
             workload = re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', pod_name)
             proposal = proposer.propose_for(namespace, pod_name, workload=workload)
-            if proposal is not None:
-                logger.info(
-                    f"Remediation proposal for {namespace}/{pod_name}: "
-                    f"{proposal.kind} ({proposal.fix_class or 'n/a'})"
-                )
+            if proposal is None:
+                return None
+            logger.info(
+                f"Remediation proposal for {namespace}/{pod_name}: "
+                f"{proposal.kind} ({proposal.fix_class or 'n/a'})"
+            )
+            # Live path: only patch proposals, only when open_prs is enabled.
+            if proposal.is_patch and open_prs:
+                proposal.pr_result = proposer.open_pr(proposal, namespace, workload)
+                if proposal.pr_result:
+                    logger.info(f"Remediation PR for {namespace}/{workload}: {proposal.pr_result}")
             return proposal
         except Exception as e:
             logger.debug(f"Remediation proposal skipped: {e}")
+            return None
+
+    def _github_write_client(self):
+        """Build a GitHub API client for opening remediation PRs, or None.
+
+        Reuses event_runtime's self-contained GitHubApiClient. Token from
+        GITHUB_TOKEN (same as the git context provider). Returns None when no
+        token is set so the proposer falls back to dry-run.
+        """
+        token = os.getenv('GITHUB_TOKEN', '').strip()
+        if not token:
+            logger.warning("remediation.open_prs is on but GITHUB_TOKEN is unset; staying dry-run")
+            return None
+        try:
+            from event_runtime.github_client import GitHubApiClient
+            return GitHubApiClient(token=token)
+        except Exception as e:
+            logger.warning(f"Could not init GitHub client for remediation: {e}")
             return None
 
     def _verify_investigation_outcome(self, outcome: str, alert_info: Dict[str, Any],
