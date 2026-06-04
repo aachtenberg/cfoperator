@@ -1,0 +1,61 @@
+# Noise reduction — signal over a sea of red
+
+**Problem:** every anomaly → investigate → `needs_action` → red notification. Result
+is alert fatigue. A healthy pod with one old recovered restart (faster-whisper:
+healthy 20h, restartCount 1, exit 255) should never page red.
+
+**Principle:** **red = "broken right now and a human must act."** Almost nothing
+clears that bar. Everything else is recorded quietly, batched into a digest, or
+downgraded. Severity = urgency-to-act, gated on *current* state, surfaced on a
+channel proportional to severity.
+
+The levers mostly already exist (triage, `file-backed-cooldown`, finding-status
+API `acknowledged`/`false_positive`, the morning-summary digest) — they're just
+not tuned for signal.
+
+## Tiers
+
+### Tier 1 — kill the biggest noise class (deterministic, in the agent)  ← building now
+Both gate on the same precise condition: **the alert is about a recoverable
+runtime condition (restart / terminated / exit code / not-ready / crashloop /
+oomkill) AND the pod is healthy right now.** A healthy pod that's genuinely
+mis-configured (a non-runtime concern) still gets `needs_action`.
+
+- **1a — state-aware downgrade.** Mirror of B1: after classification, downgrade
+  `needs_action → monitoring` when the condition has recovered. (B1 already does
+  the opposite: `resolved → needs_action` when still broken.)
+- **1b — early-exit / don't investigate healthy things.** *Before* the LLM loop,
+  if the pod is healthy-now + recovered + restartCount ≤ threshold (default 3),
+  short-circuit to `monitoring` with a logged reason and a lightweight
+  investigation record. Skips the expensive investigation (227s/882s) and never
+  generates a `needs_action`. High restart counts (flapping) still investigate —
+  1a is the safety net for those.
+
+### Tier 2 — match channel to severity (stops the *red*, not the signal)
+- **2c — severity→channel mapping.** Real-time red only for `escalate` /
+  broken-now. `monitoring` + recovered findings route to the morning-summary
+  digest instead of an instant page.
+- **2d — recurrence suppression.** A finding that recurs every sweep (as svclb
+  did) notifies once, then stays quiet until its state changes or severity
+  escalates. Honor `acknowledged`/`false_positive` finding status so dismissed
+  items don't return red.
+
+### Tier 3 — learn the cluster's known noise
+Feed `acknowledged`/`false_positive` findings into the KB so the agent learns
+this cluster's benign patterns (the exit-255/Unknown-restart class is endemic
+here — power-outage aftermath, SD flakiness).
+
+## Status
+- **Tier 1 (1a + 1b): implemented, default-on** (`ooda.noise.enabled: true`,
+  `recovered_restart_threshold: 3`). `_recovered_and_healthy()` +
+  `_early_exit_monitoring()` in `agent/agent.py`; tests in
+  `agent/test_noise_filter.py`. faster-whisper-class alerts now early-exit to
+  `monitoring`; flapping (restarts > threshold) and still-broken pods still
+  investigate.
+- Tier 2 (severity→channel, recurrence suppression), Tier 3 (learn known noise):
+  not started.
+
+## Notes
+- 1b doubles as the long-wanted **early-exit guard** for over-investigation.
+- Deterministic on purpose — no new LLM unpredictability in the noise filter.
+- Config: `ooda.noise` (thresholds) — default-on, conservative thresholds.

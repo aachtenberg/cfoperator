@@ -74,6 +74,13 @@ INVESTIGATION_QUEUE_DEPTH = Gauge('cfoperator_investigation_queue_depth', 'Pendi
 INVESTIGATION_QUEUE_REJECTED = Counter('cfoperator_investigation_queue_rejected_total', 'HTTP investigations rejected because queue was full')
 INVESTIGATION_POSTBACK = Counter('cfoperator_investigation_postback_total', 'Investigation completions posted back to event_runtime', ['status'])
 
+# Triggers that describe a *recoverable* runtime condition — if the pod is
+# healthy now, the thing the alert worried about has cleared. Used by the
+# Tier-1 noise filter (early-exit + needs_action downgrade). See
+# docs/noise-reduction.md.
+_RECOVERABLE_TRIGGER = re.compile(
+    r"restart|terminat|exit\s*code|not\s*ready|notready|oom|crashloop|back-?off", re.I)
+
 
 class _MetricsLogHandler(logging.Handler):
     """Logging handler that increments LOG_MESSAGES Prometheus counter."""
@@ -966,6 +973,20 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
                     similar_text += f"- [{inv.get('outcome', '?')}] {inv.get('trigger', '')[:100]} (similarity: {sim_score})\n"
 
             alert_info = context.get('alert', {})
+
+            # Tier-1 noise filter (1b): if the alert is about a recoverable
+            # runtime condition and the pod is healthy now with only a few
+            # restarts, don't spend a full investigation on it — record a
+            # 'monitoring' result and return. Flapping (high restart count) and
+            # still-broken pods fall through to a real investigation.
+            noise_cfg = (self.config.get('ooda', {}) or {}).get('noise', {}) if isinstance(self.config, dict) else {}
+            noise_on = noise_cfg.get('enabled', True)
+            restart_thresh = int(noise_cfg.get('recovered_restart_threshold', 3))
+            if noise_on:
+                pre_recovered, pre_note, pre_restarts = self._recovered_and_healthy(alert_info, trigger)
+                if pre_recovered and pre_restarts <= restart_thresh:
+                    return self._early_exit_monitoring(inv_id, trigger, start_time, pre_note)
+
             system_prompt = f"""You are CFOperator investigating an infrastructure alert.
 
 Alert: {trigger}
@@ -1029,6 +1050,17 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # downgrade resolved -> needs_action so we never announce a fix that
             # didn't happen.
             outcome, verify_note = self._verify_investigation_outcome(outcome, alert_info, trigger)
+
+            # Tier-1 noise filter (1a): if the investigation lands on needs_action
+            # but the alerted runtime condition has recovered (pod healthy now,
+            # few restarts) — including pods that recovered *during* the
+            # investigation — downgrade to monitoring so it doesn't page red.
+            if noise_on and outcome == 'needs_action':
+                post_recovered, post_note, post_restarts = self._recovered_and_healthy(alert_info, trigger)
+                if post_recovered and post_restarts <= restart_thresh:
+                    outcome = 'monitoring'
+                    verify_note = ((verify_note + '; ') if verify_note else '') + f"recovered — {post_note}"
+                    logger.info(f"Noise filter: needs_action -> monitoring ({post_note})")
 
             # The investigation prompt asks the LLM to end with a
             # "RECOMMENDATION:" line; surface it as the operator-facing next
@@ -1212,6 +1244,58 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             if c.get('type') == 'Ready':
                 return c.get('status') == 'True'
         return False
+
+    def _recovered_and_healthy(self, alert_info: Dict[str, Any], trigger: str) -> tuple:
+        """Tier-1 noise filter: is the alert about a recoverable runtime
+        condition whose pod is healthy *right now*? Returns
+        (recovered: bool, note: str|None, restart_count: int).
+
+        Only fires for restart/termination/exit-code/not-ready/crashloop/oom
+        triggers tied to an identifiable pod that is currently Running+Ready.
+        A healthy pod with a *non-runtime* concern (mis-config, deprecation)
+        won't match — it keeps its needs_action.
+        """
+        if not _RECOVERABLE_TRIGGER.search(trigger or ""):
+            return (False, None, 0)
+        k8s = getattr(self.tools, 'k8s_tools', None)
+        if not k8s:
+            return (False, None, 0)
+        ident = self._identify_pod(alert_info, trigger)
+        if not ident:
+            return (False, None, 0)
+        namespace, pod_name = ident
+        try:
+            status = k8s.get_pod_status(namespace, pod_name)
+        except Exception:
+            return (False, None, 0)
+        if not status.get('success') or not self._pod_is_healthy(status):
+            return (False, None, 0)
+        restarts = max((c.get('restartCount', 0) for c in status.get('containerStatuses', [])),
+                       default=0)
+        return (True, f"{namespace}/{pod_name} healthy now ({restarts} restart(s), recovered)", restarts)
+
+    def _early_exit_monitoring(self, inv_id: int, trigger: str, start_time: float,
+                               note: str) -> Dict[str, Any]:
+        """Record a lightweight 'monitoring' result without running the LLM loop
+        (Tier-1 1b). Used when the alerted condition has already recovered."""
+        duration = time.time() - start_time
+        rec = f"No action needed — {note}. Skipped deep investigation (noise filter)."
+        findings = {'response': rec, 'tool_calls': 0, 'recommendation': rec, 'preflight_skip': True}
+        try:
+            self.kb.update_investigation(
+                investigation_id=inv_id, completed_at=datetime.now(), findings=findings,
+                outcome='monitoring', duration_seconds=duration, tool_calls_count=0)
+        except Exception as e:
+            logger.debug(f"early-exit record skipped: {e}")
+        INVESTIGATIONS.labels(outcome='monitoring').inc()
+        logger.info(f"Investigation #{inv_id} early-exit (noise filter): monitoring — {note}")
+        return self._build_action_result(
+            success=True,
+            message=self._action_message('monitoring', trigger, duration, 0),
+            details={'investigation_id': inv_id, 'outcome': 'monitoring',
+                     'duration_s': round(duration, 1), 'tool_calls': 0,
+                     'preflight_skip': True, 'remediation': rec},
+        )
 
     def _maybe_propose_remediation(self, outcome: str, alert_info: Dict[str, Any],
                                    trigger: str):
