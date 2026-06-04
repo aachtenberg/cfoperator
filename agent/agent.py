@@ -54,6 +54,7 @@ from tools import ToolRegistry
 
 # Import Ollama pool (for parallel sweeps)
 from ollama_pool import OllamaPool
+from remediation import RemediationProposer
 
 # Configure logging
 logging.basicConfig(
@@ -1035,6 +1036,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # just a bare "Resolved"), matching what the sweep path already does.
             recommendation = self._extract_recommendation(response_text)
 
+            # Phase-B remediation: for a confirmed needs_action, see if this is a
+            # case we can propose a concrete fix for (dry-run only). Default off;
+            # never opens a PR in this build. Conservative by design — it mostly
+            # turns a vague "needs_action" into either a candidate patch or a
+            # precise decline reason (see remediation.py + the design doc).
+            proposal = self._maybe_propose_remediation(outcome, alert_info, trigger)
+
             findings = {
                 'response': response_text[:5000],
                 'tool_calls': tool_calls_count,
@@ -1043,6 +1051,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             }
             if verify_note:
                 findings['outcome_verification'] = verify_note
+            if proposal is not None:
+                findings['remediation_proposal'] = proposal.to_details()
 
             # Update investigation record
             self.kb.update_investigation(
@@ -1075,6 +1085,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # "Recommendation:" line on the completion notification.
             if recommendation:
                 details['remediation'] = recommendation
+            if proposal is not None:
+                details['remediation_proposal'] = proposal.to_details()
             return self._build_action_result(
                 success=outcome != 'failed',
                 message=message,
@@ -1200,6 +1212,46 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             if c.get('type') == 'Ready':
                 return c.get('status') == 'True'
         return False
+
+    def _maybe_propose_remediation(self, outcome: str, alert_info: Dict[str, Any],
+                                   trigger: str):
+        """Phase-B: for a confirmed needs_action pod, build a dry-run remediation
+        proposal (patch candidate or precise decline). Returns a Proposal or None.
+
+        Off unless ``remediation.enabled`` is set in config. Never opens a PR in
+        this build — ``open_prs`` is plumbed through but the live path is a
+        deferred TODO in remediation.py.
+        """
+        if outcome != 'needs_action':
+            return None
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if not rcfg.get('enabled'):
+            return None
+        k8s = getattr(self.tools, 'k8s_tools', None)
+        if not k8s:
+            return None
+        ident = self._identify_pod(alert_info, trigger)
+        if not ident:
+            return None
+        namespace, pod_name = ident
+        try:
+            proposer = RemediationProposer(
+                k8s,
+                repos=self.config.get('git', {}).get('repos', []),
+                open_prs=bool(rcfg.get('open_prs')),
+                default_repo_name=rcfg.get('default_repo', 'homelab-infra'),
+            )
+            workload = re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', pod_name)
+            proposal = proposer.propose_for(namespace, pod_name, workload=workload)
+            if proposal is not None:
+                logger.info(
+                    f"Remediation proposal for {namespace}/{pod_name}: "
+                    f"{proposal.kind} ({proposal.fix_class or 'n/a'})"
+                )
+            return proposal
+        except Exception as e:
+            logger.debug(f"Remediation proposal skipped: {e}")
+            return None
 
     def _verify_investigation_outcome(self, outcome: str, alert_info: Dict[str, Any],
                                       trigger: str) -> tuple:

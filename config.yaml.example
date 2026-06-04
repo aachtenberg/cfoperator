@@ -225,6 +225,16 @@ git:
         - camera-postgres
         - camera-postgres-exporter
 
+# Remediation (Phase B) — turn a verified needs_action investigation into a
+# concrete fix proposal. See docs/remediation-pipeline.md.
+# Default OFF. Even when enabled, this build only DRY-RUNS: it attaches a patch
+# candidate or a precise decline reason to the investigation result; it never
+# opens a PR or changes the cluster. `open_prs` is reserved for a later phase.
+remediation:
+  enabled: false
+  open_prs: false          # reserved; live PR opening is not implemented yet
+  default_repo: homelab-infra   # which `git.repos[].name` owns manifests to patch
+
 # Skills
 skills:
   directory: ./skills
