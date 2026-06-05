@@ -2746,7 +2746,8 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
     _NODE_HEALTH_KEYWORDS = (
         'kubelet', 'service issue', 'service is not', 'service not',
         'unhealthy', 'unstable', 'pressure', 'degraded', 'stability',
-        'not running', 'not ready', 'down',
+        'not running', 'not ready', 'notready', 'ready condition',
+        'status=false', 'status="false"', 'condition false', 'down',
     )
 
     # Pattern 3: metrics sweep reads an empty prometheus_query result and
