@@ -119,6 +119,15 @@ def is_ephemeral_job_pod(name: str) -> bool:
     return bool(name and _EPHEMERAL_JOB_POD.search(name))
 
 
+def normalize_finding_signature(text: str) -> str:
+    """A count-insensitive signature for a finding summary, so dismissals
+    generalize across changing numbers. "restarted 11 times" and
+    "restarted 14 times" map to the same signature. Used by Tier-3 learning to
+    suppress future variants of a dismissed finding."""
+    s = re.sub(r'\d+', 'N', (text or '').lower())
+    return re.sub(r'\s+', ' ', s).strip()
+
+
 # ============================= Schema Models ==================================
 
 class Host(Base):
@@ -3776,6 +3785,9 @@ class KnowledgeBase:
                             keys.add(str(f['id']))
                         if f.get('finding'):
                             keys.add(str(f['finding']).strip())
+                            # Tier-3: count-insensitive signature so future
+                            # variants (different restart counts, etc.) match too.
+                            keys.add('sig::' + normalize_finding_signature(f['finding']))
         return keys
 
     def purge_correlations_for_services(self, service_names) -> int:

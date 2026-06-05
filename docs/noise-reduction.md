@@ -89,7 +89,16 @@ here — power-outage aftermath, SD flakiness).
   `CFOP_EVENT_RUNTIME_RECURRENCE_WINDOW_SECONDS` (0 disables).
   Not yet: honoring `acknowledged`/`false_positive` finding status (needs the
   agent to skip those at post-time) — small follow-on.
-- Tier 3 (learn known noise): not started.
+- **Tier 3 (learn known noise): shipped (deterministic form).** Dismissals
+  (`acknowledged`/`false_positive`) now generalize at the *pattern* level via a
+  count-insensitive signature (`normalize_finding_signature`: digits→N) — so
+  dismissing "restarted 11 times" also suppresses the future "restarted 14
+  times" variant, not just the exact string (#17). Applied in
+  `_post_findings_to_event_runtime` alongside id/exact-summary matching.
+  Deterministic and per-resource (the resource name stays in the signature, so
+  it won't over-suppress a different resource). A semantic/embedding-based
+  cross-resource version is a possible future step but carries over-suppression
+  risk, so it's deliberately not done.
 
 ## Notes
 - 1b doubles as the long-wanted **early-exit guard** for over-investigation.

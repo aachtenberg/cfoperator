@@ -29,7 +29,7 @@ from pathlib import Path
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
-from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod
+from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature
 from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService
 
@@ -3161,8 +3161,10 @@ Only return the JSON array, no other text."""
             fid = finding.get("id") or hashlib.md5(
                 (finding.get("finding", "") + finding.get("sweep_phase", "")).encode()
             ).hexdigest()[:8]
-            if dismissed and (fid in dismissed or (summary_text and summary_text in dismissed)):
-                logger.info(f"Skipping dismissed finding (acknowledged/false_positive): {summary_text[:80]}")
+            sig = 'sig::' + normalize_finding_signature(summary_text)
+            if dismissed and (fid in dismissed or sig in dismissed
+                              or (summary_text and summary_text in dismissed)):
+                logger.info(f"Skipping dismissed finding (acknowledged/false_positive/known-noise): {summary_text[:80]}")
                 continue
             severity = str(finding.get("severity") or "info").lower()
             if severity not in ("info", "warning", "critical"):

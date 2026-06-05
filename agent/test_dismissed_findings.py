@@ -49,3 +49,28 @@ def test_dismissed_by_id_skipped(monkeypatch):
     import urllib.request
     monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not post")))
     op._post_findings_to_event_runtime([{"finding": "x", "id": "abc12345", "severity": "warning"}])
+
+
+# --- #14 Tier 3: count-insensitive signature generalization -------------------
+
+from knowledge_base import normalize_finding_signature
+
+
+def test_signature_normalizes_counts():
+    a = normalize_finding_signature("faster-whisper restarted 11 times (restartCount 11)")
+    b = normalize_finding_signature("faster-whisper restarted 14 times (restartCount 14)")
+    assert a == b
+    # different resource -> different signature
+    assert normalize_finding_signature("vaultwarden restarted 2 times") != \
+           normalize_finding_signature("faster-whisper restarted 2 times")
+
+
+def test_dismissed_signature_suppresses_count_variant(monkeypatch):
+    sig = "sig::" + normalize_finding_signature("faster-whisper restarted 11 times (restartCount 11)")
+    op = _op_posting(monkeypatch, {sig})
+    import urllib.request
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not post")))
+    # a NEW count variant of the dismissed finding -> suppressed by signature
+    op._post_findings_to_event_runtime(
+        [{"finding": "faster-whisper restarted 14 times (restartCount 14)", "severity": "warning"}])
