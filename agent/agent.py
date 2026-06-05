@@ -3150,7 +3150,20 @@ Only return the JSON array, no other text."""
         from urllib.request import Request, urlopen
         from urllib.error import URLError
         endpoint = f"{url.rstrip('/')}/alert?mode=async"
+        # Honor operator dismissals: don't re-post findings marked
+        # acknowledged/false_positive — they'd otherwise recur every sweep.
+        try:
+            dismissed = self.kb._kb.get_dismissed_finding_keys()
+        except Exception:
+            dismissed = set()
         for finding in findings:
+            summary_text = str(finding.get("finding") or finding.get("summary") or "").strip()
+            fid = finding.get("id") or hashlib.md5(
+                (finding.get("finding", "") + finding.get("sweep_phase", "")).encode()
+            ).hexdigest()[:8]
+            if dismissed and (fid in dismissed or (summary_text and summary_text in dismissed)):
+                logger.info(f"Skipping dismissed finding (acknowledged/false_positive): {summary_text[:80]}")
+                continue
             severity = str(finding.get("severity") or "info").lower()
             if severity not in ("info", "warning", "critical"):
                 severity = "warning"

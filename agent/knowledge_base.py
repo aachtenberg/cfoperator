@@ -3755,6 +3755,29 @@ class KnowledgeBase:
         # Match k8s ReplicaSet hash + pod hash suffix: -<rs-hash>-<pod-hash>
         return re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', name)
 
+    def get_dismissed_finding_keys(self, days: int = 30) -> set:
+        """Finding ids + summaries the operator marked acknowledged/false_positive.
+
+        Lets the sweep stop re-posting findings a human has already dismissed
+        (they'd otherwise recur every cycle). Matched on both the stable id and
+        the summary text, since the id isn't assigned until the report is stored.
+        """
+        from datetime import timedelta
+        keys: set = set()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        with self.session_scope() as session:
+            reports = session.query(SweepReport).filter(SweepReport.swept_at >= cutoff).all()
+            for report in reports:
+                for f in (report.findings or []):
+                    if not isinstance(f, dict):
+                        continue
+                    if f.get('status') in ('acknowledged', 'false_positive'):
+                        if f.get('id'):
+                            keys.add(str(f['id']))
+                        if f.get('finding'):
+                            keys.add(str(f['finding']).strip())
+        return keys
+
     def purge_correlations_for_services(self, service_names) -> int:
         """Delete persisted service correlations involving any of these services.
 
