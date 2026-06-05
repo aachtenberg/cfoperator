@@ -3,22 +3,20 @@
 Single-pane status across the in-flight workstreams. Detail lives in the linked
 design docs; this file is the index + open-TODO list.
 
-_Last updated: 2026-06-04._
+_Last updated: 2026-06-05._
 
-## Currently: observation window
-Noise filtering, Job-awareness, and dry-run remediation are live. Observation
-exposed that Tier 1 and #15 each missed a parallel code path; those gaps are now
-closed (#16). **Back to observing against real traffic.**
+## Currently: all planned work shipped — watch live behavior
+The full noise-reduction stack (Tiers 1–3), the correctness fixes, and the
+remediation pipeline (now **open_prs LIVE**) are deployed. Nothing queued.
 
-Watch for (effects land on the **next sweep after the c6712af deploy**; the
-correlation purge needs one sweep to clean the table):
-- faster-whisper / "restarted once" class goes quiet on the sweep path too.
-- freshet-alerter ↔ ingest "co-failure" insight stops recurring (may appear once
-  more if a sweep is mid-flight, then clears after the purge runs).
-- remediation dry-run proposals are sensible (good declines, plausible patches) —
-  the trust data for the `open_prs` decision.
-- anything *over*-suppressed (a real issue downgraded to monitoring / a real
-  finding suppressed) → tune `ooda.noise.recovered_restart_threshold`.
+Watch for:
+- **Remediation PRs** — when a needs_action unschedulable-pod alert fires, the
+  agent opens a PR (`cfop/remediate-*`) on homelab-infra. Review/merge or close.
+  If it ever proposes something wrong, set `remediation.open_prs: false` to pause.
+- Slack stays quiet for low-signal/recurring/dismissed findings; real
+  needs_action / critical still pages.
+- anything *over*-suppressed (a real issue gone quiet) → raise
+  `ooda.noise.recovered_restart_threshold`, or a finding wrongly PR'd → pause open_prs.
 
 ## Shipped (live in prod)
 
@@ -39,15 +37,22 @@ correlation purge needs one sweep to clean the table):
   restart findings) + **persisted-correlation purge** (clean false rows #15
   couldn't reach). _(live: main-c6712af — verified: purged 15 false rows, sweep clean)_
 - **Tier 2c (severity→channel)** — real-time Slack only for act-now classes;
-  resolutions/monitoring/resolved/info + correlation insights → digest.
-  _(deploy: main-034e6e0, rolling out)_
+  resolutions/monitoring/resolved/info + correlation insights → digest. _(live)_
+- **Tier 2d (recurrence suppression)** — recurring identical finding notifies
+  once per window (6h; 30m critical); escalations bypass. _(live)_
+- **node-Ready false-positive suppressor** — metric-misread "all nodes NotReady"
+  killed by the ground-truth filter. _(live: main-b1c2938)_
+- **Tier 3 (learn dismissals)** — `acknowledged`/`false_positive` skip re-notify
+  (#17), generalized count-insensitively (#14). _(live)_
 
 ### Remediation pipeline → [docs/remediation-pipeline.md](remediation-pipeline.md)
-- **B2 dry-run** proposer: unschedulable pod → patch candidate or precise decline
+- **B2** proposer: unschedulable pod → patch candidate or precise decline
   (conservative; declines the adguard-shape host-port traps).
-- **B2-live** PR path: locate manifest → branch/commit → open PR (mock-tested +
-  read-path smoke-tested against real homelab-infra).
-- **Enabled in prod, dry-run** (`remediation.enabled: true, open_prs: false`).
+- **B2-live** PR path: locate manifest → branch/commit → open PR. Write path
+  smoke-tested end-to-end (homelab-infra PR #40, cleaned up).
+- **open_prs LIVE** (`enabled: true, open_prs: true, max_open_prs: 3`) — agent
+  autonomously opens PRs on qualifying needs_action unschedulable alerts;
+  **human-merge gated**. Pause = set open_prs:false + restart.
 
 ### Infra (homelab, one-offs — done)
 - svclb-traefik sysctl churn fixed (+ baked into ansible bootstrap).
@@ -57,18 +62,19 @@ correlation purge needs one sweep to clean the table):
 
 ## Open TODOs
 
-| ID | Item | Notes | Priority |
-|----|------|-------|----------|
-| #11 | Flip remediation `open_prs` | After observation. Needs: one throwaway-PR write smoke test, a global cap on open remediation PRs. Token already capable. | after observe |
-| #13 | **Tier 2d** — recurrence suppression | _(2c severity→channel shipped — main-034e6e0.)_ Remaining: a recurring identical finding notifies once, then quiet until its state changes / severity escalates; honor `acknowledged`/`false_positive` finding status. | next build |
-| #14 | **Tier 3 noise** — learn endemic noise | Feed `acknowledged`/`false_positive` findings into the KB so the agent pre-classifies known-benign patterns. | later |
-| — | Remediation: more fix classes | Resource-limit bumps, image pins (Phase C). Currently only add-toleration. | later |
-| — | Remediation: wire `open_pr` into event-runtime decision vocabulary | `_TRIAGE_VALID_ACTIONS` is frozen to 4; not needed while the agent drives off the investigation result. | optional |
+All planned items (#11–#17, Tiers 1–3) are shipped. Remaining are optional
+future enhancements, none scheduled:
 
-## Recommended next (when resuming)
-**#13 Tier 2.** Tier 1 + the Job-fix made severity *correct*; Tier 2 makes the
-*channel* match it, which is what actually quiets the real-time Slack pings. Then
-#11 once the dry-run proposals have proven sensible.
+| Item | Notes | Priority |
+|------|-------|----------|
+| Remediation: more fix classes | Resource-limit bumps, image pins (Phase C). Currently only add-toleration. | later |
+| Remediation: wire `open_pr` into event-runtime decision vocabulary | `_TRIAGE_VALID_ACTIONS` is frozen to 4; not needed while the agent drives off the investigation result. | optional |
+| Noise: semantic/cross-resource dismissal learning | Current Tier 3 is deterministic (count-insensitive, per-resource). Embedding-based cross-resource matching would generalize further but risks over-suppression. | optional |
+| Noise: richer suppressed-item digest | Today's "digest" = morning summary + queryable history; a dedicated "what I quieted" roll-up could come later. | optional |
+
+## Recommended next
+Nothing required — **observe live behavior** (esp. the first real remediation
+PRs and overall Slack volume). Pick up an optional item only if a need emerges.
 
 ## Deploy reminders
 - cfoperator code: push to `main` → CI builds `:main-<sha>` → bumps private
