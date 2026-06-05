@@ -334,12 +334,22 @@ class RemediationProposer:
 
     def __init__(self, k8s_tools: Any, repos: Optional[List[Dict[str, Any]]] = None,
                  *, open_prs: bool = False, default_repo_name: str = "homelab-infra",
-                 github: Any = None):
+                 github: Any = None, max_open_prs: int = 3):
         self.k8s = k8s_tools
         self.repos = repos or []
         self.open_prs = bool(open_prs)
         self.default_repo_name = default_repo_name
         self.github = github  # a GitHubApiClient-like object with .request(); None => dry-run
+        self.max_open_prs = max_open_prs  # global cap on concurrent remediation PRs
+
+    def _open_remediation_pr_count(self, repo: str) -> int:
+        """How many cfoperator remediation PRs are already open (volume guard)."""
+        resp = self.github.request("GET", f"/repos/{repo}/pulls",
+                                   params={"state": "open", "per_page": "100"})
+        if not resp.get("success"):
+            return 0
+        return sum(1 for pr in (resp.get("data") or [])
+                   if str(((pr.get("head") or {}).get("ref") or "")).startswith("cfop/remediate-"))
 
     def _repo_slug(self, name: str) -> str:
         for r in self.repos:
@@ -374,6 +384,11 @@ class RemediationProposer:
         existing = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{branch}")
         if existing.get("success"):
             return {"status": "skipped", "detail": "remediation branch already exists", "branch": branch}
+
+        # Volume guard: don't flood the repo with remediation PRs.
+        if self.max_open_prs >= 0 and self._open_remediation_pr_count(repo) >= self.max_open_prs:
+            return {"status": "capped",
+                    "detail": f"already at the open remediation PR cap ({self.max_open_prs})"}
 
         located = locate_manifest(self.github, repo, workload, namespace, base)
         if not located:

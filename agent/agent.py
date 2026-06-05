@@ -1383,6 +1383,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 open_prs=open_prs,
                 default_repo_name=rcfg.get('default_repo', 'homelab-infra'),
                 github=self._github_write_client() if open_prs else None,
+                max_open_prs=int(rcfg.get('max_open_prs', 3)),
             )
             workload = re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', pod_name)
             proposal = proposer.propose_for(namespace, pod_name, workload=workload)

@@ -279,3 +279,44 @@ def test_open_pr_noop_when_flag_off():
                           pod_spec={}, scheduler_message=TAINT_ONLY_MSG, repo="aachtenberg/homelab-infra")
     proposer = RemediationProposer(None, open_prs=False, github=gh)
     assert proposer.open_pr(prop, "batch", "batch-worker") is None
+
+
+# --- #11: global open-PR cap --------------------------------------------------
+
+class _FakeGHWithPulls(_FakeGH):
+    def __init__(self, open_pr_branches, **kw):
+        super().__init__(**kw)
+        self._open_branches = open_pr_branches
+    def request(self, method, path, *, body=None, params=None, cache_ttl=None):
+        if method == "GET" and path.endswith("/pulls"):
+            return {"success": True, "data": [
+                {"head": {"ref": b}} for b in self._open_branches]}
+        return super().request(method, path, body=body, params=params, cache_ttl=cache_ttl)
+
+
+def test_open_pr_capped_when_too_many_open():
+    from remediation import RemediationProposer, build_proposal
+    gh = _FakeGHWithPulls(
+        open_pr_branches=["cfop/remediate-a", "cfop/remediate-b", "cfop/remediate-c"],
+        files={"k3s/base/batch/batch-worker.yml": DEPLOY_YAML})
+    prop = build_proposal(namespace="batch", pod_name="batch-worker-abc", workload="batch-worker",
+                          pod_spec={}, scheduler_message=TAINT_ONLY_MSG, repo="aachtenberg/homelab-infra")
+    proposer = RemediationProposer(
+        None, repos=[{"name": "homelab-infra", "github": "aachtenberg/homelab-infra", "branch": "main"}],
+        open_prs=True, github=gh, max_open_prs=3)
+    res = proposer.open_pr(prop, "batch", "batch-worker")
+    assert res["status"] == "capped"
+    assert gh.created_pull is None
+
+
+def test_open_pr_allowed_under_cap():
+    from remediation import RemediationProposer, build_proposal
+    gh = _FakeGHWithPulls(open_pr_branches=["cfop/remediate-a"],
+                          files={"k3s/base/batch/batch-worker.yml": DEPLOY_YAML})
+    prop = build_proposal(namespace="batch", pod_name="batch-worker-abc", workload="batch-worker",
+                          pod_spec={}, scheduler_message=TAINT_ONLY_MSG, repo="aachtenberg/homelab-infra")
+    proposer = RemediationProposer(
+        None, repos=[{"name": "homelab-infra", "github": "aachtenberg/homelab-infra", "branch": "main"}],
+        open_prs=True, github=gh, max_open_prs=3)
+    res = proposer.open_pr(prop, "batch", "batch-worker")
+    assert res["status"] == "opened"
