@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable
 
 from .host_observability import build_host_observability_plugins
-from .dedupe import FileBackedCooldownPolicy
+from .dedupe import FileBackedCooldownPolicy, RecurrenceSuppressionPolicy
 from .models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, Decision, ScheduledTask
 from .plugins import ActionHandler, AlertSource, ContextProvider, DecisionEngine, HostObservabilityProvider, Scheduler
 
@@ -465,19 +465,37 @@ def build_default_action_handlers() -> Dict[str, ActionHandler]:
     return {handler.action_name: handler for handler in handlers}
 
 
-def build_default_alert_policies(base_dir: str | None = None) -> list[FileBackedCooldownPolicy]:
-    """Return portable default alert policies."""
+def build_default_alert_policies(base_dir: str | None = None) -> list:
+    """Return portable default alert policies.
+
+    Two layers: a short cooldown (alert storms) and a long recurrence
+    suppression (proactive sweep findings that recur every cycle — notify once
+    per window, escalations pass through). Each is independently toggleable via
+    env (set its window to 0 to disable).
+    """
     if base_dir is None:
         base_dir = str(Path.home() / ".cfoperator" / "event-runtime")
+    policies: list = []
+
     cooldown_seconds = int(os.getenv("CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS", "300"))
-    if cooldown_seconds <= 0:
-        return []
-    return [
-        FileBackedCooldownPolicy(
+    if cooldown_seconds > 0:
+        policies.append(FileBackedCooldownPolicy(
             path=str(Path(base_dir) / "policies" / "dedupe.json"),
             cooldown_seconds=cooldown_seconds,
-        )
-    ]
+        ))
+
+    # Tier-2d: a recurring identical finding notifies once, then stays quiet for
+    # this window (escalations bypass — severity is in the fingerprint).
+    recur_seconds = int(os.getenv("CFOP_EVENT_RUNTIME_RECURRENCE_WINDOW_SECONDS", "21600"))
+    recur_critical = int(os.getenv("CFOP_EVENT_RUNTIME_RECURRENCE_CRITICAL_SECONDS", "1800"))
+    if recur_seconds > 0:
+        policies.append(RecurrenceSuppressionPolicy(
+            path=str(Path(base_dir) / "policies" / "recurrence.json"),
+            window_seconds=recur_seconds,
+            critical_window_seconds=recur_critical,
+        ))
+
+    return policies
 
 
 def build_default_host_observability_plugins(

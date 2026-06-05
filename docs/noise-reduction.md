@@ -79,8 +79,16 @@ here — power-outage aftermath, SD flakiness).
   - agent correlation insights — stored as learnings, suppressed real-time;
     re-enable with `notifications.realtime_correlation_insights: true`.
   Caveat: the "digest" is the existing morning summary + queryable history; a
-  richer real-time-suppressed roll-up can come later. **2d (recurrence
-  suppression) not yet done.**
+  richer real-time-suppressed roll-up can come later.
+- **Tier 2d (recurrence suppression): shipped.** `RecurrenceSuppressionPolicy`
+  (event_runtime) — a recurring identical finding (same fingerprint) notifies
+  once, then stays quiet for a long window (default 6h; critical 30m). Sweeps
+  re-emit findings every ~90–150 min; the 5-min cooldown was too short.
+  Escalations bypass automatically (severity is part of the fingerprint, so
+  warning→critical is a new fingerprint). Toggle via
+  `CFOP_EVENT_RUNTIME_RECURRENCE_WINDOW_SECONDS` (0 disables).
+  Not yet: honoring `acknowledged`/`false_positive` finding status (needs the
+  agent to skip those at post-time) — small follow-on.
 - Tier 3 (learn known noise): not started.
 
 ## Notes
