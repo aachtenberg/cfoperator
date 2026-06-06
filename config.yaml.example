@@ -36,6 +36,19 @@ observability:
       webhook_url: ${SLACK_WEBHOOK_URL}
     - backend: discord
       webhook_url: ${DISCORD_WEBHOOK_URL}
+    # ntfy: delivers the triage 'notify' action to a phone/desktop. url + topic
+    # are required and env-driven so the (access-controlling) topic stays out of
+    # the repo — set NTFY_URL/NTFY_TOPIC (+ optional NTFY_TOKEN) in the deploy.
+    # Empty url or topic => sink skipped. All other fields are optional and fall
+    # back to the sink's built-in defaults; override here to customize:
+    #   priority_map:  {info: "3", warning: "4", critical: "5"}   # ntfy 1..5
+    #   tags_map:      {info: information_source, warning: warning, critical: rotating_light}
+    #   title: "CFOperator Event Runtime"
+    #   timeout: 10
+    - backend: ntfy
+      url: ${NTFY_URL}
+      topic: ${NTFY_TOPIC}
+      token: ${NTFY_TOKEN}
     # - backend: email
     #   smtp_host: smtp.gmail.com
     #   smtp_port: 587

@@ -21,7 +21,7 @@ from .http_actions import (
     build_http_triage_engine,
     log_completion_endpoint_status,
 )
-from .notifications import SlackNotificationSink, DiscordNotificationSink
+from .notifications import SlackNotificationSink, DiscordNotificationSink, NtfyNotificationSink
 from .plugins import AlertSource
 from .sources import AlertmanagerAlertSource
 from .engine import EventRuntime
@@ -181,6 +181,30 @@ def _build_notification_sinks(config_path: str | None = None) -> list:
                 continue
             sinks.append(DiscordNotificationSink(webhook_url=webhook))
             _log.info("Initialized Discord notification sink")
+        elif backend == "ntfy":
+            # Every knob is config-driven; url/topic are required (and usually
+            # ${NTFY_URL}/${NTFY_TOPIC} so the topic stays out of the public
+            # repo). Empty url/topic -> skip, so the entry is inert until set.
+            base_url = str(entry.get("url") or "").strip()
+            topic = str(entry.get("topic") or "").strip()
+            if not base_url or not topic:
+                _log.info("ntfy notification sink skipped (missing url or topic)")
+                continue
+            sinks.append(
+                NtfyNotificationSink(
+                    base_url=base_url,
+                    topic=topic,
+                    title=entry.get("title"),
+                    priority_map=entry.get("priority_map"),
+                    tags_map=entry.get("tags_map"),
+                    token=str(entry.get("token") or "").strip(),
+                    timeout=int(entry.get("timeout") or 10),
+                    default_priority=entry.get("default_priority"),
+                )
+            )
+            # Don't log the topic: on a public ntfy server it's the only access
+            # control, so emitting it would leak that secret into logs.
+            _log.info("Initialized ntfy notification sink")
 
     # Fallback: env vars when no config entries matched
     if not sinks:
@@ -192,8 +216,41 @@ def _build_notification_sinks(config_path: str | None = None) -> list:
         if discord_url:
             sinks.append(DiscordNotificationSink(webhook_url=discord_url))
             _log.info("Initialized Discord notification sink from DISCORD_WEBHOOK_URL")
+        ntfy_url = os.getenv("NTFY_URL", "").strip()
+        ntfy_topic = os.getenv("NTFY_TOPIC", "").strip()
+        if ntfy_url and ntfy_topic:
+            sinks.append(
+                NtfyNotificationSink(
+                    base_url=ntfy_url,
+                    topic=ntfy_topic,
+                    title=os.getenv("NTFY_TITLE") or None,
+                    token=os.getenv("NTFY_TOKEN", "").strip(),
+                    timeout=int(os.getenv("NTFY_TIMEOUT") or 10),
+                    priority_map=_json_dict_or_none(os.getenv("NTFY_PRIORITY_MAP")),
+                    tags_map=_json_dict_or_none(os.getenv("NTFY_TAGS_MAP")),
+                    default_priority=os.getenv("NTFY_DEFAULT_PRIORITY") or None,
+                )
+            )
+            _log.info("Initialized ntfy notification sink from NTFY_URL/NTFY_TOPIC")
 
     return sinks
+
+
+def _json_dict_or_none(raw: str | None) -> dict | None:
+    """Parse a JSON object env var (e.g. NTFY_PRIORITY_MAP) into a dict.
+
+    Returns None on empty/invalid input so the sink falls back to its
+    configurable defaults rather than erroring at startup.
+    """
+    if not raw or not raw.strip():
+        return None
+    import json as _json
+
+    try:
+        value = _json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _load_git_repos(config_path: str | None = None) -> list[dict]:
