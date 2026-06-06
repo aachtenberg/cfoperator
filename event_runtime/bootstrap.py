@@ -202,7 +202,9 @@ def _build_notification_sinks(config_path: str | None = None) -> list:
                     default_priority=entry.get("default_priority"),
                 )
             )
-            _log.info("Initialized ntfy notification sink (topic=%s)", topic)
+            # Don't log the topic: on a public ntfy server it's the only access
+            # control, so emitting it would leak that secret into logs.
+            _log.info("Initialized ntfy notification sink")
 
     # Fallback: env vars when no config entries matched
     if not sinks:
