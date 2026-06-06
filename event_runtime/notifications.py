@@ -1,4 +1,4 @@
-"""Stdlib-only notification sinks for Slack and Discord webhooks."""
+"""Stdlib-only notification sinks for Slack, Discord, and ntfy webhooks."""
 
 from __future__ import annotations
 
@@ -233,4 +233,95 @@ class DiscordNotificationSink(NotificationSink):
                 return resp.status in (200, 204)
         except (urllib.error.URLError, OSError) as exc:
             logger.warning("Discord notification failed: %s", exc)
+            return False
+
+
+class NtfyNotificationSink(NotificationSink):
+    """Deliver notifications to an ntfy topic (stdlib only).
+
+    Every destination/render value — server URL, topic, title, per-severity
+    priority and tags, auth token, request timeout — is injected by the caller
+    (see ``bootstrap._build_notification_sinks``, which reads them from the
+    ``observability.notifications`` config block or ``NTFY_*`` env vars).
+    Nothing about the target is hard-coded here: the class-level ``DEFAULT_*``
+    maps are overridable fallbacks, not fixed values.
+
+    Message bodies reuse the shared ``_format_message`` so ntfy renders the
+    same triage text as Slack/Discord; ntfy-native ``X-Priority``/``X-Tags``
+    headers carry severity instead of inline emoji.
+    """
+
+    name = "ntfy-notification"
+
+    # Overridable defaults. ntfy priority is 1 (min) .. 5 (max/urgent).
+    DEFAULT_PRIORITY_MAP: Dict[str, str] = {
+        "info": "3",
+        "warning": "4",
+        "critical": "5",
+    }
+    # ntfy renders these tag names as icons (see ntfy.sh/docs/emojis).
+    DEFAULT_TAGS_MAP: Dict[str, str] = {
+        "info": "information_source",
+        "warning": "warning",
+        "critical": "rotating_light",
+    }
+    DEFAULT_TITLE = "CFOperator Event Runtime"
+    DEFAULT_PRIORITY = "3"
+
+    def __init__(
+        self,
+        base_url: str,
+        topic: str,
+        *,
+        title: str | None = None,
+        priority_map: Dict[str, str] | None = None,
+        tags_map: Dict[str, str] | None = None,
+        token: str = "",
+        timeout: int = 10,
+        default_priority: str | None = None,
+    ):
+        self.base_url = (base_url or "").rstrip("/")
+        self.topic = (topic or "").strip().strip("/")
+        self.title = self.DEFAULT_TITLE if title is None else title
+        self.priority_map = dict(self.DEFAULT_PRIORITY_MAP if priority_map is None else priority_map)
+        self.tags_map = dict(self.DEFAULT_TAGS_MAP if tags_map is None else tags_map)
+        self.token = token or ""
+        self.timeout = timeout
+        self.default_priority = str(self.DEFAULT_PRIORITY if default_priority is None else default_priority)
+
+    @property
+    def url(self) -> str:
+        """Full publish URL, or empty string when not fully configured."""
+        if not self.base_url or not self.topic:
+            return ""
+        return f"{self.base_url}/{self.topic}"
+
+    def notify(self, summary: str, *, severity: str = "info", details: Dict | None = None) -> bool:
+        # Inert until both url and topic are supplied (keeps the sink a no-op
+        # when NTFY_URL/NTFY_TOPIC are unset rather than erroring).
+        if not self.url:
+            return False
+
+        text = _format_message(summary, severity=severity, details=details)
+        headers: Dict[str, str] = {"Content-Type": "text/plain; charset=utf-8"}
+        if self.title:
+            headers["X-Title"] = self.title
+        priority = self.priority_map.get(severity, self.default_priority)
+        if priority:
+            headers["X-Priority"] = str(priority)
+        tags = self.tags_map.get(severity)
+        if tags:
+            headers["X-Tags"] = tags
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        return self._post(text.encode("utf-8"), headers)
+
+    def _post(self, data: bytes, headers: Dict[str, str]) -> bool:
+        req = urllib.request.Request(self.url, data=data, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return 200 <= resp.status < 300
+        except (urllib.error.URLError, OSError) as exc:
+            logger.warning("ntfy notification failed: %s", exc)
             return False
