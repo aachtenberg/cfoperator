@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Set
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .escalation import EscalationLedger
 from .models import Alert, AlertSeverity
 from .plugins import AlertSource
 
@@ -56,6 +57,7 @@ class AlertmanagerAlertSource(AlertSource):
         timeout_seconds: int = 10,
         include_labels: bool = True,
         max_backoff_seconds: float = 300.0,
+        escalation_ledger: EscalationLedger | None = None,
     ):
         self.url = url.rstrip("/")
         self.poll_filter = poll_filter
@@ -65,6 +67,12 @@ class AlertmanagerAlertSource(AlertSource):
         self._seen_fingerprints: Set[str] = set()
         self._consecutive_failures: int = 0
         self._backoff_until: float = 0.0
+        # When wired, emit a one-time "Resolved:" alert as escalated alerts
+        # clear. ``_active_alerts`` snapshots each firing alert so the
+        # resolution message can name what recovered after the alert is gone
+        # from Alertmanager's active set.
+        self._escalation_ledger = escalation_ledger
+        self._active_alerts: Dict[str, Alert] = {}
 
     def poll(self) -> Iterable[Alert]:
         if time.monotonic() < self._backoff_until:
@@ -87,10 +95,47 @@ class AlertmanagerAlertSource(AlertSource):
             alert = self._normalize(raw)
             if alert is not None:
                 new_alerts.append(alert)
+                if self._escalation_ledger is not None:
+                    self._active_alerts[fingerprint] = alert
+
+        # Alerts that were active last cycle but are gone now have resolved.
+        # For any that escalated to a human, emit a single "Resolved:" alert so
+        # the operator who got paged learns it cleared (the ledger guarantees
+        # once). Non-escalated resolutions stay silent (scoped by design).
+        if self._escalation_ledger is not None:
+            for fingerprint in self._seen_fingerprints - current_fingerprints:
+                snapshot = self._active_alerts.pop(fingerprint, None)
+                if snapshot is not None and self._escalation_ledger.take(fingerprint):
+                    new_alerts.append(self._build_resolution_alert(snapshot))
 
         # Forget resolved alerts so they can fire again later
         self._seen_fingerprints = current_fingerprints
         return new_alerts
+
+    def _build_resolution_alert(self, original: Alert) -> Alert:
+        """Synthesize the INFO resolution alert for a cleared escalation.
+
+        Rides the runtime's existing resolution path: ``details["resolution"]``
+        flips the notification prefix to ":white_check_mark: Resolved:" and the
+        agent-side triage short-circuits it (no LLM call). The fingerprint gets
+        a ``:resolved`` suffix so dedupe/recurrence policies — which key on the
+        firing alert's fingerprint — don't suppress the resolution.
+        """
+        details: Dict[str, Any] = {"resolution": True}
+        if original.details.get("alertname"):
+            details["alertname"] = original.details["alertname"]
+        if original.details.get("host"):
+            details["host"] = original.details["host"]
+        return Alert(
+            source=self.name,
+            severity=AlertSeverity.INFO,
+            summary=f"Resolved: {original.summary}",
+            details=details,
+            namespace=original.namespace,
+            resource_type=original.resource_type,
+            resource_name=original.resource_name,
+            fingerprint=f"{original.fingerprint}:resolved",
+        )
 
     def _fetch_alerts(self) -> List[Dict[str, Any]] | None:
         """Fetch alerts from Alertmanager. Returns None on failure."""
