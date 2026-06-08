@@ -21,6 +21,7 @@ from .http_actions import (
     build_http_triage_engine,
     log_completion_endpoint_status,
 )
+from .escalation import EscalationLedger
 from .notifications import SlackNotificationSink, DiscordNotificationSink, NtfyNotificationSink
 from .plugins import AlertSource
 from .sources import AlertmanagerAlertSource
@@ -120,11 +121,22 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
     for sink in _build_notification_sinks(config_path):
         plugins.register_notification_sink(sink)
 
+    # Resolution notifications: when an escalated alert clears, emit a one-time
+    # ":white_check_mark: Resolved:" notice. The ledger is shared by reference
+    # between the source (which detects the clear) and the runtime (which marks
+    # the escalation). Disable with CFOP_EVENT_RUNTIME_RESOLUTION_NOTIFICATIONS=false.
+    resolution_enabled = os.getenv(
+        "CFOP_EVENT_RUNTIME_RESOLUTION_NOTIFICATIONS", "true"
+    ).strip().lower() not in ("0", "false", "no")
+    escalation_ledger = EscalationLedger() if resolution_enabled else None
+
     alertmanager_url = os.getenv("CFOP_EVENT_RUNTIME_ALERTMANAGER_URL", "").strip()
     if alertmanager_url:
-        plugins.register_alert_source(AlertmanagerAlertSource(url=alertmanager_url))
+        plugins.register_alert_source(
+            AlertmanagerAlertSource(url=alertmanager_url, escalation_ledger=escalation_ledger)
+        )
 
-    return EventRuntime(plugins)
+    return EventRuntime(plugins, escalation_ledger=escalation_ledger)
 
 
 def build_portable_worker(

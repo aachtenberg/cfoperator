@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Dict, List, Optional
 
 from .activity import build_activity_feed, filter_activities, filter_events
+from .escalation import EscalationLedger
 from .models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, Decision, DomainEvent, ScheduledTask
 from .notifications import should_notify
 from .plugin_manager import PluginManager
@@ -53,12 +54,15 @@ logger = logging.getLogger(__name__)
 class EventRuntime:
     """Coordinate alert intake, gating, context, decisions, and actions."""
 
-    def __init__(self, plugins: PluginManager):
+    def __init__(self, plugins: PluginManager, escalation_ledger: EscalationLedger | None = None):
         if plugins.state_sink is None:
             raise ValueError("EventRuntime requires a registered state sink")
         if plugins.decision_engine is None:
             raise ValueError("EventRuntime requires a registered decision engine")
         self.plugins = plugins
+        # Shared with the Alertmanager source so it can emit a one-time
+        # "Resolved:" notification when an escalated alert clears (None = off).
+        self._escalation_ledger = escalation_ledger
         self._started = False
 
     def start(self) -> None:
@@ -163,6 +167,7 @@ class EventRuntime:
 
             request = ActionRequest(alert=alert, decision=decision, context=envelope)
             action_result = handler.execute(request)
+            self._maybe_mark_escalation(alert, action_result)
             self.record_event(
                 "action_completed",
                 alert=alert.to_dict(),
@@ -284,6 +289,7 @@ class EventRuntime:
         in-process action_completed flow so the activity feed and
         notification path are identical regardless of executor.
         """
+        self._maybe_mark_escalation(alert, action_result)
         self.record_event(
             "action_completed",
             alert=alert.to_dict(),
@@ -291,6 +297,17 @@ class EventRuntime:
             source="external",
         )
         self._notify_action_completed(alert, action_result)
+
+    def _maybe_mark_escalation(self, alert: Alert, action_result: ActionResult) -> None:
+        """Record an escalated alert's fingerprint so its later resolution can
+        be announced. Keyed on the same ``outcome`` signal the digest router
+        uses (``action_result.details["outcome"] == "escalated"``). No-op unless
+        an escalation ledger is wired and the alert carries a fingerprint."""
+        if self._escalation_ledger is None or not alert.fingerprint:
+            return
+        details = action_result.details if isinstance(action_result.details, dict) else {}
+        if str(details.get("outcome") or "") == "escalated":
+            self._escalation_ledger.mark(alert.fingerprint)
 
     def _notify_action_completed(
         self,
