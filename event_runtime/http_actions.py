@@ -354,7 +354,19 @@ def build_http_triage_engine(agent_url: Optional[str]) -> Optional[HTTPTriageDec
 
     Returns None when ``agent_url`` is missing or empty, so the portable
     OpenReasoningDecisionEngine stays in place.
+
+    ``CFOP_TRIAGE_TIMEOUT_SECONDS`` overrides the HTTP timeout (default 5s).
+    The default suits fast triage backends; a local thinking model (e.g.
+    qwen3 27b on Ollama) can legitimately take 30-90s per classification —
+    below that knob's value every fresh alert's triage times out and safe-
+    defaults to investigate/confidence=0, silently disabling the triage tier.
     """
     if not agent_url:
         return None
-    return HTTPTriageDecisionEngine(agent_url=agent_url)
+    raw_timeout = os.getenv("CFOP_TRIAGE_TIMEOUT_SECONDS", "").strip()
+    try:
+        timeout = float(raw_timeout) if raw_timeout else 5.0
+    except ValueError:
+        logger.warning("Invalid CFOP_TRIAGE_TIMEOUT_SECONDS=%r; using 5s", raw_timeout)
+        timeout = 5.0
+    return HTTPTriageDecisionEngine(agent_url=agent_url, timeout=timeout)
