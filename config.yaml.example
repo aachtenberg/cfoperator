@@ -285,6 +285,7 @@ git:
 remediation:
   enabled: false
   open_prs: false          # reserved; live PR opening is not implemented yet
+  deep_open_prs: false     # deep-investigation diffs -> PRs (same gates + shared cap)
   default_repo: homelab-infra   # which `git.repos[].name` owns manifests to patch
 
 # Skills
