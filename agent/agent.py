@@ -1421,6 +1421,90 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             logger.warning(f"Could not init GitHub client for remediation: {e}")
             return None
 
+    def store_deep_investigation(self, alert: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+        """Ingest a deep-investigation worker's report into the knowledge base.
+
+        Mirrors the storage tail of ``_act`` (start/update investigation +
+        embedding) so the report surfaces in future triage's
+        similar-investigation lookups. If the report carries a proposed diff
+        and ``remediation.deep_open_prs`` is enabled, route it through the
+        existing PR gates — never a parallel path.
+        """
+        details = result.get('details') if isinstance(result.get('details'), dict) else {}
+        summary = str(alert.get('summary') or '(no summary)')
+        trigger = f"[deep] {summary}"
+        # The worker reports outcome "escalated" (the engine ledger's exact
+        # match string); the KB convention from STATUS parsing is "escalate".
+        outcome = str(details.get('outcome') or 'needs_action')
+        kb_outcome = 'escalate' if outcome == 'escalated' else outcome
+
+        inv_id = self.kb.start_investigation(trigger=trigger)
+        findings = {
+            'response': str(details.get('report') or '')[:5000],
+            'recommendation': str(details.get('recommendation') or ''),
+            'provider': f"anthropic/{details.get('model') or 'unknown'}",
+            'deep': True,
+            'host': details.get('host'),
+        }
+        self.kb.update_investigation(
+            investigation_id=inv_id,
+            completed_at=datetime.now(),
+            findings=findings,
+            outcome=kb_outcome,
+            duration_seconds=float(details.get('duration_s') or 0.0),
+        )
+        self._embed_investigation(inv_id, trigger, findings, kb_outcome)
+        logger.info(f"Deep investigation #{inv_id} stored: {kb_outcome} (host={details.get('host')})")
+
+        pr_result = None
+        diff_text = str(details.get('proposed_diff') or '')
+        if diff_text:
+            pr_result = self._maybe_open_pr_from_deep_diff(alert, details, diff_text)
+            if pr_result:
+                logger.info(f"Deep-investigation PR for {details.get('host')}: {pr_result}")
+
+        out: Dict[str, Any] = {'investigation_id': inv_id, 'outcome': kb_outcome}
+        if pr_result:
+            out['pr_result'] = pr_result
+        return out
+
+    def _maybe_open_pr_from_deep_diff(self, alert: Dict[str, Any], details: Dict[str, Any],
+                                      diff_text: str) -> Optional[Dict[str, Any]]:
+        """Route a deep-investigation diff through the remediation PR gates.
+
+        Off unless ``remediation.deep_open_prs`` is set — until then the diff
+        only travels inside the report/notification (dry-run, like Phase B
+        before open_prs went live).
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if not rcfg.get('deep_open_prs'):
+            return None
+        try:
+            proposer = RemediationProposer(
+                getattr(self.tools, 'k8s_tools', None),
+                repos=self.config.get('git', {}).get('repos', []),
+                open_prs=True,
+                default_repo_name=rcfg.get('default_repo', 'homelab-infra'),
+                github=self._github_write_client(),
+                max_open_prs=int(rcfg.get('max_open_prs', 3)),
+            )
+            host = str(details.get('host') or 'unknown')
+            alertname = str((alert.get('details') or {}).get('alertname') or 'finding')
+            title = f"cfoperator deep-investigation fix: {alertname} on {host}"
+            body = (
+                f"Proposed by a deep-investigation run for alert: {alert.get('summary')}\n\n"
+                f"Recommendation: {details.get('recommendation') or '(see report)'}\n\n"
+                "Generated from host forensics; review before merging.\n"
+                f"Report excerpt:\n\n{str(details.get('report') or '')[:2000]}"
+            )
+            return proposer.open_pr_from_diff(
+                diff_text=diff_text, title=title, body=body,
+                dedupe_key=f"{host}-{alertname}",
+            )
+        except Exception as e:
+            logger.warning(f"Deep-investigation PR path failed: {e}")
+            return {'status': 'error', 'detail': str(e)[:200]}
+
     def _verify_investigation_outcome(self, outcome: str, alert_info: Dict[str, Any],
                                       trigger: str) -> tuple:
         """Deterministically check a 'resolved' verdict against live cluster state.

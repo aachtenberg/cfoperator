@@ -204,6 +204,85 @@ def _is_secret_path(path: str) -> bool:
     return bool(_SECRET_PATH.search(path or ""))
 
 
+# --- unified-diff application (deep-investigation PR path) -------------------
+
+
+def parse_unified_diff(diff_text: str) -> Optional[tuple]:
+    """Parse a single-file unified diff into (path, hunks).
+
+    Each hunk is (old_start, old_lines) where old_lines are the lines the
+    hunk expects in the current file (context + deletions, prefix stripped)
+    paired with the lines it produces (context + additions). Returns None for
+    anything that isn't a clean single-file diff — multi-file diffs are a
+    deliberate decline, not a loop.
+    """
+    if not diff_text:
+        return None
+    lines = diff_text.splitlines()
+    path = None
+    hunks: List[tuple] = []
+    current: Optional[dict] = None
+    for line in lines:
+        if line.startswith("--- "):
+            continue
+        if line.startswith("+++ "):
+            if path is not None:
+                return None  # second file header -> multi-file diff
+            raw = line[4:].strip()
+            path = raw[2:] if raw.startswith("b/") else raw
+            continue
+        if line.startswith("@@"):
+            m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@", line)
+            if not m or path is None:
+                return None
+            current = {"old_start": int(m.group(1)), "old": [], "new": []}
+            hunks.append(current)
+            continue
+        if current is None:
+            continue  # preamble text before the first hunk
+        if line.startswith(" ") or line == "":
+            body = line[1:] if line.startswith(" ") else ""
+            current["old"].append(body)
+            current["new"].append(body)
+        elif line.startswith("-"):
+            current["old"].append(line[1:])
+        elif line.startswith("+"):
+            current["new"].append(line[1:])
+        elif line.startswith("\\"):
+            continue  # "\ No newline at end of file"
+        else:
+            return None  # malformed hunk body
+    if not path or not hunks:
+        return None
+    return path, [(h["old_start"], h["old"], h["new"]) for h in hunks]
+
+
+def apply_unified_diff(text: str, hunks: List[tuple]) -> Optional[str]:
+    """Apply parsed hunks with exact context matching; None on any mismatch.
+
+    Tries the hunk's stated position first; falls back to a whole-file search
+    only when the expected block occurs exactly once (an ambiguous or absent
+    match means the file drifted from what the LLM saw — reject, don't guess).
+    """
+    lines = text.splitlines()
+    offset = 0
+    for old_start, old, new in hunks:
+        if not old:
+            return None  # pure-insertion hunks lack anchoring context
+        idx = old_start - 1 + offset
+        if lines[idx:idx + len(old)] != old:
+            matches = [
+                i for i in range(len(lines) - len(old) + 1)
+                if lines[i:i + len(old)] == old
+            ]
+            if len(matches) != 1:
+                return None
+            idx = matches[0]
+        lines[idx:idx + len(old)] = new
+        offset += len(new) - len(old)
+    return "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+
+
 def _manifest_matches(text: str, workload: str, namespace: str, kinds=WORKLOAD_KINDS) -> bool:
     try:
         docs = list(yaml.safe_load_all(text))
@@ -422,6 +501,77 @@ class RemediationProposer:
 
         pr = self.github.request("POST", f"/repos/{repo}/pulls", body={
             "title": proposal.pr_title, "body": proposal.pr_body, "head": branch, "base": base})
+        if not pr.get("success"):
+            return {"status": "error", "detail": f"PR create failed ({pr.get('status')})"}
+        data = pr.get("data") or {}
+        return {"status": "opened", "pr_number": data.get("number"),
+                "html_url": data.get("html_url"), "branch": branch, "path": path}
+
+    def open_pr_from_diff(self, *, diff_text: str, title: str, body: str,
+                          dedupe_key: str) -> Optional[Dict[str, Any]]:
+        """Open a PR from a deep-investigation's proposed unified diff.
+
+        Same gates as ``open_pr`` — config-off dry-run, single-file only,
+        secret-path refusal, branch dedupe, and the shared ``cfop/remediate-``
+        cap (deep PRs count against the same ``max_open_prs`` budget as taint
+        remediations). The diff applies with exact context matching; any drift
+        between the LLM's view of the file and the current base branch is a
+        decline, never a guess. Human merge stays the only mutation path.
+        """
+        if not (self.open_prs and self.github):
+            return None
+        repo = self._repo_slug(self.default_repo_name)
+        if not repo:
+            return {"status": "error", "detail": "no repo configured for patch"}
+
+        parsed = parse_unified_diff(diff_text)
+        if not parsed:
+            return {"status": "declined", "detail": "not a clean single-file unified diff"}
+        path, hunks = parsed
+        if _is_secret_path(path):
+            return {"status": "refused", "detail": f"won't patch secret-bearing file: {path}"}
+
+        base = self._base_branch(self.default_repo_name)
+        slug = re.sub(r"[^a-z0-9-]+", "-", f"deep-{dedupe_key}".lower()).strip("-")
+        branch = f"cfop/remediate-{slug}"
+
+        existing = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{branch}")
+        if existing.get("success"):
+            return {"status": "skipped", "detail": "remediation branch already exists", "branch": branch}
+
+        if self.max_open_prs >= 0 and self._open_remediation_pr_count(repo) >= self.max_open_prs:
+            return {"status": "capped",
+                    "detail": f"already at the open remediation PR cap ({self.max_open_prs})"}
+
+        got = _get_file(self.github, repo, path, base)
+        if not got:
+            return {"status": "declined", "detail": f"could not fetch {path} at {base}"}
+        text, file_sha = got
+        patched = apply_unified_diff(text, hunks)
+        if not patched or patched == text:
+            return {"status": "declined", "detail": "diff does not apply cleanly to the current file"}
+
+        head = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{base}")
+        head_sha = ((head.get("data") or {}).get("object") or {}).get("sha") if head.get("success") else None
+        if not head_sha:
+            return {"status": "error", "detail": f"could not read base ref {base}"}
+
+        cr = self.github.request("POST", f"/repos/{repo}/git/refs",
+                                 body={"ref": f"refs/heads/{branch}", "sha": head_sha})
+        if not cr.get("success"):
+            return {"status": "error", "detail": f"branch create failed ({cr.get('status')})"}
+
+        commit = self.github.request("PUT", f"/repos/{repo}/contents/{path}", body={
+            "message": title,
+            "content": base64.b64encode(patched.encode("utf-8")).decode("ascii"),
+            "branch": branch,
+            "sha": file_sha,
+        })
+        if not commit.get("success"):
+            return {"status": "error", "detail": f"commit failed ({commit.get('status')})"}
+
+        pr = self.github.request("POST", f"/repos/{repo}/pulls", body={
+            "title": title, "body": body, "head": branch, "base": base})
         if not pr.get("success"):
             return {"status": "error", "detail": f"PR create failed ({pr.get('status')})"}
         data = pr.get("data") or {}

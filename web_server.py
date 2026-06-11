@@ -130,6 +130,37 @@ class WebServer:
                 'queue_depth': enqueued.get('queue_depth'),
             }), 202
 
+        # Deep-investigation report ingest — called (best-effort) by the
+        # ephemeral worker Job after it posts its completion to the event
+        # runtime. Stores the report in the KB with embeddings so future
+        # triage retrieves it, and optionally routes a proposed diff through
+        # the remediation PR gates. Auth: same X-CFOP-Token shared secret as
+        # the completion endpoint. Storage runs in a background thread (KB +
+        # embedding + possible GitHub round-trips would block the worker's
+        # short post timeout).
+        @self.app.route('/v1/deep-investigations', methods=['POST'])
+        def deep_investigations():
+            from event_runtime.http_actions import COMPLETION_AUTH_HEADER, verify_completion_auth
+            auth_error = verify_completion_auth(request.headers.get(COMPLETION_AUTH_HEADER))
+            if auth_error:
+                return jsonify({'error': auth_error}), 401
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({'error': 'JSON object body required'}), 400
+            alert = payload.get('alert')
+            result = payload.get('result')
+            if not isinstance(alert, dict) or not isinstance(result, dict):
+                return jsonify({'error': "Body must contain 'alert' and 'result' objects"}), 400
+
+            def _store():
+                try:
+                    self.operator.store_deep_investigation(alert, result)
+                except Exception as e:
+                    logger.error(f"Deep-investigation ingest failed: {e}", exc_info=True)
+
+            threading.Thread(target=_store, daemon=True, name="deep-ingest").start()
+            return jsonify({'status': 'accepted'}), 202
+
         # Synchronous triage classifier. Called by event_runtime's
         # HTTPTriageDecisionEngine before it decides whether to route an
         # alert to /v1/investigate. Returns {action, reason, confidence}

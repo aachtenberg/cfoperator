@@ -14,6 +14,11 @@ from .defaults import (
     build_default_action_handlers,
     build_default_host_observability_plugins,
 )
+from .deep_investigation import (
+    DeepInvestigationActionHandler,
+    EscalationRoutingDecisionEngine,
+    build_deep_investigation_config,
+)
 from .git_context import GitChangeContextProvider
 from .github_actions import build_github_action_handlers
 from .http_actions import (
@@ -62,7 +67,30 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
     # 'investigate') when no agent is configured.
     agent_url_for_triage = os.getenv("CFOP_AGENT_URL", "").strip()
     triage_engine = build_http_triage_engine(agent_url_for_triage or None)
-    plugins.register_decision_engine(triage_engine or OpenReasoningDecisionEngine())
+    decision_engine = triage_engine or OpenReasoningDecisionEngine()
+    # Deep-investigation tier (disabled by default). When enabled, host-shaped
+    # escalate / low-confidence-investigate verdicts are rerouted to an
+    # ephemeral forensics Job, and the previously-unhandled `escalate` action
+    # gains a notify fallback for workload alerts. Requires a completion base
+    # URL so the Job can post its report back — missing URL keeps the tier
+    # off (same skip-when-unconfigured pattern as the ntfy sink).
+    deep_cfg = build_deep_investigation_config(_load_root_config(config_path).get("event_runtime") or {})
+    if deep_cfg.enabled and not deep_cfg.completion_base_url:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Deep investigation enabled but no completion_base_url / "
+            "CFOP_DEEP_COMPLETION_BASE_URL configured; tier stays disabled."
+        )
+    if deep_cfg.enabled and deep_cfg.completion_base_url:
+        decision_engine = EscalationRoutingDecisionEngine(
+            decision_engine,
+            confidence_threshold=deep_cfg.confidence_threshold,
+            route_escalate=deep_cfg.route_escalate,
+            route_low_confidence_investigate=deep_cfg.route_low_confidence_investigate,
+            escalate_fallback_action=deep_cfg.escalate_fallback_action,
+        )
+        plugins.register_action_handler(DeepInvestigationActionHandler(deep_cfg))
+    plugins.register_decision_engine(decision_engine)
     for policy in build_default_alert_policies(str(base_dir)):
         plugins.register_alert_policy(policy)
     plugins.register_context_provider(HostContextProvider())

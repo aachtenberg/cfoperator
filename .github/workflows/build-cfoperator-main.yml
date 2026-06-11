@@ -72,6 +72,45 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
+  # Worker image for deep-investigation Jobs (worker/). Multi-arch because
+  # Jobs schedule on any node (Pis are arm64). Referenced by the floating
+  # :main tag from CFOP_DEEP_WORKER_IMAGE — the kustomize images transformer
+  # can't rewrite env-var image refs, so there's no bump step for it.
+  build-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tag
+        id: tag
+        run: echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push worker
+        uses: docker/build-push-action@v5
+        with:
+          context: worker/
+          push: true
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cfoperator-worker:main
+            ghcr.io/${{ github.repository_owner }}/cfoperator-worker:${{ steps.tag.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
   bump-deploy-repo:
     needs: build-and-push
     runs-on: ubuntu-latest
