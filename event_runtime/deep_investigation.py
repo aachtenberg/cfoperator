@@ -494,6 +494,11 @@ class DeepInvestigationActionHandler(ActionHandler):
                             {
                                 "name": "worker",
                                 "image": cfg.image,
+                                # The worker ref is a floating :main tag (the
+                                # kustomize images transformer can't bump env-
+                                # carried refs); without Always, nodes keep
+                                # running whatever they cached.
+                                "imagePullPolicy": "Always",
                                 "env": env,
                                 "volumeMounts": [
                                     {"name": "ssh", "mountPath": "/ssh-secret", "readOnly": True}
