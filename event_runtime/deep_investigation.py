@@ -85,6 +85,7 @@ class DeepInvestigationConfig:
     route_escalate: bool = True
     route_low_confidence_investigate: bool = True
     escalate_fallback_action: str = "notify"
+    route_boot_forensics: bool = True
 
 
 # slots=True turns class attributes into member descriptors, so defaults must
@@ -161,6 +162,9 @@ def build_deep_investigation_config(event_runtime_cfg: dict) -> DeepInvestigatio
         escalate_fallback_action=_str(
             "CFOP_DEEP_ESCALATE_FALLBACK", "escalate_fallback_action", _DEFAULTS.escalate_fallback_action, source=routing
         ),
+        route_boot_forensics=_flag(
+            "CFOP_DEEP_ROUTE_BOOT_FORENSICS", "route_boot_forensics", True, source=routing
+        ),
     )
 
 
@@ -205,6 +209,12 @@ class EscalationRoutingDecisionEngine(DecisionEngine):
     Non-host ``escalate`` verdicts are aliased to a configurable fallback
     action (default ``notify``). Before this module, ``escalate`` had no
     registered handler at all and failed as ``action_missing``.
+
+    Boot-forensics alerts (``details.boot_forensics: true``, posted by the
+    on-host unclean-reboot oneshot) bypass triage entirely: the decision is
+    mechanical — an unclean reboot already happened and the only sensible
+    response is prior-boot forensics — so spending an LLM classification on
+    it adds latency and no signal.
     """
 
     name = "escalation-routing"
@@ -217,12 +227,14 @@ class EscalationRoutingDecisionEngine(DecisionEngine):
         route_escalate: bool = True,
         route_low_confidence_investigate: bool = True,
         escalate_fallback_action: str = "notify",
+        route_boot_forensics: bool = True,
     ):
         self._inner = inner
         self._threshold = float(confidence_threshold)
         self._route_escalate = bool(route_escalate)
         self._route_low_conf = bool(route_low_confidence_investigate)
         self._escalate_fallback = str(escalate_fallback_action or "notify")
+        self._route_boot_forensics = bool(route_boot_forensics)
 
     @property
     def inner(self) -> DecisionEngine:
@@ -235,6 +247,34 @@ class EscalationRoutingDecisionEngine(DecisionEngine):
         self._inner.stop()
 
     def decide(self, envelope: ContextEnvelope) -> Decision:
+        alert = envelope.alert
+        if (
+            self._route_boot_forensics
+            and alert.details.get("boot_forensics")
+            and _is_host_shaped(alert)
+        ):
+            # Deterministic route — no triage call. Boot metadata from the
+            # posting host rides along as the prior-tier findings.
+            logger.info(
+                "Routing alert %s to boot forensics (unclean reboot on %s)",
+                alert.alert_id, _target_host(alert),
+            )
+            return Decision(
+                action=DEEP_INVESTIGATE_ACTION,
+                confidence=1.0,
+                reasoning="unclean reboot detected on host — routed directly to boot forensics",
+                params={
+                    "routed_by": self.name,
+                    "deep_template": "boot-forensics",
+                    "deep_context": {
+                        "original_action": "boot_forensics",
+                        "previous_boot_id": alert.details.get("previous_boot_id"),
+                        "detected_at": alert.details.get("detected_at"),
+                        "marker_state": alert.details.get("marker_state"),
+                    },
+                },
+            )
+
         decision = self._inner.decide(envelope)
 
         if not _is_host_shaped(envelope.alert):

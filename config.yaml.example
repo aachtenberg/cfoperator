@@ -200,6 +200,10 @@ event_runtime:
       route_escalate: true              # host-shaped escalate -> deep_investigate
       route_low_confidence_investigate: true
       escalate_fallback_action: notify  # non-host escalate verdicts
+      # Unclean-reboot alerts (details.boot_forensics, posted by the on-host
+      # oneshot) skip triage and go straight to the worker with the
+      # boot-forensics template. CFOP_DEEP_ROUTE_BOOT_FORENSICS
+      route_boot_forensics: true
 
 # Git & GitHub Integration
 # Maps repositories to infrastructure targets so the agent can correlate
