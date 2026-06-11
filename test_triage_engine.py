@@ -257,3 +257,15 @@ def test_format_message_keeps_long_form_for_investigate():
     assert "Alert: Pod X not ready" in msg
     assert "Result: Resolved" in msg
     assert "\n" in msg
+
+
+def test_build_engine_honors_timeout_env(monkeypatch):
+    monkeypatch.setenv("CFOP_TRIAGE_TIMEOUT_SECONDS", "120")
+    engine = build_http_triage_engine("http://agent:8083")
+    assert engine._timeout == 120.0
+
+
+def test_build_engine_rejects_bad_timeout_env(monkeypatch):
+    monkeypatch.setenv("CFOP_TRIAGE_TIMEOUT_SECONDS", "soon")
+    engine = build_http_triage_engine("http://agent:8083")
+    assert engine._timeout == 5.0
