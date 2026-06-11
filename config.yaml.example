@@ -171,6 +171,35 @@ event_runtime:
       #   url: http://prometheus:9090
       #   discover: true        # auto-discover nodes via kube_node_info
       #   timeout: 10           # Prometheus query timeout in seconds
+  # Deep-investigation tier: host-shaped escalate / low-confidence verdicts
+  # launch an ephemeral k8s Job running headless Claude Code that SSHes into
+  # the affected host (journalctl, dmesg, disk health) and posts its report
+  # back through the normal completion path. Read-only by design; proposed
+  # fixes flow through the existing remediation PR gates.
+  deep_investigation:
+    enabled: false                      # CFOP_DEEP_INVESTIGATION_ENABLED
+    image: ghcr.io/aachtenberg/cfoperator-worker:main   # CFOP_DEEP_WORKER_IMAGE
+    namespace: apps                     # CFOP_DEEP_JOB_NAMESPACE
+    service_account: cfoperator-worker  # read-only SA the Job runs as
+    secrets_name: cfoperator-secrets    # holds ANTHROPIC_API_KEY + completion secret
+    ssh_secret_name: cfop-forensics-ssh # dedicated forensics SSH keypair
+    ssh_user: aachten
+    # Where the Job posts its report back (event runtime service URL).
+    # Required — the tier stays off without it. CFOP_DEEP_COMPLETION_BASE_URL
+    completion_base_url: ""
+    # agent_url: ""                     # defaults to CFOP_AGENT_URL (KB ingest)
+    max_concurrent: 2                   # CFOP_DEEP_MAX_CONCURRENT
+    daily_budget: 10                    # CFOP_DEEP_DAILY_BUDGET (launches/day)
+    active_deadline_seconds: 900        # hard Job kill
+    claude_timeout_seconds: 600         # claude -p timeout (margin for post-back)
+    ttl_seconds_after_finished: 21600   # finished Jobs visible for 6h
+    default_template: host-forensics    # worker prompt template
+    default_model: claude-opus-4-8      # CFOP_DEEP_MODEL (haiku/sonnet = cost knob)
+    routing:
+      confidence_threshold: 0.4         # CFOP_DEEP_CONFIDENCE_THRESHOLD
+      route_escalate: true              # host-shaped escalate -> deep_investigate
+      route_low_confidence_investigate: true
+      escalate_fallback_action: notify  # non-host escalate verdicts
 
 # Git & GitHub Integration
 # Maps repositories to infrastructure targets so the agent can correlate
