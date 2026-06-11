@@ -159,10 +159,32 @@ class ClaudeRun:
     error: str
     duration_s: float
     cost_usd: Optional[float] = None
+    retryable: bool = False
+
+
+# API failures the CLI reports via is_error/api_error_status that are worth
+# one retry: rate limit, transient server errors, overloaded.
+_RETRYABLE_API_STATUSES = {429, 500, 502, 503, 529}
 
 
 def run_claude(prompt: str, *, model: str, timeout: int, cwd: str | None = None) -> ClaudeRun:
-    """Run headless Claude Code and return its final report text."""
+    """Run headless Claude Code and return its final report text.
+
+    On failure the CLI exits nonzero with an EMPTY stderr — the error detail
+    lives in the stdout JSON (``is_error``/``api_error_status``/``result``),
+    so that is what gets surfaced. Transient API errors get one retry.
+    """
+    run = _run_claude_once(prompt, model=model, timeout=timeout, cwd=cwd)
+    if not run.success and run.retryable:
+        logger.warning("claude failed retryably (%s); retrying once in 15s", run.error)
+        time.sleep(15)
+        retry = _run_claude_once(prompt, model=model, timeout=timeout, cwd=cwd)
+        retry.duration_s += run.duration_s + 15
+        return retry
+    return run
+
+
+def _run_claude_once(prompt: str, *, model: str, timeout: int, cwd: str | None = None) -> ClaudeRun:
     cmd = [
         "claude",
         "-p", prompt,
@@ -188,19 +210,29 @@ def run_claude(prompt: str, *, model: str, timeout: int, cwd: str | None = None)
         return ClaudeRun(False, "", "claude CLI not found on PATH", time.monotonic() - started)
     duration = time.monotonic() - started
 
-    if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()[:1000]
-        return ClaudeRun(False, "", f"claude exited {proc.returncode}: {stderr}", duration)
+    payload: Dict[str, Any] = {}
     try:
-        payload = json.loads(proc.stdout)
-        report = str(payload.get("result") or "")
-        cost = payload.get("total_cost_usd")
-        cost_usd = float(cost) if isinstance(cost, (int, float)) else None
+        parsed = json.loads(proc.stdout)
+        if isinstance(parsed, dict):
+            payload = parsed
     except ValueError:
-        # Unexpected non-JSON stdout: salvage it as the report rather than
-        # discarding a possibly-useful investigation.
-        report = proc.stdout.strip()
-        cost_usd = None
+        pass
+
+    api_status = payload.get("api_error_status")
+    if proc.returncode != 0 or payload.get("is_error"):
+        detail = str(payload.get("result") or "").strip() or (proc.stderr or "").strip()[:500] \
+            or (proc.stdout or "").strip()[:500] or "(no output)"
+        error = f"claude exited {proc.returncode}"
+        if api_status:
+            error += f" (api_error_status={api_status})"
+        error += f": {detail[:300]}"
+        run = ClaudeRun(False, "", error, duration)
+        run.retryable = isinstance(api_status, int) and api_status in _RETRYABLE_API_STATUSES
+        return run
+
+    report = str(payload.get("result") or "") if payload else proc.stdout.strip()
+    cost = payload.get("total_cost_usd")
+    cost_usd = float(cost) if isinstance(cost, (int, float)) else None
     if not report:
         return ClaudeRun(False, "", "claude returned an empty report", duration)
     return ClaudeRun(True, report, "", duration, cost_usd)

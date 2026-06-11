@@ -234,3 +234,59 @@ def test_post_completion_without_url_fails_fast():
     inputs = _inputs(CFOP_COMPLETION_URL="")
     result = build_action_result(ClaudeRun(True, _REPORT, "", 1.0), inputs)
     assert post_completion(inputs, result) is False
+
+
+def test_run_claude_surfaces_stdout_error_detail(monkeypatch):
+    # The CLI exits 1 with EMPTY stderr; the error detail is in stdout JSON.
+    import subprocess as sp
+
+    def fake_run(cmd, **kw):
+        return sp.CompletedProcess(cmd, 1, stdout=json.dumps({
+            "type": "result", "is_error": True, "api_error_status": 401,
+            "result": "Invalid API key · Fix external API key",
+        }), stderr="")
+
+    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
+    run = entrypoint.run_claude("p", model="m", timeout=5)
+    assert run.success is False
+    assert "api_error_status=401" in run.error
+    assert "Invalid API key" in run.error
+    assert run.retryable is False
+
+
+def test_run_claude_treats_is_error_exit_zero_as_failure(monkeypatch):
+    # "Not logged in" exits 0 but sets is_error — must not become a report.
+    import subprocess as sp
+
+    def fake_run(cmd, **kw):
+        return sp.CompletedProcess(cmd, 0, stdout=json.dumps({
+            "is_error": True, "result": "Not logged in · Please run /login",
+        }), stderr="")
+
+    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
+    run = entrypoint.run_claude("p", model="m", timeout=5)
+    assert run.success is False
+    assert "Not logged in" in run.error
+
+
+def test_run_claude_retries_once_on_overloaded(monkeypatch):
+    import subprocess as sp
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return sp.CompletedProcess(cmd, 1, stdout=json.dumps({
+                "is_error": True, "api_error_status": 529, "result": "Overloaded",
+            }), stderr="")
+        return sp.CompletedProcess(cmd, 0, stdout=json.dumps({
+            "is_error": False, "result": "report\nSTATUS: monitoring\nRECOMMENDATION: x",
+            "total_cost_usd": 0.1,
+        }), stderr="")
+
+    monkeypatch.setattr(entrypoint.subprocess, "run", fake_run)
+    monkeypatch.setattr(entrypoint.time, "sleep", lambda _s: None)
+    run = entrypoint.run_claude("p", model="m", timeout=5)
+    assert len(calls) == 2
+    assert run.success is True
+    assert "STATUS: monitoring" in run.report
