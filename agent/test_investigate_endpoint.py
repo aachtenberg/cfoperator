@@ -389,6 +389,61 @@ def test_endpoint_returns_503_when_queue_full():
     assert resp.get_json()['error'] == 'investigation queue full'
 
 
+# ---- investigations read API ----------------------------------------------
+
+
+def test_list_investigations_returns_recent():
+    client, op = _flask_client()
+    rows = [{'id': 1815, 'trigger': 'redis restarts', 'outcome': 'monitoring'}]
+    op.kb = SimpleNamespace(get_recent_investigations=lambda limit=20: rows)
+    resp = client.get('/api/investigations')
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['investigations'] == rows
+    assert body['count'] == 1
+
+
+def test_list_investigations_passes_limit():
+    client, op = _flask_client()
+    captured = {}
+
+    def fake_recent(limit=20):
+        captured['limit'] = limit
+        return []
+
+    op.kb = SimpleNamespace(get_recent_investigations=fake_recent)
+    resp = client.get('/api/investigations?limit=5')
+    assert resp.status_code == 200
+    assert captured['limit'] == 5
+
+
+def test_get_investigation_returns_full_record():
+    client, op = _flask_client()
+    record = {'id': 1814, 'trigger': 'node-exporter restarts', 'findings': {'response': 'probe timeout'}}
+    op.kb = SimpleNamespace(get_investigation=lambda investigation_id: record)
+    resp = client.get('/api/investigations/1814')
+    assert resp.status_code == 200
+    assert resp.get_json() == record
+
+
+def test_get_investigation_404_when_missing():
+    client, op = _flask_client()
+    op.kb = SimpleNamespace(get_investigation=lambda investigation_id: None)
+    resp = client.get('/api/investigations/99999')
+    assert resp.status_code == 404
+
+
+def test_list_investigations_500_on_kb_error():
+    client, op = _flask_client()
+
+    def boom(limit=20):
+        raise RuntimeError('db down')
+
+    op.kb = SimpleNamespace(get_recent_investigations=boom)
+    resp = client.get('/api/investigations')
+    assert resp.status_code == 500
+
+
 # ---- reactive poll gating -------------------------------------------------
 
 

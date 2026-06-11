@@ -654,6 +654,30 @@ class WebServer:
                 logger.error(f"Error fetching sweep reports: {e}")
                 return jsonify({'error': str(e), 'reports': []}), 500
 
+        # Investigations API
+        @self.app.route('/api/investigations')
+        def list_investigations():
+            """List recent investigations (summary rows, no findings payload)."""
+            try:
+                limit = request.args.get('limit', 20, type=int)
+                investigations = self.operator.kb.get_recent_investigations(limit=limit)
+                return jsonify({'investigations': investigations, 'count': len(investigations)})
+            except Exception as e:
+                logger.error(f"Error fetching investigations: {e}")
+                return jsonify({'error': str(e), 'investigations': []}), 500
+
+        @self.app.route('/api/investigations/<int:investigation_id>')
+        def get_investigation(investigation_id):
+            """Get a single investigation by ID, including full findings."""
+            try:
+                investigation = self.operator.kb.get_investigation(investigation_id)
+                if not investigation:
+                    return jsonify({'error': 'Investigation not found'}), 404
+                return jsonify(investigation)
+            except Exception as e:
+                logger.error(f"Error fetching investigation {investigation_id}: {e}")
+                return jsonify({'error': str(e)}), 500
+
         # Findings API
         @self.app.route('/api/findings')
         def list_findings():
