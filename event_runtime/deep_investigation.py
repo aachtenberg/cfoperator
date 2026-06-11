@@ -482,13 +482,21 @@ class DeepInvestigationActionHandler(ActionHandler):
                         "restartPolicy": "Never",
                         "serviceAccountName": cfg.service_account,
                         "imagePullSecrets": [{"name": cfg.image_pull_secret}],
+                        # fsGroup makes the secret volume group-readable by the
+                        # worker uid; the entrypoint copies keys into ~/.ssh
+                        # with 0600 (ssh refuses group-readable private keys).
+                        "securityContext": {
+                            "runAsUser": 10001,
+                            "runAsGroup": 10001,
+                            "fsGroup": 10001,
+                        },
                         "containers": [
                             {
                                 "name": "worker",
                                 "image": cfg.image,
                                 "env": env,
                                 "volumeMounts": [
-                                    {"name": "ssh", "mountPath": "/home/worker/.ssh", "readOnly": True}
+                                    {"name": "ssh", "mountPath": "/ssh-secret", "readOnly": True}
                                 ],
                                 "resources": {
                                     "requests": {"cpu": "100m", "memory": "256Mi"},
@@ -497,7 +505,7 @@ class DeepInvestigationActionHandler(ActionHandler):
                             }
                         ],
                         "volumes": [
-                            {"name": "ssh", "secret": {"secretName": cfg.ssh_secret_name, "defaultMode": 0o400}}
+                            {"name": "ssh", "secret": {"secretName": cfg.ssh_secret_name, "defaultMode": 0o440}}
                         ],
                     },
                 },
