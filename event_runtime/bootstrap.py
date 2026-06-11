@@ -88,6 +88,7 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
             route_escalate=deep_cfg.route_escalate,
             route_low_confidence_investigate=deep_cfg.route_low_confidence_investigate,
             escalate_fallback_action=deep_cfg.escalate_fallback_action,
+            route_boot_forensics=deep_cfg.route_boot_forensics,
         )
         plugins.register_action_handler(DeepInvestigationActionHandler(deep_cfg))
     plugins.register_decision_engine(decision_engine)

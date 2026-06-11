@@ -409,3 +409,81 @@ def test_bootstrap_skips_deep_handler_without_completion_url(monkeypatch, tmp_pa
     )
     assert DEEP_INVESTIGATE_ACTION not in runtime.plugins.action_handlers
     assert not isinstance(runtime.plugins.decision_engine, EscalationRoutingDecisionEngine)
+
+
+# ---- routing: boot-forensics bypass ------------------------------------------
+
+
+def _boot_alert(**overrides) -> Alert:
+    payload = {
+        "source": "boot-forensics",
+        "severity": "warning",
+        "summary": "Unclean reboot detected on raspberrypi5",
+        "resource_type": "node",
+        "resource_name": "raspberrypi5",
+        "fingerprint": "boot-forensics-raspberrypi5-abc123",
+        "details": {
+            "boot_forensics": True,
+            "host": "raspberrypi5",
+            "labels": {"node": "raspberrypi5"},
+            "previous_boot_id": "abc123",
+            "detected_at": "2026-06-11T12:00:00+00:00",
+        },
+    }
+    payload.update(overrides)
+    return Alert.from_dict(payload)
+
+
+class _ExplodingEngine(DecisionEngine):
+    """Inner engine that must NOT be consulted for boot-forensics alerts."""
+
+    name = "exploding"
+
+    def decide(self, envelope: ContextEnvelope) -> Decision:
+        raise AssertionError("triage should be bypassed for boot-forensics alerts")
+
+
+def test_boot_forensics_bypasses_triage_and_routes_deep():
+    engine = EscalationRoutingDecisionEngine(_ExplodingEngine())
+    routed = engine.decide(ContextEnvelope(alert=_boot_alert()))
+
+    assert routed.action == DEEP_INVESTIGATE_ACTION
+    assert routed.confidence == 1.0
+    assert routed.params["deep_template"] == "boot-forensics"
+    assert routed.params["routed_by"] == "escalation-routing"
+    ctx = routed.params["deep_context"]
+    assert ctx["original_action"] == "boot_forensics"
+    assert ctx["previous_boot_id"] == "abc123"
+
+
+def test_boot_forensics_route_can_be_disabled():
+    decision = Decision(action="notify", confidence=0.9, reasoning="triaged")
+    engine = EscalationRoutingDecisionEngine(_StubEngine(decision), route_boot_forensics=False)
+    routed = engine.decide(ContextEnvelope(alert=_boot_alert()))
+    assert routed.action == "notify"  # fell through to normal triage
+
+
+def test_non_boot_alert_unaffected_by_bypass():
+    decision = Decision(action="investigate", confidence=0.9, reasoning="normal")
+    engine = EscalationRoutingDecisionEngine(_StubEngine(decision))
+    routed = engine.decide(ContextEnvelope(alert=_host_alert()))
+    assert routed.action == "investigate"
+
+
+def test_boot_forensics_handler_uses_template_and_fingerprint(tmp_path):
+    kubectl = _FakeKubectl()
+    handler = _handler(tmp_path, kubectl)
+    alert = _boot_alert()
+    decision = Decision(
+        action=DEEP_INVESTIGATE_ACTION, confidence=1.0, reasoning="boot",
+        params={"deep_template": "boot-forensics", "deep_context": {"previous_boot_id": "abc123"}},
+    )
+
+    result = handler.execute(_request(alert, decision))
+
+    manifest = kubectl.created_manifest
+    env = {e["name"]: e for e in manifest["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["CFOP_TEMPLATE"]["value"] == "boot-forensics"
+    assert result.details["template"] == "boot-forensics"
+    # Explicit per-boot fingerprint flows into the dedupe label
+    assert manifest["metadata"]["labels"][JOB_FINGERPRINT_LABEL] == alert.effective_fingerprint()[:12]
