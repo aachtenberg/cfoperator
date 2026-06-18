@@ -3225,7 +3225,8 @@ class KnowledgeBase:
         risk: str = 'high',
         confidence: Optional[float] = None,
         priority: int = 5,
-    ) -> int:
+        dedupe_key: Optional[str] = None,
+    ) -> Optional[int]:
         """Record a recommendation for remediation and return its queue id.
 
         The auto-execute gate runs here: only low-risk, mechanizable classes
@@ -3233,12 +3234,25 @@ class KnowledgeBase:
         executor). Everything else is still recorded — as 'needs-human' — so
         the queue is the single ledger of everything that wants doing. Unknown
         classes fall back to 'manual'.
+
+        ``dedupe_key`` (also stored in ``payload``) suppresses duplicates: if a
+        non-terminal row already carries the same key, returns None instead of
+        enqueuing again — so a recurring sweep finding doesn't pile up daily.
         """
         remediation_class, risk = normalize_remediation_fields(remediation_class, risk)
         status = 'queued' if remediation_is_auto_eligible(
             remediation_class, risk, confidence) else 'needs-human'
 
         with self.session_scope() as session:
+            if dedupe_key:
+                existing = session.query(RemediationQueue.id).filter(
+                    RemediationQueue.status.notin_(('resolved', 'rejected')),
+                    RemediationQueue.payload['dedupe_key'].astext == dedupe_key,
+                ).first()
+                if existing:
+                    _log("info", "Remediation dedup skip",
+                         dedupe_key=dedupe_key, existing_id=existing[0])
+                    return None
             item = RemediationQueue(
                 investigation_id=investigation_id,
                 host_id=host_id,

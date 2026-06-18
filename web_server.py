@@ -191,6 +191,22 @@ class WebServer:
                 return jsonify({'error': 'remediation not found'}), 404
             return jsonify({'status': 'recorded', 'id': remediation_id}), 200
 
+        # On-demand: enqueue remediations from recent sweep findings (the data
+        # behind the morning summary). Same shared-secret auth. Lets an operator
+        # backfill the queue without waiting for the 7-9am summary run.
+        @self.app.route('/v1/remediations/feed-sweeps', methods=['POST'])
+        def feed_sweeps():
+            from event_runtime.http_actions import COMPLETION_AUTH_HEADER, verify_completion_auth
+            auth_error = verify_completion_auth(request.headers.get(COMPLETION_AUTH_HEADER))
+            if auth_error:
+                return jsonify({'error': auth_error}), 401
+            try:
+                n = self.operator.feed_remediations_from_recent_sweeps()
+            except Exception as e:
+                logger.error(f"feed-sweeps failed: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
+            return jsonify({'status': 'ok', 'enqueued': n}), 200
+
         # Synchronous triage classifier. Called by event_runtime's
         # HTTPTriageDecisionEngine before it decides whether to route an
         # alert to /v1/investigate. Returns {action, reason, confidence}
