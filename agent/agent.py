@@ -74,6 +74,7 @@ LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'componen
 INVESTIGATION_QUEUE_DEPTH = Gauge('cfoperator_investigation_queue_depth', 'Pending HTTP-triggered investigations')
 INVESTIGATION_QUEUE_REJECTED = Counter('cfoperator_investigation_queue_rejected_total', 'HTTP investigations rejected because queue was full')
 INVESTIGATION_POSTBACK = Counter('cfoperator_investigation_postback_total', 'Investigation completions posted back to event_runtime', ['status'])
+REMEDIATION_QUEUE = Gauge('cfoperator_remediation_queue', 'Remediation queue rows by status', ['status'])
 
 # Triggers that describe a *recoverable* runtime condition — if the pod is
 # healthy now, the thing the alert worried about has cleared. Used by the
@@ -214,7 +215,8 @@ class CFOperator:
         self.last_sweep = 0
         self.last_reap = 0    # remediation reaper tick
         self.last_drain = 0   # remediation drainer tick
-        self.last_verify = 0  # remediation PR-reconcile tick
+        self.last_verify = 0   # remediation PR-reconcile tick
+        self.last_metrics = 0  # remediation gauge refresh tick
         self.start_time = time.time()
         # Initialized to start_time so the first heartbeat fires after the
         # configured interval rather than immediately after the bootstrap
@@ -567,6 +569,10 @@ class CFOperator:
                 if time.time() - self.last_verify > self._get_verify_interval():
                     self._reconcile_remediation_prs()
                     self.last_verify = time.time()
+
+                # Refresh the remediation-queue gauge for Grafana (throttled,
+                # flag-independent so the panel works even with feed/drain off).
+                self._update_remediation_metrics()
 
                 time.sleep(self._get_alert_check_interval())
 
@@ -1610,6 +1616,26 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if advanced:
             logger.info(f"Reconciled {advanced} remediation PR(s)")
         return advanced
+
+    _REMEDIATION_STATUSES = ('queued', 'claimed', 'executing', 'pr-open', 'verifying',
+                             'resolved', 'failed', 'needs-human', 'rejected')
+
+    def _update_remediation_metrics(self) -> None:
+        """Refresh the cfoperator_remediation_queue gauge (throttled to ~30s).
+
+        Reports every status (0 when empty) so the Grafana panel has stable
+        series. Independent of the feed/drain flags.
+        """
+        if time.time() - self.last_metrics < 30:
+            return
+        self.last_metrics = time.time()
+        try:
+            counts = self.kb.count_remediations_by_status()
+        except Exception as e:
+            logger.debug(f"remediation metrics refresh skipped: {e}")
+            return
+        for status in self._REMEDIATION_STATUSES:
+            REMEDIATION_QUEUE.labels(status=status).set(counts.get(status, 0))
 
     def _verify_remediation(self, row: Dict[str, Any]) -> None:
         """Best-effort post-merge verification: re-investigate the original signal.

@@ -192,3 +192,28 @@ def test_reconcile_off_is_noop():
     op = MagicMock(); op.config = {"remediation": {"queue_verify": False}}
     assert CFOperator._reconcile_remediation_prs(op) == 0
     op.kb.list_remediations_by_status.assert_not_called()
+
+
+# ---- metrics -----------------------------------------------------------------
+
+
+def test_update_remediation_metrics_sets_gauge():
+    import sys
+    REMEDIATION_QUEUE = sys.modules[CFOperator.__module__].REMEDIATION_QUEUE
+    op = MagicMock()
+    op.last_metrics = 0  # not throttled
+    op._REMEDIATION_STATUSES = CFOperator._REMEDIATION_STATUSES
+    op.kb.count_remediations_by_status.return_value = {"queued": 2, "resolved": 1}
+    CFOperator._update_remediation_metrics(op)
+    assert REMEDIATION_QUEUE.labels(status="queued")._value.get() == 2
+    assert REMEDIATION_QUEUE.labels(status="resolved")._value.get() == 1
+    assert REMEDIATION_QUEUE.labels(status="claimed")._value.get() == 0  # absent -> 0
+
+
+def test_update_remediation_metrics_throttles():
+    import time as _t
+    op = MagicMock()
+    op.last_metrics = _t.time()  # just ran -> should skip
+    op._REMEDIATION_STATUSES = CFOperator._REMEDIATION_STATUSES
+    CFOperator._update_remediation_metrics(op)
+    op.kb.count_remediations_by_status.assert_not_called()

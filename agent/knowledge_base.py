@@ -3365,6 +3365,14 @@ class KnowledgeBase:
             _log("info", "Reaped stale remediations", count=len(stale_ids), ids=stale_ids)
         return len(stale_ids)
 
+    def count_remediations_by_status(self) -> Dict[str, int]:
+        """Return {status: count} across the remediation queue (for metrics)."""
+        with self.session_scope() as session:
+            rows = session.query(
+                RemediationQueue.status, func.count(RemediationQueue.id)
+            ).group_by(RemediationQueue.status).all()
+            return {status: int(n) for status, n in rows}
+
     def list_remediations_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Return remediation rows in a given status (oldest first).
 
