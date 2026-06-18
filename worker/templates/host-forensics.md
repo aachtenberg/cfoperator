@@ -38,7 +38,7 @@ If the fix is a manifest change in the homelab-infra GitOps repo, include
 exactly ONE unified diff in a ```diff fenced block, with the repo-relative
 file path in the diff header.
 
-Then end your response with exactly these two lines:
+Then end your response with these lines:
 
 STATUS: <one of: resolved | needs_action | monitoring | escalate>
   - resolved: the host is healthy RIGHT NOW and the problem is gone. Do NOT
@@ -48,3 +48,18 @@ STATUS: <one of: resolved | needs_action | monitoring | escalate>
   - monitoring: transient or inconclusive; worth watching, no action yet.
   - escalate: urgent; a human should look now.
 RECOMMENDATION: <the single most useful operator-facing next step — a concrete command or config change, or "No action needed" when the host is genuinely healthy>
+
+When STATUS is needs_action or escalate, also classify how the RECOMMENDATION
+could be applied so it can be routed for remediation (these are read-only
+classifications — do NOT apply anything yourself):
+
+REMEDIATION_CLASS: <one of: gitops-patch | k8s-action | node-action | manual>
+  - gitops-patch: a manifest change in the homelab-infra GitOps repo. Use this
+    only when you included exactly one ```diff block above.
+  - k8s-action: a reversible in-cluster verb (kubectl rollout restart, delete
+    pod, scale) — no manifest change needed.
+  - node-action: a node-state change (DNS/resolv.conf, files, systemd) applied
+    over ssh/ansible.
+  - manual: needs human judgement or is not safely mechanizable.
+RISK: <one of: low | med | high — blast radius / reversibility of applying the fix>
+CONFIDENCE: <0.0-1.0 — your confidence the RECOMMENDATION is correct and complete>

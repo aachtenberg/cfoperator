@@ -11,7 +11,10 @@ from entrypoint import (
     build_prompt,
     extract_proposed_diff,
     load_inputs,
+    parse_confidence,
     parse_recommendation,
+    parse_remediation_class,
+    parse_risk,
     parse_status,
     post_completion,
 )
@@ -144,6 +147,53 @@ def test_extract_proposed_diff_takes_first_of_multiple():
     assert extract_proposed_diff(report) == "first"
 
 
+# ---- remediation classification ----------------------------------------------
+
+_REPORT_REMEDIATION = """## Root cause
+CoreDNS configmap drift.
+
+STATUS: needs_action
+RECOMMENDATION: Restore the upstream forwarders in the CoreDNS configmap.
+REMEDIATION_CLASS: gitops-patch
+RISK: low
+CONFIDENCE: 0.85
+"""
+
+
+def test_parse_remediation_class():
+    assert parse_remediation_class(_REPORT_REMEDIATION) == "gitops-patch"
+    assert parse_remediation_class("REMEDIATION_CLASS: k8s-action") == "k8s-action"
+    assert parse_remediation_class("REMEDIATION_CLASS: node-action") == "node-action"
+
+
+def test_parse_remediation_class_absent_or_invalid():
+    assert parse_remediation_class(_REPORT) == ""  # no class line -> manual/human
+    assert parse_remediation_class("REMEDIATION_CLASS: bogus") == ""
+
+
+def test_parse_risk():
+    assert parse_risk(_REPORT_REMEDIATION) == "low"
+    assert parse_risk("RISK: med") == "med"
+    assert parse_risk("RISK: HIGH") == "high"
+
+
+def test_parse_risk_absent_or_invalid():
+    assert parse_risk(_REPORT) == ""
+    assert parse_risk("RISK: catastrophic") == ""
+
+
+def test_parse_confidence():
+    assert parse_confidence(_REPORT_REMEDIATION) == 0.85
+    assert parse_confidence("CONFIDENCE: 1") == 1.0
+    assert parse_confidence("CONFIDENCE: .5") == 0.5
+
+
+def test_parse_confidence_absent_and_clamped():
+    assert parse_confidence(_REPORT) is None
+    assert parse_confidence("CONFIDENCE: 95") == 1.0  # out-of-range clamps, not poisons
+    assert parse_confidence("CONFIDENCE: -2") == 0.0
+
+
 # ---- ActionResult construction -------------------------------------------------
 
 
@@ -167,6 +217,23 @@ def test_build_action_result_escalate_maps_to_escalated():
     run = ClaudeRun(True, "report\nSTATUS: escalate\nRECOMMENDATION: look now", "", 5.0)
     result = build_action_result(run, _inputs())
     assert result["details"]["outcome"] == "escalated"
+
+
+def test_build_action_result_hoists_remediation_fields():
+    run = ClaudeRun(True, _REPORT_REMEDIATION, "", 5.0)
+    details = build_action_result(run, _inputs())["details"]
+    assert details["remediation_class"] == "gitops-patch"
+    assert details["risk"] == "low"
+    assert details["confidence"] == 0.85
+
+
+def test_build_action_result_omits_remediation_fields_when_absent():
+    # _REPORT has STATUS/RECOMMENDATION/diff but no classification lines —
+    # the keys must be absent (drainer treats absence as manual/human-only).
+    details = build_action_result(ClaudeRun(True, _REPORT, "", 5.0), _inputs())["details"]
+    assert "remediation_class" not in details
+    assert "risk" not in details
+    assert "confidence" not in details
 
 
 def test_build_action_result_failure_is_loud_failed():

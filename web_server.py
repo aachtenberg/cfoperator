@@ -161,6 +161,36 @@ class WebServer:
             threading.Thread(target=_store, daemon=True, name="deep-ingest").start()
             return jsonify({'status': 'accepted'}), 202
 
+        # Remediation executor completion. The executor Job posts here to drive
+        # its RemediationQueue row's state machine (pr-open / needs-human /
+        # failed). Same shared-secret auth as the deep-investigation callback.
+        @self.app.route('/v1/remediations/<int:remediation_id>/complete', methods=['POST'])
+        def remediation_complete(remediation_id):
+            from event_runtime.http_actions import COMPLETION_AUTH_HEADER, verify_completion_auth
+            auth_error = verify_completion_auth(request.headers.get(COMPLETION_AUTH_HEADER))
+            if auth_error:
+                return jsonify({'error': auth_error}), 401
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict):
+                return jsonify({'error': 'JSON object body required'}), 400
+            status = payload.get('status')
+            if not isinstance(status, str) or not status:
+                return jsonify({'error': "'status' is required"}), 400
+            try:
+                ok = self.operator.kb.update_remediation_status(
+                    remediation_id=remediation_id,
+                    status=status,
+                    pr_url=payload.get('pr_url'),
+                    result=payload.get('result'),
+                    last_error=payload.get('detail'),
+                )
+            except Exception as e:
+                logger.error(f"Remediation completion failed: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
+            if not ok:
+                return jsonify({'error': 'remediation not found'}), 404
+            return jsonify({'status': 'recorded', 'id': remediation_id}), 200
+
         # Synchronous triage classifier. Called by event_runtime's
         # HTTPTriageDecisionEngine before it decides whether to route an
         # alert to /v1/investigate. Returns {action, reason, confidence}
