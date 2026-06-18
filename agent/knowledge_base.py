@@ -17,7 +17,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 from contextlib import contextmanager
 
@@ -357,6 +357,104 @@ class InvestigationQueue(Base):
         Index('idx_queue_status', 'status'),
         Index('idx_queue_created', 'created_at', postgresql_using='btree', postgresql_ops={'created_at': 'DESC'}),
         Index('idx_queue_priority', 'priority'),
+    )
+
+
+# Auto-execute gate for the remediation queue. Only low-risk, mechanizable
+# classes at/above this confidence enter 'queued' (drainable by the executor);
+# everything else is recorded as 'needs-human'. Mirrors the worker-side
+# classification — keep the class list in sync with _VALID_REMEDIATION_CLASSES.
+_AUTO_REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action')
+_AUTO_REMEDIATION_MIN_CONFIDENCE = 0.8
+# Reaper: an in-flight lease older than this (no terminal transition) is
+# assumed dead (pod OOM/evicted) and requeued. Worker Jobs have a 6h TTL.
+_REMEDIATION_LEASE_TIMEOUT_S = 1800
+_REMEDIATION_MAX_ATTEMPTS = 3
+_REMEDIATION_INFLIGHT = ('claimed', 'executing')
+_REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action', 'node-action', 'manual')
+_REMEDIATION_RISKS = ('low', 'med', 'high')
+
+
+def normalize_remediation_fields(remediation_class: str, risk: str):
+    """Coerce class/risk to valid values, defaulting conservatively.
+
+    Unknown class -> 'manual' (human-only); unknown risk -> 'high' (never
+    auto). Keeps a malformed worker payload from ever becoming auto-eligible.
+    """
+    if remediation_class not in _REMEDIATION_CLASSES:
+        remediation_class = 'manual'
+    if risk not in _REMEDIATION_RISKS:
+        risk = 'high'
+    return remediation_class, risk
+
+
+def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence) -> bool:
+    """The auto-execute gate: low-risk, mechanizable, confident enough.
+
+    Pure policy so the drainer and queue agree on what may run unattended.
+    """
+    return (
+        remediation_class in _AUTO_REMEDIATION_CLASSES
+        and risk == 'low'
+        and confidence is not None
+        and confidence >= _AUTO_REMEDIATION_MIN_CONFIDENCE
+    )
+
+
+class RemediationQueue(Base):
+    """Queue of mechanizable recommendations handed off to the executor tier.
+
+    Distinct lifecycle from InvestigationQueue: that queues investigations to
+    *run*; this queues remediations to *execute*. A row is created from an
+    investigation's structured hints (remediation_class/risk/confidence emitted
+    by the worker). A disposable executor Job leases a row (status='claimed' +
+    executor_job_name + claimed_at), acts, and drives it to a terminal state.
+    The row IS the executor's state, so the Job stays stateless and a dead
+    Job's stale lease is reaped back to 'queued' (see requeue_stale_remediations).
+
+    Lifecycle:
+        queued -> claimed -> executing -> {pr-open -> verifying ->} resolved
+        any in-flight state -> failed -> (retry) queued | needs-human
+        pr-open -> rejected (human closed the PR)
+    Non-auto-eligible recommendations are recorded directly as 'needs-human'
+    so the queue is the single ledger of everything that wants doing.
+    """
+    __tablename__ = 'remediation_queue'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    investigation_id = Column(Integer, nullable=True)  # source recommendation
+    host_id = Column(String(64), nullable=False, default='default')
+    created_at = Column(TIMESTAMP, nullable=False, default=lambda: datetime.now(timezone.utc))
+    claimed_at = Column(TIMESTAMP, nullable=True)  # lease timestamp
+    completed_at = Column(TIMESTAMP, nullable=True)
+
+    remediation_class = Column(String(50), nullable=False)  # gitops-patch|k8s-action|node-action|manual
+    risk = Column(String(20), nullable=False, default='high')  # conservative default
+    confidence = Column(Float, nullable=True)
+    status = Column(String(50), nullable=False, default='queued')
+    priority = Column(Integer, default=5)  # 1=highest, 10=lowest
+    attempts = Column(Integer, nullable=False, default=0)
+
+    payload = Column(JSONB, nullable=False)  # self-contained work order (target, recommendation, context)
+    result = Column(JSONB, nullable=True)    # what the executor did (commands, verification)
+    pr_url = Column(String(500), nullable=True)
+    executor_job_name = Column(String(253), nullable=True)  # lease holder (k8s name max 253)
+    last_error = Column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "remediation_class IN ('gitops-patch', 'k8s-action', 'node-action', 'manual')",
+            name='valid_remediation_class'),
+        CheckConstraint("risk IN ('low', 'med', 'high')", name='valid_remediation_risk'),
+        CheckConstraint(
+            "status IN ('queued', 'claimed', 'executing', 'pr-open', 'verifying', "
+            "'resolved', 'failed', 'needs-human', 'rejected')",
+            name='valid_remediation_status'),
+        Index('idx_remediation_status', 'status'),
+        Index('idx_remediation_lease', 'status', 'claimed_at'),
+        Index('idx_remediation_investigation', 'investigation_id'),
+        Index('idx_remediation_created', 'created_at',
+              postgresql_using='btree', postgresql_ops={'created_at': 'DESC'}),
     )
 
 
@@ -3115,6 +3213,176 @@ class KnowledgeBase:
                 _log("info", "Queue item cancelled", queue_id=queue_id)
                 return True
             return False
+
+    # ---- remediation queue ---------------------------------------------------
+
+    def queue_remediation(
+        self,
+        remediation_class: str,
+        payload: Dict[str, Any],
+        investigation_id: Optional[int] = None,
+        host_id: str = 'default',
+        risk: str = 'high',
+        confidence: Optional[float] = None,
+        priority: int = 5,
+    ) -> int:
+        """Record a recommendation for remediation and return its queue id.
+
+        The auto-execute gate runs here: only low-risk, mechanizable classes
+        at/above the confidence threshold enter 'queued' (drainable by the
+        executor). Everything else is still recorded — as 'needs-human' — so
+        the queue is the single ledger of everything that wants doing. Unknown
+        classes fall back to 'manual'.
+        """
+        remediation_class, risk = normalize_remediation_fields(remediation_class, risk)
+        status = 'queued' if remediation_is_auto_eligible(
+            remediation_class, risk, confidence) else 'needs-human'
+
+        with self.session_scope() as session:
+            item = RemediationQueue(
+                investigation_id=investigation_id,
+                host_id=host_id,
+                remediation_class=remediation_class,
+                risk=risk,
+                confidence=confidence,
+                status=status,
+                priority=priority,
+                payload=payload,
+            )
+            session.add(item)
+            session.flush()
+            queue_id = item.id
+            _log("info", "Remediation queued", queue_id=queue_id,
+                 remediation_class=remediation_class, risk=risk,
+                 confidence=confidence, status=status)
+            return queue_id
+
+    def claim_next_remediation(self, executor_job_name: str) -> Optional[Dict[str, Any]]:
+        """Lease the highest-priority queued remediation for an executor Job.
+
+        Sets status='claimed' + executor_job_name + claimed_at atomically so a
+        crashed executor leaves a stale lease the reaper can recover. Returns
+        the work order, or None when the queue is empty.
+        """
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(
+                status='queued'
+            ).order_by(
+                RemediationQueue.priority.asc(),
+                RemediationQueue.created_at.asc(),
+            ).first()
+            if not item:
+                return None
+            item.status = 'claimed'
+            item.executor_job_name = executor_job_name
+            item.claimed_at = datetime.now(timezone.utc)
+            session.flush()
+            _log("info", "Remediation claimed", queue_id=item.id, job=executor_job_name)
+            return {
+                "id": item.id,
+                "investigation_id": item.investigation_id,
+                "host_id": item.host_id,
+                "remediation_class": item.remediation_class,
+                "risk": item.risk,
+                "confidence": item.confidence,
+                "attempts": item.attempts,
+                "payload": item.payload,
+            }
+
+    def update_remediation_status(
+        self,
+        remediation_id: int,
+        status: str,
+        *,
+        pr_url: Optional[str] = None,
+        result: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+    ) -> bool:
+        """Transition a remediation to a new status (executor/verify/PR hooks).
+
+        Terminal states ('resolved', 'rejected', 'needs-human') stamp
+        completed_at. Returns False if the id is unknown.
+        """
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return False
+            item.status = status
+            if pr_url is not None:
+                item.pr_url = pr_url
+            if result is not None:
+                item.result = result
+            if last_error is not None:
+                item.last_error = last_error
+            if status in ('resolved', 'rejected', 'needs-human'):
+                item.completed_at = datetime.now(timezone.utc)
+            _log("info", "Remediation status updated", queue_id=remediation_id, status=status)
+            return True
+
+    def fail_remediation(self, remediation_id: int, error: str) -> str:
+        """Mark a remediation attempt failed; retry until the attempt cap.
+
+        Increments attempts and re-queues (clearing the lease) while under
+        _REMEDIATION_MAX_ATTEMPTS, otherwise routes to 'needs-human'. Returns
+        the resulting status ('queued' | 'needs-human' | 'unknown').
+        """
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return 'unknown'
+            item.attempts = (item.attempts or 0) + 1
+            item.last_error = error
+            if item.attempts >= _REMEDIATION_MAX_ATTEMPTS:
+                item.status = 'needs-human'
+                item.completed_at = datetime.now(timezone.utc)
+            else:
+                item.status = 'queued'
+                item.executor_job_name = None
+                item.claimed_at = None
+            _log("info", "Remediation failed", queue_id=remediation_id,
+                 attempts=item.attempts, status=item.status)
+            return item.status
+
+    def requeue_stale_remediations(self, lease_timeout_s: int = _REMEDIATION_LEASE_TIMEOUT_S) -> int:
+        """Reaper: requeue in-flight remediations whose lease has expired.
+
+        An executor Job that died (OOM/evicted) leaves a row stuck in 'claimed'
+        or 'executing'. Past the lease timeout we treat it as dead, count the
+        attempt, and recover it via fail_remediation (re-queue or needs-human).
+        Returns the number of rows recovered.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=lease_timeout_s)
+        with self.session_scope() as session:
+            stale = session.query(RemediationQueue).filter(
+                RemediationQueue.status.in_(_REMEDIATION_INFLIGHT),
+                RemediationQueue.claimed_at.isnot(None),
+                RemediationQueue.claimed_at < cutoff,
+            ).all()
+            stale_ids = [item.id for item in stale]
+        for rid in stale_ids:
+            self.fail_remediation(rid, "lease expired (executor Job presumed dead)")
+        if stale_ids:
+            _log("info", "Reaped stale remediations", count=len(stale_ids), ids=stale_ids)
+        return len(stale_ids)
+
+    def list_remediations_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return remediation rows in a given status (oldest first).
+
+        Used by the PR reconciler to find 'pr-open' rows whose PR may have been
+        merged or closed.
+        """
+        with self.session_scope() as session:
+            rows = session.query(RemediationQueue).filter_by(
+                status=status
+            ).order_by(RemediationQueue.created_at.asc()).limit(limit).all()
+            return [{
+                "id": r.id,
+                "investigation_id": r.investigation_id,
+                "host_id": r.host_id,
+                "remediation_class": r.remediation_class,
+                "pr_url": r.pr_url,
+                "payload": r.payload,
+            } for r in rows]
 
     def get_queue_wait_time_seconds(self, queue_id: int) -> Optional[float]:
         """Get the time a queue item waited before processing (seconds)."""

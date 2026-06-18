@@ -47,6 +47,16 @@ _STATUS_TO_OUTCOME = {
     "escalate": "escalated",
 }
 
+# Remediation classification — how the recommendation could be applied, so the
+# remediation drainer can route and risk-gate it. These are diagnostic
+# (read-only) classifications, not actions; the worker stays strictly read-only.
+#   gitops-patch: a manifest change to homelab-infra (paired with a ```diff block)
+#   k8s-action:   a reversible in-cluster verb (rollout restart, delete pod, scale)
+#   node-action:  a node-state change (DNS, files, systemd) via ssh/ansible
+#   manual:       needs human judgement; not safely mechanizable
+_VALID_REMEDIATION_CLASSES = ("gitops-patch", "k8s-action", "node-action", "manual")
+_VALID_RISKS = ("low", "med", "high")
+
 # Read-only tool allowlist. --permission-mode dontAsk auto-denies anything
 # not listed, so a prompt-injected `kubectl delete` simply fails. The space
 # before * is required prefix-match syntax.
@@ -259,6 +269,45 @@ def parse_recommendation(report: str) -> str:
     return ""
 
 
+def parse_remediation_class(report: str) -> str:
+    """Extract the trailing REMEDIATION_CLASS: line; "" if absent/invalid.
+
+    Empty means the investigator did not classify the recommendation — the
+    drainer treats that as manual (human-only), never auto-executed.
+    """
+    for line in reversed(report.strip().splitlines()):
+        match = re.match(r"^\s*REMEDIATION_CLASS:\s*([\w-]+)", line)
+        if match and match.group(1).lower() in _VALID_REMEDIATION_CLASSES:
+            return match.group(1).lower()
+    return ""
+
+
+def parse_risk(report: str) -> str:
+    """Extract the trailing RISK: line; "" if absent/invalid."""
+    for line in reversed(report.strip().splitlines()):
+        match = re.match(r"^\s*RISK:\s*(\w+)", line)
+        if match and match.group(1).lower() in _VALID_RISKS:
+            return match.group(1).lower()
+    return ""
+
+
+def parse_confidence(report: str) -> Optional[float]:
+    """Extract the trailing CONFIDENCE: line as a 0.0-1.0 float; None if absent.
+
+    Out-of-range values are clamped so a stray "CONFIDENCE: 95" reads as 1.0
+    rather than poisoning the auto-execute gate.
+    """
+    for line in reversed(report.strip().splitlines()):
+        match = re.match(r"^\s*CONFIDENCE:\s*(-?[0-9]*\.?[0-9]+)", line)
+        if match:
+            try:
+                value = float(match.group(1))
+            except ValueError:
+                return None
+            return max(0.0, min(1.0, value))
+    return None
+
+
 def extract_proposed_diff(report: str) -> Optional[str]:
     """Return the first ```diff fenced block, if any."""
     match = re.search(r"```diff\n(.*?)```", report, re.DOTALL)
@@ -288,6 +337,9 @@ def build_action_result(run: ClaudeRun, inputs: WorkerInputs) -> Dict[str, Any]:
     outcome = _STATUS_TO_OUTCOME[status]
     recommendation = parse_recommendation(run.report)
     diff = extract_proposed_diff(run.report)
+    remediation_class = parse_remediation_class(run.report)
+    risk = parse_risk(run.report)
+    confidence = parse_confidence(run.report)
     details: Dict[str, Any] = {
         "outcome": outcome,
         "report": run.report[:_REPORT_MAX_CHARS],
@@ -300,6 +352,14 @@ def build_action_result(run: ClaudeRun, inputs: WorkerInputs) -> Dict[str, Any]:
         details["recommendation"] = recommendation  # hoisted into the notification
     if diff:
         details["proposed_diff"] = diff
+    # Remediation routing hints for the queue/drainer (purely additive — absent
+    # when the investigator omits the lines, in which case it stays manual).
+    if remediation_class:
+        details["remediation_class"] = remediation_class
+    if risk:
+        details["risk"] = risk
+    if confidence is not None:
+        details["confidence"] = confidence
     if run.cost_usd is not None:
         details["cost_usd"] = run.cost_usd
     return {

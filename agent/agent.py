@@ -15,6 +15,7 @@ import re
 import sys
 import time
 import json
+import uuid
 import yaml
 import logging
 import hashlib
@@ -211,6 +212,9 @@ class CFOperator:
         # OODA state
         self.current_investigation = None
         self.last_sweep = 0
+        self.last_reap = 0    # remediation reaper tick
+        self.last_drain = 0   # remediation drainer tick
+        self.last_verify = 0  # remediation PR-reconcile tick
         self.start_time = time.time()
         # Initialized to start_time so the first heartbeat fires after the
         # configured interval rather than immediately after the bootstrap
@@ -547,6 +551,22 @@ class CFOperator:
 
                 # MODE 3: Morning summary (TPS report style)
                 self._check_morning_summary()
+
+                # MODE 4: Remediation reaper — recover dead executor leases.
+                # Safe/idempotent; runs independently of the drainer.
+                if time.time() - self.last_reap > self._get_reap_interval():
+                    self._reap_remediations()
+                    self.last_reap = time.time()
+
+                # MODE 5: Remediation drainer — claim queued items, spawn executors.
+                if time.time() - self.last_drain > self._get_drain_interval():
+                    self._drain_remediation_queue()
+                    self.last_drain = time.time()
+
+                # MODE 6: Remediation PR reconcile — advance merged/closed PRs.
+                if time.time() - self.last_verify > self._get_verify_interval():
+                    self._reconcile_remediation_prs()
+                    self.last_verify = time.time()
 
                 time.sleep(self._get_alert_check_interval())
 
@@ -1403,6 +1423,209 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             logger.debug(f"Remediation proposal skipped: {e}")
             return None
 
+    def _reap_remediations(self) -> int:
+        """Recover remediations whose executor lease expired (gated, safe).
+
+        Off unless ``remediation.queue_reap`` is set. Harmless when the queue is
+        empty, so it can be enabled independently of the drainer.
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if not rcfg.get('queue_reap'):
+            return 0
+        try:
+            count = self.kb.requeue_stale_remediations()
+            if count:
+                logger.info(f"Reaped {count} stale remediation(s) back to the queue")
+            return count
+        except Exception as e:
+            logger.error(f"Remediation reaper failed: {e}", exc_info=True)
+            return 0
+
+    def _drain_remediation_queue(self) -> int:
+        """Claim auto-eligible remediations and spawn an executor Job per item.
+
+        Off unless ``remediation.queue_drain`` is set. Bounded per tick so one
+        cycle can't fan out the whole queue. A spawn failure fails the claim so
+        the reaper/retry path recovers it rather than leaving it stuck claimed.
+        Returns the number of executor Jobs spawned.
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if not rcfg.get('queue_drain'):
+            return 0
+        max_per_tick = max(1, int(rcfg.get('max_drain_per_tick', 3)))
+        spawned = 0
+        for _ in range(max_per_tick):
+            job_name = f"cfop-executor-{uuid.uuid4().hex[:10]}"
+            try:
+                work = self.kb.claim_next_remediation(job_name)
+            except Exception as e:
+                logger.error(f"Remediation claim failed: {e}", exc_info=True)
+                break
+            if not work:
+                break  # queue drained
+            try:
+                self._spawn_remediation_executor(job_name, work)
+                spawned += 1
+                logger.info(
+                    f"Spawned executor {job_name} for remediation #{work['id']} "
+                    f"({work.get('remediation_class')}, risk={work.get('risk')})"
+                )
+            except Exception as e:
+                # Don't leave the row stuck 'claimed' — fail it so retry/reaper recovers.
+                logger.error(f"Executor spawn failed for remediation #{work['id']}: {e}")
+                self.kb.fail_remediation(work['id'], f"executor spawn failed: {e}")
+        return spawned
+
+    def _executor_config(self) -> Dict[str, Any]:
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        ec = rcfg.get('executor') if isinstance(rcfg.get('executor'), dict) else {}
+        return ec
+
+    def _build_executor_manifest(self, job_name: str, work_order: Dict[str, Any]) -> Dict[str, Any]:
+        """Build the cfoperator-executor Job manifest for a claimed remediation.
+
+        Mirrors the deep-investigation Job shape, minus the ssh mount: the
+        executor is read-only toward the cluster (its only mutation is a GitHub
+        PR). LLM backend is fully env-driven so the model is swappable per the
+        portable-executor design.
+        """
+        ec = self._executor_config()
+        namespace = ec.get('namespace', os.getenv('CFOP_EXECUTOR_NAMESPACE', 'apps'))
+        image = ec.get('image', os.getenv('CFOP_EXECUTOR_IMAGE', 'ghcr.io/aachtenberg/cfoperator-executor:main'))
+        sa = ec.get('service_account', 'cfoperator-executor')
+        secrets_name = ec.get('secrets_name', 'cfoperator-secrets')
+        pull_secret = ec.get('image_pull_secret', 'ghcr-pull-secret')
+        completion_base = ec.get('completion_base_url', os.getenv(
+            'CFOP_EXECUTOR_COMPLETION_BASE_URL',
+            'http://cfoperator.apps.svc.cluster.local:8083/v1/remediations'))
+        git_repo = ec.get('git_repo', os.getenv('CFOP_GIT_REPO', 'aachtenberg/homelab-infra'))
+        git_base = ec.get('git_base', 'main')
+        llm = ec.get('llm') if isinstance(ec.get('llm'), dict) else {}
+        ttl = int(ec.get('ttl_seconds_after_finished', 3600))
+        deadline = int(ec.get('active_deadline_seconds', 900))
+
+        completion_url = f"{completion_base.rstrip('/')}/{work_order['id']}/complete"
+        env = [
+            {"name": "ANTHROPIC_API_KEY", "valueFrom": {"secretKeyRef": {"name": secrets_name, "key": "ANTHROPIC_API_KEY", "optional": True}}},
+            {"name": "GITHUB_TOKEN", "valueFrom": {"secretKeyRef": {"name": secrets_name, "key": "GITHUB_TOKEN"}}},
+            {"name": "CFOP_COMPLETION_TOKEN", "valueFrom": {"secretKeyRef": {"name": secrets_name, "key": "CFOP_COMPLETION_SHARED_SECRET", "optional": True}}},
+            {"name": "CFOP_COMPLETION_URL", "value": completion_url},
+            {"name": "CFOP_REMEDIATION_JSON", "value": json.dumps(work_order, default=str)},
+            {"name": "CFOP_GIT_REPO", "value": str(git_repo)},
+            {"name": "CFOP_GIT_BASE", "value": str(git_base)},
+            {"name": "CFOP_EXEC_LLM_BACKEND", "value": str(llm.get('backend', 'anthropic'))},
+            {"name": "CFOP_EXEC_LLM_MODEL", "value": str(llm.get('model', ''))},
+            {"name": "CFOP_EXEC_LLM_BASE_URL", "value": str(llm.get('base_url', ''))},
+        ]
+        labels = {
+            "app.kubernetes.io/managed-by": "cfoperator",
+            "cfop.dev/role": "remediation-executor",
+        }
+        return {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {"name": job_name, "namespace": namespace, "labels": dict(labels)},
+            "spec": {
+                "backoffLimit": 0,  # an LLM rerun is a drainer decision, not a retry policy
+                "ttlSecondsAfterFinished": ttl,
+                "activeDeadlineSeconds": deadline,
+                "template": {
+                    "metadata": {"labels": dict(labels)},
+                    "spec": {
+                        "restartPolicy": "Never",
+                        "serviceAccountName": sa,
+                        "imagePullSecrets": [{"name": pull_secret}],
+                        "securityContext": {"runAsUser": 10001, "runAsGroup": 10001, "fsGroup": 10001},
+                        "containers": [{
+                            "name": "executor",
+                            "image": image,
+                            "imagePullPolicy": "Always",
+                            "env": env,
+                            "resources": {
+                                "requests": {"cpu": "100m", "memory": "256Mi"},
+                                "limits": {"cpu": "1", "memory": "1Gi"},
+                            },
+                        }],
+                    },
+                },
+            },
+        }
+
+    def _kubectl_create(self, manifest: Dict[str, Any]) -> str:
+        proc = subprocess.run(
+            ["kubectl", "create", "-n", manifest["metadata"]["namespace"], "-f", "-"],
+            input=json.dumps(manifest), capture_output=True, text=True, timeout=30,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"kubectl create failed: {proc.stderr.strip()[:300]}")
+        return proc.stdout.strip()
+
+    def _spawn_remediation_executor(self, job_name: str, work_order: Dict[str, Any]) -> None:
+        """Spawn the cfoperator-executor Job for a claimed remediation."""
+        manifest = self._build_executor_manifest(job_name, work_order)
+        self._kubectl_create(manifest)
+
+    @staticmethod
+    def _parse_pr_url(url: str) -> Optional[tuple]:
+        """Parse https://github.com/<owner>/<repo>/pull/<n> -> ('owner/repo', n)."""
+        m = re.search(r"github\.com/([^/]+/[^/]+)/pull/(\d+)", url or "")
+        return (m.group(1), int(m.group(2))) if m else None
+
+    def _reconcile_remediation_prs(self) -> int:
+        """Advance 'pr-open' remediations by their PR state.
+
+        Off unless ``remediation.queue_verify`` is set. Merged -> resolved (then
+        re-investigate to confirm the signal cleared); closed-without-merge ->
+        rejected. Returns the number of rows advanced.
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if not rcfg.get('queue_verify'):
+            return 0
+        try:
+            rows = self.kb.list_remediations_by_status('pr-open')
+        except Exception as e:
+            logger.error(f"Remediation PR reconcile list failed: {e}", exc_info=True)
+            return 0
+        gh = self._github_write_client() if rows else None
+        if gh is None:
+            return 0
+        advanced = 0
+        for row in rows:
+            ref = self._parse_pr_url(row.get('pr_url') or '')
+            if not ref:
+                continue
+            repo, number = ref
+            resp = gh.request("GET", f"/repos/{repo}/pulls/{number}")
+            if not resp.get('success'):
+                continue
+            data = resp.get('data') or {}
+            if data.get('merged'):
+                self.kb.update_remediation_status(row['id'], 'resolved', result={'pr_merged': True})
+                self._verify_remediation(row)
+                advanced += 1
+            elif data.get('state') == 'closed':
+                self.kb.update_remediation_status(row['id'], 'rejected',
+                                                  last_error='PR closed without merge')
+                advanced += 1
+        if advanced:
+            logger.info(f"Reconciled {advanced} remediation PR(s)")
+        return advanced
+
+    def _verify_remediation(self, row: Dict[str, Any]) -> None:
+        """Best-effort post-merge verification: re-investigate the original signal.
+
+        Enqueues a fresh investigation so the KB (and a human) sees whether the
+        merge actually cleared the condition. Non-fatal.
+        """
+        try:
+            rec = str((row.get('payload') or {}).get('recommendation') or 'remediation')
+            self.enqueue_investigation({
+                'summary': f"verify remediation #{row['id']}: {rec[:120]}",
+                'source': 'remediation-verify',
+            })
+        except Exception as e:
+            logger.debug(f"Remediation verify enqueue skipped: {e}")
+
     def _github_write_client(self):
         """Build a GitHub API client for opening remediation PRs, or None.
 
@@ -1456,6 +1679,12 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         self._embed_investigation(inv_id, trigger, findings, kb_outcome)
         logger.info(f"Deep investigation #{inv_id} stored: {kb_outcome} (host={details.get('host')})")
 
+        # Feed the remediation queue from the structured hints the worker
+        # emitted (remediation_class/risk/confidence). The queue's auto-gate
+        # decides drainable vs needs-human; the drainer/executor take it from
+        # there. Distinct from the legacy inline deep_open_prs path below.
+        self._maybe_queue_remediation(inv_id, details)
+
         pr_result = None
         diff_text = str(details.get('proposed_diff') or '')
         if diff_text:
@@ -1467,6 +1696,37 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if pr_result:
             out['pr_result'] = pr_result
         return out
+
+    def _maybe_queue_remediation(self, investigation_id: int, details: Dict[str, Any]) -> Optional[int]:
+        """Enqueue a remediation from an investigation's structured hints.
+
+        Off unless ``remediation.queue_feed`` is set. No-op when the investigator
+        didn't classify the recommendation (no ``remediation_class``).
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if not rcfg.get('queue_feed'):
+            return None
+        rclass = details.get('remediation_class')
+        if not rclass:
+            return None
+        try:
+            return self.kb.queue_remediation(
+                remediation_class=str(rclass),
+                payload={
+                    'recommendation': str(details.get('recommendation') or ''),
+                    'rendered_context': str(details.get('report') or '')[:5000],
+                    'proposed_diff': str(details.get('proposed_diff') or ''),
+                    'target': {'host': details.get('host')},
+                },
+                investigation_id=investigation_id,
+                host_id=str(details.get('host') or 'default'),
+                risk=str(details.get('risk') or 'high'),
+                confidence=details.get('confidence'),
+            )
+        except Exception as e:
+            logger.error(f"Failed to queue remediation from investigation #{investigation_id}: {e}",
+                         exc_info=True)
+            return None
 
     def _maybe_open_pr_from_deep_diff(self, alert: Dict[str, Any], details: Dict[str, Any],
                                       diff_text: str) -> Optional[Dict[str, Any]]:
@@ -3394,6 +3654,36 @@ Only return the JSON array, no other text."""
         except Exception:
             pass
         return self.config.get('ooda', {}).get('sweep_interval', 1800)
+
+    def _get_reap_interval(self) -> int:
+        """Remediation reaper interval: DB setting → config.yaml → default 300."""
+        try:
+            val = self.kb.get_setting('remediation_reap_interval', '')
+            if val:
+                return max(60, min(3600, int(val)))
+        except Exception:
+            pass
+        return self.config.get('ooda', {}).get('remediation_reap_interval_seconds', 300)
+
+    def _get_drain_interval(self) -> int:
+        """Remediation drainer interval: DB setting → config.yaml → default 60."""
+        try:
+            val = self.kb.get_setting('remediation_drain_interval', '')
+            if val:
+                return max(10, min(3600, int(val)))
+        except Exception:
+            pass
+        return self.config.get('ooda', {}).get('remediation_drain_interval_seconds', 60)
+
+    def _get_verify_interval(self) -> int:
+        """Remediation PR-reconcile interval: DB setting → config.yaml → default 300."""
+        try:
+            val = self.kb.get_setting('remediation_verify_interval', '')
+            if val:
+                return max(30, min(3600, int(val)))
+        except Exception:
+            pass
+        return self.config.get('ooda', {}).get('remediation_verify_interval_seconds', 300)
 
     def _format_heartbeat(self) -> str:
         """Build a one-line OODA heartbeat summary for periodic log emission.
