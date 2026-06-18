@@ -1754,6 +1754,56 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                          exc_info=True)
             return None
 
+    _SEVERITY_RISK = {'critical': 'high', 'warning': 'med', 'info': 'low'}
+
+    def _feed_remediations_from_sweeps(self, reports: List[Dict[str, Any]]) -> int:
+        """Enqueue remediations from structured sweep findings (morning-summary feed).
+
+        Off unless ``remediation.queue_feed`` is set. Sweep findings carry no
+        mechanizability signal, so they enqueue as class 'manual' (-> needs-human,
+        tracked but not auto-executed) with risk mapped from severity. Deduped by
+        finding id so recurring findings don't pile up across runs.
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if not rcfg.get('queue_feed'):
+            return 0
+        enq = 0
+        for rep in reports or []:
+            for f in (rep.get('findings') or []):
+                rec = str(f.get('remediation') or '').strip()
+                if not rec or rec.lower() in ('no action needed', 'none', 'n/a'):
+                    continue
+                key = f"sweep-{f.get('id') or rec[:80]}"
+                try:
+                    rid = self.kb.queue_remediation(
+                        remediation_class='manual',
+                        payload={
+                            'recommendation': rec,
+                            'finding': f.get('finding'),
+                            'evidence': f.get('evidence'),
+                            'resource': {'type': f.get('resource_type'),
+                                         'name': f.get('resource_name'),
+                                         'namespace': f.get('namespace')},
+                            'source': 'morning-summary/sweep',
+                            'dedupe_key': key,
+                        },
+                        host_id=str(f.get('resource_name') or f.get('namespace') or 'default')[:64],
+                        risk=self._SEVERITY_RISK.get(str(f.get('severity') or 'info'), 'high'),
+                        confidence=None,
+                        dedupe_key=key,
+                    )
+                    if rid:
+                        enq += 1
+                except Exception as e:
+                    logger.error(f"sweep->remediation enqueue failed: {e}", exc_info=True)
+        if enq:
+            logger.info(f"Fed {enq} remediation(s) from sweep findings")
+        return enq
+
+    def feed_remediations_from_recent_sweeps(self, limit: int = 10) -> int:
+        """On-demand: enqueue remediations from the most recent sweep reports."""
+        return self._feed_remediations_from_sweeps(self.kb.get_recent_sweep_reports(limit=limit))
+
     def _maybe_open_pr_from_deep_diff(self, alert: Dict[str, Any], details: Dict[str, Any],
                                       diff_text: str) -> Optional[Dict[str, Any]]:
         """Route a deep-investigation diff through the remediation PR gates.
@@ -5223,6 +5273,7 @@ IMPORTANT:
         context_parts = []
 
         # 1. Sweep reports since midnight
+        overnight_reports = []
         try:
             reports = self.kb.get_recent_sweep_reports(limit=10)
             overnight_reports = [r for r in reports
@@ -5245,6 +5296,10 @@ IMPORTANT:
                 context_parts.append("## No sweep reports since midnight")
         except Exception as e:
             context_parts.append(f"## Sweep reports unavailable: {e}")
+
+        # Feed structured sweep-finding recommendations into the remediation
+        # queue (gated by remediation.queue_feed; deduped by finding id).
+        self._feed_remediations_from_sweeps(overnight_reports)
 
         # 2. Investigations since midnight
         try:

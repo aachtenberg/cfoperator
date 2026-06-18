@@ -217,3 +217,43 @@ def test_update_remediation_metrics_throttles():
     op._REMEDIATION_STATUSES = CFOperator._REMEDIATION_STATUSES
     CFOperator._update_remediation_metrics(op)
     op.kb.count_remediations_by_status.assert_not_called()
+
+
+# ---- morning-summary (sweep finding) feed ------------------------------------
+
+
+def _feed_op(feed=True):
+    op = MagicMock()
+    op.config = {"remediation": {"queue_feed": feed}}
+    op._SEVERITY_RISK = CFOperator._SEVERITY_RISK
+    op.kb.queue_remediation.return_value = 1
+    return op
+
+
+def test_feed_from_sweeps_disabled():
+    op = _feed_op(feed=False)
+    reports = [{"findings": [{"id": "a", "remediation": "x", "severity": "warning"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 0
+    op.kb.queue_remediation.assert_not_called()
+
+
+def test_feed_from_sweeps_enqueues_and_maps_severity():
+    op = _feed_op()
+    reports = [{"findings": [
+        {"id": "f1", "finding": "Ollama 500s", "remediation": "Verify DNS on raspberrypi5",
+         "severity": "warning", "resource_name": "ollama"},
+        {"id": "f2", "finding": "healthy", "remediation": "No action needed", "severity": "info"},
+    ]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1  # 2nd skipped
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["remediation_class"] == "manual"  # sweep findings -> needs-human
+    assert kwargs["risk"] == "med"                  # warning -> med
+    assert kwargs["dedupe_key"] == "sweep-f1"
+    assert kwargs["payload"]["recommendation"] == "Verify DNS on raspberrypi5"
+
+
+def test_feed_from_sweeps_dedup_not_counted():
+    op = _feed_op()
+    op.kb.queue_remediation.return_value = None  # deduped by kb
+    reports = [{"findings": [{"id": "f1", "remediation": "x", "severity": "critical"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 0
