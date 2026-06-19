@@ -74,6 +74,20 @@
   .kv { margin:4px 0; } .kv b { color:var(--text-secondary); font-weight:600; }
   .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px; }
   .empty { padding:40px; text-align:center; color:var(--text-muted); }
+  select, input[type="number"], input[type="text"], input:not([type]) {
+    background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border);
+    border-radius:var(--radius-sm); padding:5px 8px; font-family:'JetBrains Mono',monospace;
+    font-size:13px; outline:none; }
+  select:focus, input:focus { border-color:var(--accent); }
+  .actform { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 12px; }
+  .actform label { color:var(--text-secondary); font-size:12px; }
+  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
+  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
+    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
+    font-size:13px; min-width:200px; transition:opacity .2s; }
+  .toast.ok { border-left-color:var(--accent); }
+  .toast.err { border-left-color:var(--red); }
 </style>
 </head>
 <body>
@@ -107,6 +121,7 @@
 </table>
 <div id="empty" class="empty" hidden>No remediations match this filter.</div>
 <div id="detail"></div>
+<div id="toasts"></div>
 
 <script>
 const STATUS = ['queued','claimed','executing','pr-open','verifying','resolved','failed','needs-human','rejected'];
@@ -122,6 +137,10 @@ function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.
   if(s<90) return Math.round(s)+'s'; if(s<5400) return Math.round(s/60)+'m';
   if(s<129600) return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
+  const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
+  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, 3200); }
+function clearForm(){ const f=document.getElementById('actionform'); if(f) f.innerHTML=''; }
 
 let ALL = [];
 async function load(){
@@ -168,12 +187,13 @@ async function detail(id){
   d.innerHTML = `
     <span class="x" onclick="document.getElementById('detail').classList.remove('open')">×</span>
     <h2 style="margin:0 0 8px">Remediation #${r.id}</h2>
-    <div style="margin:0 0 12px;display:flex;gap:8px;flex-wrap:wrap">
+    <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>
-      <button class="chip" onclick="reject(${r.id})">✕ Reject</button>
-      <button class="chip" onclick="reclassify(${r.id})">⟳ Reclassify</button>
+      <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
+      <button class="chip" onclick="showReclassify(${r.id},'${esc(r.remediation_class)}','${esc(r.risk)}',${r.confidence==null?'null':r.confidence})">⟳ Reclassify</button>
       ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">🔎 Investigation #${r.investigation_id}</button>`:''}
     </div>
+    <div id="actionform"></div>
     <div class="kv">${badge(r.status,SC[r.status]||'--text-muted')} ${badge(r.risk,RC[r.risk]||'--text-muted')}
       <span class="muted">${esc(r.remediation_class)} · conf ${r.confidence==null?'—':r.confidence}</span></div>
     <div class="kv"><b>host</b> ${esc(r.host_id)}</div>
@@ -197,35 +217,60 @@ async function loadFlags(){
   document.getElementById('flags').innerHTML = Object.keys(FLAG_LABEL).map(k=>
     `<button class="chip tog ${k==='queue_drain'?'drain':''} ${f[k]?'on':''}" onclick="toggleFlag('${k}',${!f[k]})">${FLAG_LABEL[k]}: ${f[k]?'on':'off'}</button>`).join(' ');
 }
-async function toggleFlag(name,value){
-  if(name==='queue_drain' && value &&
-     !confirm('Enable queue_drain? The agent will autonomously OPEN PRs for mechanizable items (you still merge them).')) return;
+function toggleFlag(name,value){
+  if(name==='queue_drain' && value){ confirmDrain(); return; }  // inline confirm, no popup
+  setFlag(name,value);
+}
+function confirmDrain(){
+  document.getElementById('feedmsg').innerHTML =
+    `<span style="color:var(--orange)">Enable drain — agent will open PRs (you still merge).</span> ` +
+    `<button class="chip" onclick="setFlag('queue_drain',true);clearMsg()">Yes, enable</button> ` +
+    `<button class="chip" onclick="clearMsg()">Cancel</button>`;
+}
+function clearMsg(){ document.getElementById('feedmsg').textContent=''; }
+async function setFlag(name,value){
   try{ await fetch('/api/remediation/flags',{method:'POST',headers:{'Content-Type':'application/json'},
-       body:JSON.stringify({name,value})}); }catch(e){}
+       body:JSON.stringify({name,value})}); toast(FLAG_LABEL[name]+' '+(value?'on':'off'),'ok'); }
+  catch(e){ toast('toggle failed','err'); }
   loadFlags();
 }
 async function runFeed(){
-  const m=document.getElementById('feedmsg'); m.textContent='running summary…';
-  try{ await fetch('/api/remediation/run-feed',{method:'POST'});
-       m.textContent='triggered — rows appear in ~1-2 min'; setTimeout(load,90000); }
-  catch(e){ m.textContent='failed'; }
+  toast('running summary — rows appear in ~1-2 min','ok');
+  try{ await fetch('/api/remediation/run-feed',{method:'POST'}); setTimeout(load,90000); }
+  catch(e){ toast('run-feed failed','err'); }
 }
 
-// ---- row actions ----
-async function act(id,verb,body){
+// ---- row actions (inline forms + toasts, no browser dialogs) ----
+async function act(id,verb,body,okmsg){
   try{ const r=await fetch(`/api/remediations/${id}/${verb}`,{method:'POST',
         headers:{'Content-Type':'application/json'}, body:body?JSON.stringify(body):null});
-       if(!r.ok){ alert(verb+' failed ('+r.status+')'); return; } }
-  catch(e){ alert(verb+' failed'); return; }
-  await load(); detail(id);
+       if(!r.ok){ toast(verb+' failed ('+r.status+')','err'); return; } }
+  catch(e){ toast(verb+' failed','err'); return; }
+  toast(okmsg||(verb+' ok'),'ok'); await load(); detail(id);
 }
-function approve(id){ if(confirm('Approve → send to executor (status: queued)?')) act(id,'approve'); }
-function reject(id){ const note=prompt('Reject — reason (optional):'); if(note!==null) act(id,'reject',{note}); }
-function reclassify(id){
-  const c=prompt('remediation_class: gitops-patch | k8s-action | node-action | manual'); if(c===null) return;
-  const rk=prompt('risk: low | med | high'); if(rk===null) return;
-  const cf=prompt('confidence 0-1 (blank = keep)');
-  act(id,'reclassify',{remediation_class:c.trim(),risk:rk.trim(),confidence:cf});
+function approve(id){ act(id,'approve',null,'approved → queued'); }
+function showReject(id){
+  document.getElementById('actionform').innerHTML =
+    `<div class="actform"><input id="rj-note" placeholder="reason (optional)" style="flex:1;min-width:160px">
+     <button class="chip" onclick="saveReject(${id})">Confirm reject</button>
+     <button class="chip" onclick="clearForm()">Cancel</button></div>`;
+  const el=document.getElementById('rj-note'); if(el) el.focus();
+}
+function saveReject(id){ act(id,'reject',{note:document.getElementById('rj-note').value},'rejected'); }
+function showReclassify(id,cls,risk,conf){
+  const opt=(v,sel)=>`<option value="${v}" ${v===sel?'selected':''}>${v}</option>`;
+  document.getElementById('actionform').innerHTML =
+    `<div class="actform">
+       <label>class</label><select id="rc-class">${['gitops-patch','k8s-action','node-action','manual'].map(v=>opt(v,cls)).join('')}</select>
+       <label>risk</label><select id="rc-risk">${['low','med','high'].map(v=>opt(v,risk)).join('')}</select>
+       <label>conf</label><input id="rc-conf" type="number" min="0" max="1" step="0.05" value="${conf==null?'':conf}" style="width:74px">
+       <button class="chip" onclick="saveReclassify(${id})">Save</button>
+       <button class="chip" onclick="clearForm()">Cancel</button></div>`;
+}
+function saveReclassify(id){
+  act(id,'reclassify',{remediation_class:document.getElementById('rc-class').value,
+    risk:document.getElementById('rc-risk').value,
+    confidence:document.getElementById('rc-conf').value},'reclassified');
 }
 async function viewInvestigation(id){
   let inv; try{ inv=await (await fetch('/api/investigations/'+id)).json(); }catch(e){ return; }
