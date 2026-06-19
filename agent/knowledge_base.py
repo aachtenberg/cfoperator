@@ -401,6 +401,27 @@ def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence) 
     )
 
 
+def remediation_row_dict(r) -> Dict[str, Any]:
+    """Serialize a RemediationQueue row for the read API / operator console."""
+    return {
+        "id": r.id,
+        "status": r.status,
+        "remediation_class": r.remediation_class,
+        "risk": r.risk,
+        "confidence": r.confidence,
+        "host_id": r.host_id,
+        "investigation_id": r.investigation_id,
+        "priority": r.priority,
+        "attempts": r.attempts,
+        "pr_url": r.pr_url,
+        "last_error": r.last_error,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "claimed_at": r.claimed_at.isoformat() if r.claimed_at else None,
+        "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+        "payload": r.payload,
+    }
+
+
 class RemediationQueue(Base):
     """Queue of mechanizable recommendations handed off to the executor tier.
 
@@ -3405,6 +3426,21 @@ class KnowledgeBase:
                 "pr_url": r.pr_url,
                 "payload": r.payload,
             } for r in rows]
+
+    def list_remediations(self, status: Optional[str] = None, limit: int = 200) -> List[Dict[str, Any]]:
+        """List remediation queue rows (newest first) for the operator console."""
+        with self.session_scope() as session:
+            q = session.query(RemediationQueue)
+            if status:
+                q = q.filter_by(status=status)
+            rows = q.order_by(RemediationQueue.created_at.desc()).limit(limit).all()
+            return [remediation_row_dict(r) for r in rows]
+
+    def get_remediation(self, remediation_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch a single remediation row (full detail), or None."""
+        with self.session_scope() as session:
+            r = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            return remediation_row_dict(r) if r else None
 
     def get_queue_wait_time_seconds(self, queue_id: int) -> Optional[float]:
         """Get the time a queue item waited before processing (seconds)."""
