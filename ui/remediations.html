@@ -63,7 +63,10 @@
     font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
   .rec { max-width:520px; }
 
-  #detail { position:fixed; top:0; right:0; width:min(560px,92vw); height:100%;
+  #backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:40;
+    opacity:0; pointer-events:none; transition:opacity .15s; }
+  #backdrop.open { opacity:1; pointer-events:auto; }
+  #detail { position:fixed; top:0; right:0; width:min(560px,92vw); height:100%; z-index:50;
     background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px;
     overflow:auto; transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; }
   #detail.open { transform:translateX(0); }
@@ -120,6 +123,7 @@
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" class="empty" hidden>No remediations match this filter.</div>
+<div id="backdrop" onclick="closeDetail()"></div>
 <div id="detail"></div>
 <div id="toasts"></div>
 
@@ -179,13 +183,20 @@ function render(rows){
   }).join('');
 }
 
+function closeDetail(){
+  document.getElementById('detail').classList.remove('open');
+  document.getElementById('backdrop').classList.remove('open');
+}
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDetail(); });
+
 async function detail(id){
   const d = document.getElementById('detail');
-  d.innerHTML = '<span class="muted">loading…</span>'; d.classList.add('open');
+  d.innerHTML = '<span class="muted">loading…</span>';
+  d.classList.add('open'); document.getElementById('backdrop').classList.add('open');
   let r; try { r = await (await fetch('/api/remediations/'+id)).json(); } catch(e){ d.innerHTML='error'; return; }
   const p = r.payload||{};
   d.innerHTML = `
-    <span class="x" onclick="document.getElementById('detail').classList.remove('open')">×</span>
+    <span class="x" onclick="closeDetail()">×</span>
     <h2 style="margin:0 0 8px">Remediation #${r.id}</h2>
     <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>
