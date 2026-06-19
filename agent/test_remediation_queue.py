@@ -227,6 +227,9 @@ def _feed_op(feed=True):
     op.config = {"remediation": {"queue_feed": feed}}
     op._SEVERITY_RISK = CFOperator._SEVERITY_RISK
     op.kb.queue_remediation.return_value = 1
+    # wire real helpers the methods call on self (MagicMock would shadow them)
+    op._parse_summary_recommendations = CFOperator._parse_summary_recommendations
+    op._feed_remediations_from_sweeps = lambda reports: CFOperator._feed_remediations_from_sweeps(op, reports)
     return op
 
 
@@ -257,3 +260,53 @@ def test_feed_from_sweeps_dedup_not_counted():
     op.kb.queue_remediation.return_value = None  # deduped by kb
     reports = [{"findings": [{"id": "f1", "remediation": "x", "severity": "critical"}]}]
     assert CFOperator._feed_remediations_from_sweeps(op, reports) == 0
+
+
+# ---- summary structured-recommendations feed ---------------------------------
+
+_SUMMARY = """## Morning Summary
+All quiet overnight. A couple of low-priority items.
+
+```json
+{"recommendations": [
+  {"title": "Ollama 500s on raspberrypi5", "recommendation": "Verify DNS / CoreDNS health",
+   "host": "raspberrypi5", "remediation_class": "node-action", "risk": "med", "confidence": 0.6},
+  {"title": "Corrupted Immich videos", "recommendation": "Quarantine Failed Videos dir",
+   "host": "", "remediation_class": "node-action", "risk": "high", "confidence": 0.5}
+]}
+```
+"""
+
+
+def test_parse_summary_recommendations():
+    recs = CFOperator._parse_summary_recommendations(_SUMMARY)
+    assert len(recs) == 2
+    assert recs[0]["title"].startswith("Ollama")
+    assert CFOperator._parse_summary_recommendations("no json here") == []
+    assert CFOperator._parse_summary_recommendations("```json\n{bad}\n```") == []
+
+
+def test_feed_from_summary_enqueues_recs():
+    op = _feed_op()
+    n = CFOperator._feed_remediations_from_summary(op, _SUMMARY, [])
+    assert n == 2
+    keys = [c.kwargs["dedupe_key"] for c in op.kb.queue_remediation.call_args_list]
+    assert keys[0] == "summary-ollama-500s-on-raspberrypi5"
+    first = op.kb.queue_remediation.call_args_list[0].kwargs
+    assert first["remediation_class"] == "node-action"
+    assert first["risk"] == "med"
+    assert first["host_id"] == "raspberrypi5"
+
+
+def test_feed_from_summary_falls_back_to_sweeps_when_no_block():
+    op = _feed_op()
+    reports = [{"findings": [{"id": "f1", "remediation": "do x", "severity": "warning"}]}]
+    n = CFOperator._feed_remediations_from_summary(op, "plain text, no json block", reports)
+    assert n == 1  # fell back to sweep findings
+    assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "sweep-f1"
+
+
+def test_feed_from_summary_disabled():
+    op = _feed_op(feed=False)
+    assert CFOperator._feed_remediations_from_summary(op, _SUMMARY, []) == 0
+    op.kb.queue_remediation.assert_not_called()

@@ -207,6 +207,26 @@ class WebServer:
                 return jsonify({'error': str(e)}), 500
             return jsonify({'status': 'ok', 'enqueued': n}), 200
 
+        # On-demand: regenerate the morning summary (LLM + live checks), which
+        # feeds the queue from its structured recommendations. Async — the
+        # summary is slow — and does NOT send a notification (that path is only
+        # the scheduled 7-9am run). Lets an operator surface today's recs now.
+        @self.app.route('/v1/remediations/feed-summary', methods=['POST'])
+        def feed_summary():
+            from event_runtime.http_actions import COMPLETION_AUTH_HEADER, verify_completion_auth
+            auth_error = verify_completion_auth(request.headers.get(COMPLETION_AUTH_HEADER))
+            if auth_error:
+                return jsonify({'error': auth_error}), 401
+
+            def _run():
+                try:
+                    self.operator._generate_morning_summary()
+                except Exception as e:
+                    logger.error(f"feed-summary run failed: {e}", exc_info=True)
+
+            threading.Thread(target=_run, daemon=True, name="feed-summary").start()
+            return jsonify({'status': 'accepted'}), 202
+
         # Synchronous triage classifier. Called by event_runtime's
         # HTTPTriageDecisionEngine before it decides whether to route an
         # alert to /v1/investigate. Returns {action, reason, confidence}

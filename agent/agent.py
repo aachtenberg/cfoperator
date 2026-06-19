@@ -1804,6 +1804,61 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         """On-demand: enqueue remediations from the most recent sweep reports."""
         return self._feed_remediations_from_sweeps(self.kb.get_recent_sweep_reports(limit=limit))
 
+    @staticmethod
+    def _parse_summary_recommendations(summary_text: str) -> List[Dict[str, Any]]:
+        """Extract recs from the summary's ```json {"recommendations":[...]} block."""
+        m = re.search(r"```json\s*(\{.*?\})\s*```", summary_text or "", re.DOTALL)
+        if not m:
+            return []
+        try:
+            data = json.loads(m.group(1))
+        except ValueError:
+            return []
+        recs = data.get('recommendations') if isinstance(data, dict) else None
+        return [r for r in recs if isinstance(r, dict)] if isinstance(recs, list) else []
+
+    def _feed_remediations_from_summary(self, summary_text: str,
+                                        overnight_reports: Optional[List[Dict[str, Any]]] = None) -> int:
+        """Feed the queue from the summary's structured recommendations block.
+
+        Captures the operator-facing 'Issues & Recommendations' (LLM synthesis),
+        which raw sweep findings don't contain. Falls back to structured sweep
+        findings when the LLM emits no usable block. Gated by queue_feed; the
+        per-item remediation_class/risk/confidence drive the auto-execute gate,
+        so a low-risk gitops-patch can become auto-eligible. Deduped by title.
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if not rcfg.get('queue_feed'):
+            return 0
+        recs = self._parse_summary_recommendations(summary_text)
+        if not recs:
+            return self._feed_remediations_from_sweeps(overnight_reports or [])
+        enq = 0
+        for r in recs:
+            rec = str(r.get('recommendation') or '').strip()
+            if not rec or rec.lower() in ('no action needed', 'none', 'n/a'):
+                continue
+            title = str(r.get('title') or rec[:80]).strip()
+            key = "summary-" + re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:60]
+            try:
+                rid = self.kb.queue_remediation(
+                    remediation_class=str(r.get('remediation_class') or 'manual'),
+                    payload={'recommendation': rec, 'title': title,
+                             'target': {'host': r.get('host')},
+                             'source': 'morning-summary', 'dedupe_key': key},
+                    host_id=str(r.get('host') or 'default')[:64],
+                    risk=str(r.get('risk') or 'med'),
+                    confidence=r.get('confidence') if isinstance(r.get('confidence'), (int, float)) else None,
+                    dedupe_key=key,
+                )
+                if rid:
+                    enq += 1
+            except Exception as e:
+                logger.error(f"summary->remediation enqueue failed: {e}", exc_info=True)
+        if enq:
+            logger.info(f"Fed {enq} remediation(s) from morning-summary recommendations")
+        return enq
+
     def _maybe_open_pr_from_deep_diff(self, alert: Dict[str, Any], details: Dict[str, Any],
                                       diff_text: str) -> Optional[Dict[str, Any]]:
         """Route a deep-investigation diff through the remediation PR gates.
@@ -5297,10 +5352,6 @@ IMPORTANT:
         except Exception as e:
             context_parts.append(f"## Sweep reports unavailable: {e}")
 
-        # Feed structured sweep-finding recommendations into the remediation
-        # queue (gated by remediation.queue_feed; deduped by finding id).
-        self._feed_remediations_from_sweeps(overnight_reports)
-
         # 2. Investigations since midnight
         try:
             investigations = self.kb.get_recent_investigations(limit=20)
@@ -5347,7 +5398,18 @@ IMPORTANT:
             f"1. Overnight activity highlights\n"
             f"2. Current system health status\n"
             f"3. Any issues or recommendations\n\n"
-            f"Be concise and practical. Use markdown formatting."
+            f"Be concise and practical. Use markdown formatting.\n\n"
+            f"AFTER the markdown, append the actionable items as EXACTLY one fenced "
+            f"json block (use [] if none) so they can be tracked/remediated:\n"
+            f"```json\n"
+            f'{{"recommendations": [{{"title": "short label", '
+            f'"recommendation": "the concrete next step", "host": "affected host or empty", '
+            f'"remediation_class": "gitops-patch|k8s-action|node-action|manual", '
+            f'"risk": "low|med|high", "confidence": 0.0}}]}}\n'
+            f"```\n"
+            f"Classify remediation_class honestly: gitops-patch only if it's a single "
+            f"manifest change in the GitOps repo; node-action for host/DNS/file changes; "
+            f"manual if it needs human judgement. Be conservative with risk."
         )
 
         try:
@@ -5367,6 +5429,10 @@ IMPORTANT:
                 # have rolled over to a different provider than the configured
                 # primary; without this line nobody can tell after the fact).
                 summary_text = _append_llm_attribution(summary_text, result)
+                # Feed the queue from the summary's structured recommendations
+                # (captures the prose 'Issues & Recommendations' the operator
+                # sees); falls back to raw sweep findings if no block emitted.
+                self._feed_remediations_from_summary(summary_text, overnight_reports)
                 return {
                     'text': summary_text,
                     'timestamp': now,
