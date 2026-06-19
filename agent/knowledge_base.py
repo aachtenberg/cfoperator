@@ -3442,6 +3442,33 @@ class KnowledgeBase:
             r = session.query(RemediationQueue).filter_by(id=remediation_id).first()
             return remediation_row_dict(r) if r else None
 
+    def reclassify_remediation(self, remediation_id: int, remediation_class: Optional[str] = None,
+                               risk: Optional[str] = None, confidence: Optional[float] = None
+                               ) -> Optional[Dict[str, Any]]:
+        """Operator override of class/risk/confidence; re-runs the auto-gate.
+
+        Only re-gates rows that aren't in flight or terminal (queued / needs-human
+        / failed): an eligible combo -> 'queued', otherwise 'needs-human'. Returns
+        the updated row, or None if unknown.
+        """
+        _regate = ('queued', 'needs-human', 'failed')
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return None
+            nc = remediation_class if remediation_class is not None else item.remediation_class
+            nr = risk if risk is not None else item.risk
+            item.remediation_class, item.risk = normalize_remediation_fields(nc, nr)
+            if confidence is not None:
+                item.confidence = confidence
+            if item.status in _regate:
+                item.status = 'queued' if remediation_is_auto_eligible(
+                    item.remediation_class, item.risk, item.confidence) else 'needs-human'
+            session.flush()
+            _log("info", "Remediation reclassified", queue_id=remediation_id,
+                 remediation_class=item.remediation_class, risk=item.risk, status=item.status)
+            return remediation_row_dict(item)
+
     def get_queue_wait_time_seconds(self, queue_id: int) -> Optional[float]:
         """Get the time a queue item waited before processing (seconds)."""
         with self.session_scope() as session:

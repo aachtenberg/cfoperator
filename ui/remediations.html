@@ -26,6 +26,11 @@
   .chip { background:var(--panel); border:1px solid var(--line); color:var(--fg);
     border-radius:999px; padding:5px 12px; cursor:pointer; font-size:13px; }
   .chip.active { background:var(--blue); border-color:var(--blue); color:#fff; }
+  button.chip { font-family:inherit; }
+  .pipeline { padding:0 20px 14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    border-bottom:1px solid var(--line); margin-bottom:6px; }
+  .tog.on { background:var(--green); border-color:var(--green); color:#0b0f14; font-weight:700; }
+  .tog.drain.on { background:var(--orange); border-color:var(--orange); }
   table { width:100%; border-collapse:collapse; }
   th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line);
     vertical-align:top; }
@@ -54,6 +59,12 @@
   <span class="muted" id="updated"></span>
   <span style="margin-left:auto" class="muted">auto-refresh 15s · <a href="/">← console</a></span>
 </header>
+<div class="pipeline" id="pipeline">
+  <span class="muted">Pipeline:</span>
+  <span id="flags"></span>
+  <button class="chip" onclick="runFeed()">⟳ Run feed-summary</button>
+  <span id="feedmsg" class="muted"></span>
+</div>
 <div class="tiles" id="tiles"></div>
 <div class="filters" id="filters"></div>
 <table>
@@ -130,6 +141,12 @@ async function detail(id){
   d.innerHTML = `
     <span class="x" onclick="document.getElementById('detail').classList.remove('open')">×</span>
     <h2 style="margin:0 0 8px">Remediation #${r.id}</h2>
+    <div style="margin:0 0 12px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>
+      <button class="chip" onclick="reject(${r.id})">✕ Reject</button>
+      <button class="chip" onclick="reclassify(${r.id})">⟳ Reclassify</button>
+      ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">🔎 Investigation #${r.investigation_id}</button>`:''}
+    </div>
     <div class="kv">${badge(r.status,SC[r.status]||'--gray')} ${badge(r.risk,RC[r.risk]||'--gray')}
       <span class="muted">${esc(r.remediation_class)} · conf ${r.confidence==null?'—':r.confidence}</span></div>
     <div class="kv"><b>host</b> ${esc(r.host_id)}</div>
@@ -145,7 +162,53 @@ async function detail(id){
 }
 
 function setFilter(s){ filter=s; paint(); }
-load(); setInterval(load, 15000);
+
+// ---- pipeline flags + run-feed ----
+const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify'};
+async function loadFlags(){
+  let f; try{ f = await (await fetch('/api/remediation/flags')).json(); }catch(e){ return; }
+  document.getElementById('flags').innerHTML = Object.keys(FLAG_LABEL).map(k=>
+    `<button class="chip tog ${k==='queue_drain'?'drain':''} ${f[k]?'on':''}" onclick="toggleFlag('${k}',${!f[k]})">${FLAG_LABEL[k]}: ${f[k]?'on':'off'}</button>`).join(' ');
+}
+async function toggleFlag(name,value){
+  if(name==='queue_drain' && value &&
+     !confirm('Enable queue_drain? The agent will autonomously OPEN PRs for mechanizable items (you still merge them).')) return;
+  try{ await fetch('/api/remediation/flags',{method:'POST',headers:{'Content-Type':'application/json'},
+       body:JSON.stringify({name,value})}); }catch(e){}
+  loadFlags();
+}
+async function runFeed(){
+  const m=document.getElementById('feedmsg'); m.textContent='running summary…';
+  try{ await fetch('/api/remediation/run-feed',{method:'POST'});
+       m.textContent='triggered — rows appear in ~1-2 min'; setTimeout(load,90000); }
+  catch(e){ m.textContent='failed'; }
+}
+
+// ---- row actions ----
+async function act(id,verb,body){
+  try{ const r=await fetch(`/api/remediations/${id}/${verb}`,{method:'POST',
+        headers:{'Content-Type':'application/json'}, body:body?JSON.stringify(body):null});
+       if(!r.ok){ alert(verb+' failed ('+r.status+')'); return; } }
+  catch(e){ alert(verb+' failed'); return; }
+  await load(); detail(id);
+}
+function approve(id){ if(confirm('Approve → send to executor (status: queued)?')) act(id,'approve'); }
+function reject(id){ const note=prompt('Reject — reason (optional):'); if(note!==null) act(id,'reject',{note}); }
+function reclassify(id){
+  const c=prompt('remediation_class: gitops-patch | k8s-action | node-action | manual'); if(c===null) return;
+  const rk=prompt('risk: low | med | high'); if(rk===null) return;
+  const cf=prompt('confidence 0-1 (blank = keep)');
+  act(id,'reclassify',{remediation_class:c.trim(),risk:rk.trim(),confidence:cf});
+}
+async function viewInvestigation(id){
+  let inv; try{ inv=await (await fetch('/api/investigations/'+id)).json(); }catch(e){ return; }
+  if(inv.error){ document.getElementById('detail').innerHTML+='<p class="muted">investigation not found</p>'; return; }
+  document.getElementById('detail').innerHTML +=
+    `<h3>Investigation #${id} — ${esc(inv.outcome)}</h3><pre>${esc(JSON.stringify(inv.findings,null,2))}</pre>`;
+}
+
+loadFlags();
+load(); setInterval(()=>{ load(); loadFlags(); }, 15000);
 </script>
 </body>
 </html>

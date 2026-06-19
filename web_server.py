@@ -739,6 +739,96 @@ class WebServer:
             """Operator console: the remediation worklist."""
             return send_from_directory('ui', 'remediations.html')
 
+        # --- operator console actions (internal /api, like the other UI POSTs) ---
+        @self.app.route('/api/remediations/<int:remediation_id>/approve', methods=['POST'])
+        def approve_remediation(remediation_id):
+            """Send a row to the executor: status -> queued."""
+            try:
+                ok = self.operator.kb.update_remediation_status(remediation_id, 'queued')
+                if not ok:
+                    return jsonify({'error': 'not found'}), 404
+                return jsonify(self.operator.kb.get_remediation(remediation_id))
+            except Exception as e:
+                logger.error(f"approve remediation {remediation_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/remediations/<int:remediation_id>/reject', methods=['POST'])
+        def reject_remediation(remediation_id):
+            try:
+                note = (request.get_json(silent=True) or {}).get('note')
+                ok = self.operator.kb.update_remediation_status(remediation_id, 'rejected', last_error=note)
+                if not ok:
+                    return jsonify({'error': 'not found'}), 404
+                return jsonify(self.operator.kb.get_remediation(remediation_id))
+            except Exception as e:
+                logger.error(f"reject remediation {remediation_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/remediations/<int:remediation_id>/reclassify', methods=['POST'])
+        def reclassify_remediation_api(remediation_id):
+            try:
+                b = request.get_json(silent=True) or {}
+                conf = b.get('confidence')
+                if isinstance(conf, str):
+                    conf = float(conf) if conf.strip() else None
+                elif not isinstance(conf, (int, float)):
+                    conf = None
+                row = self.operator.kb.reclassify_remediation(
+                    remediation_id, remediation_class=b.get('remediation_class'),
+                    risk=b.get('risk'), confidence=conf)
+                if not row:
+                    return jsonify({'error': 'not found'}), 404
+                return jsonify(row)
+            except Exception as e:
+                logger.error(f"reclassify remediation {remediation_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/remediation/flags')
+        def get_remediation_flags():
+            try:
+                return jsonify({f: self.operator._remediation_flag(f)
+                                for f in self.operator._REMEDIATION_FLAGS})
+            except Exception as e:
+                logger.error(f"get remediation flags failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/remediation/flags', methods=['POST'])
+        def set_remediation_flag():
+            try:
+                b = request.get_json(silent=True) or {}
+                name, value = b.get('name'), b.get('value')
+                if name not in self.operator._REMEDIATION_FLAGS:
+                    return jsonify({'error': 'unknown flag'}), 400
+                self.operator.kb.set_setting('remediation_' + name, '1' if value else '0')
+                return jsonify({f: self.operator._remediation_flag(f)
+                                for f in self.operator._REMEDIATION_FLAGS})
+            except Exception as e:
+                logger.error(f"set remediation flag failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/remediation/run-feed', methods=['POST'])
+        def run_remediation_feed():
+            """Regenerate the summary (which feeds the queue); async, no notify."""
+            def _run():
+                try:
+                    self.operator._generate_morning_summary()
+                except Exception as e:
+                    logger.error(f"run-feed failed: {e}", exc_info=True)
+            threading.Thread(target=_run, daemon=True, name="run-feed").start()
+            return jsonify({'status': 'accepted'}), 202
+
+        @self.app.route('/api/investigations/<int:investigation_id>')
+        def get_investigation_api(investigation_id):
+            """Investigation drill-in for the worklist detail drawer."""
+            try:
+                inv = self.operator.kb.get_investigation(investigation_id)
+                if not inv:
+                    return jsonify({'error': 'not found'}), 404
+                return jsonify(inv)
+            except Exception as e:
+                logger.error(f"get investigation {investigation_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/sweep-reports')
         def sweep_reports():
             """Get recent sweep reports."""

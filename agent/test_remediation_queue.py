@@ -19,13 +19,20 @@ from knowledge_base import (  # noqa: E402
 from agent import CFOperator  # noqa: E402
 
 
+def _wire_flags(op):
+    """Make op._remediation_flag read op.config (config-only), like the real method
+    (a bare MagicMock would return a truthy mock and defeat the gating)."""
+    op._remediation_flag = lambda name: bool((op.config.get('remediation') or {}).get(name))
+    return op
+
+
 def _fake_op(*, drain=False, reap=False, max_per_tick=3):
     """Minimal stand-in 'self' for calling the unbound drainer/reaper methods."""
     op = MagicMock()
     op.config = {"remediation": {
         "queue_drain": drain, "queue_reap": reap, "max_drain_per_tick": max_per_tick,
     }}
-    return op
+    return _wire_flags(op)
 
 
 def test_normalize_defaults_conservatively():
@@ -133,7 +140,7 @@ def test_build_executor_manifest_shape():
 
 
 def test_maybe_queue_remediation_feeds_when_enabled():
-    op = MagicMock()
+    op = _wire_flags(MagicMock())
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 7
     details = {"remediation_class": "k8s-action", "risk": "low", "confidence": 0.9,
@@ -146,11 +153,11 @@ def test_maybe_queue_remediation_feeds_when_enabled():
 
 
 def test_maybe_queue_remediation_off_or_unclassified():
-    off = MagicMock(); off.config = {"remediation": {"queue_feed": False}}
+    off = _wire_flags(MagicMock()); off.config = {"remediation": {"queue_feed": False}}
     assert CFOperator._maybe_queue_remediation(off, 1, {"remediation_class": "k8s-action"}) is None
     off.kb.queue_remediation.assert_not_called()
 
-    on = MagicMock(); on.config = {"remediation": {"queue_feed": True}}
+    on = _wire_flags(MagicMock()); on.config = {"remediation": {"queue_feed": True}}
     assert CFOperator._maybe_queue_remediation(on, 1, {"recommendation": "x"}) is None  # no class
     on.kb.queue_remediation.assert_not_called()
 
@@ -164,7 +171,7 @@ def test_parse_pr_url():
 
 
 def _reconcile_op(pr_data):
-    op = MagicMock()
+    op = _wire_flags(MagicMock())
     op.config = {"remediation": {"queue_verify": True}}
     op.kb.list_remediations_by_status.return_value = [
         {"id": 1, "pr_url": "https://github.com/o/r/pull/5", "payload": {}}]
@@ -189,7 +196,7 @@ def test_reconcile_closed_unmerged_rejects():
 
 
 def test_reconcile_off_is_noop():
-    op = MagicMock(); op.config = {"remediation": {"queue_verify": False}}
+    op = _wire_flags(MagicMock()); op.config = {"remediation": {"queue_verify": False}}
     assert CFOperator._reconcile_remediation_prs(op) == 0
     op.kb.list_remediations_by_status.assert_not_called()
 
@@ -230,7 +237,7 @@ def _feed_op(feed=True):
     # wire real helpers the methods call on self (MagicMock would shadow them)
     op._parse_summary_recommendations = CFOperator._parse_summary_recommendations
     op._feed_remediations_from_sweeps = lambda reports: CFOperator._feed_remediations_from_sweeps(op, reports)
-    return op
+    return _wire_flags(op)
 
 
 def test_feed_from_sweeps_disabled():
@@ -330,3 +337,25 @@ def test_remediation_row_dict_serializes():
     assert d["created_at"].startswith("2026-06-19T12:00")
     assert d["claimed_at"] is None
     assert d["payload"]["recommendation"] == "verify DNS"
+
+
+# ---- live flag resolution (console toggles) ----------------------------------
+
+
+def test_remediation_flag_db_overrides_config():
+    op = MagicMock()
+    op.config = {"remediation": {"queue_drain": False}}
+    op.kb.get_setting.return_value = "1"  # DB toggle says on
+    assert CFOperator._remediation_flag(op, "queue_drain") is True
+    op.kb.get_setting.return_value = "0"  # DB toggle says off, overrides config
+    op.config = {"remediation": {"queue_drain": True}}
+    assert CFOperator._remediation_flag(op, "queue_drain") is False
+
+
+def test_remediation_flag_falls_back_to_config():
+    op = MagicMock()
+    op.kb.get_setting.return_value = ""  # no DB override
+    op.config = {"remediation": {"queue_feed": True}}
+    assert CFOperator._remediation_flag(op, "queue_feed") is True
+    op.config = {"remediation": {}}
+    assert CFOperator._remediation_flag(op, "queue_drain") is False
