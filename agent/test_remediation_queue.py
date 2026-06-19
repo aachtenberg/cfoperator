@@ -310,3 +310,23 @@ def test_feed_from_summary_disabled():
     op = _feed_op(feed=False)
     assert CFOperator._feed_remediations_from_summary(op, _SUMMARY, []) == 0
     op.kb.queue_remediation.assert_not_called()
+
+
+# ---- read API serialization (operator console) -------------------------------
+
+
+def test_remediation_row_dict_serializes():
+    import types
+    from datetime import datetime, timezone
+    from knowledge_base import remediation_row_dict
+    row = types.SimpleNamespace(
+        id=5, status="needs-human", remediation_class="node-action", risk="med",
+        confidence=0.6, host_id="rpi5", investigation_id=99, priority=5, attempts=0,
+        pr_url=None, last_error=None,
+        created_at=datetime(2026, 6, 19, 12, 0, tzinfo=timezone.utc),
+        claimed_at=None, completed_at=None, payload={"recommendation": "verify DNS"})
+    d = remediation_row_dict(row)
+    assert d["id"] == 5 and d["status"] == "needs-human" and d["risk"] == "med"
+    assert d["created_at"].startswith("2026-06-19T12:00")
+    assert d["claimed_at"] is None
+    assert d["payload"]["recommendation"] == "verify DNS"

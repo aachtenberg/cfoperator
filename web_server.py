@@ -709,6 +709,36 @@ class WebServer:
             return jsonify({'success': True, 'updated': updated})
 
         # Sweep Reports API
+        # Remediation queue read API + operator console (see docs/OBSERVABILITY.md).
+        @self.app.route('/api/remediations')
+        def list_remediations_api():
+            """List remediation queue rows. Query: status=, limit=."""
+            try:
+                status = request.args.get('status')
+                limit = request.args.get('limit', 200, type=int)
+                rows = self.operator.kb.list_remediations(status=status, limit=limit)
+                return jsonify({'remediations': rows, 'count': len(rows)})
+            except Exception as e:
+                logger.error(f"Error listing remediations: {e}")
+                return jsonify({'error': str(e), 'remediations': []}), 500
+
+        @self.app.route('/api/remediations/<int:remediation_id>')
+        def get_remediation_api(remediation_id):
+            """Fetch one remediation row (full detail)."""
+            try:
+                row = self.operator.kb.get_remediation(remediation_id)
+                if not row:
+                    return jsonify({'error': 'not found'}), 404
+                return jsonify(row)
+            except Exception as e:
+                logger.error(f"Error fetching remediation {remediation_id}: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/remediations')
+        def remediations_page():
+            """Operator console: the remediation worklist."""
+            return send_from_directory('ui', 'remediations.html')
+
         @self.app.route('/api/sweep-reports')
         def sweep_reports():
             """Get recent sweep reports."""

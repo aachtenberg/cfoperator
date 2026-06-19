@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFOperator — Remediation Worklist</title>
+<style>
+  :root {
+    --bg:#0f1419; --panel:#1a2230; --line:#2a3547; --fg:#e6edf3; --muted:#8b98a9;
+    --blue:#388bfd; --green:#3fb950; --amber:#d29922; --red:#f85149;
+    --purple:#a371f7; --orange:#db8b3a; --gray:#6e7681;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:16px 20px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; font-weight:600; }
+  .muted { color:var(--muted); }
+  .tiles { display:flex; gap:10px; flex-wrap:wrap; padding:14px 20px; }
+  .tile { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+    padding:10px 14px; min-width:120px; }
+  .tile .n { font-size:22px; font-weight:700; }
+  .tile .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .filters { padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { background:var(--panel); border:1px solid var(--line); color:var(--fg);
+    border-radius:999px; padding:5px 12px; cursor:pointer; font-size:13px; }
+  .chip.active { background:var(--blue); border-color:var(--blue); color:#fff; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line);
+    vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase;
+    letter-spacing:.03em; position:sticky; top:0; background:var(--bg); }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:#161d29; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px;
+    font-weight:600; white-space:nowrap; }
+  .rec { max-width:520px; }
+  a { color:var(--blue); }
+  #detail { position:fixed; top:0; right:0; width:min(560px,92vw); height:100%;
+    background:var(--panel); border-left:1px solid var(--line); padding:20px;
+    overflow:auto; transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; }
+  #detail.open { transform:translateX(0); }
+  #detail pre { background:#0b0f14; border:1px solid var(--line); border-radius:6px;
+    padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+  .kv { margin:4px 0; } .kv b { color:var(--muted); font-weight:600; }
+  .x { float:right; cursor:pointer; color:var(--muted); font-size:20px; }
+  .empty { padding:40px; text-align:center; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Remediation Worklist</h1>
+  <span class="muted" id="updated"></span>
+  <span style="margin-left:auto" class="muted">auto-refresh 15s · <a href="/">← console</a></span>
+</header>
+<div class="tiles" id="tiles"></div>
+<div class="filters" id="filters"></div>
+<table>
+  <thead><tr>
+    <th>ID</th><th>Status</th><th>Class</th><th>Risk</th><th>Conf</th>
+    <th>Host</th><th>Recommendation</th><th>Age</th><th>PR</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty" hidden>No remediations match this filter.</div>
+<div id="detail"></div>
+
+<script>
+const STATUS = ['queued','claimed','executing','pr-open','verifying','resolved','failed','needs-human','rejected'];
+const SC = {queued:'--blue',claimed:'--amber',executing:'--amber','pr-open':'--purple',
+  verifying:'--amber',resolved:'--green',failed:'--red','needs-human':'--orange',rejected:'--gray'};
+const RC = {low:'--green',med:'--amber',high:'--red'};
+let filter = '';
+
+function color(v){ return getComputedStyle(document.documentElement).getPropertyValue(v)||'#888'; }
+function badge(text, varname){ return `<span class="badge" style="background:${color(varname)}22;color:${color(varname)};border:1px solid ${color(varname)}55">${text||'—'}</span>`; }
+function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+ (iso.endsWith('Z')?'':'Z')).getTime())/1000;
+  if(s<90) return Math.round(s)+'s'; if(s<5400) return Math.round(s/60)+'m';
+  if(s<129600) return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+let ALL = [];
+async function load(){
+  try { ALL = (await (await fetch('/api/remediations')).json()).remediations || []; } catch(e){ return; }
+  paint();
+  document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+}
+function paint(){
+  tiles(ALL);
+  render(filter ? ALL.filter(r=>r.status===filter) : ALL);
+}
+
+function tiles(rows){
+  const c = {}; STATUS.forEach(s=>c[s]=0); rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);
+  const show = ['queued','needs-human','pr-open','failed','resolved'];
+  document.getElementById('tiles').innerHTML = show.map(s=>
+    `<div class="tile"><div class="n" style="color:${color(SC[s])}">${c[s]||0}</div><div class="l">${s}</div></div>`).join('');
+  document.getElementById('filters').innerHTML =
+    `<span class="chip ${filter===''?'active':''}" onclick="setFilter('')">all (${rows.length})</span>` +
+    STATUS.map(s=>`<span class="chip ${filter===s?'active':''}" onclick="setFilter('${s}')">${s} (${c[s]||0})</span>`).join('');
+}
+
+function render(rows){
+  const tb = document.getElementById('rows');
+  document.getElementById('empty').hidden = rows.length>0;
+  tb.innerHTML = rows.map(r=>{
+    const p = r.payload||{};
+    const rec = p.recommendation || p.title || '';
+    const pr = r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" onclick="event.stopPropagation()">PR ↗</a>` : '—';
+    return `<tr onclick="detail(${r.id})">
+      <td>#${r.id}</td>
+      <td>${badge(r.status, SC[r.status]||'--gray')}</td>
+      <td>${esc(r.remediation_class)}</td>
+      <td>${badge(r.risk, RC[r.risk]||'--gray')}</td>
+      <td>${r.confidence==null?'—':r.confidence}</td>
+      <td>${esc(r.host_id)}</td>
+      <td class="rec">${esc(rec).slice(0,160)}</td>
+      <td class="muted">${age(r.created_at)}</td>
+      <td>${pr}</td></tr>`;
+  }).join('');
+}
+
+async function detail(id){
+  const d = document.getElementById('detail');
+  d.innerHTML = '<span class="muted">loading…</span>';
+  d.classList.add('open');
+  let r; try { r = await (await fetch('/api/remediations/'+id)).json(); } catch(e){ d.innerHTML='error'; return; }
+  const p = r.payload||{};
+  d.innerHTML = `
+    <span class="x" onclick="document.getElementById('detail').classList.remove('open')">×</span>
+    <h2 style="margin:0 0 8px">Remediation #${r.id}</h2>
+    <div class="kv">${badge(r.status,SC[r.status]||'--gray')} ${badge(r.risk,RC[r.risk]||'--gray')}
+      <span class="muted">${esc(r.remediation_class)} · conf ${r.confidence==null?'—':r.confidence}</span></div>
+    <div class="kv"><b>host</b> ${esc(r.host_id)}</div>
+    <div class="kv"><b>source investigation</b> ${r.investigation_id?('#'+r.investigation_id):'—'}</div>
+    <div class="kv"><b>created</b> ${esc(r.created_at)} · <b>attempts</b> ${r.attempts}</div>
+    ${r.pr_url?`<div class="kv"><b>PR</b> <a href="${esc(r.pr_url)}" target="_blank">${esc(r.pr_url)}</a></div>`:''}
+    ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
+    <h3>Recommendation</h3><pre>${esc(p.recommendation||p.title||'—')}</pre>
+    ${p.finding?`<h3>Finding</h3><pre>${esc(p.finding)}</pre>`:''}
+    ${p.evidence?`<h3>Evidence</h3><pre>${esc(p.evidence)}</pre>`:''}
+    ${p.proposed_diff?`<h3>Proposed diff</h3><pre>${esc(p.proposed_diff)}</pre>`:''}
+    <h3>Payload</h3><pre>${esc(JSON.stringify(p,null,2))}</pre>`;
+}
+
+function setFilter(s){ filter=s; paint(); }
+load(); setInterval(load, 15000);
+</script>
+</body>
+</html>
