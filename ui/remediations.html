@@ -3,64 +3,95 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CFOperator — Remediation Worklist</title>
+<title>CFOperator · Remediations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
+  /* Theme tokens shared with the main page (ui/index.html) */
   :root {
-    --bg:#0f1419; --panel:#1a2230; --line:#2a3547; --fg:#e6edf3; --muted:#8b98a9;
-    --blue:#388bfd; --green:#3fb950; --amber:#d29922; --red:#f85149;
-    --purple:#a371f7; --orange:#db8b3a; --gray:#6e7681;
+    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
+    --border:#2a2a3a; --border-subtle:#1e1e2e;
+    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
+    --accent:#22c55e; --accent-dim:#166534; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444;
+    --purple:#a371f7;
+    --radius:10px; --radius-sm:6px; --header-height:56px;
   }
   * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-    font:14px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
-  header { padding:16px 20px; border-bottom:1px solid var(--line);
-    display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
-  h1 { font-size:18px; margin:0; font-weight:600; }
-  .muted { color:var(--muted); }
-  .tiles { display:flex; gap:10px; flex-wrap:wrap; padding:14px 20px; }
-  .tile { background:var(--panel); border:1px solid var(--line); border-radius:8px;
-    padding:10px 14px; min-width:120px; }
-  .tile .n { font-size:22px; font-weight:700; }
-  .tile .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
-  .filters { padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
-  .chip { background:var(--panel); border:1px solid var(--line); color:var(--fg);
-    border-radius:999px; padding:5px 12px; cursor:pointer; font-size:13px; }
-  .chip.active { background:var(--blue); border-color:var(--blue); color:#fff; }
-  button.chip { font-family:inherit; }
-  .pipeline { padding:0 20px 14px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;
-    border-bottom:1px solid var(--line); margin-bottom:6px; }
-  .tog.on { background:var(--green); border-color:var(--green); color:#0b0f14; font-weight:700; }
-  .tog.drain.on { background:var(--orange); border-color:var(--orange); }
+  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
+    font-family:'Inter',-apple-system,sans-serif; font-size:14px; }
+  header { height:var(--header-height); background:var(--bg-secondary);
+    border-bottom:1px solid var(--border); display:flex; align-items:center;
+    padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
+  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700;
+    color:var(--accent); letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
+  .logo svg { width:24px; height:24px; opacity:.9; }
+  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
+  .right { margin-left:auto; display:flex; align-items:center; gap:14px; }
+  .muted { color:var(--text-secondary); font-size:12px; }
+  a { color:var(--cyan); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+
+  .pipeline { display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+    padding:12px 20px; border-bottom:1px solid var(--border-subtle); }
+  .pipeline .lbl { font-family:'JetBrains Mono',monospace; color:var(--text-secondary);
+    font-size:12px; text-transform:uppercase; letter-spacing:.5px; }
+  .tiles { display:flex; gap:10px; flex-wrap:wrap; padding:14px 20px 6px; }
+  .tile { background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius);
+    padding:10px 14px; min-width:118px; }
+  .tile .n { font-size:22px; font-weight:700; font-family:'JetBrains Mono',monospace; }
+  .tile .l { color:var(--text-muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
+  .filters { padding:6px 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
+
+  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:var(--radius-sm); padding:5px 11px; cursor:pointer; font-size:13px;
+    font-family:inherit; transition:border-color .15s,background .15s; }
+  .chip:hover { border-color:var(--text-secondary); }
+  .chip.active { background:var(--accent-dim); border-color:var(--accent); color:#fff; }
+  .tog.on { background:var(--accent-dim); border-color:var(--accent); color:var(--text-primary); font-weight:600; }
+  .tog.drain.on { background:var(--orange); border-color:var(--orange); color:#0a0a0f; }
+
   table { width:100%; border-collapse:collapse; }
-  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line);
-    vertical-align:top; }
-  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase;
-    letter-spacing:.03em; position:sticky; top:0; background:var(--bg); }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
+  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
+  td { font-size:13px; }
   tbody tr { cursor:pointer; }
-  tbody tr:hover { background:#161d29; }
-  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px;
-    font-weight:600; white-space:nowrap; }
+  tbody tr:hover { background:var(--bg-hover); }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
+    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
   .rec { max-width:520px; }
-  a { color:var(--blue); }
+
   #detail { position:fixed; top:0; right:0; width:min(560px,92vw); height:100%;
-    background:var(--panel); border-left:1px solid var(--line); padding:20px;
+    background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px;
     overflow:auto; transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; }
   #detail.open { transform:translateX(0); }
-  #detail pre { background:#0b0f14; border:1px solid var(--line); border-radius:6px;
-    padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
-  .kv { margin:4px 0; } .kv b { color:var(--muted); font-weight:600; }
-  .x { float:right; cursor:pointer; color:var(--muted); font-size:20px; }
-  .empty { padding:40px; text-align:center; color:var(--muted); }
+  #detail h2 { font-family:'JetBrains Mono',monospace; }
+  #detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle);
+    border-radius:var(--radius-sm); padding:10px; overflow:auto; white-space:pre-wrap;
+    word-break:break-word; font-size:12px; }
+  .kv { margin:4px 0; } .kv b { color:var(--text-secondary); font-weight:600; }
+  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px; }
+  .empty { padding:40px; text-align:center; color:var(--text-muted); }
 </style>
 </head>
 <body>
 <header>
-  <h1>Remediation Worklist</h1>
-  <span class="muted" id="updated"></span>
-  <span style="margin-left:auto" class="muted">auto-refresh 15s · <a href="/">← console</a></span>
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+    </svg>
+    CFOperator <span class="sub">/ Remediations</span>
+  </div>
+  <div class="right">
+    <span class="muted" id="updated"></span>
+    <a href="/">← console</a>
+  </div>
 </header>
+
 <div class="pipeline" id="pipeline">
-  <span class="muted">Pipeline:</span>
+  <span class="lbl">Pipeline</span>
   <span id="flags"></span>
   <button class="chip" onclick="runFeed()">⟳ Run feed-summary</button>
   <span id="feedmsg" class="muted"></span>
@@ -79,14 +110,15 @@
 
 <script>
 const STATUS = ['queued','claimed','executing','pr-open','verifying','resolved','failed','needs-human','rejected'];
-const SC = {queued:'--blue',claimed:'--amber',executing:'--amber','pr-open':'--purple',
-  verifying:'--amber',resolved:'--green',failed:'--red','needs-human':'--orange',rejected:'--gray'};
-const RC = {low:'--green',med:'--amber',high:'--red'};
+const SC = {queued:'--cyan',claimed:'--orange',executing:'--orange','pr-open':'--purple',
+  verifying:'--cyan',resolved:'--accent',failed:'--red','needs-human':'--orange',rejected:'--text-muted'};
+const RC = {low:'--accent',med:'--orange',high:'--red'};
 let filter = '';
 
-function color(v){ return getComputedStyle(document.documentElement).getPropertyValue(v)||'#888'; }
-function badge(text, varname){ return `<span class="badge" style="background:${color(varname)}22;color:${color(varname)};border:1px solid ${color(varname)}55">${text||'—'}</span>`; }
-function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+ (iso.endsWith('Z')?'':'Z')).getTime())/1000;
+function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
+function badge(text, varname){ const c=color(varname);
+  return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${text||'—'}</span>`; }
+function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.endsWith('Z')?'':'Z')).getTime())/1000;
   if(s<90) return Math.round(s)+'s'; if(s<5400) return Math.round(s/60)+'m';
   if(s<129600) return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
@@ -97,10 +129,7 @@ async function load(){
   paint();
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
-function paint(){
-  tiles(ALL);
-  render(filter ? ALL.filter(r=>r.status===filter) : ALL);
-}
+function paint(){ tiles(ALL); render(filter ? ALL.filter(r=>r.status===filter) : ALL); }
 
 function tiles(rows){
   const c = {}; STATUS.forEach(s=>c[s]=0); rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);
@@ -116,15 +145,14 @@ function render(rows){
   const tb = document.getElementById('rows');
   document.getElementById('empty').hidden = rows.length>0;
   tb.innerHTML = rows.map(r=>{
-    const p = r.payload||{};
-    const rec = p.recommendation || p.title || '';
+    const p = r.payload||{}; const rec = p.recommendation || p.title || '';
     const pr = r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" onclick="event.stopPropagation()">PR ↗</a>` : '—';
     return `<tr onclick="detail(${r.id})">
-      <td>#${r.id}</td>
-      <td>${badge(r.status, SC[r.status]||'--gray')}</td>
+      <td class="mono">#${r.id}</td>
+      <td>${badge(r.status, SC[r.status]||'--text-muted')}</td>
       <td>${esc(r.remediation_class)}</td>
-      <td>${badge(r.risk, RC[r.risk]||'--gray')}</td>
-      <td>${r.confidence==null?'—':r.confidence}</td>
+      <td>${badge(r.risk, RC[r.risk]||'--text-muted')}</td>
+      <td class="mono">${r.confidence==null?'—':r.confidence}</td>
       <td>${esc(r.host_id)}</td>
       <td class="rec">${esc(rec).slice(0,160)}</td>
       <td class="muted">${age(r.created_at)}</td>
@@ -134,8 +162,7 @@ function render(rows){
 
 async function detail(id){
   const d = document.getElementById('detail');
-  d.innerHTML = '<span class="muted">loading…</span>';
-  d.classList.add('open');
+  d.innerHTML = '<span class="muted">loading…</span>'; d.classList.add('open');
   let r; try { r = await (await fetch('/api/remediations/'+id)).json(); } catch(e){ d.innerHTML='error'; return; }
   const p = r.payload||{};
   d.innerHTML = `
@@ -147,7 +174,7 @@ async function detail(id){
       <button class="chip" onclick="reclassify(${r.id})">⟳ Reclassify</button>
       ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">🔎 Investigation #${r.investigation_id}</button>`:''}
     </div>
-    <div class="kv">${badge(r.status,SC[r.status]||'--gray')} ${badge(r.risk,RC[r.risk]||'--gray')}
+    <div class="kv">${badge(r.status,SC[r.status]||'--text-muted')} ${badge(r.risk,RC[r.risk]||'--text-muted')}
       <span class="muted">${esc(r.remediation_class)} · conf ${r.confidence==null?'—':r.confidence}</span></div>
     <div class="kv"><b>host</b> ${esc(r.host_id)}</div>
     <div class="kv"><b>source investigation</b> ${r.investigation_id?('#'+r.investigation_id):'—'}</div>
