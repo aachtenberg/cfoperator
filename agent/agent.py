@@ -1429,6 +1429,23 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             logger.debug(f"Remediation proposal skipped: {e}")
             return None
 
+    _REMEDIATION_FLAGS = ('queue_feed', 'queue_drain', 'queue_reap', 'queue_verify')
+
+    def _remediation_flag(self, name: str) -> bool:
+        """Resolve a remediation flag: DB setting overrides config.yaml.
+
+        A DB setting (set via the operator console) wins so flags can be toggled
+        live without a redeploy/restart; falls back to the config block.
+        """
+        try:
+            val = self.kb.get_setting('remediation_' + name, '')
+            if val not in (None, ''):
+                return str(val).strip().lower() in ('1', 'true', 'yes', 'on')
+        except Exception:
+            pass
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        return bool(rcfg.get(name))
+
     def _reap_remediations(self) -> int:
         """Recover remediations whose executor lease expired (gated, safe).
 
@@ -1436,7 +1453,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         empty, so it can be enabled independently of the drainer.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
-        if not rcfg.get('queue_reap'):
+        if not self._remediation_flag('queue_reap'):
             return 0
         try:
             count = self.kb.requeue_stale_remediations()
@@ -1456,7 +1473,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         Returns the number of executor Jobs spawned.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
-        if not rcfg.get('queue_drain'):
+        if not self._remediation_flag('queue_drain'):
             return 0
         max_per_tick = max(1, int(rcfg.get('max_drain_per_tick', 3)))
         spawned = 0
@@ -1585,7 +1602,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         rejected. Returns the number of rows advanced.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
-        if not rcfg.get('queue_verify'):
+        if not self._remediation_flag('queue_verify'):
             return 0
         try:
             rows = self.kb.list_remediations_by_status('pr-open')
@@ -1730,7 +1747,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         didn't classify the recommendation (no ``remediation_class``).
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
-        if not rcfg.get('queue_feed'):
+        if not self._remediation_flag('queue_feed'):
             return None
         rclass = details.get('remediation_class')
         if not rclass:
@@ -1765,7 +1782,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         finding id so recurring findings don't pile up across runs.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
-        if not rcfg.get('queue_feed'):
+        if not self._remediation_flag('queue_feed'):
             return 0
         enq = 0
         for rep in reports or []:
@@ -1828,7 +1845,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         so a low-risk gitops-patch can become auto-eligible. Deduped by title.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
-        if not rcfg.get('queue_feed'):
+        if not self._remediation_flag('queue_feed'):
             return 0
         recs = self._parse_summary_recommendations(summary_text)
         if not recs:
