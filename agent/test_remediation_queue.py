@@ -252,9 +252,9 @@ def test_feed_from_sweeps_enqueues_and_maps_severity():
     reports = [{"findings": [
         {"id": "f1", "finding": "Ollama 500s", "remediation": "Verify DNS on raspberrypi5",
          "severity": "warning", "resource_name": "ollama"},
-        {"id": "f2", "finding": "healthy", "remediation": "No action needed", "severity": "info"},
+        {"id": "f2", "finding": "healthy", "remediation": "No action required. Healthy.", "severity": "info"},
     ]}]
-    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1  # 2nd skipped
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1  # 2nd skipped (no-action prefix)
     kwargs = op.kb.queue_remediation.call_args.kwargs
     assert kwargs["remediation_class"] == "manual"  # sweep findings -> needs-human
     assert kwargs["risk"] == "med"                  # warning -> med

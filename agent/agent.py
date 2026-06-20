@@ -1808,7 +1808,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         for rep in reports or []:
             for f in (rep.get('findings') or []):
                 rec = str(f.get('remediation') or '').strip()
-                if not rec or rec.lower() in ('no action needed', 'none', 'n/a'):
+                if not rec or rec.lower().startswith('no action') or rec.lower() in ('none', 'n/a', 'nothing'):
                     continue
                 key = f"sweep-{f.get('id') or rec[:80]}"
                 risk = self._SEVERITY_RISK.get(str(f.get('severity') or 'info'), 'high')
@@ -1875,7 +1875,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         enq = 0
         for r in recs:
             rec = str(r.get('recommendation') or '').strip()
-            if not rec or rec.lower() in ('no action needed', 'none', 'n/a'):
+            if not rec or rec.lower().startswith('no action') or rec.lower() in ('none', 'n/a', 'nothing'):
                 continue
             title = str(r.get('title') or rec[:80]).strip()
             key = "summary-" + re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:60]
