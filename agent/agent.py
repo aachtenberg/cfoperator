@@ -30,7 +30,7 @@ from pathlib import Path
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
-from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature
+from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, remediation_is_auto_eligible
 from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService
 
@@ -75,6 +75,10 @@ INVESTIGATION_QUEUE_DEPTH = Gauge('cfoperator_investigation_queue_depth', 'Pendi
 INVESTIGATION_QUEUE_REJECTED = Counter('cfoperator_investigation_queue_rejected_total', 'HTTP investigations rejected because queue was full')
 INVESTIGATION_POSTBACK = Counter('cfoperator_investigation_postback_total', 'Investigation completions posted back to event_runtime', ['status'])
 REMEDIATION_QUEUE = Gauge('cfoperator_remediation_queue', 'Remediation queue rows by status', ['status'])
+REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remediations enqueued', ['source', 'remediation_class', 'eligible'])
+REMEDIATION_SPAWNED = Counter('cfoperator_remediation_executor_spawned_total', 'Executor Jobs spawned by the drainer', ['result'])
+REMEDIATION_OUTCOME = Counter('cfoperator_remediation_outcome_total', 'Terminal remediation outcomes', ['outcome'])
+REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediations recovered from dead executor leases')
 
 # Triggers that describe a *recoverable* runtime condition — if the pod is
 # healthy now, the thing the alert worried about has cleared. Used by the
@@ -1458,6 +1462,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         try:
             count = self.kb.requeue_stale_remediations()
             if count:
+                REMEDIATION_REAPED.inc(count)
                 logger.info(f"Reaped {count} stale remediation(s) back to the queue")
             return count
         except Exception as e:
@@ -1489,12 +1494,14 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             try:
                 self._spawn_remediation_executor(job_name, work)
                 spawned += 1
+                REMEDIATION_SPAWNED.labels(result='ok').inc()
                 logger.info(
                     f"Spawned executor {job_name} for remediation #{work['id']} "
                     f"({work.get('remediation_class')}, risk={work.get('risk')})"
                 )
             except Exception as e:
                 # Don't leave the row stuck 'claimed' — fail it so retry/reaper recovers.
+                REMEDIATION_SPAWNED.labels(result='failed').inc()
                 logger.error(f"Executor spawn failed for remediation #{work['id']}: {e}")
                 self.kb.fail_remediation(work['id'], f"executor spawn failed: {e}")
         return spawned
@@ -1624,11 +1631,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             data = resp.get('data') or {}
             if data.get('merged'):
                 self.kb.update_remediation_status(row['id'], 'resolved', result={'pr_merged': True})
+                REMEDIATION_OUTCOME.labels(outcome='resolved').inc()
                 self._verify_remediation(row)
                 advanced += 1
             elif data.get('state') == 'closed':
                 self.kb.update_remediation_status(row['id'], 'rejected',
                                                   last_error='PR closed without merge')
+                REMEDIATION_OUTCOME.labels(outcome='rejected').inc()
                 advanced += 1
         if advanced:
             logger.info(f"Reconciled {advanced} remediation PR(s)")
@@ -1740,6 +1749,12 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             out['pr_result'] = pr_result
         return out
 
+    def _count_enqueued(self, source: str, rclass: str, risk: str, confidence) -> None:
+        """Bump the enqueue counter, labelled by source/class and auto-eligibility."""
+        nc, nr = normalize_remediation_fields(rclass, risk)
+        elig = remediation_is_auto_eligible(nc, nr, confidence)
+        REMEDIATION_ENQUEUED.labels(source=source, remediation_class=nc, eligible=str(elig).lower()).inc()
+
     def _maybe_queue_remediation(self, investigation_id: int, details: Dict[str, Any]) -> Optional[int]:
         """Enqueue a remediation from an investigation's structured hints.
 
@@ -1752,8 +1767,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         rclass = details.get('remediation_class')
         if not rclass:
             return None
+        risk = str(details.get('risk') or 'high')
+        confidence = details.get('confidence')
         try:
-            return self.kb.queue_remediation(
+            rid = self.kb.queue_remediation(
                 remediation_class=str(rclass),
                 payload={
                     'recommendation': str(details.get('recommendation') or ''),
@@ -1763,9 +1780,12 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 },
                 investigation_id=investigation_id,
                 host_id=str(details.get('host') or 'default'),
-                risk=str(details.get('risk') or 'high'),
-                confidence=details.get('confidence'),
+                risk=risk,
+                confidence=confidence,
             )
+            if rid:
+                self._count_enqueued('deep-investigation', str(rclass), risk, confidence)
+            return rid
         except Exception as e:
             logger.error(f"Failed to queue remediation from investigation #{investigation_id}: {e}",
                          exc_info=True)
@@ -1791,6 +1811,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 if not rec or rec.lower() in ('no action needed', 'none', 'n/a'):
                     continue
                 key = f"sweep-{f.get('id') or rec[:80]}"
+                risk = self._SEVERITY_RISK.get(str(f.get('severity') or 'info'), 'high')
                 try:
                     rid = self.kb.queue_remediation(
                         remediation_class='manual',
@@ -1805,12 +1826,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                             'dedupe_key': key,
                         },
                         host_id=str(f.get('resource_name') or f.get('namespace') or 'default')[:64],
-                        risk=self._SEVERITY_RISK.get(str(f.get('severity') or 'info'), 'high'),
+                        risk=risk,
                         confidence=None,
                         dedupe_key=key,
                     )
                     if rid:
                         enq += 1
+                        self._count_enqueued('morning-summary/sweep', 'manual', risk, None)
                 except Exception as e:
                     logger.error(f"sweep->remediation enqueue failed: {e}", exc_info=True)
         if enq:
@@ -1857,19 +1879,23 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 continue
             title = str(r.get('title') or rec[:80]).strip()
             key = "summary-" + re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:60]
+            rclass = str(r.get('remediation_class') or 'manual')
+            risk = str(r.get('risk') or 'med')
+            conf = r.get('confidence') if isinstance(r.get('confidence'), (int, float)) else None
             try:
                 rid = self.kb.queue_remediation(
-                    remediation_class=str(r.get('remediation_class') or 'manual'),
+                    remediation_class=rclass,
                     payload={'recommendation': rec, 'title': title,
                              'target': {'host': r.get('host')},
                              'source': 'morning-summary', 'dedupe_key': key},
                     host_id=str(r.get('host') or 'default')[:64],
-                    risk=str(r.get('risk') or 'med'),
-                    confidence=r.get('confidence') if isinstance(r.get('confidence'), (int, float)) else None,
+                    risk=risk,
+                    confidence=conf,
                     dedupe_key=key,
                 )
                 if rid:
                     enq += 1
+                    self._count_enqueued('morning-summary', rclass, risk, conf)
             except Exception as e:
                 logger.error(f"summary->remediation enqueue failed: {e}", exc_info=True)
         if enq:
