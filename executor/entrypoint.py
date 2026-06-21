@@ -188,7 +188,12 @@ def run(env: Dict[str, str]) -> Dict[str, Any]:
         )
 
     status, pr_url, detail = classify_result(diff, pr_result)
-    return build_completion_payload(work_order, status, pr_url, detail, pr_result)
+    # Surface the proposed diff + chosen file so a decline is debuggable in the console.
+    result = dict(pr_result or {})
+    result["target_file"] = path
+    if diff:
+        result["proposed_diff"] = diff[:6000]
+    return build_completion_payload(work_order, status, pr_url, detail, result)
 
 
 def _pr_body(work_order: Dict[str, Any], report: str) -> str:
