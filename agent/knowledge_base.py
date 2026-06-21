@@ -2763,20 +2763,27 @@ class KnowledgeBase:
                             WHERE il.deprecated IS NOT TRUE
                               AND to_tsvector('english', il.search_text) @@ plainto_tsquery('english', :query)
                         )
-                        SELECT il.id, il.learning_type, il.title, il.description,
-                               il.applies_when, il.services, il.tags, il.category,
-                               il.success_rate, il.created_at,
-                               COALESCE(v.vector_sim, 0) as vector_sim,
-                               COALESCE(f.fts_rank, 0) as fts_rank,
-                               (COALESCE(v.vector_sim, 0) * :vw +
-                                COALESCE(f.fts_rank, 0) * :fw) as combined_score
-                        FROM investigation_learnings il
-                        LEFT JOIN vector_scores v ON il.id = v.learning_id
-                        LEFT JOIN fts_scores f ON il.id = f.learning_id
-                        WHERE il.deprecated IS NOT TRUE
-                          AND (v.vector_sim IS NOT NULL OR f.fts_rank IS NOT NULL)
+                        SELECT id, learning_type, title, description, applies_when,
+                               services, tags, category, success_rate, created_at,
+                               vector_sim, fts_rank, combined_score
+                        FROM (
+                            SELECT il.id, il.learning_type, il.title, il.description,
+                                   il.applies_when, il.services, il.tags, il.category,
+                                   il.success_rate, il.created_at, il.times_applied,
+                                   COALESCE(v.vector_sim, 0) as vector_sim,
+                                   COALESCE(f.fts_rank, 0) as fts_rank,
+                                   (COALESCE(v.vector_sim, 0) * :vw +
+                                    COALESCE(f.fts_rank, 0) * :fw) as combined_score
+                            FROM investigation_learnings il
+                            LEFT JOIN vector_scores v ON il.id = v.learning_id
+                            LEFT JOIN fts_scores f ON il.id = f.learning_id
+                            WHERE il.deprecated IS NOT TRUE
+                              AND (v.vector_sim IS NOT NULL OR f.fts_rank IS NOT NULL)
+                        ) ranked
+                        -- ORDER BY in the outer query so the combined_score alias is a
+                        -- real column (Postgres rejects an alias inside an ORDER BY expression)
                         ORDER BY combined_score * COALESCE(
-                            CASE WHEN il.times_applied >= 3 THEN 0.5 + COALESCE(il.success_rate, 0.5)
+                            CASE WHEN times_applied >= 3 THEN 0.5 + COALESCE(success_rate, 0.5)
                                  ELSE 1.0 END,
                             1.0) DESC
                         LIMIT :limit
