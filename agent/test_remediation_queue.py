@@ -134,6 +134,17 @@ def test_build_executor_manifest_shape():
     # GitHub token comes from a secret, never inline
     assert env["GITHUB_TOKEN"]["valueFrom"]["secretKeyRef"]["key"] == "GITHUB_TOKEN"
     assert env["CFOP_EXEC_LLM_BACKEND"]["value"] == "anthropic"
+    assert env["CFOP_GIT_REPO"]["value"] == "aachtenberg/homelab-infra"  # config default
+
+
+def test_build_executor_manifest_per_item_repo():
+    op = MagicMock()
+    op._executor_config.return_value = {}
+    work = {"id": 9, "remediation_class": "gitops-patch", "risk": "low",
+            "payload": {"repo": "aachtenberg/cfoperator-deploy"}}
+    m = CFOperator._build_executor_manifest(op, "cfop-executor-x", work)
+    env = {e["name"]: e for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["CFOP_GIT_REPO"]["value"] == "aachtenberg/cfoperator-deploy"  # payload wins
 
 
 # ---- feed hook ---------------------------------------------------------------

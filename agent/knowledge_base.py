@@ -3443,13 +3443,14 @@ class KnowledgeBase:
             return remediation_row_dict(r) if r else None
 
     def reclassify_remediation(self, remediation_id: int, remediation_class: Optional[str] = None,
-                               risk: Optional[str] = None, confidence: Optional[float] = None
-                               ) -> Optional[Dict[str, Any]]:
-        """Operator override of class/risk/confidence; re-runs the auto-gate.
+                               risk: Optional[str] = None, confidence: Optional[float] = None,
+                               repo: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Operator override of class/risk/confidence (+ target repo); re-runs the gate.
 
         Only re-gates rows that aren't in flight or terminal (queued / needs-human
-        / failed): an eligible combo -> 'queued', otherwise 'needs-human'. Returns
-        the updated row, or None if unknown.
+        / failed): an eligible combo -> 'queued', otherwise 'needs-human'. ``repo``
+        (when given) is merged into payload so the executor targets that repo.
+        Returns the updated row, or None if unknown.
         """
         _regate = ('queued', 'needs-human', 'failed')
         with self.session_scope() as session:
@@ -3461,6 +3462,9 @@ class KnowledgeBase:
             item.remediation_class, item.risk = normalize_remediation_fields(nc, nr)
             if confidence is not None:
                 item.confidence = confidence
+            if repo is not None:
+                # reassign (not mutate) so SQLAlchemy tracks the JSONB change
+                item.payload = {**(item.payload or {}), 'repo': repo.strip() or None}
             if item.status in _regate:
                 item.status = 'queued' if remediation_is_auto_eligible(
                     item.remediation_class, item.risk, item.confidence) else 'needs-human'
