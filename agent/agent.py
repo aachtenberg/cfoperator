@@ -1890,6 +1890,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if not recs:
             return self._feed_remediations_from_sweeps(overnight_reports or [])
         enq = 0
+        dispatched = 0  # investigate-class findings sent to the investigation pipeline
         for r in recs:
             rec = str(r.get('recommendation') or '').strip()
             if not rec or rec.lower().startswith('no action') or rec.lower() in ('none', 'n/a', 'nothing'):
@@ -1899,6 +1900,17 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             rclass = str(r.get('remediation_class') or 'manual')
             risk = str(r.get('risk') or 'med')
             conf = r.get('confidence') if isinstance(r.get('confidence'), (int, float)) else None
+            # 'investigate' findings are evidence-gathering the agent does itself —
+            # dispatch an autonomous investigation instead of a needs-human row.
+            if rclass == 'investigate':
+                try:
+                    self.enqueue_investigation({'summary': f"{title}: {rec}"[:300],
+                                                'source': 'summary-investigate',
+                                                'host': r.get('host')})
+                    dispatched += 1
+                except Exception as e:
+                    logger.warning(f"could not dispatch investigation for '{title}': {e}")
+                continue
             try:
                 rid = self.kb.queue_remediation(
                     remediation_class=rclass,
@@ -1916,8 +1928,9 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     self._count_enqueued('morning-summary', rclass, risk, conf)
             except Exception as e:
                 logger.error(f"summary->remediation enqueue failed: {e}", exc_info=True)
-        if enq:
-            logger.info(f"Fed {enq} remediation(s) from morning-summary recommendations")
+        if enq or dispatched:
+            logger.info(f"Morning summary: queued {enq} remediation(s), "
+                        f"dispatched {dispatched} investigation(s)")
         return enq
 
     def _maybe_open_pr_from_deep_diff(self, alert: Dict[str, Any], details: Dict[str, Any],
@@ -5465,16 +5478,24 @@ IMPORTANT:
             f"```json\n"
             f'{{"recommendations": [{{"title": "short label", '
             f'"recommendation": "the concrete next step", "host": "affected host or empty", '
-            f'"remediation_class": "gitops-patch|k8s-action|node-action|manual", '
+            f'"remediation_class": "gitops-patch|k8s-action|node-action|investigate|manual", '
             f'"risk": "low|med|high", "confidence": 0.0, '
             f'"repo": "owning GitOps repo slug or empty"}}]}}\n'
             f"```\n"
-            f"Classify remediation_class honestly: gitops-patch only if it's a single "
-            f"manifest change in the GitOps repo; node-action for host/DNS/file changes; "
-            f"manual if it needs human judgement. Be conservative with risk. For "
-            f"gitops-patch, set repo to the owning GitOps repo slug "
-            f"(aachtenberg/homelab-infra for cluster apps; aachtenberg/cfoperator-deploy "
-            f"for cfoperator/event-runtime itself); otherwise leave repo empty."
+            f"Classify remediation_class honestly:\n"
+            f"- investigate: the next step is to GATHER EVIDENCE you can collect "
+            f"yourself — check pod/job logs, query metrics/Loki, confirm an endpoint "
+            f"responds, look for a pattern. PREFER THIS over manual for anything "
+            f"'check/verify/confirm/investigate/monitor'; the agent will investigate "
+            f"autonomously rather than ask a human.\n"
+            f"- gitops-patch: a single manifest change in a GitOps repo (set repo: "
+            f"aachtenberg/homelab-infra for cluster apps, aachtenberg/cfoperator-deploy "
+            f"for cfoperator/event-runtime itself).\n"
+            f"- k8s-action: a reversible in-cluster verb (rollout restart, delete pod).\n"
+            f"- node-action: a host change over ssh/ansible (DNS, files, systemd).\n"
+            f"- manual: genuinely needs a human's hands or judgement (hardware, wiring, "
+            f"a risky decision) — NOT something you could investigate first.\n"
+            f"Be conservative with risk."
         )
 
         try:

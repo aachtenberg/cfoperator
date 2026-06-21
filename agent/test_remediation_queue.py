@@ -330,6 +330,27 @@ def test_feed_from_summary_disabled():
     op.kb.queue_remediation.assert_not_called()
 
 
+_SUMMARY_INV = """## Summary
+```json
+{"recommendations": [
+  {"title": "Check ollama logs", "recommendation": "Verify /api/chat responds 200",
+   "remediation_class": "investigate", "risk": "low", "confidence": 0.6},
+  {"title": "Bump probe", "recommendation": "add probe timeout",
+   "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9, "repo": "o/r"}
+]}
+```
+"""
+
+
+def test_feed_summary_routes_investigate_to_investigation():
+    op = _feed_op()
+    n = CFOperator._feed_remediations_from_summary(op, _SUMMARY_INV, [])
+    # investigate -> autonomous investigation (not a needs-human row)
+    op.enqueue_investigation.assert_called_once()
+    # only the gitops-patch became a queued remediation
+    assert n == 1 and op.kb.queue_remediation.call_count == 1
+
+
 # ---- read API serialization (operator console) -------------------------------
 
 
