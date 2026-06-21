@@ -845,9 +845,20 @@ class WebServer:
             threading.Thread(target=_run, daemon=True, name="run-feed").start()
             return jsonify({'status': 'accepted'}), 202
 
+        @self.app.route('/api/investigations')
+        def list_investigations_api():
+            """List recent investigations (summary rows). (was feat/investigations-read-api)"""
+            try:
+                limit = request.args.get('limit', 50, type=int)
+                rows = self.operator.kb.get_recent_investigations(limit=limit)
+                return jsonify({'investigations': rows, 'count': len(rows)})
+            except Exception as e:
+                logger.error(f"Error listing investigations: {e}")
+                return jsonify({'error': str(e), 'investigations': []}), 500
+
         @self.app.route('/api/investigations/<int:investigation_id>')
         def get_investigation_api(investigation_id):
-            """Investigation drill-in for the worklist detail drawer."""
+            """Investigation drill-in (full findings) for the console + worklist drawer."""
             try:
                 inv = self.operator.kb.get_investigation(investigation_id)
                 if not inv:
@@ -856,6 +867,11 @@ class WebServer:
             except Exception as e:
                 logger.error(f"get investigation {investigation_id} failed: {e}")
                 return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/investigations')
+        def investigations_page():
+            """Operator console: recent investigations + conclusions."""
+            return send_from_directory('ui', 'investigations.html')
 
         @self.app.route('/api/sweep-reports')
         def sweep_reports():

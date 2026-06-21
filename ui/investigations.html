@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFOperator · Investigations</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
+    --border:#2a2a3a; --border-subtle:#1e1e2e;
+    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
+    --accent:#22c55e; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444; --purple:#a371f7;
+    --radius:10px; --radius-sm:6px; --header-height:56px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
+    font-family:'Inter',-apple-system,sans-serif; font-size:14px; }
+  header { height:var(--header-height); background:var(--bg-secondary); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
+  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700; color:var(--accent);
+    letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
+  .logo svg { width:24px; height:24px; opacity:.9; }
+  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
+  .right { margin-left:auto; display:flex; align-items:center; gap:14px; }
+  .muted { color:var(--text-secondary); font-size:12px; }
+  a { color:var(--cyan); text-decoration:none; } a:hover { text-decoration:underline; }
+  .filters { padding:14px 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:999px; padding:5px 12px; cursor:pointer; font-size:13px; }
+  .chip.active { background:var(--accent); border-color:var(--accent); color:#0a0a0f; font-weight:600; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
+  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
+  td { font-size:13px; } .mono { font-family:'JetBrains Mono',monospace; }
+  tbody tr { cursor:pointer; } tbody tr:hover { background:var(--bg-hover); }
+  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
+    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
+  .trig { max-width:560px; }
+  #backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:40; opacity:0;
+    pointer-events:none; transition:opacity .15s; }
+  #backdrop.open { opacity:1; pointer-events:auto; }
+  #detail { position:fixed; top:0; right:0; width:min(620px,94vw); height:100%; z-index:50;
+    background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px; overflow:auto;
+    transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; }
+  #detail.open { transform:translateX(0); }
+  #detail h2 { font-family:'JetBrains Mono',monospace; }
+  #detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
+    padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
+  .kv { margin:4px 0; } .kv b { color:var(--text-secondary); font-weight:600; }
+  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px; }
+  .empty { padding:40px; text-align:center; color:var(--text-muted); }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
+    </svg>
+    CFOperator <span class="sub">/ Investigations</span>
+  </div>
+  <div class="right"><span class="muted" id="updated"></span>
+    <a href="/remediations">remediations →</a><a href="/">← console</a></div>
+</header>
+<div class="filters" id="filters"></div>
+<table>
+  <thead><tr><th>ID</th><th>Outcome</th><th>Trigger</th><th>Duration</th><th>Started</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty" hidden>No investigations match this filter.</div>
+<div id="backdrop" onclick="closeDetail()"></div>
+<div id="detail"></div>
+
+<script>
+const OUTCOMES = ['resolved','needs_action','monitoring','escalated','escalate','failed','in_progress','retry'];
+const OC = {resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',escalated:'--red',
+  escalate:'--red',failed:'--red',in_progress:'--text-muted',retry:'--purple'};
+let filter='', ALL=[];
+function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
+function badge(t,v){ const c=color(v); return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${t||'—'}</span>`; }
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.endsWith('Z')?'':'Z')).getTime())/1000;
+  if(s<90)return Math.round(s)+'s'; if(s<5400)return Math.round(s/60)+'m'; if(s<129600)return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
+
+async function load(){
+  try{ ALL=(await (await fetch('/api/investigations?limit=80')).json()).investigations||[]; }catch(e){ return; }
+  paint(); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
+}
+function paint(){
+  const c={}; ALL.forEach(r=>c[r.outcome]=(c[r.outcome]||0)+1);
+  const seen=OUTCOMES.filter(o=>c[o]);
+  document.getElementById('filters').innerHTML =
+    `<span class="chip ${filter===''?'active':''}" onclick="setF('')">all (${ALL.length})</span>`+
+    seen.map(o=>`<span class="chip ${filter===o?'active':''}" onclick="setF('${o}')">${o} (${c[o]})</span>`).join('');
+  const rows=filter?ALL.filter(r=>r.outcome===filter):ALL;
+  document.getElementById('empty').hidden=rows.length>0;
+  document.getElementById('rows').innerHTML=rows.map(r=>`
+    <tr onclick="detail(${r.id})">
+      <td class="mono">#${r.id}</td>
+      <td>${badge(r.outcome, OC[r.outcome]||'--text-muted')}</td>
+      <td class="trig">${esc(r.trigger||'').slice(0,140)}</td>
+      <td class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':'—'}</td>
+      <td class="muted">${age(r.started_at)}</td></tr>`).join('');
+}
+function setF(o){ filter=o; paint(); }
+function closeDetail(){ document.getElementById('detail').classList.remove('open'); document.getElementById('backdrop').classList.remove('open'); }
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
+
+async function detail(id){
+  const d=document.getElementById('detail'); d.innerHTML='<span class="muted">loading…</span>';
+  d.classList.add('open'); document.getElementById('backdrop').classList.add('open');
+  let r; try{ r=await (await fetch('/api/investigations/'+id)).json(); }catch(e){ d.innerHTML='error'; return; }
+  const f=r.findings||{};
+  d.innerHTML=`
+    <span class="x" onclick="closeDetail()">×</span>
+    <h2 style="margin:0 0 8px">Investigation #${r.id}</h2>
+    <div class="kv">${badge(r.outcome,OC[r.outcome]||'--text-muted')}
+      <span class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':''} · ${r.tool_calls_count||0} tool calls</span></div>
+    <div class="kv"><b>trigger</b> ${esc(r.trigger)}</div>
+    <div class="kv"><b>started</b> ${esc(r.started_at)}${r.completed_at?' · <b>completed</b> '+esc(r.completed_at):''}</div>
+    ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
+    ${f.recommendation?`<h3>Recommendation</h3><pre>${esc(f.recommendation)}</pre>`:''}
+    ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
+    <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;
+}
+load(); setInterval(load, 20000);
+</script>
+</body>
+</html>
