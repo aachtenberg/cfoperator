@@ -62,6 +62,9 @@
   .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
     font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
   .rec { max-width:520px; }
+  .divider { margin:24px 20px 2px; padding-top:14px; border-top:1px solid var(--border);
+    font-family:'JetBrains Mono',monospace; font-size:12px; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--text-secondary); }
 
   #backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:40;
     opacity:0; pointer-events:none; transition:opacity .15s; }
@@ -95,12 +98,12 @@
 </head>
 <body>
 <header>
-  <div class="logo">
+  <a href="/" class="logo" style="text-decoration:none" title="Back to console">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
     </svg>
     CFOperator <span class="sub">/ Remediations</span>
-  </div>
+  </a>
   <div class="right">
     <span class="muted" id="updated"></span>
     <a href="/">← console</a>
@@ -122,7 +125,18 @@
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
-<div id="empty" class="empty" hidden>No remediations match this filter.</div>
+<div id="empty" class="empty" hidden>No open remediations.</div>
+
+<div id="done-section" hidden>
+  <div class="divider">Closed <span id="done-count" class="muted"></span></div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Status</th><th>Class</th><th>Risk</th><th>Conf</th>
+      <th>Host</th><th>Recommendation</th><th>Age</th><th>PR</th>
+    </tr></thead>
+    <tbody id="rows-done"></tbody>
+  </table>
+</div>
 <div id="backdrop" onclick="closeDetail()"></div>
 <div id="detail"></div>
 <div id="toasts"></div>
@@ -156,7 +170,7 @@ function paint(){ tiles(ALL); render(filter ? ALL.filter(r=>r.status===filter) :
 
 function tiles(rows){
   const c = {}; STATUS.forEach(s=>c[s]=0); rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);
-  const show = ['queued','needs-human','pr-open','failed','resolved'];
+  const show = ['queued','needs-human','pr-open','resolved','rejected','failed'];
   document.getElementById('tiles').innerHTML = show.map(s=>
     `<div class="tile"><div class="n" style="color:${color(SC[s])}">${c[s]||0}</div><div class="l">${s}</div></div>`).join('');
   document.getElementById('filters').innerHTML =
@@ -164,23 +178,29 @@ function tiles(rows){
     STATUS.map(s=>`<span class="chip ${filter===s?'active':''}" onclick="setFilter('${s}')">${s} (${c[s]||0})</span>`).join('');
 }
 
+const TERMINAL = new Set(['resolved', 'rejected']);
+function rowHtml(r){
+  const p = r.payload||{}; const rec = p.recommendation || p.title || '';
+  const pr = r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" onclick="event.stopPropagation()">PR ↗</a>` : '—';
+  return `<tr onclick="detail(${r.id})">
+    <td class="mono">#${r.id}</td>
+    <td>${badge(r.status, SC[r.status]||'--text-muted')}</td>
+    <td>${esc(r.remediation_class)}</td>
+    <td>${badge(r.risk, RC[r.risk]||'--text-muted')}</td>
+    <td class="mono">${r.confidence==null?'—':r.confidence}</td>
+    <td>${esc(r.host_id)}</td>
+    <td class="rec">${esc(rec).slice(0,160)}</td>
+    <td class="muted">${age(r.created_at)}</td>
+    <td>${pr}</td></tr>`;
+}
 function render(rows){
-  const tb = document.getElementById('rows');
-  document.getElementById('empty').hidden = rows.length>0;
-  tb.innerHTML = rows.map(r=>{
-    const p = r.payload||{}; const rec = p.recommendation || p.title || '';
-    const pr = r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" onclick="event.stopPropagation()">PR ↗</a>` : '—';
-    return `<tr onclick="detail(${r.id})">
-      <td class="mono">#${r.id}</td>
-      <td>${badge(r.status, SC[r.status]||'--text-muted')}</td>
-      <td>${esc(r.remediation_class)}</td>
-      <td>${badge(r.risk, RC[r.risk]||'--text-muted')}</td>
-      <td class="mono">${r.confidence==null?'—':r.confidence}</td>
-      <td>${esc(r.host_id)}</td>
-      <td class="rec">${esc(rec).slice(0,160)}</td>
-      <td class="muted">${age(r.created_at)}</td>
-      <td>${pr}</td></tr>`;
-  }).join('');
+  const active = rows.filter(r=>!TERMINAL.has(r.status));
+  const done = rows.filter(r=>TERMINAL.has(r.status));
+  document.getElementById('rows').innerHTML = active.map(rowHtml).join('');
+  document.getElementById('empty').hidden = active.length>0;
+  document.getElementById('rows-done').innerHTML = done.map(rowHtml).join('');
+  document.getElementById('done-section').hidden = done.length===0;
+  document.getElementById('done-count').textContent = done.length ? `(${done.length})` : '';
 }
 
 function closeDetail(){
