@@ -722,6 +722,34 @@ class WebServer:
                 logger.error(f"Error listing remediations: {e}")
                 return jsonify({'error': str(e), 'remediations': []}), 500
 
+        @self.app.route('/api/remediations', methods=['POST'])
+        def create_remediation_api():
+            """Manually enqueue a remediation (operator-authored)."""
+            try:
+                b = request.get_json(silent=True) or {}
+                rec = str(b.get('recommendation') or '').strip()
+                if not rec:
+                    return jsonify({'error': 'recommendation required'}), 400
+                conf = b.get('confidence')
+                if isinstance(conf, str):
+                    conf = float(conf) if conf.strip() else None
+                elif not isinstance(conf, (int, float)):
+                    conf = None
+                key = str(b.get('dedupe_key') or f"manual-{int(time.time())}")
+                rid = self.operator.kb.queue_remediation(
+                    remediation_class=str(b.get('remediation_class') or 'manual'),
+                    payload={'recommendation': rec, 'title': str(b.get('title') or rec[:60]),
+                             'repo': (str(b.get('repo') or '').strip() or None),
+                             'source': 'manual', 'dedupe_key': key},
+                    host_id=str(b.get('host_id') or 'default')[:64],
+                    risk=str(b.get('risk') or 'high'), confidence=conf, dedupe_key=key)
+                if not rid:
+                    return jsonify({'status': 'deduped'}), 200
+                return jsonify(self.operator.kb.get_remediation(rid)), 201
+            except Exception as e:
+                logger.error(f"create remediation failed: {e}", exc_info=True)
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/remediations/<int:remediation_id>')
         def get_remediation_api(remediation_id):
             """Fetch one remediation row (full detail)."""

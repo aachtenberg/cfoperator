@@ -18,9 +18,10 @@ Rules:
 - Use real lines from the content above as context so the patch applies cleanly.
 - Repo-relative path in the diff header: `--- a/{path}` / `+++ b/{path}`.
 - Make the smallest change that addresses the recommendation. No drive-by edits.
+- Change ONLY {path}. Do NOT include hunks for any other file. If the fix truly
+  needs more than this one file, output a short explanation and NO diff block.
+- Exactly one `--- a/{path}` / `+++ b/{path}` header pair — never a second file.
 - Never touch secret-bearing files.
-- If the recommendation can't be done safely as a single-file diff against this
-  file, output a short explanation and NO diff block (it will go to a human).
 
 Format:
 
