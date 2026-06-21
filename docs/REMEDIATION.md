@@ -1,97 +1,172 @@
-# Remediation queue + portable executor
+# Remediation & auto-heal
 
-Turns an investigation's recommendation into a **proposed PR** that a human
-merges (ArgoCD then syncs). Read-only toward the cluster end to end — the only
-mutation is the PR.
+How CFOperator turns an observed problem into an autonomous (human-gated) fix.
+Read-only toward the cluster end to end — the **only** mutation is a GitHub PR a
+human merges, which ArgoCD then syncs.
 
-## Pipeline
+## TL;DR
 
+- Findings (alerts, proactive sweeps, the morning summary) are **triaged**.
+- Anything the agent can look into itself becomes an **autonomous investigation**
+  (logs/metrics/Loki/ssh) → a real outcome: `resolved` / `monitoring` /
+  `escalated`, or a concrete recommendation.
+- A *mechanizable* recommendation is enqueued on the **remediation queue**; the
+  drainer hands it to a **file-aware executor Job** that opens a **PR**.
+- You merge → ArgoCD syncs → the **verify** reconciler closes the loop to
+  `resolved`. Genuinely human work (hardware, wiring, judgement) → `needs-human`.
+
+Principle the design enforces: **don't punt to a human what the agent can
+investigate or mechanize itself.** `needs-human` is the exception, not the dumping ground.
+
+## Architecture
+
+```mermaid
+flowchart TB
+  subgraph sources[Signals]
+    AL[Alertmanager]
+    SW[Proactive sweep]
+    MS[Morning summary]
+  end
+  subgraph ER[event_runtime pod]
+    TR[Triage decision engine]
+  end
+  subgraph AG[cfoperator agent pod]
+    INV["Investigation pipeline + deep tier"]
+    Q[("RemediationQueue (postgres)")]
+    WK["worker thread: reaper / drainer / verify"]
+    WEB["web UI :8083 — console + read APIs"]
+    INV -->|"mechanizable rec"| Q
+    Q --> WK
+  end
+  subgraph EX[executor Job ephemeral]
+    P1["pass 1: list files, pick"] --> P2["pass 2: fetch file, diff"] --> PR
+  end
+  AL --> TR
+  SW --> INV
+  MS --> INV
+  TR -->|"investigate / escalate"| INV
+  WK -->|"spawn"| P1
+  PR[["GitHub PR"]] -->|"human merge"| GH[("GitOps repo")]
+  GH --> ARGO[ArgoCD] --> CLUSTER[(cluster)]
+  EX -->|"callback"| WEB
+  WK -->|"poll PR state"| PR
+  AG -->|"/metrics"| GRAF[Grafana]
 ```
-deep investigation (worker)            agent (CFOperator pod)                 executor Job
-  emits in details:                      store_deep_investigation()             (cfoperator-executor image)
-    remediation_class                      └─ _maybe_queue_remediation ──┐        render remediation.md
-    risk / confidence            POST        (queue_feed)                │        → swappable LLM → diff
-    recommendation        ──────────────▶  RemediationQueue (postgres)  │        → open PR (own stdlib client)
-    proposed_diff          /v1/deep-          │                         │        → POST /v1/remediations/{id}/complete
-                            investigations    │  drainer (queue_drain) ──┴──spawn──▶  │
-                                              │  reaper  (queue_reap, recovers leases)  │
-                                              │  reconcile (queue_verify) ◀── PR merged/closed
-                                              ▼
-                                      update_remediation_status → resolved | needs-human | rejected
+
+**Process topology:** `agent` and `event_runtime` are separate pods sharing one
+postgres and one image; the **executor** and deep-investigation **worker** are
+ephemeral Jobs (separate images). The drainer runs in the agent; the agent SA has
+`batch/jobs` create; the executor SA is read-only.
+
+## End-to-end flow
+
+```mermaid
+sequenceDiagram
+  participant S as Signal (alert/sweep/summary)
+  participant A as Agent
+  participant Q as RemediationQueue
+  participant X as Executor Job
+  participant H as Human
+  participant G as ArgoCD
+  S->>A: finding
+  A->>A: investigate (logs/metrics/ssh) → outcome
+  alt mechanizable fix
+    A->>Q: queue_remediation(class, risk, conf, repo)
+    Q->>X: drainer claims (auto-gate) + spawns
+    X->>X: pass1 pick file · pass2 diff vs real content
+    X->>H: open PR
+    H->>G: merge
+    G-->>A: synced; verify reconciler → resolved
+  else investigate-shaped
+    A->>A: autonomous investigation → resolved/monitoring/escalated
+  else genuinely human
+    A->>Q: needs-human (tracked, not auto-acted)
+  end
 ```
 
-State machine: `queued → claimed → executing → pr-open → (merge) → verifying → resolved`;
-`* → failed → (retry) queued | needs-human`; `pr-open → rejected` (PR closed unmerged).
-Non-auto-eligible recommendations are recorded directly as `needs-human`.
+## Remediation queue state machine
 
-**Auto-execute gate** (`remediation.queue_feed` enqueues; gate in `knowledge_base.remediation_is_auto_eligible`):
-only `remediation_class ∈ {gitops-patch, k8s-action}` **and** `risk == low` **and**
-`confidence ≥ 0.8` enter `queued`. Everything else → `needs-human`.
+```mermaid
+stateDiagram-v2
+  [*] --> queued: auto-eligible (low-risk + mechanizable + conf≥0.8)
+  [*] --> needs_human: not eligible
+  queued --> claimed: drainer
+  claimed --> executing: executor
+  executing --> pr_open: PR opened
+  executing --> needs_human: no clean single-file diff
+  pr_open --> resolved: PR merged (verify)
+  pr_open --> rejected: PR closed unmerged (verify)
+  executing --> failed: error
+  failed --> queued: retry < cap
+  failed --> needs_human: retry cap
+  claimed --> queued: lease expired (reaper)
+  resolved --> [*]
+  rejected --> [*]
+  needs_human --> [*]
+```
 
-## Flags (config.yaml `remediation:`)
+## Components
 
-| flag | default | effect |
-|---|---|---|
-| `queue_reap` | true | recover dead executor leases (safe/idempotent) |
-| `queue_feed` | false | enqueue remediations from investigation hints |
-| `queue_drain` | false | claim queued items + spawn executor Jobs |
-| `queue_verify` | false | advance `pr-open` rows by PR merge/close state |
+- **RemediationQueue** (`agent/knowledge_base.py`) — postgres table + ops
+  (`queue_remediation`, `claim_next_remediation`, `update_remediation_status`,
+  `fail_remediation`, `requeue_stale_remediations`, `reclassify_remediation`,
+  `list/get/count`). Pure auto-gate: `remediation_is_auto_eligible`.
+- **Feeds** → the queue / investigation pipeline:
+  - deep-investigation results carrying `remediation_class` (`_maybe_queue_remediation`)
+  - morning-summary **structured recommendations** (`_feed_remediations_from_summary`),
+    with raw sweep-finding fallback; `investigate`-class recs are **dispatched as
+    autonomous investigations**, not queued as needs-human
+  - manual operator-authored: `POST /api/remediations`
+- **Worker thread** (`_remediation_worker_loop`) — reaper · drainer · verify, off
+  the OODA loop so a long sweep can't starve them.
+- **Executor Job** (`executor/`) — portable, stdlib-only, model-swappable
+  (`CFOP_EXEC_LLM_BACKEND` = anthropic | openai-compat | claude-cli). **File-aware
+  two-pass**: list repo manifests → LLM picks the file → fetch real content → LLM
+  diffs against it → `open_pr_from_diff`. Per-item target repo (`payload.repo`).
+  Read-only toward the cluster; slim image (~43 MB).
+- **Callback** — executor → `POST /v1/remediations/<id>/complete` → drives the row.
+- **Console + read APIs** — see [OBSERVABILITY.md](OBSERVABILITY.md).
 
-Go-live order: `queue_feed` → watch rows land → `queue_drain` → `queue_verify`.
+## Flags
 
-## LLM backend (swappable, per executor)
+Resolve **DB setting (`kb.set_setting remediation_<flag>`) → config.yaml**, so
+they toggle live (no redeploy) from the console pipeline bar.
 
-Set under `remediation.executor.llm` (or env on the Job): `backend` =
-`anthropic` | `openai` | `claude-cli`. `openai` speaks /chat/completions so it
-covers Ollama, the homelab llm-gateway, vLLM, OpenAI — set `base_url`/`model`.
+| flag | effect |
+|---|---|
+| `queue_feed` | enqueue remediations from findings |
+| `queue_drain` | claim queued items + spawn executors (opens PRs) |
+| `queue_reap` | recover dead executor leases |
+| `queue_verify` | advance `pr-open` rows by PR merge/close |
 
-## Deploy requirements (private `cfoperator-deploy` repo)
+Auto-execute gate (enqueue → `queued` vs `needs-human`): class ∈
+{`gitops-patch`,`k8s-action`} **and** `risk == low` **and** `confidence ≥ 0.8`.
 
-1. **Image/CI** — build & push `ghcr.io/aachtenberg/cfoperator-executor:main`
-   from `executor/Dockerfile` (multi-arch, same pattern as cfoperator-worker).
+## Safety model
 
-2. **Executor ServiceAccount + RBAC — read-only k8s only.** No write verbs; the
-   PR is the only mutation.
-   ```yaml
-   apiVersion: v1
-   kind: ServiceAccount
-   metadata: { name: cfoperator-executor, namespace: apps }
-   ---
-   apiVersion: rbac.authorization.k8s.io/v1
-   kind: ClusterRole
-   metadata: { name: cfoperator-executor-readonly }
-   rules:
-     - apiGroups: ["", "apps"]
-       resources: ["pods","events","configmaps","deployments","nodes"]
-       verbs: ["get","list","describe"]
-   ---
-   apiVersion: rbac.authorization.k8s.io/v1
-   kind: ClusterRoleBinding
-   metadata: { name: cfoperator-executor-readonly }
-   roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: cfoperator-executor-readonly }
-   subjects: [{ kind: ServiceAccount, name: cfoperator-executor, namespace: apps }]
-   ```
+Single-file diffs only (multi-file → `needs-human`), exact-context apply (drift →
+decline), secret-path refusal, branch dedupe, per-tick + retry caps, read-only
+executor SA, and **human merge is the only mutation path**.
 
-3. **Agent SA must create Jobs.** The drainer runs in the CFOperator pod, so the
-   `cfoperator` (agent) ServiceAccount needs `create`/`get`/`list` on
-   `batch/jobs` in `apps`. Verify this exists; the deep tier creates Jobs from
-   the *event_runtime* SA, which is a different binding.
+## Deploy
 
-4. **Secret `cfoperator-secrets` keys** consumed by the executor Job env:
-   `GITHUB_TOKEN` (required — opens the PR), `ANTHROPIC_API_KEY` (anthropic/cli
-   backends), `CFOP_COMPLETION_SHARED_SECRET` (optional — authenticates the
-   callback, same secret the deep callback uses).
+CI (`build-cfoperator-main.yml`) builds `cfoperator`, `cfoperator-worker`,
+`cfoperator-executor`. RBAC + config live in the private `cfoperator-deploy`
+repo: `cfoperator-executor` read-only SA, the `remediation:` config block, and
+`cfoperator-secrets` (`GITHUB_TOKEN`, `ANTHROPIC_API_KEY`,
+`CFOP_COMPLETION_SHARED_SECRET`). After an executor code change, wait for the
+`build-executor` job before re-queuing (else the Job pulls the prior `:main`).
 
-5. **Callback reachability** — `remediation.executor.completion_base_url` must
-   resolve to the agent's web server (default
-   `http://cfoperator.apps.svc.cluster.local:8083/v1/remediations`).
+## Operate
 
-## Run & debug
+- Console: `:8083/remediations` (worklist + actions + flag toggles),
+  `:8083/investigations` (outcomes + drill).
+- APIs: `GET /api/remediations[/<id>]`, `GET /api/investigations[/<id>]`,
+  `POST /api/remediations` (create), `.../<id>/{approve,reject,reclassify}`,
+  `GET/POST /api/remediation/flags`, `POST /api/remediation/run-feed`.
 
-- Local unit tests: `pytest` in `executor/`, `agent/`, `worker/`.
-- Inspect the queue: `GET /api/investigations` for sources; the
-  `remediation_queue` table for rows (id, status, remediation_class, pr_url).
-- First live smoke: set `queue_feed: true`, trigger a deep investigation that
-  emits `REMEDIATION_CLASS: gitops-patch / RISK: low / CONFIDENCE: 0.9`, confirm
-  a `queued` row appears. Then `queue_drain: true` and watch for a
-  `cfop-executor-*` Job and a `pr-open` transition.
+## Known gaps
+
+- Executor declines genuinely multi-file fixes (single-file gate) → `needs-human`.
+- Orphaned `in_progress` investigations after a pod roll (in-memory queue) — a
+  startup reaper for stale rows would mop these up (not yet built).
