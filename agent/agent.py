@@ -1528,7 +1528,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         completion_base = ec.get('completion_base_url', os.getenv(
             'CFOP_EXECUTOR_COMPLETION_BASE_URL',
             'http://cfoperator.apps.svc.cluster.local:8083/v1/remediations'))
-        git_repo = ec.get('git_repo', os.getenv('CFOP_GIT_REPO', 'aachtenberg/homelab-infra'))
+        # Per-item repo (work-order payload) wins over the config default, so a
+        # cfoperator-deploy fix targets that repo while cluster fixes go to homelab-infra.
+        payload_repo = (work_order.get('payload') or {}).get('repo')
+        git_repo = payload_repo or ec.get('git_repo', os.getenv('CFOP_GIT_REPO', 'aachtenberg/homelab-infra'))
         git_base = ec.get('git_base', 'main')
         llm = ec.get('llm') if isinstance(ec.get('llm'), dict) else {}
         ttl = int(ec.get('ttl_seconds_after_finished', 3600))
@@ -1887,6 +1890,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     remediation_class=rclass,
                     payload={'recommendation': rec, 'title': title,
                              'target': {'host': r.get('host')},
+                             'repo': (str(r.get('repo') or '').strip() or None),
                              'source': 'morning-summary', 'dedupe_key': key},
                     host_id=str(r.get('host') or 'default')[:64],
                     risk=risk,
@@ -5448,11 +5452,15 @@ IMPORTANT:
             f'{{"recommendations": [{{"title": "short label", '
             f'"recommendation": "the concrete next step", "host": "affected host or empty", '
             f'"remediation_class": "gitops-patch|k8s-action|node-action|manual", '
-            f'"risk": "low|med|high", "confidence": 0.0}}]}}\n'
+            f'"risk": "low|med|high", "confidence": 0.0, '
+            f'"repo": "owning GitOps repo slug or empty"}}]}}\n'
             f"```\n"
             f"Classify remediation_class honestly: gitops-patch only if it's a single "
             f"manifest change in the GitOps repo; node-action for host/DNS/file changes; "
-            f"manual if it needs human judgement. Be conservative with risk."
+            f"manual if it needs human judgement. Be conservative with risk. For "
+            f"gitops-patch, set repo to the owning GitOps repo slug "
+            f"(aachtenberg/homelab-infra for cluster apps; aachtenberg/cfoperator-deploy "
+            f"for cfoperator/event-runtime itself); otherwise leave repo empty."
         )
 
         try:

@@ -775,7 +775,7 @@ class WebServer:
                     conf = None
                 row = self.operator.kb.reclassify_remediation(
                     remediation_id, remediation_class=b.get('remediation_class'),
-                    risk=b.get('risk'), confidence=conf)
+                    risk=b.get('risk'), confidence=conf, repo=b.get('repo'))
                 if not row:
                     return jsonify({'error': 'not found'}), 404
                 return jsonify(row)

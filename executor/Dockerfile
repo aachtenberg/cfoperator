@@ -2,30 +2,22 @@
 #
 # Portable, model-swappable diff producer. Reads a work order from env, renders
 # templates/remediation.md, calls the configured LLM backend (anthropic /
-# openai-compatible / claude-cli — CFOP_EXEC_LLM_BACKEND), extracts a unified
-# diff, opens a PR against the GitOps repo, and POSTs the outcome to the agent.
+# openai-compatible over HTTP — CFOP_EXEC_LLM_BACKEND), extracts a unified diff,
+# opens a PR against the target GitOps repo, and POSTs the outcome to the agent.
 #
-# Read-only toward the cluster (the Job's service account has no write verbs);
-# the only mutation is a GitHub PR a human merges and ArgoCD then syncs.
+# Stdlib-only at runtime (urllib): the default HTTP backends need no Node, no
+# Claude CLI, and no kubectl — so this stays tiny (~base python-slim) and pulls
+# fast on arm64 nodes. (The claude-cli backend would need a fuller image with
+# the CLI + kubectl; build a separate variant if you want it.)
 #
-# Multi-arch (amd64 + arm64): Jobs schedule on any cluster node.
+# Read-only toward the cluster (its SA has no write verbs); the only mutation is
+# a GitHub PR a human merges and ArgoCD then syncs. Multi-arch (amd64 + arm64).
 
-FROM node:22-slim
+FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    curl \
-    ca-certificates \
+# ca-certificates for HTTPS (api.anthropic.com / api.github.com via urllib).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-# kubectl for read-only cluster inspection (no write verbs on the SA).
-ARG TARGETARCH
-RUN curl -fsSLo /usr/local/bin/kubectl \
-    "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/${TARGETARCH}/kubectl" \
-    && chmod +x /usr/local/bin/kubectl
-
-# claude CLI only needed for the claude-cli backend; HTTP backends use stdlib.
-RUN npm install -g @anthropic-ai/claude-code
 
 RUN useradd --create-home --uid 10001 executor
 USER executor

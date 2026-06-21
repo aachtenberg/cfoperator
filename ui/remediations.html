@@ -201,7 +201,7 @@ async function detail(id){
     <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
-      <button class="chip" onclick="showReclassify(${r.id},'${esc(r.remediation_class)}','${esc(r.risk)}',${r.confidence==null?'null':r.confidence})">⟳ Reclassify</button>
+      <button class="chip" onclick="showReclassify(${r.id},'${esc(r.remediation_class)}','${esc(r.risk)}',${r.confidence==null?'null':r.confidence},'${esc((r.payload&&r.payload.repo)||'')}')">⟳ Reclassify</button>
       ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">🔎 Investigation #${r.investigation_id}</button>`:''}
     </div>
     <div id="actionform"></div>
@@ -268,7 +268,7 @@ function showReject(id){
   const el=document.getElementById('rj-note'); if(el) el.focus();
 }
 function saveReject(id){ act(id,'reject',{note:document.getElementById('rj-note').value},'rejected'); }
-function showReclassify(id,cls,risk,conf){
+function showReclassify(id,cls,risk,conf,repo){
   // chip pickers (not <select>): native dropdowns don't open inside the
   // transform'd drawer, and chips match the theme + are always clickable.
   const pickRow=(group,vals,cur)=> vals.map(v=>
@@ -277,6 +277,10 @@ function showReclassify(id,cls,risk,conf){
     `<div class="actform" style="flex-direction:column;align-items:stretch;gap:10px">
        <div><span class="muted">class</span><br>${pickRow('class',['gitops-patch','k8s-action','node-action','manual'],cls)}</div>
        <div><span class="muted">risk</span><br>${pickRow('risk',['low','med','high'],risk)}</div>
+       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+         <span class="muted">repo</span>
+         <input id="rc-repo" type="text" value="${repo||''}" placeholder="owner/repo (gitops-patch target)" style="flex:1;min-width:200px">
+       </div>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
          <span class="muted">conf</span>
          <input id="rc-conf" type="number" min="0" max="1" step="0.05" value="${conf==null?'':conf}" placeholder="keep" style="width:80px">
@@ -293,7 +297,8 @@ function pick(btn){
 function saveReclassify(id){
   const sel=g=>{ const b=document.querySelector(`#actionform .pick.active[data-g="${g}"]`); return b?b.dataset.v:undefined; };
   act(id,'reclassify',{remediation_class:sel('class'), risk:sel('risk'),
-    confidence:document.getElementById('rc-conf').value},'reclassified');
+    confidence:document.getElementById('rc-conf').value,
+    repo:document.getElementById('rc-repo').value},'reclassified');
 }
 async function viewInvestigation(id){
   let inv; try{ inv=await (await fetch('/api/investigations/'+id)).json(); }catch(e){ return; }
