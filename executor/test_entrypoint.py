@@ -93,26 +93,46 @@ def _env(**extra):
     return env
 
 
-def test_run_opens_pr_on_diff():
-    class _LLM:
-        def complete(self, prompt):
-            return _DIFF_REPORT
+class _SeqLLM:
+    """Returns canned replies in order (pass 1 = file path, pass 2 = diff)."""
+    def __init__(self, replies):
+        self.replies = list(replies); self.i = 0
+    def complete(self, prompt):
+        r = self.replies[self.i]; self.i += 1; return r
 
-    with patch.object(entrypoint, "make_llm", return_value=_LLM()), \
+
+_FILES = ["k8s/base/apps/ollama.yaml", "k8s/base/apps/immich.yaml"]
+
+
+def test_parse_selected_path():
+    assert entrypoint.parse_selected_path("k8s/base/apps/ollama.yaml", _FILES) == _FILES[0]
+    assert entrypoint.parse_selected_path("I'd edit k8s/base/apps/immich.yaml", _FILES) == _FILES[1]
+    assert entrypoint.parse_selected_path("NONE", _FILES) is None
+    assert entrypoint.parse_selected_path("nope/other.yaml", _FILES) is None
+
+
+def test_run_two_pass_opens_pr():
+    llm = _SeqLLM(["k8s/base/apps/ollama.yaml", _DIFF_REPORT])  # pass1 path, pass2 diff
+    with patch.object(entrypoint, "make_llm", return_value=llm), \
+         patch.object(entrypoint, "list_repo_files", return_value=["k8s/base/apps/ollama.yaml"]), \
+         patch.object(entrypoint, "get_file", return_value="a\nb\nc\n"), \
          patch.object(entrypoint, "open_pr_from_diff",
                       return_value={"status": "opened", "html_url": "http://pr/1", "pr_number": 1}):
         payload = run(_env())
-    assert payload["status"] == "pr-open"
-    assert payload["pr_url"] == "http://pr/1"
-    assert payload["remediation_id"] == 5
+    assert payload["status"] == "pr-open" and payload["pr_url"] == "http://pr/1"
 
 
-def test_run_routes_to_human_when_no_diff():
-    class _LLM:
-        def complete(self, prompt):
-            return "I can't safely mechanize this; needs a human."
-
-    with patch.object(entrypoint, "make_llm", return_value=_LLM()):
+def test_run_needs_human_when_no_file_picked():
+    with patch.object(entrypoint, "make_llm", return_value=_SeqLLM(["NONE"])), \
+         patch.object(entrypoint, "list_repo_files", return_value=["a.yaml"]):
         payload = run(_env())
-    assert payload["status"] == "needs-human"
-    assert payload["pr_url"] is None
+    assert payload["status"] == "needs-human" and "pick" in payload["detail"]
+
+
+def test_run_needs_human_when_no_diff():
+    llm = _SeqLLM(["k8s/base/apps/ollama.yaml", "can't do it safely; no diff"])
+    with patch.object(entrypoint, "make_llm", return_value=llm), \
+         patch.object(entrypoint, "list_repo_files", return_value=["k8s/base/apps/ollama.yaml"]), \
+         patch.object(entrypoint, "get_file", return_value="x\n"):
+        payload = run(_env())
+    assert payload["status"] == "needs-human" and payload["pr_url"] is None

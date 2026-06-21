@@ -1,6 +1,6 @@
 """Tests for the stdlib GitHub PR-from-diff client."""
 
-from github import open_pr_from_diff
+from github import get_file, list_repo_files, open_pr_from_diff
 
 _DIFF = """--- a/k3s/base/apps/ollama.yaml
 +++ b/k3s/base/apps/ollama.yaml
@@ -73,6 +73,30 @@ def test_open_pr_declines_non_diff():
     result = open_pr_from_diff(_FakeClient(), repo="o/r", base="main", diff_text="not a diff",
                               title="t", body="b", dedupe_key="x")
     assert result["status"] == "declined"
+
+
+class _TreeClient:
+    """Fake client for list_repo_files: base ref + recursive tree."""
+    def request(self, method, path, *, body=None):
+        if "/git/ref/heads/" in path:
+            return {"success": True, "data": {"object": {"sha": "basesha"}}}
+        if "/git/trees/" in path:
+            return {"success": True, "data": {"tree": [
+                {"type": "blob", "path": "k8s/base/apps/ollama.yaml"},
+                {"type": "blob", "path": "k8s/base/secrets/sealed.yaml"},  # secret -> filtered
+                {"type": "blob", "path": "README.md"},                     # non-yaml -> filtered
+                {"type": "tree", "path": "k8s/base"},                      # dir -> skipped
+            ]}}
+        return {"success": False, "data": {}}
+
+
+def test_list_repo_files_filters_yaml_and_secrets():
+    files = list_repo_files(_TreeClient(), "o/r", "main")
+    assert files == ["k8s/base/apps/ollama.yaml"]
+
+
+def test_get_file_returns_content():
+    assert get_file(_FakeClient(file_text="hello\n"), "o/r", "p.yaml", "main") == "hello\n"
 
 
 def test_open_pr_declines_on_drift():

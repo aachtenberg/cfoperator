@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from diff import extract_diff_block
-from github import GitHubClient, open_pr_from_diff
+from github import GitHubClient, get_file, list_repo_files, open_pr_from_diff
 from llm import make_llm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -102,29 +102,84 @@ def post_completion(url: str, payload: Dict[str, Any], *, token: str = "", retri
     return False
 
 
+def build_select_prompt(work_order: Dict[str, Any], repo: str, files: list) -> str:
+    """Pass 1: ask the LLM to pick the one file to edit, from the real repo list."""
+    payload = work_order.get("payload") or {}
+    return (
+        f"You are choosing the single file to edit in the GitOps repo {repo} to "
+        f"implement this remediation.\n\n"
+        f"Recommendation: {payload.get('recommendation', '')}\n"
+        f"Target: {json.dumps(payload.get('target') or {})}\n\n"
+        f"Candidate files:\n" + "\n".join(files) + "\n\n"
+        f"Reply with EXACTLY the repo-relative path of the ONE file to change "
+        f"(must be one of the candidates above), or NONE if no single file fits."
+    )
+
+
+def parse_selected_path(reply: str, files: list) -> Optional[str]:
+    """Extract the chosen path: the candidate that appears earliest in the reply."""
+    r = reply or ""
+    hits = [(r.find(f), f) for f in files if f in r]
+    return min(hits)[1] if hits else None
+
+
+def build_diff_prompt(template_text: str, work_order: Dict[str, Any], repo: str,
+                      path: str, content: str) -> str:
+    """Pass 2: render remediation.md with the real file content for a clean diff."""
+    payload = work_order.get("payload") or {}
+    fields = {
+        "{recommendation}": str(payload.get("recommendation", "")),
+        "{remediation_class}": str(work_order.get("remediation_class", "")),
+        "{context}": str(payload.get("rendered_context", "")),
+        "{repo}": repo,
+        "{path}": path,
+        "{file_content}": content[:16000],
+        "{target}": json.dumps(payload.get("target") or {}),
+    }
+    out = template_text
+    for key, value in fields.items():
+        out = out.replace(key, value)
+    return out
+
+
 def run(env: Dict[str, str]) -> Dict[str, Any]:
-    """Execute one remediation work order; returns the completion payload."""
+    """Execute one remediation work order (file-aware, two-pass)."""
     work_order = load_work_order(env)
     payload = work_order.get("payload") or {}
+    token = (env.get("GITHUB_TOKEN") or "").strip()
+    repo = (env.get("CFOP_GIT_REPO") or payload.get("repo") or "").strip()
+    base = (env.get("CFOP_GIT_BASE") or "main").strip()
+    if not token:
+        raise RuntimeError("GITHUB_TOKEN unset; cannot remediate")
+    if not repo:
+        raise RuntimeError("no target repo configured (CFOP_GIT_REPO)")
+    client = GitHubClient(token)
+    llm = make_llm(env)
 
+    # Pass 1 — pick the target file from the repo's real manifest list.
+    files = list_repo_files(client, repo, base)
+    if not files:
+        return build_completion_payload(work_order, "needs-human", None,
+                                        f"no candidate files in {repo}", None)
+    path = parse_selected_path(llm.complete(build_select_prompt(work_order, repo, files)), files)
+    if not path:
+        return build_completion_payload(work_order, "needs-human", None,
+                                        "model could not pick a target file", None)
+
+    # Fetch the real file so the diff applies with exact context.
+    content = get_file(client, repo, path, base)
+    if content is None:
+        return build_completion_payload(work_order, "needs-human", None,
+                                        f"could not fetch {path}", None)
+
+    # Pass 2 — produce a diff against the real content.
     templates_dir = Path(env.get("CFOP_TEMPLATES_DIR", str(Path.home() / "templates")))
     template_text = (templates_dir / "remediation.md").read_text(encoding="utf-8")
-    prompt = build_prompt(template_text, work_order)
-
-    llm = make_llm(env)
-    report = llm.complete(prompt)
+    report = llm.complete(build_diff_prompt(template_text, work_order, repo, path, content))
     diff = extract_diff_block(report)
 
     pr_result: Optional[Dict[str, Any]] = None
     if diff:
-        token = (env.get("GITHUB_TOKEN") or "").strip()
-        if not token:
-            raise RuntimeError("GITHUB_TOKEN unset; cannot open remediation PR")
-        client = GitHubClient(token)
-        repo = (env.get("CFOP_GIT_REPO") or payload.get("repo") or "").strip()
-        base = (env.get("CFOP_GIT_BASE") or "main").strip()
-        if not repo:
-            raise RuntimeError("no target repo configured (CFOP_GIT_REPO)")
         pr_result = open_pr_from_diff(
             client, repo=repo, base=base, diff_text=diff,
             title=f"cfop: remediate {payload.get('recommendation', 'issue')[:60]}",

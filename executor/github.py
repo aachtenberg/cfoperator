@@ -57,6 +57,28 @@ class GitHubClient:
         return text, d.get("sha", "")
 
 
+def list_repo_files(client: GitHubClient, repo: str, base: str,
+                    exts: Tuple[str, ...] = (".yaml", ".yml"), limit: int = 400) -> list:
+    """List candidate manifest paths in the repo (for the file-selection pass)."""
+    ref = client.request("GET", f"/repos/{repo}/git/ref/heads/{base}")
+    sha = ((ref.get("data") or {}).get("object") or {}).get("sha") if ref.get("success") else None
+    if not sha:
+        return []
+    tr = client.request("GET", f"/repos/{repo}/git/trees/{sha}?recursive=1")
+    if not tr.get("success"):
+        return []
+    paths = [t.get("path") for t in (tr.get("data") or {}).get("tree", [])
+             if t.get("type") == "blob" and t.get("path", "").endswith(exts)
+             and not is_secret_path(t.get("path", ""))]
+    return paths[:limit]
+
+
+def get_file(client: GitHubClient, repo: str, path: str, ref: str) -> Optional[str]:
+    """Fetch a file's text content at ref, or None."""
+    got = client._get_file(repo, path, ref)
+    return got[0] if got else None
+
+
 def open_pr_from_diff(client: GitHubClient, *, repo: str, base: str, diff_text: str,
                       title: str, body: str, dedupe_key: str) -> Dict[str, Any]:
     """Open a PR from a single-file unified diff. Returns a status dict.
