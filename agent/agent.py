@@ -521,6 +521,9 @@ class CFOperator:
         # POST /v1/investigate endpoint has something to drain into.
         self._start_investigation_worker()
 
+        # Remediation reaper/drainer/verify in their own thread (see loop note).
+        self._start_remediation_worker()
+
         # Start web server in background thread
         if self.web_server:
             self.web_server.run_threaded()
@@ -558,24 +561,10 @@ class CFOperator:
                 # MODE 3: Morning summary (TPS report style)
                 self._check_morning_summary()
 
-                # MODE 4: Remediation reaper — recover dead executor leases.
-                # Safe/idempotent; runs independently of the drainer.
-                if time.time() - self.last_reap > self._get_reap_interval():
-                    self._reap_remediations()
-                    self.last_reap = time.time()
-
-                # MODE 5: Remediation drainer — claim queued items, spawn executors.
-                if time.time() - self.last_drain > self._get_drain_interval():
-                    self._drain_remediation_queue()
-                    self.last_drain = time.time()
-
-                # MODE 6: Remediation PR reconcile — advance merged/closed PRs.
-                if time.time() - self.last_verify > self._get_verify_interval():
-                    self._reconcile_remediation_prs()
-                    self.last_verify = time.time()
-
-                # Refresh the remediation-queue gauge for Grafana (throttled,
-                # flag-independent so the panel works even with feed/drain off).
+                # Remediation reaper/drainer/verify run in their own daemon thread
+                # (_remediation_worker_loop) so a long proactive sweep can't starve
+                # them — the OODA loop is single-threaded and a sweep blocks for
+                # minutes. Metrics gauge refresh is cheap, so it stays inline.
                 self._update_remediation_metrics()
 
                 time.sleep(self._get_alert_check_interval())
@@ -1449,6 +1438,31 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             pass
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         return bool(rcfg.get(name))
+
+    def _start_remediation_worker(self) -> None:
+        """Run the remediation reaper/drainer/verify in a daemon thread.
+
+        Off the main OODA loop so a long proactive sweep (minutes, single-thread)
+        can't starve the drain tick — same pattern as the HTTP investigation
+        worker. Each task self-gates on its flag + interval.
+        """
+        threading.Thread(target=self._remediation_worker_loop, daemon=True,
+                         name="remediation-worker").start()
+        logger.info("Remediation worker thread started")
+
+    def _remediation_worker_loop(self) -> None:
+        while True:
+            try:
+                now = time.time()
+                if now - self.last_reap > self._get_reap_interval():
+                    self._reap_remediations(); self.last_reap = now
+                if now - self.last_drain > self._get_drain_interval():
+                    self._drain_remediation_queue(); self.last_drain = now
+                if now - self.last_verify > self._get_verify_interval():
+                    self._reconcile_remediation_prs(); self.last_verify = now
+            except Exception:
+                logger.exception("Remediation worker tick failed")
+            time.sleep(10)
 
     def _reap_remediations(self) -> int:
         """Recover remediations whose executor lease expired (gated, safe).
