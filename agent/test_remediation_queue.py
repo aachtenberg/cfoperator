@@ -17,6 +17,7 @@ from knowledge_base import (  # noqa: E402
     remediation_is_auto_eligible,
 )
 from agent import CFOperator  # noqa: E402
+from agent.agent import _SUMMARY_CONFIDENCE_CAP  # noqa: E402
 
 
 def _wire_flags(op):
@@ -357,16 +358,18 @@ def test_parse_summary_recommendations():
     assert CFOperator._parse_summary_recommendations("```json\n{bad}\n```") == []
 
 
-def test_feed_from_summary_enqueues_recs():
+def test_feed_from_summary_routes_mutations_to_investigation():
+    # Summary mutation-class recs are unverified hypotheses from the cheap model,
+    # so they go to the investigation pipeline, not straight into the queue.
     op = _feed_op()
     n = CFOperator._feed_remediations_from_summary(op, _SUMMARY, [])
-    assert n == 2
-    keys = [c.kwargs["dedupe_key"] for c in op.kb.queue_remediation.call_args_list]
-    assert keys[0] == "summary-ollama-500s-on-raspberrypi5"
-    first = op.kb.queue_remediation.call_args_list[0].kwargs
-    assert first["remediation_class"] == "node-action"
-    assert first["risk"] == "med"
-    assert first["host_id"] == "raspberrypi5"
+    assert n == 0
+    op.kb.queue_remediation.assert_not_called()
+    assert op.enqueue_investigation.call_count == 2  # both node-action recs
+    # the proposed class is preserved for the investigator's traceability
+    arg0 = op.enqueue_investigation.call_args_list[0].args[0]
+    assert "[proposed: node-action]" in arg0["summary"]
+    assert arg0["source"] == "summary-investigate" and arg0["host"] == "raspberrypi5"
 
 
 def test_feed_from_summary_falls_back_to_sweeps_when_no_block():
@@ -395,13 +398,35 @@ _SUMMARY_INV = """## Summary
 """
 
 
-def test_feed_summary_routes_investigate_to_investigation():
+def test_feed_summary_routes_investigate_and_mutations_to_investigation():
     op = _feed_op()
     n = CFOperator._feed_remediations_from_summary(op, _SUMMARY_INV, [])
-    # investigate -> autonomous investigation (not a needs-human row)
-    op.enqueue_investigation.assert_called_once()
-    # only the gitops-patch became a queued remediation
-    assert n == 1 and op.kb.queue_remediation.call_count == 1
+    # both the 'investigate' rec AND the unverified gitops-patch -> investigation;
+    # nothing from the cheap summary becomes a remediation directly.
+    assert op.enqueue_investigation.call_count == 2
+    assert n == 0 and op.kb.queue_remediation.call_count == 0
+
+
+_SUMMARY_MANUAL = """## Summary
+```json
+{"recommendations": [
+  {"title": "Replace SD card on rpi3", "recommendation": "SD card wearing out; swap it",
+   "host": "raspberrypi3", "remediation_class": "manual", "risk": "high", "confidence": 0.95}
+]}
+```
+"""
+
+
+def test_feed_summary_manual_queues_with_clamped_confidence():
+    # Non-mutation (human-only) classes still queue, but the cheap model's
+    # self-reported confidence is clamped so it can't look authoritative.
+    op = _feed_op()
+    n = CFOperator._feed_remediations_from_summary(op, _SUMMARY_MANUAL, [])
+    assert n == 1
+    op.enqueue_investigation.assert_not_called()
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["remediation_class"] == "manual"
+    assert kw["confidence"] == _SUMMARY_CONFIDENCE_CAP  # clamped from 0.95
 
 
 # ---- read API serialization (operator console) -------------------------------

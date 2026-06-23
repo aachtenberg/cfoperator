@@ -85,6 +85,14 @@ REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediation
 # never inherits a cost downgrade applied to the generic executor model.
 _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 
+# The morning summary is authored by the cheap, unverified primary model, so a
+# mutation-class rec from it is a HYPOTHESIS, not a diagnosis. These are routed
+# through the investigation pipeline (capable model + real tools) instead of
+# becoming a remediation directly, and the model's self-reported confidence is
+# clamped so a confident hallucination can't look authoritative in the queue.
+_SUMMARY_MUTATION_CLASSES = ('node-action', 'gitops-patch', 'k8s-action')
+_SUMMARY_CONFIDENCE_CAP = 0.5
+
 # Triggers that describe a *recoverable* runtime condition — if the pod is
 # healthy now, the thing the alert worried about has cleared. Used by the
 # Tier-1 noise filter (early-exit + needs_action downgrade). See
@@ -1939,11 +1947,20 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             rclass = str(r.get('remediation_class') or 'manual')
             risk = str(r.get('risk') or 'med')
             conf = r.get('confidence') if isinstance(r.get('confidence'), (int, float)) else None
-            # 'investigate' findings are evidence-gathering the agent does itself —
-            # dispatch an autonomous investigation instead of a needs-human row.
-            if rclass == 'investigate':
+            # Clamp the cheap model's self-reported confidence: a confident
+            # hallucination must not surface as a high-confidence queue row.
+            if conf is not None:
+                conf = min(conf, _SUMMARY_CONFIDENCE_CAP)
+            # 'investigate' findings are evidence-gathering the agent does itself.
+            # A mutation-class rec from the summary is an UNVERIFIED hypothesis
+            # (cheap model, no enforced grounding), so route it the same way:
+            # the deep tier verifies it and only a grounded finding becomes a
+            # remediation — never a high-confidence host action straight from a
+            # summary hunch. Manual/other classes still queue (human-only).
+            if rclass == 'investigate' or rclass in _SUMMARY_MUTATION_CLASSES:
                 try:
-                    self.enqueue_investigation({'summary': f"{title}: {rec}"[:300],
+                    suffix = '' if rclass == 'investigate' else f" [proposed: {rclass}]"
+                    self.enqueue_investigation({'summary': f"{title}: {rec}{suffix}"[:300],
                                                 'source': 'summary-investigate',
                                                 'host': r.get('host')})
                     dispatched += 1
