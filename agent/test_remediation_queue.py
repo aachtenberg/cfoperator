@@ -147,6 +147,59 @@ def test_build_executor_manifest_per_item_repo():
     assert env["CFOP_GIT_REPO"]["value"] == "aachtenberg/cfoperator-deploy"  # payload wins
 
 
+def test_build_executor_manifest_gitops_has_no_ssh_mount():
+    """GitOps classes stay PR-only: no SSH secret, no node-action opt-in env."""
+    op = MagicMock()
+    op._executor_config.return_value = {"node_action": {"enabled": True}}
+    work = {"id": 12, "remediation_class": "gitops-patch", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-g", work)["spec"]["template"]["spec"]
+    assert "volumes" not in spec
+    assert "volumeMounts" not in spec["containers"][0]
+    env = {e["name"] for e in spec["containers"][0]["env"]}
+    assert "CFOP_NODE_ACTION_ENABLED" not in env
+
+
+def test_build_executor_manifest_node_action_mounts_ssh():
+    op = MagicMock()
+    op._executor_config.return_value = {"node_action": {"enabled": True, "host": "controller"}}
+    work = {"id": 10, "remediation_class": "node-action", "risk": "low",
+            "payload": {"recommendation": "fix perms"}}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-n", work)["spec"]["template"]["spec"]
+    # SSH secret mounted at a staging dir, copied to ~/.ssh at runtime.
+    vol = {v["name"]: v for v in spec["volumes"]}["ssh"]
+    assert vol["secret"]["secretName"] == "cfop-forensics-ssh"
+    mount = {m["name"]: m for m in spec["containers"][0]["volumeMounts"]}["ssh"]
+    assert mount["mountPath"] == "/ssh-secret" and mount["readOnly"] is True
+    env = {e["name"]: e["value"] for e in spec["containers"][0]["env"] if "value" in e}
+    assert env["CFOP_NODE_ACTION_ENABLED"] == "true"
+    assert env["CFOP_NODE_ACTION_HOST"] == "controller"
+    assert env["CFOP_SSH_SECRET_DIR"] == "/ssh-secret"
+    # model floor: unset node_action.model -> falls back to the top model, not ''.
+    assert env["CFOP_EXEC_LLM_MODEL"] == "claude-opus-4-8"
+
+
+def test_build_executor_manifest_node_action_model_floor_overrides_downgrade():
+    """A cost downgrade of the generic executor model must not reach node-action."""
+    op = MagicMock()
+    op._executor_config.return_value = {
+        "llm": {"model": "claude-haiku-4-5-20251001"},  # generic executor downgraded
+        "node_action": {"enabled": True, "model": "claude-opus-4-8"},
+    }
+    work = {"id": 10, "remediation_class": "node-action", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-m", work)["spec"]["template"]["spec"]
+    models = [e["value"] for e in spec["containers"][0]["env"] if e.get("name") == "CFOP_EXEC_LLM_MODEL"]
+    assert models == ["claude-opus-4-8"]  # exactly one entry, the node-action floor
+
+
+def test_build_executor_manifest_node_action_disabled_no_mount():
+    """node-action class but opt-in off -> still no SSH mount (safe default)."""
+    op = MagicMock()
+    op._executor_config.return_value = {"node_action": {"enabled": False}}
+    work = {"id": 10, "remediation_class": "node-action", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-d", work)["spec"]["template"]["spec"]
+    assert "volumes" not in spec
+
+
 # ---- feed hook ---------------------------------------------------------------
 
 

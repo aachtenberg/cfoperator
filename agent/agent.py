@@ -80,6 +80,11 @@ REMEDIATION_SPAWNED = Counter('cfoperator_remediation_executor_spawned_total', '
 REMEDIATION_OUTCOME = Counter('cfoperator_remediation_outcome_total', 'Terminal remediation outcomes', ['outcome'])
 REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediations recovered from dead executor leases')
 
+# Model floor for the node-action executor (the only path that runs shell on a
+# host): used when remediation.executor.node_action.model is unset, so node-action
+# never inherits a cost downgrade applied to the generic executor model.
+_ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
+
 # Triggers that describe a *recoverable* runtime condition — if the pod is
 # healthy now, the thing the alert worried about has cleared. Used by the
 # Tier-1 noise filter (early-exit + needs_action downgrade). See
@@ -1528,10 +1533,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
     def _build_executor_manifest(self, job_name: str, work_order: Dict[str, Any]) -> Dict[str, Any]:
         """Build the cfoperator-executor Job manifest for a claimed remediation.
 
-        Mirrors the deep-investigation Job shape, minus the ssh mount: the
-        executor is read-only toward the cluster (its only mutation is a GitHub
-        PR). LLM backend is fully env-driven so the model is swappable per the
-        portable-executor design.
+        GitOps classes are read-only toward the cluster (their only mutation is a
+        GitHub PR). A node-action additionally SSHes to a host to run a guarded
+        command plan, so for that class only we mount the SSH key and flip the
+        opt-in env. LLM backend is fully env-driven so the model is swappable per
+        the portable-executor design.
         """
         ec = self._executor_config()
         namespace = ec.get('namespace', os.getenv('CFOP_EXECUTOR_NAMESPACE', 'apps'))
@@ -1564,10 +1570,58 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             {"name": "CFOP_EXEC_LLM_MODEL", "value": str(llm.get('model', ''))},
             {"name": "CFOP_EXEC_LLM_BASE_URL", "value": str(llm.get('base_url', ''))},
         ]
+        # node-action only: opt in + mount the SSH key so the executor can run a
+        # guarded command plan on a host. GitOps classes stay PR-only (no mount).
+        volumes: List[Dict[str, Any]] = []
+        volume_mounts: List[Dict[str, Any]] = []
+        na = ec.get('node_action') if isinstance(ec.get('node_action'), dict) else {}
+        if (work_order.get('remediation_class') or '') == 'node-action' and na.get('enabled'):
+            # Reuse the forensics keypair the deep-investigation worker already
+            # uses to SSH into hosts. Mount it at a staging dir (group-readable);
+            # the executor copies it into ~/.ssh at 0600 (ssh refuses looser).
+            ssh_secret = na.get('ssh_secret', 'cfop-forensics-ssh')
+            env += [
+                {"name": "CFOP_NODE_ACTION_ENABLED", "value": "true"},
+                {"name": "CFOP_NODE_ACTION_HOST", "value": str(na.get('host', ''))},
+                {"name": "CFOP_SSH_USER", "value": str(na.get('ssh_user', 'aachten'))},
+                {"name": "CFOP_SSH_SECRET_DIR", "value": "/ssh-secret"},
+            ]
+            # Node-action is the only path that runs shell on a host, so it pins
+            # its own model floor: a cost downgrade of the generic executor model
+            # must never silently drop the model deciding what to run on hosts.
+            na_model = str(na.get('model', '') or _ANTHROPIC_DEFAULT_EXEC_MODEL)
+            for e in env:
+                if e.get("name") == "CFOP_EXEC_LLM_MODEL":
+                    e["value"] = na_model
+                    break
+            volumes.append({"name": "ssh", "secret": {
+                "secretName": ssh_secret, "defaultMode": 0o440}})
+            volume_mounts.append({"name": "ssh", "mountPath": "/ssh-secret", "readOnly": True})
         labels = {
             "app.kubernetes.io/managed-by": "cfoperator",
             "cfop.dev/role": "remediation-executor",
         }
+        container = {
+            "name": "executor",
+            "image": image,
+            "imagePullPolicy": "Always",
+            "env": env,
+            "resources": {
+                "requests": {"cpu": "100m", "memory": "256Mi"},
+                "limits": {"cpu": "1", "memory": "1Gi"},
+            },
+        }
+        if volume_mounts:
+            container["volumeMounts"] = volume_mounts
+        pod_spec = {
+            "restartPolicy": "Never",
+            "serviceAccountName": sa,
+            "imagePullSecrets": [{"name": pull_secret}],
+            "securityContext": {"runAsUser": 10001, "runAsGroup": 10001, "fsGroup": 10001},
+            "containers": [container],
+        }
+        if volumes:
+            pod_spec["volumes"] = volumes
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",
@@ -1578,22 +1632,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 "activeDeadlineSeconds": deadline,
                 "template": {
                     "metadata": {"labels": dict(labels)},
-                    "spec": {
-                        "restartPolicy": "Never",
-                        "serviceAccountName": sa,
-                        "imagePullSecrets": [{"name": pull_secret}],
-                        "securityContext": {"runAsUser": 10001, "runAsGroup": 10001, "fsGroup": 10001},
-                        "containers": [{
-                            "name": "executor",
-                            "image": image,
-                            "imagePullPolicy": "Always",
-                            "env": env,
-                            "resources": {
-                                "requests": {"cpu": "100m", "memory": "256Mi"},
-                                "limits": {"cpu": "1", "memory": "1Gi"},
-                            },
-                        }],
-                    },
+                    "spec": pod_spec,
                 },
             },
         }
