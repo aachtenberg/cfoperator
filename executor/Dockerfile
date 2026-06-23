@@ -10,13 +10,16 @@
 # fast on arm64 nodes. (The claude-cli backend would need a fuller image with
 # the CLI + kubectl; build a separate variant if you want it.)
 #
-# Read-only toward the cluster (its SA has no write verbs); the only mutation is
-# a GitHub PR a human merges and ArgoCD then syncs. Multi-arch (amd64 + arm64).
+# Read-only toward the cluster (its SA has no write verbs). GitOps classes only
+# mutate via a GitHub PR a human merges and ArgoCD then syncs; the node-action
+# class additionally SSHes to a host to run a gated command plan (opt-in via
+# CFOP_NODE_ACTION_ENABLED). Multi-arch (amd64 + arm64).
 
 FROM python:3.12-slim
 
-# ca-certificates for HTTPS (api.anthropic.com / api.github.com via urllib).
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+# ca-certificates for HTTPS (api.anthropic.com / api.github.com via urllib);
+# openssh-client for the node-action path (guarded SSH command plans).
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --uid 10001 executor
@@ -26,6 +29,7 @@ WORKDIR /home/executor
 COPY --chown=executor:executor diff.py /home/executor/diff.py
 COPY --chown=executor:executor llm.py /home/executor/llm.py
 COPY --chown=executor:executor github.py /home/executor/github.py
+COPY --chown=executor:executor nodeaction.py /home/executor/nodeaction.py
 COPY --chown=executor:executor entrypoint.py /home/executor/entrypoint.py
 COPY --chown=executor:executor templates/ /home/executor/templates/
 

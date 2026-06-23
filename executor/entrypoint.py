@@ -5,11 +5,15 @@ imports from the agent monolith:
 
   in   env: CFOP_REMEDIATION_JSON (work order), CFOP_COMPLETION_URL/_TOKEN,
             GITHUB_TOKEN, CFOP_GIT_REPO/_BASE, CFOP_TEMPLATES_DIR, + LLM env
-  do   render remediation.md -> swappable LLM -> unified diff -> open PR
+  do   route by remediation_class:
+         gitops/* -> render remediation.md -> swappable LLM -> unified diff -> open PR
+         node-action -> swappable LLM -> gated command plan -> run over SSH
   out  POST the outcome to the agent callback, which drives the queue row
 
-Read-only toward the cluster: the only mutation is a GitHub PR, which a human
-merges and ArgoCD then syncs. Stdlib only.
+GitOps classes are read-only toward the cluster: the only mutation is a GitHub
+PR, which a human merges and ArgoCD then syncs. The node-action path runs a
+guarded command plan on a host over SSH (opt-in via CFOP_NODE_ACTION_ENABLED).
+Stdlib only.
 """
 
 from __future__ import annotations
@@ -24,6 +28,9 @@ from typing import Any, Dict, Optional, Tuple
 from diff import extract_diff_block
 from github import GitHubClient, get_file, list_repo_files, open_pr_from_diff
 from llm import make_llm
+from nodeaction import (
+    build_command_prompt, parse_command_plan, run_ssh_plan, validate_plan,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("cfop-executor")
@@ -143,8 +150,63 @@ def build_diff_prompt(template_text: str, work_order: Dict[str, Any], repo: str,
 
 
 def run(env: Dict[str, str]) -> Dict[str, Any]:
-    """Execute one remediation work order (file-aware, two-pass)."""
+    """Execute one remediation work order, routed by remediation_class.
+
+    node-action -> run a guarded command plan over SSH; everything else uses the
+    file-aware, two-pass GitOps path that opens a PR.
+    """
     work_order = load_work_order(env)
+    if (work_order.get("remediation_class") or "").strip() == "node-action":
+        return run_node_action(env, work_order)
+    return run_gitops(env, work_order)
+
+
+def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute a node-action: LLM proposes a command plan, gate it, run over SSH.
+
+    Reaches here only after a human escalated the queue row (node-actions are
+    never auto-eligible). Opt-in per deploy via CFOP_NODE_ACTION_ENABLED so the
+    image cannot silently start running shell on hosts.
+    """
+    payload = work_order.get("payload") or {}
+    if (env.get("CFOP_NODE_ACTION_ENABLED") or "").strip().lower() not in ("1", "true", "yes"):
+        return build_completion_payload(work_order, "needs-human", None,
+                                        "node-action execution not enabled on this executor", None)
+
+    llm = make_llm(env)
+    plan = parse_command_plan(llm.complete(build_command_prompt(work_order)))
+    if not plan:
+        return build_completion_payload(work_order, "needs-human", None,
+                                        "model produced no parseable command plan", None)
+    commands = plan.get("commands") or []
+    ok, reason = validate_plan(commands)
+    if not ok:
+        return build_completion_payload(work_order, "needs-human", None,
+                                        f"command plan failed safety gate: {reason}",
+                                        {"proposed_commands": commands})
+
+    target = payload.get("target") or {}
+    host = (str(plan.get("host") or "").strip() or str(target.get("host") or "").strip()
+            or (env.get("CFOP_NODE_ACTION_HOST") or "").strip())
+    if not host:
+        return build_completion_payload(work_order, "needs-human", None,
+                                        "no target host (plan/target/CFOP_NODE_ACTION_HOST all empty)",
+                                        {"proposed_commands": commands})
+
+    results = run_ssh_plan(host, commands, env)  # raises SSHError on connect failure -> reaped/retried
+    failed = [r for r in results if r["returncode"] != 0]
+    result = {"host": host, "commands": commands, "executed": results,
+              "explanation": plan.get("explanation", "")}
+    if failed:
+        last = failed[-1]
+        return build_completion_payload(work_order, "needs-human", None,
+                                        f"command exited {last['returncode']}: {last['stderr'][:200]}", result)
+    return build_completion_payload(work_order, "resolved", None,
+                                    f"ran {len(results)} command(s) on {host}", result)
+
+
+def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any]:
+    """Execute one GitOps remediation work order (file-aware, two-pass)."""
     payload = work_order.get("payload") or {}
     token = (env.get("GITHUB_TOKEN") or "").strip()
     repo = (env.get("CFOP_GIT_REPO") or payload.get("repo") or "").strip()
