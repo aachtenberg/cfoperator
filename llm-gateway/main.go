@@ -497,8 +497,13 @@ func (gw *Gateway) ProxyRequest(backend *Backend, body []byte) ([]byte, int, err
 		}
 
 	default: // openai compatible (groq, etc)
-		url = strings.TrimRight(backend.URL, "/")
-		url = strings.TrimSuffix(url, "/v1") + "/v1/chat/completions"
+		base := strings.TrimRight(backend.URL, "/")
+		if backend.Provider == "groq" {
+			// Groq's OpenAI-compatible API lives under /openai/v1 (matches GroqProvider.BuildChatRequest).
+			url = base + "/openai/v1/chat/completions"
+		} else {
+			url = strings.TrimSuffix(base, "/v1") + "/v1/chat/completions"
+		}
 		// Inject model
 		var openaiReq map[string]interface{}
 		json.Unmarshal(body, &openaiReq)
