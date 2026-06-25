@@ -879,8 +879,15 @@ func (gw *Gateway) healthChecker(ctx context.Context) {
 				gw.state.SetHealthy(name, true)
 				continue
 			default:
-				url = strings.TrimRight(b.URL, "/")
-				url = strings.TrimSuffix(url, "/v1") + "/v1/models"
+				// Use the provider's own health-check URL so OpenAI-compatible
+				// backends with non-standard paths (e.g. Groq's /openai/v1/models)
+				// are probed correctly instead of a hardcoded /v1/models.
+				if p := GetProvider(b.Provider); p != nil {
+					url = p.HealthCheckURL(b)
+				} else {
+					url = strings.TrimRight(b.URL, "/")
+					url = strings.TrimSuffix(url, "/v1") + "/v1/models"
+				}
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
