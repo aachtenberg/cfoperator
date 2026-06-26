@@ -649,10 +649,10 @@ func (gw *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Parse request to get model hint (for future model-specific routing)
+	// Parse request to get the requested model for model-aware routing.
 	var req map[string]interface{}
 	json.Unmarshal(body, &req)
-	_ = req["model"] // Reserved for model-specific routing
+	requestedModel, _ := req["model"].(string)
 
 	// Try backends in fallback order
 	var lastErr error
@@ -666,6 +666,11 @@ func (gw *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request)
 
 		// Skip unhealthy backends unless it's our last option
 		if !gw.state.IsHealthy(backendName) {
+			continue
+		}
+
+		// Skip backends that can't serve the requested model (model-aware routing).
+		if !gw.canServeModel(backend, requestedModel) {
 			continue
 		}
 
