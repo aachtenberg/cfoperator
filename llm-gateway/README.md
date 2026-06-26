@@ -2,6 +2,16 @@
 
 Lightweight OpenAI-compatible LLM proxy with routing, fallback, and Prometheus observability.
 
+> **⚠️ Deployed image vs. this source.** The running homelab `:latest` image is built
+> from tag `llm-gateway-v0.1.1` (branched off commit `28c3603`), which fixed the Groq
+> health-check + chat path (`/openai/v1/...`). `main` has since regressed the dynamic
+> model-discovery + model-aware routing that the live config (ollama backends with
+> `model: ""`) relies on. **Do not rebuild `:latest` from `main`** — per-model routing
+> would break (requests fall back to the first healthy backend). Reconciling `main`
+> with the deployed build is open work. Consumers route via `llm-gateway.ai:4000`
+> (e.g. linkedin-scout: Groq screening + `claude-sonnet-4-6` why_fit). The cfoperator
+> agent intentionally does **not** route through this gateway.
+
 ## Features
 
 - **OpenAI-compatible API** - Drop-in replacement for `/v1/chat/completions`
@@ -71,9 +81,13 @@ fallback:
 | `llm_gateway_request_duration_seconds` | backend, model | Latency histogram |
 | `llm_gateway_tokens_total` | backend, model, type | Token usage |
 | `llm_gateway_backend_healthy` | backend | Health status (0/1) |
-| `llm_gateway_fallbacks_total` | from, to | Fallback events |
-| `llm_gateway_jobs_total` | status | Async job counts |
 | `llm_gateway_job_queue_size` | - | Current queue depth |
+| `llm_gateway_fallbacks_total` | from, to | Fallback events — *`main` source only; NOT emitted by deployed v0.1.1* |
+| `llm_gateway_jobs_total` | status | Async job counts — *`main` source only; NOT emitted by deployed v0.1.1* |
+
+> The deployed v0.1.1 build emits the first five families above. `requests_total`,
+> `tokens_total`, `request_duration_seconds`, and `backend_healthy` carry `app="llm-gateway"`
+> (set by Prometheus' annotation pod-scrape), not a `container` label — query/dashboard on `app`.
 
 ## Kubernetes Deployment
 
