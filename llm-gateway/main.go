@@ -45,13 +45,14 @@ type Config struct {
 }
 
 type Backend struct {
-	Name     string `yaml:"name"`
-	Provider string `yaml:"provider"` // ollama, openai, anthropic
-	URL      string `yaml:"url"`
-	Model    string `yaml:"model"`
-	APIKey   string `yaml:"api_key"`
-	Priority int    `yaml:"priority"` // Lower = preferred
-	Enabled  bool   `yaml:"enabled"`
+	Name     string   `yaml:"name"`
+	Provider string   `yaml:"provider"` // ollama, openai, anthropic
+	URL      string   `yaml:"url"`
+	Model    string   `yaml:"model"`
+	Models   []string `yaml:"models"` // optional pinned ollama model list; empty = auto-discover
+	APIKey   string   `yaml:"api_key"`
+	Priority int      `yaml:"priority"` // Lower = preferred
+	Enabled  bool     `yaml:"enabled"`
 }
 
 func loadConfig(path string) (*Config, error) {
@@ -153,17 +154,53 @@ func init() {
 
 type BackendState struct {
 	sync.RWMutex
-	healthy    map[string]bool
-	lastCheck  map[string]time.Time
-	errorCount map[string]int
+	healthy          map[string]bool
+	lastCheck        map[string]time.Time
+	errorCount       map[string]int
+	discoveredModels map[string][]string // backend name -> discovered model names
 }
 
 func NewBackendState() *BackendState {
 	return &BackendState{
-		healthy:    make(map[string]bool),
-		lastCheck:  make(map[string]time.Time),
-		errorCount: make(map[string]int),
+		healthy:          make(map[string]bool),
+		lastCheck:        make(map[string]time.Time),
+		errorCount:       make(map[string]int),
+		discoveredModels: make(map[string][]string),
 	}
+}
+
+// DiscoveredModel represents a model found on a backend.
+type DiscoveredModel struct {
+	Name       string                 `json:"name"`
+	Backend    string                 `json:"backend"`
+	Provider   string                 `json:"provider"`
+	Size       int64                  `json:"size,omitempty"`
+	ModifiedAt string                 `json:"modified_at,omitempty"`
+	Details    map[string]interface{} `json:"details,omitempty"`
+}
+
+func (bs *BackendState) SetDiscoveredModels(name string, models []string) {
+	bs.Lock()
+	defer bs.Unlock()
+	bs.discoveredModels[name] = models
+}
+
+func (bs *BackendState) GetDiscoveredModels(name string) []string {
+	bs.RLock()
+	defer bs.RUnlock()
+	return bs.discoveredModels[name]
+}
+
+func (bs *BackendState) GetAllModels() []DiscoveredModel {
+	bs.RLock()
+	defer bs.RUnlock()
+	var all []DiscoveredModel
+	for backend, models := range bs.discoveredModels {
+		for _, m := range models {
+			all = append(all, DiscoveredModel{Name: m, Backend: backend})
+		}
+	}
+	return all
 }
 
 func (bs *BackendState) SetHealthy(name string, healthy bool) {
@@ -314,11 +351,38 @@ func NewGateway(cfg *Config) *Gateway {
 	return gw
 }
 
+// canServeModel reports whether a backend can serve the requested model:
+// cloud backends by exact configured model, ollama by pinned list or discovered models.
+func (gw *Gateway) canServeModel(b *Backend, requestedModel string) bool {
+	if requestedModel == "" {
+		return true
+	}
+	if b.Provider != "ollama" {
+		return b.Model == requestedModel
+	}
+	if len(b.Models) > 0 {
+		for _, m := range b.Models {
+			if m == requestedModel {
+				return true
+			}
+		}
+		return false
+	}
+	discovered := gw.state.GetDiscoveredModels(b.Name)
+	for _, m := range discovered {
+		if m == requestedModel {
+			return true
+		}
+	}
+	// No models discovered yet (first request before health check): allow.
+	return len(discovered) == 0
+}
+
 func (gw *Gateway) SelectBackend(preferredModel string) *Backend {
-	// Try fallback order first
+	// Try fallback order first, preferring backends that can serve the model
 	for _, name := range gw.config.Fallback {
 		if b, ok := gw.backends[name]; ok && b.Enabled && gw.state.IsHealthy(name) {
-			if preferredModel == "" || b.Model == preferredModel {
+			if gw.canServeModel(b, preferredModel) {
 				return b
 			}
 		}
@@ -418,8 +482,13 @@ func (gw *Gateway) ProxyRequest(backend *Backend, body []byte) ([]byte, int, err
 		}
 
 	default: // openai compatible (groq, etc)
-		url = strings.TrimRight(backend.URL, "/")
-		url = strings.TrimSuffix(url, "/v1") + "/v1/chat/completions"
+		base := strings.TrimRight(backend.URL, "/")
+		if backend.Provider == "groq" {
+			// Groq's OpenAI-compatible API lives under /openai/v1.
+			url = base + "/openai/v1/chat/completions"
+		} else {
+			url = strings.TrimSuffix(base, "/v1") + "/v1/chat/completions"
+		}
 		// Inject model
 		var openaiReq map[string]interface{}
 		json.Unmarshal(body, &openaiReq)
@@ -641,14 +710,26 @@ func (gw *Gateway) handleChatCompletions(w http.ResponseWriter, r *http.Request)
 }
 
 func (gw *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
+	seen := make(map[string]bool)
 	var models []map[string]interface{}
 	for _, b := range gw.backends {
-		if b.Enabled {
+		if !b.Enabled {
+			continue
+		}
+		if b.Provider == "ollama" {
+			// List models discovered on the ollama backend.
+			for _, m := range gw.state.GetDiscoveredModels(b.Name) {
+				if !seen[m] {
+					seen[m] = true
+					models = append(models, map[string]interface{}{
+						"id": m, "object": "model", "owned_by": b.Provider, "backend": b.Name,
+					})
+				}
+			}
+		} else if b.Model != "" && !seen[b.Model] {
+			seen[b.Model] = true
 			models = append(models, map[string]interface{}{
-				"id":       b.Model,
-				"object":   "model",
-				"owned_by": b.Provider,
-				"backend":  b.Name,
+				"id": b.Model, "object": "model", "owned_by": b.Provider, "backend": b.Name,
 			})
 		}
 	}
@@ -761,8 +842,15 @@ func (gw *Gateway) healthChecker(ctx context.Context) {
 				gw.state.SetHealthy(name, true)
 				continue
 			default:
-				url = strings.TrimRight(b.URL, "/")
-				url = strings.TrimSuffix(url, "/v1") + "/v1/models"
+				// Use the provider's own health-check URL so OpenAI-compatible
+				// backends with non-standard paths (e.g. Groq's /openai/v1/models)
+				// are probed correctly instead of a hardcoded /v1/models.
+				if p := GetProvider(b.Provider); p != nil {
+					url = p.HealthCheckURL(b)
+				} else {
+					url = strings.TrimRight(b.URL, "/")
+					url = strings.TrimSuffix(url, "/v1") + "/v1/models"
+				}
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -775,12 +863,34 @@ func (gw *Gateway) healthChecker(ctx context.Context) {
 			cancel()
 
 			healthy := err == nil && resp != nil && resp.StatusCode == 200
-			if resp != nil {
+
+			// Discover available models from Ollama backends (drives model-aware routing).
+			if healthy && b.Provider == "ollama" && resp != nil {
+				body, readErr := io.ReadAll(resp.Body)
 				resp.Body.Close()
+				if readErr == nil {
+					var tagsResp struct {
+						Models []struct {
+							Name string `json:"name"`
+						} `json:"models"`
+					}
+					if json.Unmarshal(body, &tagsResp) == nil {
+						var modelNames []string
+						for _, m := range tagsResp.Models {
+							modelNames = append(modelNames, m.Name)
+						}
+						gw.state.SetDiscoveredModels(name, modelNames)
+						log.Printf("Health check %s: healthy=%v models=%v", name, healthy, modelNames)
+					}
+				}
+			} else {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				log.Printf("Health check %s: healthy=%v", name, healthy)
 			}
 
 			gw.state.SetHealthy(name, healthy)
-			log.Printf("Health check %s: healthy=%v", name, healthy)
 		}
 	}
 
