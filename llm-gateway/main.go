@@ -416,8 +416,15 @@ func (gw *Gateway) ProxyRequest(backend *Backend, body []byte) ([]byte, int, err
 		// Transform OpenAI format to Ollama format
 		var openaiReq map[string]interface{}
 		json.Unmarshal(body, &openaiReq)
+		// Use the client's requested model, falling back to the backend's configured
+		// model. Discovery-mode ollama backends set model: "" in config, so the
+		// requested model MUST pass through (else ollama gets an empty model -> 400).
+		model := backend.Model
+		if rm, ok := openaiReq["model"].(string); ok && rm != "" {
+			model = rm
+		}
 		ollamaReq := map[string]interface{}{
-			"model":    backend.Model,
+			"model":    model,
 			"messages": openaiReq["messages"],
 			"stream":   false,
 		}
