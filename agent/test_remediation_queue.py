@@ -358,6 +358,19 @@ def test_parse_summary_recommendations():
     assert CFOperator._parse_summary_recommendations("```json\n{bad}\n```") == []
 
 
+def test_strip_summary_recommendations_block():
+    # The machine-readable json block must not leak into operator-facing channels.
+    stripped = CFOperator._strip_summary_recommendations_block(_SUMMARY)
+    assert "```json" not in stripped
+    assert "recommendations" not in stripped
+    assert "All quiet overnight." in stripped  # prose preserved
+    # but the queue can still parse the original (strip happens after feed)
+    assert len(CFOperator._parse_summary_recommendations(_SUMMARY)) == 2
+    # no-op when there is no block, and safe on empty input
+    assert CFOperator._strip_summary_recommendations_block("just text") == "just text"
+    assert CFOperator._strip_summary_recommendations_block("") == ""
+
+
 def test_feed_from_summary_routes_mutations_to_investigation():
     # Summary mutation-class recs are unverified hypotheses from the cheap model,
     # so they go to the investigation pipeline, not straight into the queue.
