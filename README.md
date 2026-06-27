@@ -1,6 +1,6 @@
 # CFOperator - Continuous Feedback Operator
 
-**v1.0.8** — Autonomous infrastructure monitoring agent with proactive intelligence.
+**v1.0.8** — Autonomous infrastructure monitoring agent with proactive intelligence (agent + event_runtime split).
 
 CFOperator runs continuously in the background, monitoring your fleet via an OODA loop (Observe → Orient → Decide → Act), predicting issues before they become alerts, and surfacing insights through a chat UI.
 
@@ -57,17 +57,18 @@ CFOperator agent (Docker container)
 │   │            get_events, get_nodes, get_node_metrics, exec_pod, describe, ...
 │   └── Discovery (4): ping_host, verify_ssh, verify_sudo, discover_all_hosts
 │
-├── Skills (7 investigation workflows)
+├── Skills (8 investigation workflows)
 │   ├── /investigate-host — Systematic host/server investigation
 │   ├── /investigate-container — Systematic container investigation
 │   ├── /investigate-pod — Kubernetes pod investigation
 │   ├── /investigate-deployment — Kubernetes deployment investigation
+│   ├── /investigate-code-change — Correlate alerts with recent git changes
 │   ├── /k3s-cluster-health — Full cluster health check
 │   ├── /why-restart — Analyze container restart causes
 │   └── /compare-hosts — Compare metrics across fleet
 │
 └── Web UI (Dark theme, Inter + JetBrains Mono)
-    ├── Chat interface (HTTP polling with WebSocket fallback)
+    ├── Chat interface (HTTP polling; WebSocket code present but disabled — Waitress WSGI limitation)
     ├── Collapsible sidebar (OODA config, skills, pool toggles)
     ├── LLM backend/model selector with provider fallback toggle
     ├── Sweep findings panel with severity badges
@@ -158,15 +159,16 @@ docker compose up -d
 |----------|-------------|
 | `/` | Chat UI |
 | `/api/health` | Health check + uptime |
-| `/api/chat` | HTTP chat API |
+| `/api/chat` | HTTP chat API (polling; WebSocket disabled) |
 | `/api/sweep` | Trigger deep system sweep (POST) |
 | `/api/config/reload` | Hot-reload config (POST) |
 | `/api/ollama/models` | List available Ollama models |
 | `/api/ollama/models/select` | Persist model selection (POST) |
-| `/api/qa` | Pending questions (GET/POST) |
+| `/api/qa` | **Removed** — replaced by chat sessions (`/api/chat-sessions`) |
 | `/v1/investigate` | POST — async investigation entry point called by event_runtime |
+| `/v1/triage` | POST — synchronous triage decision (log_only/notify/investigate/escalate) |
 | `/metrics` | Prometheus metrics |
-| `/ws` | WebSocket chat |
+| `/ws` | WebSocket chat (code present, disabled at runtime) |
 
 ## cfassist (Go CLI)
 
@@ -271,6 +273,13 @@ make all            # all platforms
 ### Benchmarks
 - [benchmarks/results.md](benchmarks/results.md) — Ollama inference latency benchmark (TTFT, tokens/sec, GPU stats)
 - [docs/ollama-tool-calling-benchmark.md](docs/ollama-tool-calling-benchmark.md) — Multi-host tool calling benchmark
+
+## Accuracy Notes (README vs. Code)
+
+- **Skills**: 8 loaded at runtime (`investigate-code-change` is present and functional but was omitted from the earlier count of 7).
+- **WebSocket**: Code exists (`/ws`) but `WEBSOCKET_AVAILABLE=False` at runtime because Waitress (WSGI) does not support it; UI uses HTTP polling via `/api/chat`.
+- **`/api/qa`**: Endpoint removed; replaced by chat session management (`/api/chat-sessions`).
+- **Morning summary**: Runs 7-9 AM local time (configurable), authored by the cheap primary model; LLM Judge verification applies to sweep findings only.
 
 ## License
 
