@@ -1920,6 +1920,21 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         recs = data.get('recommendations') if isinstance(data, dict) else None
         return [r for r in recs if isinstance(r, dict)] if isinstance(recs, list) else []
 
+    @staticmethod
+    def _strip_summary_recommendations_block(summary_text: str) -> str:
+        """Remove the machine-readable ```json recommendations block from the
+        summary so it never reaches operator-facing channels (Slack/ntfy).
+
+        The block is emitted by the LLM purely to feed the remediation queue
+        (see _feed_remediations_from_summary); humans see the prose table above
+        it. Strip only after the queue has consumed it.
+        """
+        if not summary_text:
+            return summary_text
+        stripped = re.sub(r"\n*```json\s*\{.*?\}\s*```\n*", "\n", summary_text,
+                          flags=re.DOTALL)
+        return stripped.rstrip() + "\n" if stripped != summary_text else summary_text
+
     def _feed_remediations_from_summary(self, summary_text: str,
                                         overnight_reports: Optional[List[Dict[str, Any]]] = None) -> int:
         """Feed the queue from the summary's structured recommendations block.
@@ -5575,6 +5590,10 @@ IMPORTANT:
                 # (captures the prose 'Issues & Recommendations' the operator
                 # sees); falls back to raw sweep findings if no block emitted.
                 self._feed_remediations_from_summary(summary_text, overnight_reports)
+                # Strip the machine-readable JSON block now that the queue has
+                # consumed it — operators only need the prose table above it,
+                # not the raw recommendations block leaking into Slack/ntfy.
+                summary_text = self._strip_summary_recommendations_block(summary_text)
                 return {
                     'text': summary_text,
                     'timestamp': now,
