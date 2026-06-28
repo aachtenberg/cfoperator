@@ -19,6 +19,19 @@ from diff import apply_unified_diff, is_secret_path, parse_unified_diff
 
 _DEFAULT_API = "https://api.github.com"
 
+# Editable text targets for the file-selection pass. GitOps isn't only k8s YAML:
+# remediations also land in systemd units, Ansible playbooks/templates, shell
+# scripts, and Terraform/config files. Kept to text-config extensions so the
+# picker never offers binaries or docs. Secret-bearing paths are filtered
+# separately by is_secret_path regardless of extension.
+_EDITABLE_EXTS: Tuple[str, ...] = (
+    ".yaml", ".yml", ".json", ".toml", ".ini", ".cfg", ".conf",
+    ".service", ".timer", ".socket", ".target", ".mount", ".path",
+    ".sh", ".bash", ".j2", ".tf", ".tfvars", ".properties",
+)
+# Well-known extensionless config files worth offering as edit targets.
+_EDITABLE_NAMES: Tuple[str, ...] = ("Dockerfile", "Makefile")
+
 
 class GitHubClient:
     def __init__(self, token: str, api_url: str = _DEFAULT_API, *, timeout: int = 30):
@@ -57,9 +70,19 @@ class GitHubClient:
         return text, d.get("sha", "")
 
 
+def _is_editable(path: str, exts: Tuple[str, ...]) -> bool:
+    """A path is an edit candidate if it has a config extension or a known name."""
+    return path.endswith(exts) or path.rsplit("/", 1)[-1] in _EDITABLE_NAMES
+
+
 def list_repo_files(client: GitHubClient, repo: str, base: str,
-                    exts: Tuple[str, ...] = (".yaml", ".yml"), limit: int = 400) -> list:
-    """List candidate manifest paths in the repo (for the file-selection pass)."""
+                    exts: Tuple[str, ...] = _EDITABLE_EXTS, limit: int = 600) -> list:
+    """List candidate edit paths in the repo (for the file-selection pass).
+
+    Covers IaC/config text files (k8s YAML, systemd units, Ansible, shell,
+    Terraform), not just k8s manifests — a remediation may target any of them.
+    Secret-bearing paths are filtered regardless of extension.
+    """
     ref = client.request("GET", f"/repos/{repo}/git/ref/heads/{base}")
     sha = ((ref.get("data") or {}).get("object") or {}).get("sha") if ref.get("success") else None
     if not sha:
@@ -68,7 +91,7 @@ def list_repo_files(client: GitHubClient, repo: str, base: str,
     if not tr.get("success"):
         return []
     paths = [t.get("path") for t in (tr.get("data") or {}).get("tree", [])
-             if t.get("type") == "blob" and t.get("path", "").endswith(exts)
+             if t.get("type") == "blob" and _is_editable(t.get("path", ""), exts)
              and not is_secret_path(t.get("path", ""))]
     return paths[:limit]
 

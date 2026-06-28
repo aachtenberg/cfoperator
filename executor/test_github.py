@@ -83,16 +83,27 @@ class _TreeClient:
         if "/git/trees/" in path:
             return {"success": True, "data": {"tree": [
                 {"type": "blob", "path": "k8s/base/apps/ollama.yaml"},
+                {"type": "blob", "path": "ansible/files/cfop.service"},     # systemd unit -> kept
+                {"type": "blob", "path": "ansible/deploy.yml"},             # ansible play -> kept
+                {"type": "blob", "path": "scripts/boot.sh"},               # shell -> kept
+                {"type": "blob", "path": "Dockerfile"},                    # known name -> kept
                 {"type": "blob", "path": "k8s/base/secrets/sealed.yaml"},  # secret -> filtered
-                {"type": "blob", "path": "README.md"},                     # non-yaml -> filtered
+                {"type": "blob", "path": "README.md"},                     # doc -> filtered
+                {"type": "blob", "path": "logo.png"},                      # binary -> filtered
                 {"type": "tree", "path": "k8s/base"},                      # dir -> skipped
             ]}}
         return {"success": False, "data": {}}
 
 
-def test_list_repo_files_filters_yaml_and_secrets():
+def test_list_repo_files_keeps_config_targets_and_filters_secrets():
     files = list_repo_files(_TreeClient(), "o/r", "main")
-    assert files == ["k8s/base/apps/ollama.yaml"]
+    assert files == [
+        "k8s/base/apps/ollama.yaml",
+        "ansible/files/cfop.service",
+        "ansible/deploy.yml",
+        "scripts/boot.sh",
+        "Dockerfile",
+    ]
 
 
 def test_get_file_returns_content():
