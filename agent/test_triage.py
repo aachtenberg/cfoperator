@@ -234,3 +234,24 @@ def test_run_triage_handles_alertmanager_payload_shape():
     })
     # The legacy alertmanager-shape summary should still reach the prompt.
     assert "Pod X failing" in captured["messages"][0]["content"]
+
+
+def test_run_triage_rubric_guards_novel_pod_failures():
+    """The 2026-07-09 gemma4/qwen3.6 benchmark showed both models classify
+    novel warning-severity pod failures (OOMKilled, ImagePullBackOff) as
+    notify instead of the rubric's investigate default. The rubric must
+    explicitly forbid notify for pod failures without a listed precedent,
+    and mark precedent-free pod failures as novel → investigate."""
+    op = _operator()
+    captured = {}
+
+    def fake_chat(messages, system_context, max_iterations=None, **kwargs):
+        captured["system_context"] = system_context
+        return {"response": '{"action": "investigate", "reason": "x", "confidence": 0.7}',
+                "tool_calls": 0}
+
+    op._chat_with_tools_with_fallback = fake_chat
+    op.run_triage(_alert(summary="Pod immich-ml OOMKilled 4 times in 30m"))
+    rubric = captured["system_context"]
+    assert "do NOT use notify for pod failures" in rubric
+    assert "novel by definition" in rubric
