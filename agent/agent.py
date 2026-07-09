@@ -782,10 +782,16 @@ Action rubric:
               waste. Use when a similar past investigation resolved with
               little effort, when severity=info, or when the pattern is
               one the operator already understands (e.g. raspberrypi
-              SD-card warning that's been known for weeks).
+              SD-card warning that's been known for weeks). Requires a
+              clear precedent: do NOT use notify for pod failures
+              (CrashLoop, OOMKilled, ImagePullBackOff, NotReady) unless
+              a similar past investigation is listed in the alert
+              context.
   investigate Novel pattern, no similar resolved precedent, or pattern
               that previous investigations classified as 'monitoring'.
-              Default if uncertain.
+              A pod failure with no similar past investigation listed is
+              novel by definition — investigate it. Default if
+              uncertain.
   escalate    Severity=critical AND impact is broad (NodeNotReady on a
               control plane, data-loss patterns, multiple correlated
               services down). Operator should page in.
