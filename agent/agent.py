@@ -174,6 +174,26 @@ OPENAI_COMPAT_PROVIDERS = {
     },
 }
 
+# Sent once when a model ends the tool loop with an empty message (no tool
+# calls, no text). gemma4:26b does this on virtually every healthy-cluster
+# investigation (benchmarks/empty_response_sim.py: 10/10 empty finals, and
+# 19/19 recovered by this nudge); without it the empty response used to be
+# stored verbatim and _extract_status('') silently defaulted to 'monitoring'.
+EMPTY_RESPONSE_NUDGE = (
+    "You have gathered enough data. Do NOT call any more tools. "
+    "Respond NOW with a short summary of what you found, followed by your "
+    "final answer in exactly the format the instructions above require."
+)
+
+
+class EmptyLLMResponseError(RuntimeError):
+    """Model returned an empty final message even after the nudge retry.
+
+    Must propagate out of _chat_with_tools_inner (never be swallowed into a
+    synthetic response) so _chat_with_tools_with_fallback rotates to the
+    next provider in the chain.
+    """
+
 
 class CFOperator:
     """
@@ -4083,6 +4103,33 @@ Only return the JSON array, no other text."""
         omitted = len(text) - max_chars
         return text[:max_chars] + f'\n...[truncated {omitted} chars of tool output]'
 
+    @staticmethod
+    def _handle_empty_final(empty_nudge_sent: bool, iteration_budget: int,
+                            max_iterations: int, full_messages: list,
+                            provider_type: str, model: str):
+        """The model ended the tool loop with an empty message — no tool
+        calls, no text (gemma4:26b does this on nearly every healthy-cluster
+        investigation; see benchmarks/empty_response_sim.py).
+
+        First occurrence: append EMPTY_RESPONSE_NUDGE and grant one bonus
+        round (the nudge recovered a well-formed answer 19/19 times in the
+        benchmark). Second occurrence: raise EmptyLLMResponseError so the
+        provider fallback chain rotates — never return '' to the caller,
+        where _extract_status('') silently classifies it as 'monitoring'
+        (investigations #1880/#1884/#1885/#1889).
+
+        Returns the updated (empty_nudge_sent, iteration_budget).
+        """
+        if empty_nudge_sent:
+            raise EmptyLLMResponseError(
+                f"{provider_type}/{model} returned an empty final response "
+                f"even after the nudge retry")
+        logger.warning(
+            f"[CHAT] empty final response from {provider_type}/{model} — "
+            f"nudging once for an answer")
+        full_messages.append({'role': 'user', 'content': EMPTY_RESPONSE_NUDGE})
+        return True, min(iteration_budget + 1, max_iterations + 1)
+
     # Read-only inspection tools whose result is stable enough to memoize for
     # the lifetime of one _chat_with_tools call. A repeated identical call
     # returns a short stub instead of re-running the tool and re-dumping the
@@ -4408,6 +4455,7 @@ Only return the JSON array, no other text."""
         max_result_chars = self._max_tool_result_chars()
         tool_cache = {}  # memoizes read-only tool results for this session
         final_answer_forced = False  # final-iteration nudge sent only once
+        empty_nudge_sent = False  # empty-final-response nudge sent only once
 
         # Get tool schemas
         tools = self.tools.get_schemas()
@@ -4415,7 +4463,14 @@ Only return the JSON array, no other text."""
         # Build initial messages with system context
         full_messages = [{'role': 'system', 'content': system_context}] + messages
 
-        for iteration in range(max_iterations):
+        # while (not for/range) so the empty-response nudge can grant one
+        # bonus round past max_iterations — the empty final typically happens
+        # ON the last iteration, where a `continue` would otherwise just fall
+        # out of the loop.
+        iteration = -1
+        iteration_budget = max_iterations
+        while iteration + 1 < iteration_budget:
+            iteration += 1
             try:
                 logger.debug(f"[CHAT] iteration {iteration+1}/{max_iterations}, messages count: {len(full_messages)}")
                 # Force a final answer on the last iteration instead of falling
@@ -4424,7 +4479,7 @@ Only return the JSON array, no other text."""
                 # providers (groq, xai) hard-error ("tool_use_failed") if a
                 # reasoning model emits a tool call while tools are absent — so
                 # for those, keep tools available and nudge with a message.
-                is_final_iteration = (iteration == max_iterations - 1)
+                is_final_iteration = (iteration == iteration_budget - 1)
                 is_openai_compat = provider_type in OPENAI_COMPAT_PROVIDERS
                 offered_tools = [] if (is_final_iteration and not is_openai_compat) else tools
                 if is_final_iteration and not final_answer_forced:
@@ -4529,6 +4584,11 @@ Only return the JSON array, no other text."""
 
                     # No tool calls, extract text response
                     text = message.get('content', '')
+                    if not (text or '').strip():
+                        empty_nudge_sent, iteration_budget = self._handle_empty_final(
+                            empty_nudge_sent, iteration_budget, max_iterations,
+                            full_messages, provider_type, model)
+                        continue
                     return {
                         'response': text,
                         'tool_calls': tool_calls_count,
@@ -4635,6 +4695,11 @@ Only return the JSON array, no other text."""
 
                     # No tool calls — return text response
                     text = message.get('content', '')
+                    if not (text or '').strip():
+                        empty_nudge_sent, iteration_budget = self._handle_empty_final(
+                            empty_nudge_sent, iteration_budget, max_iterations,
+                            full_messages, provider_type, model)
+                        continue
                     return {
                         'response': text,
                         'tool_calls': tool_calls_count,
@@ -4786,6 +4851,11 @@ Only return the JSON array, no other text."""
 
                     # No tool calls — return text response
                     text = '\n'.join(text_parts)
+                    if not text.strip():
+                        empty_nudge_sent, iteration_budget = self._handle_empty_final(
+                            empty_nudge_sent, iteration_budget, max_iterations,
+                            full_messages, provider_type, model)
+                        continue
                     return {
                         'response': text,
                         'tool_calls': tool_calls_count,
@@ -4797,6 +4867,11 @@ Only return the JSON array, no other text."""
                 else:
                     raise NotImplementedError(f"Provider {provider_type} not yet implemented for chat")
 
+            except EmptyLLMResponseError:
+                # Must reach _chat_with_tools_with_fallback so the next
+                # provider gets a shot — a synthetic error-text response
+                # would be stored as findings and misread as a verdict.
+                raise
             except Exception as e:
                 logger.error(f"Chat iteration {iteration} failed: {e}", exc_info=True)
                 if iteration == 0:
