@@ -58,6 +58,11 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            if parsed.path == "/livez":
+                # Liveness only: must never touch the runtime (health() does a
+                # live jobstore query, so a slow DB would get the pod killed).
+                _json_response(self, HTTPStatus.OK, {"status": "alive"})
+                return
             if parsed.path == "/health":
                 payload = runtime.health()
                 if worker is not None:

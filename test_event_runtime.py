@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection
@@ -1442,6 +1443,40 @@ def test_stdlib_server_exposes_metrics_endpoint(tmp_path: Path):
         assert "text/plain" in str(content_type)
         assert b"cfoperator_event_runtime_alerts_received_total" in payload
         assert b"cfoperator_event_runtime_up" in payload
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+        server.server_close()
+        runtime.stop()
+
+
+def test_stdlib_server_livez_does_not_touch_runtime_health(tmp_path: Path):
+    """/livez must answer even when runtime.health() would block (slow jobstore)."""
+
+    class BlockingHealthScheduler(MemoryScheduler):
+        name = "blocking-health-scheduler"
+
+        def health(self) -> dict:
+            time.sleep(5)
+            return super().health()
+
+    sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "livez-outbox"))])
+    plugins = PluginManager()
+    plugins.register_state_sink(sink)
+    plugins.register_decision_engine(InvestigateDecision())
+    plugins.register_action_handler(InvestigateAction())
+    plugins.register_scheduler(BlockingHealthScheduler())
+    runtime = EventRuntime(plugins)
+
+    runtime.start()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(runtime, worker=None))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        status, content_type, payload = _request_raw(server, "GET", "/livez")
+        assert status == 200
+        assert "application/json" in str(content_type)
+        assert json.loads(payload) == {"status": "alive"}
     finally:
         server.shutdown()
         thread.join(timeout=2)

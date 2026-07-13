@@ -55,6 +55,12 @@ def create_app(runtime=None, worker=None):
 
     app = FastAPI(title="CFOperator Event Runtime", version="0.1.0", lifespan=lifespan)
 
+    @app.get("/livez")
+    def livez() -> dict:
+        # Liveness only: must never touch the runtime (health() does a
+        # live jobstore query, so a slow DB would get the pod killed).
+        return {"status": "alive"}
+
     @app.get("/health")
     def health() -> dict:
         payload = runtime.health()
