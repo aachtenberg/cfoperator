@@ -301,8 +301,29 @@ def _feed_op(feed=True):
     op.kb.queue_remediation.return_value = 1
     # wire real helpers the methods call on self (MagicMock would shadow them)
     op._parse_summary_recommendations = CFOperator._parse_summary_recommendations
+    op._recommendation_is_investigate_shaped = CFOperator._recommendation_is_investigate_shaped
     op._feed_remediations_from_sweeps = lambda reports: CFOperator._feed_remediations_from_sweeps(op, reports)
     return _wire_flags(op)
+
+
+def test_recommendation_is_investigate_shaped():
+    assert CFOperator._recommendation_is_investigate_shaped(
+        "Check CoreDNS logs for errors/latency")
+    assert CFOperator._recommendation_is_investigate_shaped(
+        "Monitor the stability of the Loki service")
+    assert CFOperator._recommendation_is_investigate_shaped(
+        "Investigate the PostgreSQL database for stability")
+    assert CFOperator._recommendation_is_investigate_shaped(
+        "Verify /api/chat responds 200")
+    # genuinely human — stay on the manual queue
+    assert not CFOperator._recommendation_is_investigate_shaped(
+        "Physically check power and ethernet for ubuntu-cm5-01")
+    assert not CFOperator._recommendation_is_investigate_shaped(
+        "Check power supply and network switch for the Pi cluster")
+    assert not CFOperator._recommendation_is_investigate_shaped(
+        "Replace SD card on rpi3")
+    assert not CFOperator._recommendation_is_investigate_shaped("do x")
+    assert not CFOperator._recommendation_is_investigate_shaped("")
 
 
 def test_feed_from_sweeps_disabled():
@@ -310,28 +331,47 @@ def test_feed_from_sweeps_disabled():
     reports = [{"findings": [{"id": "a", "remediation": "x", "severity": "warning"}]}]
     assert CFOperator._feed_remediations_from_sweeps(op, reports) == 0
     op.kb.queue_remediation.assert_not_called()
+    op.enqueue_investigation.assert_not_called()
 
 
-def test_feed_from_sweeps_enqueues_and_maps_severity():
+def test_feed_from_sweeps_dispatches_investigate_shaped():
+    # #36/#37-class: "check/verify/monitor" sweep recs must become autonomous
+    # investigations, not needs-human manuals.
     op = _feed_op()
     reports = [{"findings": [
         {"id": "f1", "finding": "Ollama 500s", "remediation": "Verify DNS on raspberrypi5",
          "severity": "warning", "resource_name": "ollama"},
         {"id": "f2", "finding": "healthy", "remediation": "No action required. Healthy.", "severity": "info"},
     ]}]
-    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1  # 2nd skipped (no-action prefix)
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1  # 2nd skipped
+    op.kb.queue_remediation.assert_not_called()
+    op.enqueue_investigation.assert_called_once()
+    arg = op.enqueue_investigation.call_args.args[0]
+    assert arg["source"] == "sweep-investigate"
+    assert "Verify DNS" in arg["summary"]
+    assert arg["host"] == "ollama"
+
+
+def test_feed_from_sweeps_queues_human_only_manual():
+    op = _feed_op()
+    reports = [{"findings": [
+        {"id": "f1", "finding": "Pi down", "remediation": "Physically inspect power strip",
+         "severity": "critical", "resource_name": "raspberrypi4"},
+    ]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
+    op.enqueue_investigation.assert_not_called()
     kwargs = op.kb.queue_remediation.call_args.kwargs
-    assert kwargs["remediation_class"] == "manual"  # sweep findings -> needs-human
-    assert kwargs["risk"] == "med"                  # warning -> med
+    assert kwargs["remediation_class"] == "manual"
+    assert kwargs["risk"] == "high"
     assert kwargs["dedupe_key"] == "sweep-f1"
-    assert kwargs["payload"]["recommendation"] == "Verify DNS on raspberrypi5"
 
 
 def test_feed_from_sweeps_dedup_not_counted():
     op = _feed_op()
     op.kb.queue_remediation.return_value = None  # deduped by kb
-    reports = [{"findings": [{"id": "f1", "remediation": "x", "severity": "critical"}]}]
+    reports = [{"findings": [{"id": "f1", "remediation": "do x", "severity": "critical"}]}]
     assert CFOperator._feed_remediations_from_sweeps(op, reports) == 0
+    op.enqueue_investigation.assert_not_called()
 
 
 # ---- summary structured-recommendations feed ---------------------------------
@@ -387,10 +427,25 @@ def test_feed_from_summary_routes_mutations_to_investigation():
 
 def test_feed_from_summary_falls_back_to_sweeps_when_no_block():
     op = _feed_op()
+    # non-investigate-shaped → still queues as manual via sweep fallback
     reports = [{"findings": [{"id": "f1", "remediation": "do x", "severity": "warning"}]}]
     n = CFOperator._feed_remediations_from_summary(op, "plain text, no json block", reports)
     assert n == 1  # fell back to sweep findings
     assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "sweep-f1"
+
+
+def test_feed_from_summary_fallback_dispatches_investigate_shaped_sweeps():
+    op = _feed_op()
+    reports = [{"findings": [
+        {"id": "e1ce1ec8", "finding": "DNS issues",
+         "remediation": "Check CoreDNS logs for errors/latency", "severity": "warning"},
+    ]}]
+    n = CFOperator._feed_remediations_from_summary(op, "plain text, no json block", reports)
+    assert n == 1
+    op.kb.queue_remediation.assert_not_called()
+    arg = op.enqueue_investigation.call_args.args[0]
+    assert arg["source"] == "sweep-investigate"
+    assert "Check CoreDNS" in arg["summary"]
 
 
 def test_feed_from_summary_disabled():
@@ -440,6 +495,31 @@ def test_feed_summary_manual_queues_with_clamped_confidence():
     kw = op.kb.queue_remediation.call_args.kwargs
     assert kw["remediation_class"] == "manual"
     assert kw["confidence"] == _SUMMARY_CONFIDENCE_CAP  # clamped from 0.95
+
+
+_SUMMARY_MISLABELLED_MANUAL = """## Summary
+```json
+{"recommendations": [
+  {"title": "Connectivity/DNS issues", "recommendation": "Check CoreDNS logs for errors/latency",
+   "host": "", "remediation_class": "manual", "risk": "med", "confidence": 0.7},
+  {"title": "Promtail Loki resets", "recommendation": "Monitor Loki stability and Promtail connectivity",
+   "host": "", "remediation_class": "manual", "risk": "med", "confidence": 0.6}
+]}
+```
+"""
+
+
+def test_feed_summary_mislabelled_manual_investigate_shaped_dispatches():
+    # Cheap model often labels check/monitor items as manual; still investigate.
+    op = _feed_op()
+    n = CFOperator._feed_remediations_from_summary(op, _SUMMARY_MISLABELLED_MANUAL, [])
+    assert n == 0
+    op.kb.queue_remediation.assert_not_called()
+    assert op.enqueue_investigation.call_count == 2
+    summaries = [c.args[0]["summary"] for c in op.enqueue_investigation.call_args_list]
+    assert any("Check CoreDNS" in s for s in summaries)
+    assert any("Monitor Loki" in s for s in summaries)
+    assert all("[proposed:" not in s for s in summaries)
 
 
 # ---- read API serialization (operator console) -------------------------------

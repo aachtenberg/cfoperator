@@ -93,6 +93,15 @@ _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 _SUMMARY_MUTATION_CLASSES = ('node-action', 'gitops-patch', 'k8s-action')
 _SUMMARY_CONFIDENCE_CAP = 0.5
 
+# Sweep/summary recs that say "check/verify/…" are evidence-gathering the agent
+# can do itself — never park them as needs-human. Exclude physically-human work
+# even when the text also contains a check/verify verb.
+_INVESTIGATE_SHAPED = re.compile(
+    r'\b(check|verify|confirm|investigate|monitor|look\s+into|examine)\b', re.I)
+_HUMAN_ONLY_SHAPED = re.compile(
+    r'\b(physically|hardware|power\s+supply|power\s+strip|sd\s+card|'
+    r'replace|swap\s+it|wiring|console|hard-?cycle)\b', re.I)
+
 # Triggers that describe a *recoverable* runtime condition — if the pod is
 # healthy now, the thing the alert worried about has cleared. Used by the
 # Tier-1 noise filter (early-exit + needs_action downgrade). See
@@ -1883,17 +1892,33 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
 
     _SEVERITY_RISK = {'critical': 'high', 'warning': 'med', 'info': 'low'}
 
-    def _feed_remediations_from_sweeps(self, reports: List[Dict[str, Any]]) -> int:
-        """Enqueue remediations from structured sweep findings (morning-summary feed).
+    @staticmethod
+    def _recommendation_is_investigate_shaped(text: str) -> bool:
+        """True when the next step is evidence-gathering the agent can do itself.
 
-        Off unless ``remediation.queue_feed`` is set. Sweep findings carry no
-        mechanizability signal, so they enqueue as class 'manual' (-> needs-human,
-        tracked but not auto-executed) with risk mapped from severity. Deduped by
-        finding id so recurring findings don't pile up across runs.
+        Matches the morning-summary prompt's investigate vocabulary
+        (check/verify/confirm/investigate/monitor). Human-only cues
+        (physically, hardware, power supply, …) stay on the manual queue even
+        when a check/verify verb is also present.
+        """
+        if not text or _HUMAN_ONLY_SHAPED.search(text):
+            return False
+        return bool(_INVESTIGATE_SHAPED.search(text))
+
+    def _feed_remediations_from_sweeps(self, reports: List[Dict[str, Any]]) -> int:
+        """Feed overnight sweep findings into investigation or the remediation queue.
+
+        Off unless ``remediation.queue_feed`` is set. Investigate-shaped
+        recommendations (check/verify/monitor/…) are dispatched as autonomous
+        investigations — the agent gathers evidence itself rather than parking
+        them as needs-human. Only genuinely human-shaped recs enqueue as
+        ``manual``. Deduped by finding id for the manual path.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_feed'):
             return 0
+        handled = 0
+        dispatched = 0
         enq = 0
         for rep in reports or []:
             for f in (rep.get('findings') or []):
@@ -1902,6 +1927,20 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     continue
                 key = f"sweep-{f.get('id') or rec[:80]}"
                 risk = self._SEVERITY_RISK.get(str(f.get('severity') or 'info'), 'high')
+                finding = str(f.get('finding') or '').strip()
+                title = finding or rec[:80]
+                if self._recommendation_is_investigate_shaped(rec):
+                    try:
+                        self.enqueue_investigation({
+                            'summary': f"{title}: {rec}"[:300],
+                            'source': 'sweep-investigate',
+                            'host': f.get('resource_name') or f.get('namespace') or '',
+                        })
+                        dispatched += 1
+                        handled += 1
+                    except Exception as e:
+                        logger.warning(f"could not dispatch sweep investigation for '{title}': {e}")
+                    continue
                 try:
                     rid = self.kb.queue_remediation(
                         remediation_class='manual',
@@ -1922,12 +1961,14 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     )
                     if rid:
                         enq += 1
+                        handled += 1
                         self._count_enqueued('morning-summary/sweep', 'manual', risk, None)
                 except Exception as e:
                     logger.error(f"sweep->remediation enqueue failed: {e}", exc_info=True)
-        if enq:
-            logger.info(f"Fed {enq} remediation(s) from sweep findings")
-        return enq
+        if handled:
+            logger.info(f"Fed {handled} sweep finding(s): "
+                        f"{dispatched} investigation(s), {enq} manual remediation(s)")
+        return handled
 
     def feed_remediations_from_recent_sweeps(self, limit: int = 10) -> int:
         """On-demand: enqueue remediations from the most recent sweep reports."""
@@ -1997,10 +2038,21 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # (cheap model, no enforced grounding), so route it the same way:
             # the deep tier verifies it and only a grounded finding becomes a
             # remediation — never a high-confidence host action straight from a
-            # summary hunch. Manual/other classes still queue (human-only).
-            if rclass == 'investigate' or rclass in _SUMMARY_MUTATION_CLASSES:
+            # summary hunch. Mislabelled 'manual' with investigate-shaped text
+            # (check/verify/monitor/…) is also dispatched — the cheap model
+            # often defaults to manual for "check CoreDNS" style items.
+            # Only genuinely human-only manuals still queue.
+            route_investigate = (
+                rclass == 'investigate'
+                or rclass in _SUMMARY_MUTATION_CLASSES
+                or (rclass == 'manual' and self._recommendation_is_investigate_shaped(rec))
+            )
+            if route_investigate:
                 try:
-                    suffix = '' if rclass == 'investigate' else f" [proposed: {rclass}]"
+                    # Preserve mutation-class proposals for the investigator;
+                    # investigate / mislabelled-manual get no suffix.
+                    suffix = (f" [proposed: {rclass}]"
+                              if rclass in _SUMMARY_MUTATION_CLASSES else '')
                     self.enqueue_investigation({'summary': f"{title}: {rec}{suffix}"[:300],
                                                 'source': 'summary-investigate',
                                                 'host': r.get('host')})
