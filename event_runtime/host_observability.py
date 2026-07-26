@@ -493,20 +493,42 @@ class PrometheusK3sProvider(HostObservabilityProvider):
             label_key="phase",
         )
 
-        # Container restarts (top offenders)
+        # Container restarts (top offenders). The raw metric is a lifetime
+        # counter, so also collect the 2h increase — without it triage cannot
+        # tell active crash-looping from counts accumulated across old node
+        # reboots, and flags stale totals as findings.
         restart_results = self._query(
             f'topk(10, sum(kube_pod_container_status_restarts_total{{{node_sel}}}) by (namespace, pod))'
         )
+        recent_results = self._query(
+            f'topk(10, sum(increase(kube_pod_container_status_restarts_total{{{node_sel}}}[2h])) by (namespace, pod))'
+        )
+        recent_by_pod: dict[tuple[str | None, str | None], int] = {}
+        for item in recent_results.get("data", {}).get("result", []):
+            metric = item.get("metric", {})
+            value = _float_or_none(str(item.get("value", [None, None])[1]))
+            if value is not None and value > 0:
+                recent_by_pod[(metric.get("namespace"), metric.get("pod"))] = int(round(value))
         restarts = []
         for item in restart_results.get("data", {}).get("result", []):
             metric = item.get("metric", {})
             value = _float_or_none(str(item.get("value", [None, None])[1]))
             if value is not None and value > 0:
+                key = (metric.get("namespace"), metric.get("pod"))
                 restarts.append({
-                    "namespace": metric.get("namespace"),
-                    "pod": metric.get("pod"),
+                    "namespace": key[0],
+                    "pod": key[1],
                     "restarts": int(value),
+                    "restarts_last_2h": recent_by_pod.pop(key, 0),
                 })
+        # Pods restarting now but outside the lifetime top-10 still matter.
+        for (namespace, pod), recent in recent_by_pod.items():
+            restarts.append({
+                "namespace": namespace,
+                "pod": pod,
+                "restarts": recent,
+                "restarts_last_2h": recent,
+            })
 
         # CPU usage (cAdvisor, summed per node)
         cpu_usage_cores = self._scalar(

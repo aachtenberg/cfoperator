@@ -31,7 +31,9 @@ SWEEP_PHASES = {
             "Check the health of all infrastructure hosts and services by examining metrics. "
             "Look at resource usage, scrape targets, pod/container health, and anything that looks off. "
             "Use k8s tools (k8s_get_pods, k8s_get_nodes, k8s_get_events) for Kubernetes workloads "
-            "and prometheus_query for host-level metrics."
+            "and prometheus_query for host-level metrics. "
+            "kube_pod_container_status_restarts_total is a lifetime counter — use increase(...[2h]) to judge restart activity; "
+            "a high raw counter with zero recent increase is normal, not a finding."
         ),
     },
     'logs': {
@@ -63,7 +65,10 @@ SWEEP_PHASES = {
             "and any Docker containers. Use k8s_get_pods, k8s_get_all_unhealthy, and k8s_get_events for k8s workloads across apps, monitoring, data, iot, ai, infrastructure, and kube-system, "
             "loki_query for workload logs, prometheus_query for resource usage, and ssh_list_services for bare-metal hosts. "
             "Do not rely only on current pod phase: recovered failures may appear only in recent Kubernetes warning events or Loki logs. "
-            "Check for BackOff, Unhealthy/readiness failures, restarts, CrashLoopBackOff history, and other issues."
+            "Check for BackOff, Unhealthy/readiness failures, restarts, CrashLoopBackOff history, and other issues. "
+            "Restart counts are cumulative over the pod's lifetime: only report restarts as an issue if they are RECENT "
+            "(lastState.terminated.finishedAt within the last ~2 hours) or ongoing (BackOff/CrashLoopBackOff right now). "
+            "High lifetime counts on long-running pods — accumulated across past node reboots or power events — are normal and are NOT findings."
         ),
     },
 }
