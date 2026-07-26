@@ -544,6 +544,15 @@ def test_k3s_provider_discovers_nodes_and_collects_metrics():
                 ]
             },
         },
+        'topk(10, sum(increase(kube_pod_container_status_restarts_total{node="raspberrypi"}[2h])) by (namespace, pod))': {
+            "status": "success",
+            "data": {
+                "result": [
+                    {"metric": {"namespace": "apps", "pod": "api-7b4f9"}, "value": [1712448000, "2.03"]},
+                    {"metric": {"namespace": "iot", "pod": "sensor-hub-0"}, "value": [1712448000, "3.0"]},
+                ]
+            },
+        },
         'sum(rate(container_cpu_usage_seconds_total{node="raspberrypi",container!=""}[5m]))': {
             "status": "success",
             "data": {"result": [{"value": [1712448000, "0.45"]}]},
@@ -600,6 +609,10 @@ def test_k3s_provider_discovers_nodes_and_collects_metrics():
         assert stats["pods"]["by_phase"]["Running"] == 7
         assert stats["restarts"][0]["pod"] == "api-7b4f9"
         assert stats["restarts"][0]["restarts"] == 12
+        assert stats["restarts"][0]["restarts_last_2h"] == 2
+        # sensor-hub-0 restarts recently but is outside the lifetime top-10 —
+        # it must still appear, marked as fully recent
+        assert {"namespace": "iot", "pod": "sensor-hub-0", "restarts": 3, "restarts_last_2h": 3} in stats["restarts"]
         assert stats["resources"]["cpu"]["usage_cores"] == 0.45
         assert stats["resources"]["cpu"]["allocatable_cores"] == 4.0
         assert stats["resources"]["cpu"]["utilization_percent"] == 11.25
