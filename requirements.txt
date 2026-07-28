@@ -32,5 +32,6 @@ numpy>=1.26.0
 # LangGraph (parallel sweep orchestration)
 langgraph>=0.2.0
 
-# MCP (Model Context Protocol) server
-mcp>=0.9.0
+# MCP (Model Context Protocol) server — mcp_server/ codes against the 1.x FastMCP API
+mcp>=1.27,<2
+httpx>=0.28
