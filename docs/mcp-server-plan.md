@@ -4,11 +4,14 @@ Reusable MCP surface for CFOperator so any agent host (Cursor, Claude Desktop,
 custom Slack bots, CLI, CI) can investigate the fleet, triage alerts, and work
 remediations — without baking Cursor or Slack into the core.
 
-_Status: phase 1 **code** shipped in-repo (`mcp_server/` MVP — see
-[mcp-server.md](mcp-server.md)). Verified 2026-07-28 against live agent routes
-+ `pytest mcp_server/tests` (22 passed). Phase 1 **ops** still open
-(NetworkPolicy / deploy manifests live in the private deploy repo). Phase 2+
-not started. See [Verification](#verification-against-implementation)._
+_Status: phase 1 **code + deploy** live. Code shipped in PR #81 (image
+`main-d5459cd`); sibling `cfoperator-mcp` Deployment running in-cluster
+(cfoperator-deploy, `investigate` scope, amd64-pinned). In-cluster e2e
+verified 2026-07-29 via pod exec: 401 without token, MCP initialize +
+`list_investigations` tool call with token. Remaining phase-1 ops: the
+`:8083` NetworkPolicy (homelab-infra) — `remediate` scope stays withheld
+until it lands. Phase 2+ not started. See
+[Verification](#verification-against-implementation)._
 
 ## Goals
 
@@ -305,15 +308,19 @@ conversational threads only.
 5. [x] Support `stdio` and `streamable-http` transports.
 6. [x] Unit tests with mocked upstream (`mcp_server/tests`, 22 passed);
    smoke script `scripts/mcp_smoke.py`.
-7. [ ] Sibling Deployment + Service in private deploy repo (not in this tree).
+7. [x] Sibling Deployment + Service in cfoperator-deploy (`cfoperator-mcp.yml`,
+   2026-07-29): ClusterIP :8090, `investigate` scope, token Secret created
+   out-of-band, amd64 nodeSelector (image is amd64-only).
 8. [ ] NetworkPolicy (or shared-secret) closing the `:8083` bypass before any
    token leaves the cluster.
 9. [x] Docs: [mcp-server.md](mcp-server.md) (Cursor team MCP + Claude Desktop
    + raw HTTP).
 
 **Exit criteria (code):** A non-Cursor MCP client can triage an alert and list
-remediations end-to-end — met by unit tests + smoke script shape.
-**Exit criteria (ops):** NetworkPolicy + deploy manifests — **not met**.
+remediations end-to-end — met by unit tests + smoke script shape, and by
+in-cluster e2e (curl-as-MCP-client) 2026-07-29.
+**Exit criteria (ops):** deploy manifests **met** (cfoperator-deploy);
+NetworkPolicy **not met** — `remediate` scope withheld until it lands.
 
 ### Phase 2 — Prompts, KB, LocalCfop bridge
 
@@ -424,7 +431,7 @@ _Checked 2026-07-28 against `mcp_server/`, `web_server.py`, `event_runtime/`,
 
 | Item | Plan expectation | Reality |
 |------|------------------|---------|
-| Phase 1 ops | NetworkPolicy + sibling Deployment | **Not in this repo** — still required before any external token |
+| Phase 1 ops | NetworkPolicy + sibling Deployment | Deployment live (cfoperator-deploy, 2026-07-29); **NetworkPolicy still required** before any external token |
 | `idempotency_key` | Upstream dedup in `enqueue_investigation` | MCP forwards key; `agent.enqueue_investigation` enqueues unconditionally |
 | `search_knowledge` | Phase 2 | No tool; no `GET /api/kb/search` on agent |
 | `cfop://digest/morning` | Phase 2 | No resource; morning summary is generate/notify, not a stable GET |
