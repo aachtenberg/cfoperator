@@ -174,6 +174,39 @@ def test_empty_prompt_gets_usage_message():
     assert "Ask me something" in web.posts[0]["text"]
 
 
+def test_consecutive_turns_share_one_event_loop():
+    """Regression: asyncio.run() per turn closed the loop the shared httpx
+    client had bound its pool to — turn 1 worked, turn 2 raised
+    'Event loop is closed'. Drive two turns through the SAME bridge with a
+    real CfopClient over a mock transport."""
+    import httpx
+
+    from mcp_server.client import CfopClient
+    from mcp_server.config import Settings
+
+    def handler(request):
+        if request.url.path == "/api/chat":
+            return httpx.Response(200, json={"chat_id": "c9"})
+        return httpx.Response(200, json={
+            "events": [{"event": "done", "data": {"response": "pong"}}],
+            "cursor": 1, "done": True,
+        })
+
+    client = CfopClient(Settings(chat_poll_interval=0.01),
+                        transport=httpx.MockTransport(handler))
+    rt = LocalCfopRuntime(client)
+    web = FakeWeb()
+    b = make_bridge(runtime=rt, web=web)
+
+    b.process_event({"type": "app_mention", "channel": "C1", "ts": "1.1",
+                     "text": "<@U1> ping one"})
+    b.process_event({"type": "app_mention", "channel": "C1", "ts": "2.1",
+                     "text": "<@U1> ping two"})
+
+    texts = [p["text"] for p in web.posts]
+    assert texts == ["pong", "pong"], f"second turn failed: {texts}"
+
+
 # --- chunking ---
 
 def test_chunk_text_respects_limit_and_reassembles():
