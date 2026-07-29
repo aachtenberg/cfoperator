@@ -27,7 +27,8 @@ def register(mcp, client, settings):
             summary, description, severity, labels, alert_id,
             extra={"idempotency_key": idempotency_key} if idempotency_key else None)
         return await guarded(
-            settings, "investigate", lambda: client.start_investigation(alert))
+            settings, "investigate", lambda: client.start_investigation(alert),
+            tool="start_investigation")
 
     @mcp.tool()
     async def get_investigation(investigation_id: int) -> dict:
@@ -36,7 +37,8 @@ def register(mcp, client, settings):
         Requires scope: read.
         """
         return await guarded(
-            settings, "read", lambda: client.get_investigation(investigation_id))
+            settings, "read", lambda: client.get_investigation(investigation_id),
+            tool="get_investigation")
 
     @mcp.tool()
     async def list_investigations(limit: int = 20) -> dict:
@@ -45,4 +47,5 @@ def register(mcp, client, settings):
         Requires scope: read.
         """
         return await guarded(
-            settings, "read", lambda: client.list_investigations(limit=limit))
+            settings, "read", lambda: client.list_investigations(limit=limit),
+            tool="list_investigations")

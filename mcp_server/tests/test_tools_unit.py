@@ -263,6 +263,22 @@ def test_prompts_registered_from_skills_dir():
     assert "apps/foo" in rendered.messages[0].content.text
 
 
+# --- audit logging ---
+
+def test_tool_calls_emit_audit_lines(caplog):
+    server, stub = make(scopes={"read"})
+    with caplog.at_level("INFO", logger="mcp_server.audit"):
+        call(server, "list_investigations", {"limit": 1})   # ok
+        call(server, "triage_alert", {"summary": "x"})      # unauthorized
+    lines = [json.loads(r.message) for r in caplog.records
+             if r.name == "mcp_server.audit"]
+    assert [(l["tool"], l["outcome"]) for l in lines] == [
+        ("list_investigations", "ok"),
+        ("triage_alert", "unauthorized"),
+    ]
+    assert all("ms" in l and l["scope"] for l in lines)
+
+
 # --- bearer middleware (raw ASGI) ---
 
 def _asgi_probe(auth_header=None):

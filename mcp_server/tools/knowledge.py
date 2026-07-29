@@ -16,4 +16,5 @@ def register(mcp, client, settings):
         Requires scope: read.
         """
         return await guarded(
-            settings, "read", lambda: client.search_knowledge(query, limit=limit))
+            settings, "read", lambda: client.search_knowledge(query, limit=limit),
+            tool="search_knowledge")

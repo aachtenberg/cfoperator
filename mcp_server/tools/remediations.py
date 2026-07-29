@@ -15,7 +15,8 @@ def register(mcp, client, settings):
         """
         return await guarded(
             settings, "read",
-            lambda: client.list_remediations(status=status, limit=limit))
+            lambda: client.list_remediations(status=status, limit=limit),
+            tool="list_remediations")
 
     @mcp.tool()
     async def get_remediation(remediation_id: int) -> dict:
@@ -24,7 +25,8 @@ def register(mcp, client, settings):
         Requires scope: read.
         """
         return await guarded(
-            settings, "read", lambda: client.get_remediation(remediation_id))
+            settings, "read", lambda: client.get_remediation(remediation_id),
+            tool="get_remediation")
 
     @mcp.tool()
     async def approve_remediation(remediation_id: int) -> dict:
@@ -34,7 +36,8 @@ def register(mcp, client, settings):
         """
         return await guarded(
             settings, "remediate",
-            lambda: client.approve_remediation(remediation_id))
+            lambda: client.approve_remediation(remediation_id),
+            tool="approve_remediation")
 
     @mcp.tool()
     async def reject_remediation(remediation_id: int, note: str | None = None) -> dict:
@@ -44,4 +47,5 @@ def register(mcp, client, settings):
         """
         return await guarded(
             settings, "remediate",
-            lambda: client.reject_remediation(remediation_id, note=note))
+            lambda: client.reject_remediation(remediation_id, note=note),
+            tool="reject_remediation")

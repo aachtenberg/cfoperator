@@ -23,15 +23,19 @@ def main():
         print(f"cfoperator-bridge: {e}", file=sys.stderr)
         return 2
 
-    client = CfopClient(Settings(
-        agent_url=settings.agent_url,
-        chat_timeout=settings.chat_timeout,
-    ))
-    runtime = LocalCfopRuntime(
-        client,
-        chat_timeout=settings.chat_timeout,
-        max_history_turns=settings.max_history_turns,
-    )
+    if settings.runtime == "anthropic":
+        from bridge.runtimes.anthropic import AnthropicRuntime
+        runtime = AnthropicRuntime(settings)
+    else:
+        client = CfopClient(Settings(
+            agent_url=settings.agent_url,
+            chat_timeout=settings.chat_timeout,
+        ))
+        runtime = LocalCfopRuntime(
+            client,
+            chat_timeout=settings.chat_timeout,
+            max_history_turns=settings.max_history_turns,
+        )
     SlackBridge(settings, runtime).run()
     return 0
 

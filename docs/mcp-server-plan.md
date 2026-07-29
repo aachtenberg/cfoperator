@@ -11,11 +11,14 @@ verified 2026-07-29 via pod exec: 401 without token, MCP initialize +
 `list_investigations` tool call with token. Phase-1 ops complete 2026-07-29:
 `:8083` bypass closed via host iptables guard (homelab-infra PR #67 —
 NetworkPolicy was unenforceable for the hostNetwork agent). `remediate`
-scope now safe to grant within trusted networks. Phase 2 **code complete**
-(prompts from all 8 skills, `search_knowledge` + `/api/kb/search`,
-`cfop://digest/morning`, upstream idempotent enqueue, Slack `bridge/` with
-`LocalCfopRuntime`) — bridge awaits Slack app tokens for live verification.
-See [Verification](#verification-against-implementation)._
+scope now safe to grant within trusted networks. Phase 2 **live and
+Slack-verified** 2026-07-29 (prompts, KB search, digest, idempotent enqueue,
+bridge answering DMs/mentions on `LocalCfopRuntime`). Phase 3 **core done**
+2026-07-29: `AnthropicRuntime` (Claude over cfoperator-mcp's own tools,
+runtime-switchable via config) + tool-call audit log; `CursorRuntime`
+deferred on the MCP-exposure decision, fleet tools deferred per their own
+"if needed" condition. See
+[Verification](#verification-against-implementation)._
 
 ## Goals
 
@@ -363,13 +366,30 @@ for live verification.
 
 ### Phase 3 — Multi-runtime + fleet wrappers
 
-1. `CursorRuntime` (SDK or Cloud Agents API).
-2. Optional `AnthropicRuntime`.
-3. Read-only fleet tools if hosts need them.
-4. Capability-tier enforcement hardened + audit log of tool calls.
+1. [ ] `CursorRuntime` — **deferred pending two operator decisions**: Cursor
+   cloud VMs need the MCP server publicly reachable (CF Tunnel exposure) and
+   a Cursor API key. Writing speculative code against a fast-moving external
+   API with no way to test it is worse than the one-file gap; the
+   `AgentRuntime` seam is ready when the decision lands.
+2. [x] `AnthropicRuntime` (2026-07-29): Claude (`claude-opus-5` default,
+   `CFOP_BRIDGE_ANTHROPIC_MODEL` to override) drives an agentic tool loop
+   over cfoperator-mcp's own tools via MCP streamable HTTP — the bridge
+   consumes the same MCP server as every other host. Adaptive thinking,
+   server-side refusal fallbacks, per-thread text history. Switch with
+   `CFOP_BRIDGE_RUNTIME=anthropic` (+ `CFOP_MCP_TOKEN`, `ANTHROPIC_API_KEY`).
+3. [ ] Read-only fleet tools — deferred per the plan's own condition ("if
+   hosts need them"): no host has needed a deterministic tool graph yet;
+   `ask_sre` covers the need.
+4. [x] Audit log (2026-07-29): every MCP tool call emits one structured
+   JSON line (tool, scope, outcome, duration) → stderr → journald → Loki.
+   Per-token scope sets stay deferred: single-token-per-process holds, and
+   the clean hardening path is one Deployment per capability tier (e.g. a
+   `cfoperator-mcp-admin` with `remediate` scope + its own Secret) rather
+   than fragile per-request scope plumbing through the MCP session layer.
 
-**Exit criteria:** Same Slack app can switch runtimes via config; Cursor path uses
-the same MCP as LocalCfop.
+**Exit criteria:** Same Slack app can switch runtimes via config — **met**
+(`local` ↔ `anthropic`); Cursor path uses the same MCP as LocalCfop —
+pending the exposure decision above.
 
 ### Phase 4 — Prod hardening
 
