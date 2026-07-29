@@ -63,10 +63,11 @@ header `Authorization: Bearer <CFOP_MCP_TOKEN>`. For Cursor Cloud
 Agents/Slack-triggered agents register it in Dashboard → Integrations & MCP —
 a repo `.cursor/mcp.json` alone does not reach cloud agents.
 
-## Deployment sketch (sibling Deployment)
+## Deployment (sibling Deployment — live since 2026-07-29)
 
-Same image as the agent, different command — manifests live in the private
-deploy repo per the usual GitOps path:
+Deployed as `cfoperator-mcp` in the `apps` namespace (cfoperator-deploy repo,
+ClusterIP `cfoperator-mcp.apps.svc.cluster.local:8090`, amd64-pinned since the
+image is amd64-only). Shape:
 
 ```yaml
 containers:
