@@ -29,6 +29,16 @@ class SlackBridge:
         self._seen_events = OrderedDict()  # event_id -> None, LRU
         self._known_threads = set()
         self._threads_lock = threading.Lock()
+        # ONE persistent event loop for every runtime call. asyncio.run() per
+        # turn would close its loop on return, stranding the shared httpx
+        # client's pooled connections — turn 1 works, turn 2 dies with
+        # "Event loop is closed".
+        self._loop = asyncio.new_event_loop()
+        threading.Thread(target=self._loop.run_forever, daemon=True,
+                         name="bridge-async-loop").start()
+
+    def _run_async(self, coro):
+        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
 
     # --- event filtering ---
 
@@ -75,10 +85,10 @@ class SlackBridge:
         self._react(channel, event.get("ts"), "eyes")
         try:
             if is_new:
-                reply = asyncio.run(
+                reply = self._run_async(
                     self._runtime.start(prompt, thread_id=thread_ts))
             else:
-                reply = asyncio.run(
+                reply = self._run_async(
                     self._runtime.follow_up(thread_ts, prompt))
         except Exception as e:
             logger.error("turn failed in thread %s: %s", thread_ts, e, exc_info=True)
