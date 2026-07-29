@@ -6,9 +6,11 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_server.auth import BearerAuthMiddleware
 from mcp_server.client import CfopClient
+from mcp_server.prompts import playbooks
+from mcp_server.resources import digests as digest_resources
 from mcp_server.resources import investigations as investigation_resources
 from mcp_server.resources import remediations as remediation_resources
-from mcp_server.tools import chat, investigate, remediations, triage
+from mcp_server.tools import chat, investigate, knowledge, remediations, triage
 
 logger = logging.getLogger(__name__)
 
@@ -25,10 +27,12 @@ def build_server(settings, client=None):
     server = FastMCP("cfoperator", instructions=INSTRUCTIONS,
                      host=settings.host, port=settings.port)
     client = client or CfopClient(settings)
-    for module in (triage, investigate, chat, remediations):
+    for module in (triage, investigate, chat, knowledge, remediations):
         module.register(server, client, settings)
     investigation_resources.register(server, client, settings)
     remediation_resources.register(server, client, settings)
+    digest_resources.register(server, client, settings)
+    playbooks.register(server, client, settings)
     return server
 
 

@@ -3,7 +3,12 @@
 All methods raise UpstreamError with the plan's structured error vocabulary
 (upstream_unavailable / unauthorized / not_found / conflict / validation) so
 tools can surface host-neutral failures without leaking transport details.
+
+run_chat() is the shared start-poll-collect orchestration used by both the
+ask_sre MCP tool and the Slack bridge's LocalCfopRuntime.
 """
+
+import asyncio
 
 import httpx
 
@@ -31,6 +36,7 @@ class UpstreamError(Exception):
 
 class CfopClient:
     def __init__(self, settings, transport=None):
+        self._settings = settings
         self._http = httpx.AsyncClient(
             base_url=settings.agent_url,
             timeout=settings.request_timeout,
@@ -81,10 +87,22 @@ class CfopClient:
     async def get_investigation(self, investigation_id):
         return await self._request("GET", f"/api/investigations/{investigation_id}")
 
+    # --- knowledge / digests ---
+
+    async def search_knowledge(self, query, limit=5):
+        return await self._request("GET", "/api/kb/search",
+                                   params={"q": query, "limit": limit})
+
+    async def list_sweep_reports(self, limit=20):
+        return await self._request("GET", "/api/sweep-reports",
+                                   params={"limit": limit})
+
     # --- chat ---
 
-    async def start_chat(self, message, backend="auto", model=None):
+    async def start_chat(self, message, history=None, backend="auto", model=None):
         body = {"message": message, "backend": backend}
+        if history:
+            body["history"] = history
         if model:
             body["model"] = model
         return await self._request("POST", "/api/chat", json=body)
@@ -95,6 +113,58 @@ class CfopClient:
 
     async def stop_chat(self, chat_id):
         return await self._request("POST", f"/api/chat/{chat_id}/stop")
+
+    async def run_chat(self, message, history=None, timeout=None, poll_interval=None):
+        """Start a chat, poll events until done, return the final reply.
+
+        Returns {chat_id, response, tool_calls}. On deadline the chat is
+        stopped server-side (best-effort) and a retryable UpstreamError is
+        raised so the agent doesn't keep burning LLM cycles for a caller
+        that gave up.
+        """
+        loop = asyncio.get_running_loop()
+        timeout = timeout or self._settings.chat_timeout
+        poll_interval = poll_interval or self._settings.chat_poll_interval
+        deadline = loop.time() + timeout
+
+        started = await self.start_chat(message, history=history)
+        chat_id = started.get("chat_id")
+        if not chat_id:
+            raise UpstreamError(
+                "upstream_unavailable", "agent returned no chat_id", retryable=True)
+
+        cursor = 0
+        tool_calls = 0
+        response = ""
+        while True:
+            batch = await self.chat_events(chat_id, cursor=cursor)
+            cursor = batch.get("cursor", cursor)
+            for evt in batch.get("events", []):
+                kind = evt.get("event")
+                data = evt.get("data") or {}
+                if kind == "tool_call":
+                    tool_calls += 1
+                elif kind == "done":
+                    response = data.get("response") or ""
+                elif kind == "error":
+                    raise UpstreamError(
+                        "upstream_unavailable",
+                        f"agent chat failed: {data.get('error', 'unknown error')}",
+                        retryable=True)
+            if batch.get("done"):
+                break
+            if loop.time() >= deadline:
+                try:
+                    await self.stop_chat(chat_id)
+                except UpstreamError:
+                    pass
+                raise UpstreamError(
+                    "upstream_unavailable",
+                    f"chat {chat_id} still running after {timeout:.0f}s; stopped it",
+                    retryable=True)
+            await asyncio.sleep(poll_interval)
+
+        return {"chat_id": chat_id, "response": response, "tool_calls": tool_calls}
 
     # --- remediations ---
 

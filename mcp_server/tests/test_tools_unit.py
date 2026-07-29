@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from mcp_server.client import UpstreamError
+from mcp_server.client import CfopClient, UpstreamError
 from mcp_server.config import Settings, expand_scopes
 from mcp_server.server import build_server
 
@@ -14,9 +14,17 @@ ALL_SCOPES = frozenset({"read", "investigate", "remediate"})
 
 
 class StubClient:
-    """Records calls; per-method results seeded by tests."""
+    """Records calls; per-method results seeded by tests.
 
-    def __init__(self):
+    run_chat is the REAL CfopClient poll loop running over the stubbed
+    start_chat/chat_events/stop_chat, so ask_sre tests exercise actual
+    polling/timeout behavior.
+    """
+
+    run_chat = CfopClient.run_chat
+
+    def __init__(self, settings=None):
+        self._settings = settings or Settings()
         self.calls = []
         self.chat_event_batches = []
 
@@ -36,9 +44,23 @@ class StubClient:
         self.calls.append(("get_investigation", investigation_id))
         return {"id": investigation_id}
 
-    async def start_chat(self, message, backend="auto", model=None):
+    async def start_chat(self, message, history=None, backend="auto", model=None):
         self.calls.append(("start_chat", message))
         return {"chat_id": "abc123"}
+
+    async def search_knowledge(self, query, limit=5):
+        self.calls.append(("search_knowledge", query, limit))
+        return {"query": query, "mode": "fts", "results": [{"title": "t"}], "count": 1}
+
+    async def list_sweep_reports(self, limit=20):
+        self.calls.append(("list_sweep_reports", limit))
+        return {"reports": [
+            {"swept_at": "2026-07-29T12:00:00", "summary": "Sweep",
+             "sweep_meta": {"type": "scheduled"}, "findings": []},
+            {"swept_at": "2026-07-29T11:00:00", "summary": "Morning summary - 2026-07-29",
+             "sweep_meta": {"type": "morning_summary", "full_text": "all quiet on the fleet"},
+             "findings": [{"finding": "all quiet"}]},
+        ]}
 
     async def chat_events(self, chat_id, cursor=0):
         self.calls.append(("chat_events", chat_id, cursor))
@@ -77,8 +99,8 @@ def call(server, tool, args):
 
 
 def make(scopes=ALL_SCOPES, **settings_kwargs):
-    stub = StubClient()
     settings = Settings(scopes=frozenset(scopes), **settings_kwargs)
+    stub = StubClient(settings)
     return build_server(settings, client=stub), stub
 
 
@@ -212,6 +234,33 @@ def test_investigation_detail_resource():
     contents = asyncio.run(server.read_resource("cfop://investigations/17"))
     assert json.loads(contents[0].content) == {"id": 17}
     assert ("get_investigation", 17) in stub.calls
+
+
+# --- phase 2: knowledge, digest, prompts ---
+
+def test_search_knowledge_is_read_scoped():
+    server, stub = make(scopes={"read"})
+    out = call(server, "search_knowledge", {"query": "etcd timeout"})
+    assert out["count"] == 1
+    assert ("search_knowledge", "etcd timeout", 5) in stub.calls
+
+
+def test_morning_digest_resource_picks_morning_summary_full_text():
+    server, stub = make()
+    contents = asyncio.run(server.read_resource("cfop://digest/morning"))
+    payload = json.loads(contents[0].content)
+    assert payload["text"] == "all quiet on the fleet"
+    assert payload["summary"].startswith("Morning summary")
+
+
+def test_prompts_registered_from_skills_dir():
+    server, _ = make()
+    prompts = asyncio.run(server.list_prompts())
+    names = {p.name for p in prompts}
+    assert "investigate-pod" in names and "why-restart" in names
+    rendered = asyncio.run(server.get_prompt(
+        "investigate-pod", {"target": "apps/foo"}))
+    assert "apps/foo" in rendered.messages[0].content.text
 
 
 # --- bearer middleware (raw ASGI) ---

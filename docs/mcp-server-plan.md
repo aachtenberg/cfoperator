@@ -11,8 +11,11 @@ verified 2026-07-29 via pod exec: 401 without token, MCP initialize +
 `list_investigations` tool call with token. Phase-1 ops complete 2026-07-29:
 `:8083` bypass closed via host iptables guard (homelab-infra PR #67 —
 NetworkPolicy was unenforceable for the hostNetwork agent). `remediate`
-scope now safe to grant within trusted networks. Phase 2+ not started. See
-[Verification](#verification-against-implementation)._
+scope now safe to grant within trusted networks. Phase 2 **code complete**
+(prompts from all 8 skills, `search_knowledge` + `/api/kb/search`,
+`cfop://digest/morning`, upstream idempotent enqueue, Slack `bridge/` with
+`LocalCfopRuntime`) — bridge awaits Slack app tokens for live verification.
+See [Verification](#verification-against-implementation)._
 
 ## Goals
 
@@ -127,12 +130,12 @@ bridge/                      # optional second process — phase 2+
 | `get_remediation` | `GET /api/remediations/<id>` | `read` | yes (added in MVP; not in original draft table) |
 | `approve_remediation` | `POST .../approve` | `remediate` | yes |
 | `reject_remediation` | `POST .../reject` | `remediate` | yes |
-| `search_knowledge` | new thin agent route (`GET /api/kb/search`) — phase 2 | `read` | no |
+| `search_knowledge` | `GET /api/kb/search` (added in phase 2) | `read` | yes |
 
-`search_knowledge` has **no upstream endpoint today** — `agent/knowledge_base.py`
-is internal-only. Per design rule 1 the MCP server must not import it (that
-would drag DB/embedding deps into the facade); a thin `GET /api/kb/search`
-agent route is a phase-2 prerequisite.
+`GET /api/kb/search` exists as of phase 2 — a thin agent route so the MCP
+server never imports `knowledge_base.py` (design rule 1: no DB/embedding
+deps in the facade). Hybrid vector+FTS when embeddings are up, FTS-only
+otherwise, mirroring the OODA loop's own fallback.
 
 ### Tools (phase 2 — optional fleet wrappers)
 
@@ -151,7 +154,7 @@ Mutating fleet ops (`ssh_exec`, force delete) stay out of MCP unless a dedicated
 | `cfop://investigations/recent` | Recent investigation summaries (JSON) | `GET /api/investigations` | yes |
 | `cfop://investigations/{id}` | Single investigation detail | `GET /api/investigations/<id>` | yes |
 | `cfop://remediations/open` | Open remediation proposals / PRs | `GET /api/remediations` (filter closed) | yes |
-| `cfop://digest/morning` | Latest morning / noise digest | **no stable GET today** — deferred | no |
+| `cfop://digest/morning` | Latest morning / noise digest | `GET /api/sweep-reports` (summary stored as sweep report; `full_text` in sweep_meta since phase 2) | yes |
 | `cfop://alerts/{id}` | Alert + triage outcome if known | `GET /history?alert_id=` on event_runtime | no (client field unused) |
 
 ### Prompts
@@ -335,16 +338,28 @@ complete.
 
 ### Phase 2 — Prompts, KB, LocalCfop bridge
 
-1. MCP prompts from `skills/*/SKILL.md`.
-2. New thin agent route `GET /api/kb/search`; `search_knowledge` wired to it.
-3. `bridge/` with Slack Socket Mode + `LocalCfopRuntime` only.
-4. Idempotency: dedup added upstream in `enqueue_investigation`
-   (`/v1/investigate` honors `idempotency_key` / `alert_id`); MCP forwards
-   the key, keeps no state.
-5. `cfop://digest/morning` route in event_runtime + resource wired.
+1. [x] MCP prompts from `skills/*/SKILL.md` (all 8 skills; optional `target`
+   argument; `CFOP_SKILLS_DIR` config).
+2. [x] New thin agent route `GET /api/kb/search` (hybrid vector+FTS with the
+   OODA loop's fallback ladder); `search_knowledge` tool wired, `read` scope.
+3. [x] `bridge/` with Slack Socket Mode + `LocalCfopRuntime` only
+   (see [slack-bridge.md](slack-bridge.md)); `AgentRuntime` protocol kept
+   pluggable for phase-3 Cursor/Anthropic runtimes.
+4. [x] Idempotency: dedup upstream in `enqueue_investigation` — TTL window
+   (`ooda.investigation_dedup_ttl_seconds`, default 1h) keyed on
+   `idempotency_key` (preferred) or `alert_id`; repeats return
+   `status='deduped'`. In-memory by design: restart clears the window, which
+   risks only a duplicate investigation, never a lost one. MCP forwards the
+   key, keeps no state.
+5. [x] `cfop://digest/morning` — served from the agent's existing
+   `/api/sweep-reports` (morning summary is stored as a sweep report; the
+   agent now also stores `full_text` in sweep_meta so the resource isn't
+   limited to the 500-char findings truncation). No event_runtime route
+   needed after all.
 
 **Exit criteria:** Slack message → local CFOperator answer/investigation → thread
-reply, with zero Cursor dependency.
+reply, with zero Cursor dependency. Code complete; awaiting Slack app tokens
+for live verification.
 
 ### Phase 3 — Multi-runtime + fleet wrappers
 
@@ -444,11 +459,11 @@ _Checked 2026-07-28 against `mcp_server/`, `web_server.py`, `event_runtime/`,
 | Item | Plan expectation | Reality |
 |------|------------------|---------|
 | Phase 1 ops | NetworkPolicy + sibling Deployment | **Complete** — Deployment live (cfoperator-deploy) + `:8083` host guard (homelab-infra #67; netpol unenforceable for hostNetwork) |
-| `idempotency_key` | Upstream dedup in `enqueue_investigation` | MCP forwards key; `agent.enqueue_investigation` enqueues unconditionally |
-| `search_knowledge` | Phase 2 | No tool; no `GET /api/kb/search` on agent |
-| `cfop://digest/morning` | Phase 2 | No resource; morning summary is generate/notify, not a stable GET |
+| `idempotency_key` | Upstream dedup in `enqueue_investigation` | Done (phase 2): TTL dedup on idempotency_key/alert_id, queue-full releases the claim |
+| `search_knowledge` | Phase 2 | Done (phase 2): `GET /api/kb/search` + tool, `read` scope |
+| `cfop://digest/morning` | Phase 2 | Done (phase 2): resource reads `/api/sweep-reports`, agent stores full_text |
 | `cfop://alerts/{id}` | Deferred | Upstream exists (`GET /history?alert_id=`); MCP unused `event_runtime_url` |
-| MCP prompts | Phase 2 from `skills/*/SKILL.md` | No `mcp_server/prompts/`; 8 skills present on disk |
+| MCP prompts | Phase 2 from `skills/*/SKILL.md` | Done (phase 2): all 8 skills registered, optional `target` argument |
 | Resource scope gating | `read` for resources | Resources skip `require_scope` |
 | Metrics / rate limits / readiness | Phase 4 | None |
 | ROADMAP row | Still “design” wording | Should point at shipped MVP + ops gap |

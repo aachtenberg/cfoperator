@@ -32,6 +32,9 @@ def _operator(*, queue_size: int = 4, reactive_poll: bool = True) -> CFOperator:
     op._investigation_worker_thread = None
     op._investigation_lock = _t.Lock()
     op._reactive_poll_enabled = reactive_poll
+    op._enqueue_dedup_ttl = 3600.0
+    op._enqueue_dedup_keys = {}
+    op._enqueue_dedup_lock = _t.Lock()
     op.current_investigation = None
     return op
 
@@ -66,6 +69,59 @@ def test_enqueue_raises_queue_full_when_capacity_exhausted():
     op.enqueue_investigation(_alert(alert_id='b'))
     with pytest.raises(queue.Full):
         op.enqueue_investigation(_alert(alert_id='c'))
+
+
+# ---- idempotent enqueue (phase-2 MCP contract) ------------------------------
+
+
+def test_enqueue_dedupes_repeat_alert_id_within_ttl():
+    op = _operator()
+    first = op.enqueue_investigation(_alert(alert_id='aid-dup'))
+    second = op.enqueue_investigation(_alert(alert_id='aid-dup'))
+    assert first['status'] == 'queued'
+    assert second['status'] == 'deduped'
+    assert op._investigation_queue.qsize() == 1
+
+
+def test_enqueue_prefers_idempotency_key_over_alert_id():
+    op = _operator()
+    op.enqueue_investigation(_alert(alert_id='a1', idempotency_key='k1'))
+    # same key, different alert_id -> deduped
+    result = op.enqueue_investigation(_alert(alert_id='a2', idempotency_key='k1'))
+    assert result['status'] == 'deduped'
+    # different key -> enqueued
+    result = op.enqueue_investigation(_alert(alert_id='a2', idempotency_key='k2'))
+    assert result['status'] == 'queued'
+    assert op._investigation_queue.qsize() == 2
+
+
+def test_enqueue_dedup_expires_after_ttl():
+    op = _operator()
+    op._enqueue_dedup_ttl = 0.0  # everything expired immediately
+    op.enqueue_investigation(_alert(alert_id='aid-ttl'))
+    result = op.enqueue_investigation(_alert(alert_id='aid-ttl'))
+    assert result['status'] == 'queued'
+    assert op._investigation_queue.qsize() == 2
+
+
+def test_enqueue_without_any_key_never_dedupes():
+    op = _operator()
+    alert = _alert()
+    alert.pop('alert_id')
+    assert op.enqueue_investigation(dict(alert))['status'] == 'queued'
+    assert op.enqueue_investigation(dict(alert))['status'] == 'queued'
+    assert op._investigation_queue.qsize() == 2
+
+
+def test_queue_full_rejection_releases_dedup_claim():
+    op = _operator(queue_size=1)
+    op.enqueue_investigation(_alert(alert_id='first'))
+    with pytest.raises(queue.Full):
+        op.enqueue_investigation(_alert(alert_id='retry-me'))
+    # drain and retry: the rejected key must not read as 'deduped'
+    op._investigation_queue.get_nowait()
+    result = op.enqueue_investigation(_alert(alert_id='retry-me'))
+    assert result['status'] == 'queued'
 
 
 def _counter_value(counter) -> float:

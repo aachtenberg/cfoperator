@@ -873,6 +873,39 @@ class WebServer:
             """Operator console: recent investigations + conclusions."""
             return send_from_directory('ui', 'investigations.html')
 
+        @self.app.route('/api/kb/search')
+        def kb_search():
+            """Thin KB search for the MCP facade (search_knowledge tool).
+
+            Hybrid (vector + FTS) when the embedding service is up, FTS-only
+            otherwise — same fallback ladder the OODA loop uses. Kept as an
+            HTTP route so the MCP server never imports knowledge_base
+            (facade rule: no DB/embedding deps outside the agent).
+            """
+            q = (request.args.get('q') or '').strip()
+            if not q:
+                return jsonify({'error': 'query parameter q is required'}), 400
+            limit = min(request.args.get('limit', 5, type=int), 25)
+            try:
+                query_embedding = None
+                try:
+                    if self.operator.embeddings.is_available():
+                        query_embedding = self.operator.embeddings.generate_embedding(q)
+                except Exception:
+                    pass
+                if query_embedding:
+                    results = self.operator.kb._kb.find_learnings_hybrid(
+                        query_text=q, query_embedding=query_embedding, limit=limit)
+                    mode = 'hybrid'
+                else:
+                    results = self.operator.kb.find_learnings(query=q, limit=limit)
+                    mode = 'fts'
+                return jsonify({'query': q, 'mode': mode,
+                                'results': results, 'count': len(results)})
+            except Exception as e:
+                logger.error(f"KB search failed: {e}")
+                return jsonify({'error': str(e), 'results': []}), 500
+
         @self.app.route('/api/sweep-reports')
         def sweep_reports():
             """Get recent sweep reports."""
