@@ -88,9 +88,12 @@ containers:
     ports: [{ containerPort: 8090 }]
 ```
 
-**Before any token leaves the cluster:** apply the NetworkPolicy closing the
-`:8083` bypass (see plan, "The `:8083` bypass problem") — MCP scopes mean
-nothing while the agent port is open to the same network.
+**The `:8083` bypass is closed** (2026-07-29): a host iptables guard on
+headless-gpu (homelab-infra `ansible/deploy-cfoperator-8083-guard.yml`)
+restricts the agent port to cluster sources — a NetworkPolicy could not do
+this because the agent is a hostNetwork pod. Note: direct LAN browsing to
+`192.168.0.150:8083` no longer works; use `kubectl port-forward
+svc/cfoperator 8083:8083` or add your workstation to `guard_allowed_cidrs`.
 
 ## Error shape
 

@@ -8,9 +8,10 @@ _Status: phase 1 **code + deploy** live. Code shipped in PR #81 (image
 `main-d5459cd`); sibling `cfoperator-mcp` Deployment running in-cluster
 (cfoperator-deploy, `investigate` scope, amd64-pinned). In-cluster e2e
 verified 2026-07-29 via pod exec: 401 without token, MCP initialize +
-`list_investigations` tool call with token. Remaining phase-1 ops: the
-`:8083` NetworkPolicy (homelab-infra) — `remediate` scope stays withheld
-until it lands. Phase 2+ not started. See
+`list_investigations` tool call with token. Phase-1 ops complete 2026-07-29:
+`:8083` bypass closed via host iptables guard (homelab-infra PR #67 —
+NetworkPolicy was unenforceable for the hostNetwork agent). `remediate`
+scope now safe to grant within trusted networks. Phase 2+ not started. See
 [Verification](#verification-against-implementation)._
 
 ## Goals
@@ -209,19 +210,27 @@ Defaults:
 Network: MCP HTTP listener reachable only from trusted hosts / tunnel / mesh.
 Secrets stay on the MCP host; cloud agent VMs never receive kube/SSH creds.
 
-### The `:8083` bypass problem (phase 1, not phase 4)
+### The `:8083` bypass problem — CLOSED 2026-07-29
 
 The agent API itself is unauthenticated except the two executor-completion
 endpoints (X-CFOP-Token). MCP token scopes are only real if clients cannot
 reach `:8083` directly — otherwise anyone who can hit the MCP listener can
-bypass it and call `POST /api/remediations/<id>/approve` straight. Before any
-MCP client outside the cluster gets a token, one of:
+bypass it and call `POST /api/remediations/<id>/approve` straight.
 
-- **NetworkPolicy** restricting agent `:8083` ingress to the MCP pod plus
-  existing in-cluster callers (preferred — no agent code change), or
-- shared-secret auth on the mutating agent routes.
+The originally planned **NetworkPolicy turned out to be a no-op**: the agent
+runs `hostNetwork: true` and Kubernetes network policies do not apply to
+hostNetwork pods. The enforceable equivalent shipped instead: a host-level
+iptables guard on headless-gpu (homelab-infra PR #67,
+`ansible/deploy-cfoperator-8083-guard.yml`) — dedicated `CFOP-8083-GUARD`
+chain on `INPUT tcp/8083` allowing lo, the pod CIDR (10.42.0.0/16), node IPs,
+and the WireGuard backhaul (10.99.99.0/24); rate-limited LOG + tcp-reset
+REJECT for everything else. Boot-persistent systemd oneshot.
 
-Without this the `remediate` scope is theater.
+Verified 2026-07-29: docker-bridge (non-allowed) source rejected + logged;
+MCP e2e, executor completion path, and Prometheus scrape unaffected. Direct
+LAN browsing to `:8083` no longer works — use `kubectl port-forward` or add
+your workstation to `guard_allowed_cidrs`. `remediate` scope is now safe to
+grant to tokens that stay within trusted networks.
 
 ## Transports and config
 
@@ -311,16 +320,18 @@ conversational threads only.
 7. [x] Sibling Deployment + Service in cfoperator-deploy (`cfoperator-mcp.yml`,
    2026-07-29): ClusterIP :8090, `investigate` scope, token Secret created
    out-of-band, amd64 nodeSelector (image is amd64-only).
-8. [ ] NetworkPolicy (or shared-secret) closing the `:8083` bypass before any
-   token leaves the cluster.
+8. [x] `:8083` bypass closed (2026-07-29) — host iptables guard, not a
+   NetworkPolicy (unenforceable for hostNetwork pods): homelab-infra PR #67,
+   applied + verified. See "The `:8083` bypass problem".
 9. [x] Docs: [mcp-server.md](mcp-server.md) (Cursor team MCP + Claude Desktop
    + raw HTTP).
 
 **Exit criteria (code):** A non-Cursor MCP client can triage an alert and list
 remediations end-to-end — met by unit tests + smoke script shape, and by
 in-cluster e2e (curl-as-MCP-client) 2026-07-29.
-**Exit criteria (ops):** deploy manifests **met** (cfoperator-deploy);
-NetworkPolicy **not met** — `remediate` scope withheld until it lands.
+**Exit criteria (ops):** **met** (2026-07-29) — deploy manifests
+(cfoperator-deploy) + `:8083` host guard (homelab-infra PR #67). Phase 1
+complete.
 
 ### Phase 2 — Prompts, KB, LocalCfop bridge
 
@@ -358,7 +369,8 @@ the same MCP as LocalCfop.
 1. **Facade only** — no nested autonomous OODA inside `mcp_server`.
 2. **Host-neutral payloads** — no Cursor/Slack IDs in MCP results.
 3. **Scopes on tokens** — default deny for `remediate`; scopes count for
-   nothing until the `:8083` bypass is closed (NetworkPolicy or route auth).
+   nothing if the `:8083` bypass reopens (host iptables guard on
+   headless-gpu — a NetworkPolicy cannot enforce this for a hostNetwork pod).
 4. **Idempotent investigate** — `alert_id` / `idempotency_key` required for bridge
    callers.
 5. **Dual transport** — never ship HTTP-only or stdio-only as the only option.
@@ -431,7 +443,7 @@ _Checked 2026-07-28 against `mcp_server/`, `web_server.py`, `event_runtime/`,
 
 | Item | Plan expectation | Reality |
 |------|------------------|---------|
-| Phase 1 ops | NetworkPolicy + sibling Deployment | Deployment live (cfoperator-deploy, 2026-07-29); **NetworkPolicy still required** before any external token |
+| Phase 1 ops | NetworkPolicy + sibling Deployment | **Complete** — Deployment live (cfoperator-deploy) + `:8083` host guard (homelab-infra #67; netpol unenforceable for hostNetwork) |
 | `idempotency_key` | Upstream dedup in `enqueue_investigation` | MCP forwards key; `agent.enqueue_investigation` enqueues unconditionally |
 | `search_knowledge` | Phase 2 | No tool; no `GET /api/kb/search` on agent |
 | `cfop://digest/morning` | Phase 2 | No resource; morning summary is generate/notify, not a stable GET |
@@ -452,9 +464,9 @@ _Checked 2026-07-28 against `mcp_server/`, `web_server.py`, `event_runtime/`,
 
 ### Recommended next step
 
-1. **Ops close-out for phase 1:** NetworkPolicy locking `:8083` + sibling MCP
-   Deployment/Service in the deploy repo — scopes are theater until then.
-2. Then **phase 2 slice:** upstream `idempotency_key` dedup in
+1. ~~Ops close-out for phase 1~~ — **done 2026-07-29** (sibling Deployment in
+   cfoperator-deploy; `:8083` host guard via homelab-infra PR #67).
+2. **Phase 2 slice:** upstream `idempotency_key` dedup in
    `enqueue_investigation`, optional `cfop://alerts/{id}` via `/history`, MCP
    prompts from skills — still defer `bridge/` until a non-Cursor host has
    exercised the HTTP transport for real.
