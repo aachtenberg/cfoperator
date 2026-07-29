@@ -17,9 +17,10 @@ def register(mcp, client, settings):
         """Enqueue an asynchronous CFOperator investigation for an alert.
 
         Returns immediately with {status, alert_id, queue_depth}; poll
-        list_investigations / get_investigation for the outcome. The
-        idempotency_key is forwarded to the agent (upstream dedup lands in
-        phase 2 — until then retries may double-enqueue).
+        list_investigations / get_investigation for the outcome. Retries
+        carrying the same idempotency_key (or alert_id) within the agent's
+        dedup window (default 1h) return status='deduped' instead of
+        double-enqueuing.
         Requires scope: investigate.
         """
         alert = build_alert(

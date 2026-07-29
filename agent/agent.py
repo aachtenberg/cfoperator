@@ -275,6 +275,13 @@ class CFOperator:
         queue_size = max(1, int(ooda_cfg.get('investigation_queue_size', 32)))
         self._investigation_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=queue_size)
         self._investigation_worker_thread: Optional[threading.Thread] = None
+        # Idempotent enqueue: retries from Slack bridges / MCP hosts carrying
+        # the same idempotency_key (or alert_id) within the TTL are absorbed
+        # instead of double-enqueued. In-memory by design — a restart clearing
+        # the window only risks a duplicate investigation, never a lost one.
+        self._enqueue_dedup_ttl = float(ooda_cfg.get('investigation_dedup_ttl_seconds', 3600))
+        self._enqueue_dedup_keys: Dict[str, float] = {}
+        self._enqueue_dedup_lock = threading.Lock()
         # Serializes investigations across the reactive poll (main thread)
         # and the HTTP worker thread. Without this, both paths could race
         # on self.current_investigation and other non-thread-safe state.
@@ -919,11 +926,35 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         to HTTP 503 so the event_runtime worker retries with backoff. The
         rejection counter is incremented here so callers don't reach into
         module-level metrics.
+
+        Alerts carrying idempotency_key (preferred) or alert_id are deduped
+        within a TTL window: a repeat within the window returns
+        status='deduped' without enqueuing.
         """
+        dedup_key = alert.get('idempotency_key') or alert.get('alert_id')
+        if dedup_key:
+            now = time.time()
+            with self._enqueue_dedup_lock:
+                self._enqueue_dedup_keys = {
+                    k: t for k, t in self._enqueue_dedup_keys.items()
+                    if now - t < self._enqueue_dedup_ttl
+                }
+                if dedup_key in self._enqueue_dedup_keys:
+                    return {
+                        'status': 'deduped',
+                        'queue_depth': self._investigation_queue.qsize(),
+                        'alert_id': alert.get('alert_id'),
+                    }
+                self._enqueue_dedup_keys[str(dedup_key)] = now
         try:
             self._investigation_queue.put_nowait(alert)
         except queue.Full:
             INVESTIGATION_QUEUE_REJECTED.inc()
+            # The rejected alert never entered the queue — drop its dedup
+            # claim so the caller's retry isn't absorbed as 'deduped'.
+            if dedup_key:
+                with self._enqueue_dedup_lock:
+                    self._enqueue_dedup_keys.pop(str(dedup_key), None)
             raise
         INVESTIGATION_QUEUE_DEPTH.set(self._investigation_queue.qsize())
         return {
@@ -5585,7 +5616,9 @@ IMPORTANT:
                 severity=summary.get('severity', 'info'),
                 findings=[{'severity': 'info', 'finding': summary['text'][:500]}],
                 summary=f"Morning summary - {now.strftime('%Y-%m-%d')}",
-                sweep_meta={'type': 'morning_summary'}
+                # full_text: the cfop://digest/morning MCP resource serves the
+                # complete summary; findings stay truncated for the console.
+                sweep_meta={'type': 'morning_summary', 'full_text': summary['text']}
             )
         except Exception as e:
             logger.warning(f"Could not store morning summary in DB: {e}")

@@ -42,6 +42,7 @@ class Settings:
     request_timeout: float = 30.0
     chat_timeout: float = 300.0
     chat_poll_interval: float = 2.0
+    skills_dir: str = "./skills"
 
     @classmethod
     def from_env(cls, env=None):
@@ -73,4 +74,5 @@ class Settings:
             chat_timeout=float(env.get("CFOP_MCP_CHAT_TIMEOUT") or cls.chat_timeout),
             chat_poll_interval=float(
                 env.get("CFOP_MCP_CHAT_POLL_INTERVAL") or cls.chat_poll_interval),
+            skills_dir=env.get("CFOP_SKILLS_DIR") or cls.skills_dir,
         )

@@ -29,6 +29,8 @@ COPY event_runtime/ ./event_runtime/
 # MCP facade — the sibling MCP Deployment reuses this image with
 # command: ["python", "-m", "mcp_server"]
 COPY mcp_server/ ./mcp_server/
+# Slack bridge — sibling Deployment, command: ["python", "-m", "bridge"]
+COPY bridge/ ./bridge/
 COPY config.yaml.example ./config.yaml.example
 
 # agent.py uses bare imports (knowledge_base, llm_fallback, etc.)
