@@ -26,6 +26,9 @@ COPY tools/ ./tools/
 COPY skills/ ./skills/
 COPY ui/ ./ui/
 COPY event_runtime/ ./event_runtime/
+# MCP facade — the sibling MCP Deployment reuses this image with
+# command: ["python", "-m", "mcp_server"]
+COPY mcp_server/ ./mcp_server/
 COPY config.yaml.example ./config.yaml.example
 
 # agent.py uses bare imports (knowledge_base, llm_fallback, etc.)
