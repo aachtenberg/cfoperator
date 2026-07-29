@@ -17,4 +17,5 @@ def register(mcp, client, settings):
         """
         return await guarded(
             settings, "investigate",
-            lambda: client.run_chat(question, timeout=timeout_seconds))
+            lambda: client.run_chat(question, timeout=timeout_seconds),
+            tool="ask_sre")

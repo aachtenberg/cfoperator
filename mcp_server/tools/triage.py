@@ -20,4 +20,5 @@ def register(mcp, client, settings):
         Requires scope: investigate.
         """
         alert = build_alert(summary, description, severity, labels, alert_id)
-        return await guarded(settings, "investigate", lambda: client.triage(alert))
+        return await guarded(settings, "investigate",
+                             lambda: client.triage(alert), tool="triage_alert")

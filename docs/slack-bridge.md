@@ -27,9 +27,28 @@ bridge owns conversations only.
 | `SLACK_BOT_TOKEN` | — | required, `xoxb-...` |
 | `SLACK_APP_TOKEN` | — | required, `xapp-...` (Socket Mode) |
 | `CFOP_AGENT_URL` | `http://127.0.0.1:8083` | agent base URL |
-| `CFOP_BRIDGE_RUNTIME` | `local` | phase 2 supports `local` only |
-| `CFOP_BRIDGE_CHAT_TIMEOUT` | `300` | per-turn agent deadline (s) |
+| `CFOP_BRIDGE_RUNTIME` | `local` | `local` (agent chat API) or `anthropic` (Claude over MCP tools) |
+| `CFOP_BRIDGE_CHAT_TIMEOUT` | `300` | per-turn agent deadline (s, local runtime) |
 | `CFOP_BRIDGE_MAX_HISTORY_TURNS` | `10` | thread history cap |
+
+### anthropic runtime (phase 3)
+
+Claude answers Slack turns by driving cfoperator-mcp's tools directly — an
+agentic tool loop entirely inside the bridge pod, with only the Anthropic API
+call leaving the cluster. Same Slack app, one env flip.
+
+| Env var | Default | Notes |
+|---------|---------|-------|
+| `ANTHROPIC_API_KEY` | — | required (already in `cfoperator-secrets`) |
+| `CFOP_MCP_TOKEN` | — | required; bearer for cfoperator-mcp (from the `cfoperator-mcp` Secret) |
+| `CFOP_MCP_URL` | `http://cfoperator-mcp.apps.svc:8090/mcp` | |
+| `CFOP_BRIDGE_ANTHROPIC_MODEL` | `claude-opus-5` | adaptive thinking on; refusal fallbacks enabled on opus-5/fable |
+| `CFOP_BRIDGE_MAX_TOOL_ITERATIONS` | `15` | cap on the tool loop per turn |
+
+Trade-off vs `local`: Claude-quality reasoning and tool orchestration with
+per-token API cost; `local` stays free on the in-cluster model. `investigate:`
+prefix is a `local`-runtime feature — under `anthropic`, Claude decides itself
+when to call `start_investigation`.
 
 Run locally: `SLACK_BOT_TOKEN=... SLACK_APP_TOKEN=... python -m bridge`
 

@@ -230,3 +230,70 @@ def test_bridge_settings_require_both_tokens():
     s = BridgeSettings.from_env(
         {"SLACK_BOT_TOKEN": "xoxb-1", "SLACK_APP_TOKEN": "xapp-1"})
     assert s.runtime == "local"
+
+
+# --- AnthropicRuntime ---
+
+BASE_ENV = {"SLACK_BOT_TOKEN": "xoxb-1", "SLACK_APP_TOKEN": "xapp-1"}
+
+
+def test_anthropic_runtime_requires_mcp_token_and_api_key():
+    env = dict(BASE_ENV, CFOP_BRIDGE_RUNTIME="anthropic")
+    with pytest.raises(ValueError, match="CFOP_MCP_TOKEN"):
+        BridgeSettings.from_env(env)
+    env["CFOP_MCP_TOKEN"] = "t"
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        BridgeSettings.from_env(env)
+    env["ANTHROPIC_API_KEY"] = "sk-ant-x"
+    s = BridgeSettings.from_env(env)
+    assert s.runtime == "anthropic"
+    assert s.anthropic_model == "claude-opus-5"
+
+
+def test_anthropic_runtime_threads_history():
+    from bridge.runtimes.anthropic import AnthropicRuntime
+
+    settings = BridgeSettings(
+        slack_bot_token="x", slack_app_token="x", runtime="anthropic",
+        mcp_token="t", max_history_turns=2)
+    rt = AnthropicRuntime(settings, anthropic_client=object())
+    seen = []
+
+    async def fake_loop(messages):
+        seen.append(list(messages))
+        return f"reply {len(seen)}"
+
+    rt._run_agent_loop = fake_loop
+    r1 = asyncio.run(rt.start("q1", thread_id="t1"))
+    assert r1 == "reply 1"
+    asyncio.run(rt.follow_up("t1", "q2"))
+    assert seen[1] == [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "reply 1"},
+        {"role": "user", "content": "q2"},
+    ]
+    # cap: 2 turns = 4 messages
+    asyncio.run(rt.follow_up("t1", "q3"))
+    asyncio.run(rt.follow_up("t1", "q4"))
+    assert len(rt._history["t1"]) == 4
+
+
+def test_reply_from_message_handles_refusal_and_text():
+    from types import SimpleNamespace
+
+    from bridge.runtimes.anthropic import _reply_from_message
+
+    refusal = SimpleNamespace(stop_reason="refusal", content=[])
+    assert "declined" in _reply_from_message(refusal)
+
+    msg = SimpleNamespace(stop_reason="end_turn", content=[
+        SimpleNamespace(type="thinking", thinking=""),
+        SimpleNamespace(type="text", text="all good "),
+        SimpleNamespace(type="text", text="on the fleet"),
+    ])
+    assert _reply_from_message(msg) == "all good on the fleet"
+
+    empty = SimpleNamespace(stop_reason="end_turn", content=[])
+    assert "no text" in _reply_from_message(empty)
+    with pytest.raises(RuntimeError):
+        _reply_from_message(None)
