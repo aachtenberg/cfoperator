@@ -45,7 +45,7 @@ class StubClient:
         return {"id": investigation_id}
 
     async def start_chat(self, message, history=None, backend="auto", model=None):
-        self.calls.append(("start_chat", message))
+        self.calls.append(("start_chat", message, backend, model))
         return {"chat_id": "abc123"}
 
     async def search_knowledge(self, query, limit=5):
@@ -192,6 +192,20 @@ def test_ask_sre_timeout_stops_chat_and_returns_retryable_error():
     assert out["error"]["code"] == "upstream_unavailable"
     assert out["error"]["retryable"] is True
     assert ("stop_chat", "abc123") in stub.calls
+
+
+def test_ask_sre_passes_backend_and_model_through():
+    server, stub = make(chat_poll_interval=0.01)
+    stub.chat_event_batches = [
+        {"events": [{"event": "done", "data": {"response": "opus says no"}}],
+         "cursor": 1, "done": True},
+    ]
+    out = call(server, "ask_sre", {"question": "is this cm5 finding real?",
+                                   "backend": "anthropic",
+                                   "model": "claude-opus-5"})
+    assert out["response"] == "opus says no"
+    assert ("start_chat", "is this cm5 finding real?",
+            "anthropic", "claude-opus-5") in stub.calls
 
 
 def test_ask_sre_error_event_surfaces_as_error_payload():

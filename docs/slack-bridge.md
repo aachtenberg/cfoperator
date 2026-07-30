@@ -30,6 +30,7 @@ bridge owns conversations only.
 | `CFOP_BRIDGE_RUNTIME` | `local` | `local` (agent chat API) or `anthropic` (Claude over MCP tools) |
 | `CFOP_BRIDGE_CHAT_TIMEOUT` | `300` | per-turn agent deadline (s, local runtime) |
 | `CFOP_BRIDGE_MAX_HISTORY_TURNS` | `10` | thread history cap |
+| `CFOP_BRIDGE_ESCALATION_MODEL` | `claude-opus-5` | model for the `claude:` per-message prefix (local runtime) |
 
 ### anthropic runtime (phase 3)
 
@@ -86,6 +87,15 @@ No Service needed — Socket Mode is outbound-only.
 - Reply in the thread for follow-ups — history carries over.
 - `@cfoperator investigate: promtail crashlooping on pi3` — enqueues a full
   investigation (idempotent per thread+text; retries won't double-enqueue).
+- `@cfoperator claude: is that etcd diagnosis on cm5 actually real?` — this
+  ONE turn runs on Anthropic (`CFOP_BRIDGE_ESCALATION_MODEL`, default
+  `claude-opus-5`) instead of the local model, with the thread's history
+  carried over — the in-Slack second opinion for suspect local-model
+  conclusions. `opus:` is an alias; the reply is tagged with 🧠 + the model
+  name. Costs API tokens per use.
+
+The same per-call selection is exposed to every MCP host via `ask_sre`'s
+optional `backend` (`auto|ollama|groq|anthropic|xai`) and `model` params.
 
 ## Design notes
 

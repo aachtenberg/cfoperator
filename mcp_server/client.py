@@ -114,8 +114,12 @@ class CfopClient:
     async def stop_chat(self, chat_id):
         return await self._request("POST", f"/api/chat/{chat_id}/stop")
 
-    async def run_chat(self, message, history=None, timeout=None, poll_interval=None):
+    async def run_chat(self, message, history=None, timeout=None,
+                       poll_interval=None, backend="auto", model=None):
         """Start a chat, poll events until done, return the final reply.
+
+        backend/model select the agent-side LLM per call (backend one of
+        auto/ollama/groq/anthropic/xai; model is provider-specific).
 
         Returns {chat_id, response, tool_calls}. On deadline the chat is
         stopped server-side (best-effort) and a retryable UpstreamError is
@@ -127,7 +131,8 @@ class CfopClient:
         poll_interval = poll_interval or self._settings.chat_poll_interval
         deadline = loop.time() + timeout
 
-        started = await self.start_chat(message, history=history)
+        started = await self.start_chat(message, history=history,
+                                        backend=backend, model=model)
         chat_id = started.get("chat_id")
         if not chat_id:
             raise UpstreamError(
