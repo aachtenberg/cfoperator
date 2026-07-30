@@ -109,10 +109,22 @@ of the fleet's logs.
 
 (Claude Code: `claude mcp add cfoperator -e CFOP_AGENT_URL=... -- python -m mcp_server`)
 
-**Remote hosts (Streamable HTTP):** endpoint `http://<host>:8090/mcp`, auth
-header `Authorization: Bearer <CFOP_MCP_TOKEN>`. The service is
-cluster-internal; exposing it publicly (e.g. for Cursor Cloud Agents or
-Claude-in-Slack connectors) is a deliberate decision — see the plan doc's
+**LAN hosts (Streamable HTTP, since 2026-07-30):** the MCP endpoint is
+exposed at `http://192.168.0.150:8090/mcp` via hostPort (the pod is pinned
+to headless-gpu). Auth: `Authorization: Bearer <token from the
+cfoperator-mcp Secret>`. Defense-in-depth: the `CFOP-8090-GUARD` iptables
+chain (same ansible playbook as the 8083 guard) allows only cluster
+sources, the WireGuard backhaul, and the operator workstation
+(192.168.0.224) — hooked into INPUT **and** FORWARD because hostPort
+traffic is DNAT'd. Example workstation config (Claude Code):
+
+```bash
+claude mcp add --transport http cfoperator http://192.168.0.150:8090/mcp \
+  --header "Authorization: Bearer $(kubectl -n apps get secret cfoperator-mcp -o jsonpath='{.data.token}' | base64 -d)"
+```
+
+**Public internet exposure** (Cursor Cloud Agents, Claude-in-Slack
+connectors) remains a deliberate, separate decision — see the plan doc's
 phase-3 CursorRuntime note.
 
 ## Deployment (live)
