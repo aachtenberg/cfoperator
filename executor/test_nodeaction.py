@@ -168,6 +168,22 @@ def test_node_action_closes_change_record_when_url_and_ref_set():
     assert payload["result"]["approval"]["identity"] == "carol"
 
 
+def test_node_action_uses_approved_plan_skips_llm():
+    order = _node_order()
+    order["approved_plan"] = {
+        "host": "controller",
+        "commands": ["sudo -n chmod 600 /root/.ssh/config"],
+        "explanation": "approved",
+    }
+    runs = [{"command": "c1", "returncode": 0, "stdout": "", "stderr": ""}]
+    with patch.object(entrypoint, "make_llm") as make_llm, \
+         patch.object(entrypoint, "run_ssh_plan", return_value=runs) as ssh:
+        payload = run(_env(order))
+    make_llm.assert_not_called()
+    assert ssh.call_args[0][1] == ["sudo -n chmod 600 /root/.ssh/config"]
+    assert payload["status"] == "resolved"
+
+
 def test_node_action_command_failure_routes_to_human():
     reply = '{"host": "controller", "commands": ["sudo -n chmod 600 /root/.ssh/config"]}'
     runs = [{"command": "c1", "returncode": 1, "stdout": "", "stderr": "Operation not permitted"}]

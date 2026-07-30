@@ -183,26 +183,38 @@ def _maybe_close_change_record(env: Dict[str, str], work_order: Dict[str, Any],
 
 
 def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any]:
-    """Execute a node-action: LLM proposes a command plan, gate it, run over SSH.
+    """Execute a node-action: gated command plan over SSH.
 
     Reaches here only after a human escalated the queue row (node-actions are
     never auto-eligible). Opt-in per deploy via CFOP_NODE_ACTION_ENABLED so the
     image cannot silently start running shell on hosts.
 
     When CFOP_EXEC_CHANGE_URL is set, the agent has already opened a change
-    record and gated spawn on named approval; this path only closes the record
-    after SSH. Unset URL → prior behavior (no change-record HTTP at all).
+    record with a concrete plan and gated spawn on named approval. If the work
+    order carries ``approved_plan``, that plan is executed (LLM planning is
+    skipped) so what ran matches what was approved. Still runs through
+    ``validate_plan``. Unset URL → prior behavior (LLM plan + no change-record HTTP).
     """
     payload = work_order.get("payload") or {}
     if (env.get("CFOP_NODE_ACTION_ENABLED") or "").strip().lower() not in ("1", "true", "yes"):
         return build_completion_payload(work_order, "needs-human", None,
                                         "node-action execution not enabled on this executor", None)
 
-    llm = make_llm(env)
-    plan = parse_command_plan(llm.complete(build_command_prompt(work_order)))
-    if not plan:
-        return build_completion_payload(work_order, "needs-human", None,
-                                        "model produced no parseable command plan", None)
+    approved = work_order.get("approved_plan") if isinstance(work_order.get("approved_plan"), dict) else None
+    if approved and approved.get("commands"):
+        plan = {
+            "host": str(approved.get("host") or "").strip(),
+            "commands": [str(c) for c in approved.get("commands") or []],
+            "explanation": str(approved.get("explanation") or ""),
+        }
+        logger.info("using approved_plan (%d command(s)); skipping LLM planning",
+                    len(plan["commands"]))
+    else:
+        llm = make_llm(env)
+        plan = parse_command_plan(llm.complete(build_command_prompt(work_order)))
+        if not plan:
+            return build_completion_payload(work_order, "needs-human", None,
+                                            "model produced no parseable command plan", None)
     commands = plan.get("commands") or []
     ok, reason = validate_plan(commands)
     if not ok:

@@ -18,7 +18,7 @@ def _intent(**extra) -> Intent:
         host="headless-gpu",
         commands=["sudo -n chmod 600 /root/.ssh/config"],
         justification="fix perms",
-        image_digest="ghcr.io/aachtenberg/cfoperator-executor@sha256:abc",
+        image="ghcr.io/aachtenberg/cfoperator-executor:main",
         flag_snapshot={"node_action.enabled": True},
         investigation_id=99,
         risk="low",
@@ -68,9 +68,46 @@ def test_github_open_creates_branch_commit_and_pr():
     assert meta["pr_number"] == 7 and meta["backend"] == "github"
     put = next(c for c in client.calls if c[0] == "PUT")
     content = json.loads(base64.b64decode(put[2]["content"]))
-    assert content["executor_image_digest"].startswith("ghcr.io/")
+    assert content["executor_image"].startswith("ghcr.io/")
     assert content["flag_snapshot"]["node_action.enabled"] is True
     assert content["commands"] == ["sudo -n chmod 600 /root/.ssh/config"]
+
+
+def test_github_open_resume_without_pr_creates_pr():
+    """Branch exists but PR create crashed — resume must create the PR."""
+    client = _FakeGH({
+        "GET /repos/o/r/git/ref/heads/cfop/change/42": {
+            "success": True, "status": 200, "data": {"object": {"sha": "b"}},
+        },
+        "GET /repos/o/r/pulls": {"success": True, "status": 200, "data": []},
+        "POST /repos/o/r/pulls": {
+            "success": True, "status": 201,
+            "data": {"number": 11, "html_url": "https://github.com/o/r/pull/11"},
+        },
+    })
+    backend = GitHubRecorder(client, "o/r", "main")
+    ref = backend.open(_intent())
+    meta = decode_ref(ref.id)
+    assert meta["pr_number"] == 11
+    assert ref.url.endswith("/pull/11")
+    assert any(c[0] == "POST" and c[1].endswith("/pulls") for c in client.calls)
+
+
+def test_github_approval_ignores_token_repo():
+    """Token-supplied repo must not redirect the recorder at another repo."""
+    client = _FakeGH({
+        "GET /repos/o/r/pulls/7": {
+            "success": True, "status": 200,
+            "data": {"merged": True, "merged_by": {"login": "bob"},
+                     "merged_at": "2026-07-30T12:00:00Z", "state": "closed"},
+        },
+    })
+    backend = GitHubRecorder(client, "o/r")
+    token = encode_ref({"backend": "github", "repo": "evil/other", "pr_number": 7})
+    ap = backend.approval(token)
+    assert ap is not None and ap.identity == "bob"
+    assert any(c[1] == "/repos/o/r/pulls/7" for c in client.calls)
+    assert not any("evil/other" in c[1] for c in client.calls)
 
 
 def test_github_approval_merged_vs_open_vs_closed():
@@ -98,6 +135,16 @@ def test_github_approval_merged_vs_open_vs_closed():
         backend.approval(token)
 
 
+def test_github_close_rejects_path_outside_records_dir():
+    backend = GitHubRecorder(_FakeGH({}), "o/r")
+    token = encode_ref({
+        "backend": "github", "repo": "o/r", "base": "main",
+        "path": "../secrets/token", "pr_number": 7,
+    })
+    with pytest.raises(ChangeRecordError, match="path outside records_dir"):
+        backend.close(token, {"executed": []})
+
+
 def test_github_close_commits_outcome():
     doc = {"kind": "cfop-change-record", "outcome": None}
     client = _FakeGH({
@@ -108,11 +155,12 @@ def test_github_close_commits_outcome():
     })
     backend = GitHubRecorder(client, "o/r")
     token = encode_ref({
-        "backend": "github", "repo": "o/r", "base": "main",
+        "backend": "github", "repo": "evil/other", "base": "main",
         "path": "change-records/7.json", "pr_number": 7,
     })
     backend.close(token, {"executed": [{"returncode": 0}]})
     put = next(c for c in client.calls if c[0] == "PUT")
+    assert put[1].startswith("/repos/o/r/contents/")
     written = json.loads(base64.b64decode(put[2]["content"]))
     assert written["outcome"]["executed"][0]["returncode"] == 0
     assert "closed_at" in written

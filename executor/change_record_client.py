@@ -2,18 +2,23 @@
 
 The agent owns open() + approval gating before spawn. The executor only
 POSTs /close when CFOP_EXEC_CHANGE_URL is set and the work order carries
-change_record_ref. Stdlib only.
+change_record_ref. When CFOP_CHANGERECORD_SHARED_SECRET is set, requests
+send X-CFOP-Token. Stdlib only.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("cfop-executor.change_record")
+
+AUTH_HEADER = "X-CFOP-Token"
+SHARED_SECRET_ENV = "CFOP_CHANGERECORD_SHARED_SECRET"  # noqa: S105 - env var name
 
 
 def close_record(base_url: str, ref: str, outcome: Dict[str, Any], *,
@@ -26,10 +31,14 @@ def close_record(base_url: str, ref: str, outcome: Dict[str, Any], *,
         return None
     url = f"{base_url.rstrip('/')}/close"
     body = json.dumps({"ref": ref, "outcome": outcome}, default=str).encode("utf-8")
-    req = urllib.request.Request(url, data=body, method="POST", headers={
+    headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
-    })
+    }
+    secret = (os.getenv(SHARED_SECRET_ENV) or "").strip()
+    if secret:
+        headers[AUTH_HEADER] = secret
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec
             if 200 <= resp.status < 300:

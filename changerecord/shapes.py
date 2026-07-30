@@ -21,7 +21,7 @@ class Intent:
     host: str
     commands: List[str]
     justification: str
-    image_digest: str
+    image: str  # executor image ref (tag or digest; digest resolution is a follow-up)
     flag_snapshot: Dict[str, Any] = field(default_factory=dict)
     investigation_id: Any = None
     risk: str = ""
@@ -67,7 +67,7 @@ def record_document(intent: Intent) -> Dict[str, Any]:
         "justification": intent.justification,
         "risk": intent.risk,
         "confidence": intent.confidence,
-        "executor_image_digest": intent.image_digest,
+        "executor_image": intent.image,
         "flag_snapshot": intent.flag_snapshot,
         "outcome": None,
     }
@@ -80,12 +80,16 @@ def intent_from_body(body: Dict[str, Any]) -> Intent:
     commands = body.get("commands") or []
     if not isinstance(commands, list):
         commands = [str(commands)]
+    # Prefer ``image``; accept legacy ``image_digest`` for older clients.
+    image = body.get("image")
+    if image is None or image == "":
+        image = body.get("image_digest") or ""
     return Intent(
         remediation_id=body.get("remediation_id"),
         host=str(body.get("host") or ""),
         commands=[str(c) for c in commands],
         justification=str(body.get("justification") or ""),
-        image_digest=str(body.get("image_digest") or ""),
+        image=str(image),
         flag_snapshot=flags,
         investigation_id=body.get("investigation_id"),
         risk=str(body.get("risk") or ""),

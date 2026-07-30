@@ -6,6 +6,10 @@ close — commit the execution outcome back onto the record file
 
 Approved/closed state env knobs are reserved for ticket backends (snow/jira);
 GitHub treats merge as approval. Stdlib only.
+
+Security: ref tokens are opaque handles only. ``repo`` / ``base`` always come
+from the recorder instance config (never from the token). ``path`` must stay
+under the configured ``records_dir``.
 """
 
 from __future__ import annotations
@@ -36,22 +40,58 @@ class GitHubRecorder:
         self.base = base
         self.records_dir = records_dir.rstrip("/")
 
+    def _safe_path(self, meta: Dict[str, Any], *, rid_fallback: Any = None) -> str:
+        """Resolve a record path from meta, constrained to ``records_dir/``.
+
+        Token-supplied ``path`` is ignored unless it is a file directly under
+        the configured records directory (no ``..``, no other prefixes).
+        """
+        prefix = f"{self.records_dir}/"
+        raw = str(meta.get("path") or "").strip()
+        if raw:
+            # Normalize: reject absolute, parent traversal, and off-prefix paths.
+            if raw.startswith("/") or ".." in raw.split("/"):
+                raise ChangeRecordError(f"path outside records_dir: {raw}")
+            if not raw.startswith(prefix) or raw.rstrip("/") == self.records_dir:
+                raise ChangeRecordError(f"path outside records_dir: {raw}")
+            # Only allow a single file segment under records_dir.
+            rest = raw[len(prefix):]
+            if not rest or "/" in rest:
+                raise ChangeRecordError(f"path outside records_dir: {raw}")
+            return raw
+        if rid_fallback is not None:
+            return f"{prefix}{rid_fallback}.json"
+        pr = meta.get("pr_number")
+        if pr is not None:
+            return f"{prefix}{pr}.json"
+        raise ChangeRecordError("ref missing path")
+
+    def _pr_body(self, intent: Intent) -> str:
+        return (
+            f"Change record for **node-action** remediation `{intent.remediation_id}`.\n\n"
+            f"- **Host:** `{intent.host}`\n"
+            f"- **Commands:**\n"
+            + "".join(f"  - `{c}`\n" for c in intent.commands)
+            + f"- **Justification:** {intent.justification}\n"
+            f"- **Executor image:** `{intent.image or 'unset'}`\n"
+            f"- **Flag snapshot:** `{json.dumps(intent.flag_snapshot)}`\n\n"
+            f"Merge approves execution. The agent blocks executor spawn until this PR merges.\n"
+        )
+
+    def _create_pr(self, branch: str, title: str, body: str) -> Dict[str, Any]:
+        pr = self.client.request("POST", f"/repos/{self.repo}/pulls",
+                                 body={"title": title, "body": body, "head": branch, "base": self.base})
+        if not pr.get("success"):
+            raise ChangeRecordError(f"change-record PR create failed ({pr.get('status')})")
+        return pr.get("data") or {}
+
     def open(self, intent: Intent) -> RecordRef:
         doc = record_document(intent)
         rid = intent.remediation_id
         path = f"{self.records_dir}/{rid}.json"
         branch = f"cfop/change/{rid}"
         title = f"cfop: change-record for remediation {rid} on {intent.host}"
-        body = (
-            f"Change record for **node-action** remediation `{rid}`.\n\n"
-            f"- **Host:** `{intent.host}`\n"
-            f"- **Commands:**\n"
-            + "".join(f"  - `{c}`\n" for c in intent.commands)
-            + f"- **Justification:** {intent.justification}\n"
-            f"- **Executor image:** `{intent.image_digest or 'unset'}`\n"
-            f"- **Flag snapshot:** `{json.dumps(intent.flag_snapshot)}`\n\n"
-            f"Merge approves execution. The agent blocks executor spawn until this PR merges.\n"
-        )
+        body = self._pr_body(intent)
 
         if self.client.request("GET", f"/repos/{self.repo}/git/ref/heads/{branch}").get("success"):
             # Resume an existing record PR rather than failing.
@@ -63,6 +103,9 @@ class GitHubRecorder:
             )
             pr_list = prs.get("data") if isinstance(prs.get("data"), list) else []
             pr = pr_list[0] if pr_list else {}
+            if not pr.get("number"):
+                # Branch exists but PR create crashed mid-flight — finish it.
+                pr = self._create_pr(branch, title, body)
             meta = {
                 "backend": "github",
                 "repo": self.repo,
@@ -99,11 +142,7 @@ class GitHubRecorder:
         if not commit.get("success"):
             raise ChangeRecordError(f"record commit failed ({commit.get('status')})")
 
-        pr = self.client.request("POST", f"/repos/{self.repo}/pulls",
-                                 body={"title": title, "body": body, "head": branch, "base": self.base})
-        if not pr.get("success"):
-            raise ChangeRecordError(f"change-record PR create failed ({pr.get('status')})")
-        data = pr.get("data") or {}
+        data = self._create_pr(branch, title, body)
         meta = {
             "backend": "github",
             "repo": self.repo,
@@ -120,8 +159,8 @@ class GitHubRecorder:
         pr_number = meta.get("pr_number")
         if pr_number is None:
             raise ChangeRecordError("ref missing pr_number")
-        repo = meta.get("repo") or self.repo
-        r = self.client.request("GET", f"/repos/{repo}/pulls/{pr_number}")
+        # Never trust token-supplied repo — use the instance config only.
+        r = self.client.request("GET", f"/repos/{self.repo}/pulls/{pr_number}")
         if not r.get("success"):
             raise ChangeRecordError(f"could not fetch PR #{pr_number} ({r.get('status')})")
         data = r.get("data") or {}
@@ -139,18 +178,19 @@ class GitHubRecorder:
     def close(self, ref_token: str, outcome: Dict[str, Any]) -> None:
         from shapes import decode_ref
         meta = decode_ref(ref_token)
-        path = meta.get("path") or f"{self.records_dir}/{meta.get('pr_number')}.json"
-        base = meta.get("base") or self.base
-        repo = meta.get("repo") or self.repo
-        got = self.client.get_file(repo, path, base)
+        path = self._safe_path(meta)
+        # Always write into the configured repo/base; token repo/base are ignored.
+        # Prefer the file on base (post-merge); fall back to the feature branch.
+        # Note: committing to base fails under branch protection — see REMEDIATION.md.
+        got = self.client.get_file(self.repo, path, self.base)
         if not got:
-            branch = meta.get("branch") or base
-            got = self.client.get_file(repo, path, branch)
+            branch = str(meta.get("branch") or "").strip() or f"cfop/change/unknown"
+            got = self.client.get_file(self.repo, path, branch)
             if not got:
                 raise ChangeRecordError(f"could not load change record {path} to close")
             target_ref = branch
         else:
-            target_ref = base
+            target_ref = self.base
         text, sha = got
         try:
             doc = json.loads(text)
@@ -158,7 +198,7 @@ class GitHubRecorder:
             doc = {"raw": text}
         doc["outcome"] = outcome
         doc["closed_at"] = utc_now()
-        put = self.client.request("PUT", f"/repos/{repo}/contents/{path}", body={
+        put = self.client.request("PUT", f"/repos/{self.repo}/contents/{path}", body={
             "message": f"cfop: close change-record {meta.get('pr_number')}",
             "content": base64.b64encode(
                 json.dumps(doc, indent=2, default=str).encode("utf-8")

@@ -221,6 +221,13 @@ def test_build_executor_manifest_node_action_change_record_url():
     assert "CFOP_EXEC_CHANGE_URL" not in genv
 
 
+_PLAN = {
+    "host": "controller",
+    "commands": ["sudo -n chmod 600 /root/.ssh/config"],
+    "explanation": "fix perms",
+}
+
+
 def test_unapproved_change_record_never_reaches_spawn():
     """Acceptance (#80): unapproved record never reaches run_ssh_plan — agent gate."""
     op = _fake_op(drain=True, max_per_tick=1)
@@ -231,6 +238,7 @@ def test_unapproved_change_record_never_reaches_spawn():
     }
     op._change_record_url = lambda: "http://changerecord:8091"
     op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
     # Use the real gate implementation.
     op._prepare_node_action_change_record = (
         lambda work: CFOperator._prepare_node_action_change_record(op, work)
@@ -241,7 +249,7 @@ def test_unapproved_change_record_never_reaches_spawn():
         "risk": "med",
         "confidence": 0.6,
         "payload": {"recommendation": "fix perms", "target": {"host": "controller"}},
-        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/1"}},
+        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/1", "plan": _PLAN}},
     }
     op.kb.claim_next_remediation.return_value = work
     with patch.object(agent_mod, "change_record_approval", return_value=None):
@@ -260,6 +268,7 @@ def test_approved_change_record_spawns_with_ref():
     }
     op._change_record_url = lambda: "http://changerecord:8091"
     op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
     op._prepare_node_action_change_record = (
         lambda work: CFOperator._prepare_node_action_change_record(op, work)
     )
@@ -268,7 +277,7 @@ def test_approved_change_record_spawns_with_ref():
         "remediation_class": "node-action",
         "risk": "med",
         "payload": {"recommendation": "fix", "target": {"host": "h"}},
-        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/9"}},
+        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/9", "plan": _PLAN}},
     }
     op.kb.claim_next_remediation.return_value = work
     approval = {"identity": "carol", "timestamp": "t", "state": "merged"}
@@ -278,6 +287,7 @@ def test_approved_change_record_spawns_with_ref():
     spawned_work = op._spawn_remediation_executor.call_args[0][1]
     assert spawned_work["change_record_ref"] == "opaque-ref"
     assert spawned_work["change_record_approval"]["identity"] == "carol"
+    assert spawned_work["approved_plan"]["commands"] == _PLAN["commands"]
 
 
 def test_unset_change_url_node_action_spawns_without_gate():
@@ -297,6 +307,111 @@ def test_unset_change_url_node_action_spawns_without_gate():
     opened.assert_not_called()
     approved.assert_not_called()
     op._spawn_remediation_executor.assert_called_once()
+
+
+def test_awaiting_approval_does_not_starve_later_rows():
+    """Released awaiting-approval rows are skipped for the rest of the tick."""
+    op = _fake_op(drain=True, max_per_tick=3)
+    op.config["remediation"]["executor"] = {
+        "node_action": {"enabled": True,
+                        "change_record": {"url": "http://changerecord:8091"}},
+    }
+    op._change_record_url = lambda: "http://changerecord:8091"
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
+    op._prepare_node_action_change_record = (
+        lambda work: CFOperator._prepare_node_action_change_record(op, work)
+    )
+    awaiting = {
+        "id": 10,
+        "remediation_class": "node-action",
+        "risk": "med",
+        "payload": {"recommendation": "fix", "target": {"host": "h"}},
+        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/1", "plan": _PLAN}},
+    }
+    gitops = {"id": 20, "remediation_class": "gitops-patch", "risk": "low"}
+    claim_excludes = []
+    taken = set()  # rows that stayed claimed (spawned), not merely released
+
+    def _claim(job_name, exclude_ids=None):
+        skip = set(exclude_ids or []) | taken
+        claim_excludes.append(set(exclude_ids or []))
+        # Without exclude_ids, awaiting would win every time (higher priority).
+        if 10 not in skip:
+            return awaiting  # released mid-tick → reclaimable unless excluded
+        if 20 not in skip:
+            taken.add(20)
+            return gitops
+        return None
+
+    op.kb.claim_next_remediation.side_effect = _claim
+    with patch.object(agent_mod, "change_record_approval", return_value=None):
+        spawned = CFOperator._drain_remediation_queue(op)
+    assert spawned == 1
+    op._spawn_remediation_executor.assert_called_once()
+    assert op._spawn_remediation_executor.call_args[0][1]["id"] == 20
+    assert op.kb.claim_next_remediation.call_count >= 2
+    assert 10 in claim_excludes[1]
+
+
+def test_change_record_409_fails_but_transport_releases():
+    from change_record_client import ChangeRecordClientError
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["executor"] = {
+        "node_action": {"enabled": True,
+                        "change_record": {"url": "http://changerecord:8091"}},
+    }
+    op._change_record_url = lambda: "http://changerecord:8091"
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
+    work = {
+        "id": 13,
+        "remediation_class": "node-action",
+        "risk": "med",
+        "payload": {"recommendation": "fix", "target": {"host": "h"}},
+        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/1", "plan": _PLAN}},
+    }
+    # 409 → fail
+    with patch.object(agent_mod, "change_record_approval",
+                      side_effect=ChangeRecordClientError("closed", status=409)):
+        assert CFOperator._prepare_node_action_change_record(op, work) is None
+    op.kb.fail_remediation.assert_called_once()
+    op.kb.release_remediation_claim.assert_not_called()
+
+    op.kb.reset_mock()
+    # transport → release (no attempt burn)
+    with patch.object(agent_mod, "change_record_approval",
+                      side_effect=ChangeRecordClientError("blip", status=0)):
+        assert CFOperator._prepare_node_action_change_record(op, work) is None
+    op.kb.release_remediation_claim.assert_called_once()
+    op.kb.fail_remediation.assert_not_called()
+
+
+def test_open_stamps_plan_commands_into_record():
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["executor"] = {
+        "image": "ghcr.io/aachtenberg/cfoperator-executor:test",
+        "node_action": {"enabled": True, "host": "controller",
+                        "change_record": {"url": "http://changerecord:8091"}},
+    }
+    op._change_record_url = lambda: "http://changerecord:8091"
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
+    work = {
+        "id": 14,
+        "remediation_class": "node-action",
+        "risk": "med",
+        "payload": {"recommendation": "fix perms", "target": {"host": "controller"}},
+        "result": {},
+    }
+    with patch.object(agent_mod, "change_record_open",
+                      return_value={"ref": "new-ref", "url": "http://pr/2"}) as opened, \
+         patch.object(agent_mod, "change_record_approval", return_value=None):
+        assert CFOperator._prepare_node_action_change_record(op, work) is None
+    intent = opened.call_args[0][1]
+    assert intent["commands"] == _PLAN["commands"]
+    assert intent["image"].startswith("ghcr.io/")
+    assert "image_digest" not in intent
 
 
 def test_build_executor_manifest_node_action_disabled_no_mount():

@@ -22,16 +22,19 @@ class FakeRecorder:
         self.approved: Dict[str, Approval] = {}
         self.closed: Dict[str, Dict[str, Any]] = {}
         self.reject_closed = False
+        self.boom = False
 
     def open(self, intent: Intent) -> RecordRef:
+        if self.boom:
+            raise RuntimeError("secret boom detail")
         meta = {"backend": "fake", "rid": intent.remediation_id,
-                "digest": intent.image_digest, "flags": intent.flag_snapshot}
+                "image": intent.image, "flags": intent.flag_snapshot}
         ref = encode_ref(meta)
         self.docs[ref] = {
             "remediation_id": intent.remediation_id,
             "host": intent.host,
             "commands": list(intent.commands),
-            "image_digest": intent.image_digest,
+            "image": intent.image,
             "flag_snapshot": dict(intent.flag_snapshot),
         }
         return RecordRef(id=ref, url=f"http://fake/{intent.remediation_id}", meta=meta)
@@ -65,10 +68,32 @@ def server():
     httpd.server_close()
 
 
-def _json(method: str, url: str, body: Optional[dict] = None) -> tuple:
+@pytest.fixture
+def authed_server():
+    fake = FakeRecorder()
+    httpd, _ = entrypoint.make_server(
+        {
+            "CFOP_CHANGERECORD_HOST": "127.0.0.1",
+            "CFOP_CHANGERECORD_PORT": "0",
+            "CFOP_CHANGERECORD_SHARED_SECRET": "s3cret",
+        },
+        recorder=fake,
+    )
+    t = threading.Thread(target=httpd.serve_forever, daemon=True)
+    t.start()
+    host, port = httpd.server_address[:2]
+    base = f"http://{host}:{port}"
+    yield base, fake
+    httpd.shutdown()
+    httpd.server_close()
+
+
+def _json(method: str, url: str, body: Optional[dict] = None,
+          headers: Optional[dict] = None) -> tuple:
     data = json.dumps(body).encode("utf-8") if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={
         "Content-Type": "application/json",
+        **(headers or {}),
     })
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:  # nosec
@@ -90,15 +115,16 @@ def test_open_approval_close_contract(server):
         "host": "controller",
         "commands": ["sudo -n chmod 600 /root/.ssh/config"],
         "justification": "fix perms",
-        "image_digest": "img@sha256:abc",
+        "image": "img:main",
         "flag_snapshot": {"node_action.enabled": True},
         "investigation_id": 9,
     })
     assert status == 201
     ref = opened["ref"]
     assert opened["url"].endswith("/42")
-    assert fake.docs[ref]["image_digest"] == "img@sha256:abc"
+    assert fake.docs[ref]["image"] == "img:main"
     assert fake.docs[ref]["flag_snapshot"]["node_action.enabled"] is True
+    assert fake.docs[ref]["commands"] == ["sudo -n chmod 600 /root/.ssh/config"]
 
     # Not yet approved -> 404
     status, body = _json("GET", f"{base}/approval/{ref}")
@@ -117,6 +143,56 @@ def test_open_approval_close_contract(server):
     assert fake.closed[ref]["executed"][0]["returncode"] == 0
 
 
+def test_approval_closed_without_merge_is_409(server):
+    base, fake = server
+    status, opened = _json("POST", f"{base}/open", {
+        "remediation_id": 1, "host": "h", "commands": ["chmod 600 /a"],
+        "justification": "j", "image": "i",
+    })
+    assert status == 201
+    fake.reject_closed = True
+    status, body = _json("GET", f"{base}/approval/{opened['ref']}")
+    assert status == 409
+    assert "closed without merge" in body["error"]
+
+
+def test_auth_required_when_secret_set(authed_server):
+    base, _ = authed_server
+    status, body = _json("POST", f"{base}/open", {
+        "remediation_id": 1, "host": "h", "commands": ["chmod 600 /a"],
+        "justification": "j", "image": "i",
+    })
+    assert status == 401 and "Missing" in body["error"]
+
+    status, body = _json("POST", f"{base}/open", {
+        "remediation_id": 1, "host": "h", "commands": ["chmod 600 /a"],
+        "justification": "j", "image": "i",
+    }, headers={"X-CFOP-Token": "wrong"})
+    assert status == 401 and "Invalid" in body["error"]
+
+    status, opened = _json("POST", f"{base}/open", {
+        "remediation_id": 1, "host": "h", "commands": ["chmod 600 /a"],
+        "justification": "j", "image": "i",
+    }, headers={"X-CFOP-Token": "s3cret"})
+    assert status == 201 and opened.get("ref")
+
+    # healthz stays open
+    status, body = _json("GET", f"{base}/healthz")
+    assert status == 200 and body["ok"] is True
+
+
+def test_500_returns_generic_message(server):
+    base, fake = server
+    fake.boom = True
+    status, body = _json("POST", f"{base}/open", {
+        "remediation_id": 1, "host": "h", "commands": ["chmod 600 /a"],
+        "justification": "j", "image": "i",
+    })
+    assert status == 500
+    assert body["error"] == "internal error"
+    assert "secret boom" not in body["error"]
+
+
 def test_close_requires_ref_and_outcome(server):
     base, _ = server
     status, body = _json("POST", f"{base}/close", {"outcome": {}})
@@ -129,3 +205,9 @@ def test_healthz(server):
     base, _ = server
     status, body = _json("GET", f"{base}/healthz")
     assert status == 200 and body["ok"] is True
+
+
+def test_intent_accepts_legacy_image_digest():
+    from shapes import intent_from_body
+    intent = intent_from_body({"host": "h", "commands": [], "image_digest": "old"})
+    assert intent.image == "old"
