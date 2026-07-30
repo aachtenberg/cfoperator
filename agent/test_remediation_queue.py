@@ -7,7 +7,7 @@ unattended, so it gets the same scrutiny as the worker-side classification.
 
 import os
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -18,6 +18,7 @@ from knowledge_base import (  # noqa: E402
 )
 from agent import CFOperator  # noqa: E402
 from agent.agent import _SUMMARY_CONFIDENCE_CAP  # noqa: E402
+import agent.agent as agent_mod  # noqa: E402
 
 
 def _wire_flags(op):
@@ -33,6 +34,9 @@ def _fake_op(*, drain=False, reap=False, max_per_tick=3):
     op.config = {"remediation": {
         "queue_drain": drain, "queue_reap": reap, "max_drain_per_tick": max_per_tick,
     }}
+    # Unset change-record URL → prepare is a no-op pass-through (homelab default).
+    op._change_record_url = lambda: ""
+    op._prepare_node_action_change_record = lambda work: work
     return _wire_flags(op)
 
 
@@ -96,6 +100,7 @@ def test_drain_spawn_failure_fails_the_claim():
     op = _fake_op(drain=True, max_per_tick=1)
     op.kb.claim_next_remediation.return_value = {
         "id": 7, "remediation_class": "gitops-patch", "risk": "low"}
+    op._prepare_node_action_change_record = lambda work: work
     op._spawn_remediation_executor.side_effect = RuntimeError("boom")
     assert CFOperator._drain_remediation_queue(op) == 0
     op.kb.fail_remediation.assert_called_once()
@@ -177,6 +182,8 @@ def test_build_executor_manifest_node_action_mounts_ssh():
     assert env["CFOP_SSH_SECRET_DIR"] == "/ssh-secret"
     # model floor: unset node_action.model -> falls back to the top model, not ''.
     assert env["CFOP_EXEC_LLM_MODEL"] == "claude-opus-4-8"
+    # Unset change-record URL → no change-record env on the Job (homelab default).
+    assert "CFOP_EXEC_CHANGE_URL" not in env
 
 
 def test_build_executor_manifest_node_action_model_floor_overrides_downgrade():
@@ -190,6 +197,221 @@ def test_build_executor_manifest_node_action_model_floor_overrides_downgrade():
     spec = CFOperator._build_executor_manifest(op, "cfop-executor-m", work)["spec"]["template"]["spec"]
     models = [e["value"] for e in spec["containers"][0]["env"] if e.get("name") == "CFOP_EXEC_LLM_MODEL"]
     assert models == ["claude-opus-4-8"]  # exactly one entry, the node-action floor
+
+
+def test_build_executor_manifest_node_action_change_record_url():
+    op = MagicMock()
+    op._executor_config.return_value = {
+        "image": "ghcr.io/aachtenberg/cfoperator-executor:test",
+        "node_action": {
+            "enabled": True,
+            "change_record": {"url": "http://cfop-changerecord.apps.svc:8091"},
+        },
+    }
+    work = {"id": 10, "remediation_class": "node-action", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-cr", work)["spec"]["template"]["spec"]
+    env = {e["name"]: e["value"] for e in spec["containers"][0]["env"] if "value" in e}
+    assert env["CFOP_EXEC_CHANGE_URL"] == "http://cfop-changerecord.apps.svc:8091"
+    # GitOps manifests must not carry the change-record URL.
+    gitops = CFOperator._build_executor_manifest(
+        op, "cfop-executor-g2",
+        {"id": 11, "remediation_class": "gitops-patch", "risk": "low"},
+    )["spec"]["template"]["spec"]
+    genv = {e["name"] for e in gitops["containers"][0]["env"]}
+    assert "CFOP_EXEC_CHANGE_URL" not in genv
+
+
+_PLAN = {
+    "host": "controller",
+    "commands": ["sudo -n chmod 600 /root/.ssh/config"],
+    "explanation": "fix perms",
+}
+
+
+def test_unapproved_change_record_never_reaches_spawn():
+    """Acceptance (#80): unapproved record never reaches run_ssh_plan — agent gate."""
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["executor"] = {
+        "image": "ghcr.io/aachtenberg/cfoperator-executor:test",
+        "node_action": {"enabled": True, "host": "controller",
+                        "change_record": {"url": "http://changerecord:8091"}},
+    }
+    op._change_record_url = lambda: "http://changerecord:8091"
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
+    # Use the real gate implementation.
+    op._prepare_node_action_change_record = (
+        lambda work: CFOperator._prepare_node_action_change_record(op, work)
+    )
+    work = {
+        "id": 10,
+        "remediation_class": "node-action",
+        "risk": "med",
+        "confidence": 0.6,
+        "payload": {"recommendation": "fix perms", "target": {"host": "controller"}},
+        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/1", "plan": _PLAN}},
+    }
+    op.kb.claim_next_remediation.return_value = work
+    with patch.object(agent_mod, "change_record_approval", return_value=None):
+        spawned = CFOperator._drain_remediation_queue(op)
+    assert spawned == 0
+    op._spawn_remediation_executor.assert_not_called()
+    op.kb.release_remediation_claim.assert_called_once()
+    assert op.kb.release_remediation_claim.call_args[0][0] == 10
+
+
+def test_approved_change_record_spawns_with_ref():
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["executor"] = {
+        "node_action": {"enabled": True,
+                        "change_record": {"url": "http://changerecord:8091"}},
+    }
+    op._change_record_url = lambda: "http://changerecord:8091"
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
+    op._prepare_node_action_change_record = (
+        lambda work: CFOperator._prepare_node_action_change_record(op, work)
+    )
+    work = {
+        "id": 11,
+        "remediation_class": "node-action",
+        "risk": "med",
+        "payload": {"recommendation": "fix", "target": {"host": "h"}},
+        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/9", "plan": _PLAN}},
+    }
+    op.kb.claim_next_remediation.return_value = work
+    approval = {"identity": "carol", "timestamp": "t", "state": "merged"}
+    with patch.object(agent_mod, "change_record_approval", return_value=approval):
+        spawned = CFOperator._drain_remediation_queue(op)
+    assert spawned == 1
+    spawned_work = op._spawn_remediation_executor.call_args[0][1]
+    assert spawned_work["change_record_ref"] == "opaque-ref"
+    assert spawned_work["change_record_approval"]["identity"] == "carol"
+    assert spawned_work["approved_plan"]["commands"] == _PLAN["commands"]
+
+
+def test_unset_change_url_node_action_spawns_without_gate():
+    """Unset URL → console-escalation path unchanged (no open/approval HTTP)."""
+    op = _fake_op(drain=True, max_per_tick=1)
+    op._change_record_url = lambda: ""
+    op._prepare_node_action_change_record = (
+        lambda work: CFOperator._prepare_node_action_change_record(op, work)
+    )
+    work = {"id": 12, "remediation_class": "node-action", "risk": "med",
+            "payload": {"recommendation": "fix"}}
+    op.kb.claim_next_remediation.return_value = work
+    with patch.object(agent_mod, "change_record_open") as opened, \
+         patch.object(agent_mod, "change_record_approval") as approved:
+        spawned = CFOperator._drain_remediation_queue(op)
+    assert spawned == 1
+    opened.assert_not_called()
+    approved.assert_not_called()
+    op._spawn_remediation_executor.assert_called_once()
+
+
+def test_awaiting_approval_does_not_starve_later_rows():
+    """Released awaiting-approval rows are skipped for the rest of the tick."""
+    op = _fake_op(drain=True, max_per_tick=3)
+    op.config["remediation"]["executor"] = {
+        "node_action": {"enabled": True,
+                        "change_record": {"url": "http://changerecord:8091"}},
+    }
+    op._change_record_url = lambda: "http://changerecord:8091"
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
+    op._prepare_node_action_change_record = (
+        lambda work: CFOperator._prepare_node_action_change_record(op, work)
+    )
+    awaiting = {
+        "id": 10,
+        "remediation_class": "node-action",
+        "risk": "med",
+        "payload": {"recommendation": "fix", "target": {"host": "h"}},
+        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/1", "plan": _PLAN}},
+    }
+    gitops = {"id": 20, "remediation_class": "gitops-patch", "risk": "low"}
+    claim_excludes = []
+    taken = set()  # rows that stayed claimed (spawned), not merely released
+
+    def _claim(job_name, exclude_ids=None):
+        skip = set(exclude_ids or []) | taken
+        claim_excludes.append(set(exclude_ids or []))
+        # Without exclude_ids, awaiting would win every time (higher priority).
+        if 10 not in skip:
+            return awaiting  # released mid-tick → reclaimable unless excluded
+        if 20 not in skip:
+            taken.add(20)
+            return gitops
+        return None
+
+    op.kb.claim_next_remediation.side_effect = _claim
+    with patch.object(agent_mod, "change_record_approval", return_value=None):
+        spawned = CFOperator._drain_remediation_queue(op)
+    assert spawned == 1
+    op._spawn_remediation_executor.assert_called_once()
+    assert op._spawn_remediation_executor.call_args[0][1]["id"] == 20
+    assert op.kb.claim_next_remediation.call_count >= 2
+    assert 10 in claim_excludes[1]
+
+
+def test_change_record_409_fails_but_transport_releases():
+    from change_record_client import ChangeRecordClientError
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["executor"] = {
+        "node_action": {"enabled": True,
+                        "change_record": {"url": "http://changerecord:8091"}},
+    }
+    op._change_record_url = lambda: "http://changerecord:8091"
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
+    work = {
+        "id": 13,
+        "remediation_class": "node-action",
+        "risk": "med",
+        "payload": {"recommendation": "fix", "target": {"host": "h"}},
+        "result": {"change_record": {"ref": "opaque-ref", "url": "http://pr/1", "plan": _PLAN}},
+    }
+    # 409 → fail
+    with patch.object(agent_mod, "change_record_approval",
+                      side_effect=ChangeRecordClientError("closed", status=409)):
+        assert CFOperator._prepare_node_action_change_record(op, work) is None
+    op.kb.fail_remediation.assert_called_once()
+    op.kb.release_remediation_claim.assert_not_called()
+
+    op.kb.reset_mock()
+    # transport → release (no attempt burn)
+    with patch.object(agent_mod, "change_record_approval",
+                      side_effect=ChangeRecordClientError("blip", status=0)):
+        assert CFOperator._prepare_node_action_change_record(op, work) is None
+    op.kb.release_remediation_claim.assert_called_once()
+    op.kb.fail_remediation.assert_not_called()
+
+
+def test_open_stamps_plan_commands_into_record():
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["executor"] = {
+        "image": "ghcr.io/aachtenberg/cfoperator-executor:test",
+        "node_action": {"enabled": True, "host": "controller",
+                        "change_record": {"url": "http://changerecord:8091"}},
+    }
+    op._change_record_url = lambda: "http://changerecord:8091"
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda work: dict(_PLAN)
+    work = {
+        "id": 14,
+        "remediation_class": "node-action",
+        "risk": "med",
+        "payload": {"recommendation": "fix perms", "target": {"host": "controller"}},
+        "result": {},
+    }
+    with patch.object(agent_mod, "change_record_open",
+                      return_value={"ref": "new-ref", "url": "http://pr/2"}) as opened, \
+         patch.object(agent_mod, "change_record_approval", return_value=None):
+        assert CFOperator._prepare_node_action_change_record(op, work) is None
+    intent = opened.call_args[0][1]
+    assert intent["commands"] == _PLAN["commands"]
+    assert intent["image"].startswith("ghcr.io/")
+    assert "image_digest" not in intent
 
 
 def test_build_executor_manifest_node_action_disabled_no_mount():

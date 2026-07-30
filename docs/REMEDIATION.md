@@ -142,19 +142,70 @@ they toggle live (no redeploy) from the console pipeline bar.
 Auto-execute gate (enqueue → `queued` vs `needs-human`): class ∈
 {`gitops-patch`,`k8s-action`} **and** `risk == low` **and** `confidence ≥ 0.8`.
 
+## Imperative lane change records
+
+`node-action` remediations run a gated command plan over SSH. Console approve
+still escalates the queue row. For evidence-grade approval, deploy the
+**changerecord** microservice (`changerecord/`) and point the agent at it with
+`CFOP_EXEC_CHANGE_URL` (also under `remediation.executor.node_action.change_record.url`).
+
+When the URL is **unset** (homelab default), behavior is unchanged: console
+escalation → drain → executor SSH. No change-record HTTP at all.
+
+When the URL is **set**:
+
+1. Agent drain generates a concrete command plan (same allowlist the executor
+   uses), then opens a record (`POST /open`) stamping that plan + executor
+   image + flag snapshot. The plan is what a human merges.
+2. Agent polls `GET /approval/{ref}` each tick; spawn is blocked until a named
+   identity is returned. Unapproved records never reach `run_ssh_plan`.
+3. Executor runs the **approved plan** (skips LLM planning), then `POST /close`
+   with per-command results.
+
+### Microservice swap model
+
+One ClusterIP **Service** (`cfop-changerecord`); swap the **Deployment image** to
+change backends — github today, snow/jira later. Agent and executor only speak
+the 3-endpoint HTTP contract; there is no `github|snow|jira` switch in either.
+
+| image | approval meaning |
+|---|---|
+| `cfoperator-changerecord` (github) | record PR under `change-records/`; merge = approve |
+| snow / jira (later) | ticket state from `CFOP_EXEC_CHANGE_APPROVED_STATE` / `_CLOSED_STATE` on the recorder |
+
+Approved/closed state names stay **env on the recorder Deployment**, not in the
+agent or executor.
+
+Auth: when `CFOP_CHANGERECORD_SHARED_SECRET` is set on the recorder, `/open`,
+`/approval/{ref}`, and `/close` require `X-CFOP-Token` (same idiom as
+`CFOP_COMPLETION_SHARED_SECRET`). `/healthz` stays open. Wire the secret into
+the agent Deployment and the executor Job (via `cfoperator-secrets`).
+
+**GitHub close note:** after merge, `close()` commits the outcome onto the
+**base** branch (the merged record file). That commit fails under branch
+protection on `main` — either allow the recorder bot to push to base, or treat
+close as best-effort and rely on the PR conversation / agent result for
+evidence until a follow-up lands a PR-based close path.
+
 ## Safety model
 
 Single-file diffs only (multi-file → `needs-human`), exact-context apply (drift →
 decline), secret-path refusal, branch dedupe, per-tick + retry caps, read-only
-executor SA, and **human merge is the only mutation path**.
+executor SA, and **human merge is the only mutation path** for GitOps classes.
+Node-actions additionally require change-record approval when
+`CFOP_EXEC_CHANGE_URL` is set.
 
 ## Deploy
 
 CI (`build-cfoperator-main.yml`) builds `cfoperator`, `cfoperator-worker`,
-`cfoperator-executor`. RBAC + config live in the private `cfoperator-deploy`
-repo: `cfoperator-executor` read-only SA, the `remediation:` config block, and
-`cfoperator-secrets` (`GITHUB_TOKEN`, `ANTHROPIC_API_KEY`,
-`CFOP_COMPLETION_SHARED_SECRET`). After an executor code change, wait for the
+`cfoperator-executor`. The changerecord image is built from `changerecord/`
+(add a CI job when deploying it). RBAC + config live in the private
+`cfoperator-deploy` repo: `cfoperator-executor` read-only SA, the
+`remediation:` config block, and `cfoperator-secrets` (`GITHUB_TOKEN`,
+`ANTHROPIC_API_KEY`, `CFOP_COMPLETION_SHARED_SECRET`, and optionally
+`CFOP_CHANGERECORD_SHARED_SECRET`). Wire `CFOP_EXEC_CHANGE_URL` and the
+changerecord shared secret into the **agent** Deployment (not only Job env)
+when using change records. After an executor code change, wait for the
 `build-executor` job before re-queuing (else the Job pulls the prior `:main`).
 
 ## Operate

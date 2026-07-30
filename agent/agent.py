@@ -56,6 +56,17 @@ from tools import ToolRegistry
 # Import Ollama pool (for parallel sweeps)
 from ollama_pool import OllamaPool
 from remediation import RemediationProposer
+from change_record_client import (
+    ChangeRecordClientError,
+    get_approval as change_record_approval,
+    open_record as change_record_open,
+)
+from node_action_plan import (
+    build_command_prompt as _na_build_command_prompt,
+    normalize_plan as _na_normalize_plan,
+    parse_command_plan as _na_parse_command_plan,
+    validate_plan as _na_validate_plan,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -1569,22 +1580,38 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         cycle can't fan out the whole queue. A spawn failure fails the claim so
         the reaper/retry path recovers it rather than leaving it stuck claimed.
         Returns the number of executor Jobs spawned.
+
+        When ``CFOP_EXEC_CHANGE_URL`` is set, node-action rows are gated on the
+        changerecord microservice (open + named approval) before spawn — so an
+        unapproved record never reaches ``run_ssh_plan``. Unset URL preserves
+        prior console-escalation behavior byte-for-byte.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_drain'):
             return 0
         max_per_tick = max(1, int(rcfg.get('max_drain_per_tick', 3)))
         spawned = 0
+        # Rows released mid-tick (awaiting approval / transient recorder errors)
+        # go back to queued with the same priority — skip them for the rest of
+        # this tick so they cannot starve later items via reclaim churn.
+        skip_ids: set = set()
         for _ in range(max_per_tick):
             job_name = f"cfop-executor-{uuid.uuid4().hex[:10]}"
             try:
-                work = self.kb.claim_next_remediation(job_name)
+                work = self.kb.claim_next_remediation(job_name, exclude_ids=skip_ids)
             except Exception as e:
                 logger.error(f"Remediation claim failed: {e}", exc_info=True)
                 break
             if not work:
                 break  # queue drained
             try:
+                gated = self._prepare_node_action_change_record(work)
+                if gated is None:
+                    # Waiting on approval (or hard gate failure already released/
+                    # failed the claim). Do not spawn; continue draining others.
+                    skip_ids.add(work['id'])
+                    continue
+                work = gated
                 self._spawn_remediation_executor(job_name, work)
                 spawned += 1
                 REMEDIATION_SPAWNED.labels(result='ok').inc()
@@ -1597,12 +1624,182 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 REMEDIATION_SPAWNED.labels(result='failed').inc()
                 logger.error(f"Executor spawn failed for remediation #{work['id']}: {e}")
                 self.kb.fail_remediation(work['id'], f"executor spawn failed: {e}")
+                skip_ids.add(work['id'])
         return spawned
 
     def _executor_config(self) -> Dict[str, Any]:
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         ec = rcfg.get('executor') if isinstance(rcfg.get('executor'), dict) else {}
         return ec
+
+    def _change_record_url(self) -> str:
+        """Base URL of the changerecord Service, or '' when unset (homelab default).
+
+        Prefer process env (wired into the agent Deployment) over nested config
+        so the gate is not Job-only.
+        """
+        env_url = (os.getenv('CFOP_EXEC_CHANGE_URL') or '').strip()
+        if env_url:
+            return env_url.rstrip('/')
+        na = self._executor_config().get('node_action')
+        na = na if isinstance(na, dict) else {}
+        cr = na.get('change_record') if isinstance(na.get('change_record'), dict) else {}
+        return str(cr.get('url') or '').strip().rstrip('/')
+
+    def _complete_node_action_plan(self, prompt: str) -> str:
+        """LLM completion for a node-action plan (same model floor as the Job)."""
+        import requests as req
+        ec = self._executor_config()
+        llm = ec.get('llm') if isinstance(ec.get('llm'), dict) else {}
+        na = ec.get('node_action') if isinstance(ec.get('node_action'), dict) else {}
+        model = str(na.get('model') or llm.get('model') or _ANTHROPIC_DEFAULT_EXEC_MODEL)
+        api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY required to plan node-action before open")
+        payload = {
+            'model': model,
+            'max_tokens': 2048,
+            'messages': [{'role': 'user', 'content': prompt}],
+        }
+        resp = req.post(
+            'https://api.anthropic.com/v1/messages',
+            json=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'x-api-key': api_key,
+                'anthropic-version': '2023-06-01',
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return '\n'.join(
+            b.get('text', '') for b in resp.json().get('content', [])
+            if b.get('type') == 'text'
+        )
+
+    def _generate_node_action_plan(self, work: Dict[str, Any]) -> Dict[str, Any]:
+        """Produce a validated {host, commands, explanation} plan for open()/spawn.
+
+        Reuses any plan already persisted on the change_record / payload so a
+        reclaim after release does not re-call the LLM.
+        """
+        result = work.get('result') if isinstance(work.get('result'), dict) else {}
+        cr = result.get('change_record') if isinstance(result.get('change_record'), dict) else {}
+        for candidate in (cr.get('plan'), work.get('approved_plan'),
+                          (work.get('payload') or {}).get('plan') if isinstance(work.get('payload'), dict) else None):
+            if isinstance(candidate, dict) and candidate.get('commands'):
+                plan = _na_normalize_plan(candidate)
+                ok, reason = _na_validate_plan(plan['commands'])
+                if ok:
+                    return plan
+                raise RuntimeError(f"persisted plan failed safety gate: {reason}")
+        reply = self._complete_node_action_plan(_na_build_command_prompt(work))
+        parsed = _na_parse_command_plan(reply)
+        if not parsed:
+            raise RuntimeError("model produced no parseable command plan")
+        plan = _na_normalize_plan(parsed)
+        ok, reason = _na_validate_plan(plan['commands'])
+        if not ok:
+            raise RuntimeError(f"command plan failed safety gate: {reason}")
+        return plan
+
+    def _prepare_node_action_change_record(self, work: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Gate node-actions on changerecord approval before executor spawn.
+
+        Generates the concrete command plan *before* open() so the record PR
+        a human merges is exactly what the executor will run. Returns the
+        (possibly enriched) work order when spawn may proceed, or None when
+        the claim was released/failed and spawn must be skipped.
+        Non-node-action work and unset URL are pass-through (no behavior change).
+        """
+        if (work.get('remediation_class') or '') != 'node-action':
+            return work
+        base_url = self._change_record_url()
+        if not base_url:
+            return work
+
+        result = work.get('result') if isinstance(work.get('result'), dict) else {}
+        cr = dict(result.get('change_record')) if isinstance(result.get('change_record'), dict) else {}
+        ref = str(cr.get('ref') or '').strip()
+        payload = work.get('payload') if isinstance(work.get('payload'), dict) else {}
+        target = payload.get('target') if isinstance(payload.get('target'), dict) else {}
+        na = self._executor_config().get('node_action')
+        na = na if isinstance(na, dict) else {}
+        ec = self._executor_config()
+        image = ec.get('image', os.getenv('CFOP_EXECUTOR_IMAGE',
+                                         'ghcr.io/aachtenberg/cfoperator-executor:main'))
+        flag_snapshot = {
+            "node_action.enabled": bool(na.get('enabled')),
+            "queue_drain": bool(self._remediation_flag('queue_drain')),
+            "change_record.url": base_url,
+        }
+
+        try:
+            plan = self._generate_node_action_plan(work)
+            cr = {**cr, "plan": plan}
+            host = (plan.get('host') or str(target.get('host') or na.get('host') or '')).strip()
+            if not ref:
+                opened = change_record_open(base_url, {
+                    "remediation_id": work.get('id'),
+                    "investigation_id": work.get('investigation_id'),
+                    "host": host,
+                    "commands": list(plan.get('commands') or []),
+                    "justification": str(payload.get('recommendation') or ''),
+                    "image": str(image),
+                    "flag_snapshot": flag_snapshot,
+                    "risk": str(work.get('risk') or ''),
+                    "confidence": work.get('confidence'),
+                })
+                ref = str(opened['ref'])
+                cr = {"ref": ref, "url": opened.get('url'), "plan": plan}
+                logger.info(
+                    "Opened change record for remediation #%s (ref=%s, %d cmd(s))",
+                    work['id'], ref[:24], len(plan.get('commands') or []),
+                )
+
+            approval = change_record_approval(base_url, ref)
+            if approval is None:
+                # Persist ref+plan, release claim — next drain tick reclaims and re-polls.
+                # Never spawn: unapproved records must not reach run_ssh_plan.
+                self.kb.release_remediation_claim(
+                    work['id'],
+                    result={"change_record": cr},
+                    last_error="awaiting change-record approval",
+                )
+                return None
+        except ChangeRecordClientError as e:
+            logger.error("Change-record gate failed for remediation #%s: %s", work['id'], e)
+            # Only closed-without-merge (HTTP 409) burns an attempt; transport/5xx
+            # release and retry next tick so a recorder blip cannot needs-human.
+            if e.status == 409:
+                self.kb.fail_remediation(work['id'], f"change record gate: {e}")
+            else:
+                self.kb.release_remediation_claim(
+                    work['id'],
+                    result={"change_record": cr} if cr else None,
+                    last_error=f"change record transient: {e}",
+                )
+            return None
+        except Exception as e:  # noqa: BLE001
+            # Plan generation / validation failures are hard — burn an attempt.
+            logger.error("Change-record plan failed for remediation #%s: %s", work['id'], e)
+            self.kb.fail_remediation(work['id'], f"change record plan: {e}")
+            return None
+
+        # Approved — stamp ref + approval + approved_plan into the Job work order.
+        enriched = dict(work)
+        enriched['change_record_ref'] = ref
+        enriched['change_record_url'] = cr.get('url')
+        enriched['change_record_approval'] = approval
+        enriched['approved_plan'] = plan
+        try:
+            self.kb.update_remediation_status(
+                work['id'], 'claimed',
+                result={"change_record": {**cr, "approval": approval, "plan": plan}},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("could not persist change-record approval: %s", e)
+        return enriched
 
     def _build_executor_manifest(self, job_name: str, work_order: Dict[str, Any]) -> Dict[str, Any]:
         """Build the cfoperator-executor Job manifest for a claimed remediation.
@@ -1660,6 +1857,26 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 {"name": "CFOP_SSH_USER", "value": str(na.get('ssh_user', 'aachten'))},
                 {"name": "CFOP_SSH_SECRET_DIR", "value": "/ssh-secret"},
             ]
+            # Change-record close URL for the executor (agent already gated on
+            # approval before spawn). Unset → executor skips close entirely.
+            cr = na.get('change_record') if isinstance(na.get('change_record'), dict) else {}
+            change_url = (
+                (os.getenv('CFOP_EXEC_CHANGE_URL') or '').strip()
+                or str(cr.get('url') or '').strip()
+            ).rstrip('/')
+            if change_url:
+                env.append({"name": "CFOP_EXEC_CHANGE_URL", "value": change_url})
+                # Shared secret for /close (optional; matches changerecord Deployment).
+                env.append({
+                    "name": "CFOP_CHANGERECORD_SHARED_SECRET",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": secrets_name,
+                            "key": "CFOP_CHANGERECORD_SHARED_SECRET",
+                            "optional": True,
+                        }
+                    },
+                })
             # Node-action is the only path that runs shell on a host, so it pins
             # its own model floor: a cost downgrade of the generic executor model
             # must never silently drop the model deciding what to run on hosts.

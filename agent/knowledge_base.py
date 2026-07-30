@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 from contextlib import contextmanager
 
 from sqlalchemy import (
@@ -3299,17 +3299,26 @@ class KnowledgeBase:
                  confidence=confidence, status=status)
             return queue_id
 
-    def claim_next_remediation(self, executor_job_name: str) -> Optional[Dict[str, Any]]:
+    def claim_next_remediation(
+        self,
+        executor_job_name: str,
+        exclude_ids: Optional[Iterable[int]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Lease the highest-priority queued remediation for an executor Job.
 
         Sets status='claimed' + executor_job_name + claimed_at atomically so a
         crashed executor leaves a stale lease the reaper can recover. Returns
         the work order, or None when the queue is empty.
+
+        ``exclude_ids`` skips rows already released this drain tick (e.g.
+        awaiting change-record approval) so they cannot starve later items.
         """
+        skip = {int(i) for i in (exclude_ids or []) if i is not None}
         with self.session_scope() as session:
-            item = session.query(RemediationQueue).filter_by(
-                status='queued'
-            ).order_by(
+            q = session.query(RemediationQueue).filter_by(status='queued')
+            if skip:
+                q = q.filter(~RemediationQueue.id.in_(skip))
+            item = q.order_by(
                 RemediationQueue.priority.asc(),
                 RemediationQueue.created_at.asc(),
             ).first()
@@ -3329,6 +3338,8 @@ class KnowledgeBase:
                 "confidence": item.confidence,
                 "attempts": item.attempts,
                 "payload": item.payload,
+                "result": item.result,
+                "pr_url": item.pr_url,
             }
 
     def update_remediation_status(
@@ -3343,7 +3354,10 @@ class KnowledgeBase:
         """Transition a remediation to a new status (executor/verify/PR hooks).
 
         Terminal states ('resolved', 'rejected', 'needs-human') stamp
-        completed_at. Returns False if the id is unknown.
+        completed_at. When ``result`` is provided it is merged into the
+        existing dict (same as ``release_remediation_claim``) so callers do
+        not clobber prior attempt / change-record fields. Returns False if
+        the id is unknown.
         """
         with self.session_scope() as session:
             item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
@@ -3353,12 +3367,44 @@ class KnowledgeBase:
             if pr_url is not None:
                 item.pr_url = pr_url
             if result is not None:
-                item.result = result
+                existing = dict(item.result or {}) if isinstance(item.result, dict) else {}
+                existing.update(result)
+                item.result = existing
             if last_error is not None:
                 item.last_error = last_error
             if status in ('resolved', 'rejected', 'needs-human'):
                 item.completed_at = datetime.now(timezone.utc)
             _log("info", "Remediation status updated", queue_id=remediation_id, status=status)
+            return True
+
+    def release_remediation_claim(
+        self,
+        remediation_id: int,
+        *,
+        result: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+    ) -> bool:
+        """Return a claimed row to queued without burning an attempt.
+
+        Used when the change-record microservice has opened a record but
+        approval is not yet available — the next drain tick will reclaim and
+        re-check. Optionally merges ``result`` (e.g. change_record ref) so the
+        open is not repeated.
+        """
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return False
+            item.status = 'queued'
+            item.executor_job_name = None
+            item.claimed_at = None
+            if result is not None:
+                existing = dict(item.result or {}) if isinstance(item.result, dict) else {}
+                existing.update(result)
+                item.result = existing
+            if last_error is not None:
+                item.last_error = last_error
+            _log("info", "Remediation claim released", queue_id=remediation_id)
             return True
 
     def fail_remediation(self, remediation_id: int, error: str) -> str:
