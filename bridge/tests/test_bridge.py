@@ -16,8 +16,10 @@ class StubClient:
         self.investigations = []
         self.investigate_status = "queued"
 
-    async def run_chat(self, message, history=None, timeout=None):
-        self.chats.append({"message": message, "history": list(history or [])})
+    async def run_chat(self, message, history=None, timeout=None,
+                       backend="auto", model=None):
+        self.chats.append({"message": message, "history": list(history or []),
+                           "backend": backend, "model": model})
         return {"chat_id": "c1", "response": f"reply to: {message}", "tool_calls": 2}
 
     async def start_investigation(self, alert):
@@ -87,6 +89,31 @@ def test_investigate_prefix_enqueues_with_idempotency_key():
     stub.investigate_status = "deduped"
     reply2 = asyncio.run(rt.start("investigate: pod X crashlooping", thread_id="t9"))
     assert "deduped" in reply2.lower()
+
+
+def test_claude_prefix_escalates_one_turn_to_anthropic():
+    stub = StubClient()
+    rt = LocalCfopRuntime(stub, escalation_model="claude-opus-5")
+
+    asyncio.run(rt.start("how is cm5?", thread_id="t1"))
+    assert stub.chats[0]["backend"] == "auto" and stub.chats[0]["model"] is None
+
+    reply = asyncio.run(rt.follow_up("t1", "claude: is that etcd diagnosis real?"))
+    assert stub.chats[1]["backend"] == "anthropic"
+    assert stub.chats[1]["model"] == "claude-opus-5"
+    assert stub.chats[1]["message"] == "is that etcd diagnosis real?"
+    assert reply.startswith(":brain:")
+    # prior local-model turn stays in history for the escalated turn
+    assert stub.chats[1]["history"][0]["content"] == "how is cm5?"
+
+    # next un-prefixed turn drops back to the local model
+    asyncio.run(rt.follow_up("t1", "ok thanks"))
+    assert stub.chats[2]["backend"] == "auto"
+
+    # opus: alias works too
+    asyncio.run(rt.start("Opus: second opinion", thread_id="t2"))
+    assert stub.chats[3]["backend"] == "anthropic"
+    assert stub.chats[3]["message"] == "second opinion"
 
 
 def test_investigate_prefix_without_body_is_usage_hint():

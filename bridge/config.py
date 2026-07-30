@@ -14,6 +14,8 @@ class BridgeSettings:
     agent_url: str = "http://127.0.0.1:8083"
     chat_timeout: float = 300.0
     max_history_turns: int = 10
+    # local runtime: model for the per-message "claude:" escalation prefix
+    escalation_model: str = "claude-opus-5"
     # anthropic runtime only
     anthropic_model: str = "claude-opus-5"
     mcp_url: str = "http://cfoperator-mcp.apps.svc.cluster.local:8090/mcp"
@@ -51,6 +53,7 @@ class BridgeSettings:
             chat_timeout=float(env.get("CFOP_BRIDGE_CHAT_TIMEOUT") or cls.chat_timeout),
             max_history_turns=int(
                 env.get("CFOP_BRIDGE_MAX_HISTORY_TURNS") or cls.max_history_turns),
+            escalation_model=env.get("CFOP_BRIDGE_ESCALATION_MODEL") or cls.escalation_model,
             anthropic_model=env.get("CFOP_BRIDGE_ANTHROPIC_MODEL") or cls.anthropic_model,
             mcp_url=(env.get("CFOP_MCP_URL") or cls.mcp_url),
             mcp_token=mcp_token,

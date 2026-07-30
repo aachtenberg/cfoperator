@@ -35,6 +35,7 @@ def main():
             client,
             chat_timeout=settings.chat_timeout,
             max_history_turns=settings.max_history_turns,
+            escalation_model=settings.escalation_model,
         )
     SlackBridge(settings, runtime).run()
     return 0
