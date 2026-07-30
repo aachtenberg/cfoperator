@@ -138,11 +138,34 @@ def test_node_action_success_marks_resolved():
     runs = [{"command": "c1", "returncode": 0, "stdout": "", "stderr": ""},
             {"command": "c2", "returncode": 0, "stdout": "", "stderr": ""}]
     with patch.object(entrypoint, "make_llm", return_value=_FixedLLM(reply)), \
-         patch.object(entrypoint, "run_ssh_plan", return_value=runs) as ssh:
+         patch.object(entrypoint, "run_ssh_plan", return_value=runs) as ssh, \
+         patch.object(entrypoint, "close_record") as close:
         payload = run(_env(_node_order()))
     # host empty in plan + target -> falls through; target host 'controller' used.
     assert ssh.call_args[0][0] == "controller"
     assert payload["status"] == "resolved" and "2 command(s) on controller" in payload["detail"]
+    # Unset CFOP_EXEC_CHANGE_URL → no close HTTP (homelab / prior behavior).
+    close.assert_not_called()
+
+
+def test_node_action_closes_change_record_when_url_and_ref_set():
+    order = _node_order()
+    order["change_record_ref"] = "opaque-ref"
+    order["change_record_url"] = "http://pr/9"
+    order["change_record_approval"] = {
+        "identity": "carol", "timestamp": "t", "state": "merged",
+    }
+    reply = '{"host": "controller", "commands": ["sudo -n chmod 600 /root/.ssh/config"], "explanation": "fix"}'
+    runs = [{"command": "c1", "returncode": 0, "stdout": "", "stderr": ""}]
+    with patch.object(entrypoint, "make_llm", return_value=_FixedLLM(reply)), \
+         patch.object(entrypoint, "run_ssh_plan", return_value=runs), \
+         patch.object(entrypoint, "close_record", return_value=None) as close:
+        payload = run(_env(order, CFOP_EXEC_CHANGE_URL="http://changerecord:8091"))
+    assert payload["status"] == "resolved"
+    close.assert_called_once()
+    assert close.call_args[0][0] == "http://changerecord:8091"
+    assert close.call_args[0][1] == "opaque-ref"
+    assert payload["result"]["approval"]["identity"] == "carol"
 
 
 def test_node_action_command_failure_routes_to_human():

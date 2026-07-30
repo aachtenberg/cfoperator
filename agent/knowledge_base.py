@@ -3329,6 +3329,8 @@ class KnowledgeBase:
                 "confidence": item.confidence,
                 "attempts": item.attempts,
                 "payload": item.payload,
+                "result": item.result,
+                "pr_url": item.pr_url,
             }
 
     def update_remediation_status(
@@ -3359,6 +3361,36 @@ class KnowledgeBase:
             if status in ('resolved', 'rejected', 'needs-human'):
                 item.completed_at = datetime.now(timezone.utc)
             _log("info", "Remediation status updated", queue_id=remediation_id, status=status)
+            return True
+
+    def release_remediation_claim(
+        self,
+        remediation_id: int,
+        *,
+        result: Optional[Dict[str, Any]] = None,
+        last_error: Optional[str] = None,
+    ) -> bool:
+        """Return a claimed row to queued without burning an attempt.
+
+        Used when the change-record microservice has opened a record but
+        approval is not yet available — the next drain tick will reclaim and
+        re-check. Optionally merges ``result`` (e.g. change_record ref) so the
+        open is not repeated.
+        """
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return False
+            item.status = 'queued'
+            item.executor_job_name = None
+            item.claimed_at = None
+            if result is not None:
+                existing = dict(item.result or {}) if isinstance(item.result, dict) else {}
+                existing.update(result)
+                item.result = existing
+            if last_error is not None:
+                item.last_error = last_error
+            _log("info", "Remediation claim released", queue_id=remediation_id)
             return True
 
     def fail_remediation(self, remediation_id: int, error: str) -> str:

@@ -56,6 +56,11 @@ from tools import ToolRegistry
 # Import Ollama pool (for parallel sweeps)
 from ollama_pool import OllamaPool
 from remediation import RemediationProposer
+from change_record_client import (
+    ChangeRecordClientError,
+    get_approval as change_record_approval,
+    open_record as change_record_open,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -1569,6 +1574,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         cycle can't fan out the whole queue. A spawn failure fails the claim so
         the reaper/retry path recovers it rather than leaving it stuck claimed.
         Returns the number of executor Jobs spawned.
+
+        When ``CFOP_EXEC_CHANGE_URL`` is set, node-action rows are gated on the
+        changerecord microservice (open + named approval) before spawn — so an
+        unapproved record never reaches ``run_ssh_plan``. Unset URL preserves
+        prior console-escalation behavior byte-for-byte.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_drain'):
@@ -1585,6 +1595,12 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             if not work:
                 break  # queue drained
             try:
+                gated = self._prepare_node_action_change_record(work)
+                if gated is None:
+                    # Waiting on approval (or hard gate failure already released/
+                    # failed the claim). Do not spawn; continue draining others.
+                    continue
+                work = gated
                 self._spawn_remediation_executor(job_name, work)
                 spawned += 1
                 REMEDIATION_SPAWNED.labels(result='ok').inc()
@@ -1603,6 +1619,98 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         ec = rcfg.get('executor') if isinstance(rcfg.get('executor'), dict) else {}
         return ec
+
+    def _change_record_url(self) -> str:
+        """Base URL of the changerecord Service, or '' when unset (homelab default).
+
+        Prefer process env (wired into the agent Deployment) over nested config
+        so the gate is not Job-only.
+        """
+        env_url = (os.getenv('CFOP_EXEC_CHANGE_URL') or '').strip()
+        if env_url:
+            return env_url.rstrip('/')
+        na = self._executor_config().get('node_action')
+        na = na if isinstance(na, dict) else {}
+        cr = na.get('change_record') if isinstance(na.get('change_record'), dict) else {}
+        return str(cr.get('url') or '').strip().rstrip('/')
+
+    def _prepare_node_action_change_record(self, work: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Gate node-actions on changerecord approval before executor spawn.
+
+        Returns the (possibly enriched) work order when spawn may proceed, or
+        None when the claim was released/failed and spawn must be skipped.
+        Non-node-action work and unset URL are pass-through (no behavior change).
+        """
+        if (work.get('remediation_class') or '') != 'node-action':
+            return work
+        base_url = self._change_record_url()
+        if not base_url:
+            return work
+
+        result = work.get('result') if isinstance(work.get('result'), dict) else {}
+        cr = result.get('change_record') if isinstance(result.get('change_record'), dict) else {}
+        ref = str(cr.get('ref') or '').strip()
+        payload = work.get('payload') if isinstance(work.get('payload'), dict) else {}
+        target = payload.get('target') if isinstance(payload.get('target'), dict) else {}
+        na = self._executor_config().get('node_action')
+        na = na if isinstance(na, dict) else {}
+        ec = self._executor_config()
+        image = ec.get('image', os.getenv('CFOP_EXECUTOR_IMAGE',
+                                         'ghcr.io/aachtenberg/cfoperator-executor:main'))
+        flag_snapshot = {
+            "node_action.enabled": bool(na.get('enabled')),
+            "queue_drain": bool(self._remediation_flag('queue_drain')),
+            "change_record.url": base_url,
+        }
+
+        try:
+            if not ref:
+                opened = change_record_open(base_url, {
+                    "remediation_id": work.get('id'),
+                    "investigation_id": work.get('investigation_id'),
+                    "host": str(target.get('host') or na.get('host') or ''),
+                    "commands": list(payload.get('commands') or []),
+                    "justification": str(payload.get('recommendation') or ''),
+                    "image_digest": str(image),
+                    "flag_snapshot": flag_snapshot,
+                    "risk": str(work.get('risk') or ''),
+                    "confidence": work.get('confidence'),
+                })
+                ref = str(opened['ref'])
+                cr = {"ref": ref, "url": opened.get('url')}
+                logger.info(
+                    "Opened change record for remediation #%s (ref=%s)",
+                    work['id'], ref[:24],
+                )
+
+            approval = change_record_approval(base_url, ref)
+            if approval is None:
+                # Persist ref, release claim — next drain tick reclaims and re-polls.
+                # Never spawn: unapproved records must not reach run_ssh_plan.
+                self.kb.release_remediation_claim(
+                    work['id'],
+                    result={"change_record": cr},
+                    last_error="awaiting change-record approval",
+                )
+                return None
+        except ChangeRecordClientError as e:
+            logger.error("Change-record gate failed for remediation #%s: %s", work['id'], e)
+            self.kb.fail_remediation(work['id'], f"change record gate: {e}")
+            return None
+
+        # Approved — stamp ref + approval into the work order the Job receives.
+        enriched = dict(work)
+        enriched['change_record_ref'] = ref
+        enriched['change_record_url'] = cr.get('url')
+        enriched['change_record_approval'] = approval
+        try:
+            self.kb.update_remediation_status(
+                work['id'], 'claimed',
+                result={"change_record": {**cr, "approval": approval}},
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("could not persist change-record approval: %s", e)
+        return enriched
 
     def _build_executor_manifest(self, job_name: str, work_order: Dict[str, Any]) -> Dict[str, Any]:
         """Build the cfoperator-executor Job manifest for a claimed remediation.
@@ -1660,6 +1768,15 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 {"name": "CFOP_SSH_USER", "value": str(na.get('ssh_user', 'aachten'))},
                 {"name": "CFOP_SSH_SECRET_DIR", "value": "/ssh-secret"},
             ]
+            # Change-record close URL for the executor (agent already gated on
+            # approval before spawn). Unset → executor skips close entirely.
+            cr = na.get('change_record') if isinstance(na.get('change_record'), dict) else {}
+            change_url = (
+                (os.getenv('CFOP_EXEC_CHANGE_URL') or '').strip()
+                or str(cr.get('url') or '').strip()
+            ).rstrip('/')
+            if change_url:
+                env.append({"name": "CFOP_EXEC_CHANGE_URL", "value": change_url})
             # Node-action is the only path that runs shell on a host, so it pins
             # its own model floor: a cost downgrade of the generic executor model
             # must never silently drop the model deciding what to run on hosts.

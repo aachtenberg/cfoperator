@@ -4,15 +4,19 @@ Runs as an ephemeral Job spawned by the agent's drainer. Contract only — no
 imports from the agent monolith:
 
   in   env: CFOP_REMEDIATION_JSON (work order), CFOP_COMPLETION_URL/_TOKEN,
-            GITHUB_TOKEN, CFOP_GIT_REPO/_BASE, CFOP_TEMPLATES_DIR, + LLM env
+            GITHUB_TOKEN, CFOP_GIT_REPO/_BASE, CFOP_TEMPLATES_DIR, + LLM env,
+            + CFOP_EXEC_CHANGE_URL (optional; close-only after node-action)
   do   route by remediation_class:
          gitops/* -> render remediation.md -> swappable LLM -> unified diff -> open PR
          node-action -> swappable LLM -> gated command plan -> run over SSH
+           -> optional change-record close
   out  POST the outcome to the agent callback, which drives the queue row
 
 GitOps classes are read-only toward the cluster: the only mutation is a GitHub
 PR, which a human merges and ArgoCD then syncs. The node-action path runs a
 guarded command plan on a host over SSH (opt-in via CFOP_NODE_ACTION_ENABLED).
+When a change-record Service is configured, the *agent* opens the record and
+gates spawn on named approval; this Job only POSTs /close on completion.
 Stdlib only.
 """
 
@@ -25,6 +29,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from change_record_client import close_record
 from diff import extract_diff_block
 from github import GitHubClient, get_file, list_repo_files, open_pr_from_diff
 from llm import make_llm
@@ -161,12 +166,32 @@ def run(env: Dict[str, str]) -> Dict[str, Any]:
     return run_gitops(env, work_order)
 
 
+def _maybe_close_change_record(env: Dict[str, str], work_order: Dict[str, Any],
+                               outcome: Dict[str, Any]) -> Optional[str]:
+    """Best-effort POST /close when the agent stamped a change_record_ref.
+
+    Returns an error string on failure, None on success / skipped.
+    """
+    base = (env.get("CFOP_EXEC_CHANGE_URL") or "").strip()
+    ref = str(work_order.get("change_record_ref") or "").strip()
+    if not base or not ref:
+        return None
+    err = close_record(base, ref, outcome)
+    if err:
+        logger.warning("change record close failed (execution already ran): %s", err)
+    return err
+
+
 def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any]:
     """Execute a node-action: LLM proposes a command plan, gate it, run over SSH.
 
     Reaches here only after a human escalated the queue row (node-actions are
     never auto-eligible). Opt-in per deploy via CFOP_NODE_ACTION_ENABLED so the
     image cannot silently start running shell on hosts.
+
+    When CFOP_EXEC_CHANGE_URL is set, the agent has already opened a change
+    record and gated spawn on named approval; this path only closes the record
+    after SSH. Unset URL → prior behavior (no change-record HTTP at all).
     """
     payload = work_order.get("payload") or {}
     if (env.get("CFOP_NODE_ACTION_ENABLED") or "").strip().lower() not in ("1", "true", "yes"):
@@ -195,13 +220,42 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
 
     results = run_ssh_plan(host, commands, env)  # raises SSHError on connect failure -> reaped/retried
     failed = [r for r in results if r["returncode"] != 0]
-    result = {"host": host, "commands": commands, "executed": results,
-              "explanation": plan.get("explanation", "")}
+    approval = work_order.get("change_record_approval") if isinstance(
+        work_order.get("change_record_approval"), dict) else None
+    result: Dict[str, Any] = {
+        "host": host,
+        "commands": commands,
+        "executed": results,
+        "explanation": plan.get("explanation", ""),
+    }
+    if approval:
+        result["approval"] = {
+            "identity": approval.get("identity"),
+            "timestamp": approval.get("timestamp"),
+            "state": approval.get("state"),
+        }
+    if work_order.get("change_record_ref"):
+        result["change_record"] = {
+            "ref": work_order.get("change_record_ref"),
+            "url": work_order.get("change_record_url"),
+        }
+
+    close_err = _maybe_close_change_record(env, work_order, {
+        "host": host,
+        "commands": commands,
+        "executed": results,
+        "approval": result.get("approval"),
+        "change_record": result.get("change_record"),
+    })
+    if close_err:
+        result["change_record_close_error"] = close_err
+
+    pr_url = work_order.get("change_record_url")
     if failed:
         last = failed[-1]
-        return build_completion_payload(work_order, "needs-human", None,
+        return build_completion_payload(work_order, "needs-human", pr_url,
                                         f"command exited {last['returncode']}: {last['stderr'][:200]}", result)
-    return build_completion_payload(work_order, "resolved", None,
+    return build_completion_payload(work_order, "resolved", pr_url,
                                     f"ran {len(results)} command(s) on {host}", result)
 
 

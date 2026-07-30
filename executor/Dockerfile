@@ -29,6 +29,7 @@ WORKDIR /home/executor
 COPY --chown=executor:executor diff.py /home/executor/diff.py
 COPY --chown=executor:executor llm.py /home/executor/llm.py
 COPY --chown=executor:executor github.py /home/executor/github.py
+COPY --chown=executor:executor change_record_client.py /home/executor/change_record_client.py
 COPY --chown=executor:executor nodeaction.py /home/executor/nodeaction.py
 COPY --chown=executor:executor entrypoint.py /home/executor/entrypoint.py
 COPY --chown=executor:executor templates/ /home/executor/templates/
