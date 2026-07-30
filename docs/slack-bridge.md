@@ -53,9 +53,15 @@ when to call `start_investigation`.
 
 Run locally: `SLACK_BOT_TOKEN=... SLACK_APP_TOKEN=... python -m bridge`
 
-## Deployment
+## Deployment (live since 2026-07-29)
 
-Same image as the agent, sibling Deployment (like cfoperator-mcp):
+Deployed as `cfoperator-bridge` in `apps` (cfoperator-deploy repo): same
+image as the agent, `Recreate` strategy (two connected bridges would
+double-answer every mention), amd64-pinned, no Service (Socket Mode is
+outbound-only). The anthropic-runtime creds (`ANTHROPIC_API_KEY`,
+`CFOP_MCP_TOKEN`) are already wired from existing Secrets, so switching
+runtimes is a one-line change of `CFOP_BRIDGE_RUNTIME` in the manifest.
+Reference shape:
 
 ```bash
 kubectl -n apps create secret generic cfoperator-bridge \
@@ -81,21 +87,36 @@ No Service needed — Socket Mode is outbound-only.
 
 ## Usage
 
-- `@cfoperator how is raspberrypi5?` — agent answers in the thread (it runs
-  its full tool loop server-side; expect up to a few minutes for hard
-  questions; the 👀 reaction means it's working).
-- Reply in the thread for follow-ups — history carries over.
-- `@cfoperator investigate: promtail crashlooping on pi3` — enqueues a full
-  investigation (idempotent per thread+text; retries won't double-enqueue).
-- `@cfoperator claude: is that etcd diagnosis on cm5 actually real?` — this
-  ONE turn runs on Anthropic (`CFOP_BRIDGE_ESCALATION_MODEL`, default
-  `claude-opus-5`) instead of the local model, with the thread's history
-  carried over — the in-Slack second opinion for suspect local-model
-  conclusions. `opus:` is an alias; the reply is tagged with 🧠 + the model
-  name. Costs API tokens per use.
+**Where it listens:**
 
-The same per-call selection is exposed to every MCP host via `ask_sre`'s
-optional `backend` (`auto|ollama|groq|anthropic|xai`) and `model` params.
+- DM the bot directly, or `@cfoperator <message>` in any channel it's been
+  invited to (`/invite @cfoperator`).
+- Reply **in the thread** to follow up — conversation history lives per
+  thread (capped at `CFOP_BRIDGE_MAX_HISTORY_TURNS`). A fresh top-level
+  message starts a fresh context.
+- The 👀 reaction means it's working. Local-model answers take ~30–60s;
+  `claude:` turns and hard tool-heavy questions can take a couple of
+  minutes.
+
+**Message syntax** (prefixes are case-insensitive; everything else is plain
+English — there is no other command syntax):
+
+| You type | What happens |
+|---|---|
+| `@cfoperator how is raspberrypi5?` | Normal chat — local model (free), full agent tool loop over metrics/logs/k8s/SSH |
+| `@cfoperator claude: is that cm5 diagnosis real?` | This ONE turn runs on Anthropic (`CFOP_BRIDGE_ESCALATION_MODEL`, default `claude-opus-5`) with thread history carried over — the in-Slack second opinion for suspect local-model conclusions. `opus:` is an alias. Reply tagged 🧠 + model name. Costs API tokens per use. |
+| `@cfoperator investigate: promtail crashlooping on pi3` | Enqueues a full asynchronous investigation (idempotent per thread+text — retries won't double-enqueue); results land in the investigations console |
+
+Example session for a suspect diagnosis:
+
+```
+@cfoperator what did investigation 2006 conclude about cm5?
+   ↳ (in thread) claude: does that conclusion hold up given the known NIC-hang bug?
+```
+
+The same per-call model selection is exposed to every MCP host via
+`ask_sre`'s optional `backend` (`auto|ollama|groq|anthropic|xai`) and
+`model` params — see [mcp-server.md](mcp-server.md).
 
 ## Design notes
 

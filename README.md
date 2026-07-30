@@ -11,6 +11,11 @@ The deployed system runs as two processes that split responsibilities along a cl
 - **`event_runtime`** (separate process / pod) — ingests alerts from Alertmanager, applies dedupe/cooldown policies, runs the decision engine, dispatches actions, and owns the notification surface (Slack, Discord).
 - **`agent`** (this codebase's main process) — runs LLM-driven investigations, owns the knowledge base + embeddings, runs the proactive deep sweep, and serves the chat UI.
 
+Two additional sibling deployments reuse the same image and expose the agent to conversational surfaces:
+
+- **`mcp_server`** — a standard [MCP](https://modelcontextprotocol.io/) facade over the agent API (10 tools, 4 resources, 8 skill prompts) with bearer auth + scope tiers (`read` ⊂ `investigate` ⊂ `remediate`) and a structured audit log, consumable by Claude Desktop/Code, Cursor, or any MCP host. See [docs/mcp-server.md](docs/mcp-server.md).
+- **`bridge`** — a Slack Socket Mode bot (`@cfoperator` mentions/DMs, threaded conversations, `investigate:` enqueue, per-message `claude:` model escalation) with pluggable runtimes: `local` (agent chat API, free) or `anthropic` (Claude drives the MCP server's tools). See [docs/slack-bridge.md](docs/slack-bridge.md).
+
 When an alert arrives, `event_runtime` asks the agent's LLM to **triage** it into `log_only` / `notify` / `investigate` / `escalate`. Only `investigate` and `escalate` trigger a full LLM investigation: the runtime POSTs the alert to the agent's `/v1/investigate`, the agent enqueues, runs the LLM investigation with tools, and POSTs the completed `ActionResult` back to `event_runtime` at `/v1/investigations/{alert_id}/complete`, which fires the single Slack notification with the real outcome (tagged with the LLM that triaged it, e.g. `triaged by ollama/qwen3-coder:latest`). See [docs/event-runtime-quickstart.md](docs/event-runtime-quickstart.md) for the full flow + env vars (`CFOP_AGENT_URL`, `CFOP_COMPLETION_SHARED_SECRET`).
 
 ```mermaid
@@ -245,6 +250,8 @@ make all            # all platforms
 | `agent/agent.py` | OODA loop (proactive sweep + HTTP-driven `run_investigation`), chat handler, tool registry |
 | `web_server.py` | Flask + Waitress; REST + WebSocket APIs + `POST /v1/investigate` for event_runtime delegation |
 | `event_runtime/` | Standalone process: alert ingest, dedupe, decisions, action dispatch, Slack/Discord |
+| `mcp_server/` | MCP facade over the agent API: tools/resources/prompts, bearer auth + scopes, audit log ([docs](docs/mcp-server.md)) |
+| `bridge/` | Slack Socket Mode bot with pluggable runtimes (local agent / Claude-over-MCP) ([docs](docs/slack-bridge.md)) |
 | `event_runtime/http_actions.py` | `HTTPInvestigateActionHandler` + completion endpoint auth/validation helpers |
 | `ui/index.html` | Single-page chat UI (dark theme, sidebar layout) |
 | `agent/knowledge_base.py` | ResilientKnowledgeBase wrapping PostgreSQL + pgvector |
