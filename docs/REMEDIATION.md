@@ -198,8 +198,8 @@ Node-actions additionally require change-record approval when
 ## Deploy
 
 CI (`build-cfoperator-main.yml`) builds `cfoperator`, `cfoperator-worker`,
-`cfoperator-executor`. The changerecord image is built from `changerecord/`
-(add a CI job when deploying it). RBAC + config live in the private
+`cfoperator-executor`, and `cfoperator-changerecord` (from `changerecord/`,
+floating `:main` tag like the worker/executor). RBAC + config live in the private
 `cfoperator-deploy` repo: `cfoperator-executor` read-only SA, the
 `remediation:` config block, and `cfoperator-secrets` (`GITHUB_TOKEN`,
 `ANTHROPIC_API_KEY`, `CFOP_COMPLETION_SHARED_SECRET`, and optionally
