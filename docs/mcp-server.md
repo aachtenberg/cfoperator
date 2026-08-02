@@ -28,6 +28,7 @@ Scopes form a hierarchy: `remediate` ⊃ `investigate` ⊃ `read`.
 | `ask_sre(question, timeout_seconds?, backend='auto', model=None)` | investigate | Blocking chat through the agent's own tool loop (metrics/logs/k8s/SSH, all in-cluster). `backend` selects the agent-side LLM per call: `auto` \| `ollama` \| `groq` \| `anthropic` \| `xai`; `model` is provider-specific (e.g. `backend='anthropic', model='claude-opus-5'` for a second opinion on a suspect local-model conclusion). Can take minutes. |
 | `approve_remediation(remediation_id)` | remediate | Hands the row to the executor (status → queued) |
 | `reject_remediation(remediation_id, note?)` | remediate | Rejects with optional operator note |
+| `resolve_remediation(remediation_id, note?)` | remediate | Manual close (status → resolved) for work already handled — fixed by hand or superseded; note lands in `result.resolution_note` |
 
 ## Resources
 

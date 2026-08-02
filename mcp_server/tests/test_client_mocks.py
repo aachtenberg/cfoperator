@@ -66,6 +66,23 @@ def test_reject_posts_note_body():
     assert seen["body"] == {"note": "won't fix"}
 
 
+def test_resolve_posts_note_body():
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": 7, "status": "resolved"})
+
+    client = make_client(handler)
+    run(client.resolve_remediation(7, note="fixed by hand"))
+    assert seen["path"] == "/api/remediations/7/resolve"
+    assert seen["body"] == {"note": "fixed by hand"}
+
+    run(client.resolve_remediation(7))
+    assert seen["body"] == {}
+
+
 def test_404_maps_to_not_found_not_retryable():
     client = make_client(
         lambda request: httpx.Response(404, json={"error": "not found"}))

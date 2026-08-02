@@ -213,7 +213,7 @@ when using change records. After an executor code change, wait for the
 - Console: `:8083/remediations` (worklist + actions + flag toggles),
   `:8083/investigations` (outcomes + drill).
 - APIs: `GET /api/remediations[/<id>]`, `GET /api/investigations[/<id>]`,
-  `POST /api/remediations` (create), `.../<id>/{approve,reject,reclassify}`,
+  `POST /api/remediations` (create), `.../<id>/{approve,resolve,reject,reclassify}`,
   `GET/POST /api/remediation/flags`, `POST /api/remediation/run-feed`.
 
 ## Known gaps

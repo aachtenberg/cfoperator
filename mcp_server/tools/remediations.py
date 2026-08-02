@@ -1,4 +1,4 @@
-"""Remediation worklist tools: list / get / approve / reject."""
+"""Remediation worklist tools: list / get / approve / resolve / reject."""
 
 from mcp_server.tools import guarded
 
@@ -49,3 +49,17 @@ def register(mcp, client, settings):
             settings, "remediate",
             lambda: client.reject_remediation(remediation_id, note=note),
             tool="reject_remediation")
+
+    @mcp.tool()
+    async def resolve_remediation(remediation_id: int, note: str | None = None) -> dict:
+        """Close a remediation as done (status -> resolved) with an optional note.
+
+        Use when the work is already handled — fixed by hand, or superseded —
+        rather than rejected as unwanted. The note records why and is stored on
+        the row as result.resolution_note. Does NOT execute anything.
+        Requires scope: remediate.
+        """
+        return await guarded(
+            settings, "remediate",
+            lambda: client.resolve_remediation(remediation_id, note=note),
+            tool="resolve_remediation")

@@ -190,3 +190,8 @@ class CfopClient:
         return await self._request(
             "POST", f"/api/remediations/{remediation_id}/reject",
             json={"note": note} if note else {})
+
+    async def resolve_remediation(self, remediation_id, note=None):
+        return await self._request(
+            "POST", f"/api/remediations/{remediation_id}/resolve",
+            json={"note": note} if note else {})
