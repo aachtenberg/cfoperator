@@ -809,6 +809,15 @@ def test_resolve_endpoint_allows_empty_note():
     assert op.kb.update_remediation_status.call_args.kwargs["result"]["resolution_note"] is None
 
 
+def test_resolve_endpoint_survives_non_object_body():
+    """A bare JSON list/string is 'no note', not a 500."""
+    client, op = _console_client()
+    resp = client.post("/api/remediations/7/resolve", data="[1, 2]",
+                       content_type="application/json")
+    assert resp.status_code == 200
+    assert op.kb.update_remediation_status.call_args.kwargs["result"]["resolution_note"] is None
+
+
 def test_resolve_endpoint_404s_on_unknown_id():
     client, op = _console_client()
     op.kb.update_remediation_status.return_value = False

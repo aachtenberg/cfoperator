@@ -241,15 +241,19 @@ async function detail(id){
     <h3>Payload</h3><pre>${esc(JSON.stringify(p,null,2))}</pre>`;
 }
 
-// Closed-by-hand rows carry the why in result.resolution_note (last_error is
-// for failures only), so surface it next to completed_at.
+// Every resolved row gets a close line (so completed_at is always visible),
+// whichever path closed it. Closed-by-hand rows also carry the why in
+// result.resolution_note — last_error is for failures only. Attribution is
+// shown only when the row actually says who: operator (console/MCP) or a
+// merged PR (reconcile); the executor's completion payload names neither.
 function resolutionHtml(r){
   const res = r.result || {};
-  if(!res.resolution_note && res.resolved_by!=='operator') return '';
-  const who = res.resolved_by==='operator' ? 'operator' : (res.resolved_by||'—');
-  return `<div class="kv"><b>resolved</b> by ${esc(who)}` +
+  const note = res.resolution_note;
+  if(r.status!=='resolved' && !note) return '';
+  const who = res.resolved_by || (res.pr_merged ? 'PR merge' : '');
+  return `<div class="kv"><b>resolved</b>` + (who?` by ${esc(who)}`:'') +
     (r.completed_at?` · ${esc(r.completed_at)}`:'') +
-    (res.resolution_note?`<br><span class="muted">${esc(res.resolution_note)}</span>`:'') + `</div>`;
+    (note?`<br><span class="muted">${esc(note)}</span>`:'') + `</div>`;
 }
 
 function setFilter(s){ filter=s; paint(); }

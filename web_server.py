@@ -801,7 +801,10 @@ class WebServer:
             in result.resolution_note, not last_error (which means failure).
             """
             try:
-                note = (request.get_json(silent=True) or {}).get('note')
+                # get_json can decode to a non-dict (a bare list/string); treat
+                # anything that isn't an object as "no note" rather than 500ing.
+                body = request.get_json(silent=True)
+                note = body.get('note') if isinstance(body, dict) else None
                 note = (str(note).strip()[:2000] or None) if note else None
                 ok = self.operator.kb.update_remediation_status(
                     remediation_id, 'resolved',
