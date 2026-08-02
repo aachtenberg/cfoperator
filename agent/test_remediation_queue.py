@@ -9,6 +9,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from knowledge_base import (  # noqa: E402
@@ -778,6 +780,8 @@ def _console_client():
     operator = MagicMock()
     operator.kb.update_remediation_status.return_value = True
     operator.kb.get_remediation.return_value = {"id": 7, "status": "resolved"}
+    operator.kb.reclassify_remediation.return_value = {"id": 7, "status": "queued"}
+    operator._REMEDIATION_FLAGS = ("queue_feed", "queue_drain")
     server = WebServer.__new__(WebServer)
     server.operator = operator
     server.host, server.port = "localhost", 0
@@ -816,6 +820,22 @@ def test_resolve_endpoint_survives_non_object_body():
                        content_type="application/json")
     assert resp.status_code == 200
     assert op.kb.update_remediation_status.call_args.kwargs["result"]["resolution_note"] is None
+
+
+@pytest.mark.parametrize("path", [
+    "/api/remediations",
+    "/api/remediations/7/reject",
+    "/api/remediations/7/resolve",
+    "/api/remediations/7/reclassify",
+    "/api/remediation/flags",
+])
+@pytest.mark.parametrize("body", ["[1, 2]", '"note"', "7"])
+def test_console_posts_never_500_on_non_object_body(path, body):
+    """json_object() reads a non-object body as empty, so the endpoint's own
+    field validation decides the status (200/400) — never AttributeError."""
+    client, _ = _console_client()
+    resp = client.post(path, data=body, content_type="application/json")
+    assert resp.status_code != 500
 
 
 def test_resolve_endpoint_404s_on_unknown_id():

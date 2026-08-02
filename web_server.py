@@ -28,6 +28,20 @@ WEBSOCKET_AVAILABLE = False
 
 logger = logging.getLogger("cfoperator.web")
 
+
+def json_object() -> Dict[str, Any]:
+    """Request body as a dict, for the operator-console POSTs.
+
+    ``request.get_json`` happily decodes a bare list/string/number, so the
+    ``(get_json(silent=True) or {}).get(...)`` idiom raised AttributeError
+    (a 500) on ``POST [1,2]``. Anything that isn't a JSON object reads as an
+    empty body, so the endpoint's own field validation decides the status.
+    The ``/v1/*`` machine endpoints stay stricter — they 400 on a non-object.
+    """
+    body = request.get_json(silent=True)
+    return body if isinstance(body, dict) else {}
+
+
 class WebServer:
     """
     Web server for CFOperator UI and APIs.
@@ -726,7 +740,7 @@ class WebServer:
         def create_remediation_api():
             """Manually enqueue a remediation (operator-authored)."""
             try:
-                b = request.get_json(silent=True) or {}
+                b = json_object()
                 rec = str(b.get('recommendation') or '').strip()
                 if not rec:
                     return jsonify({'error': 'recommendation required'}), 400
@@ -783,7 +797,7 @@ class WebServer:
         @self.app.route('/api/remediations/<int:remediation_id>/reject', methods=['POST'])
         def reject_remediation(remediation_id):
             try:
-                note = (request.get_json(silent=True) or {}).get('note')
+                note = json_object().get('note')
                 ok = self.operator.kb.update_remediation_status(remediation_id, 'rejected', last_error=note)
                 if not ok:
                     return jsonify({'error': 'not found'}), 404
@@ -801,10 +815,7 @@ class WebServer:
             in result.resolution_note, not last_error (which means failure).
             """
             try:
-                # get_json can decode to a non-dict (a bare list/string); treat
-                # anything that isn't an object as "no note" rather than 500ing.
-                body = request.get_json(silent=True)
-                note = body.get('note') if isinstance(body, dict) else None
+                note = json_object().get('note')
                 note = (str(note).strip()[:2000] or None) if note else None
                 ok = self.operator.kb.update_remediation_status(
                     remediation_id, 'resolved',
@@ -819,7 +830,7 @@ class WebServer:
         @self.app.route('/api/remediations/<int:remediation_id>/reclassify', methods=['POST'])
         def reclassify_remediation_api(remediation_id):
             try:
-                b = request.get_json(silent=True) or {}
+                b = json_object()
                 conf = b.get('confidence')
                 if isinstance(conf, str):
                     conf = float(conf) if conf.strip() else None
@@ -847,7 +858,7 @@ class WebServer:
         @self.app.route('/api/remediation/flags', methods=['POST'])
         def set_remediation_flag():
             try:
-                b = request.get_json(silent=True) or {}
+                b = json_object()
                 name, value = b.get('name'), b.get('value')
                 if name not in self.operator._REMEDIATION_FLAGS:
                     return jsonify({'error': 'unknown flag'}), 400
