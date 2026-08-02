@@ -133,6 +133,7 @@ bridge/                      # optional second process — phase 2+
 | `get_remediation` | `GET /api/remediations/<id>` | `read` | yes (added in MVP; not in original draft table) |
 | `approve_remediation` | `POST .../approve` | `remediate` | yes |
 | `reject_remediation` | `POST .../reject` | `remediate` | yes |
+| `resolve_remediation` | `POST .../resolve` | `remediate` | yes (added post-MVP; manual close for work already handled) |
 | `search_knowledge` | `GET /api/kb/search` (added in phase 2) | `read` | yes |
 
 `GET /api/kb/search` exists as of phase 2 — a thin agent route so the MCP
@@ -205,7 +206,7 @@ Token (bearer / `CFOP_MCP_TOKEN`) carries a scope set:
 |-------|---------|
 | `read` | list/get investigations, remediations, resources, search_knowledge |
 | `investigate` | `read` + triage, start_investigation, ask_sre |
-| `remediate` | `investigate` + approve/reject remediations |
+| `remediate` | `investigate` + approve/resolve/reject remediations |
 
 Defaults:
 
@@ -493,7 +494,7 @@ _Checked 2026-07-28 against `mcp_server/`, `web_server.py`, `event_runtime/`,
 - `POST /v1/triage`, `POST /v1/investigate` → 202 `{status, alert_id, queue_depth}`
 - `GET /api/investigations`, `GET /api/investigations/<id>`
 - `POST /api/chat`, `GET /api/chat/events/<id>`, `POST /api/chat/<id>/stop`
-- `GET/POST /api/remediations*`, approve/reject
+- `GET/POST /api/remediations*`, approve/resolve/reject
 - `GET /api/health` (unused by MCP readiness yet)
 - event_runtime `GET /history?alert_id=` (unused by MCP yet)
 

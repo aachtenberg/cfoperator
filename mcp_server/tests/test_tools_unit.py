@@ -92,6 +92,10 @@ class StubClient:
         self.calls.append(("reject_remediation", remediation_id, note))
         return {"id": remediation_id, "status": "rejected"}
 
+    async def resolve_remediation(self, remediation_id, note=None):
+        self.calls.append(("resolve_remediation", remediation_id, note))
+        return {"id": remediation_id, "status": "resolved"}
+
 
 def call(server, tool, args):
     result = asyncio.run(server.call_tool(tool, args))
@@ -145,6 +149,27 @@ def test_remediate_scope_can_approve():
     out = call(server, "approve_remediation", {"remediation_id": 1})
     assert out == {"id": 1, "status": "queued"}
     assert stub.calls == [("approve_remediation", 1)]
+
+
+def test_investigate_scope_cannot_resolve():
+    server, stub = make(scopes={"read", "investigate"})
+    out = call(server, "resolve_remediation", {"remediation_id": 1})
+    assert out["error"]["code"] == "unauthorized"
+    assert stub.calls == []
+
+
+def test_remediate_scope_can_resolve_with_note():
+    server, stub = make()
+    out = call(server, "resolve_remediation",
+               {"remediation_id": 4, "note": "fixed by hand"})
+    assert out == {"id": 4, "status": "resolved"}
+    assert stub.calls == [("resolve_remediation", 4, "fixed by hand")]
+
+
+def test_resolve_note_is_optional():
+    server, stub = make()
+    call(server, "resolve_remediation", {"remediation_id": 4})
+    assert stub.calls == [("resolve_remediation", 4, None)]
 
 
 # --- payload assembly ---

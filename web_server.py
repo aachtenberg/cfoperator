@@ -792,6 +792,27 @@ class WebServer:
                 logger.error(f"reject remediation {remediation_id} failed: {e}")
                 return jsonify({'error': str(e)}), 500
 
+        @self.app.route('/api/remediations/<int:remediation_id>/resolve', methods=['POST'])
+        def resolve_remediation(remediation_id):
+            """Operator closes a row as done (fixed by hand, or no longer needed).
+
+            The automated paths to 'resolved' are merge-reconcile and executor
+            completion; this is the manual one. The note is the *why* — it lands
+            in result.resolution_note, not last_error (which means failure).
+            """
+            try:
+                note = (request.get_json(silent=True) or {}).get('note')
+                note = (str(note).strip()[:2000] or None) if note else None
+                ok = self.operator.kb.update_remediation_status(
+                    remediation_id, 'resolved',
+                    result={'resolved_by': 'operator', 'resolution_note': note})
+                if not ok:
+                    return jsonify({'error': 'not found'}), 404
+                return jsonify(self.operator.kb.get_remediation(remediation_id))
+            except Exception as e:
+                logger.error(f"resolve remediation {remediation_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/api/remediations/<int:remediation_id>/reclassify', methods=['POST'])
         def reclassify_remediation_api(remediation_id):
             try:

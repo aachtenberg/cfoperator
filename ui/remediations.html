@@ -220,6 +220,7 @@ async function detail(id){
     <h2 style="margin:0 0 8px">Remediation #${r.id}</h2>
     <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
       <button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>
+      <button class="chip" onclick="showResolve(${r.id})">✔ Resolve</button>
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
       <button class="chip" onclick="showReclassify(${r.id},'${esc(r.remediation_class)}','${esc(r.risk)}',${r.confidence==null?'null':r.confidence},'${esc((r.payload&&r.payload.repo)||'')}')">⟳ Reclassify</button>
       ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">🔎 Investigation #${r.investigation_id}</button>`:''}
@@ -232,11 +233,23 @@ async function detail(id){
     <div class="kv"><b>created</b> ${esc(r.created_at)} · <b>attempts</b> ${r.attempts}</div>
     ${r.pr_url?`<div class="kv"><b>PR</b> <a href="${esc(r.pr_url)}" target="_blank">${esc(r.pr_url)}</a></div>`:''}
     ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
+    ${resolutionHtml(r)}
     <h3>Recommendation</h3><pre>${esc(p.recommendation||p.title||'—')}</pre>
     ${p.finding?`<h3>Finding</h3><pre>${esc(p.finding)}</pre>`:''}
     ${p.evidence?`<h3>Evidence</h3><pre>${esc(p.evidence)}</pre>`:''}
     ${p.proposed_diff?`<h3>Proposed diff</h3><pre>${esc(p.proposed_diff)}</pre>`:''}
     <h3>Payload</h3><pre>${esc(JSON.stringify(p,null,2))}</pre>`;
+}
+
+// Closed-by-hand rows carry the why in result.resolution_note (last_error is
+// for failures only), so surface it next to completed_at.
+function resolutionHtml(r){
+  const res = r.result || {};
+  if(!res.resolution_note && res.resolved_by!=='operator') return '';
+  const who = res.resolved_by==='operator' ? 'operator' : (res.resolved_by||'—');
+  return `<div class="kv"><b>resolved</b> by ${esc(who)}` +
+    (r.completed_at?` · ${esc(r.completed_at)}`:'') +
+    (res.resolution_note?`<br><span class="muted">${esc(res.resolution_note)}</span>`:'') + `</div>`;
 }
 
 function setFilter(s){ filter=s; paint(); }
@@ -288,6 +301,15 @@ function showReject(id){
   const el=document.getElementById('rj-note'); if(el) el.focus();
 }
 function saveReject(id){ act(id,'reject',{note:document.getElementById('rj-note').value},'rejected'); }
+function showResolve(id){
+  document.getElementById('actionform').innerHTML =
+    `<div class="actform"><input id="rs-note" placeholder="what closed it (e.g. fixed by hand, superseded)" style="flex:1;min-width:200px"
+       onkeydown="if(event.key==='Enter')saveResolve(${id})">
+     <button class="chip" onclick="saveResolve(${id})">Confirm resolve</button>
+     <button class="chip" onclick="clearForm()">Cancel</button></div>`;
+  const el=document.getElementById('rs-note'); if(el) el.focus();
+}
+function saveResolve(id){ act(id,'resolve',{note:document.getElementById('rs-note').value},'resolved'); }
 function showReclassify(id,cls,risk,conf,repo){
   // chip pickers (not <select>): native dropdowns don't open inside the
   // transform'd drawer, and chips match the theme + are always clickable.

@@ -754,7 +754,7 @@ def test_remediation_row_dict_serializes():
     row = types.SimpleNamespace(
         id=5, status="needs-human", remediation_class="node-action", risk="med",
         confidence=0.6, host_id="rpi5", investigation_id=99, priority=5, attempts=0,
-        pr_url=None, last_error=None,
+        pr_url=None, last_error=None, result={"resolution_note": "fixed by hand"},
         created_at=datetime(2026, 6, 19, 12, 0, tzinfo=timezone.utc),
         claimed_at=None, completed_at=None, payload={"recommendation": "verify DNS"})
     d = remediation_row_dict(row)
@@ -762,6 +762,58 @@ def test_remediation_row_dict_serializes():
     assert d["created_at"].startswith("2026-06-19T12:00")
     assert d["claimed_at"] is None
     assert d["payload"]["recommendation"] == "verify DNS"
+    # the console renders the resolution note from result
+    assert d["result"]["resolution_note"] == "fixed by hand"
+
+
+# ---- operator console actions (manual close) ---------------------------------
+
+
+def _console_client():
+    """Flask test client wired to a stub operator whose kb records status writes."""
+    from web_server import WebServer
+    from flask import Flask
+    import threading as _t
+
+    operator = MagicMock()
+    operator.kb.update_remediation_status.return_value = True
+    operator.kb.get_remediation.return_value = {"id": 7, "status": "resolved"}
+    server = WebServer.__new__(WebServer)
+    server.operator = operator
+    server.host, server.port = "localhost", 0
+    server.app = Flask(__name__)
+    server.sock = None
+    server.ws_clients = []
+    server._chat_sessions = {}
+    server._sessions_lock = _t.Lock()
+    server._setup_routes()
+    return server.app.test_client(), operator
+
+
+def test_resolve_endpoint_closes_row_with_note():
+    client, op = _console_client()
+    resp = client.post("/api/remediations/7/resolve", json={"note": "fixed by hand"})
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "resolved"
+    args, kwargs = op.kb.update_remediation_status.call_args
+    assert args == (7, "resolved")
+    # the why goes in result, never last_error (which means failure)
+    assert kwargs["result"] == {"resolved_by": "operator", "resolution_note": "fixed by hand"}
+    assert "last_error" not in kwargs
+
+
+def test_resolve_endpoint_allows_empty_note():
+    client, op = _console_client()
+    resp = client.post("/api/remediations/7/resolve", json={"note": "   "})
+    assert resp.status_code == 200
+    assert op.kb.update_remediation_status.call_args.kwargs["result"]["resolution_note"] is None
+
+
+def test_resolve_endpoint_404s_on_unknown_id():
+    client, op = _console_client()
+    op.kb.update_remediation_status.return_value = False
+    resp = client.post("/api/remediations/999/resolve", json={"note": "x"})
+    assert resp.status_code == 404
 
 
 # ---- live flag resolution (console toggles) ----------------------------------

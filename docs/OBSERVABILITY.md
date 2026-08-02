@@ -49,7 +49,8 @@ Investigations/LLM/Triage drilldowns carved out of the fleet board.
 
 - **`/remediations`** — worklist (open items up top, **Closed (resolved/rejected)
   below a divider**), status/risk badges, detail drawer with the proposed diff/PR;
-  actions: approve / reject / reclassify (class·risk·repo); pipeline bar with live
+  actions: approve / resolve (manual close + note) / reject / reclassify
+  (class·risk·repo); pipeline bar with live
   `feed/drain/reap/verify` toggles + run-feed; toasts, click-away dismiss.
 - **`/investigations`** — outcome-filtered list + drill into each one's
   recommendation/findings (read what the agent concluded).

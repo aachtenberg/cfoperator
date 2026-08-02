@@ -415,6 +415,7 @@ def remediation_row_dict(r) -> Dict[str, Any]:
         "attempts": r.attempts,
         "pr_url": r.pr_url,
         "last_error": r.last_error,
+        "result": r.result,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "claimed_at": r.claimed_at.isoformat() if r.claimed_at else None,
         "completed_at": r.completed_at.isoformat() if r.completed_at else None,
@@ -437,6 +438,7 @@ class RemediationQueue(Base):
         queued -> claimed -> executing -> {pr-open -> verifying ->} resolved
         any in-flight state -> failed -> (retry) queued | needs-human
         pr-open -> rejected (human closed the PR)
+        any state -> resolved | rejected (operator closes it in the console)
     Non-auto-eligible recommendations are recorded directly as 'needs-human'
     so the queue is the single ledger of everything that wants doing.
     """
