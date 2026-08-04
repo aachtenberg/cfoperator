@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<!--
+  Console login. Deliberately self-contained: no external CSS/JS/fonts, so the
+  only path web_auth.py has to leave unauthenticated is /login itself. Adding a
+  stylesheet here would mean exempting static assets too, widening the
+  unauthenticated surface on a LAN-reachable port.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CFOperator — Sign in</title>
+  <style>
+    :root {
+      --bg: #0f1115; --card: #181b22; --fg: #e6e8ee; --muted: #9aa3b2;
+      --accent: #4f8cff; --border: #2a2f3a; --err: #ff6b6b;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f6f8; --card: #ffffff; --fg: #1a1d24; --muted: #5c6675;
+        --accent: #2563eb; --border: #dfe3ea; --err: #d92d20;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center;
+      justify-content: center; background: var(--bg); color: var(--fg);
+      font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      padding: 1.5rem;
+    }
+    .card {
+      width: 100%; max-width: 360px; background: var(--card);
+      border: 1px solid var(--border); border-radius: 12px; padding: 2rem;
+    }
+    h1 { margin: 0 0 .25rem; font-size: 1.25rem; }
+    p.sub { margin: 0 0 1.5rem; color: var(--muted); font-size: .875rem; }
+    label { display: block; font-size: .8125rem; color: var(--muted); margin-bottom: .35rem; }
+    input {
+      width: 100%; padding: .625rem .75rem; margin-bottom: 1rem;
+      background: var(--bg); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 8px; font-size: .9375rem;
+    }
+    input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+    button {
+      width: 100%; padding: .6875rem; border: 0; border-radius: 8px;
+      background: var(--accent); color: #fff; font-size: .9375rem;
+      font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: .6; cursor: default; }
+    .err {
+      display: none; margin-bottom: 1rem; padding: .625rem .75rem;
+      border-radius: 8px; font-size: .875rem;
+      color: var(--err); border: 1px solid var(--err); background: transparent;
+    }
+    .err.show { display: block; }
+  </style>
+</head>
+<body>
+  <form class="card" id="f" autocomplete="on">
+    <h1>CFOperator</h1>
+    <p class="sub">Sign in to the operator console.</p>
+
+    <div class="err" id="err" role="alert"></div>
+
+    <label for="u">Username</label>
+    <input id="u" name="username" autocomplete="username" required autofocus>
+
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password" required>
+
+    <button type="submit" id="btn">Sign in</button>
+  </form>
+
+  <script>
+    const form = document.getElementById('f');
+    const err  = document.getElementById('err');
+    const btn  = document.getElementById('btn');
+
+    // Preserve the originally requested page across the redirect.
+    const next = new URLSearchParams(location.search).get('next') || '/';
+
+    function fail(msg) {
+      err.textContent = msg;
+      err.classList.add('show');
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.classList.remove('show');
+      btn.disabled = true;
+      btn.textContent = 'Signing in…';
+
+      try {
+        const res = await fetch('/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // Same-origin so the session cookie is stored on success.
+          credentials: 'same-origin',
+          body: JSON.stringify({
+            username: document.getElementById('u').value,
+            password: document.getElementById('p').value,
+            next: next
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          location.href = data.next || '/';
+          return;
+        }
+        if (res.status === 429) return fail('Too many attempts. Try again in a few minutes.');
+        if (res.status === 503) return fail('Console auth is not configured on the server.');
+        fail('Invalid credentials.');
+      } catch (_) {
+        fail('Could not reach the server.');
+      }
+    });
+  </script>
+</body>
+</html>

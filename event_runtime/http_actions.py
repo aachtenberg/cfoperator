@@ -30,6 +30,29 @@ from .plugins import ActionHandler, DecisionEngine
 logger = logging.getLogger(__name__)
 
 
+# ---- outbound auth to the agent ------------------------------------------
+#
+# The agent console on :8083 requires credentials (web_auth.py). event_runtime
+# is a service, not a browser, so it presents the shared bearer token rather
+# than holding a session. Read per-call instead of cached at import so a
+# rotated secret takes effect on pod restart without special handling.
+#
+# Absent token => no header, which the agent answers with 401. That is the
+# correct failure: it surfaces the misconfiguration instead of silently
+# depending on the agent having auth turned off.
+
+AGENT_TOKEN_ENV = "CFOP_API_TOKEN"  # noqa: S105 - env var name, not a secret
+
+
+def _agent_headers() -> dict:
+    """Content-Type plus bearer auth for calls into the agent API."""
+    headers = {"Content-Type": "application/json"}
+    token = os.getenv(AGENT_TOKEN_ENV, "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 # ---- completion endpoint helpers -----------------------------------------
 #
 # Exposed here (next to the dispatch handler) so server.py and the FastAPI
@@ -181,7 +204,7 @@ class HTTPInvestigateActionHandler(ActionHandler):
         req = urllib.request.Request(
             endpoint,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=_agent_headers(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:
@@ -311,7 +334,7 @@ class HTTPTriageDecisionEngine(DecisionEngine):
         req = urllib.request.Request(
             endpoint,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=_agent_headers(),
             method="POST",
         )
         try:
