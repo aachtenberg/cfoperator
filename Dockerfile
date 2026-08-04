@@ -21,6 +21,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY agent/ ./agent/
 COPY web_server.py ./
+# web_server.py imports this at module load, so a missing copy is not a
+# degraded console — it is an ImportError that crash-loops the whole agent.
+COPY web_auth.py ./
 COPY observability/ ./observability/
 COPY tools/ ./tools/
 COPY skills/ ./skills/
