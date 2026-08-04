@@ -5,6 +5,7 @@ Tool Registry for CFOperator
 Provides infrastructure monitoring tools to the LLM:
 - Prometheus metrics queries
 - Loki log queries
+- TimescaleDB read-only telemetry queries (MQTT device data)
 - Docker container operations
 - SSH remote execution
 - System health checks
@@ -14,12 +15,14 @@ Tools for CFOperator's single-agent architecture.
 
 from typing import Dict, Any, List, Optional
 import logging
+import os
 import requests as _requests
 from .ssh import SSHTools
 from .discovery import DiscoveryTools
 from .k8s import K8sTools
 from .git import GitTools
 from .github import GitHubTools
+from .timescale import TimescaleTools
 
 logger = logging.getLogger("cfoperator.tools")
 
@@ -84,6 +87,23 @@ class ToolRegistry:
             logger.info(f"Local git tools initialized for {len(repos_config)} repos")
         else:
             self.git_tools = None
+
+        # Initialize TimescaleDB tools (read-only telemetry queries).
+        # Env-driven like the knowledge-base connection; disabled without a
+        # password so dev setups without the DB just lose the one tool.
+        ts_password = os.getenv('TIMESCALE_PASSWORD', '')
+        if ts_password:
+            self.timescale_tools = TimescaleTools(
+                host=os.getenv('TIMESCALE_HOST', 'timescaledb.data.svc.cluster.local'),
+                port=int(os.getenv('TIMESCALE_PORT', '5432')),
+                database=os.getenv('TIMESCALE_DB', 'sensors'),
+                user=os.getenv('TIMESCALE_USER', 'cfoperator_ro'),
+                password=ts_password,
+            )
+            logger.info("TimescaleDB tools initialized (read-only telemetry queries)")
+        else:
+            self.timescale_tools = None
+            logger.warning("TIMESCALE_PASSWORD not set - timescale_query tool disabled")
 
         # Register all tools
         self._register_tools()
@@ -243,6 +263,15 @@ class ToolRegistry:
                 tool_name = schema['name']
                 self.tools[tool_name] = {
                     'function': self._make_github_tool_wrapper(tool_name),
+                    'schema': schema
+                }
+
+        # TimescaleDB read-only telemetry queries
+        if self.timescale_tools:
+            for schema in self.timescale_tools.get_schemas():
+                tool_name = schema['name']
+                self.tools[tool_name] = {
+                    'function': self._make_timescale_tool_wrapper(tool_name),
                     'schema': schema
                 }
 
@@ -814,6 +843,26 @@ class ToolRegistry:
             return lambda **kwargs: {'error': f'Unknown SSH tool: {tool_name}'}
 
         method = getattr(self.ssh_tools, method_name)
+
+        def wrapper(**kwargs):
+            try:
+                return method(**kwargs)
+            except Exception as e:
+                return {'error': str(e), 'tool': tool_name}
+
+        return wrapper
+
+    def _make_timescale_tool_wrapper(self, tool_name: str):
+        """Create wrapper function for TimescaleDB tools."""
+        method_map = {
+            'timescale_query': 'query',
+        }
+
+        method_name = method_map.get(tool_name)
+        if not method_name:
+            return lambda **kwargs: {'error': f'Unknown timescale tool: {tool_name}'}
+
+        method = getattr(self.timescale_tools, method_name)
 
         def wrapper(**kwargs):
             try:
