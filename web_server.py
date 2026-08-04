@@ -22,6 +22,8 @@ from flask import Flask, request, jsonify, send_from_directory
 import time
 import requests
 
+from web_auth import install_auth
+
 # WebSocket support - disabled because Waitress (WSGI) doesn't support it
 # The UI uses HTTP polling via /api/chat instead
 WEBSOCKET_AVAILABLE = False
@@ -76,6 +78,14 @@ class WebServer:
 
         # Setup routes
         self._setup_routes()
+
+        # Console auth. Installed AFTER _setup_routes so the before_request gate
+        # covers every route registered above — :8083 is bound to the node's LAN
+        # interface (hostNetwork), and /api/remediations/<id>/approve hands work
+        # straight to the executor, so none of it can be left open. Browsers get
+        # a session cookie, services send Authorization: Bearer $CFOP_API_TOKEN.
+        # See web_auth.py for the exempt list and the fail-closed behaviour.
+        self.auth = install_auth(self.app, ui_dir='ui')
 
         logger.info(f"Web server initialized on {host}:{port}")
 

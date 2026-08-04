@@ -9,6 +9,7 @@ ask_sre MCP tool and the Slack bridge's LocalCfopRuntime.
 """
 
 import asyncio
+import os
 
 import httpx
 
@@ -37,10 +38,21 @@ class UpstreamError(Exception):
 class CfopClient:
     def __init__(self, settings, transport=None):
         self._settings = settings
+        # The agent console requires credentials (web_auth.py). This facade is a
+        # service, not a browser, so it presents the shared bearer token on every
+        # call rather than holding a session. Without it the agent answers 401 —
+        # the right failure, since it surfaces a missing secret instead of
+        # quietly assuming the agent has auth turned off.
+        headers = {}
+        token = os.getenv("CFOP_API_TOKEN", "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
         self._http = httpx.AsyncClient(
             base_url=settings.agent_url,
             timeout=settings.request_timeout,
             transport=transport,
+            headers=headers,
         )
 
     async def aclose(self):
