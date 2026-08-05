@@ -841,6 +841,20 @@ class WebServer:
             """Operator console: the remediation worklist."""
             return send_from_directory('ui', 'remediations.html')
 
+        # Not role-gated: serving the markup gives nothing away, and every
+        # /api/auth/* call the page makes is authorised on its own. Gating the
+        # page instead would only mean a member sees a 403 rather than a page
+        # that correctly shows them just their own tokens.
+        @self.app.route('/users')
+        def users_page():
+            """Operator console: user accounts."""
+            return send_from_directory('ui', 'users.html')
+
+        @self.app.route('/tokens')
+        def tokens_page():
+            """Operator console: API tokens."""
+            return send_from_directory('ui', 'tokens.html')
+
         # --- operator console actions (internal /api, like the other UI POSTs) ---
         @self.app.route('/api/remediations/<int:remediation_id>/approve', methods=['POST'])
         @require_role(ROLE_ADMIN)

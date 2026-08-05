@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<!--
+  Console user administration. Same shape as ui/remediations.html: static page,
+  inline CSS/JS, same-origin fetch() to /api/* so the session cookie rides along.
+  No external CSS/JS/fonts — this box has no outbound network, so the font stacks
+  fall back to the system sans/mono rather than hanging on a CDN that never answers.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFOperator · Users</title>
+<style>
+  /* Theme tokens shared with the main page (ui/index.html) */
+  :root {
+    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
+    --border:#2a2a3a; --border-subtle:#1e1e2e;
+    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
+    --accent:#22c55e; --accent-dim:#166534; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444;
+    --purple:#a371f7;
+    --radius:10px; --radius-sm:6px; --header-height:56px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
+    font-family:'Inter',-apple-system,sans-serif; font-size:14px; }
+  header { height:var(--header-height); background:var(--bg-secondary);
+    border-bottom:1px solid var(--border); display:flex; align-items:center;
+    padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
+  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700;
+    color:var(--accent); letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
+  .logo svg { width:24px; height:24px; opacity:.9; }
+  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
+  .right { margin-left:auto; display:flex; align-items:center; gap:14px; }
+  .muted { color:var(--text-secondary); font-size:12px; }
+  a { color:var(--cyan); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+
+  .divider { margin:24px 20px 2px; padding-top:14px; border-top:1px solid var(--border);
+    font-family:'JetBrains Mono',monospace; font-size:12px; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--text-secondary); }
+  .section { padding:0 20px; }
+
+  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:var(--radius-sm); padding:5px 11px; cursor:pointer; font-size:13px;
+    font-family:inherit; transition:border-color .15s,background .15s; }
+  .chip:hover { border-color:var(--text-secondary); }
+  .chip.danger { border-color:#7f1d1d; color:var(--red); }
+  .chip.danger:hover { border-color:var(--red); }
+  .chip:disabled { opacity:.5; cursor:default; }
+
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
+  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
+  td { font-size:13px; }
+  tbody tr:hover { background:var(--bg-hover); }
+  tbody tr.inactive td { opacity:.55; }
+  tbody tr.formrow:hover { background:transparent; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
+    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
+  .acts { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .empty { padding:40px; text-align:center; color:var(--text-muted); }
+
+  select, input[type="number"], input[type="text"], input[type="password"], input:not([type]) {
+    background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border);
+    border-radius:var(--radius-sm); padding:5px 8px; font-family:'JetBrains Mono',monospace;
+    font-size:13px; outline:none; }
+  select:focus, input:focus { border-color:var(--accent); }
+  .actform { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 12px; }
+  .actform label { color:var(--text-secondary); font-size:12px; }
+
+  .banner { margin:14px 20px 0; padding:10px 14px; border-radius:var(--radius-sm);
+    border:1px solid var(--border); border-left:3px solid var(--cyan);
+    background:var(--bg-secondary); font-size:13px; }
+  .banner.err { border-left-color:var(--red); color:var(--red); }
+  .banner.warn { border-left-color:var(--orange); }
+
+  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
+  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
+    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
+    font-size:13px; min-width:200px; transition:opacity .2s; }
+  .toast.ok { border-left-color:var(--accent); }
+  .toast.err { border-left-color:var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" class="logo" style="text-decoration:none" title="Back to console">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+    </svg>
+    CFOperator <span class="sub">/ Users</span>
+  </a>
+  <div class="right">
+    <span class="muted" id="whoami"></span>
+    <a href="/tokens">API tokens</a>
+    <a href="/remediations">remediations</a>
+    <a href="/investigations">investigations</a>
+    <a href="/">← console</a>
+  </div>
+</header>
+
+<div class="banner" id="banner" hidden></div>
+
+<div class="divider">Accounts <span class="muted" id="user-count"></span></div>
+<div class="section">
+  <!-- Admin-only: create account. See applyRole() — hiding is cosmetic. -->
+  <div class="admin-only" hidden>
+    <div class="actform">
+      <label for="nu-user">username</label>
+      <input id="nu-user" type="text" placeholder="alice" autocomplete="off" style="min-width:150px">
+      <label for="nu-pass">password</label>
+      <input id="nu-pass" type="password" placeholder="password" autocomplete="new-password" style="min-width:170px">
+      <label for="nu-role">role</label>
+      <select id="nu-role">
+        <option value="member">member</option>
+        <option value="admin">admin</option>
+      </select>
+      <button class="chip" id="nu-btn" onclick="createUser()">+ Create user</button>
+    </div>
+  </div>
+</div>
+<table>
+  <thead><tr>
+    <th>Username</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th>
+    <th class="admin-only" hidden>Actions</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty" hidden>No users.</div>
+
+<div class="divider">Change my password</div>
+<div class="section">
+  <p class="muted" style="margin:8px 0 0">
+    Self-service — everyone can change their own password. Signing in again is not required.
+  </p>
+  <div class="actform">
+    <label for="pw-cur">current</label>
+    <input id="pw-cur" type="password" autocomplete="current-password" placeholder="current password" style="min-width:170px">
+    <label for="pw-new">new</label>
+    <input id="pw-new" type="password" autocomplete="new-password" placeholder="new password" style="min-width:170px">
+    <label for="pw-new2">confirm</label>
+    <input id="pw-new2" type="password" autocomplete="new-password" placeholder="repeat new password" style="min-width:170px"
+      onkeydown="if(event.key==='Enter')changeMyPassword()">
+    <button class="chip" onclick="changeMyPassword()">Update password</button>
+  </div>
+</div>
+<div style="height:40px"></div>
+
+<div id="toasts"></div>
+
+<script>
+// ---- shared helpers (same conventions as ui/remediations.html) ----
+// Quotes matter as much as angle brackets: these values land inside HTML
+// attributes (value, data-*), where a bare " or ' breaks out of the attribute.
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Server timestamps are UTC; some carry a zone marker, some don't (sqlite writes
+// "YYYY-MM-DD HH:MM:SS"). Only the bare ones get a 'Z' appended, or the browser
+// would read them as local time and every age on the page would be off.
+function parseTs(iso){
+  if(!iso) return null;
+  const raw = String(iso).trim();
+  if(!/^\d{4}-\d\d-\d\d/.test(raw)) return null;
+  const s = raw.replace(/^(\d{4}-\d\d-\d\d) /, '$1T');
+  const bare = /\d\d:\d\d/.test(s) && !/(Z|[+-]\d\d:?\d\d)$/.test(s);
+  const d = new Date(bare ? s + 'Z' : s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmt(iso){
+  if(!iso) return '—';
+  const d = parseTs(iso);
+  return d ? d.toLocaleString() : esc(iso);
+}
+function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
+function badge(text, varname){ const c=color(varname);
+  return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(text)||'—'}</span>`; }
+function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
+  const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
+  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, 3800); }
+function banner(msg, kind){
+  const b=document.getElementById('banner');
+  if(!msg){ b.hidden=true; b.textContent=''; return; }
+  b.hidden=false; b.className='banner '+(kind||''); b.textContent=msg;
+}
+
+// The API answers errors as {"error": "..."} with 400/401/403/503; turn that into
+// one sentence an operator can act on.
+function errMsg(status, data){
+  const detail = (data && data.error) ? String(data.error) : '';
+  if(status===401) return 'your session has expired — sign in again at /login';
+  if(status===403) return 'you do not have permission' + (detail?' — '+detail:'');
+  if(status===503) return 'authentication backend unavailable' + (detail?' — '+detail:'');
+  if(status===0)   return 'could not reach the server';
+  return detail || ('request failed ('+status+')');
+}
+async function api(path, opts){
+  const o = Object.assign({credentials:'same-origin'}, opts||{});
+  if(o.body) o.headers = Object.assign({'Content-Type':'application/json'}, o.headers||{});
+  let res;
+  try { res = await fetch(path, o); }
+  catch(e){ return {ok:false, status:0, error:errMsg(0,null)}; }
+  let data=null; try { data = await res.json(); } catch(e){ data=null; }
+  if(!res.ok) return {ok:false, status:res.status, error:errMsg(res.status, data), data};
+  return {ok:true, status:res.status, data};
+}
+
+// ---- identity ----
+let ME = null;
+function isAdmin(){ return !!(ME && ME.role === 'admin'); }
+
+// Hiding admin controls is COSMETIC ONLY. It keeps a member's screen honest;
+// it is not a permission check. Every /api/auth/* call is authorised server-side
+// on its own, so a forged request from a hidden button is still rejected there.
+function applyRole(){
+  const admin = isAdmin();
+  document.querySelectorAll('.admin-only').forEach(el=>{ el.hidden = !admin; });
+}
+
+async function loadMe(){
+  const r = await api('/api/auth/me');
+  if(!r.ok){ banner(r.error, 'err'); return false; }
+  ME = r.data || {};
+  const who = ME.token_label
+    ? `token ${ME.token_label}` + (ME.username?` (${ME.username})`:'')
+    : (ME.username || 'anonymous');
+  document.getElementById('whoami').textContent = who + (ME.role?` · ${ME.role}`:'');
+  applyRole();
+  if(ME.auth_disabled){
+    banner('Authentication is disabled on this server — every request is treated as an admin. '
+         + 'Accounts managed here take effect once auth is enabled.', 'warn');
+  }
+  return true;
+}
+
+// ---- user list ----
+let USERS = [];
+async function loadUsers(){
+  const r = await api('/api/auth/users');
+  if(!r.ok){
+    USERS = [];
+    document.getElementById('rows').innerHTML = '';
+    document.getElementById('empty').hidden = false;
+    document.getElementById('empty').textContent = r.error;
+    document.getElementById('user-count').textContent = '';
+    if(r.status!==403) banner(r.error,'err');
+    return;
+  }
+  // The API wraps lists the way the rest of the console does
+  // ({users: [...]}, like {remediations: [...]}). Accept a bare array too, so
+  // a shape change shows up as an empty table rather than a thrown exception.
+  USERS = Array.isArray(r.data) ? r.data : (r.data && r.data.users) || [];
+  render();
+}
+
+function roleSelect(u){
+  const opts = ['member','admin'].map(v=>
+    `<option value="${v}"${v===u.role?' selected':''}>${v}</option>`).join('');
+  return `<select data-act="role" data-id="${Number(u.id)}" title="Change role">${opts}</select>`;
+}
+
+// Row markup carries only the numeric id in data-*; usernames are operator-supplied
+// text and never get interpolated into an inline handler.
+function rowHtml(u){
+  const id = Number(u.id);
+  const active = !!u.is_active;
+  return `<tr class="${active?'':'inactive'}">
+    <td class="mono">${esc(u.username)}</td>
+    <td>${badge(u.role, u.role==='admin'?'--purple':'--cyan')}</td>
+    <td>${badge(active?'active':'inactive', active?'--accent':'--text-muted')}</td>
+    <td class="muted">${fmt(u.created_at)}</td>
+    <td class="muted">${fmt(u.last_login_at)}</td>
+    <td class="admin-only" hidden><div class="acts">
+      ${roleSelect(u)}
+      <button class="chip${active?' danger':''}" data-act="${active?'deactivate':'reactivate'}" data-id="${id}">${active?'Deactivate':'Reactivate'}</button>
+      <button class="chip" data-act="pw" data-id="${id}">Reset password</button>
+    </div></td>
+  </tr>
+  <tr class="formrow" id="f-${id}" hidden><td colspan="6"><div class="formbody"></div></td></tr>`;
+}
+
+function render(){
+  document.getElementById('rows').innerHTML = USERS.map(rowHtml).join('');
+  document.getElementById('empty').hidden = USERS.length>0;
+  document.getElementById('empty').textContent = 'No users.';
+  document.getElementById('user-count').textContent = USERS.length ? `(${USERS.length})` : '';
+  applyRole();
+}
+
+function userById(id){ return USERS.find(u=>Number(u.id)===Number(id)) || {}; }
+function formRow(id){ return document.getElementById('f-'+Number(id)); }
+function closeForm(id){
+  const tr = formRow(id); if(!tr) return;
+  tr.hidden = true; tr.querySelector('.formbody').innerHTML = '';
+}
+function openForm(id, html){
+  document.querySelectorAll('tr.formrow').forEach(tr=>{ tr.hidden=true; tr.querySelector('.formbody').innerHTML=''; });
+  const tr = formRow(id); if(!tr) return;
+  tr.querySelector('.formbody').innerHTML = html; tr.hidden = false;
+}
+
+// ---- admin actions (inline forms + toasts, no browser dialogs) ----
+document.getElementById('rows').addEventListener('click', (e)=>{
+  const el = e.target.closest('[data-act]');
+  if(!el || el.tagName === 'SELECT') return;
+  const id = Number(el.dataset.id);
+  const act = el.dataset.act;
+  if(act==='deactivate' || act==='reactivate') confirmActive(id, act==='reactivate');
+  else if(act==='pw') showResetPassword(id);
+  else if(act==='pw-save') saveResetPassword(id);
+  else if(act==='active-save') setActive(id, el.dataset.value === '1');
+  else if(act==='cancel') closeForm(id);
+});
+document.getElementById('rows').addEventListener('change', (e)=>{
+  const el = e.target.closest('select[data-act="role"]');
+  if(!el) return;
+  setRole(Number(el.dataset.id), el.value);
+});
+
+function confirmActive(id, activate){
+  const u = userById(id);
+  openForm(id, `<div class="actform">
+      <span class="muted">${activate?'Reactivate':'Deactivate'} <b class="mono">${esc(u.username)}</b>?
+        ${activate?'They will be able to sign in again.':'Their sessions stop working and sign-in is refused.'}</span>
+      <button class="chip${activate?'':' danger'}" data-act="active-save" data-id="${Number(id)}" data-value="${activate?1:0}">Yes, ${activate?'reactivate':'deactivate'}</button>
+      <button class="chip" data-act="cancel" data-id="${Number(id)}">Cancel</button>
+    </div>`);
+}
+
+async function setActive(id, activate){
+  const r = await api('/api/auth/users/'+Number(id), {method:'PATCH', body:JSON.stringify({is_active:activate})});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast(activate?'account reactivated':'account deactivated','ok');
+  closeForm(id); await loadUsers();
+}
+
+async function setRole(id, role){
+  const r = await api('/api/auth/users/'+Number(id), {method:'PATCH', body:JSON.stringify({role})});
+  if(!r.ok){ toast(r.error,'err'); await loadUsers(); return; }
+  toast('role → '+role,'ok'); await loadUsers();
+}
+
+function showResetPassword(id){
+  const u = userById(id);
+  openForm(id, `<div class="actform">
+      <span class="muted">New password for <b class="mono">${esc(u.username)}</b></span>
+      <input id="rp-a" type="password" autocomplete="new-password" placeholder="new password" style="min-width:170px">
+      <input id="rp-b" type="password" autocomplete="new-password" placeholder="repeat" style="min-width:150px">
+      <button class="chip" data-act="pw-save" data-id="${Number(id)}">Set password</button>
+      <button class="chip" data-act="cancel" data-id="${Number(id)}">Cancel</button>
+    </div>`);
+  const el = document.getElementById('rp-a'); if(el) el.focus();
+}
+
+async function saveResetPassword(id){
+  const a = document.getElementById('rp-a'), b = document.getElementById('rp-b');
+  if(!a || !b) return;
+  if(!a.value){ toast('password is required','err'); return; }
+  if(a.value !== b.value){ toast('passwords do not match','err'); return; }
+  const r = await api('/api/auth/users/'+Number(id)+'/password', {method:'POST', body:JSON.stringify({password:a.value})});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('password reset','ok'); closeForm(id); await loadUsers();
+}
+
+async function createUser(){
+  const user = document.getElementById('nu-user').value.trim();
+  const pass = document.getElementById('nu-pass').value;
+  const role = document.getElementById('nu-role').value;
+  if(!user || !pass){ toast('username and password are required','err'); return; }
+  const btn = document.getElementById('nu-btn'); btn.disabled = true;
+  const r = await api('/api/auth/users', {method:'POST', body:JSON.stringify({username:user, password:pass, role})});
+  btn.disabled = false;
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('created '+user+' ('+role+')','ok');
+  document.getElementById('nu-user').value = '';
+  document.getElementById('nu-pass').value = '';
+  await loadUsers();
+}
+
+// ---- self-service password ----
+async function changeMyPassword(){
+  const cur = document.getElementById('pw-cur');
+  const a = document.getElementById('pw-new'), b = document.getElementById('pw-new2');
+  if(!cur.value || !a.value){ toast('current and new password are required','err'); return; }
+  if(a.value !== b.value){ toast('new passwords do not match','err'); return; }
+  const r = await api('/api/auth/password', {method:'POST',
+    body:JSON.stringify({current_password:cur.value, new_password:a.value})});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('your password was changed','ok');
+  cur.value=''; a.value=''; b.value='';
+}
+
+(async ()=>{
+  await loadMe();
+  await loadUsers();
+})();
+</script>
+</body>
+</html>
