@@ -16,6 +16,28 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SKIP_ACTIONS = frozenset({"log_only"})
 
 
+def _post_webhook(url: str, data: bytes, headers: Dict[str, str], *,
+                  timeout: int, sink: str) -> bool:
+    """POST a notification body, returning True on a 2xx.
+
+    Shared by every sink: a delivery failure is logged and swallowed so a
+    down webhook never breaks the runtime's action pipeline.
+    """
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= resp.status < 300
+    except (urllib.error.URLError, OSError) as exc:
+        logger.warning("%s notification failed: %s", sink, exc)
+        return False
+
+
+def _post_json_webhook(url: str, payload: dict, *, timeout: int, sink: str) -> bool:
+    return _post_webhook(url, json.dumps(payload).encode("utf-8"),
+                         {"Content-Type": "application/json"},
+                         timeout=timeout, sink=sink)
+
+
 def _triage_attribution(details: Dict | None) -> str:
     """Return e.g. 'ollama/qwen3-coder:latest', or empty string.
 
@@ -170,22 +192,8 @@ class SlackNotificationSink(NotificationSink):
         text = _format_message(summary, severity=severity, details=details)
         payload = {"text": f"{emoji} *CFOperator Event Runtime*\n{text}"}
 
-        return self._post(payload)
-
-    def _post(self, payload: dict) -> bool:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            self.webhook_url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return resp.status == 200
-        except (urllib.error.URLError, OSError) as exc:
-            logger.warning("Slack notification failed: %s", exc)
-            return False
+        return _post_json_webhook(self.webhook_url, payload,
+                                  timeout=self.timeout, sink="Slack")
 
 
 class DiscordNotificationSink(NotificationSink):
@@ -218,22 +226,8 @@ class DiscordNotificationSink(NotificationSink):
             ]
         }
 
-        return self._post(payload)
-
-    def _post(self, payload: dict) -> bool:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            self.webhook_url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return resp.status in (200, 204)
-        except (urllib.error.URLError, OSError) as exc:
-            logger.warning("Discord notification failed: %s", exc)
-            return False
+        return _post_json_webhook(self.webhook_url, payload,
+                                  timeout=self.timeout, sink="Discord")
 
 
 class NtfyNotificationSink(NotificationSink):
@@ -315,13 +309,5 @@ class NtfyNotificationSink(NotificationSink):
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
 
-        return self._post(text.encode("utf-8"), headers)
-
-    def _post(self, data: bytes, headers: Dict[str, str]) -> bool:
-        req = urllib.request.Request(self.url, data=data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return 200 <= resp.status < 300
-        except (urllib.error.URLError, OSError) as exc:
-            logger.warning("ntfy notification failed: %s", exc)
-            return False
+        return _post_webhook(self.url, text.encode("utf-8"), headers,
+                             timeout=self.timeout, sink="ntfy")

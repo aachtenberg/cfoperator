@@ -20,6 +20,7 @@ import yaml
 import logging
 import hashlib
 import subprocess
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import queue
 import threading
@@ -213,6 +214,31 @@ class EmptyLLMResponseError(RuntimeError):
     synthetic response) so _chat_with_tools_with_fallback rotates to the
     next provider in the chain.
     """
+
+
+@dataclass
+class _ToolLoopStats:
+    """Counters accumulated over one _chat_with_tools_inner tool loop.
+
+    Shared by every provider branch so the loop's several exit points all
+    report the same shape via ``result()``.
+    """
+
+    tool_calls: int = 0
+    cached_hits: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    learning_ids: List[str] = field(default_factory=list)
+
+    def result(self, response: str) -> Dict[str, Any]:
+        return {
+            'response': response,
+            'tool_calls': self.tool_calls,
+            'input_tokens': self.input_tokens,
+            'output_tokens': self.output_tokens,
+            'learning_ids': self.learning_ids,
+            'cached_tool_hits': self.cached_hits,
+        }
 
 
 class CFOperator:
@@ -3767,6 +3793,27 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
 
         return snapshot
 
+    def _match_workload_in_text(self, text: str,
+                                snapshot: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        """Find a cluster workload named in ``text``.
+
+        Returns the matching (token, workload_name), or None. Tokens are the
+        dashed and ≥4-char words of the text minus the stopword list, so a
+        claim naming a real pod/deployment can be disproved by the snapshot.
+        """
+        tokens: set = set()
+        tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
+        tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
+        tokens -= self._GROUND_TRUTH_STOPWORDS
+
+        for token in tokens:
+            if len(token) < 4:
+                continue
+            for workload in snapshot['workloads']:
+                if token == workload or token in workload.split('-'):
+                    return token, workload
+        return None
+
     def _ground_truth_suppress(self,
                                finding: Dict[str, Any],
                                snapshot: Dict[str, Any]) -> Optional[str]:
@@ -3797,40 +3844,26 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
         # Pattern 2: claim asserts a workload is missing, but a matching pod /
         # deployment / cronjob / service / ingress exists in the cluster.
         if any(k in text for k in self._MISSING_KEYWORDS):
-            tokens: set[str] = set()
-            tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
-            tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
-            tokens -= self._GROUND_TRUTH_STOPWORDS
-
-            for token in tokens:
-                if len(token) < 4:
-                    continue
-                for workload in snapshot['workloads']:
-                    if token == workload or token in workload.split('-'):
-                        return (
-                            f"workload matching '{token}' exists in cluster "
-                            f"({workload})"
-                        )
+            matched = self._match_workload_in_text(text, snapshot)
+            if matched:
+                token, workload = matched
+                return (
+                    f"workload matching '{token}' exists in cluster "
+                    f"({workload})"
+                )
 
         # Pattern 3: claim asserts a workload is not being scraped by Prometheus
         # or has no metrics, but the named pod/service exists. The metrics sweep
         # commonly reads an empty prometheus_query result as "target absent"
         # rather than "series has no recent data".
         if any(k in text for k in self._SCRAPE_TARGET_KEYWORDS):
-            tokens = set()
-            tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
-            tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
-            tokens -= self._GROUND_TRUTH_STOPWORDS
-
-            for token in tokens:
-                if len(token) < 4:
-                    continue
-                for workload in snapshot['workloads']:
-                    if token == workload or token in workload.split('-'):
-                        return (
-                            f"workload matching '{token}' exists in cluster "
-                            f"({workload}); an empty prometheus_query result does not confirm the target is absent"
-                        )
+            matched = self._match_workload_in_text(text, snapshot)
+            if matched:
+                token, workload = matched
+                return (
+                    f"workload matching '{token}' exists in cluster "
+                    f"({workload}); an empty prometheus_query result does not confirm the target is absent"
+                )
 
         # Pattern 4: claim asserts a node is absent from / not registered in
         # the cluster, but the node appears in the snapshot. The metrics sweep
@@ -4472,6 +4505,91 @@ Only return the JSON array, no other text."""
         return self._serialize_tool_result(result, max_chars), result, False
 
     @staticmethod
+    def _parse_tool_arguments(raw_args) -> dict:
+        """Normalize an LLM tool-call ``arguments`` field into a dict.
+
+        Providers disagree: Ollama may send a dict or a JSON string, Groq
+        always sends a string (sometimes empty).
+        """
+        if isinstance(raw_args, str):
+            return json.loads(raw_args) if raw_args.strip() else {}
+        return raw_args if raw_args else {}
+
+    def _dispatch_tool_call(self, tool_name: str, tool_args: dict, *,
+                            stats: '_ToolLoopStats', tool_cache: dict,
+                            max_result_chars: int, iteration: int,
+                            max_iterations: int, event_callback=None) -> str:
+        """Execute one model-requested tool call and return its message content.
+
+        Shared by every provider branch of the tool loop: streams the
+        tool_call/tool_result events, memoizes read-only tools, tracks the
+        loop counters plus consulted learning ids, and records the metric.
+        """
+        if event_callback:
+            event_callback('tool_call', {
+                'tool': tool_name,
+                'args': tool_args,
+                'iteration': iteration + 1,
+                'max': max_iterations
+            })
+
+        content, result, was_cached = self._cached_tool_exec(
+            tool_name, tool_args, tool_cache, max_result_chars)
+        stats.tool_calls += 1
+        if was_cached:
+            stats.cached_hits += 1
+            logger.info(f"Tool result reused from cache: {tool_name}")
+        else:
+            logger.info(f"Executing tool: {tool_name}")
+
+        if tool_name == 'find_learnings' and isinstance(result, list):
+            stats.learning_ids.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
+
+        if event_callback:
+            event_callback('tool_result', {
+                'tool': tool_name,
+                'result': json.dumps(result, default=str)[:500],
+                'iteration': iteration + 1
+            })
+
+        TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
+        return content
+
+    @staticmethod
+    def _to_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert the internal (Ollama-shaped) message list to Anthropic format.
+
+        Drops system messages (Anthropic takes ``system`` as a top-level
+        param) and rewrites tool results as ``tool_result`` content blocks in
+        a user message, preferring the stored ``tool_results`` array so
+        parallel tool calls survive the round trip.
+        """
+        converted = []
+        for m in messages:
+            if m.get('role') == 'system':
+                continue
+            if m.get('role') == 'tool':
+                if m.get('tool_results'):
+                    converted.append({'role': 'user', 'content': m['tool_results']})
+                else:
+                    converted.append({
+                        'role': 'user',
+                        'content': [{
+                            'type': 'tool_result',
+                            'tool_use_id': m.get('tool_use_id', 'tool_0'),
+                            'content': m.get('content', '')
+                        }]
+                    })
+            elif m.get('role') == 'assistant' and isinstance(m.get('content'), list):
+                converted.append(m)
+            else:
+                converted.append({
+                    'role': m.get('role', 'user'),
+                    'content': m.get('content', '')
+                })
+        return converted
+
+    @staticmethod
     def _openai_compat_request_config(provider_type: str):
         """Resolve (api_key, chat_completions_url) for an OpenAI-compatible provider.
 
@@ -4747,13 +4865,15 @@ Only return the JSON array, no other text."""
         if max_iterations is None:
             max_iterations = self._get_max_tool_iterations()
 
-        tool_calls_count = 0
-        cached_tool_hits = 0
-        total_input_tokens = 0
-        total_output_tokens = 0
-        learnings_used = []  # Track learning IDs consulted during this conversation
-        max_result_chars = self._max_tool_result_chars()
+        stats = _ToolLoopStats()
         tool_cache = {}  # memoizes read-only tool results for this session
+        dispatch_kwargs = {
+            'stats': stats,
+            'tool_cache': tool_cache,
+            'max_result_chars': self._max_tool_result_chars(),
+            'max_iterations': max_iterations,
+            'event_callback': event_callback,
+        }
         final_answer_forced = False  # final-iteration nudge sent only once
         empty_nudge_sent = False  # empty-final-response nudge sent only once
 
@@ -4820,10 +4940,8 @@ Only return the JSON array, no other text."""
                     logger.debug(f"[CHAT] LLM status={response.status_code}, tool_calls={bool(data.get('message', {}).get('tool_calls'))}, content_len={len(data.get('message', {}).get('content', ''))}")
 
                     # Extract tokens
-                    if 'prompt_eval_count' in data:
-                        total_input_tokens += data.get('prompt_eval_count', 0)
-                    if 'eval_count' in data:
-                        total_output_tokens += data.get('eval_count', 0)
+                    stats.input_tokens += data.get('prompt_eval_count', 0)
+                    stats.output_tokens += data.get('eval_count', 0)
 
                     # Check for tool calls
                     message = data.get('message', {})
@@ -4836,42 +4954,11 @@ Only return the JSON array, no other text."""
                         # Execute ALL tool calls (not just the first)
                         for tool_call in tool_calls:
                             tool_name = tool_call['function']['name']
-                            raw_args = tool_call['function'].get('arguments', {})
-                            # Ollama may return arguments as JSON string or dict
-                            if isinstance(raw_args, str):
-                                tool_args = json.loads(raw_args) if raw_args.strip() else {}
-                            else:
-                                tool_args = raw_args if raw_args else {}
+                            tool_args = self._parse_tool_arguments(
+                                tool_call['function'].get('arguments', {}))
 
-                            if event_callback:
-                                event_callback('tool_call', {
-                                    'tool': tool_name,
-                                    'args': tool_args,
-                                    'iteration': iteration + 1,
-                                    'max': max_iterations
-                                })
-
-                            content, result, was_cached = self._cached_tool_exec(
-                                tool_name, tool_args, tool_cache, max_result_chars)
-                            tool_calls_count += 1
-                            if was_cached:
-                                cached_tool_hits += 1
-                                logger.info(f"Tool result reused from cache: {tool_name}")
-                            else:
-                                logger.info(f"Executing tool: {tool_name}")
-
-                            if tool_name == 'find_learnings' and isinstance(result, list):
-                                learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
-
-                            if event_callback:
-                                result_preview = json.dumps(result, default=str)[:500]
-                                event_callback('tool_result', {
-                                    'tool': tool_name,
-                                    'result': result_preview,
-                                    'iteration': iteration + 1
-                                })
-
-                            TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
+                            content = self._dispatch_tool_call(
+                                tool_name, tool_args, iteration=iteration, **dispatch_kwargs)
 
                             # Append each tool result (size-capped, memoized)
                             full_messages.append({
@@ -4889,13 +4976,7 @@ Only return the JSON array, no other text."""
                             empty_nudge_sent, iteration_budget, max_iterations,
                             full_messages, provider_type, model)
                         continue
-                    return {
-                        'response': text,
-                        'tool_calls': tool_calls_count,
-                        'input_tokens': total_input_tokens,
-                        'output_tokens': total_output_tokens,
-                        'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
-                    }
+                    return stats.result(text)
 
                 elif provider_type in OPENAI_COMPAT_PROVIDERS:
                     # OpenAI-compatible cloud provider (Groq, xAI Grok) with tool use
@@ -4932,8 +5013,8 @@ Only return the JSON array, no other text."""
 
                     # Extract tokens
                     usage = data.get('usage', {})
-                    total_input_tokens += usage.get('prompt_tokens', 0)
-                    total_output_tokens += usage.get('completion_tokens', 0)
+                    stats.input_tokens += usage.get('prompt_tokens', 0)
+                    stats.output_tokens += usage.get('completion_tokens', 0)
 
                     # Check for tool calls
                     choice = data.get('choices', [{}])[0]
@@ -4946,43 +5027,12 @@ Only return the JSON array, no other text."""
 
                         for tool_call in tool_calls:
                             tool_name = tool_call['function']['name']
-                            # Groq returns arguments as JSON string (handle empty strings safely)
-                            raw_args = tool_call['function'].get('arguments', '{}')
-                            if isinstance(raw_args, str):
-                                tool_args = json.loads(raw_args) if raw_args.strip() else {}
-                            else:
-                                tool_args = raw_args if raw_args else {}
+                            tool_args = self._parse_tool_arguments(
+                                tool_call['function'].get('arguments', '{}'))
                             tool_call_id = tool_call.get('id', f'call_{iteration}')
 
-                            if event_callback:
-                                event_callback('tool_call', {
-                                    'tool': tool_name,
-                                    'args': tool_args,
-                                    'iteration': iteration + 1,
-                                    'max': max_iterations
-                                })
-
-                            content, result, was_cached = self._cached_tool_exec(
-                                tool_name, tool_args, tool_cache, max_result_chars)
-                            tool_calls_count += 1
-                            if was_cached:
-                                cached_tool_hits += 1
-                                logger.info(f"Tool result reused from cache: {tool_name}")
-                            else:
-                                logger.info(f"Executing tool: {tool_name}")
-
-                            if tool_name == 'find_learnings' and isinstance(result, list):
-                                learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
-
-                            if event_callback:
-                                result_preview = json.dumps(result, default=str)[:500]
-                                event_callback('tool_result', {
-                                    'tool': tool_name,
-                                    'result': result_preview,
-                                    'iteration': iteration + 1
-                                })
-
-                            TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
+                            content = self._dispatch_tool_call(
+                                tool_name, tool_args, iteration=iteration, **dispatch_kwargs)
 
                             # Append each tool result as a separate message (size-capped, memoized)
                             full_messages.append({
@@ -5000,13 +5050,7 @@ Only return the JSON array, no other text."""
                             empty_nudge_sent, iteration_budget, max_iterations,
                             full_messages, provider_type, model)
                         continue
-                    return {
-                        'response': text,
-                        'tool_calls': tool_calls_count,
-                        'input_tokens': total_input_tokens,
-                        'output_tokens': total_output_tokens,
-                        'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
-                    }
+                    return stats.result(text)
 
                 elif provider_type == 'anthropic':
                     # Anthropic Messages API with tool use
@@ -5025,34 +5069,7 @@ Only return the JSON array, no other text."""
                         })
 
                     # Anthropic uses system as a top-level param, not a message
-                    anthropic_messages = [m for m in full_messages if m.get('role') != 'system']
-
-                    # Convert tool results from Ollama format to Anthropic format
-                    converted_messages = []
-                    for m in anthropic_messages:
-                        if m.get('role') == 'tool':
-                            # Use stored tool_results array if present (parallel tool calls)
-                            if m.get('tool_results'):
-                                converted_messages.append({
-                                    'role': 'user',
-                                    'content': m['tool_results']
-                                })
-                            else:
-                                converted_messages.append({
-                                    'role': 'user',
-                                    'content': [{
-                                        'type': 'tool_result',
-                                        'tool_use_id': m.get('tool_use_id', 'tool_0'),
-                                        'content': m.get('content', '')
-                                    }]
-                                })
-                        elif m.get('role') == 'assistant' and isinstance(m.get('content'), list):
-                            converted_messages.append(m)
-                        else:
-                            converted_messages.append({
-                                'role': m.get('role', 'user'),
-                                'content': m.get('content', '')
-                            })
+                    converted_messages = self._to_anthropic_messages(full_messages)
 
                     payload = {
                         'model': model,
@@ -5083,8 +5100,8 @@ Only return the JSON array, no other text."""
 
                     # Extract tokens
                     usage = data.get('usage', {})
-                    total_input_tokens += usage.get('input_tokens', 0)
-                    total_output_tokens += usage.get('output_tokens', 0)
+                    stats.input_tokens += usage.get('input_tokens', 0)
+                    stats.output_tokens += usage.get('output_tokens', 0)
 
                     # Check for tool use in content blocks
                     # Anthropic can return multiple tool_use blocks in parallel
@@ -5100,35 +5117,9 @@ Only return the JSON array, no other text."""
                             tool_args = tool_block.get('input', {})
                             tool_use_id = tool_block.get('id', f'tool_{iteration}')
 
-                            if event_callback:
-                                event_callback('tool_call', {
-                                    'tool': tool_name,
-                                    'args': tool_args,
-                                    'iteration': iteration + 1,
-                                    'max': max_iterations
-                                })
+                            content = self._dispatch_tool_call(
+                                tool_name, tool_args, iteration=iteration, **dispatch_kwargs)
 
-                            content, result, was_cached = self._cached_tool_exec(
-                                tool_name, tool_args, tool_cache, max_result_chars)
-                            tool_calls_count += 1
-                            if was_cached:
-                                cached_tool_hits += 1
-                                logger.info(f"Tool result reused from cache: {tool_name}")
-                            else:
-                                logger.info(f"Executing tool: {tool_name}")
-
-                            if tool_name == 'find_learnings' and isinstance(result, list):
-                                learnings_used.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
-
-                            if event_callback:
-                                result_preview = json.dumps(result, default=str)[:500]
-                                event_callback('tool_result', {
-                                    'tool': tool_name,
-                                    'result': result_preview,
-                                    'iteration': iteration + 1
-                                })
-
-                            TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
                             tool_results.append({
                                 'type': 'tool_result',
                                 'tool_use_id': tool_use_id,
@@ -5156,13 +5147,7 @@ Only return the JSON array, no other text."""
                             empty_nudge_sent, iteration_budget, max_iterations,
                             full_messages, provider_type, model)
                         continue
-                    return {
-                        'response': text,
-                        'tool_calls': tool_calls_count,
-                        'input_tokens': total_input_tokens,
-                        'output_tokens': total_output_tokens,
-                        'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
-                    }
+                    return stats.result(text)
 
                 else:
                     raise NotImplementedError(f"Provider {provider_type} not yet implemented for chat")
@@ -5178,13 +5163,7 @@ Only return the JSON array, no other text."""
                     # First failure, raise immediately
                     raise
                 # Subsequent failure during tool loop, return what we have
-                return {
-                    'response': f"Error during tool execution: {str(e)}",
-                    'tool_calls': tool_calls_count,
-                    'input_tokens': total_input_tokens,
-                    'output_tokens': total_output_tokens,
-                    'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
-                }
+                return stats.result(f"Error during tool execution: {str(e)}")
 
         # Hit max iterations — do one final no-tools call to get a summary.
         # Extract tool results from conversation to provide as context.
@@ -5205,7 +5184,7 @@ Only return the JSON array, no other text."""
             summary_messages = [
                 {'role': 'system', 'content': system_context},
                 {'role': 'user', 'content': (
-                    f'You investigated the infrastructure using {tool_calls_count} tool calls. '
+                    f'You investigated the infrastructure using {stats.tool_calls} tool calls. '
                     f'Here are the key results from your tool calls:\n\n{tool_context}\n\n'
                     f'Based on these results, provide your findings as a JSON array:\n'
                     f'[{{"severity": "info|warning|critical", "finding": "description", '
@@ -5230,8 +5209,8 @@ Only return the JSON array, no other text."""
                 )
                 response.raise_for_status()
                 data = response.json()
-                total_input_tokens += data.get('prompt_eval_count', 0)
-                total_output_tokens += data.get('eval_count', 0)
+                stats.input_tokens += data.get('prompt_eval_count', 0)
+                stats.output_tokens += data.get('eval_count', 0)
                 summary_text = data.get('message', {}).get('content', '')
             elif provider_type in OPENAI_COMPAT_PROVIDERS:
                 api_key, endpoint = self._openai_compat_request_config(provider_type)
@@ -5254,26 +5233,12 @@ Only return the JSON array, no other text."""
                 response.raise_for_status()
                 data = response.json()
                 usage = data.get('usage', {})
-                total_input_tokens += usage.get('prompt_tokens', 0)
-                total_output_tokens += usage.get('completion_tokens', 0)
+                stats.input_tokens += usage.get('prompt_tokens', 0)
+                stats.output_tokens += usage.get('completion_tokens', 0)
                 summary_text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
             elif provider_type == 'anthropic':
                 api_key = os.getenv('ANTHROPIC_API_KEY', '')
-                anthropic_messages = [m for m in full_messages if m.get('role') != 'system']
-                converted = []
-                for m in anthropic_messages:
-                    if m.get('role') == 'tool':
-                        if m.get('tool_results'):
-                            converted.append({'role': 'user', 'content': m['tool_results']})
-                        else:
-                            converted.append({
-                                'role': 'user',
-                                'content': [{'type': 'tool_result', 'tool_use_id': m.get('tool_use_id', 'tool_0'), 'content': m.get('content', '')}]
-                            })
-                    elif m.get('role') == 'assistant' and isinstance(m.get('content'), list):
-                        converted.append(m)
-                    else:
-                        converted.append({'role': m.get('role', 'user'), 'content': m.get('content', '')})
+                converted = self._to_anthropic_messages(full_messages)
                 payload = {
                     'model': model, 'max_tokens': 4096,
                     'system': system_context,
@@ -5288,33 +5253,120 @@ Only return the JSON array, no other text."""
                 response.raise_for_status()
                 data = response.json()
                 usage = data.get('usage', {})
-                total_input_tokens += usage.get('input_tokens', 0)
-                total_output_tokens += usage.get('output_tokens', 0)
+                stats.input_tokens += usage.get('input_tokens', 0)
+                stats.output_tokens += usage.get('output_tokens', 0)
                 summary_text = '\n'.join(b.get('text', '') for b in data.get('content', []) if b.get('type') == 'text')
             else:
                 summary_text = ''
 
             if summary_text.strip():
                 logger.info(f"Got {len(summary_text)} char summary after hitting iteration limit")
-                return {
-                    'response': summary_text,
-                    'tool_calls': tool_calls_count,
-                    'input_tokens': total_input_tokens,
-                    'output_tokens': total_output_tokens,
-                    'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
-                }
+                return stats.result(summary_text)
             else:
                 logger.warning("Summary call returned empty response after iteration limit")
         except Exception as e:
             logger.warning(f"Failed to get summary after iteration limit: {e}", exc_info=True)
 
         # Fallback if summary call also failed
+        return stats.result(
+            "Maximum tool iterations reached. Please simplify your request.")
+
+    def _build_chat_system_context(self, mention_skills: bool = False) -> str:
+        """Build the chat system prompt: infra state, capabilities, recent learnings.
+
+        Shared by the buffered and streaming chat paths. ``mention_skills``
+        adds the slash-command bullet, which only the buffered path (the one
+        that routes ``/skill`` messages itself) advertises.
+        """
+        hosts_config = self.config.get('infrastructure', {}).get('hosts', {})
+        host_list = ', '.join(f"{name} ({info.get('address', '?')}, {info.get('role', 'unknown')})"
+                              for name, info in hosts_config.items())
+        skills_line = "- Execute skills when requested (e.g., /investigate-container)\n" if mention_skills else ""
+
+        system_context = f"""You are CFOperator, an autonomous infrastructure monitoring agent.
+
+Current System State:
+- Active investigation: {self.current_investigation is not None}
+- Last sweep: {int(time.time() - self.last_sweep)}s ago
+- Monitoring {len(hosts_config)} hosts: {host_list}
+
+You have access to:
+- Prometheus metrics (all hosts)
+- Loki logs (all hosts)
+- Docker containers AND systemd services (all hosts via SSH — not everything is a container!)
+- Knowledge base: store_learning (save solutions/insights) and find_learnings (search past learnings)
+- Web search: web_search (look up docs, error messages, CVEs via SearXNG)
+
+Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
+Use ssh_list_services to see BOTH containers and systemd services on a host.
+
+Your role:
+- Answer infrastructure-specific questions
+- Investigate issues using available tools
+{skills_line}- ALWAYS use store_learning to save solutions when you or the user resolves an issue
+- Use find_learnings to check for known solutions before investigating
+- NOT general system administration (user has Claude Code CLI for that)
+
+Be concise and infrastructure-focused.
+"""
+
+        # Surface recent verified learnings so LLM knows what's available
+        try:
+            recent_learnings = self.kb.find_learnings(limit=5, verified_only=False)
+            if recent_learnings:
+                system_context += "\n\nRecent learnings from past investigations:\n"
+                for l in recent_learnings[:3]:
+                    rate = f" ({l.get('success_rate', 0):.0%} success)" if l.get('times_applied', 0) > 0 else ""
+                    system_context += f"- [{l.get('learning_type', '?')}] {l.get('title', '?')}{rate}\n"
+                system_context += "Use find_learnings tool for more details on any of these.\n"
+        except Exception:
+            pass  # Don't break chat if KB is down
+
+        return system_context
+
+    def _prepare_skill_invocation(self, message: str):
+        """Resolve a ``/skill args`` message into its LLM inputs.
+
+        Returns ``(system_context, user_message, skill_name)``, or
+        ``(None, None, skill_name)`` when the skill is unknown — callers turn
+        that into the "Unknown skill" response.
+        """
+        parts = message.split(maxsplit=1)
+        skill_name = parts[0][1:]  # Remove leading /
+        skill_args = parts[1] if len(parts) > 1 else ''
+
+        if skill_name not in self.skills:
+            return None, None, skill_name
+
+        skill = self.skills[skill_name]
+        system_context = f"""You are CFOperator executing the "{skill['name']}" skill.
+
+SKILL DESCRIPTION:
+{skill['description']}
+
+SKILL INSTRUCTIONS:
+{skill['instructions']}
+
+USER REQUEST:
+{message}
+
+IMPORTANT:
+- Follow the skill instructions exactly as written
+- Use the tools in the suggested sequence
+- Provide structured output as described in the skill
+- Be thorough but concise
+"""
+        user_message = f"Execute {skill_name} for: {skill_args}" if skill_args else f"Execute {skill_name}"
+        logger.info(f"Executing skill: {skill_name} with args: {skill_args}")
+        return system_context, user_message, skill_name
+
+    def _unknown_skill_response(self, skill_name: str) -> Dict[str, Any]:
+        available = ', '.join(self.skills.keys())
         return {
-            'response': "Maximum tool iterations reached. Please simplify your request.",
-            'tool_calls': tool_calls_count,
-            'input_tokens': total_input_tokens,
-            'output_tokens': total_output_tokens,
-            'learning_ids': learnings_used, 'cached_tool_hits': cached_tool_hits
+            'response': f"Unknown skill: {skill_name}\n\nAvailable skills: {available}",
+            'backend': 'N/A',
+            'model': 'N/A',
+            'tool_calls': 0
         }
 
     def handle_chat_message(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None) -> Dict[str, Any]:
@@ -5345,51 +5397,7 @@ Only return the JSON array, no other text."""
         """
         logger.info(f"Handling chat message: {message[:100]}")
 
-        # Build host list dynamically from config
-        hosts_config = self.config.get('infrastructure', {}).get('hosts', {})
-        host_list = ', '.join(f"{name} ({info.get('address', '?')}, {info.get('role', 'unknown')})"
-                              for name, info in hosts_config.items())
-
-        # Build system context with current infrastructure state
-        system_context = f"""You are CFOperator, an autonomous infrastructure monitoring agent.
-
-Current System State:
-- Active investigation: {self.current_investigation is not None}
-- Last sweep: {int(time.time() - self.last_sweep)}s ago
-- Monitoring {len(hosts_config)} hosts: {host_list}
-
-You have access to:
-- Prometheus metrics (all hosts)
-- Loki logs (all hosts)
-- Docker containers AND systemd services (all hosts via SSH — not everything is a container!)
-- Knowledge base: store_learning (save solutions/insights) and find_learnings (search past learnings)
-- Web search: web_search (look up docs, error messages, CVEs via SearXNG)
-
-Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
-Use ssh_list_services to see BOTH containers and systemd services on a host.
-
-Your role:
-- Answer infrastructure-specific questions
-- Investigate issues using available tools
-- Execute skills when requested (e.g., /investigate-container)
-- ALWAYS use store_learning to save solutions when you or the user resolves an issue
-- Use find_learnings to check for known solutions before investigating
-- NOT general system administration (user has Claude Code CLI for that)
-
-Be concise and infrastructure-focused.
-"""
-
-        # Surface recent verified learnings so LLM knows what's available
-        try:
-            recent_learnings = self.kb.find_learnings(limit=5, verified_only=False)
-            if recent_learnings:
-                system_context += "\n\nRecent learnings from past investigations:\n"
-                for l in recent_learnings[:3]:
-                    rate = f" ({l.get('success_rate', 0):.0%} success)" if l.get('times_applied', 0) > 0 else ""
-                    system_context += f"- [{l.get('learning_type', '?')}] {l.get('title', '?')}{rate}\n"
-                system_context += "Use find_learnings tool for more details on any of these.\n"
-        except Exception:
-            pass  # Don't break chat if KB is down
+        system_context = self._build_chat_system_context(mention_skills=True)
 
         # Expand shortcut slash commands into natural language prompts
         message = self._expand_slash_shortcut(message)
@@ -5509,51 +5517,7 @@ Be concise and infrastructure-focused.
 
     def _handle_chat_with_stream(self, message, history, backend, model, event_callback):
         """Internal: runs handle_chat_message logic but passes event_callback to _chat_with_tools."""
-        hosts_config = self.config.get('infrastructure', {}).get('hosts', {})
-        host_list = ', '.join(f"{name} ({info.get('address', '?')}, {info.get('role', 'unknown')})"
-                              for name, info in hosts_config.items())
-
-        system_context = f"""You are CFOperator, an autonomous infrastructure monitoring agent.
-
-Current System State:
-- Active investigation: {self.current_investigation is not None}
-- Last sweep: {int(time.time() - self.last_sweep)}s ago
-- Monitoring {len(hosts_config)} hosts: {host_list}
-
-You have access to:
-- Prometheus metrics (all hosts)
-- Loki logs (all hosts)
-- Docker containers AND systemd services (all hosts via SSH — not everything is a container!)
-- Knowledge base: store_learning (save solutions/insights) and find_learnings (search past learnings)
-- Web search: web_search (look up docs, error messages, CVEs via SearXNG)
-
-Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
-Use ssh_list_services to see BOTH containers and systemd services on a host.
-
-Your role:
-- Answer infrastructure-specific questions
-- Investigate issues using available tools
-- ALWAYS use store_learning to save solutions when you or the user resolves an issue
-- Use find_learnings to check for known solutions before investigating
-- NOT general system administration (user has Claude Code CLI for that)
-
-Be concise and infrastructure-focused.
-"""
-
-        # Surface recent verified learnings so LLM knows what's available
-        try:
-            recent_learnings = self.kb.find_learnings(limit=5, verified_only=False)
-            if recent_learnings:
-                system_context += "\n\nRecent learnings from past investigations:\n"
-                for l in recent_learnings[:3]:
-                    rate = f" ({l.get('success_rate', 0):.0%} success)" if l.get('times_applied', 0) > 0 else ""
-                    system_context += f"- [{l.get('learning_type', '?')}] {l.get('title', '?')}{rate}\n"
-                system_context += "Use find_learnings tool for more details on any of these.\n"
-        except Exception:
-            pass  # Don't break chat if KB is down
-
-        start_time = time.time()
-        tool_calls_count = 0
+        system_context = self._build_chat_system_context()
 
         messages = list(history) + [{'role': 'user', 'content': message}]
 
@@ -5581,37 +5545,9 @@ Be concise and infrastructure-focused.
 
     def _execute_skill_stream(self, message: str, backend: str = 'auto', model: str = None, event_callback=None) -> Dict[str, Any]:
         """Execute a skill with streaming events."""
-        parts = message.split(maxsplit=1)
-        skill_name = parts[0][1:]
-        skill_args = parts[1] if len(parts) > 1 else ''
-
-        if skill_name not in self.skills:
-            available = ', '.join(self.skills.keys())
-            return {'response': f"Unknown skill: {skill_name}\n\nAvailable skills: {available}", 'backend': 'N/A', 'model': 'N/A', 'tool_calls': 0}
-
-        skill = self.skills[skill_name]
-        logger.info(f"Executing skill (stream): {skill_name} with args: {skill_args}")
-
-        system_context = f"""You are CFOperator executing the "{skill['name']}" skill.
-
-SKILL DESCRIPTION:
-{skill['description']}
-
-SKILL INSTRUCTIONS:
-{skill['instructions']}
-
-USER REQUEST:
-{message}
-
-IMPORTANT:
-- Follow the skill instructions exactly as written
-- Use the tools in the suggested sequence
-- Provide structured output as described in the skill
-- Be thorough but concise
-"""
-
-        user_message = f"Execute {skill_name} for: {skill_args}" if skill_args else f"Execute {skill_name}"
-        start_time = time.time()
+        system_context, user_message, skill_name = self._prepare_skill_invocation(message)
+        if system_context is None:
+            return self._unknown_skill_response(skill_name)
 
         try:
             result = self._chat_with_tools_with_fallback(
@@ -5648,47 +5584,9 @@ IMPORTANT:
         The skill instructions are injected into the system context,
         and the LLM executes the skill using available tools.
         """
-        parts = message.split(maxsplit=1)
-        skill_name = parts[0][1:]  # Remove leading /
-        skill_args = parts[1] if len(parts) > 1 else ''
-
-        # Check if skill exists
-        if skill_name not in self.skills:
-            available = ', '.join(self.skills.keys())
-            return {
-                'response': f"Unknown skill: {skill_name}\n\nAvailable skills: {available}",
-                'backend': 'N/A',
-                'model': 'N/A',
-                'tool_calls': 0
-            }
-
-        skill = self.skills[skill_name]
-        logger.info(f"Executing skill: {skill_name} with args: {skill_args}")
-
-        # Build system context with skill instructions
-        system_context = f"""You are CFOperator executing the "{skill['name']}" skill.
-
-SKILL DESCRIPTION:
-{skill['description']}
-
-SKILL INSTRUCTIONS:
-{skill['instructions']}
-
-USER REQUEST:
-{message}
-
-IMPORTANT:
-- Follow the skill instructions exactly as written
-- Use the tools in the suggested sequence
-- Provide structured output as described in the skill
-- Be thorough but concise
-"""
-
-        # Build user message
-        if skill_args:
-            user_message = f"Execute {skill_name} for: {skill_args}"
-        else:
-            user_message = f"Execute {skill_name}"
+        system_context, user_message, skill_name = self._prepare_skill_invocation(message)
+        if system_context is None:
+            return self._unknown_skill_response(skill_name)
 
         # Execute with LLM + tools
         start_time = time.time()
