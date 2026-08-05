@@ -121,9 +121,9 @@ class TestSequenceRecovery:
 
         b = LocalEventBuffer(host_id="testhost", buffer_dir=str(buffer_dir))
         try:
-            # The truncated line aborts that file's scan, so the sequence is not
-            # recovered from it — but init must still succeed.
-            assert b.buffer_event("a", {}) >= 1
+            # The truncated line aborts the rest of that file's scan, but the
+            # sequences read before it still count — no restart from 1.
+            assert b.buffer_event("a", {}) == 8
         finally:
             b.close()
 
