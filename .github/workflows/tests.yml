@@ -52,8 +52,6 @@ jobs:
         # Root-level test_*.py are integration-style; only the hermetic ones run
         # here. Deliberately excluded:
         #   - test_tool_calling.py            -> needs a live LLM (fails at fixture setup)
-        #   - test_event_runtime.py::test_dispatch_notifications_hoists_remediation_and_resolution
-        #                                     -> a pre-existing IndexError on main, tracked separately
         run: |
           set -u
           root="$PWD"
@@ -73,7 +71,6 @@ jobs:
 
           run "root-level" "${root}" \
             test_web_auth.py test_http_investigate.py test_k8s_probe_filter.py \
-            test_triage_engine.py test_github_integration.py test_event_runtime.py \
-            --deselect test_event_runtime.py::test_dispatch_notifications_hoists_remediation_and_resolution
+            test_triage_engine.py test_github_integration.py test_event_runtime.py
 
           exit "${fail}"
