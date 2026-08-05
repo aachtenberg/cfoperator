@@ -15,6 +15,7 @@ from .http_actions import (
     COMPLETION_AUTH_HEADER,
     parse_completion_payload,
     verify_completion_auth,
+    verify_runtime_auth,
 )
 from .models import Alert
 from .telemetry import observe_completion_request
@@ -31,6 +32,7 @@ def create_app(runtime=None, worker=None):
 
     try:
         from fastapi import FastAPI, HTTPException, Query, Request, Response
+        from fastapi.responses import JSONResponse
     except ImportError as exc:
         raise RuntimeError(
             "FastAPI is not installed. Install 'fastapi' and 'uvicorn' to use the ASGI adapter."
@@ -54,6 +56,17 @@ def create_app(runtime=None, worker=None):
             runtime.stop()
 
     app = FastAPI(title="CFOperator Event Runtime", version="0.1.0", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def runtime_auth(request: Request, call_next):
+        """Bearer gate over the whole surface; a no-op unless CFOP_RUNTIME_TOKEN
+        is set. Kept as middleware so a route added later is covered by
+        default rather than opted in."""
+        error = verify_runtime_auth(request.url.path, request.headers.get("Authorization"))
+        if error is not None:
+            return JSONResponse({"detail": error}, status_code=401,
+                                headers={"WWW-Authenticate": "Bearer"})
+        return await call_next(request)
 
     @app.get("/livez")
     def livez() -> dict:

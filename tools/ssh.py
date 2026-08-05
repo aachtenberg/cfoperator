@@ -9,9 +9,30 @@ for troubleshooting, log retrieval, service management, etc.
 import subprocess
 import json
 import logging
+import shlex
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger("cfoperator.tools.ssh")
+
+
+def _q(value: Any) -> str:
+    """Quote a value for interpolation into a remote shell command.
+
+    Service, container and pattern names reach these helpers from LLM tool
+    calls, so they are attacker-influenced whenever alert or log text is.
+    Unquoted they would run as remote shell metacharacters (``systemctl
+    restart 'a; curl ...'``).
+    """
+    return shlex.quote(str(value))
+
+
+def _int(value: Any, default: int) -> int:
+    """Coerce a numeric argument, falling back to the default when unusable."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
 
 class SSHTools:
     """
@@ -111,7 +132,7 @@ class SSHTools:
 
     def check_service_status(self, host: str, service: str) -> Dict[str, Any]:
         """Check systemd service status on host."""
-        result = self.execute(host, f'systemctl status {service}')
+        result = self.execute(host, f'systemctl status {_q(service)}')
         return {
             'success': result['success'],
             'host': host,
@@ -122,7 +143,7 @@ class SSHTools:
 
     def restart_service(self, host: str, service: str) -> Dict[str, Any]:
         """Restart systemd service on host."""
-        result = self.execute(host, f'sudo systemctl restart {service}')
+        result = self.execute(host, f'sudo systemctl restart {_q(service)}')
         if result['success']:
             # Verify restart succeeded
             status = self.check_service_status(host, service)
@@ -136,9 +157,10 @@ class SSHTools:
 
     def get_logs(self, host: str, service: str = None, lines: int = 100) -> Dict[str, Any]:
         """Get logs from host (journalctl or docker logs)."""
+        lines = _int(lines, 100)
         if service:
             # Try docker first, then journalctl
-            docker_result = self.execute(host, f'docker logs --tail {lines} {service} 2>&1')
+            docker_result = self.execute(host, f'docker logs --tail {lines} {_q(service)} 2>&1')
             if docker_result['success']:
                 return {
                     'success': True,
@@ -149,7 +171,7 @@ class SSHTools:
                 }
 
             # Fall back to journalctl
-            journal_result = self.execute(host, f'journalctl -u {service} -n {lines} --no-pager')
+            journal_result = self.execute(host, f'journalctl -u {_q(service)} -n {lines} --no-pager')
             return {
                 'success': journal_result['success'],
                 'host': host,
@@ -233,7 +255,7 @@ class SSHTools:
 
     def docker_inspect(self, host: str, container: str) -> Dict[str, Any]:
         """Get detailed info about Docker container on host."""
-        result = self.execute(host, f'docker inspect {container}')
+        result = self.execute(host, f'docker inspect {_q(container)}')
         if result['success']:
             try:
                 inspect_data = json.loads(result['stdout'])
@@ -254,7 +276,7 @@ class SSHTools:
 
     def docker_restart(self, host: str, container: str) -> Dict[str, Any]:
         """Restart Docker container on host."""
-        result = self.execute(host, f'docker restart {container}')
+        result = self.execute(host, f'docker restart {_q(container)}')
         if result['success']:
             return {
                 'success': True,
@@ -286,7 +308,7 @@ class SSHTools:
         """Get process list on host."""
         cmd = 'ps aux'
         if filter_pattern:
-            cmd += f' | grep "{filter_pattern}"'
+            cmd += f' | grep -- {_q(filter_pattern)}'
 
         result = self.execute(host, cmd)
         return {
@@ -298,7 +320,8 @@ class SSHTools:
 
     def check_port(self, host: str, port: int) -> Dict[str, Any]:
         """Check if port is listening on host."""
-        result = self.execute(host, f'ss -tuln | grep ":{port} " || echo "NOT_LISTENING"')
+        port = _int(port, 0)
+        result = self.execute(host, f'ss -tuln | grep -- {_q(f":{port} ")} || echo "NOT_LISTENING"')
         is_listening = 'NOT_LISTENING' not in result['stdout']
         return {
             'success': result['success'],

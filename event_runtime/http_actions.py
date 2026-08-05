@@ -88,6 +88,80 @@ def verify_completion_auth(token_header: Optional[str]) -> Optional[str]:
     return None
 
 
+# ---- inbound auth for the rest of the HTTP surface -----------------------
+#
+# /alert enqueues work that ends in an LLM investigation and can reach the
+# remediation path, and /history + /activity replay every alert, decision and
+# error the runtime has seen. Both transports served all of it unauthenticated,
+# so anything that can reach the port could inject alerts or read the fleet's
+# incident history.
+#
+# Enforcement is opt-in via CFOP_RUNTIME_TOKEN, mirroring the completion
+# secret: Alertmanager and existing scrapes keep working untouched when it is
+# unset (with a startup warning), and setting it closes the surface without a
+# code change. Probes and /metrics stay open so liveness and scraping survive.
+
+RUNTIME_TOKEN_ENV = "CFOP_RUNTIME_TOKEN"  # noqa: S105 - env var name, not a secret
+# Probes and the Prometheus scrape stay open (read-only, and gating them breaks
+# liveness + monitoring). The completion endpoint is exempt because it carries
+# its own X-CFOP-Token secret, which the agent already sends — requiring both
+# would silently break post-backs the moment this token is set.
+RUNTIME_AUTH_EXEMPT_PATHS = frozenset({"/livez", "/health", "/metrics"})
+
+
+def _expected_runtime_token() -> Optional[str]:
+    value = os.getenv(RUNTIME_TOKEN_ENV, "").strip()
+    return value or None
+
+
+def _runtime_auth_exempt(path: str) -> bool:
+    return path in RUNTIME_AUTH_EXEMPT_PATHS or (
+        path.startswith("/v1/investigations/") and path.endswith("/complete")
+    )
+
+
+def runtime_auth_required(path: str) -> bool:
+    """True when ``path`` must present the runtime token."""
+    return _expected_runtime_token() is not None and not _runtime_auth_exempt(path)
+
+
+def verify_runtime_auth(path: str, auth_header: Optional[str]) -> Optional[str]:
+    """Validate the bearer token on a runtime request.
+
+    Returns ``None`` when the request is authorized, otherwise an error string
+    for a 401 body. Accepts ``Authorization: Bearer <token>``; exempt paths
+    (probes, ``/metrics``, the separately-authenticated completion endpoint)
+    always pass.
+    """
+    expected = _expected_runtime_token()
+    if expected is None or _runtime_auth_exempt(path):
+        return None
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return "Missing Authorization: Bearer header"
+    if not secrets.compare_digest(auth_header[7:].strip(), expected):
+        return "Invalid bearer token"
+    return None
+
+
+def log_runtime_auth_status() -> None:
+    """Emit a startup status line about HTTP surface auth."""
+    if _expected_runtime_token() is None:
+        logger.warning(
+            "%s is not set; POST /alert and the /history, /activity and /jobs "
+            "read endpoints accept unauthenticated requests. Set this env var "
+            "(and send 'Authorization: Bearer <token>' from Alertmanager and "
+            "any console) so the port is not an open alert-injection and "
+            "incident-history surface.",
+            RUNTIME_TOKEN_ENV,
+        )
+    else:
+        logger.info(
+            "%s is set; the HTTP surface requires a bearer token (probes and "
+            "/metrics stay open).",
+            RUNTIME_TOKEN_ENV,
+        )
+
+
 def log_completion_endpoint_status() -> None:
     """Emit a startup status line about completion endpoint auth.
 
