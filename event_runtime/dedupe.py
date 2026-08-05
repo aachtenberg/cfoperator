@@ -16,42 +16,20 @@ from .plugins import AlertPolicy
 logger = logging.getLogger(__name__)
 
 
-class FileBackedCooldownPolicy(AlertPolicy):
-    """Suppress duplicate alerts with the same fingerprint during a cooldown window."""
+class _ExpiringFingerprintState:
+    """JSON-file-backed ``fingerprint -> expiry`` map shared by the policies.
 
-    name = "file-backed-cooldown"
+    Each policy keeps its own state file so the windows don't clobber each
+    other; the load/persist/prune mechanics are identical.
+    """
 
-    def __init__(self, path: str | None = None, cooldown_seconds: int = 300):
+    def __init__(self, path: str | None, default_filename: str):
         if path is None:
-            path = str(Path.home() / ".cfoperator" / "event-runtime" / "policies" / "dedupe.json")
+            path = str(Path.home() / ".cfoperator" / "event-runtime" / "policies" / default_filename)
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.cooldown_seconds = cooldown_seconds
         self._lock = threading.Lock()
         self._state = self._load_state()
-
-    def evaluate(self, alert: Alert) -> Tuple[bool, str | None]:
-        fingerprint = alert.effective_fingerprint()
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(seconds=self.cooldown_seconds)
-
-        with self._lock:
-            self._prune(now)
-            current = self._state.get(fingerprint)
-            if current:
-                return False, f"duplicate suppressed until {current}"
-            self._state[fingerprint] = expires_at.isoformat()
-            self._persist()
-        return True, None
-
-    def health(self) -> dict:
-        return {
-            "name": self.name,
-            "healthy": True,
-            "cooldown_seconds": self.cooldown_seconds,
-            "entries": len(self._state),
-            "path": str(self.path),
-        }
 
     def _load_state(self) -> Dict[str, str]:
         if not self.path.exists():
@@ -62,7 +40,7 @@ class FileBackedCooldownPolicy(AlertPolicy):
             if isinstance(data, dict):
                 return {str(key): str(value) for key, value in data.items()}
         except Exception as exc:
-            logger.warning("Failed to load dedupe state from %s: %s", self.path, exc)
+            logger.warning("Failed to load %s state from %s: %s", self.name, self.path, exc)
             return {}
         return {}
 
@@ -83,8 +61,46 @@ class FileBackedCooldownPolicy(AlertPolicy):
         for fingerprint in stale:
             self._state.pop(fingerprint, None)
 
+    def _claim(self, fingerprint: str, now: datetime, expires_at: datetime) -> str | None:
+        """Record the fingerprint, or return the existing expiry if suppressed."""
+        with self._lock:
+            self._prune(now)
+            current = self._state.get(fingerprint)
+            if current:
+                return current
+            self._state[fingerprint] = expires_at.isoformat()
+            self._persist()
+        return None
 
-class RecurrenceSuppressionPolicy(AlertPolicy):
+
+class FileBackedCooldownPolicy(_ExpiringFingerprintState, AlertPolicy):
+    """Suppress duplicate alerts with the same fingerprint during a cooldown window."""
+
+    name = "file-backed-cooldown"
+
+    def __init__(self, path: str | None = None, cooldown_seconds: int = 300):
+        super().__init__(path, "dedupe.json")
+        self.cooldown_seconds = cooldown_seconds
+
+    def evaluate(self, alert: Alert) -> Tuple[bool, str | None]:
+        now = datetime.now(timezone.utc)
+        current = self._claim(alert.effective_fingerprint(), now,
+                             now + timedelta(seconds=self.cooldown_seconds))
+        if current:
+            return False, f"duplicate suppressed until {current}"
+        return True, None
+
+    def health(self) -> dict:
+        return {
+            "name": self.name,
+            "healthy": True,
+            "cooldown_seconds": self.cooldown_seconds,
+            "entries": len(self._state),
+            "path": str(self.path),
+        }
+
+
+class RecurrenceSuppressionPolicy(_ExpiringFingerprintState, AlertPolicy):
     """Notify a recurring finding once, then stay quiet for a long window.
 
     The 5-minute cooldown only catches alert storms; proactive sweep findings
@@ -101,28 +117,19 @@ class RecurrenceSuppressionPolicy(AlertPolicy):
 
     def __init__(self, path: str | None = None, window_seconds: int = 21600,
                  critical_window_seconds: int = 1800):
-        if path is None:
-            path = str(Path.home() / ".cfoperator" / "event-runtime" / "policies" / "recurrence.json")
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        super().__init__(path, "recurrence.json")
         self.window_seconds = window_seconds
         self.critical_window_seconds = critical_window_seconds
-        self._lock = threading.Lock()
-        self._state = self._load_state()
 
     def evaluate(self, alert: Alert) -> Tuple[bool, str | None]:
-        fingerprint = alert.effective_fingerprint()
         severity = alert.severity.value if hasattr(alert.severity, "value") else str(alert.severity)
         window = self.critical_window_seconds if severity == "critical" else self.window_seconds
         now = datetime.now(timezone.utc)
 
-        with self._lock:
-            self._prune(now)
-            current = self._state.get(fingerprint)
-            if current:
-                return False, f"recurring finding suppressed until {current}"
-            self._state[fingerprint] = (now + timedelta(seconds=window)).isoformat()
-            self._persist()
+        current = self._claim(alert.effective_fingerprint(), now,
+                             now + timedelta(seconds=window))
+        if current:
+            return False, f"recurring finding suppressed until {current}"
         return True, None
 
     def health(self) -> dict:
@@ -134,33 +141,3 @@ class RecurrenceSuppressionPolicy(AlertPolicy):
             "entries": len(self._state),
             "path": str(self.path),
         }
-
-    def _load_state(self) -> Dict[str, str]:
-        if not self.path.exists():
-            return {}
-        try:
-            with open(self.path, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-            if isinstance(data, dict):
-                return {str(key): str(value) for key, value in data.items()}
-        except Exception as exc:
-            logger.warning("Failed to load recurrence state from %s: %s", self.path, exc)
-            return {}
-        return {}
-
-    def _persist(self) -> None:
-        with open(self.path, "w", encoding="utf-8") as handle:
-            json.dump(self._state, handle, indent=2, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
-
-    def _prune(self, now: datetime) -> None:
-        stale = []
-        for fingerprint, expires in self._state.items():
-            try:
-                if datetime.fromisoformat(expires) <= now:
-                    stale.append(fingerprint)
-            except ValueError:
-                stale.append(fingerprint)
-        for fingerprint in stale:
-            self._state.pop(fingerprint, None)

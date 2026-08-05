@@ -303,7 +303,33 @@ df -Pk / 2>/dev/null | awk 'NR==2 {print "disk_total_bytes=" $2 * 1024; print "d
         )
 
 
-class PrometheusHostStatsProvider(HostObservabilityProvider):
+class _PrometheusQueryMixin:
+    """Instant-query helpers for providers reading from a Prometheus API.
+
+    Expects ``self.url`` and ``self.timeout_seconds``. A transport or decode
+    failure degrades to an empty result set rather than raising, so one bad
+    query never aborts a collection pass.
+    """
+
+    def _query(self, query: str) -> Dict[str, Any]:
+        url = f"{self.url}/api/v1/query?{urlencode({'query': query})}"
+        request = Request(url, headers={"Accept": "application/json"})
+        try:
+            with urlopen(request, timeout=self.timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+            return {"status": "error", "data": {"result": []}}
+
+    def _scalar(self, query: str) -> float | None:
+        payload = self._query(query)
+        results = payload.get("data", {}).get("result", [])
+        if not results:
+            return None
+        value = results[0].get("value", [None, None])[1]
+        return _float_or_none(str(value) if value is not None else None)
+
+
+class PrometheusHostStatsProvider(_PrometheusQueryMixin, HostObservabilityProvider):
     """Discover and collect host OS stats from Prometheus node-exporter metrics."""
 
     name = "prometheus-host-stats"
@@ -400,25 +426,8 @@ class PrometheusHostStatsProvider(HostObservabilityProvider):
         escaped = instance.replace("\\", "\\\\").replace('"', '\\"')
         return f'instance="{escaped}"'
 
-    def _query(self, query: str) -> Dict[str, Any]:
-        url = f"{self.url}/api/v1/query?{urlencode({'query': query})}"
-        request = Request(url, headers={"Accept": "application/json"})
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
-            return {"status": "error", "data": {"result": []}}
 
-    def _scalar(self, query: str) -> float | None:
-        payload = self._query(query)
-        results = payload.get("data", {}).get("result", [])
-        if not results:
-            return None
-        value = results[0].get("value", [None, None])[1]
-        return _float_or_none(str(value) if value is not None else None)
-
-
-class PrometheusK3sProvider(HostObservabilityProvider):
+class PrometheusK3sProvider(_PrometheusQueryMixin, HostObservabilityProvider):
     """Discover k3s cluster nodes and collect workload stats via Prometheus.
 
     Queries kube-state-metrics and cAdvisor metrics already scraped by
@@ -598,23 +607,6 @@ class PrometheusK3sProvider(HostObservabilityProvider):
             if value is not None:
                 result[key] = int(value)
         return result
-
-    def _query(self, query: str) -> Dict[str, Any]:
-        url = f"{self.url}/api/v1/query?{urlencode({'query': query})}"
-        request = Request(url, headers={"Accept": "application/json"})
-        try:
-            with urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
-            return {"status": "error", "data": {"result": []}}
-
-    def _scalar(self, query: str) -> float | None:
-        payload = self._query(query)
-        results = payload.get("data", {}).get("result", [])
-        if not results:
-            return None
-        value = results[0].get("value", [None, None])[1]
-        return _float_or_none(str(value) if value is not None else None)
 
 
 class BareMetalHostContextProvider(ContextProvider):

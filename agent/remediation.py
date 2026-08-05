@@ -447,6 +447,58 @@ class RemediationProposer:
         slug = re.sub(r"[^a-z0-9-]+", "-", f"{namespace}-{workload}".lower()).strip("-")
         return f"cfop/remediate-{slug}"
 
+    def _pr_volume_guards(self, repo: str, branch: str) -> Optional[Dict[str, Any]]:
+        """Return a terminal result when this PR must not be opened.
+
+        Two gates every remediation PR passes: branch dedupe (one open
+        remediation branch per target) and the shared ``cfop/remediate-``
+        open-PR cap. ``None`` means the caller may proceed.
+        """
+        existing = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{branch}")
+        if existing.get("success"):
+            return {"status": "skipped", "detail": "remediation branch already exists", "branch": branch}
+
+        if self.max_open_prs >= 0 and self._open_remediation_pr_count(repo) >= self.max_open_prs:
+            return {"status": "capped",
+                    "detail": f"already at the open remediation PR cap ({self.max_open_prs})"}
+        return None
+
+    def _commit_and_open_pr(self, *, repo: str, base: str, branch: str, path: str,
+                            patched: str, file_sha: Optional[str], title: str,
+                            body: str) -> Dict[str, Any]:
+        """Branch off ``base``, commit ``patched`` to ``path``, and open the PR.
+
+        The single-file mutation sequence shared by the taint-toleration and
+        deep-investigation diff paths. Any failing step short-circuits into an
+        error result — nothing is retried or forced.
+        """
+        head = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{base}")
+        head_sha = ((head.get("data") or {}).get("object") or {}).get("sha") if head.get("success") else None
+        if not head_sha:
+            return {"status": "error", "detail": f"could not read base ref {base}"}
+
+        cr = self.github.request("POST", f"/repos/{repo}/git/refs",
+                                 body={"ref": f"refs/heads/{branch}", "sha": head_sha})
+        if not cr.get("success"):
+            return {"status": "error", "detail": f"branch create failed ({cr.get('status')})"}
+
+        commit = self.github.request("PUT", f"/repos/{repo}/contents/{path}", body={
+            "message": title,
+            "content": base64.b64encode(patched.encode("utf-8")).decode("ascii"),
+            "branch": branch,
+            "sha": file_sha,
+        })
+        if not commit.get("success"):
+            return {"status": "error", "detail": f"commit failed ({commit.get('status')})"}
+
+        pr = self.github.request("POST", f"/repos/{repo}/pulls", body={
+            "title": title, "body": body, "head": branch, "base": base})
+        if not pr.get("success"):
+            return {"status": "error", "detail": f"PR create failed ({pr.get('status')})"}
+        data = pr.get("data") or {}
+        return {"status": "opened", "pr_number": data.get("number"),
+                "html_url": data.get("html_url"), "branch": branch, "path": path}
+
     def open_pr(self, proposal: Proposal, namespace: str, workload: str) -> Optional[Dict[str, Any]]:
         """Open a real PR for a patch proposal. No-op (returns None) unless
         ``open_prs`` is set and a GitHub client is present. Idempotent: skips if
@@ -459,15 +511,9 @@ class RemediationProposer:
         base = self._base_branch(self.default_repo_name)
         branch = self._branch_name(namespace, workload)
 
-        # Dedupe: one open remediation branch per workload.
-        existing = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{branch}")
-        if existing.get("success"):
-            return {"status": "skipped", "detail": "remediation branch already exists", "branch": branch}
-
-        # Volume guard: don't flood the repo with remediation PRs.
-        if self.max_open_prs >= 0 and self._open_remediation_pr_count(repo) >= self.max_open_prs:
-            return {"status": "capped",
-                    "detail": f"already at the open remediation PR cap ({self.max_open_prs})"}
+        blocked = self._pr_volume_guards(repo, branch)
+        if blocked:
+            return blocked
 
         located = locate_manifest(self.github, repo, workload, namespace, base)
         if not located:
@@ -480,32 +526,9 @@ class RemediationProposer:
         if not patched or patched == text:
             return {"status": "declined", "detail": "could not generate a safe patch"}
 
-        head = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{base}")
-        head_sha = ((head.get("data") or {}).get("object") or {}).get("sha") if head.get("success") else None
-        if not head_sha:
-            return {"status": "error", "detail": f"could not read base ref {base}"}
-
-        cr = self.github.request("POST", f"/repos/{repo}/git/refs",
-                                 body={"ref": f"refs/heads/{branch}", "sha": head_sha})
-        if not cr.get("success"):
-            return {"status": "error", "detail": f"branch create failed ({cr.get('status')})"}
-
-        commit = self.github.request("PUT", f"/repos/{repo}/contents/{path}", body={
-            "message": proposal.pr_title,
-            "content": base64.b64encode(patched.encode("utf-8")).decode("ascii"),
-            "branch": branch,
-            "sha": file_sha,
-        })
-        if not commit.get("success"):
-            return {"status": "error", "detail": f"commit failed ({commit.get('status')})"}
-
-        pr = self.github.request("POST", f"/repos/{repo}/pulls", body={
-            "title": proposal.pr_title, "body": proposal.pr_body, "head": branch, "base": base})
-        if not pr.get("success"):
-            return {"status": "error", "detail": f"PR create failed ({pr.get('status')})"}
-        data = pr.get("data") or {}
-        return {"status": "opened", "pr_number": data.get("number"),
-                "html_url": data.get("html_url"), "branch": branch, "path": path}
+        return self._commit_and_open_pr(
+            repo=repo, base=base, branch=branch, path=path, patched=patched,
+            file_sha=file_sha, title=proposal.pr_title, body=proposal.pr_body)
 
     def open_pr_from_diff(self, *, diff_text: str, title: str, body: str,
                           dedupe_key: str) -> Optional[Dict[str, Any]]:
@@ -535,13 +558,9 @@ class RemediationProposer:
         slug = re.sub(r"[^a-z0-9-]+", "-", f"deep-{dedupe_key}".lower()).strip("-")
         branch = f"cfop/remediate-{slug}"
 
-        existing = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{branch}")
-        if existing.get("success"):
-            return {"status": "skipped", "detail": "remediation branch already exists", "branch": branch}
-
-        if self.max_open_prs >= 0 and self._open_remediation_pr_count(repo) >= self.max_open_prs:
-            return {"status": "capped",
-                    "detail": f"already at the open remediation PR cap ({self.max_open_prs})"}
+        blocked = self._pr_volume_guards(repo, branch)
+        if blocked:
+            return blocked
 
         got = _get_file(self.github, repo, path, base)
         if not got:
@@ -551,32 +570,9 @@ class RemediationProposer:
         if not patched or patched == text:
             return {"status": "declined", "detail": "diff does not apply cleanly to the current file"}
 
-        head = self.github.request("GET", f"/repos/{repo}/git/ref/heads/{base}")
-        head_sha = ((head.get("data") or {}).get("object") or {}).get("sha") if head.get("success") else None
-        if not head_sha:
-            return {"status": "error", "detail": f"could not read base ref {base}"}
-
-        cr = self.github.request("POST", f"/repos/{repo}/git/refs",
-                                 body={"ref": f"refs/heads/{branch}", "sha": head_sha})
-        if not cr.get("success"):
-            return {"status": "error", "detail": f"branch create failed ({cr.get('status')})"}
-
-        commit = self.github.request("PUT", f"/repos/{repo}/contents/{path}", body={
-            "message": title,
-            "content": base64.b64encode(patched.encode("utf-8")).decode("ascii"),
-            "branch": branch,
-            "sha": file_sha,
-        })
-        if not commit.get("success"):
-            return {"status": "error", "detail": f"commit failed ({commit.get('status')})"}
-
-        pr = self.github.request("POST", f"/repos/{repo}/pulls", body={
-            "title": title, "body": body, "head": branch, "base": base})
-        if not pr.get("success"):
-            return {"status": "error", "detail": f"PR create failed ({pr.get('status')})"}
-        data = pr.get("data") or {}
-        return {"status": "opened", "pr_number": data.get("number"),
-                "html_url": data.get("html_url"), "branch": branch, "path": path}
+        return self._commit_and_open_pr(
+            repo=repo, base=base, branch=branch, path=path, patched=patched,
+            file_sha=file_sha, title=title, body=body)
 
     def _scheduler_message(self, namespace: str, pod_name: str) -> str:
         """Best-effort FailedScheduling message from the pod's events."""
