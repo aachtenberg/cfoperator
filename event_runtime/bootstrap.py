@@ -25,6 +25,7 @@ from .http_actions import (
     build_http_investigate_handler,
     build_http_triage_engine,
     log_completion_endpoint_status,
+    log_runtime_auth_status,
 )
 from .escalation import EscalationLedger
 from .notifications import SlackNotificationSink, DiscordNotificationSink, NtfyNotificationSink
@@ -120,6 +121,7 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
     # build_portable_runtime). Module-level logging at import time would
     # fire too early and get swallowed.
     log_completion_endpoint_status()
+    log_runtime_auth_status()
 
     # Git / GitHub integration (gated on config or env vars)
     git_config = _load_git_config(config_path)

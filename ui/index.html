@@ -7,7 +7,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
+    <!-- Pinned + SRI: a floating major tag lets the CDN serve new code into the
+         console on any release, and this script runs with full page privileges. -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"
+            integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+"
+            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <style>
         :root {
             --bg-primary: #0a0a0f;
@@ -1188,9 +1192,38 @@
             gfm: true,
         });
 
+        // Agent replies are LLM output and quote log/alert text verbatim, so the
+        // markdown they contain is untrusted: marked emits raw HTML by design.
+        // Parse, then walk the result and drop anything scriptable before it
+        // reaches innerHTML.
+        const MD_ALLOWED_TAGS = new Set(['A','B','BLOCKQUOTE','BR','CODE','DEL','DIV','EM','H1','H2',
+            'H3','H4','H5','H6','HR','I','LI','OL','P','PRE','SPAN','STRONG','TABLE','TBODY','TD',
+            'TH','THEAD','TR','UL']);
+        const MD_ALLOWED_ATTRS = new Set(['href', 'title', 'class', 'colspan', 'rowspan']);
+
+        function sanitizeHtml(html) {
+            const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
+            const root = doc.body.firstChild;
+            for (const el of Array.from(root.querySelectorAll('*'))) {
+                if (!MD_ALLOWED_TAGS.has(el.tagName)) {
+                    el.replaceWith(...el.childNodes);  // keep the text, drop the element
+                    continue;
+                }
+                for (const attr of Array.from(el.attributes)) {
+                    const name = attr.name.toLowerCase();
+                    if (!MD_ALLOWED_ATTRS.has(name)) { el.removeAttribute(attr.name); continue; }
+                    if (name === 'href' && !/^(https?:|mailto:|#|\/)/i.test(attr.value.trim())) {
+                        el.removeAttribute(attr.name);
+                    }
+                }
+                if (el.tagName === 'A') { el.setAttribute('rel', 'noopener noreferrer'); el.setAttribute('target', '_blank'); }
+            }
+            return root.innerHTML;
+        }
+
         function renderMarkdown(text) {
             try {
-                return marked.parse(text);
+                return sanitizeHtml(marked.parse(text));
             } catch (e) {
                 return escapeHtml(text);
             }
@@ -1321,12 +1354,12 @@
             const questionCard = document.createElement('div');
             questionCard.className = 'question-card';
             questionCard.innerHTML = `
-                <h4>Investigation #${data.investigation_id} &middot; ${data.host_id || 'cfoperator'}</h4>
+                <h4>Investigation #${escapeHtml(String(data.investigation_id))} &middot; ${escapeHtml(data.host_id || 'cfoperator')}</h4>
                 <p>${escapeHtml(data.question)}</p>
                 ${data.context ? `<div class="context">${escapeHtml(data.context)}</div>` : ''}
                 <div class="answer-input">
-                    <input type="text" id="answer-${data.id}" placeholder="Your answer...">
-                    <button onclick="submitAnswer(${data.id})">Submit</button>
+                    <input type="text" id="answer-${Number(data.id)}" placeholder="Your answer...">
+                    <button onclick="submitAnswer(${Number(data.id)})">Submit</button>
                 </div>
             `;
             panel.appendChild(questionCard);
@@ -1470,10 +1503,11 @@
             }
         }
 
+        // Escapes quotes as well as angle brackets — textContent alone leaves
+        // " and ' intact, which breaks out of an HTML attribute value.
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            return (text == null ? '' : String(text)).replace(/[&<>"']/g,
+                c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
         }
 
         // Poll for pending questions
@@ -1495,7 +1529,7 @@
                 .then(r => r.json())
                 .then(data => {
                     if (data.models && data.models.length > 0) {
-                        modelSelect.innerHTML = data.models.map(m => `<option value="${m}">${m}</option>`).join('');
+                        modelSelect.innerHTML = data.models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
                         const storageKey = `cfoperator_${backend}_model`;
                         const savedModel = data.selected || localStorage.getItem(storageKey) || '';
                         if (savedModel && data.models.includes(savedModel)) modelSelect.value = savedModel;
@@ -1643,12 +1677,14 @@
                 section.style.display = '';
                 sidebar.innerHTML = data.instances.map(inst => {
                     const color = !inst.enabled ? 'var(--text-muted)' : inst.healthy ? 'var(--accent)' : 'var(--red)';
+                    // Instance name goes in a data attribute, not into the inline
+                    // handler's JS string, so a quote in it can't inject script.
                     return `<div class="pool-instance">
-                        <input type="checkbox" ${inst.enabled ? 'checked' : ''} onchange="togglePoolInstance('${inst.name}', this.checked)">
-                        <span style="color:${color}">${inst.name.replace('ollama-','')}</span>
-                        <span style="color:var(--text-muted);font-size:11px;">${inst.model || ''}</span>
+                        <input type="checkbox" ${inst.enabled ? 'checked' : ''} data-instance="${escapeHtml(inst.name)}" onchange="togglePoolInstance(this.dataset.instance, this.checked)">
+                        <span style="color:${color}">${escapeHtml(String(inst.name).replace('ollama-',''))}</span>
+                        <span style="color:var(--text-muted);font-size:11px;">${escapeHtml(inst.model || '')}</span>
                     </div>`;
-                }).join('') + `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Mode: ${data.mode || 'sequential'}</div>`;
+                }).join('') + `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Mode: ${escapeHtml(data.mode || 'sequential')}</div>`;
             }).catch(() => {});
         }
 
@@ -1781,12 +1817,12 @@
                 document.getElementById('status-sweep').textContent = `Last sweep: ${ago}`;
                 panel.innerHTML = `
                     <div class="sweep-header" onclick="this.nextElementSibling.classList.toggle('open')">
-                        <span><span class="sweep-severity ${r.severity}">${r.severity}</span> &nbsp;Sweep #${r.id}: ${r.finding_count} finding${r.finding_count !== 1 ? 's' : ''}</span>
+                        <span><span class="sweep-severity ${escapeHtml(r.severity)}">${escapeHtml(r.severity)}</span> &nbsp;Sweep #${escapeHtml(String(r.id))}: ${escapeHtml(String(r.finding_count))} finding${r.finding_count !== 1 ? 's' : ''}</span>
                         <span class="sweep-time">${ago}</span>
                     </div>
                     <div class="sweep-body">
-                        ${r.findings.map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + f.status : ''}"><span class="sweep-badge ${f.severity || 'info'}">${(f.severity || 'info').toUpperCase()}</span><span class="finding-id">#${r.id}.${i}</span>${f.status ? `<span class="finding-status ${f.status}">${f.status}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div>`).join('')}
-                        ${meta.sweep_backend ? `<div class="sweep-meta">${meta.sweep_backend}/${meta.sweep_model || ''}</div>` : ''}
+                        ${r.findings.map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + escapeHtml(f.status) : ''}"><span class="sweep-badge ${escapeHtml(f.severity || 'info')}">${escapeHtml((f.severity || 'info').toUpperCase())}</span><span class="finding-id">#${escapeHtml(String(r.id))}.${i}</span>${f.status ? `<span class="finding-status ${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div>`).join('')}
+                        ${meta.sweep_backend ? `<div class="sweep-meta">${escapeHtml(meta.sweep_backend)}/${escapeHtml(meta.sweep_model || '')}</div>` : ''}
                     </div>`;
                 panel.classList.add('active');
             }).catch(() => {});

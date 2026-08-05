@@ -81,8 +81,11 @@ const OC = {resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',esca
   escalate:'--red',failed:'--red',in_progress:'--text-muted',retry:'--purple'};
 let filter='', ALL=[];
 function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
-function badge(t,v){ const c=color(v); return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${t||'—'}</span>`; }
-function esc(s){ return (s==null?'':String(s)).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function badge(t,v){ const c=color(v); return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(t)||'—'}</span>`; }
+// Quotes are escaped too: these values also land inside HTML attributes,
+// where a bare " or ' breaks out of the attribute.
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.endsWith('Z')?'':'Z')).getTime())/1000;
   if(s<90)return Math.round(s)+'s'; if(s<5400)return Math.round(s/60)+'m'; if(s<129600)return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
 

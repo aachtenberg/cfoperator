@@ -31,6 +31,8 @@ from sqlalchemy import TIMESTAMP
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import QueuePool
 
+from embedding_service import vector_literal
+
 Base = declarative_base()
 
 
@@ -1928,7 +1930,7 @@ class KnowledgeBase:
             try:
                 # Use raw SQL for pgvector insertion
                 # pgvector accepts array format: '[0.1, 0.2, ...]'
-                embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+                embedding_str = vector_literal(embedding)
                 # Insert/update embedding and FTS vector together
                 session.execute(text("""
                     INSERT INTO investigation_embeddings
@@ -1982,7 +1984,7 @@ class KnowledgeBase:
                 # Build query with optional exclusion
                 exclude_clause = ""
                 # Format embedding as pgvector string literal
-                embedding_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+                embedding_str = vector_literal(query_embedding)
                 params = {
                     'limit': limit,
                     'min_sim': min_similarity
@@ -2207,7 +2209,7 @@ class KnowledgeBase:
 
                 # If we have an embedding, do hybrid search
                 if query_embedding and len(query_embedding) > 0:
-                    embedding_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+                    embedding_str = vector_literal(query_embedding)
 
                     results = session.execute(text(f"""
                         WITH vector_scores AS (
@@ -2748,7 +2750,7 @@ class KnowledgeBase:
         try:
             with self.session_scope() as session:
                 if query_embedding and len(query_embedding) > 0:
-                    embedding_str = "[" + ",".join(str(v) for v in query_embedding) + "]"
+                    embedding_str = vector_literal(query_embedding)
                     fts_weight = 1.0 - vector_weight
 
                     result = session.execute(text(f"""

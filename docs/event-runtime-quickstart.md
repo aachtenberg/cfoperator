@@ -161,6 +161,19 @@ event_runtime:
 - `GET /jobs/<job_id>` when background workers are enabled
 - `POST /v1/investigations/<alert_id>/complete` — receive a completed `ActionResult` from an external executor (the agent). Body shape: `{"alert": <Alert>, "result": <ActionResult>}`. Requires `X-CFOP-Token` header when `CFOP_COMPLETION_SHARED_SECRET` is set.
 
+When `CFOP_RUNTIME_TOKEN` is set, every route above except `/livez`, `/health`, `/metrics` and the completion endpoint requires `Authorization: Bearer $CFOP_RUNTIME_TOKEN`. Alertmanager sends it with a `http_config.authorization` block:
+
+```yaml
+receivers:
+  - name: cfoperator
+    webhook_configs:
+      - url: http://cfoperator-event-runtime:8080/alert
+        http_config:
+          authorization:
+            type: Bearer
+            credentials_file: /etc/alertmanager/secrets/cfop-runtime-token
+```
+
 ## Optional ASGI Mode
 
 If you want FastAPI-style deployment behind uvicorn or gunicorn, install only the adapter dependencies:
@@ -220,6 +233,7 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_JSON`: inline JSON config for bare-metal observability providers
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_CONFIG_PATH`: path to a JSON config file for bare-metal observability providers
 - `CFOP_AGENT_URL`: base URL of the CFOperator agent (e.g. `http://cfoperator.apps.svc.cluster.local:8083`). When set, the runtime registers `HTTPInvestigateActionHandler` in place of the default stub for the `investigate` action, so every `investigate` decision is dispatched to the agent over HTTP. Unsetting it falls back to the stub.
+- `CFOP_RUNTIME_TOKEN`: bearer token enforced on the HTTP surface — `POST /alert` (which enqueues LLM investigations) plus the `/history`, `/activity`, `/scheduled` and `/jobs` read endpoints that replay the fleet's incident history. `/livez`, `/health`, `/metrics` and the completion endpoint (separately authenticated) stay open. When unset, those routes accept unauthenticated requests and a warning is logged at startup. Compared via `secrets.compare_digest`.
 - `CFOP_COMPLETION_SHARED_SECRET`: shared secret enforced on `POST /v1/investigations/{alert_id}/complete`. Callers must send a matching `X-CFOP-Token` header. When unset, the endpoint accepts unauthenticated posts (portable deployments without an agent stay runnable) and logs a warning at startup. Compared via `secrets.compare_digest` to avoid timing attacks.
 
 The runtime also reads bare-metal host observability config from `config.yaml` when PyYAML is available. It looks for `event_runtime.host_observability` first, then `observability.host_observability`. You can point the runtime at a specific file with `CONFIG_PATH=/path/to/config.yaml` or `python3 -m event_runtime --config /path/to/config.yaml`.

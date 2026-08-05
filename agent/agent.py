@@ -32,7 +32,7 @@ from prometheus_client import Counter, Gauge, Histogram, Info
 # Import core components
 from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, remediation_is_auto_eligible
 from llm_fallback import LLMFallbackManager as LLMFallback
-from embedding_service import EmbeddingService
+from embedding_service import EmbeddingService, vector_literal
 
 # Import pluggable observability backends
 from observability import (
@@ -3608,7 +3608,7 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                 return
 
             from sqlalchemy import text as sql_text
-            embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+            embedding_str = vector_literal(embedding)
             with self.kb._kb.session_scope() as session:
                 session.execute(sql_text("""
                     UPDATE investigation_learnings

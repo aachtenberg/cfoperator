@@ -26,16 +26,18 @@ from event_runtime.http_actions import (
     COMPLETION_AUTH_HEADER,
     COMPLETION_SECRET_ENV,
     HTTPInvestigateActionHandler,
+    RUNTIME_TOKEN_ENV,
     build_http_investigate_handler,
     log_completion_endpoint_status,
     parse_completion_payload,
     verify_completion_auth,
+    verify_runtime_auth,
 )
 from event_runtime.models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, Decision
 from event_runtime.notifications import _format_message, should_notify
 from event_runtime.plugin_manager import PluginManager
 from event_runtime.plugins import ActionHandler, DecisionEngine
-from event_runtime.server import _match_completion_path, make_handler
+from event_runtime.server import _bounded_int, _match_completion_path, make_handler
 from event_runtime.state.composite import CompositeStateSink
 from event_runtime.state.local_outbox import LocalOutboxStateSink
 
@@ -577,6 +579,40 @@ def test_verify_completion_auth_rejects_wrong_header(monkeypatch):
 def test_verify_completion_auth_accepts_matching_header(monkeypatch):
     monkeypatch.setenv(COMPLETION_SECRET_ENV, "supersecret")
     assert verify_completion_auth("supersecret") is None
+
+
+# ---- verify_runtime_auth -------------------------------------------------
+
+
+def test_verify_runtime_auth_allows_everything_when_token_unset(monkeypatch):
+    monkeypatch.delenv(RUNTIME_TOKEN_ENV, raising=False)
+    assert verify_runtime_auth("/alert", None) is None
+    assert verify_runtime_auth("/history", None) is None
+
+
+def test_verify_runtime_auth_requires_bearer_when_token_set(monkeypatch):
+    monkeypatch.setenv(RUNTIME_TOKEN_ENV, "runtimetoken")
+    assert verify_runtime_auth("/alert", None) is not None
+    assert verify_runtime_auth("/alert", "runtimetoken") is not None  # missing scheme
+    assert verify_runtime_auth("/alert", "Bearer wrong") is not None
+    assert verify_runtime_auth("/alert", "Bearer runtimetoken") is None
+
+
+def test_verify_runtime_auth_exempts_probes_metrics_and_completion(monkeypatch):
+    monkeypatch.setenv(RUNTIME_TOKEN_ENV, "runtimetoken")
+    for path in ("/livez", "/health", "/metrics", "/v1/investigations/abc/complete"):
+        assert verify_runtime_auth(path, None) is None
+
+
+# ---- _bounded_int --------------------------------------------------------
+
+
+def test_bounded_int_defaults_clamps_and_survives_garbage():
+    assert _bounded_int(None, 50, 1, 500) == 50
+    assert _bounded_int("abc", 50, 1, 500) == 50
+    assert _bounded_int("10", 50, 1, 500) == 10
+    assert _bounded_int("100000", 50, 1, 500) == 500
+    assert _bounded_int("0", 50, 1, 500) == 1
 
 
 # ---- log_completion_endpoint_status --------------------------------------

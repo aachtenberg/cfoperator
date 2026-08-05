@@ -16,6 +16,7 @@ from .http_actions import (
     COMPLETION_AUTH_HEADER,
     parse_completion_payload,
     verify_completion_auth,
+    verify_runtime_auth,
 )
 from .models import Alert
 from .telemetry import observe_completion_request, render_metrics
@@ -41,6 +42,21 @@ def _match_completion_path(path: str) -> str | None:
     return middle
 
 
+def _bounded_int(raw: str | None, default: int, low: int, high: int) -> int:
+    """Parse a query-string integer, clamped to the same bounds the FastAPI
+    adapter declares.
+
+    A bare ``int(...)`` on a query param let any client turn ``?limit=abc``
+    into an unhandled ValueError (500 + traceback) and ``?limit=10000000`` into
+    an unbounded event scan.
+    """
+    try:
+        value = int(raw) if raw is not None else default
+    except (TypeError, ValueError):
+        return default
+    return max(low, min(value, high))
+
+
 def _bytes_response(handler: BaseHTTPRequestHandler, status: int, payload: bytes, content_type: str) -> None:
     data = payload
     handler.send_response(status)
@@ -56,8 +72,18 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
     class EventRuntimeHandler(BaseHTTPRequestHandler):
         server_version = "CFOperatorEventRuntime/0.1"
 
+        def _authorized(self, path: str) -> bool:
+            """Enforce the runtime token (no-op unless CFOP_RUNTIME_TOKEN is set)."""
+            error = verify_runtime_auth(path, self.headers.get("Authorization"))
+            if error is None:
+                return True
+            _json_response(self, HTTPStatus.UNAUTHORIZED, {"error": error})
+            return False
+
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            if not self._authorized(parsed.path):
+                return
             if parsed.path == "/livez":
                 # Liveness only: must never touch the runtime (health() does a
                 # live jobstore query, so a slow DB would get the pod killed).
@@ -71,7 +97,7 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                 return
             if parsed.path == "/history":
                 query = parse_qs(parsed.query)
-                limit = int(query.get("limit", ["50"])[0])
+                limit = _bounded_int(query.get("limit", [None])[0], 50, 1, 500)
                 event_type = query.get("event_type", [""])[0] or None
                 alert_id = query.get("alert_id", [""])[0] or None
                 job_id = query.get("job_id", [""])[0] or None
@@ -90,10 +116,12 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                 return
             if parsed.path == "/activity":
                 query = parse_qs(parsed.query)
-                limit = int(query.get("limit", ["25"])[0])
+                limit = _bounded_int(query.get("limit", [None])[0], 25, 1, 250)
                 status = query.get("status", [""])[0] or None
                 action = query.get("action", [""])[0] or None
-                event_limit = int(query.get("event_limit", [str(max(limit * 12, 100))])[0])
+                event_limit = _bounded_int(
+                    query.get("event_limit", [None])[0], max(limit * 12, 100), 1, 5000
+                )
                 _json_response(
                     self,
                     HTTPStatus.OK,
@@ -109,7 +137,7 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                 return
             if parsed.path == "/scheduled":
                 query = parse_qs(parsed.query)
-                limit = int(query.get("limit", ["100"])[0])
+                limit = _bounded_int(query.get("limit", [None])[0], 100, 1, 1000)
                 scheduler = query.get("scheduler", [""])[0] or None
                 _json_response(
                     self,
@@ -119,7 +147,7 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                 return
             if parsed.path == "/activity.html":
                 query = parse_qs(parsed.query)
-                limit = int(query.get("limit", ["25"])[0])
+                limit = _bounded_int(query.get("limit", [None])[0], 25, 1, 250)
                 payload = render_activity_html(runtime.recent_activity(limit=limit))
                 _bytes_response(self, HTTPStatus.OK, payload, "text/html; charset=utf-8")
                 return
@@ -144,6 +172,8 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
 
         def do_POST(self) -> None:
             parsed = urlparse(self.path)
+            if not self._authorized(parsed.path):
+                return
 
             if parsed.path == "/alert":
                 self._handle_alert_post(parsed)

@@ -35,6 +35,17 @@ DEFAULT_CACHE_SIZE = 500  # Max embeddings to keep in memory
 CACHE_TABLE_NAME = "embedding_cache"
 
 
+def vector_literal(values: List[float]) -> str:
+    """Render an embedding as a pgvector literal.
+
+    The literal is string-interpolated into SQL (the ``::vector`` cast does not
+    take a bind parameter), so every element is forced through ``float()``
+    first: that way nothing but numbers can ever reach the statement, whatever
+    the embedding endpoint returned.
+    """
+    return "[" + ",".join(repr(float(v)) for v in values) + "]"
+
+
 def _log(level: str, msg: str, **fields: Any) -> None:
     """Structured logging matching agent pattern."""
     payload = {
@@ -152,7 +163,7 @@ class EmbeddingCache:
         """Store embedding in database cache."""
         try:
             from sqlalchemy import text
-            embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+            embedding_str = vector_literal(embedding)
             with self._db_session_factory() as session:
                 session.execute(text(f"""
                     INSERT INTO {CACHE_TABLE_NAME} (hash_key, embedding_model, embedding, created_at)
@@ -538,7 +549,7 @@ class EmbeddingService:
             try:
                 import hashlib
                 from sqlalchemy import text as sql_text
-                embedding_str = "[" + ",".join(str(v) for v in embedding) + "]"
+                embedding_str = vector_literal(embedding)
                 with kb.session_scope() as session:
                     session.execute(sql_text("""
                         UPDATE investigation_learnings
