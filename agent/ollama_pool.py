@@ -103,8 +103,8 @@ class OllamaPool:
                 raw = kb.get_setting('ollama_pool_disabled', '')
                 if raw:
                     disabled = set(raw.split(','))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Could not load persisted pool disabled state: {e}")
 
         for cfg in instances:
             name = cfg['name']

@@ -869,14 +869,16 @@ def load_host_observability_config_from_env() -> Dict[str, Any]:
     if raw_config:
         try:
             return json.loads(raw_config)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            logger.warning("Invalid JSON in CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_JSON, ignoring: %s", e)
             return {}
     if config_path:
         path = Path(os.path.expanduser(config_path))
         if path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
+                logger.warning("Invalid JSON in host observability config file %s, ignoring: %s", path, e)
                 return {}
     return {}
 

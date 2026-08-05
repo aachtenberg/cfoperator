@@ -1,8 +1,12 @@
 """Prometheus-based Container Discovery Implementation"""
 from typing import List, Dict, Any, Optional
+import json
+import logging
 import subprocess
 import requests
 from .base import ContainerBackend
+
+logger = logging.getLogger("cfoperator.observability.prometheus_containers")
 
 
 class PrometheusContainers(ContainerBackend):
@@ -101,10 +105,10 @@ class PrometheusContainers(ContainerBackend):
 
         output = self._ssh_docker_command(host, ['docker', 'inspect', container])
         if output:
-            import json
             try:
                 return json.loads(output)[0]
-            except:
+            except (ValueError, IndexError, KeyError) as e:
+                logger.warning(f"Failed to parse docker inspect output for {container}: {e}")
                 return {}
         return {}
 
