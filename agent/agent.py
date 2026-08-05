@@ -4800,7 +4800,7 @@ Only return the JSON array, no other text."""
                     f"[FALLBACK] Provider {provider_type}/{model_name} failed: "
                     f"{type(e).__name__}: {e}"
                 )
-                self.llm.record_failure(provider_key, str(e))
+                self.llm.record_failure(provider_key, self.llm.classify_error(e))
                 continue
 
         logger.error(
