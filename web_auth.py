@@ -40,6 +40,7 @@ environment unnoticed.
 import functools
 import logging
 import os
+import re
 import secrets
 import time
 
@@ -58,6 +59,18 @@ logger = logging.getLogger(__name__)
 # Routes that must answer without credentials. Keep this list minimal and
 # read-only — anything added here is reachable by every device on the LAN.
 EXEMPT_PATHS = frozenset({"/api/health", "/metrics", "/login", "/logout"})
+
+# The only routes that authenticate with the X-CFOP-Token completion secret —
+# they call verify_completion_auth() themselves. The console gate honors that
+# secret ONLY on these paths; on every other route it must be ignored, so the
+# machine secret (injected into disposable executor Jobs and the deep-
+# investigation worker) can never act as a full console credential — in
+# particular it must not reach /api/remediations/<id>/approve. Keep in sync
+# with the verify_completion_auth routes in web_server.py.
+_COMPLETION_TOKEN_PATHS = re.compile(
+    r"^/v1/(deep-investigations"
+    r"|remediations/(\d+/complete|feed-sweeps|feed-summary))/?$"
+)
 
 # Brute force throttle. The login form is reachable from every LAN device once
 # the firewall opens up, and a single shared password is a realistic target.
@@ -166,8 +179,16 @@ class ConsoleAuth:
         """Machine callbacks (executor Jobs, deep-investigation workers) present
         the X-CFOP-Token shared secret, not the console bearer token. Honor it
         here so this gate doesn't 401 them before their route-level
-        verify_completion_auth() runs. Only honored when the secret is
-        configured — an unset secret must not become a bypass."""
+        verify_completion_auth() runs.
+
+        Scoped to the completion callback paths only: this secret is broadly
+        distributed (every executor Job pod, the deep-investigation worker), so
+        accepting it on any other route would turn the lowest-privilege
+        credential in the system into a full console credential. And only when
+        the secret is configured — an unset secret must not become a bypass."""
+        if not _COMPLETION_TOKEN_PATHS.match(request.path):
+            return False
+
         from event_runtime.http_actions import COMPLETION_AUTH_HEADER, COMPLETION_SECRET_ENV
 
         expected = os.getenv(COMPLETION_SECRET_ENV, "").strip()

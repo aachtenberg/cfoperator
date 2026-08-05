@@ -53,6 +53,13 @@ def build_app(monkeypatch, **overrides):
     def approve(rid):
         return jsonify({"approved": rid})
 
+    # A machine-callback route: authenticates with the X-CFOP-Token completion
+    # secret at the route level, so the console gate must let that secret reach
+    # it (but nowhere else).
+    @app.route("/v1/remediations/<int:rid>/complete", methods=["POST"])
+    def complete(rid):
+        return jsonify({"completed": rid})
+
     @app.route("/")
     def index():
         return "<html>console</html>"
@@ -128,14 +135,24 @@ def test_non_bearer_authorization_header_rejected(monkeypatch):
 COMPLETION_SECRET = "completion-shared-secret-xyz"
 
 
-def test_completion_token_passes_the_gate(monkeypatch):
+def test_completion_token_passes_the_gate_on_callback_path(monkeypatch):
     """Executor Jobs post completions with X-CFOP-Token, not the console
-    bearer token. The gate must let them reach the route's own auth check
-    (regression: PR #93 401'd every executor completion)."""
+    bearer token. The gate must let them reach the callback route's own auth
+    check (regression: PR #93 401'd every executor completion)."""
+    c = build_app(monkeypatch, CFOP_COMPLETION_SHARED_SECRET=COMPLETION_SECRET).test_client()
+    r = c.post("/v1/remediations/5/complete", headers={"X-CFOP-Token": COMPLETION_SECRET})
+    assert r.status_code == 200
+    assert r.get_json()["completed"] == 5
+
+
+def test_completion_token_rejected_on_console_route(monkeypatch):
+    """The completion secret is broadly distributed (every executor Job pod),
+    so it must be honored ONLY on the callback paths. On a privileged console
+    route like /approve it must not authenticate — otherwise the lowest-
+    privilege credential becomes a full console credential."""
     c = build_app(monkeypatch, CFOP_COMPLETION_SHARED_SECRET=COMPLETION_SECRET).test_client()
     r = c.post("/api/remediations/5/approve", headers={"X-CFOP-Token": COMPLETION_SECRET})
-    assert r.status_code == 200
-    assert r.get_json()["approved"] == 5
+    assert r.status_code == 401
 
 
 @pytest.mark.parametrize("bad", [
@@ -146,16 +163,16 @@ def test_completion_token_passes_the_gate(monkeypatch):
 ])
 def test_wrong_completion_tokens_rejected(monkeypatch, bad):
     c = build_app(monkeypatch, CFOP_COMPLETION_SHARED_SECRET=COMPLETION_SECRET).test_client()
-    r = c.post("/api/remediations/1/approve", headers={"X-CFOP-Token": bad})
+    r = c.post("/v1/remediations/1/complete", headers={"X-CFOP-Token": bad})
     assert r.status_code == 401
 
 
 def test_unset_completion_secret_is_not_a_bypass(monkeypatch):
-    """When no shared secret is configured, X-CFOP-Token must be ignored —
-    route-level verify_completion_auth falls open for portable deployments,
-    but the console gate must not."""
+    """When no shared secret is configured, X-CFOP-Token must be ignored even
+    on a callback path — route-level verify_completion_auth falls open for
+    portable deployments, but the console gate must not."""
     c = build_app(monkeypatch, CFOP_COMPLETION_SHARED_SECRET="").test_client()
-    r = c.post("/api/remediations/1/approve", headers={"X-CFOP-Token": "anything"})
+    r = c.post("/v1/remediations/1/complete", headers={"X-CFOP-Token": "anything"})
     assert r.status_code == 401
 
 
