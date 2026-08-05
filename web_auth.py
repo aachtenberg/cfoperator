@@ -162,6 +162,20 @@ class ConsoleAuth:
         # Timing-safe: a naive == leaks the token prefix byte by byte.
         return secrets.compare_digest(presented, self.api_token)
 
+    def _completion_token_ok(self) -> bool:
+        """Machine callbacks (executor Jobs, deep-investigation workers) present
+        the X-CFOP-Token shared secret, not the console bearer token. Honor it
+        here so this gate doesn't 401 them before their route-level
+        verify_completion_auth() runs. Only honored when the secret is
+        configured — an unset secret must not become a bypass."""
+        from event_runtime.http_actions import COMPLETION_AUTH_HEADER, COMPLETION_SECRET_ENV
+
+        expected = os.getenv(COMPLETION_SECRET_ENV, "").strip()
+        presented = request.headers.get(COMPLETION_AUTH_HEADER, "")
+        if not expected or not presented:
+            return False
+        return secrets.compare_digest(presented, expected)
+
     def check_request(self):
         """before_request hook. Returning None lets the request proceed."""
         if self.disabled:
@@ -178,6 +192,9 @@ class ConsoleAuth:
             }), 503
 
         if self._service_token_ok():
+            return None
+
+        if self._completion_token_ok():
             return None
 
         if session.get("cfop_user"):

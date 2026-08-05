@@ -122,6 +122,43 @@ def test_non_bearer_authorization_header_rejected(monkeypatch):
     assert r.status_code == 401
 
 
+# ---- completion shared secret ----------------------------------------
+
+
+COMPLETION_SECRET = "completion-shared-secret-xyz"
+
+
+def test_completion_token_passes_the_gate(monkeypatch):
+    """Executor Jobs post completions with X-CFOP-Token, not the console
+    bearer token. The gate must let them reach the route's own auth check
+    (regression: PR #93 401'd every executor completion)."""
+    c = build_app(monkeypatch, CFOP_COMPLETION_SHARED_SECRET=COMPLETION_SECRET).test_client()
+    r = c.post("/api/remediations/5/approve", headers={"X-CFOP-Token": COMPLETION_SECRET})
+    assert r.status_code == 200
+    assert r.get_json()["approved"] == 5
+
+
+@pytest.mark.parametrize("bad", [
+    "",
+    "wrong-secret",
+    COMPLETION_SECRET[:-1],
+    COMPLETION_SECRET + "x",
+])
+def test_wrong_completion_tokens_rejected(monkeypatch, bad):
+    c = build_app(monkeypatch, CFOP_COMPLETION_SHARED_SECRET=COMPLETION_SECRET).test_client()
+    r = c.post("/api/remediations/1/approve", headers={"X-CFOP-Token": bad})
+    assert r.status_code == 401
+
+
+def test_unset_completion_secret_is_not_a_bypass(monkeypatch):
+    """When no shared secret is configured, X-CFOP-Token must be ignored —
+    route-level verify_completion_auth falls open for portable deployments,
+    but the console gate must not."""
+    c = build_app(monkeypatch, CFOP_COMPLETION_SHARED_SECRET="").test_client()
+    r = c.post("/api/remediations/1/approve", headers={"X-CFOP-Token": "anything"})
+    assert r.status_code == 401
+
+
 # ---- session login ----------------------------------------------------
 
 
