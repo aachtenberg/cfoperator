@@ -16,8 +16,21 @@ Two callers, two mechanisms
   HTML that calls ``/api/*`` with same-origin fetches, so the cookie rides along
   automatically and no page needs changing.
 * **Services** (event_runtime, cfoperator-mcp, bridge) send
-  ``Authorization: Bearer $CFOP_API_TOKEN``. They are not interactive and must
-  never be redirected to a login page.
+  ``Authorization: Bearer <token>``. They are not interactive and must never be
+  redirected to a login page.
+
+Where credentials come from
+---------------------------
+When an :class:`~auth.store.AuthStore` is supplied, both mechanisms resolve
+against the database: logins against ``auth_users``, bearer tokens against
+``auth_api_tokens``. Roles and per-token scopes come from those rows.
+
+Without a store — local docker-compose, and any deploy that has not yet been
+given a database — the module falls back to the original single-credential
+environment variables. The shared ``CFOP_API_TOKEN`` also stays honoured
+*alongside* the database during the migration window, logging a deprecation
+warning and an audit row on each use so it can be retired once the audit trail
+shows nothing is using it.
 
 Exempt paths
 ------------
@@ -28,9 +41,11 @@ checks and monitoring for no benefit.
 Failure mode is CLOSED
 ----------------------
 If the console is configured for auth but the credentials are missing, every
-non-exempt route returns 503 rather than falling open. The deploy order is
-secrets first, then image, so this window should not occur — but "misconfigured"
-must never silently mean "unprotected".
+non-exempt route returns 503 rather than falling open. The same applies when the
+database is configured but unreachable: a lookup that cannot run is an error,
+never an implicit "no such user". The deploy order is secrets first, then image,
+so this window should not occur — but "misconfigured" must never silently mean
+"unprotected".
 
 ``CFOP_AUTH_DISABLED=true`` bypasses everything for local docker-compose work.
 It logs a loud warning on every start so it cannot be set in a deployed
@@ -45,6 +60,7 @@ import secrets
 import time
 
 from flask import (
+    g,
     jsonify,
     redirect,
     request,
@@ -79,6 +95,9 @@ _COMPLETION_TOKEN_PATHS = re.compile(
 _MAX_FAILURES = 8
 _LOCKOUT_SECONDS = 300
 _failures: dict[str, list] = {}
+
+ROLE_ADMIN = "admin"
+ROLE_MEMBER = "member"
 
 
 def _client_ip() -> str:
@@ -117,12 +136,74 @@ def _wants_html() -> bool:
     return "text/html" in accept and "application/json" not in accept
 
 
+# ---- request-scoped identity ------------------------------------------
+#
+# Populated by the gate so route handlers and the require_role decorator can ask
+# who is calling without repeating the credential work.
+
+
+def current_user() -> dict | None:
+    """The logged-in user for this request, or None for a token/anonymous call."""
+    return getattr(g, "cfop_user", None)
+
+
+def current_token():
+    """The :class:`~auth.store.TokenIdentity` for this request, if any."""
+    return getattr(g, "cfop_token", None)
+
+
+def current_role() -> str | None:
+    """Effective role: the user's role, or the role a token's scopes imply."""
+    user = current_user()
+    if user:
+        return user.get("role")
+    token = current_token()
+    if token is not None:
+        # A token is not a person and has no role. Treat `remediate` as
+        # admin-equivalent because that is exactly the capability the admin role
+        # gates; anything less is a member.
+        return ROLE_ADMIN if token.has_scope("remediate") else ROLE_MEMBER
+    return None
+
+
+def require_role(role: str):
+    """Gate a route on a role. Denies by default when identity is unknown.
+
+    The role is re-read from the database rather than taken from the session
+    cookie: a cookie issued to an admin stays valid for its whole lifetime, so
+    trusting it would let a just-demoted account keep approving remediations
+    until it happened to log out.
+    """
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            auth = getattr(g, "cfop_auth", None)
+            if auth is not None and auth.disabled:
+                return fn(*args, **kwargs)
+
+            effective = auth.effective_role() if auth is not None else current_role()
+            if effective is None:
+                return jsonify({"error": "authentication required"}), 401
+            if role == ROLE_ADMIN and effective != ROLE_ADMIN:
+                return jsonify({
+                    "error": "forbidden",
+                    "detail": f"this action requires the {role} role",
+                }), 403
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 class ConsoleAuth:
     """Holds the configured credentials and installs the Flask hooks."""
 
-    def __init__(self, app, ui_dir: str = "ui"):
+    def __init__(self, app, ui_dir: str = "ui", store=None):
         self.app = app
         self.ui_dir = ui_dir
+        self.store = store
         self.disabled = os.getenv("CFOP_AUTH_DISABLED", "").lower() in ("1", "true", "yes")
         self.username = os.getenv("CFOP_UI_USERNAME", "")
         self.password_hash = os.getenv("CFOP_UI_PASSWORD_HASH", "")
@@ -152,16 +233,58 @@ class ConsoleAuth:
             )
         elif not self.configured:
             logger.error(
-                "Console auth is enabled but unconfigured (need CFOP_UI_USERNAME, "
-                "CFOP_UI_PASSWORD_HASH, CFOP_API_TOKEN) — all non-exempt routes "
-                "will return 503 until these are set."
+                "Console auth is enabled but unconfigured (need an auth database, or "
+                "CFOP_UI_USERNAME, CFOP_UI_PASSWORD_HASH, CFOP_API_TOKEN) — all "
+                "non-exempt routes will return 503 until these are set."
             )
+        elif self.store is not None:
+            logger.info("Console auth active (database-backed users and API tokens)")
+            if self.api_token:
+                logger.warning(
+                    "CFOP_API_TOKEN is still set. It remains valid for now, but it is "
+                    "a shared credential that belongs to no user and cannot be revoked "
+                    "individually — mint per-service tokens and remove it."
+                )
         else:
-            logger.info("Console auth active (user=%s, service token configured)", self.username)
+            logger.info(
+                "Console auth active in legacy single-user mode (user=%s) — no auth "
+                "database configured", self.username,
+            )
 
     @property
     def configured(self) -> bool:
+        if self.store is not None:
+            return True
         return bool(self.username and self.password_hash and self.api_token)
+
+    @property
+    def legacy_mode(self) -> bool:
+        """True when credentials come from the environment, not the database."""
+        return self.store is None
+
+    # ---- identity -----------------------------------------------------
+
+    def effective_role(self) -> str | None:
+        """The caller's role, re-read from the database when one is available."""
+        if self.legacy_mode:
+            # The single environment-configured operator is the only account
+            # that exists, and it has always been able to do everything.
+            if session.get("cfop_user") or current_token() is not None:
+                return ROLE_ADMIN
+            return None
+
+        user_id = session.get("cfop_user_id")
+        if user_id is not None:
+            try:
+                user = self.store.get_user(user_id)
+            except Exception as exc:
+                logger.error("role lookup failed for user %s: %s", user_id, exc)
+                return None
+            if not user or not user.get("is_active"):
+                return None
+            return user.get("role")
+
+        return current_role()
 
     # ---- request gate -------------------------------------------------
 
@@ -170,10 +293,29 @@ class ConsoleAuth:
         if not header.startswith("Bearer "):
             return False
         presented = header[7:].strip()
-        if not presented or not self.api_token:
+        if not presented:
             return False
-        # Timing-safe: a naive == leaks the token prefix byte by byte.
-        return secrets.compare_digest(presented, self.api_token)
+
+        if self.store is not None:
+            identity = self.store.verify_token(presented)
+            if identity is not None:
+                g.cfop_token = identity
+                return True
+
+        # Legacy shared token. Checked after the database so a real token is
+        # never shadowed by it, and audited on every use so the migration can be
+        # completed on evidence rather than assumption.
+        if self.api_token and secrets.compare_digest(presented, self.api_token):
+            logger.warning(
+                "request to %s authenticated with the deprecated shared CFOP_API_TOKEN",
+                request.path,
+            )
+            if self.store is not None:
+                self.store.record_legacy_token_use(request.path, source_ip=_client_ip())
+            g.cfop_token = _legacy_token_identity()
+            return True
+
+        return False
 
     def _completion_token_ok(self) -> bool:
         """Machine callbacks (executor Jobs, deep-investigation workers) present
@@ -199,6 +341,7 @@ class ConsoleAuth:
 
     def check_request(self):
         """before_request hook. Returning None lets the request proceed."""
+        g.cfop_auth = self
         if self.disabled:
             return None
 
@@ -209,21 +352,61 @@ class ConsoleAuth:
         if not self.configured:
             return jsonify({
                 "error": "console auth is not configured",
-                "detail": "CFOP_UI_USERNAME / CFOP_UI_PASSWORD_HASH / CFOP_API_TOKEN are unset",
+                "detail": "no auth database, and CFOP_UI_USERNAME / "
+                          "CFOP_UI_PASSWORD_HASH / CFOP_API_TOKEN are unset",
             }), 503
 
-        if self._service_token_ok():
-            return None
+        # A credential store that cannot be reached is an error, not a denial:
+        # answering 401 would be indistinguishable from a wrong password, and
+        # answering anything else would be falling open.
+        try:
+            if self._service_token_ok():
+                return None
+        except Exception as exc:
+            logger.error("token verification failed: %s", exc)
+            return jsonify({
+                "error": "authentication backend unavailable",
+            }), 503
 
         if self._completion_token_ok():
             return None
 
         if session.get("cfop_user"):
-            return None
+            if self.legacy_mode:
+                return None
+            # Re-check the account on every request so deactivating a user takes
+            # effect immediately rather than whenever their cookie expires.
+            try:
+                user = self.store.get_user(session.get("cfop_user_id"))
+            except Exception as exc:
+                logger.error("session user lookup failed: %s", exc)
+                return jsonify({"error": "authentication backend unavailable"}), 503
+            if user and user.get("is_active"):
+                g.cfop_user = user
+                return None
+            session.clear()
 
         if _wants_html():
             return redirect(url_for("login", next=request.full_path))
         return jsonify({"error": "authentication required"}), 401
+
+    # ---- login --------------------------------------------------------
+
+    def _verify_credentials(self, user: str, password: str):
+        """Return the authenticated user dict, or None.
+
+        Both factors are always compared before answering, and every failure
+        yields the same generic error, so a wrong username is indistinguishable
+        from a wrong password.
+        """
+        if self.store is not None:
+            return self.store.verify_login(user, password)
+
+        user_ok = secrets.compare_digest(user, self.username)
+        pass_ok = check_password_hash(self.password_hash, password)
+        if user_ok and pass_ok:
+            return {"id": None, "username": self.username, "role": ROLE_ADMIN, "is_active": True}
+        return None
 
     # ---- routes -------------------------------------------------------
 
@@ -242,6 +425,7 @@ class ConsoleAuth:
             ip = _client_ip()
             if _locked_out(ip):
                 logger.warning("login locked out for %s", ip)
+                self._audit("login.lockout", source_ip=ip)
                 return jsonify({"error": "too many attempts, try again later"}), 429
 
             if not self.configured:
@@ -251,22 +435,34 @@ class ConsoleAuth:
             user = (data.get("username") or "").strip()
             password = data.get("password") or ""
 
-            # Compare BOTH factors before answering, and give one generic error,
-            # so a wrong username is indistinguishable from a wrong password.
-            user_ok = secrets.compare_digest(user, self.username)
-            pass_ok = check_password_hash(self.password_hash, password)
+            try:
+                authenticated = self._verify_credentials(user, password)
+            except Exception as exc:
+                logger.error("login verification failed: %s", exc)
+                return jsonify({"error": "authentication backend unavailable"}), 503
 
-            if not (user_ok and pass_ok):
+            if not authenticated:
                 _record_failure(ip)
                 logger.warning("failed console login from %s (user=%r)", ip, user)
+                self._audit("login.failure", actor=user, source_ip=ip)
                 return jsonify({"error": "invalid credentials"}), 401
 
             _failures.pop(ip, None)
             session.clear()
-            session["cfop_user"] = self.username
+            session["cfop_user"] = authenticated["username"]
+            session["cfop_user_id"] = authenticated.get("id")
+            session["cfop_role"] = authenticated.get("role", ROLE_ADMIN)
             session.permanent = True
-            logger.info("console login from %s", ip)
-            return jsonify({"ok": True, "next": data.get("next") or "/"})
+            logger.info("console login from %s (user=%s)", ip, authenticated["username"])
+            self._audit("login.success", actor=authenticated["username"], source_ip=ip)
+            return jsonify({
+                "ok": True,
+                "next": data.get("next") or "/",
+                "user": {
+                    "username": authenticated["username"],
+                    "role": authenticated.get("role", ROLE_ADMIN),
+                },
+            })
 
         @app.route("/logout", methods=["GET", "POST"])
         def logout():
@@ -275,9 +471,55 @@ class ConsoleAuth:
                 return redirect(url_for("login"))
             return jsonify({"ok": True})
 
+        @app.route("/api/auth/me")
+        def whoami():
+            """Who am I and what may I do — the UI uses this to hide controls
+            the caller cannot use. Not a security boundary: the server still
+            enforces every one of them."""
+            if self.disabled:
+                return jsonify({"username": "dev", "role": ROLE_ADMIN, "auth_disabled": True})
+            user = current_user()
+            token = current_token()
+            if user:
+                return jsonify({**user, "auth_disabled": False})
+            if token is not None:
+                return jsonify({
+                    "username": None,
+                    "token_label": token.label,
+                    "role": current_role(),
+                    "scopes": sorted(token.scopes),
+                    "auth_disabled": False,
+                })
+            return jsonify({"username": session.get("cfop_user"), "role": session.get("cfop_role")})
+
         return self
 
+    def _audit(self, event: str, **kwargs) -> None:
+        if self.store is None:
+            return
+        try:
+            self.store.record(event, **kwargs)
+        except Exception as exc:  # pragma: no cover - auditing must not break login
+            logger.warning("could not record audit event %s: %s", event, exc)
 
-def install_auth(app, ui_dir: str = "ui") -> ConsoleAuth:
+
+def _legacy_token_identity():
+    """A stand-in identity for the shared token, granting every scope.
+
+    It has no user and no token id, which is what makes it visible as legacy in
+    the audit trail — and what makes it worth removing.
+    """
+    from auth.store import TokenIdentity
+
+    return TokenIdentity(
+        token_id=None,
+        label="legacy CFOP_API_TOKEN",
+        scopes=frozenset({"read", "investigate", "remediate"}),
+        user_id=None,
+        legacy=True,
+    )
+
+
+def install_auth(app, ui_dir: str = "ui", store=None) -> ConsoleAuth:
     """Attach console auth to a Flask app. Call after routes are registered."""
-    return ConsoleAuth(app, ui_dir=ui_dir).register()
+    return ConsoleAuth(app, ui_dir=ui_dir, store=store).register()

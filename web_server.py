@@ -23,6 +23,7 @@ import time
 import requests
 
 from web_auth import install_auth
+from auth.bootstrap import init_auth_store
 
 # WebSocket support - disabled because Waitress (WSGI) doesn't support it
 # The UI uses HTTP polling via /api/chat instead
@@ -83,9 +84,15 @@ class WebServer:
         # covers every route registered above — :8083 is bound to the node's LAN
         # interface (hostNetwork), and /api/remediations/<id>/approve hands work
         # straight to the executor, so none of it can be left open. Browsers get
-        # a session cookie, services send Authorization: Bearer $CFOP_API_TOKEN.
+        # a session cookie, services send Authorization: Bearer <token>.
         # See web_auth.py for the exempt list and the fail-closed behaviour.
-        self.auth = install_auth(self.app, ui_dir='ui')
+        #
+        # The store backs logins and API tokens with the database. It is None
+        # when no auth database is reachable, which drops the console back to
+        # the legacy single-user environment credentials rather than taking it
+        # offline — see auth/bootstrap.py.
+        self.auth_store = init_auth_store()
+        self.auth = install_auth(self.app, ui_dir='ui', store=self.auth_store)
 
         logger.info(f"Web server initialized on {host}:{port}")
 

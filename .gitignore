@@ -47,3 +47,4 @@ CONTINUE_QUICKREF.md
 # OS
 .DS_Store
 Thumbs.db
+.venv-test/
