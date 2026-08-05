@@ -20,7 +20,7 @@ import logging
 import os
 
 from .models import ROLE_ADMIN, User, utcnow
-from .store import AuthStore
+from .store import AuthStore, default_db_url, describe_db_target
 
 logger = logging.getLogger(__name__)
 
@@ -89,16 +89,24 @@ def init_auth_store(seed_admin: bool = True) -> AuthStore | None:
         logger.info("auth database explicitly disabled — using legacy console credentials")
         return None
 
+    # Logged before connecting, and without credentials: when this fails, the
+    # first question is always "which database did it even try?" — and the
+    # answer is the whole diagnosis when the answer is localhost.
+    target = describe_db_target(default_db_url())
     try:
         store = AuthStore()
         store.ensure_schema()
     except Exception as exc:
         logger.error(
-            "Could not open the auth database (%s) — falling back to legacy console "
-            "credentials. Users and API tokens are unavailable until this is fixed.",
-            exc,
+            "Could not open the auth database at %s (%s) — falling back to legacy "
+            "console credentials. Users and API tokens are unavailable until this "
+            "is fixed. Set POSTGRES_HOST/PORT/DB/USER/PASSWORD, or CFOP_AUTH_DB_URL "
+            "to point at it directly.",
+            target, exc,
         )
         return None
+
+    logger.info("auth database connected at %s", target)
 
     if seed_admin:
         try:
