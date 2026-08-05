@@ -696,8 +696,8 @@ class CFOperator:
         try:
             if self.embeddings.is_available():
                 query_embedding = self.embeddings.generate_embedding(trigger)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Query embedding failed, falling back to FTS search: {e}")
 
         # Search for relevant learnings (hybrid if embedding available, FTS otherwise)
         try:
@@ -1245,8 +1245,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     outcome='failed',
                     duration_seconds=duration
                 )
-            except Exception:
-                pass
+            except Exception as persist_err:
+                logger.warning(f"Could not persist failure record for investigation #{inv_id}: {persist_err}")
             INVESTIGATIONS.labels(outcome='failed').inc()
             details.update({
                 'outcome': 'failed',
@@ -1524,8 +1524,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             val = self.kb.get_setting('remediation_' + name, '')
             if val not in (None, ''):
                 return str(val).strip().lower() in ('1', 'true', 'yes', 'on')
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not read remediation flag '{name}' from DB, using config: {e}")
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         return bool(rcfg.get(name))
 
@@ -2602,8 +2602,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                         analysis_notes=f"{ce['event_a'].get('trigger', '')} <-> {ce['event_b'].get('trigger', ce['event_b'].get('drift_type', ''))}"
                     )
                     persisted += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Could not persist event correlation: {e}")
             if persisted:
                 logger.info(f"Correlation analysis: persisted {persisted} event correlations")
 
@@ -2627,8 +2627,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         try:
             correlated_events = self.kb._kb.find_correlated_events(hours=168)[:10]
             learned_correlations = self.kb._kb.get_service_correlations(min_count=2)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not load correlations for analysis: {e}")
 
         # Skip if there's nothing interesting to analyze
         has_data = (
@@ -4243,8 +4243,8 @@ Only return the JSON array, no other text."""
             val = self.kb.get_setting('alert_check_interval', '')
             if val:
                 return max(5, min(300, int(val)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid alert_check_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('alert_check_interval', 10)
 
     def _get_sweep_interval(self) -> int:
@@ -4253,8 +4253,8 @@ Only return the JSON array, no other text."""
             val = self.kb.get_setting('sweep_interval', '')
             if val:
                 return max(60, min(86400, int(val)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid sweep_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('sweep_interval', 1800)
 
     def _get_reap_interval(self) -> int:
@@ -4263,8 +4263,8 @@ Only return the JSON array, no other text."""
             val = self.kb.get_setting('remediation_reap_interval', '')
             if val:
                 return max(60, min(3600, int(val)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid remediation_reap_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('remediation_reap_interval_seconds', 300)
 
     def _get_drain_interval(self) -> int:
@@ -4273,8 +4273,8 @@ Only return the JSON array, no other text."""
             val = self.kb.get_setting('remediation_drain_interval', '')
             if val:
                 return max(10, min(3600, int(val)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid remediation_drain_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('remediation_drain_interval_seconds', 60)
 
     def _get_verify_interval(self) -> int:
@@ -4283,8 +4283,8 @@ Only return the JSON array, no other text."""
             val = self.kb.get_setting('remediation_verify_interval', '')
             if val:
                 return max(30, min(3600, int(val)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid remediation_verify_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('remediation_verify_interval_seconds', 300)
 
     def _format_heartbeat(self) -> str:
@@ -4318,8 +4318,8 @@ Only return the JSON array, no other text."""
             val = self.kb.get_setting('heartbeat_interval', '')
             if val:
                 return max(30, min(3600, int(val)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid heartbeat_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('heartbeat_interval_seconds', 300)
 
     # Slash shortcut expansions — map short commands to natural language prompts
@@ -4353,8 +4353,8 @@ Only return the JSON array, no other text."""
             val = self.kb.get_setting('max_tool_iterations', '')
             if val:
                 return max(1, min(50, int(val)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid max_tool_iterations setting, using default: {e}")
         return self.config.get('chat', {}).get('max_tool_iterations', 10)
 
     def _get_sweep_max_iterations(self) -> int:
@@ -4370,8 +4370,8 @@ Only return the JSON array, no other text."""
             val = self.config.get('ooda', {}).get('sweep', {}).get('max_iterations')
             if val:
                 return max(2, min(20, int(val)))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid ooda.sweep.max_iterations config, using default: {e}")
         return 12
 
     def _max_tool_result_chars(self) -> int:
@@ -4385,8 +4385,8 @@ Only return the JSON array, no other text."""
             val = self.config.get('chat', {}).get('max_tool_result_chars')
             if val:
                 return max(500, int(val))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Invalid chat.max_tool_result_chars config, using default: {e}")
         return 6000
 
     @staticmethod

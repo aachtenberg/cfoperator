@@ -349,8 +349,8 @@ def main() -> int:
         order_id = None
         try:
             order_id = load_work_order(env).get("id")
-        except Exception:
-            pass
+        except Exception as load_err:
+            logger.warning("could not load work order id for failure report: %s", load_err)
         payload = {"remediation_id": order_id, "status": "failed", "pr_url": None,
                    "detail": str(e), "result": {}}
         if completion_url:

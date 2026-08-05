@@ -727,8 +727,8 @@ class WebServer:
                 for lid in learning_ids:
                     try:
                         self.operator.kb._kb.verify_learning(int(lid), True)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning(f"Failed to mark learning {lid} as verified: {e}")
 
             return jsonify({'success': True, 'updated': updated})
 
@@ -936,8 +936,8 @@ class WebServer:
                 try:
                     if self.operator.embeddings.is_available():
                         query_embedding = self.operator.embeddings.generate_embedding(q)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Query embedding failed, falling back to FTS search: {e}")
                 if query_embedding:
                     results = self.operator.kb._kb.find_learnings_hybrid(
                         query_text=q, query_embedding=query_embedding, limit=limit)

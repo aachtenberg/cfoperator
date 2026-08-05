@@ -318,8 +318,11 @@ def _load_git_config(config_path: str | None = None) -> dict:
             repos = _json.loads(repos_json)
             if isinstance(repos, list):
                 return {"repos": repos, "github": {}}
-        except _json.JSONDecodeError:
-            pass
+        except _json.JSONDecodeError as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "Invalid JSON in CFOP_GIT_REPOS_JSON, falling back to YAML config: %s", exc
+            )
 
     cfg = _load_root_config(config_path)
     git_cfg = cfg.get("git") or {}
@@ -440,7 +443,11 @@ def _load_root_config(config_path: str | None = None) -> dict:
             return {}
         expanded = _expand_env_vars(cfg)
         return expanded if isinstance(expanded, dict) else {}
-    except Exception:
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Failed to load root config from %s, using empty config: %s", config_path, exc
+        )
         return {}
 
 

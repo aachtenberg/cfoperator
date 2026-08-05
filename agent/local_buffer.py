@@ -238,7 +238,8 @@ class LocalEventBuffer:
             try:
                 with open(path, 'r') as f:
                     count += sum(1 for line in f if line.strip())
-            except Exception:
+            except Exception as e:
+                _log("warning", "Failed to count pending buffer file", path=str(path), error=str(e))
                 continue
         return count
 
