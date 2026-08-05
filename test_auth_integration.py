@@ -190,5 +190,8 @@ def test_mutations_land_in_the_audit_trail(app):
     c.post("/api/auth/users", json={"username": "bob", "password": PASSWORD, "role": ROLE_MEMBER})
 
     body = c.get("/api/auth/audit").get_json()
-    events = {e["event"] for e in next(iter(body.values()))}
+    # The key is pinned because docs/auth.md tells operators to decide whether
+    # CFOP_API_TOKEN is still in use with `jq '.audit | length'`.
+    assert "audit" in body
+    events = {e["event"] for e in body["audit"]}
     assert {"login.success", "token.created", "token.revoked", "user.created"} <= events

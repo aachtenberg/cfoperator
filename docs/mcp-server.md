@@ -76,6 +76,23 @@ Never ship `remediate` in a shared or public host config. For a
 remediate-capable consumer, prefer a **separate Deployment per capability
 tier** (own token Secret, own scope env) over widening the shared one.
 
+### Per-token scopes
+
+Over `http`, the bearer is resolved against the console's `auth_api_tokens`
+table when one is reachable, and the token's *own* scopes apply — so one HTTP
+listener can serve a `read` dashboard and an `investigate` bot without either
+inheriting the other's authority, and either can be revoked alone. Mint them at
+the console's `/tokens` page. `CFOP_MCP_SCOPES` remains the grant for `stdio`,
+where the process belongs to the local user and there is no token exchange.
+
+`CFOP_MCP_TOKEN` still works and still takes the process-wide `CFOP_MCP_SCOPES`
+grant, deliberately: promoting the shared token to a full-scope identity would
+defeat the point of moving off it. It is checked only after the database, so a
+real token is never shadowed by it, and its use is warned and audited.
+
+A database error during verification returns **503** with `retryable: true` — it
+never falls through to the shared token and never falls open.
+
 ## Audit log
 
 Every tool call emits one structured JSON line on the `mcp_server.audit`

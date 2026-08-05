@@ -77,6 +77,27 @@ curl -fsS "http://${pod_ip}:8080/health"
 curl -fsS "http://${pod_ip}:8080/metrics" | grep cfoperator_event_runtime
 ```
 
+## Console Auth
+
+The `:8083` console authenticates against `auth_users` / `auth_api_tokens` in
+the knowledge base database: real accounts with `admin` / `member` roles, and
+individually revocable API tokens carrying `read` ⊂ `investigate` ⊂ `remediate`
+scopes. Manage both at `/users` and `/tokens`.
+
+The tables are created on start, and the first admin is seeded from the existing
+`CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` sealed secret — so shipping this
+does not lock anyone out and does not require a coordinated secret change. The
+shared `CFOP_API_TOKEN` keeps working alongside per-service tokens and writes an
+audit row on every use, so it can be retired once
+`/api/auth/audit?event=token.legacy_used` stays empty.
+
+With no auth database reachable, the console falls back to the legacy
+environment credentials. A database that is configured but *unreachable* returns
+503 on every non-exempt route — never 401, never open.
+
+See [docs/auth.md](auth.md) for the roles table, the rollout order, and the
+lockout / token-rotation runbooks.
+
 ## Local / Non-Production Modes
 
 ```bash
