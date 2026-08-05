@@ -24,6 +24,14 @@ COPY web_server.py ./
 # web_server.py imports this at module load, so a missing copy is not a
 # degraded console — it is an ImportError that crash-loops the whole agent.
 COPY web_auth.py ./
+# Same rule, same reason: web_server.py and mcp_server/server.py both import
+# auth.bootstrap at module load. Leaving it out crash-looped the agent and the
+# MCP pod on the deploy that introduced them, with :8083 refusing connections.
+COPY auth/ ./auth/
+# docs/auth.md's lockout runbook is `kubectl exec ... python
+# scripts/create_admin.py`, which is the recovery path for having no usable
+# admin — it has to exist in the image to be worth documenting.
+COPY scripts/ ./scripts/
 COPY observability/ ./observability/
 COPY tools/ ./tools/
 COPY skills/ ./skills/
