@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent import CFOperator
+from llm_fallback import LLMFallbackManager
 
 
 def _operator(provider_chain, chat_responses):
@@ -116,6 +117,28 @@ def test_event_callback_fires_with_fallback_event_when_falling_through():
     assert "connection refused" in payload["reason"]
 
 
+def test_failure_recorded_with_classified_reason_not_raw_string():
+    """record_failure must receive classify_error(exc)'s short bucket, not
+    str(exc): the DB column and cooldown logic key off the reason, and a raw
+    exception string is exactly what caused the StringDataRightTruncation this
+    PR fixes. Pinning the argument stops a silent revert to str(e)."""
+    boom = TimeoutError("Ollama read timeout")
+    op = _operator(
+        provider_chain=[
+            ("ollama", "http://localhost:11434", "qwen3:14b"),
+            ("groq", None, "llama-3.3-70b"),
+        ],
+        chat_responses=[boom, {"response": "ok", "tool_calls": 0}],
+    )
+    op._chat_with_tools_with_fallback(messages=[{"role": "user", "content": "x"}])
+
+    op.llm.classify_error.assert_called_once_with(boom)
+    op.llm.record_failure.assert_called_once_with(
+        "ollama/http://localhost:11434/qwen3:14b",
+        op.llm.classify_error.return_value,
+    )
+
+
 # ---- all providers exhausted -------------------------------------------------
 
 
@@ -167,3 +190,42 @@ def test_passes_max_iterations_and_system_context_through():
     assert captured["max_iterations"] == 15
     assert captured["system_context"] == "You are CFOperator."
     assert captured["messages"] == [{"role": "user", "content": "investigate this"}]
+
+
+# ---- error classification ----------------------------------------------------
+
+
+def _manager():
+    """LLMFallbackManager without touching the DB (skips __init__/_ensure_table);
+    classify_error/calculate_cooldown only read class-level pattern lists."""
+    return LLMFallbackManager.__new__(LLMFallbackManager)
+
+
+@pytest.mark.parametrize("exc,status,expected", [
+    # 4xx / malformed request: must NOT be a transient "connection" error.
+    (Exception("400 Bad Request"), None, "bad_request"),
+    (Exception("invalid_request_error: messages: text content blocks..."), None, "bad_request"),
+    (Exception("Error code: 422 Unprocessable Entity"), None, "bad_request"),
+    (Exception("boom"), 400, "bad_request"),
+    (Exception("boom"), 404, "bad_request"),
+    # Regression guards: existing buckets unchanged.
+    (Exception("rate limit exceeded"), None, "rate_limit"),
+    (Exception("boom"), 429, "rate_limit"),
+    (Exception("unauthorized"), None, "auth"),
+    (Exception("boom"), 401, "auth"),
+    (Exception("read timed out"), None, "timeout"),
+    (Exception("some unknown failure"), None, "connection"),
+])
+def test_classify_error_buckets(exc, status, expected):
+    assert _manager().classify_error(exc, status) == expected
+
+
+def test_bad_request_gets_short_cooldown_not_exponential():
+    """A persistent malformed-request bug must not sideline a healthy provider
+    for an hour: bad_request gets the same short fixed cooldown as auth, while a
+    genuine transient error still escalates."""
+    m = _manager()
+    from datetime import timedelta
+    assert m.calculate_cooldown(4, "bad_request") == timedelta(minutes=5)
+    assert m.calculate_cooldown(4, "auth") == timedelta(minutes=5)
+    assert m.calculate_cooldown(4, "connection") == timedelta(minutes=60)

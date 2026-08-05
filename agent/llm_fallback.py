@@ -43,6 +43,11 @@ class LLMFallbackManager:
     TIMEOUT_PATTERNS = ["timeout", "timed out", "etimedout", "read timed out"]
     RATE_LIMIT_PATTERNS = ["rate limit", "rate_limit", "quota", "too many requests", "resource exhausted"]
     AUTH_PATTERNS = ["unauthorized", "invalid api key", "authentication", "forbidden"]
+    # Malformed/rejected requests (HTTP 4xx other than 401/403/429). These are a
+    # code/payload bug, not provider ill-health, so they must not be treated as
+    # a transient "connection" error and earn exponential cooldown on an
+    # otherwise-healthy provider.
+    BAD_REQUEST_PATTERNS = ["invalid_request", "invalid request", "bad request", "unprocessable"]
 
     # Cooldown configuration
     MAX_COOLDOWN_MINUTES = 60
@@ -93,7 +98,8 @@ class LLMFallbackManager:
             status_code: HTTP status code if available
 
         Returns:
-            Error type: 'timeout', 'connection', 'rate_limit', or 'auth'
+            Error type: 'timeout', 'connection', 'rate_limit', 'auth', or
+            'bad_request'
         """
         # Check by exception type first
         if isinstance(error, requests.Timeout):
@@ -107,6 +113,9 @@ class LLMFallbackManager:
                 return "rate_limit"
             if status_code in (401, 403):
                 return "auth"
+            # Any other 4xx is a client-side/payload error, not provider health.
+            if 400 <= status_code < 500:
+                return "bad_request"
 
         # Check by error message patterns
         msg = str(error).lower()
@@ -123,6 +132,10 @@ class LLMFallbackManager:
             if pattern in msg:
                 return "auth"
 
+        for pattern in self.BAD_REQUEST_PATTERNS:
+            if pattern in msg:
+                return "bad_request"
+
         # Default to connection error
         return "connection"
 
@@ -136,17 +149,20 @@ class LLMFallbackManager:
         - 3rd error: 25 min
         - 4th+ error: 60 min (capped)
 
-        Auth errors get a shorter fixed cooldown since they're likely config issues.
+        Auth and bad_request errors get a shorter fixed cooldown since they're
+        config/code issues rather than provider ill-health.
 
         Args:
             error_count: Number of consecutive errors
-            error_type: Type of error ('auth' gets special handling)
+            error_type: Type of error ('auth'/'bad_request' get special handling)
 
         Returns:
             Cooldown duration as timedelta
         """
-        if error_type == "auth":
-            # Auth errors are likely config issues, short fixed cooldown
+        if error_type in ("auth", "bad_request"):
+            # Config/code issues, not provider health — a short fixed cooldown so
+            # a bad key or a malformed request doesn't sideline an otherwise
+            # healthy provider under exponential backoff.
             return timedelta(minutes=5)
 
         # Exponential backoff for other errors
