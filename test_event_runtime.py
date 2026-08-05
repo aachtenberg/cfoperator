@@ -2399,8 +2399,15 @@ def test_format_message_resolution_uses_resolved_label_in_long_form():
     assert "Alert: ServiceX flapping" not in text
 
 
-def test_dispatch_notifications_hoists_remediation_and_resolution(tmp_path):
+def test_dispatch_notifications_hoists_remediation_and_resolution(tmp_path, monkeypatch):
     """Engine copies Alert.details.remediation and .resolution into the notification details."""
+
+    # This test is about the *hoisting* of remediation/resolution into the
+    # notification details, which is only observable when the item is delivered
+    # real-time. Disable Tier-2 digest routing, which would otherwise divert the
+    # INFO resolution to the morning digest (that routing is covered on its own
+    # by event_runtime/test_tier2_routing.py).
+    monkeypatch.setenv("CFOP_DIGEST_LOW_SEVERITY", "0")
 
     class NotifyDecision(DecisionEngine):
         name = "notify-decision"
