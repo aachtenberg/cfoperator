@@ -71,10 +71,14 @@ class LLMFallbackManager:
                         cooldown_until TIMESTAMP,
                         error_count INTEGER DEFAULT 0,
                         last_error_at TIMESTAMP,
-                        last_error_reason VARCHAR(50),
+                        last_error_reason TEXT,
                         last_success_at TIMESTAMP,
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
+                """))
+                session.execute(text("""
+                    ALTER TABLE llm_provider_state
+                    ALTER COLUMN last_error_reason TYPE TEXT
                 """))
                 session.commit()
         except Exception as e:

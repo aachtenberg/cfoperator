@@ -874,7 +874,7 @@ class LLMProviderState(Base):
     cooldown_until = Column(TIMESTAMP, nullable=True)  # NULL if not in cooldown
     error_count = Column(Integer, default=0)
     last_error_at = Column(TIMESTAMP, nullable=True)
-    last_error_reason = Column(String(50), nullable=True)  # 'timeout', 'rate_limit', 'auth', 'connection'
+    last_error_reason = Column(SQLText, nullable=True)  # 'timeout', 'rate_limit', 'auth', 'connection'
     last_success_at = Column(TIMESTAMP, nullable=True)
     updated_at = Column(TIMESTAMP, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
