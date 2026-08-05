@@ -67,8 +67,13 @@ def bootstrap_admin(store: AuthStore) -> bool:
     return True
 
 
-def init_auth_store() -> AuthStore | None:
+def init_auth_store(seed_admin: bool = True) -> AuthStore | None:
     """Build the store, create its tables, and seed the first admin.
+
+    ``seed_admin`` is False for processes that only *verify* credentials — the
+    MCP server, for one. Seeding is the console's job; a sibling deployment
+    quietly creating an admin account would be a surprising side effect of
+    starting a read path.
 
     Returns None when no auth database is configured or reachable, which puts
     the console into legacy single-user mode rather than taking it down. That is
@@ -95,9 +100,10 @@ def init_auth_store() -> AuthStore | None:
         )
         return None
 
-    try:
-        bootstrap_admin(store)
-    except Exception as exc:
-        logger.error("first-admin bootstrap failed: %s", exc)
+    if seed_admin:
+        try:
+            bootstrap_admin(store)
+        except Exception as exc:
+            logger.error("first-admin bootstrap failed: %s", exc)
 
     return store

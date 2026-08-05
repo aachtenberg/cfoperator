@@ -4,6 +4,7 @@ import logging
 
 from mcp.server.fastmcp import FastMCP
 
+from auth.bootstrap import init_auth_store
 from mcp_server.auth import BearerAuthMiddleware
 from mcp_server.client import CfopClient
 from mcp_server.prompts import playbooks
@@ -46,8 +47,18 @@ def run(settings):
 
     # streamable-http: wrap the Starlette app so the bearer check runs before
     # any MCP session handling. Settings.from_env guarantees token is set.
+    #
+    # The store lets each caller present its own token and carry its own
+    # scopes; without one, every client shares CFOP_MCP_TOKEN and the
+    # process-wide CFOP_MCP_SCOPES grant. It is seeded elsewhere — this process
+    # only verifies credentials, it does not create accounts.
     app = server.streamable_http_app()
-    app.add_middleware(BearerAuthMiddleware, token=settings.token)
+    store = init_auth_store(seed_admin=False)
+    if store is None:
+        logger.warning(
+            "no auth database — falling back to the shared CFOP_MCP_TOKEN, which "
+            "grants every client the same %s scopes", sorted(settings.scopes))
+    app.add_middleware(BearerAuthMiddleware, token=settings.token, store=store)
     logger.info("cfoperator-mcp on http://%s:%d/mcp (agent: %s, scopes: %s)",
                 settings.host, settings.port, settings.agent_url,
                 sorted(settings.scopes))
