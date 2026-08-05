@@ -22,7 +22,9 @@ from flask import Flask, request, jsonify, send_from_directory
 import time
 import requests
 
-from web_auth import install_auth
+from web_auth import ROLE_ADMIN, install_auth, require_role
+from auth.bootstrap import init_auth_store
+from auth.routes import build_auth_blueprint
 
 # WebSocket support - disabled because Waitress (WSGI) doesn't support it
 # The UI uses HTTP polling via /api/chat instead
@@ -83,14 +85,47 @@ class WebServer:
         # covers every route registered above — :8083 is bound to the node's LAN
         # interface (hostNetwork), and /api/remediations/<id>/approve hands work
         # straight to the executor, so none of it can be left open. Browsers get
-        # a session cookie, services send Authorization: Bearer $CFOP_API_TOKEN.
+        # a session cookie, services send Authorization: Bearer <token>.
         # See web_auth.py for the exempt list and the fail-closed behaviour.
-        self.auth = install_auth(self.app, ui_dir='ui')
+        #
+        # The store backs logins and API tokens with the database. It is None
+        # when no auth database is reachable, which drops the console back to
+        # the legacy single-user environment credentials rather than taking it
+        # offline — see auth/bootstrap.py.
+        self.auth_store = init_auth_store()
+        if self.auth_store is not None:
+            # Registered before install_auth so the gate covers these routes
+            # too — user and token management must sit behind the same
+            # authentication as everything else, not in front of it.
+            self.app.register_blueprint(build_auth_blueprint(self.auth_store))
+        self.auth = install_auth(self.app, ui_dir='ui', store=self.auth_store)
 
         logger.info(f"Web server initialized on {host}:{port}")
 
     def _setup_routes(self):
-        """Setup Flask routes and WebSocket handlers."""
+        """Setup Flask routes and WebSocket handlers.
+
+        Role policy
+        -----------
+        install_auth() establishes *that* a caller is known; @require_role(
+        ROLE_ADMIN) below establishes *what* they may do. Admin is required for
+        anything that changes how the system behaves or what it will act on:
+        the remediation lifecycle (approve/reject/resolve/reclassify, manual
+        enqueue, the flags, run-feed), the settings and model/provider
+        selection, config reload, the on-demand deep sweep, and pool instance
+        toggles. Members keep everything a person needs to understand the
+        system — every GET, chat, Q&A, feedback and KB search — because the
+        point of the member role is to let people read the console without
+        being able to point the executor at production.
+
+        The /v1/* endpoints are deliberately NOT decorated. They are machine
+        callbacks (executor Jobs, the deep-investigation worker, event_runtime)
+        that authenticate with the X-CFOP-Token completion secret via their own
+        verify_completion_auth() call — that secret belongs to no user and
+        carries no role, so a role check here would 403 every callback and
+        strand remediations mid-flight. Keep in sync with
+        _COMPLETION_TOKEN_PATHS in web_auth.py.
+        """
 
         # Static UI
         @self.app.route('/')
@@ -109,12 +144,14 @@ class WebServer:
 
         # Config reload (hot-reload hosts without restart)
         @self.app.route('/api/config/reload', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def reload_config():
             result = self.operator.reload_config()
             return jsonify({'status': 'ok', **result})
 
         # Trigger a deep system sweep on demand
         @self.app.route('/api/sweep', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def trigger_sweep():
             """Trigger an immediate deep system sweep (async in background thread)."""
             def _run_sweep():
@@ -392,6 +429,7 @@ class WebServer:
                 return jsonify({'error': str(e), 'models': []}), 500
 
         @self.app.route('/api/models/<backend>/select', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def select_model(backend):
             """Persist the user's model selection for a backend AND set as default provider."""
             data = request.json
@@ -417,6 +455,7 @@ class WebServer:
             return jsonify({'backend': backend, 'model': model})
 
         @self.app.route('/api/settings/provider', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def set_selected_provider():
             """Set the default LLM provider (without changing model)."""
             data = request.json
@@ -438,6 +477,7 @@ class WebServer:
             return jsonify({'max_tool_iterations': val})
 
         @self.app.route('/api/settings/max_tool_iterations', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def set_max_tool_iterations():
             """Persist max tool iterations setting."""
             data = request.json
@@ -458,6 +498,7 @@ class WebServer:
             })
 
         @self.app.route('/api/settings/ooda', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def set_ooda_settings():
             """Persist OODA loop interval settings."""
             data = request.json
@@ -491,6 +532,7 @@ class WebServer:
             return jsonify({'allow_paid_escalation': enabled})
 
         @self.app.route('/api/settings/fallback', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def set_fallback_settings():
             """Toggle paid LLM fallback."""
             data = request.json
@@ -659,6 +701,9 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
+        # Not admin-gated despite being a DELETE: a chat session is the caller's
+        # own transcript, not system state, and members who may hold a
+        # conversation must be able to discard it.
         @self.app.route('/api/chat-sessions/<int:session_id>', methods=['DELETE'])
         def delete_chat_session(session_id):
             try:
@@ -746,7 +791,12 @@ class WebServer:
                 logger.error(f"Error listing remediations: {e}")
                 return jsonify({'error': str(e), 'remediations': []}), 500
 
+        # Admin because this is not merely "propose": queue_remediation() runs
+        # the auto-execute gate on the caller-supplied class/risk/confidence, so
+        # a low-risk mechanizable body lands straight in 'queued' and the
+        # executor drains it without anyone pressing approve.
         @self.app.route('/api/remediations', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def create_remediation_api():
             """Manually enqueue a remediation (operator-authored)."""
             try:
@@ -791,8 +841,23 @@ class WebServer:
             """Operator console: the remediation worklist."""
             return send_from_directory('ui', 'remediations.html')
 
+        # Not role-gated: serving the markup gives nothing away, and every
+        # /api/auth/* call the page makes is authorised on its own. Gating the
+        # page instead would only mean a member sees a 403 rather than a page
+        # that correctly shows them just their own tokens.
+        @self.app.route('/users')
+        def users_page():
+            """Operator console: user accounts."""
+            return send_from_directory('ui', 'users.html')
+
+        @self.app.route('/tokens')
+        def tokens_page():
+            """Operator console: API tokens."""
+            return send_from_directory('ui', 'tokens.html')
+
         # --- operator console actions (internal /api, like the other UI POSTs) ---
         @self.app.route('/api/remediations/<int:remediation_id>/approve', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def approve_remediation(remediation_id):
             """Send a row to the executor: status -> queued."""
             try:
@@ -805,6 +870,7 @@ class WebServer:
                 return jsonify({'error': str(e)}), 500
 
         @self.app.route('/api/remediations/<int:remediation_id>/reject', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def reject_remediation(remediation_id):
             try:
                 note = json_object().get('note')
@@ -817,6 +883,7 @@ class WebServer:
                 return jsonify({'error': str(e)}), 500
 
         @self.app.route('/api/remediations/<int:remediation_id>/resolve', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def resolve_remediation(remediation_id):
             """Operator closes a row as done (fixed by hand, or no longer needed).
 
@@ -838,6 +905,7 @@ class WebServer:
                 return jsonify({'error': str(e)}), 500
 
         @self.app.route('/api/remediations/<int:remediation_id>/reclassify', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def reclassify_remediation_api(remediation_id):
             try:
                 b = json_object()
@@ -866,6 +934,7 @@ class WebServer:
                 return jsonify({'error': str(e)}), 500
 
         @self.app.route('/api/remediation/flags', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def set_remediation_flag():
             try:
                 b = json_object()
@@ -880,6 +949,7 @@ class WebServer:
                 return jsonify({'error': str(e)}), 500
 
         @self.app.route('/api/remediation/run-feed', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def run_remediation_feed():
             """Regenerate the summary (which feeds the queue); async, no notify."""
             def _run():
@@ -996,7 +1066,12 @@ class WebServer:
                 logger.error(f"Error fetching findings: {e}")
                 return jsonify({'error': str(e)}), 500
 
+        # Borderline — it edits a finding's triage state, not the fleet. Gated
+        # anyway because marking a finding resolved or false_positive is what
+        # stops it being fed to the remediation queue, so it silently decides
+        # what the system will and will not act on.
         @self.app.route('/api/findings/<int:report_id>/<int:finding_index>', methods=['PATCH'])
+        @require_role(ROLE_ADMIN)
         def update_finding(report_id, finding_index):
             """Update a finding's status and resolution.
 
@@ -1039,6 +1114,7 @@ class WebServer:
             return jsonify(self.operator.ollama_pool.status())
 
         @self.app.route('/api/pool/instance', methods=['POST'])
+        @require_role(ROLE_ADMIN)
         def toggle_pool_instance():
             """Enable or disable an Ollama pool instance."""
             if not hasattr(self.operator, 'ollama_pool') or not self.operator.ollama_pool:

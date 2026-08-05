@@ -44,10 +44,12 @@ jobs:
         # PYTHONPATH=<dir>:<repo-root> (the dir first so bare imports resolve,
         # the repo root for cross-package imports like agent -> observability).
         #
-        # observability is the one exception: its tests use absolute
-        # `from observability...` imports and do NOT need the dir on sys.path --
-        # and putting it there would let observability/docker.py shadow the real
-        # `docker` package. So it runs with the repo root only.
+        # observability and auth are the exceptions: their tests use absolute
+        # `from observability...` / `from auth...` imports and do NOT need the
+        # dir on sys.path -- and putting it there would let observability's
+        # docker.py shadow the real `docker` package, and auth's tokens.py /
+        # routes.py / models.py shadow anything of those names. Both run with
+        # the repo root only.
         #
         # Root-level test_*.py are integration-style; only the hermetic ones run
         # here. Deliberately excluded:
@@ -68,9 +70,11 @@ jobs:
           done
 
           run "observability" "${root}" observability
+          run "auth" "${root}" auth
 
           run "root-level" "${root}" \
-            test_web_auth.py test_http_investigate.py test_k8s_probe_filter.py \
+            test_web_auth.py test_web_auth_db.py test_auth_integration.py \
+            test_http_investigate.py test_k8s_probe_filter.py \
             test_triage_engine.py test_github_integration.py test_event_runtime.py
 
           exit "${fail}"
