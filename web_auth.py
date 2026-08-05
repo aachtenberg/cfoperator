@@ -100,6 +100,14 @@ ROLE_ADMIN = "admin"
 ROLE_MEMBER = "member"
 
 
+class AuthBackendUnavailable(Exception):
+    """The credential store could not be reached to answer a check.
+
+    Distinct from "this caller may not do that": the first is a 503 the caller
+    should retry, the second is a 401/403 they should not.
+    """
+
+
 def _client_ip() -> str:
     """Best-effort source IP. No proxy sits in front of :8083 (hostNetwork,
     reached directly), so remote_addr is the real client and X-Forwarded-For
@@ -182,7 +190,14 @@ def require_role(role: str):
             if auth is not None and auth.disabled:
                 return fn(*args, **kwargs)
 
-            effective = auth.effective_role() if auth is not None else current_role()
+            try:
+                effective = auth.effective_role() if auth is not None else current_role()
+            except AuthBackendUnavailable:
+                # Same rule as the gate itself: a check that could not run is an
+                # outage, not a denial. 401 here would send an admin looking for
+                # a credential problem they do not have.
+                return jsonify({"error": "authentication backend unavailable"}), 503
+
             if effective is None:
                 return jsonify({"error": "authentication required"}), 401
             if role == ROLE_ADMIN and effective != ROLE_ADMIN:
@@ -265,7 +280,13 @@ class ConsoleAuth:
     # ---- identity -----------------------------------------------------
 
     def effective_role(self) -> str | None:
-        """The caller's role, re-read from the database when one is available."""
+        """The caller's role, or None if there isn't one.
+
+        Raises :class:`AuthBackendUnavailable` if the store cannot be reached,
+        so an outage stays distinguishable from a caller who simply lacks the
+        role. Returning None on a failed lookup would report a database problem
+        as "you are not logged in".
+        """
         if self.legacy_mode:
             # The single environment-configured operator is the only account
             # that exists, and it has always been able to do everything.
@@ -273,13 +294,21 @@ class ConsoleAuth:
                 return ROLE_ADMIN
             return None
 
+        # check_request has already looked this user up and confirmed they are
+        # active. Reusing that result keeps the role check to one query per
+        # request, and closes the window where the gate admits a request whose
+        # role check then fails against a database that went away in between.
+        user = current_user()
+        if user is not None:
+            return user.get("role")
+
         user_id = session.get("cfop_user_id")
         if user_id is not None:
             try:
                 user = self.store.get_user(user_id)
             except Exception as exc:
                 logger.error("role lookup failed for user %s: %s", user_id, exc)
-                return None
+                raise AuthBackendUnavailable(str(exc)) from exc
             if not user or not user.get("is_active"):
                 return None
             return user.get("role")

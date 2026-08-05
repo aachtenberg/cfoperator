@@ -260,6 +260,52 @@ def test_database_down_during_login_returns_503(monkeypatch):
     assert r.status_code == 503
 
 
+def test_role_check_reuses_the_gates_lookup(monkeypatch, store):
+    """One user lookup per request, not two.
+
+    The gate already fetches and validates the session user, so a role check
+    that queried again would double the per-request database load — and open a
+    window where a request the gate admitted is then refused because the
+    database went away in between."""
+    store.create_user("alice", PASSWORD, role=ROLE_ADMIN)
+
+    lookups = []
+    real_get_user = store.get_user
+    store.get_user = lambda uid: (lookups.append(uid), real_get_user(uid))[1]
+
+    c = build_app(monkeypatch, store).test_client()
+    c.post("/login", json={"username": "alice", "password": PASSWORD})
+
+    lookups.clear()
+    assert c.post("/api/remediations/1/approve").status_code == 200
+    assert len(lookups) == 1, f"expected one lookup for the request, got {len(lookups)}"
+
+
+def test_role_check_reports_an_outage_as_503_not_401(monkeypatch, store):
+    """A role check that cannot reach the store must not read as "not logged in".
+
+    Exercised through effective_role directly: the gate normally fails first,
+    so this covers the narrow case where the store dies between the gate and
+    the handler."""
+    app = build_app(monkeypatch, store)
+
+    with app.test_request_context("/api/remediations/1/approve", method="POST"):
+        from flask import g, session as flask_session
+
+        console = web_auth.ConsoleAuth(app, ui_dir="ui", store=_BrokenStore())
+        g.cfop_auth = console
+        flask_session["cfop_user"] = "alice"
+        flask_session["cfop_user_id"] = 1
+
+        with pytest.raises(web_auth.AuthBackendUnavailable):
+            console.effective_role()
+
+        guarded = web_auth.require_role(web_auth.ROLE_ADMIN)(lambda: "reached")
+        response, status = guarded()
+        assert status == 503
+        assert response.get_json()["error"] == "authentication backend unavailable"
+
+
 # ---- identity endpoint ------------------------------------------------
 
 
