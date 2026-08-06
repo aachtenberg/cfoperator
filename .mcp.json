@@ -8,7 +8,7 @@
         "PLANE_API_HOST_URL": "https://plane.xgrunt.com",
         "PLANE_BASE_URL": "https://plane.xgrunt.com",
         "PLANE_API_KEY": "${PLANE_API_KEY}",
-        "PLANE_WORKSPACE_SLUG": "square"
+        "PLANE_WORKSPACE_SLUG": "cfoperator"
       }
     }
   }
