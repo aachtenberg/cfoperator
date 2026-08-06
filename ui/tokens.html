@@ -108,14 +108,10 @@
     </svg>
     CFOperator <span class="sub">/ API tokens</span>
   </a>
-  <div class="right">
-    <span class="muted" id="whoami"></span>
-    <a href="/users">users</a>
-    <a href="/remediations">remediations</a>
-    <a href="/investigations">investigations</a>
-    <a href="/">← console</a>
-  </div>
+  <!-- Section nav, identity and logout — see ui/nav.js -->
+  <div id="cfop-nav"></div>
 </header>
+<script src="/nav.js" defer></script>
 
 <div class="banner" id="banner" hidden></div>
 
@@ -230,13 +226,10 @@ async function api(path, opts){
 // ---- identity ----
 let ME = null;
 async function loadMe(){
-  const r = await api('/api/auth/me');
-  if(!r.ok){ banner(r.error, 'err'); return; }
-  ME = r.data || {};
-  const who = ME.token_label
-    ? `token ${ME.token_label}` + (ME.username?` (${ME.username})`:'')
-    : (ME.username || 'anonymous');
-  document.getElementById('whoami').textContent = who + (ME.role?` · ${ME.role}`:'');
+  // The shared header (ui/nav.js) already fetched this and renders the
+  // identity itself — reuse its result rather than asking a second time.
+  try { ME = await CFOP.me(); }
+  catch(e){ banner('could not load your account details — ' + e.message, 'err'); return; }
   if(ME.auth_disabled){
     banner('Authentication is disabled on this server — API calls are accepted without a token. '
          + 'Tokens created here start being enforced once auth is enabled.', 'warn');
@@ -425,10 +418,13 @@ async function createToken(){
   await loadTokens();
 }
 
-(async ()=>{
+// DOMContentLoaded rather than running immediately: ui/nav.js is deferred, and
+// loadMe() below reads the identity it fetched. Deferred scripts finish before
+// this event, so CFOP is guaranteed to exist by the time this runs.
+document.addEventListener('DOMContentLoaded', async ()=>{
   await loadMe();
   await loadTokens();
-})();
+});
 </script>
 </body>
 </html>

@@ -12,6 +12,7 @@
     <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"
             integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+"
             crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="/nav.js" defer></script>
     <style>
         :root {
             --bg-primary: #0a0a0f;
@@ -932,37 +933,6 @@
             CFOperator
         </div>
         <div class="header-controls">
-            <a href="/remediations" title="Remediation worklist"
-               style="text-decoration:none;color:var(--text-secondary);background:var(--bg-tertiary);display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:'JetBrains Mono',monospace;font-size:13px">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-                </svg>
-                Remediations
-            </a>
-            <a href="/investigations" title="Investigations"
-               style="text-decoration:none;color:var(--text-secondary);background:var(--bg-tertiary);display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:'JetBrains Mono',monospace;font-size:13px">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
-                </svg>
-                Investigations
-            </a>
-            <a href="/tokens" title="API tokens"
-               style="text-decoration:none;color:var(--text-secondary);background:var(--bg-tertiary);display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:'JetBrains Mono',monospace;font-size:13px">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/>
-                </svg>
-                Tokens
-            </a>
-            <!-- Shown to everyone: the page itself is harmless and members use
-                 it to change their own password. The admin-only controls on it
-                 are hidden client-side and enforced server-side. -->
-            <a href="/users" title="User accounts"
-               style="text-decoration:none;color:var(--text-secondary);background:var(--bg-tertiary);display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:'JetBrains Mono',monospace;font-size:13px">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-                </svg>
-                Users
-            </a>
             <div class="control-group">
                 <label>Backend</label>
                 <select id="llm-backend"><option value="auto">Auto</option></select>
@@ -977,6 +947,8 @@
             </div>
             <div class="control-group" id="pool-toggles-header"></div>
         </div>
+        <!-- Section nav, identity and logout — see ui/nav.js -->
+        <div id="cfop-nav"></div>
     </header>
 
     <div class="main-layout">
