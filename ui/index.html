@@ -932,42 +932,13 @@
             </svg>
             CFOperator
         </div>
-        <div class="header-controls">
-            <div class="control-group">
-                <label>Backend</label>
-                <select id="llm-backend"><option value="auto">Auto</option></select>
-                <select id="model-select" style="display:none;"><option value="">Loading...</option></select>
-            </div>
-            <div class="control-group">
-                <label>Fallback</label>
-                <label class="toggle-switch" title="Allow fallback to paid LLM providers">
-                    <input type="checkbox" id="fallback-toggle" onchange="onFallbackToggle()">
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <div class="control-group" id="pool-toggles-header"></div>
-        </div>
-        <!-- Section nav, identity and logout — see ui/nav.js -->
+        <!-- Section nav, identity and logout — see ui/nav.js.
+             LLM / OODA / pool controls live at /admin?tab=llm (CFOP-15). -->
         <div id="cfop-nav"></div>
     </header>
 
     <div class="main-layout">
         <aside class="sidebar" id="sidebar">
-            <div class="sidebar-section">
-                <h3>OODA Configuration</h3>
-                <div class="sidebar-field">
-                    <label>Max Tool Calls</label>
-                    <input type="number" id="max-iterations" min="1" max="50" value="10">
-                </div>
-                <div class="sidebar-field">
-                    <label>Alert Interval (s)</label>
-                    <input type="number" id="alert-interval" min="5" max="300" value="10">
-                </div>
-                <div class="sidebar-field">
-                    <label>Sweep Interval (m)</label>
-                    <input type="number" id="sweep-interval" min="1" max="1440" value="30">
-                </div>
-            </div>
             <div class="sidebar-section">
                 <h3>Skills</h3>
                 <ul class="skill-list" id="skill-list">
@@ -989,10 +960,6 @@
                     <button onclick="startNewChat()" style="background:var(--accent);color:var(--bg-primary);border:none;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;">+ New</button>
                 </h3>
                 <ul class="skill-list" id="session-list" style="margin-top:8px;max-height:200px;overflow-y:auto;"></ul>
-            </div>
-            <div class="sidebar-section" id="pool-section" style="display:none;">
-                <h3>Ollama Pool</h3>
-                <div id="pool-toggles-sidebar"></div>
             </div>
         </aside>
 
@@ -1382,10 +1349,8 @@
             const message = input.value.trim();
             if (!message) return;
 
-            const backend = document.getElementById('llm-backend').value;
-            const modelSelect = document.getElementById('model-select');
-            const model = (backend !== 'auto' && modelSelect.value) ? modelSelect.value : null;
-
+            // Provider/model selection lives in Admin → LLM; chat uses the
+            // server's selected_backend (backend: auto).
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
             saveMessage('user', message);
@@ -1396,8 +1361,7 @@
             document.getElementById('thinking').classList.add('active');
             document.getElementById('chat-container').scrollTop = document.getElementById('chat-container').scrollHeight;
 
-            const payload = {message, history: chatHistory, backend};
-            if (model) payload.model = model;
+            const payload = {message, history: chatHistory, backend: 'auto'};
 
             fetch('/api/chat', {
                 method: 'POST',
@@ -1508,182 +1472,6 @@
             }).catch(() => {});
         }, 10000);
 
-        // Model fetching
-        function fetchModels(backend) {
-            const modelSelect = document.getElementById('model-select');
-            if (!backend || backend === 'auto') { modelSelect.style.display = 'none'; return; }
-            modelSelect.style.display = '';
-            modelSelect.innerHTML = '<option value="">Loading...</option>';
-            fetch(`/api/models/${backend}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.models && data.models.length > 0) {
-                        modelSelect.innerHTML = data.models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
-                        const storageKey = `cfoperator_${backend}_model`;
-                        const savedModel = data.selected || localStorage.getItem(storageKey) || '';
-                        if (savedModel && data.models.includes(savedModel)) modelSelect.value = savedModel;
-                    } else {
-                        modelSelect.innerHTML = '<option value="">No models</option>';
-                    }
-                })
-                .catch(() => { modelSelect.innerHTML = '<option value="">Error</option>'; });
-        }
-
-        function onBackendChange() {
-            const backend = document.getElementById('llm-backend').value;
-            localStorage.setItem('cfoperator_backend', backend);
-            fetch('/api/settings/provider', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({backend})
-            }).catch(() => {});
-            fetchModels(backend);
-        }
-
-        function onModelChange() {
-            const backend = document.getElementById('llm-backend').value;
-            const model = document.getElementById('model-select').value;
-            if (model) {
-                localStorage.setItem(`cfoperator_${backend}_model`, model);
-                fetch(`/api/models/${backend}/select`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({model})
-                }).catch(() => {});
-            }
-        }
-
-        function onMaxIterationsChange() {
-            const val = Math.max(1, Math.min(50, parseInt(document.getElementById('max-iterations').value) || 10));
-            document.getElementById('max-iterations').value = val;
-            localStorage.setItem('cfoperator_max_iterations', val);
-            fetch('/api/settings/max_tool_iterations', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({max_tool_iterations: val})
-            }).catch(() => {});
-        }
-
-        function flashInput(el, ok) {
-            el.style.borderColor = ok ? 'var(--accent)' : 'var(--red)';
-            if (!ok) el.title = 'Save failed — database may be offline';
-            else el.title = '';
-            setTimeout(() => { el.style.borderColor = ''; }, 2000);
-        }
-
-        function onAlertIntervalChange() {
-            const el = document.getElementById('alert-interval');
-            const val = Math.max(5, Math.min(300, parseInt(el.value) || 10));
-            el.value = val;
-            fetch('/api/settings/ooda', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({alert_check_interval: val})
-            }).then(r => { flashInput(el, r.ok); if (!r.ok) el.value = localStorage.getItem('cfop_alert_interval') || val; else localStorage.setItem('cfop_alert_interval', val); })
-              .catch(() => flashInput(el, false));
-        }
-
-        function onSweepIntervalChange() {
-            const el = document.getElementById('sweep-interval');
-            const val = Math.max(1, Math.min(1440, parseInt(el.value) || 30));
-            el.value = val;
-            fetch('/api/settings/ooda', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({sweep_interval: val * 60})
-            }).then(r => { flashInput(el, r.ok); if (!r.ok) el.value = localStorage.getItem('cfop_sweep_interval') || val; else localStorage.setItem('cfop_sweep_interval', val); })
-              .catch(() => flashInput(el, false));
-        }
-
-        function onFallbackToggle() {
-            const enabled = document.getElementById('fallback-toggle').checked;
-            fetch('/api/settings/fallback', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({allow_paid_escalation: enabled})
-            }).catch(() => {});
-        }
-
-        function loadProviders() {
-            return fetch('/api/providers').then(r => r.json()).then(data => {
-                const select = document.getElementById('llm-backend');
-                select.innerHTML = '';
-                data.providers.forEach(p => {
-                    const opt = document.createElement('option');
-                    opt.value = p.id;
-                    opt.textContent = p.name;
-                    if (!p.available && p.id !== 'auto') {
-                        opt.disabled = true;
-                        opt.textContent += ' (unavailable)';
-                    }
-                    select.appendChild(opt);
-                });
-            }).catch(() => {});
-        }
-
-        function restoreSettings() {
-            loadProviders().then(() => {
-                fetch('/api/settings/provider').then(r => r.json()).then(data => {
-                    const backend = data.backend || 'auto';
-                    document.getElementById('llm-backend').value = backend;
-                    localStorage.setItem('cfoperator_backend', backend);
-                    fetchModels(backend);
-                }).catch(() => {
-                    const saved = localStorage.getItem('cfoperator_backend');
-                    if (saved) document.getElementById('llm-backend').value = saved;
-                    fetchModels(document.getElementById('llm-backend').value);
-                });
-            });
-
-            fetch('/api/settings/max_tool_iterations').then(r => r.json()).then(data => {
-                document.getElementById('max-iterations').value = data.max_tool_iterations;
-            }).catch(() => {
-                const saved = localStorage.getItem('cfoperator_max_iterations');
-                if (saved) document.getElementById('max-iterations').value = saved;
-            });
-
-            fetch('/api/settings/ooda').then(r => r.json()).then(data => {
-                document.getElementById('alert-interval').value = data.alert_check_interval;
-                document.getElementById('sweep-interval').value = Math.round(data.sweep_interval / 60);
-                localStorage.setItem('cfop_alert_interval', data.alert_check_interval);
-                localStorage.setItem('cfop_sweep_interval', Math.round(data.sweep_interval / 60));
-            }).catch(() => {
-                const ai = localStorage.getItem('cfop_alert_interval');
-                const si = localStorage.getItem('cfop_sweep_interval');
-                if (ai) document.getElementById('alert-interval').value = ai;
-                if (si) document.getElementById('sweep-interval').value = si;
-            });
-
-            fetch('/api/settings/fallback').then(r => r.json()).then(data => {
-                document.getElementById('fallback-toggle').checked = data.allow_paid_escalation;
-            }).catch(() => {});
-
-            loadPoolToggles();
-        }
-
-        function loadPoolToggles() {
-            fetch('/api/pool/status').then(r => r.json()).then(data => {
-                const sidebar = document.getElementById('pool-toggles-sidebar');
-                const section = document.getElementById('pool-section');
-                if (!data.instances || data.instances.length === 0) {
-                    section.style.display = 'none';
-                    return;
-                }
-                section.style.display = '';
-                sidebar.innerHTML = data.instances.map(inst => {
-                    const color = !inst.enabled ? 'var(--text-muted)' : inst.healthy ? 'var(--accent)' : 'var(--red)';
-                    // Instance name goes in a data attribute, not into the inline
-                    // handler's JS string, so a quote in it can't inject script.
-                    return `<div class="pool-instance">
-                        <input type="checkbox" ${inst.enabled ? 'checked' : ''} data-instance="${escapeHtml(inst.name)}" onchange="togglePoolInstance(this.dataset.instance, this.checked)">
-                        <span style="color:${color}">${escapeHtml(String(inst.name).replace('ollama-',''))}</span>
-                        <span style="color:var(--text-muted);font-size:11px;">${escapeHtml(inst.model || '')}</span>
-                    </div>`;
-                }).join('') + `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Mode: ${escapeHtml(data.mode || 'sequential')}</div>`;
-            }).catch(() => {});
-        }
-
-        function togglePoolInstance(name, enabled) {
-            fetch('/api/pool/instance', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name, enabled})
-            }).then(() => loadPoolToggles()).catch(() => {});
-        }
-
         // Status bar updates
         function updateStatus() {
             fetch('/api/health').then(r => r.json()).then(data => {
@@ -1763,11 +1551,6 @@
         }
 
         // Event listeners
-        document.getElementById('llm-backend').addEventListener('change', onBackendChange);
-        document.getElementById('model-select').addEventListener('change', onModelChange);
-        document.getElementById('max-iterations').addEventListener('change', onMaxIterationsChange);
-        document.getElementById('alert-interval').addEventListener('change', onAlertIntervalChange);
-        document.getElementById('sweep-interval').addEventListener('change', onSweepIntervalChange);
         document.getElementById('send-button').addEventListener('click', () => {
             if (inFlightChatId) stopChat(); else sendMessage();
         });
@@ -1827,9 +1610,6 @@
 
         loadSweepReports();
         setInterval(loadSweepReports, 60000);
-
-        // Initialize
-        restoreSettings();
 
         // Restore or create chat session
         const savedSession = localStorage.getItem('cfoperator_chat_session');
