@@ -19,6 +19,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from urllib.parse import quote_plus, urlsplit
 
 from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
@@ -456,19 +457,54 @@ class AuthStore:
         self.record(EVENT_LEGACY_TOKEN_USED, source_ip=source_ip, path=path)
 
 
-def default_db_url() -> str:
-    """Build the DSN from the knowledge base's environment variables.
+def _first_env(*names: str, default: str) -> str:
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return default
 
-    Auth shares the knowledge base's database — the deployment already provides
-    these, and a second set of connection variables would be one more thing to
-    get wrong in a sealed secret.
+
+def default_db_url() -> str:
+    """Build the DSN from the database variables the deployment already sets.
+
+    ``POSTGRES_*`` first, because that is what the k3s manifests and
+    docker-compose actually provide and what agent.py builds its own connection
+    from. ``KNOWLEDGE_BASE_PG_*`` is accepted as a fallback because
+    knowledge_base.py reads those directly, so a deployment configured that way
+    should work too.
+
+    Reading only the KNOWLEDGE_BASE_* family was the original bug: the pod sets
+    POSTGRES_*, so every lookup missed, the defaults took over, and auth spent a
+    release quietly connecting to localhost and falling back to legacy
+    single-user mode.
+
+    The defaults match agent.py's, so an unconfigured deployment aims at the
+    in-cluster service rather than at localhost, where nothing is listening.
     """
     explicit = os.getenv("CFOP_AUTH_DB_URL", "").strip()
     if explicit:
         return explicit
-    host = os.getenv("KNOWLEDGE_BASE_PG_HOST", "localhost")
-    port = os.getenv("KNOWLEDGE_BASE_PG_PORT", "5432")
-    database = os.getenv("KNOWLEDGE_BASE_PG_DATABASE", "sre_knowledge")
-    user = os.getenv("KNOWLEDGE_BASE_PG_USER", "sre_agent")
-    password = os.getenv("KNOWLEDGE_BASE_PG_PASSWORD", "")
-    return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+
+    host = _first_env("POSTGRES_HOST", "KNOWLEDGE_BASE_PG_HOST", default="postgres")
+    port = _first_env("POSTGRES_PORT", "KNOWLEDGE_BASE_PG_PORT", default="5432")
+    database = _first_env("POSTGRES_DB", "KNOWLEDGE_BASE_PG_DATABASE", default="cfoperator")
+    user = _first_env("POSTGRES_USER", "KNOWLEDGE_BASE_PG_USER", default="cfoperator")
+    password = _first_env("POSTGRES_PASSWORD", "KNOWLEDGE_BASE_PG_PASSWORD", default="")
+
+    # Sealed-secret passwords routinely contain @ / : # — unescaped, those turn
+    # into DSN syntax and surface as a confusing parse error or a connection to
+    # the wrong host.
+    return (
+        f"postgresql://{quote_plus(user)}:{quote_plus(password)}"
+        f"@{host}:{port}/{database}"
+    )
+
+
+def describe_db_target(url: str) -> str:
+    """host:port/database from a DSN, for logging. Never includes credentials."""
+    try:
+        parsed = urlsplit(url)
+        return f"{parsed.hostname}:{parsed.port or 5432}{parsed.path}"
+    except Exception:
+        return "unparseable DSN"

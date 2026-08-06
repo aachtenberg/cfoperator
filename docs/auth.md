@@ -58,7 +58,8 @@ that created it.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `CFOP_AUTH_DB_URL` | derived | Override the auth DSN; otherwise built from `KNOWLEDGE_BASE_PG_*` |
+| `CFOP_AUTH_DB_URL` | derived | Override the auth DSN outright |
+| `POSTGRES_HOST` / `_PORT` / `_DB` / `_USER` / `_PASSWORD` | `postgres:5432/cfoperator` | Where auth looks for its database. `KNOWLEDGE_BASE_PG_*` is accepted as a fallback |
 | `CFOP_AUTH_DB_DISABLED` | unset | Force legacy single-user mode even if a database is reachable |
 | `CFOP_SESSION_SECRET` | — | Signs session cookies; without it, cookies break on restart and across replicas |
 | `CFOP_AUTH_DISABLED` | unset | Opens the console entirely. **Local docker-compose only** — it logs a loud warning on every start |
