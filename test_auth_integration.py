@@ -9,7 +9,7 @@ table simply rendered empty. These tests pin the seams the layers meet at.
 import os
 
 import pytest
-from flask import Flask, send_from_directory
+from flask import Flask, redirect, send_from_directory
 from sqlalchemy import create_engine
 
 import web_auth
@@ -36,10 +36,18 @@ def app(monkeypatch):
 
     # Mirrors web_server.py: the console pages, then the blueprint, then the
     # gate over everything.
-    for page in ("users", "tokens"):
-        flask_app.add_url_rule(
-            f"/{page}", page, lambda page=page: send_from_directory("ui", f"{page}.html")
-        )
+    flask_app.add_url_rule(
+        "/account", "account", lambda: send_from_directory("ui", "account.html")
+    )
+    flask_app.add_url_rule(
+        "/admin", "admin", lambda: send_from_directory("ui", "admin.html")
+    )
+    flask_app.add_url_rule(
+        "/users", "users", lambda: redirect("/admin?tab=users", code=302)
+    )
+    flask_app.add_url_rule(
+        "/tokens", "tokens", lambda: redirect("/admin?tab=tokens", code=302)
+    )
     flask_app.register_blueprint(build_auth_blueprint(store))
     web_auth.install_auth(flask_app, ui_dir="ui", store=store)
 
@@ -79,20 +87,36 @@ def test_pages_are_served_and_reference_their_endpoints(app):
     c = app.test_client()
     login(c)
 
-    users = c.get("/users")
-    assert users.status_code == 200
-    assert b"/api/auth/users" in users.data
+    account = c.get("/account")
+    assert account.status_code == 200
+    assert b"/api/auth/password" in account.data
+    assert b"/api/auth/tokens" in account.data
 
-    tokens = c.get("/tokens")
-    assert tokens.status_code == 200
-    assert b"/api/auth/tokens" in tokens.data
+    admin = c.get("/admin")
+    assert admin.status_code == 200
+    assert b"/api/auth/users" in admin.data
+    assert b"/api/auth/tokens" in admin.data
+    assert b"/api/providers" in admin.data
+
+
+def test_legacy_users_tokens_redirect_to_admin(app):
+    c = app.test_client()
+    login(c)
+
+    users = c.get("/users", follow_redirects=False)
+    assert users.status_code == 302
+    assert users.headers["Location"].endswith("/admin?tab=users")
+
+    tokens = c.get("/tokens", follow_redirects=False)
+    assert tokens.status_code == 302
+    assert tokens.headers["Location"].endswith("/admin?tab=tokens")
 
 
 def test_console_pages_require_a_session(app):
     """The markup is not sensitive, but an anonymous visitor should land on the
     login form rather than a page whose every fetch 401s."""
     c = app.test_client()
-    r = c.get("/users", headers={"Accept": "text/html"})
+    r = c.get("/account", headers={"Accept": "text/html"})
     assert r.status_code == 302
     assert "/login" in r.headers["Location"]
 

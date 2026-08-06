@@ -1,9 +1,9 @@
 """Tests for the shared console header (ui/nav.js).
 
-The console is five static pages with no shared layout. Before nav.js each one
-hand-rolled its own header, and they drifted into three markup shapes and five
-different link sets, with the logged-in user shown on two pages out of five and
-no way to log out from any of them.
+The console is static pages with no shared layout. Before nav.js each one
+hand-rolled its own header, and they drifted into different markup shapes and
+link sets, with the logged-in user shown on only some pages and no way to log
+out from any of them.
 
 These tests exist to stop that happening again. They are deliberately about
 wiring rather than rendering: that every console page mounts the shared header
@@ -26,9 +26,10 @@ NAV_JS = UI / "nav.js"
 # sees, so it has no identity to show, nothing to log out of, and no sections
 # to navigate to.
 CONSOLE_PAGES = ["index.html", "remediations.html", "investigations.html",
-                 "users.html", "tokens.html"]
+                 "account.html", "admin.html"]
 
-SECTIONS = ["/", "/remediations", "/investigations", "/tokens", "/users"]
+# Admin is adminOnly and appears after /me; the rest always render.
+SECTIONS = ["/", "/remediations", "/investigations", "/account", "/admin"]
 
 
 def read(name):
@@ -54,7 +55,7 @@ def test_page_does_not_hand_roll_its_own_nav(page):
     """Guards against the drift nav.js was introduced to end.
 
     A page listing sibling sections in its own markup is the exact pattern that
-    produced five different link sets. The header owns those links now.
+    produced different link sets. The header owns those links now.
     """
     html = read(page)
     header = re.search(r"<header.*?</header>", html, re.S)
@@ -62,7 +63,7 @@ def test_page_does_not_hand_roll_its_own_nav(page):
     body = header.group(0)
 
     # Its own link to another section, outside the mount.
-    for target in ["/remediations", "/investigations", "/tokens", "/users"]:
+    for target in ["/remediations", "/investigations", "/account", "/admin"]:
         assert f'href="{target}"' not in body, \
             f'{page} still hard-codes a nav link to {target} in its header'
 
@@ -75,6 +76,7 @@ def test_nav_js_covers_every_section():
     js = NAV_JS.read_text(encoding="utf-8")
     for href in SECTIONS:
         assert f"href: '{href}'" in js, f"nav.js is missing the {href} section"
+    assert "adminOnly: true" in js, "Admin must be marked adminOnly"
 
 
 def test_logout_is_a_post():
@@ -99,8 +101,9 @@ def test_active_section_is_not_signalled_by_colour_alone():
 #
 # Run against node when it is available (it is on the CI runner) rather than
 # grepping the source, because the interesting part is a matching rule with
-# edge cases: a bare prefix match would let /tokens claim /tokensomething,
-# which is exactly the bug this replaced.
+# edge cases: a bare prefix match would let /account claim /accountsomething,
+# which is exactly the bug this replaced. Admin is adminOnly, so the stub waits
+# for /api/auth/me before asserting (admin role → Admin link present).
 
 _STUB = r"""
 const fs=require('fs'), vm=require('vm');
@@ -116,25 +119,28 @@ function active(pathname){
     fetch:()=>Promise.resolve({ok:true,status:200,
       json:()=>Promise.resolve({username:'u',role:'admin'})})};
   box.globalThis=box; vm.createContext(box); vm.runInContext(src,box);
-  const m=mount.innerHTML.match(/<a href="([^"]+)"[^>]*aria-current="page"/);
-  const n=(mount.innerHTML.match(/aria-current="page"/g)||[]).length;
-  return [m?m[1]:null, n];
+  return box.window.CFOP.me().then(() => new Promise(r => setImmediate(r))).then(() => {
+    const m=mount.innerHTML.match(/<a href="([^"]+)"[^>]*aria-current="page"/);
+    const n=(mount.innerHTML.match(/aria-current="page"/g)||[]).length;
+    return [m?m[1]:null, n];
+  });
 }
-console.log(JSON.stringify(active(process.argv[3])));
+active(process.argv[3]).then(r => console.log(JSON.stringify(r)));
 """
 
 
 @pytest.mark.parametrize("path,expected", [
     ("/", "/"),
-    ("/tokens", "/tokens"),
+    ("/account", "/account"),
+    ("/admin", "/admin"),
     ("/investigations", "/investigations"),
     # pathname keeps a trailing slash — it drops only the query and hash.
-    ("/tokens/", "/tokens"),
-    ("/users//", "/users"),
+    ("/account/", "/account"),
+    ("/admin//", "/admin"),
     # A path beneath a section still belongs to it.
-    ("/tokens/new", "/tokens"),
+    ("/account/settings", "/account"),
     # A sibling that merely starts with the same letters must not be claimed.
-    ("/tokensomething", None),
+    ("/accountsomething", None),
     ("/remediationsX", None),
     # Nothing outside the nav lights anything up.
     ("/login", None),
@@ -154,6 +160,41 @@ def test_active_section_for_pathname(tmp_path, path, expected):
     assert href == expected, f"{path} marked {href!r}, expected {expected!r}"
     assert count == (0 if expected is None else 1), \
         f"{path} marked {count} entries active"
+
+
+def test_admin_link_hidden_for_members(tmp_path):
+    """Members get Account; Admin stays out of the bar."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+
+    runner = tmp_path / "runner.js"
+    runner.write_text(r"""
+const fs=require('fs'), vm=require('vm');
+const src=fs.readFileSync(process.argv[2],'utf8');
+function el(){return{className:'',innerHTML:'',textContent:'',hidden:true,_q:{},
+  addEventListener(){},querySelector(s){return this._q[s.replace('#','')];}};}
+const mount=el(); mount._q={'cfop-who':el(),'cfop-logout':el()};
+const box={console,window:{location:{pathname:'/',href:''}},
+  document:{readyState:'complete',head:{appendChild(){}},
+    getElementById:id=>id==='cfop-nav'?mount:null,
+    createElement:()=>({textContent:''}),addEventListener:()=>{}},
+  fetch:()=>Promise.resolve({ok:true,status:200,
+    json:()=>Promise.resolve({username:'u',role:'member'})})};
+box.globalThis=box; vm.createContext(box); vm.runInContext(src,box);
+box.window.CFOP.me().then(() => new Promise(r => setImmediate(r))).then(() => {
+  console.log(JSON.stringify({
+    hasAdmin: mount.innerHTML.includes('href="/admin"'),
+    hasAccount: mount.innerHTML.includes('href="/account"'),
+  }));
+});
+""", encoding="utf-8")
+    out = subprocess.run([node, str(runner), str(NAV_JS)],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    data = json.loads(out.stdout)
+    assert data["hasAccount"] is True
+    assert data["hasAdmin"] is False
 
 
 def test_nav_js_has_no_external_dependencies():
@@ -187,9 +228,19 @@ def test_web_server_registers_the_route():
     source = (Path(__file__).parent / "web_server.py").read_text(encoding="utf-8")
     assert "@self.app.route('/nav.js')" in source, \
         "the pages request /nav.js — web_server.py must serve it"
+    assert "@self.app.route('/account')" in source
+    assert "@self.app.route('/admin')" in source
+    assert "redirect('/admin?tab=users'" in source
+    assert "redirect('/admin?tab=tokens'" in source
 
 
 def test_nav_js_ships_in_the_image():
     """`COPY ui/ ./ui/` carries it, but the pages 404 without it."""
     dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY ui/ ./ui/" in dockerfile
+
+
+def test_legacy_users_tokens_pages_are_gone():
+    """Content moved into /admin and /account — avoid resurrecting the old pages."""
+    assert not (UI / "users.html").exists()
+    assert not (UI / "tokens.html").exists()

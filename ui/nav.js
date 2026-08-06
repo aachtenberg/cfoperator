@@ -1,10 +1,10 @@
 /*
  * Shared console header: section nav, active-page indicator, identity, logout.
  *
- * The console is five static pages with no shared layout and no build step.
+ * The console is static pages with no shared layout and no build step.
  * Before this file each page hand-rolled its own header, which is how they
- * drifted into three markup shapes and five different link sets, with the
- * logged-in user shown on two pages out of five. Everything header-shaped
+ * drifted into three markup shapes and different link sets, with the
+ * logged-in user shown on only some pages. Everything header-shaped
  * lives here now; the pages contribute a mount point and nothing else.
  *
  * Served from /nav.js (see web_server.py). No imports, no bundler — same
@@ -26,6 +26,10 @@
   // whose href owns location.pathname. Array order is render order — left to
   // right in the header — and has no bearing on which entry is marked active;
   // activeHref() below is order-independent.
+  //
+  // adminOnly entries are omitted from the bar until /api/auth/me says the
+  // caller is an admin (or auth is disabled). Account stays for every role —
+  // that is where members change their password and manage their own tokens.
   var SECTIONS = [
     { href: '/', label: 'Console',
       icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' },
@@ -33,13 +37,10 @@
       icon: '<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>' },
     { href: '/investigations', label: 'Investigations',
       icon: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>' },
-    { href: '/tokens', label: 'Tokens',
-      icon: '<circle cx="8" cy="15" r="4"/><path d="M10.85 12.15L19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/>' },
-    // Shown to every role on purpose. The page is where a member changes
-    // their own password; its admin-only controls are hidden client-side and
-    // enforced server-side. See the note on the /users route in web_server.py.
-    { href: '/users', label: 'Users',
-      icon: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>' }
+    { href: '/account', label: 'Account',
+      icon: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>' },
+    { href: '/admin', label: 'Admin', adminOnly: true,
+      icon: '<circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>' }
   ];
 
   var LOGOUT_ICON =
@@ -83,17 +84,27 @@
            'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
   }
 
+  function isAdmin(who) {
+    return !!(who && (who.role === 'admin' || who.auth_disabled));
+  }
+
+  function visibleSections(who) {
+    return SECTIONS.filter(function (s) {
+      return !s.adminOnly || isAdmin(who);
+    });
+  }
+
   /* The href of the section owning this pathname, or null if none does.
    *
    * pathname keeps a trailing slash — it drops only the query string and the
-   * hash — so it is normalised before matching and /tokens/ lands on /tokens.
+   * hash — so it is normalised before matching and /account/ lands on /account.
    *
    * Matching is on a path-segment boundary rather than a bare prefix, so
-   * /tokens cannot claim a sibling like /tokensomething. "/" is exact-only for
-   * the same reason: it is a prefix of every other section.
+   * /account cannot claim a sibling like /accountsomething. "/" is exact-only
+   * for the same reason: it is a prefix of every other section.
    *
-   * Longest match wins. Nothing today can match two sections at once; that
-   * tie-break is there for a nested section later (/tokens and /tokens/new). */
+   * Longest match wins. Matching walks every section (including adminOnly) so
+   * /admin is recognised even before identity arrives. */
   function activeHref(pathname) {
     var path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
     var best = null;
@@ -121,9 +132,8 @@
     return mePromise;
   }
 
-  /* Matches the wording users.html used before this file existed: a token
-   * caller shows its label, a session shows the username, and the role rides
-   * along because "member" is the answer to "why is that button missing". */
+  /* A token caller shows its label, a session shows the username, and the role
+   * rides along because "member" is the answer to "why is that button missing". */
   function describe(who) {
     if (!who) return '';
     var name = who.token_label
@@ -142,10 +152,11 @@
       .then(function () { window.location.href = '/login'; });
   }
 
-  function render(mount) {
+  function render(mount, who) {
     var current = activeHref(window.location.pathname);
+    var sections = visibleSections(who);
 
-    var links = SECTIONS.map(function (s) {
+    var links = sections.map(function (s) {
       var active = s.href === current;
       return '<a href="' + s.href + '" title="' + s.label + '"' +
              (active ? ' aria-current="page"' : '') + '>' +
@@ -162,17 +173,12 @@
     var btn = mount.querySelector('#cfop-logout');
     btn.addEventListener('click', function () { logout(btn); });
 
-    me().then(function (who) {
+    if (who) {
       mount.querySelector('#cfop-who').textContent = describe(who);
       // Nothing to log out of when the server is not enforcing auth —
       // offering the control there would imply otherwise.
       btn.hidden = !!who.auth_disabled;
-    }).catch(function () {
-      // Identity unavailable (auth backend down, or /api/auth/me itself
-      // refused). The nav is still useful, so leave it; the logout button
-      // stays hidden rather than offering an action that cannot be trusted
-      // to mean anything.
-    });
+    }
   }
 
   function init() {
@@ -181,7 +187,15 @@
     var style = document.createElement('style');
     style.textContent = CSS;
     document.head.appendChild(style);
-    render(mount);
+    // Paint the public sections immediately; Admin appears once identity lands.
+    render(mount, null);
+    me().then(function (who) {
+      render(mount, who);
+    }).catch(function () {
+      // Identity unavailable (auth backend down, or /api/auth/me itself
+      // refused). The public nav is still useful; Admin stays hidden and
+      // logout stays hidden rather than offering an untrusted action.
+    });
   }
 
   window.CFOP = { me: me, describe: describe };

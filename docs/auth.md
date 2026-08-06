@@ -74,10 +74,10 @@ The deploy that ships this code is not a lockout and not a flag day.
    no users, it seeds the first admin from `CFOP_UI_USERNAME` /
    `CFOP_UI_PASSWORD_HASH` — the hash is copied verbatim, so the existing
    password keeps working.
-2. **Create per-person accounts** at `/users`, and have people log in as
-   themselves.
-3. **Mint per-service tokens** at `/tokens`, one per caller, each with the least
-   scope that works:
+2. **Create per-person accounts** at `/admin?tab=users`, and have people log in
+   as themselves.
+3. **Mint per-service tokens** at `/admin?tab=tokens`, one per caller, each with
+   the least scope that works:
 
    | Service | Scope |
    |---------|-------|
@@ -142,16 +142,18 @@ reaching this state takes deliberate effort.
 
 Tokens overlap, so there is no gap:
 
-1. Mint the replacement at `/tokens` with the same scopes.
+1. Mint the replacement at `/admin?tab=tokens` with the same scopes.
 2. Update `.env.secrets`, re-seal, roll the deployment.
 3. Confirm the new token's `last_used_at` is advancing and the old one's is not.
 4. Revoke the old token. Revocation is immediate — the next request fails.
 
 ### Someone left
 
-Deactivate the account at `/users`. Their session stops on the next request
-(the account is re-checked per request, not per cookie), and their tokens stop
-working at the same moment.
+Deactivate the account at `/admin?tab=users`. Their session stops on the next
+request (the account is re-checked per request, not per cookie), and their
+tokens stop working at the same moment.
+
+People change their own password and manage their own tokens at `/account`.
 
 ## What is deliberately not gated
 
@@ -166,7 +168,9 @@ disposable executor Job pod, so honouring it anywhere else would turn the
 lowest-privilege credential in the system into a full console credential. A role
 check here would 403 every callback and strand remediations mid-flight.
 
-The `/users` and `/tokens` pages are served without a role check. The markup
-gives nothing away, every `/api/auth/*` call it makes is authorised on its own,
-and gating the page would only mean a member sees a 403 instead of a page that
-correctly shows them their own tokens.
+`/account` and `/admin` are served without a role check. The markup gives
+nothing away, every `/api/*` call they make is authorised on its own, and
+gating the page would only mean a member sees a 403 instead of a page that
+correctly shows them their own tokens (or a banner pointing them at
+`/account`). The Admin nav link is filtered client-side for non-admins.
+Legacy `/users` and `/tokens` redirect into `/admin`.
