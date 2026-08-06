@@ -42,11 +42,17 @@ Scopes form a hierarchy: `remediate` ⊃ `investigate` ⊃ `read`.
 ## Prompts
 
 Every `skills/*/SKILL.md` is auto-registered as an MCP prompt (kebab-case
-names preserved): `investigate-pod`, `investigate-host`,
+names preserved), so the prompt list is whatever `skills/` contains at
+start — currently 9: `investigate-pod`, `investigate-host`,
 `investigate-container`, `investigate-deployment`,
 `investigate-code-change`, `why-restart`, `k3s-cluster-health`,
-`compare-hosts`. Each takes an optional `target` argument that appends a
-"Target: ..." section to the playbook.
+`compare-hosts`, `mqtt-top-talkers`. Each takes an optional `target`
+argument that appends a "Target: ..." section to the playbook.
+
+`mqtt-top-talkers` drives the agent's `timescale_query` tool, which is only
+registered when the agent has `TIMESCALE_PASSWORD` set. The prompt is
+registered by this process regardless — it is text, and the tool call happens
+agent-side.
 
 ## Quick start (stdio, local)
 
