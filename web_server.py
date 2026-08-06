@@ -132,6 +132,14 @@ class WebServer:
         def index():
             return send_from_directory('ui', 'index.html')
 
+        # The shared console header (nav, active-page state, identity, logout).
+        # Authenticated like the pages that load it — an anonymous browser is
+        # redirected to /login and never asks for this. login.html does not
+        # use it, so there is no bootstrap ordering problem.
+        @self.app.route('/nav.js')
+        def nav_js():
+            return send_from_directory('ui', 'nav.js', mimetype='application/javascript')
+
         # Health check
         @self.app.route('/api/health')
         def health():
