@@ -11,7 +11,10 @@ and none has started growing its own again. A new page added without the header
 should fail here rather than being noticed months later.
 """
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -90,6 +93,67 @@ def test_active_section_is_not_signalled_by_colour_alone():
     js = NAV_JS.read_text(encoding="utf-8")
     assert 'aria-current="page"' in js, \
         "the active section needs aria-current, not just an accent colour"
+
+
+# --- active-section behaviour -------------------------------------------
+#
+# Run against node when it is available (it is on the CI runner) rather than
+# grepping the source, because the interesting part is a matching rule with
+# edge cases: a bare prefix match would let /tokens claim /tokensomething,
+# which is exactly the bug this replaced.
+
+_STUB = r"""
+const fs=require('fs'), vm=require('vm');
+const src=fs.readFileSync(process.argv[2],'utf8');
+function el(){return{className:'',innerHTML:'',textContent:'',hidden:true,_q:{},
+  addEventListener(){},querySelector(s){return this._q[s.replace('#','')];}};}
+function active(pathname){
+  const mount=el(); mount._q={'cfop-who':el(),'cfop-logout':el()};
+  const box={console,window:{location:{pathname,href:''}},
+    document:{readyState:'complete',head:{appendChild(){}},
+      getElementById:id=>id==='cfop-nav'?mount:null,
+      createElement:()=>({textContent:''}),addEventListener:()=>{}},
+    fetch:()=>Promise.resolve({ok:true,status:200,
+      json:()=>Promise.resolve({username:'u',role:'admin'})})};
+  box.globalThis=box; vm.createContext(box); vm.runInContext(src,box);
+  const m=mount.innerHTML.match(/<a href="([^"]+)"[^>]*aria-current="page"/);
+  const n=(mount.innerHTML.match(/aria-current="page"/g)||[]).length;
+  return [m?m[1]:null, n];
+}
+console.log(JSON.stringify(active(process.argv[3])));
+"""
+
+
+@pytest.mark.parametrize("path,expected", [
+    ("/", "/"),
+    ("/tokens", "/tokens"),
+    ("/investigations", "/investigations"),
+    # pathname keeps a trailing slash — it drops only the query and hash.
+    ("/tokens/", "/tokens"),
+    ("/users//", "/users"),
+    # A path beneath a section still belongs to it.
+    ("/tokens/new", "/tokens"),
+    # A sibling that merely starts with the same letters must not be claimed.
+    ("/tokensomething", None),
+    ("/remediationsX", None),
+    # Nothing outside the nav lights anything up.
+    ("/login", None),
+])
+def test_active_section_for_pathname(tmp_path, path, expected):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+
+    stub = tmp_path / "stub.js"
+    stub.write_text(_STUB, encoding="utf-8")
+    out = subprocess.run([node, str(stub), str(NAV_JS), path],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    href, count = json.loads(out.stdout)
+
+    assert href == expected, f"{path} marked {href!r}, expected {expected!r}"
+    assert count == (0 if expected is None else 1), \
+        f"{path} marked {count} entries active"
 
 
 def test_nav_js_has_no_external_dependencies():

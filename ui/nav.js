@@ -23,8 +23,9 @@
   'use strict';
 
   // href is also the identity of the section: the active entry is the one
-  // whose href matches location.pathname. Keeping "/" last in the match
-  // order matters — it is a prefix of everything else.
+  // whose href owns location.pathname. Array order is render order — left to
+  // right in the header — and has no bearing on which entry is marked active;
+  // activeHref() below is order-independent.
   var SECTIONS = [
     { href: '/', label: 'Console',
       icon: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>' },
@@ -82,13 +83,25 @@
            'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + '</svg>';
   }
 
-  /* Longest matching href wins, so /users beats the "/" entry. Trailing
-   * slashes and query strings are already excluded by using pathname. */
+  /* The href of the section owning this pathname, or null if none does.
+   *
+   * pathname keeps a trailing slash — it drops only the query string and the
+   * hash — so it is normalised before matching and /tokens/ lands on /tokens.
+   *
+   * Matching is on a path-segment boundary rather than a bare prefix, so
+   * /tokens cannot claim a sibling like /tokensomething. "/" is exact-only for
+   * the same reason: it is a prefix of every other section.
+   *
+   * Longest match wins. Nothing today can match two sections at once; that
+   * tie-break is there for a nested section later (/tokens and /tokens/new). */
   function activeHref(pathname) {
+    var path = pathname.length > 1 ? pathname.replace(/\/+$/, '') : pathname;
     var best = null;
     for (var i = 0; i < SECTIONS.length; i++) {
       var href = SECTIONS[i].href;
-      var hit = href === '/' ? pathname === '/' : pathname.indexOf(href) === 0;
+      var hit = href === '/'
+        ? path === '/'
+        : (path === href || path.indexOf(href + '/') === 0);
       if (hit && (best === null || href.length > best.length)) best = href;
     }
     return best;
