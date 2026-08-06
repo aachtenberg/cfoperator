@@ -1,17 +1,15 @@
 <!DOCTYPE html>
 <!--
-  API token administration. Same shape as ui/remediations.html: static page,
-  inline CSS/JS, same-origin fetch() to /api/* so the session cookie rides along.
-  No external CSS/JS/fonts — this box has no outbound network, so the font stacks
-  fall back to the system sans/mono rather than hanging on a CDN that never answers.
+  Self-service account page: change password and manage own API tokens.
+  Admin user/token management lives at /admin. Same shape as the other console
+  pages — static, inline CSS/JS, same-origin fetch(). No outbound network.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CFOperator · API tokens</title>
+<title>CFOperator · Account</title>
 <style>
-  /* Theme tokens shared with the main page (ui/index.html) */
   :root {
     --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
     --border:#2a2a3a; --border-subtle:#1e1e2e;
@@ -30,7 +28,6 @@
     color:var(--accent); letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
   .logo svg { width:24px; height:24px; opacity:.9; }
   .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
-  .right { margin-left:auto; display:flex; align-items:center; gap:14px; }
   .muted { color:var(--text-secondary); font-size:12px; }
   a { color:var(--cyan); text-decoration:none; }
   a:hover { text-decoration:underline; }
@@ -54,7 +51,6 @@
     letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
   td { font-size:13px; }
   tbody tr:hover { background:var(--bg-hover); }
-  /* Dead tokens read as dead: dimmed, struck label, muted badge. */
   tbody tr.dead td { opacity:.5; }
   tbody tr.dead td.label { text-decoration:line-through; }
   tbody tr.formrow:hover { background:transparent; }
@@ -83,7 +79,6 @@
   .banner.err { border-left-color:var(--red); color:var(--red); }
   .banner.warn { border-left-color:var(--orange); }
 
-  /* The one-time secret panel: loud on purpose. */
   #secret { margin:14px 20px 0; padding:14px 16px; border:1px solid var(--orange);
     border-left:4px solid var(--orange); border-radius:var(--radius);
     background:rgba(245,158,11,.08); }
@@ -106,16 +101,31 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
       <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
     </svg>
-    CFOperator <span class="sub">/ API tokens</span>
+    CFOperator <span class="sub">/ Account</span>
   </a>
-  <!-- Section nav, identity and logout — see ui/nav.js -->
   <div id="cfop-nav"></div>
 </header>
 <script src="/nav.js" defer></script>
 
 <div class="banner" id="banner" hidden></div>
 
-<!-- Shown once, right after creation. Never re-renderable: the server keeps a hash. -->
+<div class="divider">Change my password</div>
+<div class="section">
+  <p class="muted" style="margin:8px 0 0">
+    Self-service — everyone can change their own password. Signing in again is not required.
+  </p>
+  <div class="actform">
+    <label for="pw-cur">current</label>
+    <input id="pw-cur" type="password" autocomplete="current-password" placeholder="current password" style="min-width:170px">
+    <label for="pw-new">new</label>
+    <input id="pw-new" type="password" autocomplete="new-password" placeholder="new password" style="min-width:170px">
+    <label for="pw-new2">confirm</label>
+    <input id="pw-new2" type="password" autocomplete="new-password" placeholder="repeat new password" style="min-width:170px"
+      onkeydown="if(event.key==='Enter')changeMyPassword()">
+    <button class="chip" onclick="changeMyPassword()">Update password</button>
+  </div>
+</div>
+
 <div id="secret" hidden>
   <h3>Copy this token now</h3>
   <p class="warn">This is the only time the secret is shown. It is not stored in
@@ -128,7 +138,7 @@
   <p class="muted" id="secret-meta" style="margin:8px 0 0"></p>
 </div>
 
-<div class="divider">New token</div>
+<div class="divider">My API tokens <span class="muted" id="tok-count"></span></div>
 <div class="section">
   <div class="actform" style="flex-direction:column; align-items:stretch; gap:10px">
     <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
@@ -140,12 +150,12 @@
     <div>
       <div class="muted" style="margin-bottom:6px">
         scopes — these nest: <b>remediate</b> implies <b>investigate</b> implies <b>read</b>.
-        Picking the outer scope selects the ones it contains.
+        Members cannot mint beyond <b>investigate</b>.
       </div>
       <div class="scopepick" id="nt-scopes">
         <label><input type="checkbox" value="read" checked> read <span class="muted">— view fleet state</span></label>
         <label><input type="checkbox" value="investigate"> investigate <span class="muted">— run diagnostics</span></label>
-        <label><input type="checkbox" value="remediate"> remediate <span class="muted">— act on hosts / open PRs</span></label>
+        <label id="scope-remediate"><input type="checkbox" value="remediate"> remediate <span class="muted">— act on hosts / open PRs</span></label>
       </div>
     </div>
     <div>
@@ -153,8 +163,6 @@
     </div>
   </div>
 </div>
-
-<div class="divider">Tokens <span class="muted" id="tok-count"></span></div>
 <table>
   <thead><tr>
     <th>Label</th><th>Prefix</th><th>Scopes</th><th>Status</th>
@@ -168,14 +176,8 @@
 <div id="toasts"></div>
 
 <script>
-// ---- shared helpers (same conventions as ui/remediations.html) ----
-// Quotes matter as much as angle brackets: these values land inside HTML
-// attributes (value, data-*), where a bare " or ' breaks out of the attribute.
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
   c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-// Server timestamps are UTC; some carry a zone marker, some don't (sqlite writes
-// "YYYY-MM-DD HH:MM:SS"). Only the bare ones get a 'Z' appended, or the browser
-// would read them as local time and every age on the page would be off.
 function parseTs(iso){
   if(!iso) return null;
   const raw = String(iso).trim();
@@ -201,9 +203,6 @@ function banner(msg, kind){
   if(!msg){ b.hidden=true; b.textContent=''; return; }
   b.hidden=false; b.className='banner '+(kind||''); b.textContent=msg;
 }
-
-// The API answers errors as {"error": "..."} with 400/401/403/503; turn that into
-// one sentence an operator can act on.
 function errMsg(status, data){
   const detail = (data && data.error) ? String(data.error) : '';
   if(status===401) return 'your session has expired — sign in again at /login';
@@ -223,30 +222,40 @@ async function api(path, opts){
   return {ok:true, status:res.status, data};
 }
 
-// ---- identity ----
 let ME = null;
+function isAdmin(){ return !!(ME && (ME.role === 'admin' || ME.auth_disabled)); }
+
 async function loadMe(){
-  // The shared header (ui/nav.js) already fetched this and renders the
-  // identity itself — reuse its result rather than asking a second time.
   try { ME = await CFOP.me(); }
   catch(e){ banner('could not load your account details — ' + e.message, 'err'); return; }
   if(ME.auth_disabled){
     banner('Authentication is disabled on this server — API calls are accepted without a token. '
          + 'Tokens created here start being enforced once auth is enabled.', 'warn');
   }
+  // Cosmetic: members cannot mint remediate; hide the checkbox rather than 403 later.
+  document.getElementById('scope-remediate').hidden = !isAdmin();
 }
 
-// ---- scope picker (scopes nest: remediate ⊃ investigate ⊃ read) ----
+async function changeMyPassword(){
+  const cur = document.getElementById('pw-cur');
+  const a = document.getElementById('pw-new'), b = document.getElementById('pw-new2');
+  if(!cur.value || !a.value){ toast('current and new password are required','err'); return; }
+  if(a.value !== b.value){ toast('new passwords do not match','err'); return; }
+  const r = await api('/api/auth/password', {method:'POST',
+    body:JSON.stringify({current_password:cur.value, new_password:a.value})});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('your password was changed','ok');
+  cur.value=''; a.value=''; b.value='';
+}
+
 const SCOPES = ['read','investigate','remediate'];
-const scopeBoxes = () => Array.from(document.querySelectorAll('#nt-scopes input[type=checkbox]'));
+const scopeBoxes = () => Array.from(document.querySelectorAll('#nt-scopes input[type=checkbox]:not([disabled])'));
 document.getElementById('nt-scopes').addEventListener('change', (e)=>{
   const box = e.target;
   if(!box || box.type !== 'checkbox') return;
   const i = SCOPES.indexOf(box.value);
   if(i < 0) return;
   const boxes = scopeBoxes();
-  // Checking an outer scope pulls in everything it contains; unchecking an inner
-  // one drops the outer scopes that would have implied it.
   boxes.forEach(b=>{
     const j = SCOPES.indexOf(b.value);
     if(box.checked && j < i) b.checked = true;
@@ -254,10 +263,9 @@ document.getElementById('nt-scopes').addEventListener('change', (e)=>{
   });
 });
 function selectedScopes(){
-  return scopeBoxes().filter(b=>b.checked).map(b=>b.value);
+  return scopeBoxes().filter(b=>b.checked && !b.closest('label').hidden).map(b=>b.value);
 }
 
-// ---- one-time secret panel ----
 function showSecret(row){
   const el = document.getElementById('secret');
   document.getElementById('secret-val').value = row.secret || '';
@@ -278,8 +286,6 @@ function dismissSecret(){
 function copySecret(){
   const input = document.getElementById('secret-val');
   if(!input.value){ return; }
-  // navigator.clipboard needs a secure context; the console is often plain HTTP
-  // on the LAN, so fall back to the old select+execCommand path.
   const fallback = ()=>{
     input.focus(); input.select();
     let ok=false; try { ok = document.execCommand('copy'); } catch(e){ ok=false; }
@@ -292,7 +298,6 @@ function copySecret(){
   } else { fallback(); }
 }
 
-// ---- token list ----
 let TOKENS = [];
 async function loadTokens(){
   const r = await api('/api/auth/tokens');
@@ -305,14 +310,10 @@ async function loadTokens(){
     if(r.status!==403) banner(r.error,'err');
     return;
   }
-  // The API wraps lists the way the rest of the console does
-  // ({tokens: [...]}, like {remediations: [...]}). Accept a bare array too, so
-  // a shape change shows up as an empty table rather than a thrown exception.
   TOKENS = Array.isArray(r.data) ? r.data : (r.data && r.data.tokens) || [];
   render();
 }
 
-// The server sends status; derive it only when it is missing.
 function statusOf(t){
   if(t.status) return String(t.status);
   if(t.revoked_at) return 'revoked';
@@ -331,7 +332,7 @@ function rowHtml(t){
   const scopeHtml = scopes.length
     ? `<span class="scopes">${scopes.map(s=>badge(s,'--cyan')).join('')}</span>` : '<span class="muted">—</span>';
   return `<tr class="${dead?'dead':''}">
-    <td class="label">${esc(t.label)}<div class="muted">by ${esc(t.created_by)||'—'}</div></td>
+    <td class="label">${esc(t.label)}</td>
     <td class="mono">${esc(t.token_prefix)}…</td>
     <td>${scopeHtml}</td>
     <td>${badge(st, STATUS_COLOR[st]||'--text-muted')}
@@ -365,7 +366,6 @@ function openForm(id, html){
   tr.querySelector('.formbody').innerHTML = html; tr.hidden = false;
 }
 
-// ---- actions (inline confirm + toasts, no browser dialogs) ----
 document.getElementById('rows').addEventListener('click', (e)=>{
   const el = e.target.closest('[data-act]');
   if(!el) return;
@@ -418,9 +418,6 @@ async function createToken(){
   await loadTokens();
 }
 
-// DOMContentLoaded rather than running immediately: ui/nav.js is deferred, and
-// loadMe() below reads the identity it fetched. Deferred scripts finish before
-// this event, so CFOP is guaranteed to exist by the time this runs.
 document.addEventListener('DOMContentLoaded', async ()=>{
   await loadMe();
   await loadTokens();

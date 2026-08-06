@@ -18,7 +18,7 @@ import queue
 import threading
 import uuid
 from typing import Dict, Any, Optional
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, redirect, send_from_directory
 import time
 import requests
 
@@ -849,19 +849,30 @@ class WebServer:
             """Operator console: the remediation worklist."""
             return send_from_directory('ui', 'remediations.html')
 
-        # Not role-gated: serving the markup gives nothing away, and every
-        # /api/auth/* call the page makes is authorised on its own. Gating the
-        # page instead would only mean a member sees a 403 rather than a page
-        # that correctly shows them just their own tokens.
+        # Account is for every role (password + own tokens). Admin holds
+        # user/token administration and LLM runtime config. Markup is not
+        # role-gated — every /api/* call is authorised on its own. The Admin
+        # nav link is filtered client-side in ui/nav.js; members who hit
+        # /admin see a banner and empty/403 API responses rather than a hard
+        # page gate.
+        @self.app.route('/account')
+        def account_page():
+            """Operator console: self-service password and own API tokens."""
+            return send_from_directory('ui', 'account.html')
+
+        @self.app.route('/admin')
+        def admin_page():
+            """Operator console: admin panel (users, tokens, LLM settings)."""
+            return send_from_directory('ui', 'admin.html')
+
+        # Bookmarks and docs still point at /users and /tokens.
         @self.app.route('/users')
-        def users_page():
-            """Operator console: user accounts."""
-            return send_from_directory('ui', 'users.html')
+        def users_page_redirect():
+            return redirect('/admin?tab=users', code=302)
 
         @self.app.route('/tokens')
-        def tokens_page():
-            """Operator console: API tokens."""
-            return send_from_directory('ui', 'tokens.html')
+        def tokens_page_redirect():
+            return redirect('/admin?tab=tokens', code=302)
 
         # --- operator console actions (internal /api, like the other UI POSTs) ---
         @self.app.route('/api/remediations/<int:remediation_id>/approve', methods=['POST'])
