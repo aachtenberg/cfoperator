@@ -52,3 +52,9 @@ def test_console_surfaces_model_list_errors_and_free_text_fallback():
     assert "setModelUi" in html
     assert "No models returned — enter a model id" in html
     assert "llm-model-custom" in html
+    # Save failures must not leave the popover silently desynced from the server.
+    assert "failed to save provider" in html
+    assert "failed to save model" in html
+    # Dialog focus moves into the popover and back to the chip.
+    assert "focusLlmPopover" in html
+    assert "chip.focus()" in html

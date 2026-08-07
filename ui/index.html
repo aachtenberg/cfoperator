@@ -1617,11 +1617,25 @@
         }
 
         function setLlmPopoverOpen(open) {
+            const wasOpen = llmPopoverOpen;
             llmPopoverOpen = !!open;
             const pop = document.getElementById('llm-popover');
             const chip = document.getElementById('llm-chip');
             pop.hidden = !llmPopoverOpen;
             chip.setAttribute('aria-expanded', llmPopoverOpen ? 'true' : 'false');
+            if (!llmPopoverOpen && wasOpen) {
+                // Return focus to the trigger when the dialog closes.
+                chip.focus();
+            }
+        }
+
+        function focusLlmPopover() {
+            const backend = document.getElementById('llm-backend');
+            if (backend) backend.focus();
+        }
+
+        function setLlmErr(msg) {
+            document.getElementById('llm-model-err').textContent = msg || '';
         }
 
         function setModelUi(models, selected, errMsg) {
@@ -1723,31 +1737,63 @@
             setLlmPopoverOpen(true);
             refreshLlmChip().then(cur => {
                 const backend = (cur && cur.backend) || 'auto';
-                return loadLlmProviders(backend).then(() => fetchModels(backend));
+                return loadLlmProviders(backend)
+                    .then(() => fetchModels(backend))
+                    .then(() => { if (llmPopoverOpen) focusLlmPopover(); });
             });
         }
 
         function onLlmBackendChange() {
             const backend = document.getElementById('llm-backend').value;
+            setLlmErr('');
             fetch('/api/settings/provider', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({backend})
-            }).then(r => {
-                if (!r.ok) return;
-                // Model list will refresh the chip label with the real selected model.
+            }).then(r => r.json().then(data => ({ok: r.ok, data})).catch(() => ({ok: r.ok, data: null})))
+              .then(({ok, data}) => {
+                if (!ok) {
+                    setLlmErr((data && data.error) || 'failed to save provider');
+                    // Re-sync selects + chip with whatever the server still has.
+                    return refreshLlmChip().then(cur => {
+                        const b = (cur && cur.backend) || 'auto';
+                        return loadLlmProviders(b).then(() => fetchModels(b));
+                    });
+                }
                 return fetchModels(backend).then(() => refreshLlmChip());
-            }).catch(() => {});
+            }).catch(() => {
+                setLlmErr('failed to save provider');
+                return refreshLlmChip().then(cur => {
+                    const b = (cur && cur.backend) || 'auto';
+                    return loadLlmProviders(b).then(() => fetchModels(b));
+                });
+            });
         }
 
         function commitLlmModel(model) {
             const backend = document.getElementById('llm-backend').value;
             if (!model || backend === 'auto') return;
+            setLlmErr('');
             fetch('/api/models/' + encodeURIComponent(backend) + '/select', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({model})
-            }).then(r => {
-                if (r.ok) setLlmChip(backend, model);
-            }).catch(() => {});
+            }).then(r => r.json().then(data => ({ok: r.ok, data})).catch(() => ({ok: r.ok, data: null})))
+              .then(({ok, data}) => {
+                if (ok) {
+                    setLlmChip(backend, model);
+                    return;
+                }
+                setLlmErr((data && data.error) || 'failed to save model');
+                return refreshLlmChip().then(cur => {
+                    const b = (cur && cur.backend) || backend;
+                    return fetchModels(b);
+                });
+            }).catch(() => {
+                setLlmErr('failed to save model');
+                return refreshLlmChip().then(cur => {
+                    const b = (cur && cur.backend) || backend;
+                    return fetchModels(b);
+                });
+            });
         }
 
         function onLlmModelChange() {
