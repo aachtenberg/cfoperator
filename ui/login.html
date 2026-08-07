@@ -10,16 +10,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CFOperator — Sign in</title>
+  <!-- Favicon is exempted in web_auth.EXEMPT_PATHS so the tab mark matches
+       the console before a session exists. No other static assets are linked. -->
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     :root {
-      --bg: #0f1115; --card: #181b22; --fg: #e6e8ee; --muted: #9aa3b2;
-      --accent: #4f8cff; --border: #2a2f3a; --err: #ff6b6b;
-    }
-    @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #f5f6f8; --card: #ffffff; --fg: #1a1d24; --muted: #5c6675;
-        --accent: #2563eb; --border: #dfe3ea; --err: #d92d20;
-      }
+      --bg: #0a0a0f; --card: #12121a; --fg: #e0e0e8; --muted: #8888a0;
+      --accent: #22c55e; --border: #2a2a3a; --err: #ef4444;
     }
     * { box-sizing: border-box; }
     body {
@@ -32,7 +29,13 @@
       width: 100%; max-width: 360px; background: var(--card);
       border: 1px solid var(--border); border-radius: 12px; padding: 2rem;
     }
-    h1 { margin: 0 0 .25rem; font-size: 1.25rem; }
+    .brand {
+      display: flex; align-items: center; gap: 10px;
+      margin: 0 0 .25rem; color: var(--accent);
+      font: 700 1.25rem/1.2 ui-monospace, "Cascadia Code", "Segoe UI Mono", monospace;
+      letter-spacing: -0.5px;
+    }
+    .brand svg { width: 24px; height: 24px; opacity: .9; flex-shrink: 0; }
     p.sub { margin: 0 0 1.5rem; color: var(--muted); font-size: .875rem; }
     label { display: block; font-size: .8125rem; color: var(--muted); margin-bottom: .35rem; }
     input {
@@ -43,7 +46,7 @@
     input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
     button {
       width: 100%; padding: .6875rem; border: 0; border-radius: 8px;
-      background: var(--accent); color: #fff; font-size: .9375rem;
+      background: var(--accent); color: #0a0a0f; font-size: .9375rem;
       font-weight: 600; cursor: pointer;
     }
     button:disabled { opacity: .6; cursor: default; }
@@ -57,7 +60,12 @@
 </head>
 <body>
   <form class="card" id="f" autocomplete="on">
-    <h1>CFOperator</h1>
+    <h1 class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+      </svg>
+      CFOperator
+    </h1>
     <p class="sub">Sign in to the operator console.</p>
 
     <div class="err" id="err" role="alert"></div>
