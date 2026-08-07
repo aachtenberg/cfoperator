@@ -84,84 +84,62 @@
             opacity: 0.9;
         }
 
-        .header-controls {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-left: auto;
+        /* LLM chip + popover (CFOP-19). Full OODA/pool/fallback stay in Admin. */
+        .llm-switcher { position: relative; flex-shrink: 1; min-width: 0; }
+        .llm-chip {
+            display: inline-flex; align-items: center; gap: 6px;
+            max-width: min(320px, 40vw);
+            background: var(--bg-tertiary); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 6px 10px; cursor: pointer;
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
+            transition: border-color .15s, color .15s, background .15s;
         }
-
-        .header-controls label {
-            font-size: 12px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .header-controls select, .header-controls input[type="number"] {
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-            border: 1px solid var(--border);
-            padding: 6px 10px;
-            border-radius: var(--radius-sm);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 13px;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-
-        .header-controls select:focus, .header-controls input:focus {
+        .llm-chip:hover:not(:disabled) { border-color: var(--text-secondary); }
+        .llm-chip[aria-expanded="true"] {
             border-color: var(--accent);
+            background: color-mix(in srgb, var(--accent) 12%, var(--bg-tertiary));
         }
+        .llm-chip:disabled { cursor: default; opacity: .85; }
+        .llm-chip-label {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            color: var(--text-secondary);
+        }
+        .llm-chip-label.ready { color: var(--text-primary); }
+        .llm-chip-caret { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
+        .llm-chip:disabled .llm-chip-caret { display: none; }
 
-        .header-controls input[type="number"] {
-            width: 56px;
-            text-align: center;
+        .llm-popover {
+            position: absolute; top: calc(100% + 8px); left: 0; z-index: 40;
+            width: min(300px, 90vw);
+            background: var(--bg-secondary); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 12px 14px;
+            box-shadow: 0 8px 24px #000a;
         }
-
-        .control-group {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 0 8px;
-            border-left: 1px solid var(--border);
+        .llm-popover[hidden] { display: none; }
+        .llm-popover .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+        .llm-popover .field:last-of-type { margin-bottom: 0; }
+        .llm-popover label { color: var(--text-secondary); font-size: 11px;
+            text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+        .llm-popover select, .llm-popover input[type="text"] {
+            background: var(--bg-tertiary); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 6px 8px; font-family: 'JetBrains Mono', monospace;
+            font-size: 12px; outline: none; width: 100%;
         }
-
-        .control-group:first-child { border-left: none; padding-left: 0; }
-
-        .toggle-switch {
-            position: relative;
-            display: inline-block;
-            width: 34px;
-            height: 18px;
-            flex-shrink: 0;
+        .llm-popover select:focus, .llm-popover input:focus { border-color: var(--accent); }
+        .llm-popover .llm-err {
+            color: var(--orange); font-size: 11px; margin: 0 0 8px;
+            font-family: 'JetBrains Mono', monospace; line-height: 1.35;
+            word-break: break-word;
         }
-        .toggle-switch input { opacity: 0; width: 0; height: 0; }
-        .toggle-slider {
-            position: absolute;
-            cursor: pointer;
-            inset: 0;
-            background: var(--border);
-            border-radius: 18px;
-            transition: background 0.2s;
+        .llm-popover .llm-err:empty { display: none; }
+        .llm-popover .llm-more {
+            display: block; margin-top: 12px; padding-top: 10px;
+            border-top: 1px solid var(--border-subtle);
+            font-size: 12px; color: var(--cyan); text-decoration: none;
         }
-        .toggle-slider::before {
-            content: "";
-            position: absolute;
-            width: 12px;
-            height: 12px;
-            left: 3px;
-            bottom: 3px;
-            background: var(--text-muted);
-            border-radius: 50%;
-            transition: transform 0.2s, background 0.2s;
-        }
-        .toggle-switch input:checked + .toggle-slider { background: var(--accent-dim); }
-        .toggle-switch input:checked + .toggle-slider::before {
-            transform: translateX(16px);
-            background: var(--accent);
-        }
+        .llm-popover .llm-more:hover { text-decoration: underline; }
 
         .sidebar-toggle {
             background: none;
@@ -263,22 +241,6 @@
             color: var(--text-muted);
             margin-top: 2px;
         }
-
-        #pool-toggles-sidebar {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .pool-instance {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        .pool-instance input[type="checkbox"] { accent-color: var(--accent); }
 
         /* ── Chat area ── */
         .chat-area {
@@ -932,8 +894,30 @@
             </svg>
             CFOperator
         </div>
-        <!-- Section nav, identity and logout — see ui/nav.js.
-             LLM / OODA / pool controls live at /admin?tab=llm (CFOP-15). -->
+        <!-- Current LLM readout + admin quick switch (CFOP-19).
+             Full OODA / pool / fallback stay at /admin?tab=llm (CFOP-15). -->
+        <div class="llm-switcher" id="llm-switcher">
+            <button type="button" class="llm-chip" id="llm-chip"
+                    aria-haspopup="dialog" aria-expanded="false" aria-controls="llm-popover"
+                    disabled title="Loading LLM…">
+                <span class="llm-chip-label" id="llm-chip-label">…</span>
+                <span class="llm-chip-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="llm-popover" id="llm-popover" role="dialog" aria-label="Select LLM" hidden>
+                <div class="field">
+                    <label for="llm-backend">Backend</label>
+                    <select id="llm-backend"></select>
+                </div>
+                <div class="field">
+                    <label for="llm-model">Model</label>
+                    <select id="llm-model"></select>
+                    <input type="text" id="llm-model-custom" placeholder="model id" hidden autocomplete="off">
+                </div>
+                <p class="llm-err" id="llm-model-err"></p>
+                <a class="llm-more" href="/admin?tab=llm">More in Admin →</a>
+            </div>
+        </div>
+        <!-- Section nav, identity and logout — see ui/nav.js -->
         <div id="cfop-nav"></div>
     </header>
 
@@ -1349,8 +1333,8 @@
             const message = input.value.trim();
             if (!message) return;
 
-            // Provider/model selection lives in Admin → LLM; chat uses the
-            // server's selected_backend (backend: auto).
+            // Chat uses the server's selected_backend (backend: auto). Provider/
+            // model are set via the header chip (or Admin → LLM).
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
             saveMessage('user', message);
@@ -1610,6 +1594,200 @@
 
         loadSweepReports();
         setInterval(loadSweepReports, 60000);
+
+        /* ── LLM chip / quick switcher (CFOP-19) ── */
+        let llmIsAdmin = false;
+        let llmPopoverOpen = false;
+
+        function llmLabelText(backend, model) {
+            const b = backend || 'auto';
+            if (!b || b === 'auto') return 'auto';
+            return model ? (b + ' · ' + model) : b;
+        }
+
+        function setLlmChip(backend, model) {
+            const label = document.getElementById('llm-chip-label');
+            const chip = document.getElementById('llm-chip');
+            label.textContent = llmLabelText(backend, model);
+            label.classList.add('ready');
+            chip.title = llmIsAdmin
+                ? 'Change LLM provider / model'
+                : 'Current LLM (admin required to change)';
+            chip.disabled = !llmIsAdmin;
+        }
+
+        function setLlmPopoverOpen(open) {
+            llmPopoverOpen = !!open;
+            const pop = document.getElementById('llm-popover');
+            const chip = document.getElementById('llm-chip');
+            pop.hidden = !llmPopoverOpen;
+            chip.setAttribute('aria-expanded', llmPopoverOpen ? 'true' : 'false');
+        }
+
+        function setModelUi(models, selected, errMsg) {
+            const sel = document.getElementById('llm-model');
+            const custom = document.getElementById('llm-model-custom');
+            const err = document.getElementById('llm-model-err');
+            err.textContent = errMsg || '';
+            const list = Array.isArray(models) ? models : [];
+            if (list.length > 0) {
+                sel.hidden = false;
+                custom.hidden = true;
+                sel.innerHTML = list.map(m =>
+                    `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+                if (selected && list.includes(selected)) sel.value = selected;
+                else if (selected) {
+                    // Selected model not in list — keep it selectable.
+                    const opt = document.createElement('option');
+                    opt.value = selected; opt.textContent = selected; opt.selected = true;
+                    sel.appendChild(opt);
+                }
+            } else {
+                // Empty list (or fetch failed): free-text so the switcher still works.
+                sel.hidden = true;
+                sel.innerHTML = '';
+                custom.hidden = false;
+                custom.value = selected || '';
+                if (!errMsg) err.textContent = 'No models returned — enter a model id';
+            }
+        }
+
+        function fetchModels(backend) {
+            const sel = document.getElementById('llm-model');
+            const custom = document.getElementById('llm-model-custom');
+            const err = document.getElementById('llm-model-err');
+            if (!backend || backend === 'auto') {
+                sel.hidden = false;
+                custom.hidden = true;
+                custom.value = '';
+                sel.innerHTML = '<option value="">(auto)</option>';
+                sel.disabled = true;
+                err.textContent = '';
+                return Promise.resolve();
+            }
+            sel.disabled = false;
+            sel.hidden = false;
+            custom.hidden = true;
+            sel.innerHTML = '<option value="">Loading…</option>';
+            err.textContent = '';
+            return fetch('/api/models/' + encodeURIComponent(backend))
+                .then(r => r.json().then(data => ({ok: r.ok, data})))
+                .then(({ok, data}) => {
+                    const models = (data && data.models) || [];
+                    const selected = (data && data.selected) || '';
+                    const msg = (!ok || !models.length)
+                        ? ((data && data.error) || (!ok ? 'failed to load models' : ''))
+                        : '';
+                    setModelUi(models, selected, msg);
+                })
+                .catch(() => setModelUi([], '', 'failed to load models'));
+        }
+
+        function loadLlmProviders(selectedBackend) {
+            return fetch('/api/providers')
+                .then(r => r.json())
+                .then(data => {
+                    const select = document.getElementById('llm-backend');
+                    select.innerHTML = '';
+                    (data.providers || []).forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p.id;
+                        opt.textContent = p.name + ((!p.available && p.id !== 'auto') ? ' (unavailable)' : '');
+                        if (!p.available && p.id !== 'auto') opt.disabled = true;
+                        select.appendChild(opt);
+                    });
+                    const backend = selectedBackend || 'auto';
+                    if ([...select.options].some(o => o.value === backend)) select.value = backend;
+                    else select.value = 'auto';
+                })
+                .catch(() => {});
+        }
+
+        function refreshLlmChip() {
+            return fetch('/api/settings/provider')
+                .then(r => r.json())
+                .then(data => {
+                    const backend = data.backend || 'auto';
+                    const model = data.model || '';
+                    setLlmChip(backend, model);
+                    return {backend, model};
+                })
+                .catch(() => {
+                    document.getElementById('llm-chip-label').textContent = 'LLM?';
+                    document.getElementById('llm-chip').title = 'Could not load LLM setting';
+                });
+        }
+
+        function openLlmPopover() {
+            if (!llmIsAdmin) return;
+            setLlmPopoverOpen(true);
+            refreshLlmChip().then(cur => {
+                const backend = (cur && cur.backend) || 'auto';
+                return loadLlmProviders(backend).then(() => fetchModels(backend));
+            });
+        }
+
+        function onLlmBackendChange() {
+            const backend = document.getElementById('llm-backend').value;
+            fetch('/api/settings/provider', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({backend})
+            }).then(r => {
+                if (!r.ok) return;
+                // Model list will refresh the chip label with the real selected model.
+                return fetchModels(backend).then(() => refreshLlmChip());
+            }).catch(() => {});
+        }
+
+        function commitLlmModel(model) {
+            const backend = document.getElementById('llm-backend').value;
+            if (!model || backend === 'auto') return;
+            fetch('/api/models/' + encodeURIComponent(backend) + '/select', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({model})
+            }).then(r => {
+                if (r.ok) setLlmChip(backend, model);
+            }).catch(() => {});
+        }
+
+        function onLlmModelChange() {
+            commitLlmModel(document.getElementById('llm-model').value);
+        }
+
+        function onLlmModelCustomChange() {
+            commitLlmModel(document.getElementById('llm-model-custom').value.trim());
+        }
+
+        document.getElementById('llm-chip').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!llmIsAdmin) return;
+            if (llmPopoverOpen) setLlmPopoverOpen(false);
+            else openLlmPopover();
+        });
+        document.getElementById('llm-backend').addEventListener('change', onLlmBackendChange);
+        document.getElementById('llm-model').addEventListener('change', onLlmModelChange);
+        document.getElementById('llm-model-custom').addEventListener('change', onLlmModelCustomChange);
+        document.addEventListener('click', (e) => {
+            if (!llmPopoverOpen) return;
+            if (!document.getElementById('llm-switcher').contains(e.target)) {
+                setLlmPopoverOpen(false);
+            }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && llmPopoverOpen) setLlmPopoverOpen(false);
+        });
+
+        // Identity from nav.js (deferred) — wait for DOMContentLoaded so CFOP exists.
+        document.addEventListener('DOMContentLoaded', () => {
+            if (window.CFOP && CFOP.me) {
+                CFOP.me().then(who => {
+                    llmIsAdmin = !!(who && (who.role === 'admin' || who.auth_disabled));
+                    refreshLlmChip();
+                }).catch(() => refreshLlmChip());
+            } else {
+                refreshLlmChip();
+            }
+        });
 
         // Restore or create chat session
         const savedSession = localStorage.getItem('cfoperator_chat_session');
