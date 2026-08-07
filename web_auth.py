@@ -74,7 +74,11 @@ logger = logging.getLogger(__name__)
 
 # Routes that must answer without credentials. Keep this list minimal and
 # read-only — anything added here is reachable by every device on the LAN.
-EXEMPT_PATHS = frozenset({"/api/health", "/metrics", "/login", "/logout"})
+# /favicon.svg is the brand mark used on the login tab before a session exists;
+# it is a fixed SVG with no secrets and no script.
+EXEMPT_PATHS = frozenset({
+    "/api/health", "/metrics", "/login", "/logout", "/favicon.svg",
+})
 
 # The only routes that authenticate with the X-CFOP-Token completion secret —
 # they call verify_completion_auth() themselves. The console gate honors that
