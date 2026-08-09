@@ -60,6 +60,29 @@ OUTCOME_CHECK_SQL = "outcome IN ({})".format(
     ", ".join(f"'{o}'" for o in sorted(VALID_OUTCOMES))
 )
 
+# Quoted string literals inside a rendered CHECK definition.
+_SQL_STRING_LITERAL = re.compile(r"'([^']*)'")
+
+
+def constraint_admits_outcomes(constraint_def: Optional[str], outcomes: Iterable[str]) -> bool:
+    """True if a rendered CHECK definition admits every one of ``outcomes``.
+
+    Compares the *set of quoted literals*, not the constraint text, because
+    Postgres re-renders a CHECK when it stores it: the ``outcome IN (...)`` we
+    write reads back from ``pg_get_constraintdef()`` as::
+
+        ((outcome)::text = ANY ((ARRAY['resolved'::character varying, ...])::text[]))
+
+    Comparing against OUTCOME_CHECK_SQL directly would therefore never match,
+    and the constraint would be dropped and rebuilt on *every* boot — taking an
+    ACCESS EXCLUSIVE lock on investigations each time. Extracting the literals
+    also avoids relying on one outcome not being a substring of another.
+    """
+    if not constraint_def:
+        return False
+    present = set(_SQL_STRING_LITERAL.findall(constraint_def))
+    return set(outcomes) <= present
+
 OUTCOME_ALIASES = {
     "investigating": "in_progress",
     "investigation": "in_progress",
@@ -1061,7 +1084,14 @@ class KnowledgeBase:
         _log("info", "Knowledge base initialized", db_type="postgresql", host_id=self.host_id)
 
     def initialize_schema(self):
-        """Create all tables if they don't exist."""
+        """Create all tables if they don't exist.
+
+        Returns True when the schema is fully ensured. False means the
+        investigations.outcome CHECK could not be widened to the current
+        vocabulary — the tables exist and are usable, but writes of a
+        newly-added outcome would be rejected, so callers should not latch this
+        as "initialized" (ResilientKnowledgeBase retries on that signal).
+        """
         Base.metadata.create_all(self.engine)
         # Ensure FTS columns exist (added after initial schema)
         self.ensure_fts_schema()
@@ -1069,8 +1099,9 @@ class KnowledgeBase:
         self._ensure_learning_embeddings_table()
         # Widen investigations.outcome CHECK if the vocabulary grew since this
         # database was created (create_all never alters an existing table)
-        self._ensure_outcome_constraint()
-        _log("info", "Knowledge base schema initialized")
+        outcome_ok = self._ensure_outcome_constraint()
+        _log("info", "Knowledge base schema initialized", outcome_constraint_ok=outcome_ok)
+        return outcome_ok
 
     def _ensure_outcome_constraint(self) -> bool:
         """Rebuild investigations.valid_outcome to match VALID_OUTCOMES.
@@ -1098,14 +1129,9 @@ class KnowledgeBase:
 
                 # Common path: already admits every outcome we can emit. Skip,
                 # so a normal restart takes no lock on the investigations table.
-                #
-                # Match on the quoted literals, NOT on equality with
-                # OUTCOME_CHECK_SQL: Postgres re-renders a CHECK when it stores
-                # it, so the "outcome IN (...)" written below reads back as
-                # "((outcome)::text = ANY ((ARRAY['resolved'::character varying,
-                # ...])::text[]))". Comparing whole strings would never match
-                # and this would rebuild the constraint on every single boot.
-                if current and all(f"'{o}'" in current for o in VALID_OUTCOMES):
+                # See constraint_admits_outcomes() for why this compares
+                # literals rather than the constraint text.
+                if constraint_admits_outcomes(current, VALID_OUTCOMES):
                     return True
 
                 _log("info", "Widening investigations.valid_outcome CHECK",
@@ -1127,8 +1153,9 @@ class KnowledgeBase:
                     WHERE c.conname = 'valid_outcome'
                       AND c.conrelid = to_regclass('investigations')
                 """)).scalar()
-            missing = sorted(o for o in VALID_OUTCOMES if not after or f"'{o}'" not in after)
-            if missing:
+            if not constraint_admits_outcomes(after, VALID_OUTCOMES):
+                present = set(_SQL_STRING_LITERAL.findall(after or ""))
+                missing = sorted(VALID_OUTCOMES - present)
                 _log("error", "investigations.valid_outcome still rejects known outcomes; "
                               "investigations with these outcomes will fail to persist",
                      missing=missing, constraint=after)
@@ -4667,14 +4694,27 @@ class ResilientKnowledgeBase:
         to the local JSONL outbox) and the background sync loop retries schema
         creation once the database is healthy again. A transient DB outage must
         never crash agent startup — that is the whole point of this wrapper.
+
+        A *soft* failure is handled differently from an unreachable database.
+        When the schema is created but a DDL step could not be completed (the
+        investigations.outcome CHECK could not be widened), the connection is
+        fine and everything else writes normally, so the database is NOT marked
+        unhealthy — degrading to the local outbox would be a larger outage than
+        the defect. Instead the initialized flag simply stays false, which is
+        enough for _sync_loop to retry the idempotent DDL on its next tick.
         """
         with self._schema_lock:
             if self._schema_initialized:
                 return True
             try:
-                self._kb.initialize_schema()
-                self._schema_initialized = True
-                return True
+                # Only an explicit False is a failure signal; a None return
+                # (older/stubbed KnowledgeBase) still counts as initialized.
+                self._schema_initialized = self._kb.initialize_schema() is not False
+                if not self._schema_initialized:
+                    _log("warning",
+                         "Schema init incomplete — database reachable but a DDL step "
+                         "could not be ensured; will retry on the next sync tick")
+                return self._schema_initialized
             except Exception as e:
                 self._health_monitor.mark_unhealthy()
                 _log("warning",

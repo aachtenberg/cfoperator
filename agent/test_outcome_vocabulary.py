@@ -27,6 +27,7 @@ from knowledge_base import (
     OUTCOME_CHECK_SQL,
     VALID_OUTCOMES,
     Investigation,
+    constraint_admits_outcomes,
     normalize_outcome,
 )
 
@@ -123,6 +124,51 @@ def test_check_constraint_admits_every_valid_outcome():
             f"'{outcome}' is a valid outcome the code will try to write, but the "
             f"valid_outcome CHECK rejects it: {sql}"
         )
+
+
+# Verbatim pg_get_constraintdef() output, captured from the live database.
+# Postgres re-renders a stored CHECK, so these are what the startup migration
+# actually has to reason about -- not the "outcome IN (...)" text we write.
+_LIVE_CONSTRAINT_BEFORE = (
+    "CHECK (((outcome)::text = ANY ((ARRAY['resolved'::character varying, "
+    "'escalated'::character varying, 'monitoring'::character varying, "
+    "'failed'::character varying, 'in_progress'::character varying, "
+    "'retry'::character varying])::text[])))"
+)
+_LIVE_CONSTRAINT_AFTER = (
+    "CHECK (((outcome)::text = ANY ((ARRAY['escalated'::character varying, "
+    "'failed'::character varying, 'in_progress'::character varying, "
+    "'monitoring'::character varying, 'needs_action'::character varying, "
+    "'resolved'::character varying, 'retry'::character varying])::text[])))"
+)
+
+
+def test_guard_migrates_the_live_pre_fix_constraint():
+    """The pre-fix production constraint must be detected as needing widening."""
+    assert constraint_admits_outcomes(_LIVE_CONSTRAINT_BEFORE, VALID_OUTCOMES) is False
+
+
+def test_guard_is_idempotent_against_the_rendered_form():
+    """...and must NOT re-migrate afterwards.
+
+    This is the regression that a DB-free test can still catch: comparing the
+    stored constraint to OUTCOME_CHECK_SQL by equality would never match, so
+    the constraint would be dropped and rebuilt on every boot, taking an
+    ACCESS EXCLUSIVE lock on investigations each time.
+    """
+    assert constraint_admits_outcomes(_LIVE_CONSTRAINT_AFTER, VALID_OUTCOMES) is True
+    assert _LIVE_CONSTRAINT_AFTER != OUTCOME_CHECK_SQL  # why equality can't be used
+
+
+def test_guard_treats_a_missing_constraint_as_needing_work():
+    assert constraint_admits_outcomes(None, VALID_OUTCOMES) is False
+    assert constraint_admits_outcomes("", VALID_OUTCOMES) is False
+
+
+def test_guard_does_not_match_on_substrings():
+    """A literal must match whole, not as a prefix of a longer one."""
+    partial = "CHECK ((outcome)::text = ANY (ARRAY['needs_action_extra'::text]))"
+    assert constraint_admits_outcomes(partial, {"needs_action"}) is False
 
 
 def test_aliases_resolve_to_valid_outcomes():

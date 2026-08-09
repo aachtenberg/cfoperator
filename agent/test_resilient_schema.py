@@ -18,14 +18,18 @@ from agent import ResilientKnowledgeBase
 
 
 class _StubKB:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, soft_fail=False):
         self.calls = 0
         self.fail = fail
+        # soft_fail: DB reachable, schema created, but a DDL step (widening the
+        # investigations.outcome CHECK) could not be ensured -> returns False.
+        self.soft_fail = soft_fail
 
     def initialize_schema(self):
         self.calls += 1
         if self.fail:
             raise Exception("connection refused: database is down")
+        return not self.soft_fail
 
 
 class _StubMonitor:
@@ -36,10 +40,10 @@ class _StubMonitor:
         self.marked_unhealthy = True
 
 
-def _rkb(fail=False):
+def _rkb(fail=False, soft_fail=False):
     """A ResilientKnowledgeBase with just the bits initialize_schema() touches."""
     rkb = ResilientKnowledgeBase.__new__(ResilientKnowledgeBase)
-    rkb._kb = _StubKB(fail=fail)
+    rkb._kb = _StubKB(fail=fail, soft_fail=soft_fail)
     rkb._health_monitor = _StubMonitor()
     rkb._schema_lock = threading.Lock()
     rkb._schema_initialized = False
@@ -74,6 +78,29 @@ def test_schema_init_retries_after_db_recovers():
     assert rkb.initialize_schema() is False     # DB down at startup
     rkb._kb.fail = False                        # DB comes back
     assert rkb.initialize_schema() is True      # retry succeeds
+    assert rkb._schema_initialized is True
+    assert rkb._kb.calls == 2
+
+
+def test_soft_ddl_failure_is_not_latched_as_initialized():
+    """A DDL step that could not be ensured must stay retryable.
+
+    initialize_schema() returning False (e.g. the investigations.outcome CHECK
+    could not be widened) used to be ignored, so the flag latched and the
+    process ran until the next restart still rejecting the new outcome.
+    """
+    rkb = _rkb(soft_fail=True)
+    assert rkb.initialize_schema() is False
+    assert rkb._schema_initialized is False
+    # The connection is fine — this is NOT a reason to degrade to the outbox.
+    assert rkb._health_monitor.marked_unhealthy is False
+
+
+def test_soft_ddl_failure_recovers_on_retry():
+    rkb = _rkb(soft_fail=True)
+    assert rkb.initialize_schema() is False
+    rkb._kb.soft_fail = False                   # e.g. lock contention cleared
+    assert rkb.initialize_schema() is True      # _sync_loop's next tick
     assert rkb._schema_initialized is True
     assert rkb._kb.calls == 2
 
