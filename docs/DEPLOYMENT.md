@@ -122,10 +122,14 @@ scopes. Manage both at `/users` and `/tokens`.
 
 The tables are created on start, and the first admin is seeded from the existing
 `CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` sealed secret — so shipping this
-does not lock anyone out and does not require a coordinated secret change. The
-shared `CFOP_API_TOKEN` keeps working alongside per-service tokens and writes an
-audit row on every use, so it can be retired once
-`/api/auth/audit?event=token.legacy_used` stays empty.
+does not lock anyone out and does not require a coordinated secret change.
+
+The shared `CFOP_API_TOKEN` was **retired 2026-08-09**. `event_runtime`, `mcp`
+and `bridge` each hold their own database token, mounted *as* the env var
+`CFOP_API_TOKEN`, so callers are unchanged and revoking one breaks only that
+service. There is no plain `CFOP_API_TOKEN` key in `cfoperator-secrets` any
+more, and the agent no longer mounts one — with it unset, `web_auth.py` skips
+the legacy branch entirely. Do not re-add it.
 
 With no auth database reachable, the console falls back to the legacy
 environment credentials. A database that is configured but *unreachable* returns

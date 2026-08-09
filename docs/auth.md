@@ -64,7 +64,7 @@ that created it.
 | `CFOP_SESSION_SECRET` | — | Signs session cookies; without it, cookies break on restart and across replicas |
 | `CFOP_AUTH_DISABLED` | unset | Opens the console entirely. **Local docker-compose only** — it logs a loud warning on every start |
 | `CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` | — | Legacy credentials, now the bootstrap path for the first admin |
-| `CFOP_API_TOKEN` | — | Legacy shared bearer, still honoured during migration |
+| `CFOP_API_TOKEN` | — | **Retired 2026-08-09.** Was the legacy shared bearer. Each service now mounts its own database token *as* this variable name; the plain shared key no longer exists. Leaving it unset is correct — setting it re-enables a shared credential that belongs to no user |
 
 ## Rolling it out
 
@@ -87,14 +87,39 @@ The deploy that ships this code is not a lockout and not a flag day.
 
    Put each in `homelab-infra/secrets/.env.secrets`, re-seal, and roll the
    deployments.
-4. **Retire the shared token.** Every use of `CFOP_API_TOKEN` writes an audit
-   row, so this is a question with an answer rather than a guess:
+4. **Retire the shared token.** *(Done 2026-08-09 — kept here as the method.)*
+   Every use of `CFOP_API_TOKEN` writes an audit row, so this is a question with
+   an answer rather than a guess. **Do not just count rows** — two different
+   credentials write the same `token.legacy_used` event:
+
+   | Writer | Credential | `source_ip` |
+   |--------|------------|-------------|
+   | `web_auth.py` | shared `CFOP_API_TOKEN` | always set |
+   | `mcp_server/auth.py` | `CFOP_MCP_TOKEN` (separate credential) | never set |
+
+   So filter on `source_ip`, and compare against the roll timestamp rather than
+   expecting zero — historical rows do not age out:
 
    ```bash
-   curl -s localhost:8083/api/auth/audit?event=token.legacy_used | jq '.audit | length'
+   # from a pod holding a scoped token; never from the agent pod, whose own
+   # credential used to be the shared one — reading the API there wrote the very
+   # rows this check counts
+   kubectl -n apps exec deploy/cfoperator-mcp -- python3 -c "
+   import os,urllib.request,json
+   r=urllib.request.Request(os.environ['CFOP_AGENT_URL']+'/api/auth/audit?event=token.legacy_used',
+       headers={'Authorization':'Bearer '+os.environ['CFOP_API_TOKEN']})
+   rows=json.load(urllib.request.urlopen(r))['audit']
+   print(len([e for e in rows if e.get('source_ip') and e['created_at'] > '<roll-timestamp>']))"
    ```
 
-   When that stays at zero, remove `CFOP_API_TOKEN` from the sealed secret.
+   When that stays at zero, remove `CFOP_API_TOKEN` — **manifest first, secret
+   second**, the reverse of the order used when the keys were added. Adding
+   needed secret-first because a manifest referencing a missing key is
+   `CreateContainerConfigError`; removing inverts it, since dropping the key
+   while a manifest still references it leaves a dangling `secretKeyRef` that
+   only breaks at the next restart, and under `strategy: Recreate` that restart
+   is an outage.
+
    Then remove `CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` — once a real admin
    exists, bootstrap is skipped, so deleting them is a no-op rather than a
    lockout.
