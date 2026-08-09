@@ -1430,8 +1430,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             res = k8s.get_pods(all_namespaces=True)
         except Exception:
             return None
-        # An exact name beats a prefix, so "plane-api-wl" doesn't lose to a
-        # sibling workload that merely starts the same way.
+        # An exact name beats a prefix, so "cert-manager" resolves to
+        # cert-manager rather than dying ambiguous against -webhook and
+        # -cainjector. Each pod is tested against *every* token before being
+        # classified: breaking on the first match would let a shorter prefix
+        # token beat an exact one purely on set iteration order.
         exact: Dict[tuple, list] = {}
         prefix: Dict[tuple, list] = {}
         for pod in res.get('pods', []):
@@ -1440,13 +1443,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             if not name or not namespace:
                 continue
             workload = normalize_service_name(name)
-            for token in tokens:
-                if token in (name, workload):
-                    exact.setdefault((namespace, workload), []).append(name)
-                    break
-                if workload.startswith(token + '-'):
-                    prefix.setdefault((namespace, workload), []).append(name)
-                    break
+            if any(token in (name, workload) for token in tokens):
+                exact.setdefault((namespace, workload), []).append(name)
+            elif any(workload.startswith(token + '-') for token in tokens):
+                prefix.setdefault((namespace, workload), []).append(name)
         hits = exact or prefix
         if len(hits) != 1:
             return None

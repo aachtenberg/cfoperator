@@ -298,6 +298,29 @@ def test_restart_class_is_not_subject_to_the_ready_stability_guard():
     assert recovered is True and restarts == 1
 
 
+def test_exact_workload_name_beats_prefix_siblings():
+    """"cert-manager" names one workload exactly and prefix-matches two more.
+    The exact hit wins rather than the trio reading as ambiguous."""
+    op = _op_cluster([
+        _cluster_pod("cert-manager-6d9c8f7bb4-aaaaa", "cert-manager"),
+        _cluster_pod("cert-manager-webhook-77b4c9d5f-bbbbb", "cert-manager"),
+        _cluster_pod("cert-manager-cainjector-5f6d8c4b7-ccccc", "cert-manager"),
+    ])
+    assert op._resolve_pod_from_cluster("readiness probe failures for cert-manager") == (
+        "cert-manager", "cert-manager-6d9c8f7bb4-aaaaa")
+
+
+def test_exact_and_prefix_tokens_together_still_resolve():
+    """Both 'plane-api' (prefix) and 'plane-api-wl' (exact) name the same
+    workload, and 'plane-web' names another. Classification is computed across
+    all tokens, so the exact hit wins independently of set iteration order —
+    breaking on the first matching token made this outcome hash-dependent."""
+    op = _plane_cluster()
+    trigger = ("Readiness probe failures: the plane-api service, deployment "
+               "'plane-api-wl', is timing out while plane-web is fine")
+    assert op._resolve_pod_from_cluster(trigger) == ("plane", PLANE_API_POD)
+
+
 def test_probe_trigger_not_filtered_when_pod_unhealthy_now():
     op = _plane_cluster(phase="CrashLoopBackOff", ready=False)
     recovered, _, _ = op._recovered_and_healthy({}, PLANE_TRIGGERS[3])
