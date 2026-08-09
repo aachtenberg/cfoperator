@@ -31,7 +31,7 @@ from pathlib import Path
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
-from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, remediation_is_auto_eligible
+from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible
 from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService, vector_literal
 
@@ -118,8 +118,22 @@ _HUMAN_ONLY_SHAPED = re.compile(
 # healthy now, the thing the alert worried about has cleared. Used by the
 # Tier-1 noise filter (early-exit + needs_action downgrade). See
 # docs/noise-reduction.md.
-_RECOVERABLE_TRIGGER = re.compile(
-    r"restart|terminat|exit\s*code|not\s*ready|notready|oom|crashloop|back-?off", re.I)
+#
+# Kept as two classes because they need different flapping guards. The restart
+# class leaves a trace in restartCount, so `recovered_restart_threshold` can
+# tell a settled pod from a flapping one. The probe class leaves none — a
+# readiness probe restarts nothing, so restartCount is structurally 0 however
+# badly the probe is flapping. _PROBE_TRIGGER routes that class to its own
+# guard (how long the pod has held Ready); see _recovered_and_healthy.
+_RESTART_CLASS = r"restart|terminat|exit\s*code|not\s*ready|notready|oom|crashloop|back-?off"
+_PROBE_CLASS = r"readiness|liveness|unhealthy|probe"
+_RECOVERABLE_TRIGGER = re.compile(_RESTART_CLASS + "|" + _PROBE_CLASS, re.I)
+_PROBE_TRIGGER = re.compile(_PROBE_CLASS, re.I)
+
+# Workload names as they appear in free-form sweep prose ("plane-api",
+# "faster-whisper"). Dashed identifiers only: bare words like "plane" or "pod"
+# match half the cluster. Used by _resolve_pod_from_cluster.
+_WORKLOAD_TOKEN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
 
 
 class _MetricsLogHandler(logging.Handler):
@@ -1114,7 +1128,9 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
             # restarts, don't spend a full investigation on it — record a
             # 'monitoring' result and return. Flapping (high restart count) and
             # still-broken pods fall through to a real investigation.
-            noise_cfg = (self.config.get('ooda', {}) or {}).get('noise', {}) if isinstance(self.config, dict) else {}
+            # _recovered_and_healthy applies the probe class's own flapping
+            # guard internally, since restart_thresh cannot see that class.
+            noise_cfg = self._noise_config()
             noise_on = noise_cfg.get('enabled', True)
             restart_thresh = int(noise_cfg.get('recovered_restart_threshold', 3))
             if noise_on:
@@ -1380,22 +1396,103 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 return c.get('status') == 'True'
         return False
 
+    def _noise_config(self) -> Dict[str, Any]:
+        """The ``ooda.noise`` settings block, defensively — the noise filter is
+        also exercised on instances built without a config."""
+        cfg = getattr(self, 'config', None)
+        if not isinstance(cfg, dict):
+            return {}
+        return (cfg.get('ooda', {}) or {}).get('noise', {}) or {}
+
+    def _resolve_pod_from_cluster(self, trigger: str) -> Optional[tuple]:
+        """Live-state fallback for _identify_pod: pin (namespace, pod) by
+        matching a workload name out of free-form prose against running pods.
+
+        Sweep findings are LLM prose carrying no structured resource fields —
+        the finding schema is severity/finding/evidence/remediation — so
+        neither _identify_pod's structured branch nor either of its two
+        trigger shapes can fire for them. Resolving against the cluster rather
+        than adding a third regex keeps the match honest: a name that isn't
+        running cannot be matched.
+
+        Gives up whenever the answer is not unique — more than one workload
+        named, or more than one pod behind the one workload. A missed filter
+        costs one redundant investigation; a wrong pin silences the wrong
+        alert.
+        """
+        k8s = getattr(self.tools, 'k8s_tools', None)
+        if not k8s:
+            return None
+        tokens = {t for t in _WORKLOAD_TOKEN.findall((trigger or "").lower()) if len(t) >= 4}
+        if not tokens:
+            return None
+        try:
+            res = k8s.get_pods(all_namespaces=True)
+        except Exception:
+            return None
+        # An exact name beats a prefix, so "plane-api-wl" doesn't lose to a
+        # sibling workload that merely starts the same way.
+        exact: Dict[tuple, list] = {}
+        prefix: Dict[tuple, list] = {}
+        for pod in res.get('pods', []):
+            meta = pod.get('metadata') or {}
+            name, namespace = meta.get('name'), meta.get('namespace')
+            if not name or not namespace:
+                continue
+            workload = normalize_service_name(name)
+            for token in tokens:
+                if token in (name, workload):
+                    exact.setdefault((namespace, workload), []).append(name)
+                    break
+                if workload.startswith(token + '-'):
+                    prefix.setdefault((namespace, workload), []).append(name)
+                    break
+        hits = exact or prefix
+        if len(hits) != 1:
+            return None
+        (namespace, _workload), pods = next(iter(hits.items()))
+        if len(pods) != 1:
+            return None  # replicas — can't confidently pin a single pod
+        return (namespace, pods[0])
+
+    @staticmethod
+    def _ready_stable_seconds(status: Dict[str, Any]) -> Optional[float]:
+        """Seconds the pod has continuously held Ready=True, or None when the
+        transition time is missing or unparseable.
+
+        None means "can't tell", and callers treat that as not-stable — for a
+        noise filter an unknown answer must not license silencing an alert.
+        """
+        for cond in status.get('conditions', []):
+            if cond.get('type') != 'Ready' or cond.get('status') != 'True':
+                continue
+            raw = cond.get('lastTransitionTime')
+            if not raw:
+                return None
+            try:
+                when = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+            except (TypeError, ValueError):
+                return None
+            now = datetime.now(timezone.utc) if when.tzinfo else datetime.now()
+            return max(0.0, (now - when).total_seconds())
+        return None
+
     def _recovered_and_healthy(self, alert_info: Dict[str, Any], trigger: str) -> tuple:
         """Tier-1 noise filter: is the alert about a recoverable runtime
         condition whose pod is healthy *right now*? Returns
         (recovered: bool, note: str|None, restart_count: int).
 
         Only fires for restart/termination/exit-code/not-ready/crashloop/oom
-        triggers tied to an identifiable pod that is currently Running+Ready.
-        A healthy pod with a *non-runtime* concern (mis-config, deprecation)
-        won't match — it keeps its needs_action.
+        and probe-failure triggers tied to an identifiable pod that is
+        currently Running+Ready. A healthy pod with a *non-runtime* concern
+        (mis-config, deprecation) won't match — it keeps its needs_action.
         """
         if not _RECOVERABLE_TRIGGER.search(trigger or ""):
             return (False, None, 0)
         k8s = getattr(self.tools, 'k8s_tools', None)
         if not k8s:
             return (False, None, 0)
-        ident = self._identify_pod(alert_info, trigger)
+        ident = self._identify_pod(alert_info, trigger) or self._resolve_pod_from_cluster(trigger)
         if not ident:
             return (False, None, 0)
         namespace, pod_name = ident
@@ -1405,9 +1502,23 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             return (False, None, 0)
         if not status.get('success') or not self._pod_is_healthy(status):
             return (False, None, 0)
+        # Probe-class triggers carry no restart signal, so the caller's restart
+        # threshold cannot tell a settled pod from one whose readiness is
+        # flapping. Ask how long it has held Ready instead: a flapping probe
+        # transitions the condition, one failing below failureThreshold never
+        # does.
+        stable_note = ""
+        if _PROBE_TRIGGER.search(trigger or ""):
+            stable = self._ready_stable_seconds(status)
+            min_stable = int(self._noise_config().get('recovered_ready_stable_seconds', 600))
+            if stable is None or stable < min_stable:
+                return (False, None, 0)
+            stable_note = f"Ready {int(stable // 60)}m, "
         restarts = max((c.get('restartCount', 0) for c in status.get('containerStatuses', [])),
                        default=0)
-        return (True, f"{namespace}/{pod_name} healthy now ({restarts} restart(s), recovered)", restarts)
+        return (True,
+                f"{namespace}/{pod_name} healthy now ({stable_note}{restarts} restart(s), recovered)",
+                restarts)
 
     def _ephemeral_service_names(self) -> set:
         """Normalized service names of ephemeral Job/CronJob pods in the cluster.
@@ -1424,7 +1535,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         for p in res.get('pods', []):
             pod_name = (p.get('metadata') or {}).get('name', '')
             if pod_name and is_ephemeral_job_pod(pod_name):
-                names.add(self.kb._kb._normalize_service_name(pod_name))
+                names.add(normalize_service_name(pod_name))
         return names
 
     def _restart_finding_is_noise(self, finding_text: str, threshold: int) -> Optional[str]:
@@ -1520,7 +1631,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 github=self._github_write_client() if open_prs else None,
                 max_open_prs=int(rcfg.get('max_open_prs', 3)),
             )
-            workload = re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', pod_name)
+            workload = normalize_service_name(pod_name)
             proposal = proposer.propose_for(namespace, pod_name, workload=workload)
             if proposal is None:
                 return None
