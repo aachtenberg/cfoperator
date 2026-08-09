@@ -104,3 +104,27 @@ here — power-outage aftermath, SD flakiness).
 - 1b doubles as the long-wanted **early-exit guard** for over-investigation.
 - Deterministic on purpose — no new LLM unpredictability in the noise filter.
 - Config: `ooda.noise` (thresholds) — default-on, conservative thresholds.
+
+## Known data gap: stored outcomes before 2026-08-09 (CFOP-20)
+
+`needs_action` was missing from `VALID_OUTCOMES` and from the
+`investigations.valid_outcome` CHECK constraint, so `normalize_outcome()` fell
+through to its default and **every** `needs_action` investigation was persisted
+as `monitoring`. Fixed 2026-08-09; rows written before then are not corrected.
+
+What this means when reading history:
+
+- A stored `monitoring` before that date may have been either a real
+  `monitoring` or a `needs_action`. The two are not distinguishable from the
+  `outcome` column alone — `findings.response` still carries the literal
+  `STATUS: needs_action` line if a row ever needs to be re-derived.
+- No backfill was done, deliberately: re-deriving from prose would manufacture
+  precision the column never had.
+- Live behaviour was never wrong. Paging (`_is_realtime_worthy`) and the Phase-B
+  remediation gate read the in-process outcome, not the stored row, which is
+  exactly why this went unnoticed. The damage was to anything reading rows back:
+  the console, `/api/investigations`, and the "similar past investigations"
+  context block that feeds the triage precedent rule.
+- So treat pre-fix `monitoring` counts as an upper bound, and pre-fix
+  "this pattern was previously classified `monitoring`" triage reasoning as
+  unreliable.

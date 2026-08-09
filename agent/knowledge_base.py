@@ -49,7 +49,16 @@ def _log(level: str, msg: str, **fields: Any) -> None:
 
 # ============================= Outcome Normalization ==========================
 
-VALID_OUTCOMES = {"resolved", "escalated", "monitoring", "failed", "in_progress", "retry"}
+VALID_OUTCOMES = {"resolved", "needs_action", "escalated", "monitoring", "failed", "in_progress", "retry"}
+
+# The investigations.outcome CHECK constraint is *generated* from VALID_OUTCOMES
+# rather than spelled out a second time. Keeping them as two hand-maintained
+# lists is what let 'needs_action' — a status the investigation prompt has always
+# been able to emit — stay absent from both, so every needs_action investigation
+# silently normalized to 'monitoring' (CFOP-20). One source of truth, no desync.
+OUTCOME_CHECK_SQL = "outcome IN ({})".format(
+    ", ".join(f"'{o}'" for o in sorted(VALID_OUTCOMES))
+)
 
 OUTCOME_ALIASES = {
     "investigating": "in_progress",
@@ -73,6 +82,11 @@ OUTCOME_ALIASES = {
     "failure": "failed",
     "error": "failed",
     "broken": "failed",
+    "needs-action": "needs_action",
+    "needs action": "needs_action",
+    "action_needed": "needs_action",
+    "action needed": "needs_action",
+    "unresolved": "needs_action",
     "watch": "monitoring",
     "watching": "monitoring",
     "observe": "monitoring",
@@ -244,7 +258,7 @@ class Investigation(Base):
     completed_at = Column(TIMESTAMP)
     trigger = Column(Text, nullable=False)  # what prompted investigation
     findings = Column(JSONB, nullable=False)  # hypothesis, evidence, actions, learnings
-    outcome = Column(String(50), nullable=False)  # "resolved", "escalated", "monitoring", "failed"
+    outcome = Column(String(50), nullable=False)  # one of VALID_OUTCOMES
     duration_seconds = Column(Float)
     tool_calls_count = Column(Integer, default=0)
     # Triage fields
@@ -259,7 +273,7 @@ class Investigation(Base):
 
     __table_args__ = (
         CheckConstraint("jsonb_typeof(findings) = 'object'", name='valid_findings'),
-        CheckConstraint("outcome IN ('resolved', 'escalated', 'monitoring', 'failed', 'in_progress', 'retry')", name='valid_outcome'),
+        CheckConstraint(OUTCOME_CHECK_SQL, name='valid_outcome'),
         Index('idx_investigations_started', 'started_at', postgresql_using='btree', postgresql_ops={'started_at': 'DESC'}),
         Index('idx_investigations_trigger', 'trigger'),
         Index('idx_investigations_outcome', 'outcome'),
@@ -1053,7 +1067,70 @@ class KnowledgeBase:
         self.ensure_fts_schema()
         # Ensure learning_embeddings table exists for semantic search on learnings
         self._ensure_learning_embeddings_table()
+        # Widen investigations.outcome CHECK if the vocabulary grew since this
+        # database was created (create_all never alters an existing table)
+        self._ensure_outcome_constraint()
         _log("info", "Knowledge base schema initialized")
+
+    def _ensure_outcome_constraint(self) -> bool:
+        """Rebuild investigations.valid_outcome to match VALID_OUTCOMES.
+
+        ``create_all`` only ever *creates* a table, so a database created before
+        an outcome joined the vocabulary keeps the narrower CHECK and rejects
+        the new value outright. That is not hypothetical: 'needs_action' was
+        missing, which is what made normalize_outcome()'s coercion to
+        'monitoring' load-bearing (CFOP-20).
+
+        This runs at startup, in the same process that goes on to write
+        investigations, so the widening necessarily precedes the first write
+        that needs it. Doing it here rather than as a hand-run ALTER is
+        deliberate: a merge to main builds and rolls the image automatically,
+        so there is no window in which to run the migration by hand first.
+        """
+        try:
+            with self.session_scope() as session:
+                current = session.execute(text("""
+                    SELECT pg_get_constraintdef(c.oid)
+                    FROM pg_constraint c
+                    WHERE c.conname = 'valid_outcome'
+                      AND c.conrelid = to_regclass('investigations')
+                """)).scalar()
+
+                # Common path: already admits every outcome we can emit. Skip,
+                # so a normal restart takes no lock on the investigations table.
+                if current and all(f"'{o}'" in current for o in VALID_OUTCOMES):
+                    return True
+
+                _log("info", "Widening investigations.valid_outcome CHECK",
+                     existing=current, outcomes=sorted(VALID_OUTCOMES))
+                session.execute(text(
+                    "ALTER TABLE investigations DROP CONSTRAINT IF EXISTS valid_outcome"
+                ))
+                session.execute(text(
+                    f"ALTER TABLE investigations ADD CONSTRAINT valid_outcome CHECK ({OUTCOME_CHECK_SQL})"
+                ))
+
+            # Verify in a fresh transaction. A silent failure here would turn a
+            # mislabelling bug into a persistence bug — writes of the new value
+            # would raise instead of being coerced — so this is loud on purpose.
+            with self.session_scope() as session:
+                after = session.execute(text("""
+                    SELECT pg_get_constraintdef(c.oid)
+                    FROM pg_constraint c
+                    WHERE c.conname = 'valid_outcome'
+                      AND c.conrelid = to_regclass('investigations')
+                """)).scalar()
+            missing = sorted(o for o in VALID_OUTCOMES if not after or f"'{o}'" not in after)
+            if missing:
+                _log("error", "investigations.valid_outcome still rejects known outcomes; "
+                              "investigations with these outcomes will fail to persist",
+                     missing=missing, constraint=after)
+                return False
+            _log("info", "investigations.valid_outcome up to date", constraint=after)
+            return True
+        except Exception as e:
+            _log("error", "Could not ensure investigations.valid_outcome constraint", error=str(e))
+            return False
 
     def _ensure_learning_embeddings_table(self):
         """Create learning_embeddings table if it doesn't exist."""
@@ -2558,14 +2635,21 @@ class KnowledgeBase:
             hours: How far back to look (default 24 hours)
 
         Returns:
-            Count of investigations with outcomes: escalated, failed, monitoring
+            Count of investigations with outcomes: escalated, needs_action,
+            failed, monitoring
+
+        needs_action belongs here explicitly. Before CFOP-20 it was counted
+        only by accident — such rows were being stored as 'monitoring'. Making
+        the outcome storable without listing it here would have dropped the
+        most actionable class out of the count, slowing the monitoring cadence
+        precisely when work is outstanding.
         """
         from datetime import timedelta
         cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
         with self.session_scope() as session:
             return session.query(Investigation).filter(
                 Investigation.started_at >= cutoff,
-                Investigation.outcome.in_(['escalated', 'failed', 'monitoring'])
+                Investigation.outcome.in_(['escalated', 'needs_action', 'failed', 'monitoring'])
             ).count()
 
     # ============================= Investigation Learnings ======================
