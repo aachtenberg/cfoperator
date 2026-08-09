@@ -772,9 +772,20 @@ def test_remediation_row_dict_serializes():
 
 
 def _console_client():
-    """Flask test client wired to a stub operator whose kb records status writes."""
+    """Flask test client wired to a stub operator whose kb records status writes.
+
+    Auth is installed in its explicit dev-bypass mode. These tests are about
+    what the handlers do with a body, not about who may call them — but the
+    console's mutating routes carry @require_role(ROLE_ADMIN), which denies by
+    default when no ConsoleAuth is present. Without this the requests 401 before
+    reaching a handler, and the non-object-body tests below would still pass
+    (401 != 500) while asserting nothing at all. Role enforcement itself is
+    covered by test_web_auth_db.py.
+    """
     from web_server import WebServer
+    from web_auth import install_auth
     from flask import Flask
+    import os
     import threading as _t
 
     operator = MagicMock()
@@ -791,6 +802,20 @@ def _console_client():
     server._chat_sessions = {}
     server._sessions_lock = _t.Lock()
     server._setup_routes()
+
+    # ConsoleAuth reads the flag once, at construction, so restoring the
+    # environment afterwards leaves this app bypassed without leaking the
+    # setting into any other test in the session.
+    prior = os.environ.get("CFOP_AUTH_DISABLED")
+    os.environ["CFOP_AUTH_DISABLED"] = "true"
+    try:
+        install_auth(server.app, ui_dir="ui")
+    finally:
+        if prior is None:
+            os.environ.pop("CFOP_AUTH_DISABLED", None)
+        else:
+            os.environ["CFOP_AUTH_DISABLED"] = prior
+
     return server.app.test_client(), operator
 
 

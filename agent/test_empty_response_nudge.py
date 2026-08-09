@@ -40,7 +40,8 @@ def _operator(max_iterations=5):
     )
     op.kb = SimpleNamespace(get_setting=lambda *a, **k: '')
     op.llm = SimpleNamespace(record_success=lambda *a: None,
-                             record_failure=lambda *a: None)
+                             record_failure=lambda *a: None,
+                             classify_error=lambda *a, **k: 'connection')
     return op
 
 

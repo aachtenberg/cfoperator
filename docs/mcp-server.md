@@ -42,11 +42,17 @@ Scopes form a hierarchy: `remediate` ⊃ `investigate` ⊃ `read`.
 ## Prompts
 
 Every `skills/*/SKILL.md` is auto-registered as an MCP prompt (kebab-case
-names preserved): `investigate-pod`, `investigate-host`,
+names preserved), so the prompt list is whatever `skills/` contains at
+start — currently 9: `investigate-pod`, `investigate-host`,
 `investigate-container`, `investigate-deployment`,
 `investigate-code-change`, `why-restart`, `k3s-cluster-health`,
-`compare-hosts`. Each takes an optional `target` argument that appends a
-"Target: ..." section to the playbook.
+`compare-hosts`, `mqtt-top-talkers`. Each takes an optional `target`
+argument that appends a "Target: ..." section to the playbook.
+
+`mqtt-top-talkers` drives the agent's `timescale_query` tool, which is only
+registered when the agent has `TIMESCALE_PASSWORD` set. The prompt is
+registered by this process regardless — it is text, and the tool call happens
+agent-side.
 
 ## Quick start (stdio, local)
 
@@ -75,6 +81,23 @@ Smoke check against a live agent (read-only): `scripts/mcp_smoke.py`.
 Never ship `remediate` in a shared or public host config. For a
 remediate-capable consumer, prefer a **separate Deployment per capability
 tier** (own token Secret, own scope env) over widening the shared one.
+
+### Per-token scopes
+
+Over `http`, the bearer is resolved against the console's `auth_api_tokens`
+table when one is reachable, and the token's *own* scopes apply — so one HTTP
+listener can serve a `read` dashboard and an `investigate` bot without either
+inheriting the other's authority, and either can be revoked alone. Mint them at
+the console's `/tokens` page. `CFOP_MCP_SCOPES` remains the grant for `stdio`,
+where the process belongs to the local user and there is no token exchange.
+
+`CFOP_MCP_TOKEN` still works and still takes the process-wide `CFOP_MCP_SCOPES`
+grant, deliberately: promoting the shared token to a full-scope identity would
+defeat the point of moving off it. It is checked only after the database, so a
+real token is never shadowed by it, and its use is warned and audited.
+
+A database error during verification returns **503** with `retryable: true` — it
+never falls through to the shared token and never falls open.
 
 ## Audit log
 

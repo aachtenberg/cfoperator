@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<!--
+  Self-service account page: change password and manage own API tokens.
+  Admin user/token management lives at /admin. Same shape as the other console
+  pages — static, inline CSS/JS, same-origin fetch(). No outbound network.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFOperator · Account</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
+    --border:#2a2a3a; --border-subtle:#1e1e2e;
+    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
+    --accent:#22c55e; --accent-dim:#166534; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444;
+    --purple:#a371f7;
+    --radius:10px; --radius-sm:6px; --header-height:56px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
+    font-family:'Inter',-apple-system,sans-serif; font-size:14px; }
+  header { height:var(--header-height); background:var(--bg-secondary);
+    border-bottom:1px solid var(--border); display:flex; align-items:center;
+    padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
+  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700;
+    color:var(--accent); letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
+  .logo svg { width:24px; height:24px; opacity:.9; }
+  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
+  .muted { color:var(--text-secondary); font-size:12px; }
+  a { color:var(--cyan); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+
+  .divider { margin:24px 20px 2px; padding-top:14px; border-top:1px solid var(--border);
+    font-family:'JetBrains Mono',monospace; font-size:12px; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--text-secondary); }
+  .section { padding:0 20px; }
+
+  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:var(--radius-sm); padding:5px 11px; cursor:pointer; font-size:13px;
+    font-family:inherit; transition:border-color .15s,background .15s; }
+  .chip:hover { border-color:var(--text-secondary); }
+  .chip.danger { border-color:#7f1d1d; color:var(--red); }
+  .chip.danger:hover { border-color:var(--red); }
+  .chip:disabled { opacity:.5; cursor:default; }
+
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
+  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
+  td { font-size:13px; }
+  tbody tr:hover { background:var(--bg-hover); }
+  tbody tr.dead td { opacity:.5; }
+  tbody tr.dead td.label { text-decoration:line-through; }
+  tbody tr.formrow:hover { background:transparent; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
+    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
+  .scopes { display:inline-flex; gap:4px; flex-wrap:wrap; }
+  .empty { padding:40px; text-align:center; color:var(--text-muted); }
+
+  select, input[type="number"], input[type="text"], input[type="password"], input:not([type]) {
+    background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border);
+    border-radius:var(--radius-sm); padding:5px 8px; font-family:'JetBrains Mono',monospace;
+    font-size:13px; outline:none; }
+  select:focus, input:focus { border-color:var(--accent); }
+  input[type="checkbox"] { accent-color:var(--accent); }
+  .actform { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 12px; }
+  .actform label { color:var(--text-secondary); font-size:12px; }
+  .scopepick { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  .scopepick label { display:inline-flex; gap:5px; align-items:center; color:var(--text-primary);
+    font-family:'JetBrains Mono',monospace; font-size:13px; cursor:pointer; }
+
+  .banner { margin:14px 20px 0; padding:10px 14px; border-radius:var(--radius-sm);
+    border:1px solid var(--border); border-left:3px solid var(--cyan);
+    background:var(--bg-secondary); font-size:13px; }
+  .banner.err { border-left-color:var(--red); color:var(--red); }
+  .banner.warn { border-left-color:var(--orange); }
+
+  #secret { margin:14px 20px 0; padding:14px 16px; border:1px solid var(--orange);
+    border-left:4px solid var(--orange); border-radius:var(--radius);
+    background:rgba(245,158,11,.08); }
+  #secret h3 { margin:0 0 6px; font-family:'JetBrains Mono',monospace; font-size:14px; color:var(--orange); }
+  #secret .warn { color:var(--orange); font-size:13px; margin:0 0 10px; }
+  #secret .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #secret input { flex:1; min-width:260px; font-size:14px; letter-spacing:.02em; }
+
+  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
+  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
+    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
+    font-size:13px; min-width:200px; transition:opacity .2s; }
+  .toast.ok { border-left-color:var(--accent); }
+  .toast.err { border-left-color:var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" class="logo" style="text-decoration:none" title="Back to console">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+    </svg>
+    CFOperator <span class="sub">/ Account</span>
+  </a>
+  <div id="cfop-nav"></div>
+</header>
+<script src="/nav.js" defer></script>
+
+<div class="banner" id="banner" hidden></div>
+
+<div class="divider">Change my password</div>
+<div class="section">
+  <p class="muted" style="margin:8px 0 0">
+    Self-service — everyone can change their own password. Signing in again is not required.
+  </p>
+  <div class="actform">
+    <label for="pw-cur">current</label>
+    <input id="pw-cur" type="password" autocomplete="current-password" placeholder="current password" style="min-width:170px">
+    <label for="pw-new">new</label>
+    <input id="pw-new" type="password" autocomplete="new-password" placeholder="new password" style="min-width:170px">
+    <label for="pw-new2">confirm</label>
+    <input id="pw-new2" type="password" autocomplete="new-password" placeholder="repeat new password" style="min-width:170px"
+      onkeydown="if(event.key==='Enter')changeMyPassword()">
+    <button class="chip" onclick="changeMyPassword()">Update password</button>
+  </div>
+</div>
+
+<div id="secret" hidden>
+  <h3>Copy this token now</h3>
+  <p class="warn">This is the only time the secret is shown. It is not stored in
+     recoverable form — if you lose it, revoke this token and create a new one.</p>
+  <div class="row">
+    <input id="secret-val" type="text" readonly onclick="this.select()">
+    <button class="chip" onclick="copySecret()">Copy</button>
+    <button class="chip" onclick="dismissSecret()">I saved it — hide</button>
+  </div>
+  <p class="muted" id="secret-meta" style="margin:8px 0 0"></p>
+</div>
+
+<div class="divider">My API tokens <span class="muted" id="tok-count"></span></div>
+<div class="section">
+  <div class="actform" style="flex-direction:column; align-items:stretch; gap:10px">
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+      <label for="nt-label">label</label>
+      <input id="nt-label" type="text" placeholder="ci-runner" autocomplete="off" style="min-width:200px">
+      <label for="nt-days">expires in (days)</label>
+      <input id="nt-days" type="number" min="1" max="3650" step="1" placeholder="never" style="width:110px">
+    </div>
+    <div>
+      <div class="muted" style="margin-bottom:6px">
+        scopes — these nest: <b>remediate</b> implies <b>investigate</b> implies <b>read</b>.
+        Members cannot mint beyond <b>investigate</b>.
+      </div>
+      <div class="scopepick" id="nt-scopes">
+        <label><input type="checkbox" value="read" checked> read <span class="muted">— view fleet state</span></label>
+        <label><input type="checkbox" value="investigate"> investigate <span class="muted">— run diagnostics</span></label>
+        <label id="scope-remediate"><input type="checkbox" value="remediate"> remediate <span class="muted">— act on hosts / open PRs</span></label>
+      </div>
+    </div>
+    <div>
+      <button class="chip" id="nt-btn" onclick="createToken()">+ Create token</button>
+    </div>
+  </div>
+</div>
+<table>
+  <thead><tr>
+    <th>Label</th><th>Prefix</th><th>Scopes</th><th>Status</th>
+    <th>Created</th><th>Last used</th><th>Expires</th><th></th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty" hidden>No tokens.</div>
+<div style="height:40px"></div>
+
+<div id="toasts"></div>
+
+<script>
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function parseTs(iso){
+  if(!iso) return null;
+  const raw = String(iso).trim();
+  if(!/^\d{4}-\d\d-\d\d/.test(raw)) return null;
+  const s = raw.replace(/^(\d{4}-\d\d-\d\d) /, '$1T');
+  const bare = /\d\d:\d\d/.test(s) && !/(Z|[+-]\d\d:?\d\d)$/.test(s);
+  const d = new Date(bare ? s + 'Z' : s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmt(iso){
+  if(!iso) return '—';
+  const d = parseTs(iso);
+  return d ? d.toLocaleString() : esc(iso);
+}
+function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
+function badge(text, varname){ const c=color(varname);
+  return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(text)||'—'}</span>`; }
+function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
+  const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
+  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, 3800); }
+function banner(msg, kind){
+  const b=document.getElementById('banner');
+  if(!msg){ b.hidden=true; b.textContent=''; return; }
+  b.hidden=false; b.className='banner '+(kind||''); b.textContent=msg;
+}
+function errMsg(status, data){
+  const detail = (data && data.error) ? String(data.error) : '';
+  if(status===401) return 'your session has expired — sign in again at /login';
+  if(status===403) return 'you do not have permission' + (detail?' — '+detail:'');
+  if(status===503) return 'authentication backend unavailable' + (detail?' — '+detail:'');
+  if(status===0)   return 'could not reach the server';
+  return detail || ('request failed ('+status+')');
+}
+async function api(path, opts){
+  const o = Object.assign({credentials:'same-origin'}, opts||{});
+  if(o.body) o.headers = Object.assign({'Content-Type':'application/json'}, o.headers||{});
+  let res;
+  try { res = await fetch(path, o); }
+  catch(e){ return {ok:false, status:0, error:errMsg(0,null)}; }
+  let data=null; try { data = await res.json(); } catch(e){ data=null; }
+  if(!res.ok) return {ok:false, status:res.status, error:errMsg(res.status, data), data};
+  return {ok:true, status:res.status, data};
+}
+
+let ME = null;
+function isAdmin(){ return !!(ME && (ME.role === 'admin' || ME.auth_disabled)); }
+
+async function loadMe(){
+  try { ME = await CFOP.me(); }
+  catch(e){ banner('could not load your account details — ' + e.message, 'err'); return; }
+  if(ME.auth_disabled){
+    banner('Authentication is disabled on this server — API calls are accepted without a token. '
+         + 'Tokens created here start being enforced once auth is enabled.', 'warn');
+  }
+  // Cosmetic: members cannot mint remediate; hide the checkbox rather than 403 later.
+  document.getElementById('scope-remediate').hidden = !isAdmin();
+}
+
+async function changeMyPassword(){
+  const cur = document.getElementById('pw-cur');
+  const a = document.getElementById('pw-new'), b = document.getElementById('pw-new2');
+  if(!cur.value || !a.value){ toast('current and new password are required','err'); return; }
+  if(a.value !== b.value){ toast('new passwords do not match','err'); return; }
+  const r = await api('/api/auth/password', {method:'POST',
+    body:JSON.stringify({current_password:cur.value, new_password:a.value})});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('your password was changed','ok');
+  cur.value=''; a.value=''; b.value='';
+}
+
+const SCOPES = ['read','investigate','remediate'];
+const scopeBoxes = () => Array.from(document.querySelectorAll('#nt-scopes input[type=checkbox]:not([disabled])'));
+document.getElementById('nt-scopes').addEventListener('change', (e)=>{
+  const box = e.target;
+  if(!box || box.type !== 'checkbox') return;
+  const i = SCOPES.indexOf(box.value);
+  if(i < 0) return;
+  const boxes = scopeBoxes();
+  boxes.forEach(b=>{
+    const j = SCOPES.indexOf(b.value);
+    if(box.checked && j < i) b.checked = true;
+    if(!box.checked && j > i) b.checked = false;
+  });
+});
+function selectedScopes(){
+  return scopeBoxes().filter(b=>b.checked && !b.closest('label').hidden).map(b=>b.value);
+}
+
+function showSecret(row){
+  const el = document.getElementById('secret');
+  document.getElementById('secret-val').value = row.secret || '';
+  const bits = [];
+  if(row.label) bits.push('label ' + row.label);
+  if(row.token_prefix) bits.push('prefix ' + row.token_prefix);
+  if(Array.isArray(row.scopes) && row.scopes.length) bits.push('scopes ' + row.scopes.join(', '));
+  bits.push(row.expires_at ? ('expires ' + fmt(row.expires_at)) : 'no expiry');
+  document.getElementById('secret-meta').textContent = bits.join(' · ');
+  el.hidden = false;
+  el.scrollIntoView({block:'nearest'});
+}
+function dismissSecret(){
+  document.getElementById('secret-val').value = '';
+  document.getElementById('secret-meta').textContent = '';
+  document.getElementById('secret').hidden = true;
+}
+function copySecret(){
+  const input = document.getElementById('secret-val');
+  if(!input.value){ return; }
+  const fallback = ()=>{
+    input.focus(); input.select();
+    let ok=false; try { ok = document.execCommand('copy'); } catch(e){ ok=false; }
+    toast(ok ? 'token copied to clipboard' : 'copy failed — select the text and copy manually', ok?'ok':'err');
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(input.value)
+      .then(()=>toast('token copied to clipboard','ok'))
+      .catch(fallback);
+  } else { fallback(); }
+}
+
+let TOKENS = [];
+async function loadTokens(){
+  const r = await api('/api/auth/tokens');
+  if(!r.ok){
+    TOKENS = [];
+    document.getElementById('rows').innerHTML = '';
+    document.getElementById('empty').hidden = false;
+    document.getElementById('empty').textContent = r.error;
+    document.getElementById('tok-count').textContent = '';
+    if(r.status!==403) banner(r.error,'err');
+    return;
+  }
+  TOKENS = Array.isArray(r.data) ? r.data : (r.data && r.data.tokens) || [];
+  render();
+}
+
+function statusOf(t){
+  if(t.status) return String(t.status);
+  if(t.revoked_at) return 'revoked';
+  const exp = parseTs(t.expires_at);
+  if(exp && exp.getTime() < Date.now()) return 'expired';
+  return 'active';
+}
+const STATUS_COLOR = {active:'--accent', revoked:'--red', expired:'--orange'};
+
+function rowHtml(t){
+  const id = Number(t.id);
+  const st = statusOf(t);
+  const dead = st !== 'active';
+  const scopes = Array.isArray(t.scopes) ? t.scopes
+    : (t.scopes ? String(t.scopes).split(/[,\s]+/).filter(Boolean) : []);
+  const scopeHtml = scopes.length
+    ? `<span class="scopes">${scopes.map(s=>badge(s,'--cyan')).join('')}</span>` : '<span class="muted">—</span>';
+  return `<tr class="${dead?'dead':''}">
+    <td class="label">${esc(t.label)}</td>
+    <td class="mono">${esc(t.token_prefix)}…</td>
+    <td>${scopeHtml}</td>
+    <td>${badge(st, STATUS_COLOR[st]||'--text-muted')}
+      ${st==='revoked'&&t.revoked_at?`<div class="muted">${fmt(t.revoked_at)}</div>`:''}</td>
+    <td class="muted">${fmt(t.created_at)}</td>
+    <td class="muted">${fmt(t.last_used_at)}</td>
+    <td class="muted">${t.expires_at?fmt(t.expires_at):'never'}</td>
+    <td>${dead?'' : `<button class="chip danger" data-act="revoke" data-id="${id}">Revoke</button>`}</td>
+  </tr>
+  <tr class="formrow" id="f-${id}" hidden><td colspan="8"><div class="formbody"></div></td></tr>`;
+}
+
+function render(){
+  document.getElementById('rows').innerHTML = TOKENS.map(rowHtml).join('');
+  const live = TOKENS.filter(t=>statusOf(t)==='active').length;
+  document.getElementById('empty').hidden = TOKENS.length>0;
+  document.getElementById('empty').textContent = 'No tokens.';
+  document.getElementById('tok-count').textContent =
+    TOKENS.length ? `(${live} active of ${TOKENS.length})` : '';
+}
+
+function tokenById(id){ return TOKENS.find(t=>Number(t.id)===Number(id)) || {}; }
+function formRow(id){ return document.getElementById('f-'+Number(id)); }
+function closeForm(id){
+  const tr = formRow(id); if(!tr) return;
+  tr.hidden = true; tr.querySelector('.formbody').innerHTML = '';
+}
+function openForm(id, html){
+  document.querySelectorAll('tr.formrow').forEach(tr=>{ tr.hidden=true; tr.querySelector('.formbody').innerHTML=''; });
+  const tr = formRow(id); if(!tr) return;
+  tr.querySelector('.formbody').innerHTML = html; tr.hidden = false;
+}
+
+document.getElementById('rows').addEventListener('click', (e)=>{
+  const el = e.target.closest('[data-act]');
+  if(!el) return;
+  const id = Number(el.dataset.id);
+  const act = el.dataset.act;
+  if(act==='revoke') confirmRevoke(id);
+  else if(act==='revoke-save') revoke(id);
+  else if(act==='cancel') closeForm(id);
+});
+
+function confirmRevoke(id){
+  const t = tokenById(id);
+  openForm(id, `<div class="actform">
+      <span class="muted">Revoke <b class="mono">${esc(t.label)}</b> (${esc(t.token_prefix)}…)?
+        Anything still using this token starts failing immediately. This cannot be undone.</span>
+      <button class="chip danger" data-act="revoke-save" data-id="${Number(id)}">Yes, revoke</button>
+      <button class="chip" data-act="cancel" data-id="${Number(id)}">Cancel</button>
+    </div>`);
+}
+
+async function revoke(id){
+  const r = await api('/api/auth/tokens/'+Number(id), {method:'DELETE'});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('token revoked','ok');
+  closeForm(id); await loadTokens();
+}
+
+async function createToken(){
+  const label = document.getElementById('nt-label').value.trim();
+  const scopes = selectedScopes();
+  const daysRaw = document.getElementById('nt-days').value.trim();
+  if(!label){ toast('a label is required','err'); return; }
+  if(!scopes.length){ toast('pick at least one scope','err'); return; }
+  const body = {label, scopes};
+  if(daysRaw !== ''){
+    const days = Number(daysRaw);
+    if(!isFinite(days) || days <= 0){ toast('expiry must be a positive number of days','err'); return; }
+    body.expires_in_days = Math.floor(days);
+  }
+  const btn = document.getElementById('nt-btn'); btn.disabled = true;
+  const r = await api('/api/auth/tokens', {method:'POST', body:JSON.stringify(body)});
+  btn.disabled = false;
+  if(!r.ok){ toast(r.error,'err'); return; }
+  const row = r.data || {};
+  if(row.secret) showSecret(row);
+  else toast('token created, but the server returned no secret','err');
+  document.getElementById('nt-label').value = '';
+  document.getElementById('nt-days').value = '';
+  toast('created token '+label,'ok');
+  await loadTokens();
+}
+
+document.addEventListener('DOMContentLoaded', async ()=>{
+  await loadMe();
+  await loadTokens();
+});
+</script>
+</body>
+</html>

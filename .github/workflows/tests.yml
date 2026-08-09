@@ -1,0 +1,82 @@
+name: Tests
+
+# Runs the pytest suites on every PR and on pushes to main. Until now nothing
+# ran the tests in CI, so regressions (and the security / executor-parity
+# guards added in the test suite) only surfaced if someone ran pytest locally.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run test suites
+        # The suite can't run as one flat `pytest`: several trees ship a
+        # top-level module of the same name (e.g. nodeaction / entrypoint /
+        # server), and most dirs use bare imports that need their own directory
+        # on sys.path -- so a single collection run collides. Each directory is
+        # therefore its own pytest invocation, with
+        # PYTHONPATH=<dir>:<repo-root> (the dir first so bare imports resolve,
+        # the repo root for cross-package imports like agent -> observability).
+        #
+        # observability and auth are the exceptions: their tests use absolute
+        # `from observability...` / `from auth...` imports and do NOT need the
+        # dir on sys.path -- and putting it there would let observability's
+        # docker.py shadow the real `docker` package, and auth's tokens.py /
+        # routes.py / models.py shadow anything of those names. Both run with
+        # the repo root only.
+        #
+        # Root-level test_*.py are integration-style; only the hermetic ones run
+        # here. Deliberately excluded:
+        #   - test_tool_calling.py            -> needs a live LLM (fails at fixture setup)
+        run: |
+          set -u
+          root="$PWD"
+          fail=0
+          run() {
+            local label="$1" pp="$2"; shift 2
+            echo "::group::pytest ${label}"
+            PYTHONPATH="${pp}" python -m pytest "$@" || fail=1
+            echo "::endgroup::"
+          }
+
+          for d in agent tools event_runtime executor changerecord worker mcp_server/tests bridge/tests; do
+            run "${d}" "${root}/${d}:${root}" "${d}"
+          done
+
+          run "observability" "${root}" observability
+          run "auth" "${root}" auth
+
+          run "root-level" "${root}" \
+            test_web_auth.py test_web_auth_db.py test_auth_integration.py \
+            test_console_nav.py test_console_brand.py test_console_llm_switcher.py \
+            test_dockerfile_image.py \
+            test_http_investigate.py test_k8s_probe_filter.py \
+            test_triage_engine.py test_github_integration.py test_event_runtime.py
+
+          exit "${fail}"

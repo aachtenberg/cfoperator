@@ -8,10 +8,43 @@ Production is k3s + ArgoCD GitOps. **A single `git push` is the deploy path** �
 |----------|----------|-------|------|
 | `cfoperator` (agent + chat UI) | [k3s/base/apps/cfoperator.yml](../../homelab-infra/k3s/base/apps/cfoperator.yml) | `ghcr.io/aachtenberg/cfoperator:main-<sha7>` | `8083` (hostNetwork) |
 | `cfoperator-event-runtime` | [k3s/base/apps/cfoperator-event-runtime.yml](../../homelab-infra/k3s/base/apps/cfoperator-event-runtime.yml) | `ghcr.io/aachtenberg/cfoperator:main-<sha7>` (same image, different `command`) | `8080` (ClusterIP) |
+| `cfoperator-mcp` (MCP facade) | cfoperator-deploy repo | same image, `command: ["python", "-m", "mcp_server"]` | `8090` (ClusterIP + hostPort) |
+| `cfoperator-bridge` (Slack bot) | cfoperator-deploy repo | same image, `command: ["python", "-m", "bridge"]`, `Recreate` strategy | — (Socket Mode, outbound only) |
+| `cfoperator-changerecord` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-changerecord` (own image, context `changerecord/`) | ClusterIP |
+| `cfoperator-executor` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-executor` (own image, context `executor/`) — a disposable Job per remediation, not a Deployment | — |
+| `cfoperator-worker` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-worker` (own image, context `worker/`) — deep-investigation worker | — |
 
-Both pods are scheduled on `headless-gpu` (k3s name) = `ubuntu-llm-01` = 192.168.0.150. Namespace: `apps`. Control plane runs `kubectl` locally — no SSH needed.
+Both agent pods are scheduled on `headless-gpu` (k3s name) = `ubuntu-llm-01` = 192.168.0.150. Namespace: `apps`. Control plane runs `kubectl` locally — no SSH needed.
+
+The MCP and bridge Deployments reuse the agent image, so anything that produces a
+new agent tag rolls them too. See [mcp-server.md](mcp-server.md),
+[slack-bridge.md](slack-bridge.md), and [REMEDIATION.md](REMEDIATION.md) for each
+one's own configuration and secrets.
+
+`build-cfoperator-main.yml` builds all four images in one run — agent, worker,
+executor, changerecord — each pushed as both a floating `:main` and an immutable
+`:main-<sha7>`. Only the agent tag is auto-bumped on homelab-infra; the worker,
+executor, and changerecord Deployments/Jobs track `:main`, so after changing that
+code you wait for its build job rather than merging a bump PR.
+
+### What the image contains
+
+The Dockerfile copies `agent/`, `tools/`, `skills/`, `ui/`, `observability/`,
+`event_runtime/`, `mcp_server/`, `bridge/`, `auth/`, `scripts/`, `web_server.py`,
+and `web_auth.py`. The last four matter operationally: `web_server.py` and
+`mcp_server/server.py` both import `auth.bootstrap` at module load, so omitting
+`auth/` crash-loops the agent and the MCP pod rather than degrading them, and
+`scripts/create_admin.py` is the lockout recovery path in
+[auth.md](auth.md#locked-out--no-usable-admin) — it has to be in the image to be
+usable. `test_dockerfile_image.py` asserts these copies stay present.
 
 ## How a Code Change Reaches Production
+
+Before any of this: [`.github/workflows/tests.yml`](../.github/workflows/tests.yml)
+runs the pytest suites on every pull request and on pushes to `main`. It is the
+only automated gate between a branch and an image — the build workflow does not
+run tests. See the README's "Tests & CI" section for how to run the same
+per-directory invocations locally.
 
 1. **Push to `main` on cfoperator.** This triggers [`.github/workflows/build-cfoperator-main.yml`](../.github/workflows/build-cfoperator-main.yml), which builds `ghcr.io/aachtenberg/cfoperator:main-<sha7>` for `linux/amd64` and pushes to ghcr.
 2. **Auto-bump PR opens** on homelab-infra (branch `auto/bump-cfoperator-image`), editing `k3s/overlays/production/kustomization.yml`'s image override to the new immutable tag. Same PR is updated in place if it's still open from a previous push.
@@ -40,8 +73,11 @@ The build workflow skips on pushes that only touch: `**.md`, `docs/**`, `benchma
 | Change | What ships | What you do |
 |--------|------------|-------------|
 | Python code in `agent/`, `tools/`, `skills/`, `ui/`, `event_runtime/`, `web_server.py`, `observability/` | New image tag | Push to cfoperator/main → merge auto-bump PR on homelab-infra. |
+| `auth/`, `web_auth.py`, `scripts/` | New image tag | Same. Console auth and the `create_admin.py` recovery path ship in the agent image. |
+| `mcp_server/`, `bridge/` | New image tag | Same — both Deployments reuse the agent image, so they roll on the same bump. |
+| `worker/`, `executor/`, `changerecord/` | New sibling image tag | Same workflow, separate build job. These track the floating `:main` tag — wait for the build job to finish instead of merging a bump PR (a Job re-queued too early pulls the prior `:main`). |
 | `requirements.txt` | New image tag | Same — push to cfoperator/main. |
-| `Dockerfile` | New image tag | Same. |
+| `Dockerfile` | New image tag | Same. Add a `COPY` for any new top-level package, or it will be missing at runtime. |
 | YAML manifest in homelab-infra | ArgoCD apply | Push to homelab-infra/main. Force-sync if impatient. |
 | Grafana dashboard JSON | Provisioned ConfigMap | Edit `homelab-infra/k3s/base/monitoring/files/grafana-dashboards/cfoperator-dashboard.json`, push to homelab-infra/main. |
 | Secret value | Re-sealed SealedSecret | Edit `homelab-infra/secrets/.env.secrets`, run `./scripts/seal-secrets.sh`, push. |
@@ -76,6 +112,31 @@ pod_ip=$(kubectl get pod -n apps -l app.kubernetes.io/name=cfoperator-event-runt
 curl -fsS "http://${pod_ip}:8080/health"
 curl -fsS "http://${pod_ip}:8080/metrics" | grep cfoperator_event_runtime
 ```
+
+## Console Auth
+
+The `:8083` console authenticates against `auth_users` / `auth_api_tokens` in
+the knowledge base database: real accounts with `admin` / `member` roles, and
+individually revocable API tokens carrying `read` ⊂ `investigate` ⊂ `remediate`
+scopes. Manage both at `/users` and `/tokens`.
+
+The tables are created on start, and the first admin is seeded from the existing
+`CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` sealed secret — so shipping this
+does not lock anyone out and does not require a coordinated secret change.
+
+The shared `CFOP_API_TOKEN` was **retired 2026-08-09**. `event_runtime`, `mcp`
+and `bridge` each hold their own database token, mounted *as* the env var
+`CFOP_API_TOKEN`, so callers are unchanged and revoking one breaks only that
+service. There is no plain `CFOP_API_TOKEN` key in `cfoperator-secrets` any
+more, and the agent no longer mounts one — with it unset, `web_auth.py` skips
+the legacy branch entirely. Do not re-add it.
+
+With no auth database reachable, the console falls back to the legacy
+environment credentials. A database that is configured but *unreachable* returns
+503 on every non-exempt route — never 401, never open.
+
+See [docs/auth.md](auth.md) for the roles table, the rollout order, and the
+lockout / token-rotation runbooks.
 
 ## Local / Non-Production Modes
 

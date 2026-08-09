@@ -13,8 +13,10 @@ The deployed system runs as two processes that split responsibilities along a cl
 
 Two additional sibling deployments reuse the same image and expose the agent to conversational surfaces:
 
-- **`mcp_server`** — a standard [MCP](https://modelcontextprotocol.io/) facade over the agent API (11 tools, 4 resources, 8 skill prompts) with bearer auth + scope tiers (`read` ⊂ `investigate` ⊂ `remediate`) and a structured audit log, consumable by Claude Desktop/Code, Cursor, or any MCP host. See [docs/mcp-server.md](docs/mcp-server.md).
+- **`mcp_server`** — a standard [MCP](https://modelcontextprotocol.io/) facade over the agent API (11 tools, 4 resources, 9 skill prompts — one per `skills/*/SKILL.md`) with bearer auth + scope tiers (`read` ⊂ `investigate` ⊂ `remediate`) and a structured audit log, consumable by Claude Desktop/Code, Cursor, or any MCP host. See [docs/mcp-server.md](docs/mcp-server.md).
 - **`bridge`** — a Slack Socket Mode bot (`@cfoperator` mentions/DMs, threaded conversations, `investigate:` enqueue, per-message `claude:` model escalation) with pluggable runtimes: `local` (agent chat API, free) or `anthropic` (Claude drives the MCP server's tools). See [docs/slack-bridge.md](docs/slack-bridge.md).
+
+The console on `:8083` authenticates against database-backed accounts with `admin` / `member` roles, plus individually revocable API tokens carrying the same `read` ⊂ `investigate` ⊂ `remediate` scopes. Admins manage users, tokens, and LLM settings at `/admin`; everyone manages their own password and tokens at `/account`. See [docs/auth.md](docs/auth.md).
 
 When an alert arrives, `event_runtime` asks the agent's LLM to **triage** it into `log_only` / `notify` / `investigate` / `escalate`. Only `investigate` and `escalate` trigger a full LLM investigation: the runtime POSTs the alert to the agent's `/v1/investigate`, the agent enqueues, runs the LLM investigation with tools, and POSTs the completed `ActionResult` back to `event_runtime` at `/v1/investigations/{alert_id}/complete`, which fires the single Slack notification with the real outcome (tagged with the LLM that triaged it, e.g. `triaged by ollama/qwen3-coder:latest`). See [docs/event-runtime-quickstart.md](docs/event-runtime-quickstart.md) for the full flow + env vars (`CFOP_AGENT_URL`, `CFOP_COMPLETION_SHARED_SECRET`).
 
@@ -58,11 +60,23 @@ CFOperator agent (Docker container)
 │   │         find_learnings, get_sweep_report, web_search, ...
 │   ├── SSH (9): execute, check_service, restart_service, get_logs,
 │   │           list_services, docker_list, docker_restart, get_system_info, check_port
-│   ├── K8s (15): get_pods, get_pod_logs, get_deployments, rollout_restart,
-│   │            get_events, get_nodes, get_node_metrics, exec_pod, describe, ...
+│   ├── K8s (16): get_pods, get_pod_logs, get_deployments, rollout_restart,
+│   │            rollout_status, get_events, get_nodes, get_node_metrics,
+│   │            get_services, get_ingresses, get_namespaces, get_cluster_info,
+│   │            get_pod_status, get_all_unhealthy, exec_pod, describe
+│   ├── Git (5): recent_commits, diff_summary, show_file, blame, log_path
+│   ├── GitHub (9): list_recent_prs, get_pr, list_recent_commits, get_issue,
+│   │              search_issues, get_file_contents, compare_commits,
+│   │              create_pr, create_issue_comment
+│   ├── TimescaleDB (1): timescale_query — read-only SQL over the telemetry
+│   │              database (`sensors`) where telegraf lands every MQTT message
+│   │              plus the flood/river history. Single SELECT/WITH only, on a
+│   │              read-only role and read-only transaction, with a statement
+│   │              timeout and row cap. Enabled only when `TIMESCALE_PASSWORD`
+│   │              is set — otherwise the tool is not registered.
 │   └── Discovery (4): ping_host, verify_ssh, verify_sudo, discover_all_hosts
 │
-├── Skills (8 investigation workflows)
+├── Skills (9 workflows)
 │   ├── /investigate-host — Systematic host/server investigation
 │   ├── /investigate-container — Systematic container investigation
 │   ├── /investigate-pod — Kubernetes pod investigation
@@ -70,12 +84,14 @@ CFOperator agent (Docker container)
 │   ├── /investigate-code-change — Correlate alerts with recent git changes
 │   ├── /k3s-cluster-health — Full cluster health check
 │   ├── /why-restart — Analyze container restart causes
-│   └── /compare-hosts — Compare metrics across fleet
+│   ├── /compare-hosts — Compare metrics across fleet
+│   └── /mqtt-top-talkers — Rank IoT/MQTT devices by telemetry volume
+│                            (one timescale_query call)
 │
 └── Web UI (Dark theme, Inter + JetBrains Mono)
     ├── Chat interface (HTTP polling; WebSocket code present but disabled — Waitress WSGI limitation)
-    ├── Collapsible sidebar (OODA config, skills, pool toggles)
-    ├── LLM backend/model selector with provider fallback toggle
+    ├── Collapsible sidebar (skills, chat history)
+    ├── Admin panel for LLM / OODA / pool configuration
     ├── Sweep findings panel with severity badges
     └── Status bar (connection, uptime, last sweep)
 ```
@@ -156,6 +172,7 @@ docker compose up -d
 /investigate-container telegraf     → Container investigation
 /why-restart immich-ml              → Root cause analysis
 /compare-hosts                      → Fleet comparison
+/mqtt-top-talkers                   → Chattiest MQTT devices (TimescaleDB)
 ```
 
 ## Key Endpoints
@@ -253,37 +270,96 @@ make all            # all platforms
 | `mcp_server/` | MCP facade over the agent API: tools/resources/prompts, bearer auth + scopes, audit log ([docs](docs/mcp-server.md)) |
 | `bridge/` | Slack Socket Mode bot with pluggable runtimes (local agent / Claude-over-MCP) ([docs](docs/slack-bridge.md)) |
 | `event_runtime/http_actions.py` | `HTTPInvestigateActionHandler` + completion endpoint auth/validation helpers |
+| `auth/` | Console users, roles, and API tokens: models, store, routes, bootstrap ([docs](docs/auth.md)) |
+| `web_auth.py` | Console gate on `:8083`: session login, bearer verification, `require_role` |
 | `ui/index.html` | Single-page chat UI (dark theme, sidebar layout) |
+| `ui/account.html` | Self-service password and own API tokens |
+| `ui/admin.html` | Admin panel: users, tokens, LLM runtime config |
 | `agent/knowledge_base.py` | ResilientKnowledgeBase wrapping PostgreSQL + pgvector |
 | `agent/embedding_service.py` | Embedding generation via Ollama with LRU + DB cache |
 | `agent/llm_fallback.py` | LLM provider chain with cooldown/retry |
 | `config.yaml.example` | All URLs, host definitions, OODA timing |
-| `tools/` | SSH, K8s, discovery, and core tool implementations |
+| `tools/` | SSH, K8s, git, GitHub, TimescaleDB, discovery, and core tool implementations |
+| `tools/timescale.py` | Read-only SQL over the telemetry TimescaleDB (`timescale_query`) |
+| `executor/` | Disposable Job that carries a remediation to a PR ([docs](docs/REMEDIATION.md)) |
+| `changerecord/` | Change-record microservice for the node-action lane ([docs](docs/REMEDIATION.md)) |
+| `worker/` | Deep-investigation worker + forensics templates ([docs](docs/deep-investigation.md)) |
+| `scripts/` | Operator scripts shipped in the image (`create_admin.py`, `mcp_smoke.py`) |
+| `.github/workflows/tests.yml` | pytest suites on every PR and push to `main` |
+| `.mcp.json` | Dev-tooling MCP servers for agentic sessions in this repo (Plane, workspace `cfoperator`; needs `PLANE_API_KEY` in the environment) |
 | `skills/` | Investigation workflow definitions (SKILL.md) |
 | `observability/` | Pluggable backends (Prometheus, Loki, Kubernetes, Docker, Slack, Discord) |
 | `llm-gateway/` | Go proxy with health-based routing + fallback |
 | `benchmarks/` | Inference latency benchmarks (TTFT, tokens/sec) |
 | `grafana/` | Dashboard JSON + upload script |
 
+## Tests & CI
+
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs the pytest
+suites on every pull request and on pushes to `main` (plus `workflow_dispatch`).
+
+The suite cannot run as one flat `pytest`: several trees ship a top-level module
+of the same name (`nodeaction`, `entrypoint`, `server`), and most directories use
+bare imports that need their own directory on `sys.path`. CI therefore runs one
+pytest invocation per directory with `PYTHONPATH=<dir>:<repo-root>` — mirror that
+locally:
+
+```bash
+# per-package suites
+for d in agent tools event_runtime executor changerecord worker mcp_server/tests bridge/tests; do
+  PYTHONPATH="$PWD/$d:$PWD" python -m pytest "$d"
+done
+
+# observability and auth use absolute imports — repo root only, so their
+# docker.py / tokens.py don't shadow real packages
+PYTHONPATH="$PWD" python -m pytest observability auth
+
+# hermetic root-level suites
+PYTHONPATH="$PWD" python -m pytest \
+  test_web_auth.py test_web_auth_db.py test_auth_integration.py \
+  test_dockerfile_image.py test_http_investigate.py test_k8s_probe_filter.py \
+  test_triage_engine.py test_github_integration.py test_event_runtime.py
+```
+
+`test_tool_calling.py` is deliberately excluded from CI — it needs a live LLM and
+fails at fixture setup without one.
+
 ## Documentation
 
 ### Getting Started
 - [README.md](README.md) — This file (architecture, quick start)
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Deploy checklist and quick commands
+- [docs/infrastructure-config.md](docs/infrastructure-config.md) — Fleet configuration
+- [docs/event-runtime-quickstart.md](docs/event-runtime-quickstart.md) — Alert ingest → triage → investigate flow, env vars
+
+### Interfaces
+- [docs/auth.md](docs/auth.md) — Console users, roles, API tokens, lockout/rotation runbooks
+- [docs/mcp-server.md](docs/mcp-server.md) — MCP facade: tools, resources, prompts, scopes, host setup
+- [docs/slack-bridge.md](docs/slack-bridge.md) — Slack Socket Mode bot and its runtimes
+- [docs/mcp-server-plan.md](docs/mcp-server-plan.md) — MCP design/contract and phase history
+
+### Remediation & Investigation
+- [docs/REMEDIATION.md](docs/REMEDIATION.md) — Remediation lifecycle, executor, change records
+- [docs/remediation-pipeline.md](docs/remediation-pipeline.md) — Pipeline internals
+- [docs/deep-investigation.md](docs/deep-investigation.md) — Deep-investigation worker
+- [docs/noise-reduction.md](docs/noise-reduction.md) — Dedupe/cooldown policy
 
 ### Operations & Monitoring
 - [docs/METRICS.md](docs/METRICS.md) — Prometheus metrics reference
+- [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) — Observability surfaces
 - [grafana/README.md](grafana/README.md) — Grafana dashboard guide
 - [docs/llm-observability.md](docs/llm-observability.md) — LLM metrics deep dive
-- [docs/infrastructure-config.md](docs/infrastructure-config.md) — Fleet configuration
+- [docs/ROADMAP.md](docs/ROADMAP.md) — Planned work
 
 ### Benchmarks
 - [benchmarks/results.md](benchmarks/results.md) — Ollama inference latency benchmark (TTFT, tokens/sec, GPU stats)
 - [docs/ollama-tool-calling-benchmark.md](docs/ollama-tool-calling-benchmark.md) — Multi-host tool calling benchmark
+- [docs/local-llm-benchmark.md](docs/local-llm-benchmark.md) — Local model comparison
 
 ## Accuracy Notes (README vs. Code)
 
-- **Skills**: 8 loaded at runtime (`investigate-code-change` is present and functional but was omitted from the earlier count of 7).
+- **Skills**: 9 loaded at runtime — the 8 investigation playbooks plus `mqtt-top-talkers`. The MCP server registers one prompt per skill, so its prompt count tracks this number automatically.
+- **`timescale_query`**: Registered only when `TIMESCALE_PASSWORD` is set. Without it the agent logs `TIMESCALE_PASSWORD not set - timescale_query tool disabled` and `mqtt-top-talkers` has nothing to call.
 - **WebSocket**: Code exists (`/ws`) but `WEBSOCKET_AVAILABLE=False` at runtime because Waitress (WSGI) does not support it; UI uses HTTP polling via `/api/chat`.
 - **`/api/qa`**: Endpoint removed; replaced by chat session management (`/api/chat-sessions`).
 - **Morning summary**: Runs 7-9 AM local time (configurable), authored by the cheap primary model; LLM Judge verification applies to sweep findings only.

@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CFOperator</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -12,6 +13,7 @@
     <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"
             integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+"
             crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="/nav.js" defer></script>
     <style>
         :root {
             --bg-primary: #0a0a0f;
@@ -83,84 +85,62 @@
             opacity: 0.9;
         }
 
-        .header-controls {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-left: auto;
+        /* LLM chip + popover (CFOP-19). Full OODA/pool/fallback stay in Admin. */
+        .llm-switcher { position: relative; flex-shrink: 1; min-width: 0; }
+        .llm-chip {
+            display: inline-flex; align-items: center; gap: 6px;
+            max-width: min(320px, 40vw);
+            background: var(--bg-tertiary); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 6px 10px; cursor: pointer;
+            font-family: 'JetBrains Mono', monospace; font-size: 12px;
+            transition: border-color .15s, color .15s, background .15s;
         }
-
-        .header-controls label {
-            font-size: 12px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .header-controls select, .header-controls input[type="number"] {
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-            border: 1px solid var(--border);
-            padding: 6px 10px;
-            border-radius: var(--radius-sm);
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 13px;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-
-        .header-controls select:focus, .header-controls input:focus {
+        .llm-chip:hover:not(:disabled) { border-color: var(--text-secondary); }
+        .llm-chip[aria-expanded="true"] {
             border-color: var(--accent);
+            background: color-mix(in srgb, var(--accent) 12%, var(--bg-tertiary));
         }
+        .llm-chip:disabled { cursor: default; opacity: .85; }
+        .llm-chip-label {
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            color: var(--text-secondary);
+        }
+        .llm-chip-label.ready { color: var(--text-primary); }
+        .llm-chip-caret { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
+        .llm-chip:disabled .llm-chip-caret { display: none; }
 
-        .header-controls input[type="number"] {
-            width: 56px;
-            text-align: center;
+        .llm-popover {
+            position: absolute; top: calc(100% + 8px); left: 0; z-index: 40;
+            width: min(300px, 90vw);
+            background: var(--bg-secondary); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 12px 14px;
+            box-shadow: 0 8px 24px #000a;
         }
-
-        .control-group {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            padding: 0 8px;
-            border-left: 1px solid var(--border);
+        .llm-popover[hidden] { display: none; }
+        .llm-popover .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+        .llm-popover .field:last-of-type { margin-bottom: 0; }
+        .llm-popover label { color: var(--text-secondary); font-size: 11px;
+            text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+        .llm-popover select, .llm-popover input[type="text"] {
+            background: var(--bg-tertiary); color: var(--text-primary);
+            border: 1px solid var(--border); border-radius: var(--radius-sm);
+            padding: 6px 8px; font-family: 'JetBrains Mono', monospace;
+            font-size: 12px; outline: none; width: 100%;
         }
-
-        .control-group:first-child { border-left: none; padding-left: 0; }
-
-        .toggle-switch {
-            position: relative;
-            display: inline-block;
-            width: 34px;
-            height: 18px;
-            flex-shrink: 0;
+        .llm-popover select:focus, .llm-popover input:focus { border-color: var(--accent); }
+        .llm-popover .llm-err {
+            color: var(--orange); font-size: 11px; margin: 0 0 8px;
+            font-family: 'JetBrains Mono', monospace; line-height: 1.35;
+            word-break: break-word;
         }
-        .toggle-switch input { opacity: 0; width: 0; height: 0; }
-        .toggle-slider {
-            position: absolute;
-            cursor: pointer;
-            inset: 0;
-            background: var(--border);
-            border-radius: 18px;
-            transition: background 0.2s;
+        .llm-popover .llm-err:empty { display: none; }
+        .llm-popover .llm-more {
+            display: block; margin-top: 12px; padding-top: 10px;
+            border-top: 1px solid var(--border-subtle);
+            font-size: 12px; color: var(--cyan); text-decoration: none;
         }
-        .toggle-slider::before {
-            content: "";
-            position: absolute;
-            width: 12px;
-            height: 12px;
-            left: 3px;
-            bottom: 3px;
-            background: var(--text-muted);
-            border-radius: 50%;
-            transition: transform 0.2s, background 0.2s;
-        }
-        .toggle-switch input:checked + .toggle-slider { background: var(--accent-dim); }
-        .toggle-switch input:checked + .toggle-slider::before {
-            transform: translateX(16px);
-            background: var(--accent);
-        }
+        .llm-popover .llm-more:hover { text-decoration: underline; }
 
         .sidebar-toggle {
             background: none;
@@ -262,22 +242,6 @@
             color: var(--text-muted);
             margin-top: 2px;
         }
-
-        #pool-toggles-sidebar {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .pool-instance {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        .pool-instance input[type="checkbox"] { accent-color: var(--accent); }
 
         /* ── Chat area ── */
         .chat-area {
@@ -931,54 +895,35 @@
             </svg>
             CFOperator
         </div>
-        <div class="header-controls">
-            <a href="/remediations" title="Remediation worklist"
-               style="text-decoration:none;color:var(--text-secondary);background:var(--bg-tertiary);display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:'JetBrains Mono',monospace;font-size:13px">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
-                </svg>
-                Remediations
-            </a>
-            <a href="/investigations" title="Investigations"
-               style="text-decoration:none;color:var(--text-secondary);background:var(--bg-tertiary);display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);font-family:'JetBrains Mono',monospace;font-size:13px">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
-                </svg>
-                Investigations
-            </a>
-            <div class="control-group">
-                <label>Backend</label>
-                <select id="llm-backend"><option value="auto">Auto</option></select>
-                <select id="model-select" style="display:none;"><option value="">Loading...</option></select>
+        <!-- Current LLM readout + admin quick switch (CFOP-19).
+             Full OODA / pool / fallback stay at /admin?tab=llm (CFOP-15). -->
+        <div class="llm-switcher" id="llm-switcher">
+            <button type="button" class="llm-chip" id="llm-chip"
+                    aria-haspopup="dialog" aria-expanded="false" aria-controls="llm-popover"
+                    disabled title="Loading LLM…">
+                <span class="llm-chip-label" id="llm-chip-label">…</span>
+                <span class="llm-chip-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="llm-popover" id="llm-popover" role="dialog" aria-label="Select LLM" hidden>
+                <div class="field">
+                    <label for="llm-backend">Backend</label>
+                    <select id="llm-backend"></select>
+                </div>
+                <div class="field">
+                    <label for="llm-model">Model</label>
+                    <select id="llm-model"></select>
+                    <input type="text" id="llm-model-custom" placeholder="model id" hidden autocomplete="off">
+                </div>
+                <p class="llm-err" id="llm-model-err"></p>
+                <a class="llm-more" href="/admin?tab=llm">More in Admin →</a>
             </div>
-            <div class="control-group">
-                <label>Fallback</label>
-                <label class="toggle-switch" title="Allow fallback to paid LLM providers">
-                    <input type="checkbox" id="fallback-toggle" onchange="onFallbackToggle()">
-                    <span class="toggle-slider"></span>
-                </label>
-            </div>
-            <div class="control-group" id="pool-toggles-header"></div>
         </div>
+        <!-- Section nav, identity and logout — see ui/nav.js -->
+        <div id="cfop-nav"></div>
     </header>
 
     <div class="main-layout">
         <aside class="sidebar" id="sidebar">
-            <div class="sidebar-section">
-                <h3>OODA Configuration</h3>
-                <div class="sidebar-field">
-                    <label>Max Tool Calls</label>
-                    <input type="number" id="max-iterations" min="1" max="50" value="10">
-                </div>
-                <div class="sidebar-field">
-                    <label>Alert Interval (s)</label>
-                    <input type="number" id="alert-interval" min="5" max="300" value="10">
-                </div>
-                <div class="sidebar-field">
-                    <label>Sweep Interval (m)</label>
-                    <input type="number" id="sweep-interval" min="1" max="1440" value="30">
-                </div>
-            </div>
             <div class="sidebar-section">
                 <h3>Skills</h3>
                 <ul class="skill-list" id="skill-list">
@@ -1000,10 +945,6 @@
                     <button onclick="startNewChat()" style="background:var(--accent);color:var(--bg-primary);border:none;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;">+ New</button>
                 </h3>
                 <ul class="skill-list" id="session-list" style="margin-top:8px;max-height:200px;overflow-y:auto;"></ul>
-            </div>
-            <div class="sidebar-section" id="pool-section" style="display:none;">
-                <h3>Ollama Pool</h3>
-                <div id="pool-toggles-sidebar"></div>
             </div>
         </aside>
 
@@ -1393,10 +1334,8 @@
             const message = input.value.trim();
             if (!message) return;
 
-            const backend = document.getElementById('llm-backend').value;
-            const modelSelect = document.getElementById('model-select');
-            const model = (backend !== 'auto' && modelSelect.value) ? modelSelect.value : null;
-
+            // Chat uses the server's selected_backend (backend: auto). Provider/
+            // model are set via the header chip (or Admin → LLM).
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
             saveMessage('user', message);
@@ -1407,8 +1346,7 @@
             document.getElementById('thinking').classList.add('active');
             document.getElementById('chat-container').scrollTop = document.getElementById('chat-container').scrollHeight;
 
-            const payload = {message, history: chatHistory, backend};
-            if (model) payload.model = model;
+            const payload = {message, history: chatHistory, backend: 'auto'};
 
             fetch('/api/chat', {
                 method: 'POST',
@@ -1519,182 +1457,6 @@
             }).catch(() => {});
         }, 10000);
 
-        // Model fetching
-        function fetchModels(backend) {
-            const modelSelect = document.getElementById('model-select');
-            if (!backend || backend === 'auto') { modelSelect.style.display = 'none'; return; }
-            modelSelect.style.display = '';
-            modelSelect.innerHTML = '<option value="">Loading...</option>';
-            fetch(`/api/models/${backend}`)
-                .then(r => r.json())
-                .then(data => {
-                    if (data.models && data.models.length > 0) {
-                        modelSelect.innerHTML = data.models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
-                        const storageKey = `cfoperator_${backend}_model`;
-                        const savedModel = data.selected || localStorage.getItem(storageKey) || '';
-                        if (savedModel && data.models.includes(savedModel)) modelSelect.value = savedModel;
-                    } else {
-                        modelSelect.innerHTML = '<option value="">No models</option>';
-                    }
-                })
-                .catch(() => { modelSelect.innerHTML = '<option value="">Error</option>'; });
-        }
-
-        function onBackendChange() {
-            const backend = document.getElementById('llm-backend').value;
-            localStorage.setItem('cfoperator_backend', backend);
-            fetch('/api/settings/provider', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({backend})
-            }).catch(() => {});
-            fetchModels(backend);
-        }
-
-        function onModelChange() {
-            const backend = document.getElementById('llm-backend').value;
-            const model = document.getElementById('model-select').value;
-            if (model) {
-                localStorage.setItem(`cfoperator_${backend}_model`, model);
-                fetch(`/api/models/${backend}/select`, {
-                    method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({model})
-                }).catch(() => {});
-            }
-        }
-
-        function onMaxIterationsChange() {
-            const val = Math.max(1, Math.min(50, parseInt(document.getElementById('max-iterations').value) || 10));
-            document.getElementById('max-iterations').value = val;
-            localStorage.setItem('cfoperator_max_iterations', val);
-            fetch('/api/settings/max_tool_iterations', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({max_tool_iterations: val})
-            }).catch(() => {});
-        }
-
-        function flashInput(el, ok) {
-            el.style.borderColor = ok ? 'var(--accent)' : 'var(--red)';
-            if (!ok) el.title = 'Save failed — database may be offline';
-            else el.title = '';
-            setTimeout(() => { el.style.borderColor = ''; }, 2000);
-        }
-
-        function onAlertIntervalChange() {
-            const el = document.getElementById('alert-interval');
-            const val = Math.max(5, Math.min(300, parseInt(el.value) || 10));
-            el.value = val;
-            fetch('/api/settings/ooda', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({alert_check_interval: val})
-            }).then(r => { flashInput(el, r.ok); if (!r.ok) el.value = localStorage.getItem('cfop_alert_interval') || val; else localStorage.setItem('cfop_alert_interval', val); })
-              .catch(() => flashInput(el, false));
-        }
-
-        function onSweepIntervalChange() {
-            const el = document.getElementById('sweep-interval');
-            const val = Math.max(1, Math.min(1440, parseInt(el.value) || 30));
-            el.value = val;
-            fetch('/api/settings/ooda', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({sweep_interval: val * 60})
-            }).then(r => { flashInput(el, r.ok); if (!r.ok) el.value = localStorage.getItem('cfop_sweep_interval') || val; else localStorage.setItem('cfop_sweep_interval', val); })
-              .catch(() => flashInput(el, false));
-        }
-
-        function onFallbackToggle() {
-            const enabled = document.getElementById('fallback-toggle').checked;
-            fetch('/api/settings/fallback', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({allow_paid_escalation: enabled})
-            }).catch(() => {});
-        }
-
-        function loadProviders() {
-            return fetch('/api/providers').then(r => r.json()).then(data => {
-                const select = document.getElementById('llm-backend');
-                select.innerHTML = '';
-                data.providers.forEach(p => {
-                    const opt = document.createElement('option');
-                    opt.value = p.id;
-                    opt.textContent = p.name;
-                    if (!p.available && p.id !== 'auto') {
-                        opt.disabled = true;
-                        opt.textContent += ' (unavailable)';
-                    }
-                    select.appendChild(opt);
-                });
-            }).catch(() => {});
-        }
-
-        function restoreSettings() {
-            loadProviders().then(() => {
-                fetch('/api/settings/provider').then(r => r.json()).then(data => {
-                    const backend = data.backend || 'auto';
-                    document.getElementById('llm-backend').value = backend;
-                    localStorage.setItem('cfoperator_backend', backend);
-                    fetchModels(backend);
-                }).catch(() => {
-                    const saved = localStorage.getItem('cfoperator_backend');
-                    if (saved) document.getElementById('llm-backend').value = saved;
-                    fetchModels(document.getElementById('llm-backend').value);
-                });
-            });
-
-            fetch('/api/settings/max_tool_iterations').then(r => r.json()).then(data => {
-                document.getElementById('max-iterations').value = data.max_tool_iterations;
-            }).catch(() => {
-                const saved = localStorage.getItem('cfoperator_max_iterations');
-                if (saved) document.getElementById('max-iterations').value = saved;
-            });
-
-            fetch('/api/settings/ooda').then(r => r.json()).then(data => {
-                document.getElementById('alert-interval').value = data.alert_check_interval;
-                document.getElementById('sweep-interval').value = Math.round(data.sweep_interval / 60);
-                localStorage.setItem('cfop_alert_interval', data.alert_check_interval);
-                localStorage.setItem('cfop_sweep_interval', Math.round(data.sweep_interval / 60));
-            }).catch(() => {
-                const ai = localStorage.getItem('cfop_alert_interval');
-                const si = localStorage.getItem('cfop_sweep_interval');
-                if (ai) document.getElementById('alert-interval').value = ai;
-                if (si) document.getElementById('sweep-interval').value = si;
-            });
-
-            fetch('/api/settings/fallback').then(r => r.json()).then(data => {
-                document.getElementById('fallback-toggle').checked = data.allow_paid_escalation;
-            }).catch(() => {});
-
-            loadPoolToggles();
-        }
-
-        function loadPoolToggles() {
-            fetch('/api/pool/status').then(r => r.json()).then(data => {
-                const sidebar = document.getElementById('pool-toggles-sidebar');
-                const section = document.getElementById('pool-section');
-                if (!data.instances || data.instances.length === 0) {
-                    section.style.display = 'none';
-                    return;
-                }
-                section.style.display = '';
-                sidebar.innerHTML = data.instances.map(inst => {
-                    const color = !inst.enabled ? 'var(--text-muted)' : inst.healthy ? 'var(--accent)' : 'var(--red)';
-                    // Instance name goes in a data attribute, not into the inline
-                    // handler's JS string, so a quote in it can't inject script.
-                    return `<div class="pool-instance">
-                        <input type="checkbox" ${inst.enabled ? 'checked' : ''} data-instance="${escapeHtml(inst.name)}" onchange="togglePoolInstance(this.dataset.instance, this.checked)">
-                        <span style="color:${color}">${escapeHtml(String(inst.name).replace('ollama-',''))}</span>
-                        <span style="color:var(--text-muted);font-size:11px;">${escapeHtml(inst.model || '')}</span>
-                    </div>`;
-                }).join('') + `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Mode: ${escapeHtml(data.mode || 'sequential')}</div>`;
-            }).catch(() => {});
-        }
-
-        function togglePoolInstance(name, enabled) {
-            fetch('/api/pool/instance', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({name, enabled})
-            }).then(() => loadPoolToggles()).catch(() => {});
-        }
-
         // Status bar updates
         function updateStatus() {
             fetch('/api/health').then(r => r.json()).then(data => {
@@ -1774,11 +1536,6 @@
         }
 
         // Event listeners
-        document.getElementById('llm-backend').addEventListener('change', onBackendChange);
-        document.getElementById('model-select').addEventListener('change', onModelChange);
-        document.getElementById('max-iterations').addEventListener('change', onMaxIterationsChange);
-        document.getElementById('alert-interval').addEventListener('change', onAlertIntervalChange);
-        document.getElementById('sweep-interval').addEventListener('change', onSweepIntervalChange);
         document.getElementById('send-button').addEventListener('click', () => {
             if (inFlightChatId) stopChat(); else sendMessage();
         });
@@ -1839,8 +1596,245 @@
         loadSweepReports();
         setInterval(loadSweepReports, 60000);
 
-        // Initialize
-        restoreSettings();
+        /* ── LLM chip / quick switcher (CFOP-19) ── */
+        let llmIsAdmin = false;
+        let llmPopoverOpen = false;
+
+        function llmLabelText(backend, model) {
+            const b = backend || 'auto';
+            if (!b || b === 'auto') return 'auto';
+            return model ? (b + ' · ' + model) : b;
+        }
+
+        function setLlmChip(backend, model) {
+            const label = document.getElementById('llm-chip-label');
+            const chip = document.getElementById('llm-chip');
+            label.textContent = llmLabelText(backend, model);
+            label.classList.add('ready');
+            chip.title = llmIsAdmin
+                ? 'Change LLM provider / model'
+                : 'Current LLM (admin required to change)';
+            chip.disabled = !llmIsAdmin;
+        }
+
+        function setLlmPopoverOpen(open) {
+            const wasOpen = llmPopoverOpen;
+            llmPopoverOpen = !!open;
+            const pop = document.getElementById('llm-popover');
+            const chip = document.getElementById('llm-chip');
+            pop.hidden = !llmPopoverOpen;
+            chip.setAttribute('aria-expanded', llmPopoverOpen ? 'true' : 'false');
+            if (!llmPopoverOpen && wasOpen) {
+                // Return focus to the trigger when the dialog closes.
+                chip.focus();
+            }
+        }
+
+        function focusLlmPopover() {
+            const backend = document.getElementById('llm-backend');
+            if (backend) backend.focus();
+        }
+
+        function setLlmErr(msg) {
+            document.getElementById('llm-model-err').textContent = msg || '';
+        }
+
+        function setModelUi(models, selected, errMsg) {
+            const sel = document.getElementById('llm-model');
+            const custom = document.getElementById('llm-model-custom');
+            const err = document.getElementById('llm-model-err');
+            err.textContent = errMsg || '';
+            const list = Array.isArray(models) ? models : [];
+            if (list.length > 0) {
+                sel.hidden = false;
+                custom.hidden = true;
+                sel.innerHTML = list.map(m =>
+                    `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+                if (selected && list.includes(selected)) sel.value = selected;
+                else if (selected) {
+                    // Selected model not in list — keep it selectable.
+                    const opt = document.createElement('option');
+                    opt.value = selected; opt.textContent = selected; opt.selected = true;
+                    sel.appendChild(opt);
+                }
+            } else {
+                // Empty list (or fetch failed): free-text so the switcher still works.
+                sel.hidden = true;
+                sel.innerHTML = '';
+                custom.hidden = false;
+                custom.value = selected || '';
+                if (!errMsg) err.textContent = 'No models returned — enter a model id';
+            }
+        }
+
+        function fetchModels(backend) {
+            const sel = document.getElementById('llm-model');
+            const custom = document.getElementById('llm-model-custom');
+            const err = document.getElementById('llm-model-err');
+            if (!backend || backend === 'auto') {
+                sel.hidden = false;
+                custom.hidden = true;
+                custom.value = '';
+                sel.innerHTML = '<option value="">(auto)</option>';
+                sel.disabled = true;
+                err.textContent = '';
+                return Promise.resolve();
+            }
+            sel.disabled = false;
+            sel.hidden = false;
+            custom.hidden = true;
+            sel.innerHTML = '<option value="">Loading…</option>';
+            err.textContent = '';
+            return fetch('/api/models/' + encodeURIComponent(backend))
+                .then(r => r.json().then(data => ({ok: r.ok, data})))
+                .then(({ok, data}) => {
+                    const models = (data && data.models) || [];
+                    const selected = (data && data.selected) || '';
+                    const msg = (!ok || !models.length)
+                        ? ((data && data.error) || (!ok ? 'failed to load models' : ''))
+                        : '';
+                    setModelUi(models, selected, msg);
+                })
+                .catch(() => setModelUi([], '', 'failed to load models'));
+        }
+
+        function loadLlmProviders(selectedBackend) {
+            return fetch('/api/providers')
+                .then(r => r.json())
+                .then(data => {
+                    const select = document.getElementById('llm-backend');
+                    select.innerHTML = '';
+                    (data.providers || []).forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p.id;
+                        opt.textContent = p.name + ((!p.available && p.id !== 'auto') ? ' (unavailable)' : '');
+                        if (!p.available && p.id !== 'auto') opt.disabled = true;
+                        select.appendChild(opt);
+                    });
+                    const backend = selectedBackend || 'auto';
+                    if ([...select.options].some(o => o.value === backend)) select.value = backend;
+                    else select.value = 'auto';
+                })
+                .catch(() => {});
+        }
+
+        function refreshLlmChip() {
+            return fetch('/api/settings/provider')
+                .then(r => r.json())
+                .then(data => {
+                    const backend = data.backend || 'auto';
+                    const model = data.model || '';
+                    setLlmChip(backend, model);
+                    return {backend, model};
+                })
+                .catch(() => {
+                    document.getElementById('llm-chip-label').textContent = 'LLM?';
+                    document.getElementById('llm-chip').title = 'Could not load LLM setting';
+                });
+        }
+
+        function openLlmPopover() {
+            if (!llmIsAdmin) return;
+            setLlmPopoverOpen(true);
+            refreshLlmChip().then(cur => {
+                const backend = (cur && cur.backend) || 'auto';
+                return loadLlmProviders(backend)
+                    .then(() => fetchModels(backend))
+                    .then(() => { if (llmPopoverOpen) focusLlmPopover(); });
+            });
+        }
+
+        function onLlmBackendChange() {
+            const backend = document.getElementById('llm-backend').value;
+            setLlmErr('');
+            fetch('/api/settings/provider', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({backend})
+            }).then(r => r.json().then(data => ({ok: r.ok, data})).catch(() => ({ok: r.ok, data: null})))
+              .then(({ok, data}) => {
+                if (!ok) {
+                    setLlmErr((data && data.error) || 'failed to save provider');
+                    // Re-sync selects + chip with whatever the server still has.
+                    return refreshLlmChip().then(cur => {
+                        const b = (cur && cur.backend) || 'auto';
+                        return loadLlmProviders(b).then(() => fetchModels(b));
+                    });
+                }
+                return fetchModels(backend).then(() => refreshLlmChip());
+            }).catch(() => {
+                setLlmErr('failed to save provider');
+                return refreshLlmChip().then(cur => {
+                    const b = (cur && cur.backend) || 'auto';
+                    return loadLlmProviders(b).then(() => fetchModels(b));
+                });
+            });
+        }
+
+        function commitLlmModel(model) {
+            const backend = document.getElementById('llm-backend').value;
+            if (!model || backend === 'auto') return;
+            setLlmErr('');
+            fetch('/api/models/' + encodeURIComponent(backend) + '/select', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({model})
+            }).then(r => r.json().then(data => ({ok: r.ok, data})).catch(() => ({ok: r.ok, data: null})))
+              .then(({ok, data}) => {
+                if (ok) {
+                    setLlmChip(backend, model);
+                    return;
+                }
+                setLlmErr((data && data.error) || 'failed to save model');
+                return refreshLlmChip().then(cur => {
+                    const b = (cur && cur.backend) || backend;
+                    return fetchModels(b);
+                });
+            }).catch(() => {
+                setLlmErr('failed to save model');
+                return refreshLlmChip().then(cur => {
+                    const b = (cur && cur.backend) || backend;
+                    return fetchModels(b);
+                });
+            });
+        }
+
+        function onLlmModelChange() {
+            commitLlmModel(document.getElementById('llm-model').value);
+        }
+
+        function onLlmModelCustomChange() {
+            commitLlmModel(document.getElementById('llm-model-custom').value.trim());
+        }
+
+        document.getElementById('llm-chip').addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (!llmIsAdmin) return;
+            if (llmPopoverOpen) setLlmPopoverOpen(false);
+            else openLlmPopover();
+        });
+        document.getElementById('llm-backend').addEventListener('change', onLlmBackendChange);
+        document.getElementById('llm-model').addEventListener('change', onLlmModelChange);
+        document.getElementById('llm-model-custom').addEventListener('change', onLlmModelCustomChange);
+        document.addEventListener('click', (e) => {
+            if (!llmPopoverOpen) return;
+            if (!document.getElementById('llm-switcher').contains(e.target)) {
+                setLlmPopoverOpen(false);
+            }
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && llmPopoverOpen) setLlmPopoverOpen(false);
+        });
+
+        // Identity from nav.js (deferred) — wait for DOMContentLoaded so CFOP exists.
+        document.addEventListener('DOMContentLoaded', () => {
+            if (window.CFOP && CFOP.me) {
+                CFOP.me().then(who => {
+                    llmIsAdmin = !!(who && (who.role === 'admin' || who.auth_disabled));
+                    refreshLlmChip();
+                }).catch(() => refreshLlmChip());
+            } else {
+                refreshLlmChip();
+            }
+        });
 
         // Restore or create chat session
         const savedSession = localStorage.getItem('cfoperator_chat_session');

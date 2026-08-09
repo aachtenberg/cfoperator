@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<!--
+  Admin panel: users, API tokens, and LLM runtime configuration.
+  Markup is not role-gated (same as the old /users and /tokens pages); every
+  /api/* call is authorised server-side. Members who land here see a banner.
+  Self-service password + own tokens live at /account.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFOperator · Admin</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
+    --border:#2a2a3a; --border-subtle:#1e1e2e;
+    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
+    --accent:#22c55e; --accent-dim:#166534; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444;
+    --purple:#a371f7;
+    --radius:10px; --radius-sm:6px; --header-height:56px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
+    font-family:'Inter',-apple-system,sans-serif; font-size:14px; }
+  header { height:var(--header-height); background:var(--bg-secondary);
+    border-bottom:1px solid var(--border); display:flex; align-items:center;
+    padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
+  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700;
+    color:var(--accent); letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
+  .logo svg { width:24px; height:24px; opacity:.9; }
+  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
+  .muted { color:var(--text-secondary); font-size:12px; }
+  a { color:var(--cyan); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+
+  .tabs { display:flex; gap:8px; padding:14px 20px 0; border-bottom:1px solid var(--border-subtle); }
+  .tab { background:transparent; border:1px solid transparent; border-bottom:none;
+    color:var(--text-secondary); border-radius:var(--radius-sm) var(--radius-sm) 0 0;
+    padding:8px 14px; cursor:pointer; font-family:'JetBrains Mono',monospace; font-size:13px; }
+  .tab:hover { color:var(--text-primary); }
+  .tab[aria-selected="true"] { color:var(--accent); border-color:var(--border);
+    background:var(--bg-secondary); font-weight:600; }
+  .panel { display:none; padding-bottom:40px; }
+  .panel.active { display:block; }
+
+  .divider { margin:24px 20px 2px; padding-top:14px; border-top:1px solid var(--border);
+    font-family:'JetBrains Mono',monospace; font-size:12px; text-transform:uppercase;
+    letter-spacing:.06em; color:var(--text-secondary); }
+  .section { padding:0 20px; }
+  .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; padding:0 20px; }
+
+  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:var(--radius-sm); padding:5px 11px; cursor:pointer; font-size:13px;
+    font-family:inherit; transition:border-color .15s,background .15s; }
+  .chip:hover { border-color:var(--text-secondary); }
+  .chip.danger { border-color:#7f1d1d; color:var(--red); }
+  .chip.danger:hover { border-color:var(--red); }
+  .chip:disabled { opacity:.5; cursor:default; }
+  .chip.primary { border-color:var(--accent); color:var(--accent); }
+
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
+  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
+  td { font-size:13px; }
+  tbody tr:hover { background:var(--bg-hover); }
+  tbody tr.inactive td { opacity:.55; }
+  tbody tr.dead td { opacity:.5; }
+  tbody tr.dead td.label { text-decoration:line-through; }
+  tbody tr.formrow:hover { background:transparent; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
+    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
+  .scopes { display:inline-flex; gap:4px; flex-wrap:wrap; }
+  .acts { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .empty { padding:40px; text-align:center; color:var(--text-muted); }
+
+  select, input[type="number"], input[type="text"], input[type="password"], input:not([type]) {
+    background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border);
+    border-radius:var(--radius-sm); padding:5px 8px; font-family:'JetBrains Mono',monospace;
+    font-size:13px; outline:none; }
+  select:focus, input:focus { border-color:var(--accent); }
+  input[type="checkbox"] { accent-color:var(--accent); }
+  .actform { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-sm);
+    padding:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 12px; }
+  .actform label { color:var(--text-secondary); font-size:12px; }
+  .scopepick { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+  .scopepick label { display:inline-flex; gap:5px; align-items:center; color:var(--text-primary);
+    font-family:'JetBrains Mono',monospace; font-size:13px; cursor:pointer; }
+
+  .card { background:var(--bg-secondary); border:1px solid var(--border); border-radius:var(--radius);
+    padding:14px 16px; }
+  .card h3 { margin:0 0 10px; font-family:'JetBrains Mono',monospace; font-size:13px;
+    text-transform:uppercase; letter-spacing:.04em; color:var(--text-secondary); }
+  .field { display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
+  .field label { color:var(--text-secondary); font-size:12px; }
+  .field-row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .toggle-switch { position:relative; display:inline-block; width:36px; height:20px; }
+  .toggle-switch input { opacity:0; width:0; height:0; }
+  .toggle-slider { position:absolute; cursor:pointer; inset:0; background:var(--bg-tertiary);
+    border:1px solid var(--border); border-radius:20px; transition:.15s; }
+  .toggle-slider:before { content:''; position:absolute; height:14px; width:14px; left:2px; top:2px;
+    background:var(--text-secondary); border-radius:50%; transition:.15s; }
+  .toggle-switch input:checked + .toggle-slider { background:var(--accent-dim); border-color:var(--accent); }
+  .toggle-switch input:checked + .toggle-slider:before { transform:translateX(16px); background:var(--accent); }
+  .pool-instance { display:flex; gap:8px; align-items:center; margin:4px 0; font-size:13px; }
+  .eff-row { display:flex; justify-content:space-between; gap:12px; padding:6px 0;
+    border-bottom:1px solid var(--border-subtle); font-size:13px; }
+  .eff-row:last-child { border-bottom:none; }
+
+  .banner { margin:14px 20px 0; padding:10px 14px; border-radius:var(--radius-sm);
+    border:1px solid var(--border); border-left:3px solid var(--cyan);
+    background:var(--bg-secondary); font-size:13px; }
+  .banner.err { border-left-color:var(--red); color:var(--red); }
+  .banner.warn { border-left-color:var(--orange); }
+
+  #secret { margin:14px 20px 0; padding:14px 16px; border:1px solid var(--orange);
+    border-left:4px solid var(--orange); border-radius:var(--radius);
+    background:rgba(245,158,11,.08); }
+  #secret h3 { margin:0 0 6px; font-family:'JetBrains Mono',monospace; font-size:14px; color:var(--orange); }
+  #secret .warn { color:var(--orange); font-size:13px; margin:0 0 10px; }
+  #secret .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #secret input { flex:1; min-width:260px; font-size:14px; letter-spacing:.02em; }
+
+  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
+  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
+    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
+    font-size:13px; min-width:200px; transition:opacity .2s; }
+  .toast.ok { border-left-color:var(--accent); }
+  .toast.err { border-left-color:var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" class="logo" style="text-decoration:none" title="Back to console">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+    </svg>
+    CFOperator <span class="sub">/ Admin</span>
+  </a>
+  <div id="cfop-nav"></div>
+</header>
+<script src="/nav.js" defer></script>
+
+<div class="banner" id="banner" hidden></div>
+
+<nav class="tabs" role="tablist" aria-label="Admin sections">
+  <button type="button" class="tab" role="tab" data-tab="users" aria-selected="false">Users</button>
+  <button type="button" class="tab" role="tab" data-tab="tokens" aria-selected="false">Tokens</button>
+  <button type="button" class="tab" role="tab" data-tab="llm" aria-selected="false">LLM</button>
+</nav>
+
+<!-- ── Users ── -->
+<section class="panel" id="panel-users" role="tabpanel">
+  <div class="divider">Accounts <span class="muted" id="user-count"></span></div>
+  <div class="section">
+    <div class="actform">
+      <label for="nu-user">username</label>
+      <input id="nu-user" type="text" placeholder="alice" autocomplete="off" style="min-width:150px">
+      <label for="nu-pass">password</label>
+      <input id="nu-pass" type="password" placeholder="password" autocomplete="new-password" style="min-width:170px">
+      <label for="nu-role">role</label>
+      <select id="nu-role">
+        <option value="member">member</option>
+        <option value="admin">admin</option>
+      </select>
+      <button class="chip" id="nu-btn" onclick="createUser()">+ Create user</button>
+    </div>
+  </div>
+  <table>
+    <thead><tr>
+      <th>Username</th><th>Role</th><th>Status</th><th>Created</th><th>Last login</th><th>Actions</th>
+    </tr></thead>
+    <tbody id="user-rows"></tbody>
+  </table>
+  <div id="user-empty" class="empty" hidden>No users.</div>
+</section>
+
+<!-- ── Tokens ── -->
+<section class="panel" id="panel-tokens" role="tabpanel">
+  <div id="secret" hidden>
+    <h3>Copy this token now</h3>
+    <p class="warn">This is the only time the secret is shown. It is not stored in
+       recoverable form — if you lose it, revoke this token and create a new one.</p>
+    <div class="row">
+      <input id="secret-val" type="text" readonly onclick="this.select()">
+      <button class="chip" onclick="copySecret()">Copy</button>
+      <button class="chip" onclick="dismissSecret()">I saved it — hide</button>
+    </div>
+    <p class="muted" id="secret-meta" style="margin:8px 0 0"></p>
+  </div>
+
+  <div class="divider">New token</div>
+  <div class="section">
+    <div class="actform" style="flex-direction:column; align-items:stretch; gap:10px">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        <label for="nt-label">label</label>
+        <input id="nt-label" type="text" placeholder="ci-runner" autocomplete="off" style="min-width:200px">
+        <label for="nt-days">expires in (days)</label>
+        <input id="nt-days" type="number" min="1" max="3650" step="1" placeholder="never" style="width:110px">
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:6px">
+          scopes — these nest: <b>remediate</b> implies <b>investigate</b> implies <b>read</b>.
+        </div>
+        <div class="scopepick" id="nt-scopes">
+          <label><input type="checkbox" value="read" checked> read</label>
+          <label><input type="checkbox" value="investigate"> investigate</label>
+          <label><input type="checkbox" value="remediate"> remediate</label>
+        </div>
+      </div>
+      <div>
+        <button class="chip" id="nt-btn" onclick="createToken()">+ Create token</button>
+      </div>
+    </div>
+  </div>
+  <div class="divider">Tokens <span class="muted" id="tok-count"></span></div>
+  <table>
+    <thead><tr>
+      <th>Label</th><th>Prefix</th><th>Scopes</th><th>Status</th>
+      <th>Created</th><th>Last used</th><th>Expires</th><th></th>
+    </tr></thead>
+    <tbody id="tok-rows"></tbody>
+  </table>
+  <div id="tok-empty" class="empty" hidden>No tokens.</div>
+</section>
+
+<!-- ── LLM ── -->
+<section class="panel" id="panel-llm" role="tabpanel">
+  <div class="divider">Effective configuration</div>
+  <div class="section">
+    <p class="muted" style="margin:8px 0 12px">
+      Read-only view of what the agent can use. Provider URLs and API keys stay in
+      <code>config.yaml</code> / sealed secrets — never shown here.
+    </p>
+    <div class="card" id="eff-card">
+      <div class="muted">Loading…</div>
+    </div>
+  </div>
+
+  <div class="divider">Runtime selection</div>
+  <div class="grid2">
+    <div class="card">
+      <h3>Provider &amp; model</h3>
+      <div class="field">
+        <label for="llm-backend">Backend</label>
+        <select id="llm-backend"><option value="auto">Auto</option></select>
+      </div>
+      <div class="field">
+        <label for="model-select">Model</label>
+        <select id="model-select"><option value="">—</option></select>
+      </div>
+      <div class="field-row">
+        <span class="muted">Allow paid LLM fallback</span>
+        <label class="toggle-switch" title="Allow fallback to paid LLM providers">
+          <input type="checkbox" id="fallback-toggle" onchange="onFallbackToggle()">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </div>
+    <div class="card">
+      <h3>OODA</h3>
+      <div class="field">
+        <label for="max-iterations">Max tool calls</label>
+        <input type="number" id="max-iterations" min="1" max="50" value="10" onchange="onMaxIterationsChange()">
+      </div>
+      <div class="field">
+        <label for="alert-interval">Alert interval (seconds)</label>
+        <input type="number" id="alert-interval" min="5" max="300" value="10" onchange="onAlertIntervalChange()">
+      </div>
+      <div class="field">
+        <label for="sweep-interval">Sweep interval (minutes)</label>
+        <input type="number" id="sweep-interval" min="1" max="1440" value="30" onchange="onSweepIntervalChange()">
+      </div>
+    </div>
+  </div>
+
+  <div class="divider">Ollama pool</div>
+  <div class="section">
+    <div class="card" id="pool-card">
+      <div class="muted" id="pool-empty">No pool configured.</div>
+      <div id="pool-toggles"></div>
+    </div>
+  </div>
+
+  <div class="divider">Config file</div>
+  <div class="section">
+    <p class="muted" style="margin:8px 0 12px">
+      Hot-reload <code>config.yaml</code> after editing hosts / LLM base settings on disk.
+    </p>
+    <button class="chip primary" id="reload-btn" onclick="reloadConfig()">Reload config.yaml</button>
+    <span class="muted" id="reload-status" style="margin-left:10px"></span>
+  </div>
+</section>
+
+<div id="toasts"></div>
+
+<script>
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
+  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function parseTs(iso){
+  if(!iso) return null;
+  const raw = String(iso).trim();
+  if(!/^\d{4}-\d\d-\d\d/.test(raw)) return null;
+  const s = raw.replace(/^(\d{4}-\d\d-\d\d) /, '$1T');
+  const bare = /\d\d:\d\d/.test(s) && !/(Z|[+-]\d\d:?\d\d)$/.test(s);
+  const d = new Date(bare ? s + 'Z' : s);
+  return isNaN(d.getTime()) ? null : d;
+}
+function fmt(iso){
+  if(!iso) return '—';
+  const d = parseTs(iso);
+  return d ? d.toLocaleString() : esc(iso);
+}
+function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
+function badge(text, varname){ const c=color(varname);
+  return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(text)||'—'}</span>`; }
+function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
+  const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
+  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, 3800); }
+function banner(msg, kind){
+  const b=document.getElementById('banner');
+  if(!msg){ b.hidden=true; b.textContent=''; return; }
+  b.hidden=false; b.className='banner '+(kind||''); b.textContent=msg;
+}
+function errMsg(status, data){
+  const detail = (data && data.error) ? String(data.error) : '';
+  if(status===401) return 'your session has expired — sign in again at /login';
+  if(status===403) return 'you do not have permission' + (detail?' — '+detail:'');
+  if(status===503) return 'authentication backend unavailable' + (detail?' — '+detail:'');
+  if(status===0)   return 'could not reach the server';
+  return detail || ('request failed ('+status+')');
+}
+async function api(path, opts){
+  const o = Object.assign({credentials:'same-origin'}, opts||{});
+  if(o.body) o.headers = Object.assign({'Content-Type':'application/json'}, o.headers||{});
+  let res;
+  try { res = await fetch(path, o); }
+  catch(e){ return {ok:false, status:0, error:errMsg(0,null)}; }
+  let data=null; try { data = await res.json(); } catch(e){ data=null; }
+  if(!res.ok) return {ok:false, status:res.status, error:errMsg(res.status, data), data};
+  return {ok:true, status:res.status, data};
+}
+
+let ME = null;
+function isAdmin(){ return !!(ME && (ME.role === 'admin' || ME.auth_disabled)); }
+
+const TABS = ['users','tokens','llm'];
+function currentTab(){
+  const q = new URLSearchParams(location.search).get('tab');
+  return TABS.includes(q) ? q : 'users';
+}
+function showTab(tab){
+  if(!TABS.includes(tab)) tab = 'users';
+  document.querySelectorAll('.tab').forEach(btn=>{
+    btn.setAttribute('aria-selected', btn.dataset.tab === tab ? 'true' : 'false');
+  });
+  document.querySelectorAll('.panel').forEach(p=>{
+    p.classList.toggle('active', p.id === 'panel-'+tab);
+  });
+  const url = new URL(location.href);
+  url.searchParams.set('tab', tab);
+  history.replaceState(null, '', url.pathname + '?' + url.searchParams.toString());
+  if(tab === 'llm') loadLlm();
+  if(tab === 'users') loadUsers();
+  if(tab === 'tokens') loadTokens();
+}
+document.querySelector('.tabs').addEventListener('click', (e)=>{
+  const btn = e.target.closest('.tab');
+  if(btn) showTab(btn.dataset.tab);
+});
+
+async function loadMe(){
+  try { ME = await CFOP.me(); }
+  catch(e){ banner('could not load your account details — ' + e.message, 'err'); return false; }
+  if(!isAdmin()){
+    banner('This page is for admins. Password and your own tokens are at /account.', 'warn');
+  } else if(ME.auth_disabled){
+    banner('Authentication is disabled on this server — every request is treated as an admin.', 'warn');
+  }
+  return true;
+}
+
+/* ── Users ── */
+let USERS = [];
+async function loadUsers(){
+  if(!isAdmin()){
+    document.getElementById('user-rows').innerHTML = '';
+    document.getElementById('user-empty').hidden = false;
+    document.getElementById('user-empty').textContent = 'Admin role required.';
+    return;
+  }
+  const r = await api('/api/auth/users');
+  if(!r.ok){
+    USERS = [];
+    document.getElementById('user-rows').innerHTML = '';
+    document.getElementById('user-empty').hidden = false;
+    document.getElementById('user-empty').textContent = r.error;
+    document.getElementById('user-count').textContent = '';
+    if(r.status!==403) banner(r.error,'err');
+    return;
+  }
+  USERS = Array.isArray(r.data) ? r.data : (r.data && r.data.users) || [];
+  renderUsers();
+}
+function roleSelect(u){
+  const opts = ['member','admin'].map(v=>
+    `<option value="${v}"${v===u.role?' selected':''}>${v}</option>`).join('');
+  return `<select data-act="role" data-id="${Number(u.id)}" title="Change role">${opts}</select>`;
+}
+function userRowHtml(u){
+  const id = Number(u.id);
+  const active = !!u.is_active;
+  return `<tr class="${active?'':'inactive'}">
+    <td class="mono">${esc(u.username)}</td>
+    <td>${badge(u.role, u.role==='admin'?'--purple':'--cyan')}</td>
+    <td>${badge(active?'active':'inactive', active?'--accent':'--text-muted')}</td>
+    <td class="muted">${fmt(u.created_at)}</td>
+    <td class="muted">${fmt(u.last_login_at)}</td>
+    <td><div class="acts">
+      ${roleSelect(u)}
+      <button class="chip${active?' danger':''}" data-act="${active?'deactivate':'reactivate'}" data-id="${id}">${active?'Deactivate':'Reactivate'}</button>
+      <button class="chip" data-act="pw" data-id="${id}">Reset password</button>
+    </div></td>
+  </tr>
+  <tr class="formrow" id="uf-${id}" hidden><td colspan="6"><div class="formbody"></div></td></tr>`;
+}
+function renderUsers(){
+  document.getElementById('user-rows').innerHTML = USERS.map(userRowHtml).join('');
+  document.getElementById('user-empty').hidden = USERS.length>0;
+  document.getElementById('user-empty').textContent = 'No users.';
+  document.getElementById('user-count').textContent = USERS.length ? `(${USERS.length})` : '';
+}
+function userById(id){ return USERS.find(u=>Number(u.id)===Number(id)) || {}; }
+function userFormRow(id){ return document.getElementById('uf-'+Number(id)); }
+function closeUserForm(id){
+  const tr = userFormRow(id); if(!tr) return;
+  tr.hidden = true; tr.querySelector('.formbody').innerHTML = '';
+}
+function openUserForm(id, html){
+  document.querySelectorAll('#user-rows tr.formrow').forEach(tr=>{ tr.hidden=true; tr.querySelector('.formbody').innerHTML=''; });
+  const tr = userFormRow(id); if(!tr) return;
+  tr.querySelector('.formbody').innerHTML = html; tr.hidden = false;
+}
+document.getElementById('user-rows').addEventListener('click', (e)=>{
+  const el = e.target.closest('[data-act]');
+  if(!el || el.tagName === 'SELECT') return;
+  const id = Number(el.dataset.id);
+  const act = el.dataset.act;
+  if(act==='deactivate' || act==='reactivate') confirmActive(id, act==='reactivate');
+  else if(act==='pw') showResetPassword(id);
+  else if(act==='pw-save') saveResetPassword(id);
+  else if(act==='active-save') setActive(id, el.dataset.value === '1');
+  else if(act==='cancel') closeUserForm(id);
+});
+document.getElementById('user-rows').addEventListener('change', (e)=>{
+  const el = e.target.closest('select[data-act="role"]');
+  if(!el) return;
+  setRole(Number(el.dataset.id), el.value);
+});
+function confirmActive(id, activate){
+  const u = userById(id);
+  openUserForm(id, `<div class="actform">
+      <span class="muted">${activate?'Reactivate':'Deactivate'} <b class="mono">${esc(u.username)}</b>?
+        ${activate?'They will be able to sign in again.':'Their sessions stop working and sign-in is refused.'}</span>
+      <button class="chip${activate?'':' danger'}" data-act="active-save" data-id="${Number(id)}" data-value="${activate?1:0}">Yes, ${activate?'reactivate':'deactivate'}</button>
+      <button class="chip" data-act="cancel" data-id="${Number(id)}">Cancel</button>
+    </div>`);
+}
+async function setActive(id, activate){
+  const r = await api('/api/auth/users/'+Number(id), {method:'PATCH', body:JSON.stringify({is_active:activate})});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast(activate?'account reactivated':'account deactivated','ok');
+  closeUserForm(id); await loadUsers();
+}
+async function setRole(id, role){
+  const r = await api('/api/auth/users/'+Number(id), {method:'PATCH', body:JSON.stringify({role})});
+  if(!r.ok){ toast(r.error,'err'); await loadUsers(); return; }
+  toast('role → '+role,'ok'); await loadUsers();
+}
+function showResetPassword(id){
+  const u = userById(id);
+  openUserForm(id, `<div class="actform">
+      <span class="muted">New password for <b class="mono">${esc(u.username)}</b></span>
+      <input id="rp-a" type="password" autocomplete="new-password" placeholder="new password" style="min-width:170px">
+      <input id="rp-b" type="password" autocomplete="new-password" placeholder="repeat" style="min-width:150px">
+      <button class="chip" data-act="pw-save" data-id="${Number(id)}">Set password</button>
+      <button class="chip" data-act="cancel" data-id="${Number(id)}">Cancel</button>
+    </div>`);
+  const el = document.getElementById('rp-a'); if(el) el.focus();
+}
+async function saveResetPassword(id){
+  const a = document.getElementById('rp-a'), b = document.getElementById('rp-b');
+  if(!a || !b) return;
+  if(!a.value){ toast('password is required','err'); return; }
+  if(a.value !== b.value){ toast('passwords do not match','err'); return; }
+  const r = await api('/api/auth/users/'+Number(id)+'/password', {method:'POST', body:JSON.stringify({password:a.value})});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('password reset','ok'); closeUserForm(id); await loadUsers();
+}
+async function createUser(){
+  const user = document.getElementById('nu-user').value.trim();
+  const pass = document.getElementById('nu-pass').value;
+  const role = document.getElementById('nu-role').value;
+  if(!user || !pass){ toast('username and password are required','err'); return; }
+  const btn = document.getElementById('nu-btn'); btn.disabled = true;
+  const r = await api('/api/auth/users', {method:'POST', body:JSON.stringify({username:user, password:pass, role})});
+  btn.disabled = false;
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('created '+user+' ('+role+')','ok');
+  document.getElementById('nu-user').value = '';
+  document.getElementById('nu-pass').value = '';
+  await loadUsers();
+}
+
+/* ── Tokens ── */
+const SCOPES = ['read','investigate','remediate'];
+const scopeBoxes = () => Array.from(document.querySelectorAll('#nt-scopes input[type=checkbox]'));
+document.getElementById('nt-scopes').addEventListener('change', (e)=>{
+  const box = e.target;
+  if(!box || box.type !== 'checkbox') return;
+  const i = SCOPES.indexOf(box.value);
+  if(i < 0) return;
+  const boxes = scopeBoxes();
+  boxes.forEach(b=>{
+    const j = SCOPES.indexOf(b.value);
+    if(box.checked && j < i) b.checked = true;
+    if(!box.checked && j > i) b.checked = false;
+  });
+});
+function selectedScopes(){ return scopeBoxes().filter(b=>b.checked).map(b=>b.value); }
+
+function showSecret(row){
+  const el = document.getElementById('secret');
+  document.getElementById('secret-val').value = row.secret || '';
+  const bits = [];
+  if(row.label) bits.push('label ' + row.label);
+  if(row.token_prefix) bits.push('prefix ' + row.token_prefix);
+  if(Array.isArray(row.scopes) && row.scopes.length) bits.push('scopes ' + row.scopes.join(', '));
+  bits.push(row.expires_at ? ('expires ' + fmt(row.expires_at)) : 'no expiry');
+  document.getElementById('secret-meta').textContent = bits.join(' · ');
+  el.hidden = false;
+  el.scrollIntoView({block:'nearest'});
+}
+function dismissSecret(){
+  document.getElementById('secret-val').value = '';
+  document.getElementById('secret-meta').textContent = '';
+  document.getElementById('secret').hidden = true;
+}
+function copySecret(){
+  const input = document.getElementById('secret-val');
+  if(!input.value){ return; }
+  const fallback = ()=>{
+    input.focus(); input.select();
+    let ok=false; try { ok = document.execCommand('copy'); } catch(e){ ok=false; }
+    toast(ok ? 'token copied to clipboard' : 'copy failed — select the text and copy manually', ok?'ok':'err');
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(input.value)
+      .then(()=>toast('token copied to clipboard','ok'))
+      .catch(fallback);
+  } else { fallback(); }
+}
+
+let TOKENS = [];
+async function loadTokens(){
+  const r = await api('/api/auth/tokens');
+  if(!r.ok){
+    TOKENS = [];
+    document.getElementById('tok-rows').innerHTML = '';
+    document.getElementById('tok-empty').hidden = false;
+    document.getElementById('tok-empty').textContent = r.error;
+    document.getElementById('tok-count').textContent = '';
+    if(r.status!==403) banner(r.error,'err');
+    return;
+  }
+  TOKENS = Array.isArray(r.data) ? r.data : (r.data && r.data.tokens) || [];
+  renderTokens();
+}
+function statusOf(t){
+  if(t.status) return String(t.status);
+  if(t.revoked_at) return 'revoked';
+  const exp = parseTs(t.expires_at);
+  if(exp && exp.getTime() < Date.now()) return 'expired';
+  return 'active';
+}
+const STATUS_COLOR = {active:'--accent', revoked:'--red', expired:'--orange'};
+function tokRowHtml(t){
+  const id = Number(t.id);
+  const st = statusOf(t);
+  const dead = st !== 'active';
+  const scopes = Array.isArray(t.scopes) ? t.scopes
+    : (t.scopes ? String(t.scopes).split(/[,\s]+/).filter(Boolean) : []);
+  const scopeHtml = scopes.length
+    ? `<span class="scopes">${scopes.map(s=>badge(s,'--cyan')).join('')}</span>` : '<span class="muted">—</span>';
+  return `<tr class="${dead?'dead':''}">
+    <td class="label">${esc(t.label)}<div class="muted">by ${esc(t.created_by)||'—'}</div></td>
+    <td class="mono">${esc(t.token_prefix)}…</td>
+    <td>${scopeHtml}</td>
+    <td>${badge(st, STATUS_COLOR[st]||'--text-muted')}
+      ${st==='revoked'&&t.revoked_at?`<div class="muted">${fmt(t.revoked_at)}</div>`:''}</td>
+    <td class="muted">${fmt(t.created_at)}</td>
+    <td class="muted">${fmt(t.last_used_at)}</td>
+    <td class="muted">${t.expires_at?fmt(t.expires_at):'never'}</td>
+    <td>${dead?'' : `<button class="chip danger" data-act="revoke" data-id="${id}">Revoke</button>`}</td>
+  </tr>
+  <tr class="formrow" id="tf-${id}" hidden><td colspan="8"><div class="formbody"></div></td></tr>`;
+}
+function renderTokens(){
+  document.getElementById('tok-rows').innerHTML = TOKENS.map(tokRowHtml).join('');
+  const live = TOKENS.filter(t=>statusOf(t)==='active').length;
+  document.getElementById('tok-empty').hidden = TOKENS.length>0;
+  document.getElementById('tok-empty').textContent = 'No tokens.';
+  document.getElementById('tok-count').textContent =
+    TOKENS.length ? `(${live} active of ${TOKENS.length})` : '';
+}
+function tokenById(id){ return TOKENS.find(t=>Number(t.id)===Number(id)) || {}; }
+function tokFormRow(id){ return document.getElementById('tf-'+Number(id)); }
+function closeTokForm(id){
+  const tr = tokFormRow(id); if(!tr) return;
+  tr.hidden = true; tr.querySelector('.formbody').innerHTML = '';
+}
+function openTokForm(id, html){
+  document.querySelectorAll('#tok-rows tr.formrow').forEach(tr=>{ tr.hidden=true; tr.querySelector('.formbody').innerHTML=''; });
+  const tr = tokFormRow(id); if(!tr) return;
+  tr.querySelector('.formbody').innerHTML = html; tr.hidden = false;
+}
+document.getElementById('tok-rows').addEventListener('click', (e)=>{
+  const el = e.target.closest('[data-act]');
+  if(!el) return;
+  const id = Number(el.dataset.id);
+  const act = el.dataset.act;
+  if(act==='revoke') confirmRevoke(id);
+  else if(act==='revoke-save') revoke(id);
+  else if(act==='cancel') closeTokForm(id);
+});
+function confirmRevoke(id){
+  const t = tokenById(id);
+  openTokForm(id, `<div class="actform">
+      <span class="muted">Revoke <b class="mono">${esc(t.label)}</b> (${esc(t.token_prefix)}…)?
+        Anything still using this token starts failing immediately. This cannot be undone.</span>
+      <button class="chip danger" data-act="revoke-save" data-id="${Number(id)}">Yes, revoke</button>
+      <button class="chip" data-act="cancel" data-id="${Number(id)}">Cancel</button>
+    </div>`);
+}
+async function revoke(id){
+  const r = await api('/api/auth/tokens/'+Number(id), {method:'DELETE'});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('token revoked','ok');
+  closeTokForm(id); await loadTokens();
+}
+async function createToken(){
+  const label = document.getElementById('nt-label').value.trim();
+  const scopes = selectedScopes();
+  const daysRaw = document.getElementById('nt-days').value.trim();
+  if(!label){ toast('a label is required','err'); return; }
+  if(!scopes.length){ toast('pick at least one scope','err'); return; }
+  const body = {label, scopes};
+  if(daysRaw !== ''){
+    const days = Number(daysRaw);
+    if(!isFinite(days) || days <= 0){ toast('expiry must be a positive number of days','err'); return; }
+    body.expires_in_days = Math.floor(days);
+  }
+  const btn = document.getElementById('nt-btn'); btn.disabled = true;
+  const r = await api('/api/auth/tokens', {method:'POST', body:JSON.stringify(body)});
+  btn.disabled = false;
+  if(!r.ok){ toast(r.error,'err'); return; }
+  const row = r.data || {};
+  if(row.secret) showSecret(row);
+  else toast('token created, but the server returned no secret','err');
+  document.getElementById('nt-label').value = '';
+  document.getElementById('nt-days').value = '';
+  toast('created token '+label,'ok');
+  await loadTokens();
+}
+
+/* ── LLM ── */
+let llmLoaded = false;
+async function loadLlm(){
+  if(!isAdmin()){
+    document.getElementById('eff-card').innerHTML = '<div class="muted">Admin role required.</div>';
+    return;
+  }
+  await Promise.all([loadEffective(), loadProvidersAndSettings(), loadPoolToggles()]);
+  llmLoaded = true;
+}
+async function loadEffective(){
+  const [prov, sel, fb] = await Promise.all([
+    api('/api/providers'),
+    api('/api/settings/provider'),
+    api('/api/settings/fallback'),
+  ]);
+  const card = document.getElementById('eff-card');
+  if(!prov.ok){ card.innerHTML = `<div class="muted">${esc(prov.error)}</div>`; return; }
+  const providers = (prov.data && prov.data.providers) || [];
+  const backend = (sel.ok && sel.data && sel.data.backend) || 'auto';
+  const model = (sel.ok && sel.data && sel.data.model) || '';
+  const paid = !!(fb.ok && fb.data && fb.data.allow_paid_escalation);
+  const rows = providers.map(p => {
+    const avail = p.available ? 'available' : 'unavailable';
+    const col = p.available ? '--accent' : '--text-muted';
+    return `<div class="eff-row"><span>${esc(p.name)} <span class="muted">(${esc(p.id)})</span></span>${badge(avail, col)}</div>`;
+  }).join('');
+  card.innerHTML =
+    `<div class="eff-row"><span>Selected backend</span><span class="mono">${esc(backend||'auto')}</span></div>` +
+    `<div class="eff-row"><span>Selected model</span><span class="mono">${esc(model)||'—'}</span></div>` +
+    `<div class="eff-row"><span>Paid fallback</span>${badge(paid?'enabled':'disabled', paid?'--orange':'--text-muted')}</div>` +
+    `<div style="margin-top:10px" class="muted">Providers</div>${rows}`;
+}
+function fetchModels(backend){
+  const modelSelect = document.getElementById('model-select');
+  if(!backend || backend === 'auto'){
+    modelSelect.innerHTML = '<option value="">(auto)</option>';
+    modelSelect.disabled = true;
+    return;
+  }
+  modelSelect.disabled = false;
+  modelSelect.innerHTML = '<option value="">Loading...</option>';
+  fetch(`/api/models/${backend}`)
+    .then(r => r.json())
+    .then(data => {
+      if(data.models && data.models.length > 0){
+        modelSelect.innerHTML = data.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+        if(data.selected && data.models.includes(data.selected)) modelSelect.value = data.selected;
+      } else {
+        modelSelect.innerHTML = '<option value="">No models</option>';
+      }
+    })
+    .catch(() => { modelSelect.innerHTML = '<option value="">Error</option>'; });
+}
+async function loadProvidersAndSettings(){
+  const prov = await api('/api/providers');
+  const select = document.getElementById('llm-backend');
+  select.innerHTML = '';
+  if(prov.ok){
+    (prov.data.providers || []).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      opt.textContent = p.name + ((!p.available && p.id !== 'auto') ? ' (unavailable)' : '');
+      if(!p.available && p.id !== 'auto') opt.disabled = true;
+      select.appendChild(opt);
+    });
+  }
+  const sel = await api('/api/settings/provider');
+  const backend = (sel.ok && sel.data && sel.data.backend) || 'auto';
+  select.value = backend;
+  fetchModels(backend);
+
+  const max = await api('/api/settings/max_tool_iterations');
+  if(max.ok) document.getElementById('max-iterations').value = max.data.max_tool_iterations;
+
+  const ooda = await api('/api/settings/ooda');
+  if(ooda.ok){
+    document.getElementById('alert-interval').value = ooda.data.alert_check_interval;
+    document.getElementById('sweep-interval').value = Math.round(ooda.data.sweep_interval / 60);
+  }
+
+  const fb = await api('/api/settings/fallback');
+  if(fb.ok) document.getElementById('fallback-toggle').checked = !!fb.data.allow_paid_escalation;
+}
+function onBackendChange(){
+  const backend = document.getElementById('llm-backend').value;
+  fetch('/api/settings/provider', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({backend})
+  }).then(r => { if(!r.ok) toast('failed to save provider','err'); else { toast('provider → '+backend,'ok'); loadEffective(); }})
+    .catch(() => toast('failed to save provider','err'));
+  fetchModels(backend);
+}
+function onModelChange(){
+  const backend = document.getElementById('llm-backend').value;
+  const model = document.getElementById('model-select').value;
+  if(!model || backend === 'auto') return;
+  fetch(`/api/models/${backend}/select`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({model})
+  }).then(r => { if(!r.ok) toast('failed to save model','err'); else { toast('model → '+model,'ok'); loadEffective(); }})
+    .catch(() => toast('failed to save model','err'));
+}
+function onFallbackToggle(){
+  const enabled = document.getElementById('fallback-toggle').checked;
+  fetch('/api/settings/fallback', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({allow_paid_escalation: enabled})
+  }).then(r => { if(!r.ok) toast('failed to save fallback','err'); else loadEffective(); })
+    .catch(() => toast('failed to save fallback','err'));
+}
+function flashInput(el, ok){
+  el.style.borderColor = ok ? 'var(--accent)' : 'var(--red)';
+  setTimeout(() => { el.style.borderColor = ''; }, 2000);
+}
+function onMaxIterationsChange(){
+  const el = document.getElementById('max-iterations');
+  const val = Math.max(1, Math.min(50, parseInt(el.value) || 10));
+  el.value = val;
+  fetch('/api/settings/max_tool_iterations', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({max_tool_iterations: val})
+  }).then(r => flashInput(el, r.ok)).catch(() => flashInput(el, false));
+}
+function onAlertIntervalChange(){
+  const el = document.getElementById('alert-interval');
+  const val = Math.max(5, Math.min(300, parseInt(el.value) || 10));
+  el.value = val;
+  fetch('/api/settings/ooda', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({alert_check_interval: val})
+  }).then(r => flashInput(el, r.ok)).catch(() => flashInput(el, false));
+}
+function onSweepIntervalChange(){
+  const el = document.getElementById('sweep-interval');
+  const val = Math.max(1, Math.min(1440, parseInt(el.value) || 30));
+  el.value = val;
+  fetch('/api/settings/ooda', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sweep_interval: val * 60})
+  }).then(r => flashInput(el, r.ok)).catch(() => flashInput(el, false));
+}
+async function loadPoolToggles(){
+  const r = await api('/api/pool/status');
+  const empty = document.getElementById('pool-empty');
+  const box = document.getElementById('pool-toggles');
+  if(!r.ok || !r.data.instances || r.data.instances.length === 0){
+    empty.hidden = false; empty.textContent = 'No pool configured.';
+    box.innerHTML = '';
+    return;
+  }
+  empty.hidden = true;
+  box.innerHTML = r.data.instances.map(inst => {
+    const color = !inst.enabled ? 'var(--text-muted)' : inst.healthy ? 'var(--accent)' : 'var(--red)';
+    return `<div class="pool-instance">
+      <input type="checkbox" ${inst.enabled ? 'checked' : ''} data-instance="${esc(inst.name)}"
+        onchange="togglePoolInstance(this.dataset.instance, this.checked)">
+      <span style="color:${color}">${esc(String(inst.name).replace('ollama-',''))}</span>
+      <span class="muted">${esc(inst.model || '')}</span>
+    </div>`;
+  }).join('') + `<div class="muted" style="margin-top:6px">Mode: ${esc(r.data.mode || 'sequential')}</div>`;
+}
+function togglePoolInstance(name, enabled){
+  fetch('/api/pool/instance', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, enabled})
+  }).then(() => loadPoolToggles()).catch(() => toast('pool toggle failed','err'));
+}
+async function reloadConfig(){
+  const btn = document.getElementById('reload-btn');
+  const st = document.getElementById('reload-status');
+  btn.disabled = true; st.textContent = 'reloading…';
+  const r = await api('/api/config/reload', {method:'POST', body:'{}'});
+  btn.disabled = false;
+  if(!r.ok){ st.textContent = ''; toast(r.error,'err'); return; }
+  st.textContent = 'reloaded';
+  toast('config reloaded','ok');
+  loadEffective();
+  loadProvidersAndSettings();
+}
+
+document.getElementById('llm-backend').addEventListener('change', onBackendChange);
+document.getElementById('model-select').addEventListener('change', onModelChange);
+
+document.addEventListener('DOMContentLoaded', async ()=>{
+  await loadMe();
+  showTab(currentTab());
+});
+</script>
+</body>
+</html>
