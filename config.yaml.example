@@ -99,13 +99,17 @@ ooda:
 
   # Tier-1 noise reduction (see docs/noise-reduction.md). When an alert is about
   # a recoverable runtime condition (restart/terminated/exit-code/not-ready/
-  # crashloop/oom) and the pod is healthy now with <= threshold restarts:
+  # crashloop/oom, or a readiness/liveness/startup probe failure) and the pod is
+  # healthy right now:
   #   - skip the deep investigation entirely (early-exit to 'monitoring'), and
   #   - downgrade any needs_action that recovered during investigation.
-  # Flapping (restarts > threshold) and still-broken pods still investigate.
+  # Flapping and still-broken pods still investigate. Each class has its own
+  # flapping guard: restarts leave a trace in restartCount, while a probe
+  # restarts nothing, so the probe class asks how long the pod has held Ready.
   noise:
     enabled: true
-    recovered_restart_threshold: 3
+    recovered_restart_threshold: 3       # restart class: > this many restarts = flapping
+    recovered_ready_stable_seconds: 600  # probe class: Ready must have held this long
 
   # Proactive mode: deep sweep every N seconds (1800 = 30 minutes)
   sweep_interval: 1800

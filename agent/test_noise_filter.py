@@ -218,7 +218,22 @@ def _plane_cluster(**api_pod_kwargs):
 def test_recoverable_trigger_covers_probe_class():
     for trigger in PLANE_TRIGGERS:
         assert _RECOVERABLE_TRIGGER.search(trigger), trigger
+    # All three kubelet probe types belong to the class.
+    assert _RECOVERABLE_TRIGGER.search("Startup probe failed for immich-server")
+    assert _RECOVERABLE_TRIGGER.search("Liveness probe failed on immich-server")
     assert not _RECOVERABLE_TRIGGER.search("High CPU usage on headless-gpu")
+
+
+@pytest.mark.parametrize("trigger", [
+    "blackbox probe failing for immich-server",
+    "unhealthy upstream reported by traefik for immich-server",
+    "volume unhealthy on immich-server",
+])
+def test_probe_class_excludes_non_kubelet_probe_wording(trigger):
+    """Bare "probe"/"unhealthy" reach findings that are not about a kubelet
+    probe. For those the named pod being Ready says nothing about whether the
+    reported problem is real, so pod health must not silence them."""
+    assert not _RECOVERABLE_TRIGGER.search(trigger), trigger
 
 
 @pytest.mark.parametrize("trigger", PLANE_TRIGGERS)

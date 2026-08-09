@@ -58,7 +58,12 @@ here — power-outage aftermath, SD flakiness).
   and `_identify_pod` only parses two structured shapes while sweep findings
   are free-form LLM prose. Six investigations (~11 min of model time) ran on a
   `plane-api` readiness probe that never once took the pod out of Ready.
-  - `_RECOVERABLE_TRIGGER` now also covers `readiness|liveness|unhealthy|probe`.
+  - `_RECOVERABLE_TRIGGER` now also covers `readiness|liveness|startup probe` —
+    the three kubelet probe types named explicitly. Bare `probe` / `unhealthy`
+    were deliberately rejected: they reach findings that are not about a kubelet
+    probe ("unhealthy upstream", "volume unhealthy", a blackbox probe against an
+    external URL), where the named pod being Ready says nothing about whether
+    the reported problem is real.
   - `_resolve_pod_from_cluster()` pins the pod by matching a workload name from
     the prose against live cluster state, and gives up unless exactly one
     workload — and one pod of it — matches. It is called *only* from the noise

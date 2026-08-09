@@ -125,8 +125,15 @@ _HUMAN_ONLY_SHAPED = re.compile(
 # readiness probe restarts nothing, so restartCount is structurally 0 however
 # badly the probe is flapping. _PROBE_TRIGGER routes that class to its own
 # guard (how long the pod has held Ready); see _recovered_and_healthy.
+#
+# The probe class names the three kubelet probe types explicitly rather than
+# matching bare "probe"/"unhealthy". Those wider words reach findings that are
+# not about a kubelet probe at all — "unhealthy upstream", "volume unhealthy",
+# or a blackbox probe against an external URL — where the named pod being Ready
+# says nothing about whether the reported problem is real, so silencing on pod
+# health would be wrong. All six triggers from the incident match `readiness`.
 _RESTART_CLASS = r"restart|terminat|exit\s*code|not\s*ready|notready|oom|crashloop|back-?off"
-_PROBE_CLASS = r"readiness|liveness|unhealthy|probe"
+_PROBE_CLASS = r"readiness|liveness|startup\s*probe"
 _RECOVERABLE_TRIGGER = re.compile(_RESTART_CLASS + "|" + _PROBE_CLASS, re.I)
 _PROBE_TRIGGER = re.compile(_PROBE_CLASS, re.I)
 
