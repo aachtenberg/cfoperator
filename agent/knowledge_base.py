@@ -1098,6 +1098,13 @@ class KnowledgeBase:
 
                 # Common path: already admits every outcome we can emit. Skip,
                 # so a normal restart takes no lock on the investigations table.
+                #
+                # Match on the quoted literals, NOT on equality with
+                # OUTCOME_CHECK_SQL: Postgres re-renders a CHECK when it stores
+                # it, so the "outcome IN (...)" written below reads back as
+                # "((outcome)::text = ANY ((ARRAY['resolved'::character varying,
+                # ...])::text[]))". Comparing whole strings would never match
+                # and this would rebuild the constraint on every single boot.
                 if current and all(f"'{o}'" in current for o in VALID_OUTCOMES):
                     return True
 
