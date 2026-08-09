@@ -229,3 +229,120 @@ def test_bad_request_gets_short_cooldown_not_exponential():
     assert m.calculate_cooldown(4, "bad_request") == timedelta(minutes=5)
     assert m.calculate_cooldown(4, "auth") == timedelta(minutes=5)
     assert m.calculate_cooldown(4, "connection") == timedelta(minutes=60)
+
+
+class _SdkStatusError(Exception):
+    """Shape of anthropic/openai/groq status errors: code on the exception."""
+
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _ResponseStatusError(Exception):
+    """Shape of requests.HTTPError: code on the attached response."""
+
+    def __init__(self, message, status_code):
+        super().__init__(message)
+        self.response = SimpleNamespace(status_code=status_code)
+
+
+@pytest.mark.parametrize("exc,expected", [
+    (_SdkStatusError("request rejected", 400), "bad_request"),
+    (_ResponseStatusError("unhelpful", 422), "bad_request"),
+    # A 5xx is provider ill-health, so it stays on the transient path.
+    (_SdkStatusError("upstream", 503), "connection"),
+    # 401/429 keep their own buckets when read off the exception.
+    (_SdkStatusError("nope", 401), "auth"),
+    (_SdkStatusError("slow down", 429), "rate_limit"),
+])
+def test_status_code_read_off_exception_when_not_passed(exc, expected):
+    """Neither call site has the status code to hand, and SDK messages don't
+    always name the failure ('unhelpful'), so classification must dig it out of
+    the exception rather than defaulting a 4xx to 'connection'."""
+    assert _manager().classify_error(exc) == expected
+
+
+def test_record_failure_clamps_a_raw_exception_string():
+    """Defence in depth for the truncation bug: even if a caller regresses to
+    record_failure(key, str(e)), the stored reason stays short instead of
+    blowing the INSERT."""
+    m = _manager()
+    m._get_provider_state = lambda provider_key: None
+    captured = {}
+
+    class _Session:
+        def execute(self, _stmt, params=None):
+            captured.update(params or {})
+
+        def commit(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    m.db_session_factory = _Session
+    m.record_failure("ollama/localhost/qwen3:14b", "x" * 500)
+    assert len(captured["reason"]) == 64
+
+
+# ---- startup migration -------------------------------------------------------
+
+
+class _RecordingSession:
+    """Session stub that records statements and can fail a chosen one."""
+
+    def __init__(self, log, fail_on=None, column_type="character varying"):
+        self.log = log
+        self.fail_on = fail_on
+        self.column_type = column_type
+
+    def execute(self, stmt, params=None):
+        sql = " ".join(str(stmt).split())
+        self.log.append(sql)
+        if self.fail_on and self.fail_on in sql:
+            raise RuntimeError("must be owner of table llm_provider_state")
+        return SimpleNamespace(
+            fetchone=lambda: (1,) if self.column_type != "text" else None)
+
+    def commit(self):
+        self.log.append("COMMIT")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _manager_with_sessions(**session_kwargs):
+    log = []
+    m = LLMFallbackManager.__new__(LLMFallbackManager)
+    m.db_session_factory = lambda: _RecordingSession(log, **session_kwargs)
+    return m, log
+
+
+def test_create_table_commits_before_the_widening_runs():
+    """The ALTER needs table ownership; sharing its transaction with CREATE
+    TABLE meant an ownership failure discarded the creation too."""
+    m, log = _manager_with_sessions()
+    m._ensure_table()
+    assert log.index("COMMIT") < next(
+        i for i, sql in enumerate(log) if sql.startswith("ALTER TABLE"))
+
+
+def test_failed_widening_does_not_lose_the_created_table():
+    m, log = _manager_with_sessions(fail_on="ALTER TABLE")
+    m._ensure_table()   # must not raise
+    creates = [sql for sql in log if sql.startswith("CREATE TABLE")]
+    assert creates and log.index(creates[0]) < log.index("COMMIT")
+
+
+def test_widening_skipped_when_column_is_already_text():
+    """Unconditional ALTER takes an ACCESS EXCLUSIVE lock on every start."""
+    m, log = _manager_with_sessions(column_type="text")
+    m._ensure_table()
+    assert not any(sql.startswith("ALTER TABLE") for sql in log)

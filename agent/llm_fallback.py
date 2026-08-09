@@ -10,6 +10,7 @@ Provides resilient LLM access with:
 Inspired by OpenClaw's model-fallback architecture, simplified for homelab use.
 """
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple, Callable
 import requests
@@ -26,6 +27,23 @@ def _log(level: str, msg: str, **fields: Any) -> None:
         **fields
     }
     print(json.dumps(payload, ensure_ascii=False))
+
+
+# Provider SDKs report the HTTP status differently: the OpenAI/Anthropic/Groq
+# clients expose it on the exception, requests puts it on the response, and some
+# wrappers only ever put it in the message text.
+_STATUS_IN_MESSAGE = re.compile(
+    r"\b(?:error code|status(?:_code)?|http)\D{0,3}([1-5]\d{2})\b", re.IGNORECASE)
+
+
+def _status_code_of(error: Exception) -> Optional[int]:
+    """Best-effort HTTP status for an SDK exception, or None."""
+    for candidate in (getattr(error, "status_code", None),
+                      getattr(getattr(error, "response", None), "status_code", None)):
+        if isinstance(candidate, int):
+            return candidate
+    match = _STATUS_IN_MESSAGE.search(str(error))
+    return int(match.group(1)) if match else None
 
 
 class LLMFallbackManager:
@@ -81,13 +99,40 @@ class LLMFallbackManager:
                         updated_at TIMESTAMP DEFAULT NOW()
                     )
                 """))
+                session.commit()
+        except Exception as e:
+            _log("warn", "Could not ensure llm_provider_state table", error=str(e))
+            return
+
+        self._widen_last_error_reason()
+
+    def _widen_last_error_reason(self) -> None:
+        """Migrate a pre-existing VARCHAR(50) last_error_reason to TEXT.
+
+        Separate transaction from table creation on purpose: the ALTER needs
+        table ownership, and rolling it in with CREATE TABLE meant an
+        ownership failure discarded the creation too, leaving a fresh database
+        with no table at all. Conditional so a converged column doesn't take an
+        ACCESS EXCLUSIVE lock on every start.
+        """
+        try:
+            with self.db_session_factory() as session:
+                stale = session.execute(text("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'llm_provider_state'
+                      AND column_name = 'last_error_reason'
+                      AND data_type <> 'text'
+                """)).fetchone()
+                if not stale:
+                    return
                 session.execute(text("""
                     ALTER TABLE llm_provider_state
                     ALTER COLUMN last_error_reason TYPE TEXT
                 """))
                 session.commit()
+            _log("info", "Widened llm_provider_state.last_error_reason to TEXT")
         except Exception as e:
-            _log("warn", "Could not ensure llm_provider_state table", error=str(e))
+            _log("warn", "Could not widen last_error_reason to TEXT", error=str(e))
 
     def classify_error(self, error: Exception, status_code: int = None) -> str:
         """
@@ -95,7 +140,9 @@ class LLMFallbackManager:
 
         Args:
             error: The exception that occurred
-            status_code: HTTP status code if available
+            status_code: HTTP status code; read off the exception when omitted,
+                since neither call site has it to hand and the message patterns
+                alone miss SDKs that report only a bare code
 
         Returns:
             Error type: 'timeout', 'connection', 'rate_limit', 'auth', or
@@ -108,6 +155,7 @@ class LLMFallbackManager:
             return "connection"
 
         # Check by HTTP status code
+        status_code = status_code or _status_code_of(error)
         if status_code:
             if status_code == 429:
                 return "rate_limit"
@@ -204,6 +252,10 @@ class LLMFallbackManager:
             provider_key: Provider identifier (e.g., "ollama/localhost/qwen3:14b")
             reason: Error type from classify_error()
         """
+        # calculate_cooldown keys off the short bucket, so a caller passing raw
+        # exception text would both skew the backoff and (pre-TEXT) break the
+        # INSERT. Clamp here so the contract can't be violated from outside.
+        reason = (str(reason) if reason else "unknown")[:64]
         try:
             now = datetime.now(timezone.utc)
             state = self._get_provider_state(provider_key)
