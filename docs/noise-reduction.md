@@ -52,6 +52,29 @@ here — power-outage aftermath, SD flakiness).
   `agent/test_noise_filter.py`. faster-whisper-class alerts now early-exit to
   `monitoring`; flapping (restarts > threshold) and still-broken pods still
   investigate.
+- **Tier-1 extended to the probe class + sweep-authored prose (CFOP-21).**
+  Tier-1 was dead for everything the *sweep* wrote, because two independent
+  gates both missed: the trigger vocabulary carried no probe/readiness wording,
+  and `_identify_pod` only parses two structured shapes while sweep findings
+  are free-form LLM prose. Six investigations (~11 min of model time) ran on a
+  `plane-api` readiness probe that never once took the pod out of Ready.
+  - `_RECOVERABLE_TRIGGER` now also covers `readiness|liveness|startup probe` —
+    the three kubelet probe types named explicitly. Bare `probe` / `unhealthy`
+    were deliberately rejected: they reach findings that are not about a kubelet
+    probe ("unhealthy upstream", "volume unhealthy", a blackbox probe against an
+    external URL), where the named pod being Ready says nothing about whether
+    the reported problem is real.
+  - `_resolve_pod_from_cluster()` pins the pod by matching a workload name from
+    the prose against live cluster state, and gives up unless exactly one
+    workload — and one pod of it — matches. It is called *only* from the noise
+    filter; `_identify_pod` stays narrow because B1 and the Phase-B remediation
+    proposer share it.
+  - New guard, because widening into the probe class removes the old one: a
+    readiness probe restarts nothing, so `recovered_restart_threshold` cannot
+    tell a settled pod from a flapping one. The probe class instead requires
+    the `Ready` condition to have held for `recovered_ready_stable_seconds`
+    (default 600) — a real flap transitions that condition, a probe failing
+    below `failureThreshold` never does. Unknown transition time ⇒ don't filter.
 - **Tier-1 coverage extended to the sweep + correlation paths** (the gaps
   observation exposed): the noise filter only covered the alert/investigation
   path, so the *sweep* kept re-flagging recovered restarts (faster-whisper) and
@@ -104,6 +127,12 @@ here — power-outage aftermath, SD flakiness).
 - 1b doubles as the long-wanted **early-exit guard** for over-investigation.
 - Deterministic on purpose — no new LLM unpredictability in the noise filter.
 - Config: `ooda.noise` (thresholds) — default-on, conservative thresholds.
+  `enabled` (true), `recovered_restart_threshold` (3, restart class),
+  `recovered_ready_stable_seconds` (600, probe class).
+- The filter's bias is asymmetric on purpose: when it cannot pin exactly one
+  pod, or cannot tell how long that pod has been Ready, it does **not** fire. A
+  missed filter costs one redundant investigation; a wrong one silences a real
+  alert.
 
 ## Known data gap: stored outcomes before 2026-08-09 (CFOP-20)
 

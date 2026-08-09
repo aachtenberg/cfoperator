@@ -158,6 +158,17 @@ def is_ephemeral_job_pod(name: str) -> bool:
     return bool(name and _EPHEMERAL_JOB_POD.search(name))
 
 
+def normalize_service_name(name: str) -> str:
+    """Strip k8s pod hash suffixes to get the base service/deployment name.
+
+    E.g. 'searxng-c55b97cbb-ccnj6' -> 'searxng'
+         'immich-server-868f4dd875-p7kcc' -> 'immich-server'
+         'cfoperator-759f67fddb-sskq6' -> 'cfoperator'
+    """
+    # Match k8s ReplicaSet hash + pod hash suffix: -<rs-hash>-<pod-hash>
+    return re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', name)
+
+
 def normalize_finding_signature(text: str) -> str:
     """A count-insensitive signature for a finding summary, so dismissals
     generalize across changing numbers. "restarted 11 times" and
@@ -4288,13 +4299,10 @@ class KnowledgeBase:
     def _normalize_service_name(name: str) -> str:
         """Strip k8s pod hash suffixes to get the base service/deployment name.
 
-        E.g. 'searxng-c55b97cbb-ccnj6' -> 'searxng'
-             'immich-server-868f4dd875-p7kcc' -> 'immich-server'
-             'cfoperator-759f67fddb-sskq6' -> 'cfoperator'
+        Method form of the module-level ``normalize_service_name``, kept
+        because callers reach it off a KnowledgeBase instance.
         """
-        import re
-        # Match k8s ReplicaSet hash + pod hash suffix: -<rs-hash>-<pod-hash>
-        return re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', name)
+        return normalize_service_name(name)
 
     def get_dismissed_finding_keys(self, days: int = 30) -> set:
         """Finding ids + summaries the operator marked acknowledged/false_positive.
