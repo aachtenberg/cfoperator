@@ -19,7 +19,7 @@ from knowledge_base import (  # noqa: E402
     remediation_is_auto_eligible,
 )
 from agent import CFOperator  # noqa: E402
-from agent.agent import _SUMMARY_CONFIDENCE_CAP  # noqa: E402
+from agent.agent import _SUMMARY_CONFIDENCE_CAP, _llm_provider_tag  # noqa: E402
 import agent.agent as agent_mod  # noqa: E402
 
 
@@ -890,3 +890,82 @@ def test_remediation_flag_falls_back_to_config():
     assert CFOperator._remediation_flag(op, "queue_feed") is True
     op.config = {"remediation": {}}
     assert CFOperator._remediation_flag(op, "queue_drain") is False
+
+
+# ---- CFOP-22: reporting LLM + deep PR attempt on the queue ------------------
+
+
+def test_llm_provider_tag():
+    assert _llm_provider_tag({"backend": "xai", "model": "grok"}) == "xai/grok"
+    assert _llm_provider_tag({"provider": "ollama", "model": "qwen"}) == "ollama/qwen"
+    assert _llm_provider_tag({"backend": "anthropic"}) == "anthropic"
+    assert _llm_provider_tag({}) is None
+    assert _llm_provider_tag(None) is None
+
+
+def test_maybe_queue_remediation_stamps_provider():
+    op = _wire_flags(MagicMock())
+    op.config = {"remediation": {"queue_feed": True}}
+    op.kb.queue_remediation.return_value = 9
+    details = {
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
+        "recommendation": "fix mount", "host": "rpi4",
+        "provider": "anthropic/claude-sonnet-4-6", "report": "long report",
+    }
+    assert CFOperator._maybe_queue_remediation(op, 41, details) == 9
+    payload = op.kb.queue_remediation.call_args.kwargs["payload"]
+    assert payload["provider"] == "anthropic/claude-sonnet-4-6"
+
+
+def test_feed_from_sweeps_stamps_sweep_meta_provider():
+    op = _feed_op()
+    reports = [{
+        "sweep_meta": {"provider": "ollama", "model": "qwen2.5:14b"},
+        "findings": [{"id": "f9", "remediation": "replace SD card", "severity": "warning",
+                      "resource_name": "rpi3"}],
+    }]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
+    payload = op.kb.queue_remediation.call_args.kwargs["payload"]
+    assert payload["provider"] == "ollama/qwen2.5:14b"
+
+
+def test_feed_from_summary_stamps_provider_on_manual():
+    op = _feed_op()
+    n = CFOperator._feed_remediations_from_summary(
+        op, _SUMMARY_MANUAL, [], provider="xai/grok-4")
+    assert n == 1
+    assert op.kb.queue_remediation.call_args.kwargs["payload"]["provider"] == "xai/grok-4"
+
+
+def test_store_deep_investigation_stamps_provider_and_pr_attempt():
+    op = _wire_flags(MagicMock())
+    op.config = {"remediation": {"queue_feed": True, "deep_open_prs": True}}
+    op.kb.start_investigation.return_value = 2141
+    op.kb.queue_remediation.return_value = 41
+    op._embed_investigation = MagicMock()
+    op._count_enqueued = MagicMock()
+    op._maybe_open_pr_from_deep_diff = MagicMock(return_value={
+        "status": "declined", "detail": "not a clean single-file unified diff",
+    })
+    # Use the real queue helper so provider lands in the payload.
+    op._maybe_queue_remediation = lambda inv_id, details: CFOperator._maybe_queue_remediation(
+        op, inv_id, details)
+
+    alert = {"summary": "CIFS mount failed"}
+    result = {"details": {
+        "outcome": "needs_action", "host": "raspberrypi4", "model": "claude-sonnet-4-6",
+        "recommendation": "patch mount unit", "report": "diff proposed",
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.65,
+        "proposed_diff": "diff --git a/x b/x\n", "duration_s": 12.0,
+    }}
+    out = CFOperator.store_deep_investigation(op, alert, result)
+    assert out["investigation_id"] == 2141
+    assert out["remediation_id"] == 41
+    payload = op.kb.queue_remediation.call_args.kwargs["payload"]
+    assert payload["provider"] == "anthropic/claude-sonnet-4-6"
+    op.kb.merge_remediation_payload.assert_called_once()
+    args, kwargs = op.kb.merge_remediation_payload.call_args
+    assert args[0] == 41
+    assert args[1]["pr_attempt"]["status"] == "declined"
+    assert "single-file" in args[1]["pr_attempt"]["detail"]
+    assert kwargs.get("pr_url") is None

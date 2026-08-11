@@ -462,6 +462,64 @@ class ToolRegistry:
             }
         }
 
+        self.tools['get_investigation'] = {
+            'function': self._get_investigation,
+            'schema': {
+                'name': 'get_investigation',
+                'description': 'Fetch a single investigation by id (trigger, findings, outcome, duration). Use when following an investigation_id from a remediation or when the operator asks about a specific investigation.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'investigation_id': {
+                            'type': 'integer',
+                            'description': 'Investigation id to fetch'
+                        }
+                    },
+                    'required': ['investigation_id']
+                }
+            }
+        }
+
+        self.tools['list_remediations'] = {
+            'function': self._list_remediations,
+            'schema': {
+                'name': 'list_remediations',
+                'description': 'List remediation queue rows (newest first). Optionally filter by status (queued, needs-human, pr-open, resolved, …). Use this to answer questions about the remediation queue.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'status': {
+                            'type': 'string',
+                            'description': 'Optional status filter (e.g. needs-human, queued, pr-open)'
+                        },
+                        'limit': {
+                            'type': 'integer',
+                            'description': 'Max rows to return (default 20)'
+                        }
+                    },
+                    'required': []
+                }
+            }
+        }
+
+        self.tools['get_remediation'] = {
+            'function': self._get_remediation,
+            'schema': {
+                'name': 'get_remediation',
+                'description': 'Fetch a single remediation queue row by id, including recommendation, payload (provider, proposed_diff, pr_attempt), status, and linked investigation_id.',
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'remediation_id': {
+                            'type': 'integer',
+                            'description': 'Remediation queue id to fetch'
+                        }
+                    },
+                    'required': ['remediation_id']
+                }
+            }
+        }
+
         self.tools['get_correlations'] = {
             'function': self._get_correlations,
             'schema': {
@@ -809,6 +867,70 @@ class ToolRegistry:
             return {'success': True, 'count': len(investigations), 'investigations': investigations}
         except Exception as e:
             return {'error': str(e)}
+
+    def _get_investigation(self, investigation_id: int) -> Dict[str, Any]:
+        """Fetch one investigation by id for chat follow-ups."""
+        try:
+            inv = self.operator.kb.get_investigation(int(investigation_id))
+            if not inv:
+                return {'error': f'Investigation #{investigation_id} not found'}
+            return {'success': True, 'investigation': self._trim_investigation_for_tool(inv)}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _list_remediations(self, status: str = '', limit: int = 20) -> Dict[str, Any]:
+        """List remediation queue rows for the chat agent (read-only)."""
+        try:
+            lim = max(1, min(int(limit or 20), 50))
+            status_filter = (status or '').strip() or None
+            rows = self.operator.kb.list_remediations(status=status_filter, limit=lim)
+            trimmed = [self._trim_remediation_for_tool(r) for r in rows]
+            return {'success': True, 'count': len(trimmed), 'remediations': trimmed}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _get_remediation(self, remediation_id: int) -> Dict[str, Any]:
+        """Fetch one remediation by id for the chat agent (read-only)."""
+        try:
+            row = self.operator.kb.get_remediation(int(remediation_id))
+            if not row:
+                return {'error': f'Remediation #{remediation_id} not found'}
+            return {'success': True, 'remediation': self._trim_remediation_for_tool(row)}
+        except Exception as e:
+            return {'error': str(e)}
+
+    @staticmethod
+    def _trim_remediation_for_tool(row: Dict[str, Any]) -> Dict[str, Any]:
+        """Shrink bulky remediation fields so tool output stays chat-sized."""
+        out = dict(row or {})
+        payload = dict(out.get('payload') or {}) if isinstance(out.get('payload'), dict) else {}
+        for key in ('rendered_context', 'proposed_diff', 'evidence', 'recommendation'):
+            val = payload.get(key)
+            if isinstance(val, str) and len(val) > 2000:
+                payload[key] = val[:2000] + '…'
+        out['payload'] = payload
+        result = out.get('result')
+        if isinstance(result, dict):
+            # Keep attribution keys; drop large blobs if any.
+            out['result'] = {k: v for k, v in result.items()
+                             if not (isinstance(v, str) and len(v) > 2000)}
+        return out
+
+    @staticmethod
+    def _trim_investigation_for_tool(inv: Dict[str, Any]) -> Dict[str, Any]:
+        """Shrink investigation findings for chat tool output."""
+        out = dict(inv or {})
+        findings = out.get('findings')
+        if isinstance(findings, dict):
+            trimmed = dict(findings)
+            for key in ('response',):
+                val = trimmed.get(key)
+                if isinstance(val, str) and len(val) > 2000:
+                    trimmed[key] = val[:2000] + '…'
+            out['findings'] = trimmed
+        elif isinstance(findings, str) and len(findings) > 2000:
+            out['findings'] = findings[:2000] + '…'
+        return out
 
     def _get_correlations(self, hours: int = 24) -> Dict[str, Any]:
         """Get event correlations and service failure patterns."""
