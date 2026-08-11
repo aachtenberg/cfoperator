@@ -3475,6 +3475,36 @@ class KnowledgeBase:
                 "pr_url": item.pr_url,
             }
 
+    def merge_remediation_payload(
+        self,
+        remediation_id: int,
+        patch: Dict[str, Any],
+        *,
+        pr_url: Optional[str] = None,
+    ) -> bool:
+        """Merge keys into a remediation's payload JSONB without changing status.
+
+        Used to stamp follow-up metadata (reporting LLM, deep-PR attempt
+        outcome) onto a row that was just enqueued. ``pr_url`` is optional so a
+        successful deep-PR open can set the column in the same write. Returns
+        False if the id is unknown, or if ``patch`` is empty/invalid and
+        ``pr_url`` is None (nothing to apply).
+        """
+        if not isinstance(patch, dict) or not patch:
+            if pr_url is None:
+                return False
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return False
+            if isinstance(patch, dict) and patch:
+                existing = dict(item.payload or {}) if isinstance(item.payload, dict) else {}
+                existing.update(patch)
+                item.payload = existing
+            if pr_url is not None:
+                item.pr_url = pr_url
+            return True
+
     def update_remediation_status(
         self,
         remediation_id: int,
