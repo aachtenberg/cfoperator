@@ -203,7 +203,7 @@ function rowHtml(r){
     <td class="mono">${r.confidence==null?'—':r.confidence}</td>
     <td>${esc(r.host_id)}</td>
     <td>${llm}</td>
-    <td class="rec">${esc(rec).slice(0,160)}</td>
+    <td class="rec">${esc(String(rec).slice(0,160))}</td>
     <td class="muted">${age(r.created_at)}</td>
     <td>${pr}</td></tr>`;
 }

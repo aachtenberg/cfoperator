@@ -3487,7 +3487,8 @@ class KnowledgeBase:
         Used to stamp follow-up metadata (reporting LLM, deep-PR attempt
         outcome) onto a row that was just enqueued. ``pr_url`` is optional so a
         successful deep-PR open can set the column in the same write. Returns
-        False if the id is unknown.
+        False if the id is unknown, or if ``patch`` is empty/invalid and
+        ``pr_url`` is None (nothing to apply).
         """
         if not isinstance(patch, dict) or not patch:
             if pr_url is None:
