@@ -1,0 +1,194 @@
+{
+ "summary": {
+  "model": "gemma4:26b",
+  "ollama_version": "0.32.13",
+  "runs": 12,
+  "json_valid_rate": 1.0,
+  "action_accuracy": 1.0,
+  "latency_mean_s": 8.86,
+  "latency_max_s": 25.9,
+  "errors": 0
+ },
+ "per_case": {
+  "precedent-monitoring": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "investigate"
+   ]
+  }
+ },
+ "results": [
+  {
+   "case": "precedent-monitoring",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 25.9,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.88,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.17,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 3,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 4.2,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 4,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.36,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 7.82,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 6,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.68,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 7,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 9.24,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 8,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.84,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 9,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 11.52,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 10,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 7.51,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.24,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  }
+ ]
+}

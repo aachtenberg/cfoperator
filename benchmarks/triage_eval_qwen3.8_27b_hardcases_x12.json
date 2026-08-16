@@ -1,0 +1,1098 @@
+{
+ "summary": {
+  "model": "qwen3.8:27b",
+  "ollama_version": "0.32.13",
+  "runs": 72,
+  "json_valid_rate": 1.0,
+  "action_accuracy": 1.0,
+  "latency_mean_s": 10.64,
+  "latency_max_s": 62.88,
+  "errors": 0
+ },
+ "per_case": {
+  "precedent-monitoring": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "precedent-resolved-oom": {
+   "expected": [
+    "notify"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "notify"
+   ]
+  },
+  "critical-narrow": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "warning-correlated": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "tmp-pod-critical": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "log_only"
+   ]
+  },
+  "info-novel-cert": {
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "log_only",
+    "notify"
+   ]
+  }
+ },
+ "results": [
+  {
+   "case": "precedent-monitoring",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 34.33,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.87,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 13.57,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 3,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 13.01,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 4,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 14.18,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 14.67,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 6,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 14.82,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 7,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 12.65,
+   "confidence": 0.88,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 8,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 11.88,
+   "confidence": 0.87,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 9,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 15.42,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 10,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 11.75,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 11.79,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 9.17,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 10.46,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 10.11,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.6,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 6.33,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 9.9,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 9.1,
+   "confidence": 0.93,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.4,
+   "confidence": 0.93,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 7.39,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.63,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.87,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.32,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 9.46,
+   "confidence": 0.88,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 7.91,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 10.13,
+   "confidence": 0.87,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 3,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.28,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 4,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.35,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 9.33,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 6,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 11.48,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 7,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.82,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 8,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.12,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 9,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 9.13,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 10,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.62,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 11.42,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 12.72,
+   "confidence": 0.78,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 12.49,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 12.56,
+   "confidence": 0.78,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 3,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 9.74,
+   "confidence": 0.72,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 4,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 11.77,
+   "confidence": 0.78,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 62.88,
+   "confidence": 0.72,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 6,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 10.33,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 7,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 10.32,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 8,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 10.19,
+   "confidence": 0.78,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 9,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 12.05,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 10,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 10.13,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.8,
+   "confidence": 0.82,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 7.38,
+   "confidence": 0.97,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.83,
+   "confidence": 0.97,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 6.11,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.4,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 4,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.4,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 5,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.97,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.12,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 7,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.12,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 8,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 7.02,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 6.18,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 10,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.69,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 7.73,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 9.22,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.1,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.75,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.83,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 4,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 12.11,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 10.83,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 7.54,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 7,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.69,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 10.47,
+   "confidence": 0.93,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 10.64,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 10,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 13.11,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 9.5,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  }
+ ]
+}

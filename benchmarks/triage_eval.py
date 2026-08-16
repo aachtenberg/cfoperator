@@ -29,6 +29,25 @@ Usage:
 
 Scores are only comparable across models run on the SAME ollama version and
 the SAME rubric — record both in the output JSON (this script does).
+
+STATISTICAL POWER — read before trusting a 100% score
+-----------------------------------------------------
+The failure mode this suite is looking for is usually RARE, not systematic: a
+model that takes a rubric shortcut on some fraction of runs rather than every
+run. The default 3 runs/case cannot see that.
+
+Measured example (2026-08-16): qwen3.8:27b answers `precedent-monitoring`
+correctly ~92% of the time and takes the notify shortcut the other ~8%. At
+3 runs/case the chance of catching it at least once is only 1 - 0.92^3 = 22%,
+so the suite reported a clean 42/42. At 12 runs it showed up. gemma4:26b was
+12/12 on the same case.
+
+So:
+  --runs 3     fast screen. A miss is meaningful; a clean sheet is NOT proof.
+  --runs 10+   with --only, to characterise a case where a model looks shaky.
+
+A clean run at low --runs means "no systematic error found", never "correct".
+The summary prints this caveat rather than leaving the headline to mislead.
 """
 
 import argparse
@@ -96,18 +115,51 @@ def build_user_message(case: dict) -> str:
 
 # ── Ground-truth cases ────────────────────────────────────────────────────────
 #
-# Eight cases spanning the four actions, drawn from this homelab's real alert
-# vocabulary. Two axes are deliberately probed:
+# Fourteen cases spanning the four actions, drawn from this homelab's real alert
+# vocabulary.
 #
-#   * precedent sensitivity — `known-sdcard` carries similar past
-#     investigations, `novel-oom` / `novel-imagepull` deliberately carry none.
-#     The post-#75 rubric forbids `notify` for a pod failure with no listed
-#     precedent, so those two are the rubric's discriminating cases.
-#   * over/under-escalation — noise cases must not escalate, and genuine
-#     critical+broad cases must.
+# The first eight are the original 2026-07 set. Both gemma4:26b and qwen3.8:27b
+# scored 24/24 on them, i.e. the suite had saturated and could no longer tell
+# two candidates apart. Cases 9-14 were added 2026-08-16 to restore
+# discriminating power. They are HARDER BY CONSTRUCTION, not merely more
+# numerous: each one is built so that the obvious surface reading of the alert
+# gives the WRONG answer, and only actually applying the rubric gives the right
+# one.
 #
-# `expected` is a set: `info-severity` is legitimately either log_only or
-# notify under the rubric, so both count as correct.
+# Every case therefore carries two extra fields:
+#
+#   rubric — the clause of run_triage's rubric that fixes the ground truth.
+#            If a case cannot cite one, it does not belong here: the suite
+#            measures adherence to the deployed rubric, not the taste of
+#            whoever wrote the case.
+#   trap   — the wrong answer a model lands on by reading the alert's surface
+#            features (severity, "pod failure", "precedent present") instead
+#            of the rubric. Printed on failure so a red line says *why* it is
+#            wrong, not just that it is.
+#
+# The four traps cases 9-14 probe:
+#
+#   * precedent OUTCOME vs presence — `precedent-monitoring` lists similar past
+#     investigations whose outcome was 'monitoring'. Presence of precedent says
+#     notify; the rubric says a 'monitoring' precedent means investigate.
+#   * blanket pod-failure reflex — `precedent-resolved-oom` is a pod failure
+#     WITH resolved precedent, where notify is correct. A model that learned
+#     "pod failure -> investigate" from cases 5-6 fails here.
+#   * severity as a proxy for breadth — `critical-narrow` (critical, one hobby
+#     service) must not escalate; `warning-correlated` (broad, but warning)
+#     must not escalate either. Escalate needs critical AND broad, together.
+#   * noise rules outrank severity — `tmp-pod-critical` is a `tmp-*` pod at
+#     critical severity, which is still log_only.
+#
+# `expected` holds MORE THAN ONE action where the rubric genuinely permits more
+# than one (the info-severity cases), so a model is not marked wrong for a
+# defensible reading. Any listed action counts as correct.
+
+# Rate used only for the low-run-count warning below: the measured frequency at
+# which qwen3.8:27b took the notify shortcut on `precedent-monitoring`
+# (1 miss in 12 runs, 2026-08-16). It is a reference point for "how rare a real
+# shortcut can be", not a property of any particular model under test.
+REFERENCE_SHORTCUT_RATE = 0.08
 
 CASES = [
     {
@@ -118,6 +170,8 @@ CASES = [
         "labels": {"alertname": "Watchdog", "severity": "none",
                    "namespace": "monitoring"},
         "similar": [],
+        "rubric": 'log_only: "Known noise. ... Alertmanager Watchdog"',
+        "trap": "escalate/notify — it is an alert-shaped object, but it is the pipeline's own heartbeat",
         "expected": ["log_only"],
     },
     {
@@ -128,6 +182,8 @@ CASES = [
         "labels": {"alertname": "KubePodCrashLooping", "severity": "warning",
                    "namespace": "default", "pod": "smoke-test-runner-2xk4f"},
         "similar": [],
+        "rubric": 'log_only: "Known noise. Test pods (smoke-test-*, tmp-*)"',
+        "trap": 'investigate — reads as a CrashLoop pod failure with no precedent',
         "expected": ["log_only"],
     },
     {
@@ -144,6 +200,8 @@ CASES = [
                          "mmcblk0 errors in dmesg", 0.89),
             ("monitoring", "raspberrypi3 SD card wear warnings", 0.81),
         ],
+        "rubric": 'notify: "the pattern is one the operator already understands (e.g. raspberrypi SD-card warning)"; precedent is listed and resolved',
+        "trap": 'investigate — a hardware fault sounds urgent if the precedent list is ignored',
         "expected": ["notify"],
     },
     {
@@ -157,6 +215,8 @@ CASES = [
             ("resolved", "nightly backup skipped prometheus-data — expected, "
                          "regenerable TSDB excluded by policy", 0.92),
         ],
+        "rubric": 'notify: "when severity=info"',
+        "trap": 'investigate — a skipped backup volume sounds like a failure',
         "expected": ["log_only", "notify"],
     },
     {
@@ -167,6 +227,8 @@ CASES = [
         "labels": {"alertname": "KubePodOOMKilled", "severity": "warning",
                    "namespace": "apps", "pod": "paperless-ngx-7d9c4b8f5-nq2wm"},
         "similar": [],
+        "rubric": 'investigate: "A pod failure with no similar past investigation listed is novel by definition"',
+        "trap": 'notify — the #75 rubric explicitly forbids notify here',
         "expected": ["investigate"],
     },
     {
@@ -178,6 +240,8 @@ CASES = [
         "labels": {"alertname": "KubePodImagePullBackOff", "severity": "warning",
                    "namespace": "apps", "pod": "changerecord-5f7b9d6c4-hk8pq"},
         "similar": [],
+        "rubric": 'investigate: "A pod failure with no similar past investigation listed is novel by definition"',
+        "trap": 'notify — an image tag typo feels like a known, cheap fix',
         "expected": ["investigate"],
     },
     {
@@ -188,6 +252,8 @@ CASES = [
         "labels": {"alertname": "KubeNodeNotReady", "severity": "critical",
                    "node": "ubuntu-cm5-01", "role": "control-plane"},
         "similar": [],
+        "rubric": 'escalate: "Severity=critical AND impact is broad (NodeNotReady on a control plane)"',
+        "trap": 'investigate — under-escalation on a genuine page-worthy event',
         "expected": ["escalate"],
     },
     {
@@ -198,7 +264,115 @@ CASES = [
         "labels": {"alertname": "MultipleServicesDown", "severity": "critical",
                    "namespaces": "ingress-nginx,apps,auth"},
         "similar": [],
+        "rubric": 'escalate: "Severity=critical AND impact is broad (multiple correlated services down)"',
+        "trap": 'investigate — under-escalation on a genuine page-worthy event',
         "expected": ["escalate"],
+    },
+
+    # ── Added 2026-08-16: harder cases, after both candidates scored 24/24 ────
+
+    {
+        # The precedent list is present and similar, so surface-reading says
+        # notify. But every listed outcome is 'monitoring' — the rubric names
+        # that case explicitly and sends it the other way.
+        "name": "precedent-monitoring",
+        "severity": "warning",
+        "summary": "Pod immich-machine-learning-6b8d7f9c4-t2ppq in namespace "
+                   "apps is crash-looping (5 restarts in 15 minutes).",
+        "labels": {"alertname": "KubePodCrashLooping", "severity": "warning",
+                   "namespace": "apps",
+                   "pod": "immich-machine-learning-6b8d7f9c4-t2ppq"},
+        "similar": [
+            ("monitoring", "immich-machine-learning restarts after model load — "
+                           "cause not established, watching", 0.93),
+            ("monitoring", "immich ML pod OOM/restart loop, no fix applied yet", 0.88),
+            ("monitoring", "immich-machine-learning intermittent restarts", 0.84),
+        ],
+        "rubric": 'investigate: "or pattern that previous investigations classified as \'monitoring\'"',
+        "trap": "notify — precedent is present, but its OUTCOME was never a fix",
+        "expected": ["investigate"],
+    },
+    {
+        # Mirror of novel-oom: same alert class, but precedent IS listed and
+        # resolved, which is exactly the exemption the #75 rubric carves out.
+        # A model that over-learned "pod failure -> investigate" fails here.
+        "name": "precedent-resolved-oom",
+        "severity": "warning",
+        "summary": "Pod jellyfin-5c9d8b7f6-xk4mn in namespace apps was OOMKilled "
+                   "(exit code 137) during a library scan.",
+        "labels": {"alertname": "KubePodOOMKilled", "severity": "warning",
+                   "namespace": "apps", "pod": "jellyfin-5c9d8b7f6-xk4mn"},
+        "similar": [
+            ("resolved", "jellyfin OOMKilled during library scan — memory limit "
+                         "raised to 4Gi, fixed", 0.95),
+            ("resolved", "jellyfin transcode OOM, limit bump applied", 0.90),
+        ],
+        "rubric": 'notify: pod-failure exemption — "unless a similar past investigation is listed"; here two resolved ones are',
+        "trap": "investigate — blanket 'pod failure' reflex ignoring the exemption",
+        "expected": ["notify"],
+    },
+    {
+        # critical, but one replica of one hobby service. escalate requires
+        # critical AND broad; breadth is absent, and no precedent rules out
+        # notify for a pod failure.
+        "name": "critical-narrow",
+        "severity": "critical",
+        "summary": "Pod wallabag-7f6c5d4b3-mq8wz in namespace apps has been "
+                   "unavailable for 5 minutes (single-replica bookmarking "
+                   "service, no other workload depends on it).",
+        "labels": {"alertname": "KubePodNotReady", "severity": "critical",
+                   "namespace": "apps", "pod": "wallabag-7f6c5d4b3-mq8wz"},
+        "similar": [],
+        "rubric": 'escalate needs "Severity=critical AND impact is broad" — breadth absent; no precedent, so investigate',
+        "trap": "escalate — treating the severity label alone as sufficient",
+        "expected": ["investigate"],
+    },
+    {
+        # Broad, correlated, and genuinely novel — but warning-severity, and
+        # escalate needs critical AND broad. Tests the other half of the
+        # conjunction from critical-narrow.
+        "name": "warning-correlated",
+        "severity": "warning",
+        "summary": "Elevated p99 latency on three services simultaneously "
+                   "(immich, paperless-ngx, nextcloud) — all above 2s for "
+                   "10 minutes, no errors logged.",
+        "labels": {"alertname": "ServiceLatencyHigh", "severity": "warning",
+                   "namespace": "apps",
+                   "services": "immich,paperless-ngx,nextcloud"},
+        "similar": [],
+        "rubric": 'escalate needs "Severity=critical AND impact is broad" — critical absent; novel pattern, so investigate',
+        "trap": "escalate — breadth alone, without critical severity",
+        "expected": ["investigate"],
+    },
+    {
+        # tmp-* is named in the log_only clause. Severity critical is the
+        # distractor: the noise rule is about WHAT the pod is, not how loudly
+        # it failed.
+        "name": "tmp-pod-critical",
+        "severity": "critical",
+        "summary": "Pod tmp-restore-verify-9x2kd in namespace default exited "
+                   "non-zero (restore drill container, exit code 1).",
+        "labels": {"alertname": "KubeJobFailed", "severity": "critical",
+                   "namespace": "default", "pod": "tmp-restore-verify-9x2kd"},
+        "similar": [],
+        "rubric": 'log_only: "Known noise. Test pods (smoke-test-*, tmp-*)" — the clause names tmp-* regardless of severity',
+        "trap": "escalate/investigate — critical severity overriding the noise rule",
+        "expected": ["log_only"],
+    },
+    {
+        # severity=info is named in the notify clause; absence of precedent is
+        # the distractor. Not a pod failure, so the notify restriction that
+        # governs novel-oom does not apply here.
+        "name": "info-novel-cert",
+        "severity": "info",
+        "summary": "TLS certificate for grafana.ai renews in 21 days "
+                   "(cert-manager scheduled renewal notice).",
+        "labels": {"alertname": "CertExpiryNotice", "severity": "info",
+                   "namespace": "monitoring", "host": "grafana.ai"},
+        "similar": [],
+        "rubric": 'notify: "when severity=info". Not a pod failure, so the no-precedent restriction does not apply',
+        "trap": "investigate — 'no precedent listed' reflex, ignoring severity=info",
+        "expected": ["log_only", "notify"],
     },
 ]
 
@@ -262,16 +436,32 @@ def main():
     ap.add_argument("--output", default=None)
     ap.add_argument("--keep-raw", action="store_true",
                     help="store raw text for runs that failed to parse")
+    ap.add_argument("--only", default=None,
+                    help="comma-separated case names to run. For characterising "
+                         "one case at high run-count — a latency tail seen once "
+                         "in 3 runs is an anecdote, not a measurement")
     args = ap.parse_args()
+
+    cases = CASES
+    if args.only:
+        # Drop empties first: a trailing comma would otherwise reach the
+        # unknown-name check as "" and report a blank name as unrecognised.
+        wanted = {n.strip() for n in args.only.split(",") if n.strip()}
+        if not wanted:
+            ap.error("--only was given no case names")
+        unknown = wanted - {c["name"] for c in CASES}
+        if unknown:
+            ap.error(f"unknown case name(s): {', '.join(sorted(unknown))}")
+        cases = [c for c in CASES if c["name"] in wanted]
 
     system_prompt = load_production_system_prompt()
     version = ollama_version(args.url)
 
     print(f"Triage eval: {args.model} @ {args.url} (ollama {version})")
-    print(f"{len(CASES)} cases x {args.runs} runs, production prompt + parser\n")
+    print(f"{len(cases)} cases x {args.runs} runs, production prompt + parser\n")
 
     results = []
-    for case in CASES:
+    for case in cases:
         user_msg = build_user_message(case)
         for run in range(args.runs):
             text, latency, err = call_ollama(
@@ -293,9 +483,14 @@ def main():
                         else None),
             })
             mark = "OK " if correct else ("BAD" if decision else "ERR")
-            print(f"  [{mark}] {case['name']:20} run{run}  "
+            print(f"  [{mark}] {case['name']:22} run{run}  "
                   f"{str(action):12} {latency:6.2f}s"
                   + (f"  {err}" if err else ""))
+            # A bare "BAD" says a model missed; the trap says which shortcut it
+            # took, which is the part worth acting on.
+            if not correct and decision:
+                print(f"         expected {'|'.join(case['expected'])} — "
+                      f"trap: {case['trap']}")
 
     latencies = [r["latency_s"] for r in results if r["error"] is None]
     valid = sum(1 for r in results if r["valid"])
@@ -313,7 +508,7 @@ def main():
     }
 
     per_case = {}
-    for case in CASES:
+    for case in cases:
         runs = [r for r in results if r["case"] == case["name"]]
         per_case[case["name"]] = {
             "expected": case["expected"],
@@ -332,6 +527,19 @@ def main():
           f"max {summary['latency_max_s']}s")
     if summary["errors"]:
         print(f"Errors           {summary['errors']}")
+    # A perfect score at low run-count is the suite's most misleading output:
+    # the shortcuts these cases probe show up on a FRACTION of runs, so a clean
+    # sheet here means "no systematic error", not "correct". Say so inline.
+    if correct == len(results) and args.runs < 10:
+        # P(at least one miss observed) for a shortcut that fires at
+        # REFERENCE_SHORTCUT_RATE on each independent run.
+        detection_prob = 1 - (1 - REFERENCE_SHORTCUT_RATE) ** args.runs
+        print(f"{'':17}NOTE: clean at {args.runs} runs/case. A shortcut firing at "
+              f"~{REFERENCE_SHORTCUT_RATE*100:.0f}%\n{'':23}(the observed qwen3.8 "
+              f"precedent-monitoring rate) would be caught\n{'':23}only "
+              f"{detection_prob*100:.0f}% of the time at this run count. Re-run "
+              f"with\n{'':23}--only <case> --runs 12+ before concluding a model "
+              f"is clean.")
     print(f"{'='*60}")
     for name, pc in per_case.items():
         print(f"  {name:20} {pc['correct']}/{pc['of']}  "

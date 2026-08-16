@@ -1,0 +1,1097 @@
+{
+ "summary": {
+  "model": "gemma4:26b",
+  "ollama_version": "0.32.13",
+  "runs": 72,
+  "json_valid_rate": 1.0,
+  "action_accuracy": 1.0,
+  "latency_mean_s": 5.64,
+  "latency_max_s": 9.69,
+  "errors": 0
+ },
+ "per_case": {
+  "precedent-monitoring": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "precedent-resolved-oom": {
+   "expected": [
+    "notify"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "notify"
+   ]
+  },
+  "critical-narrow": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "warning-correlated": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "tmp-pod-critical": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "log_only"
+   ]
+  },
+  "info-novel-cert": {
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": 12,
+   "of": 12,
+   "actions": [
+    "notify"
+   ]
+  }
+ },
+ "results": [
+  {
+   "case": "precedent-monitoring",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.62,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 7.34,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.98,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 3,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 9.69,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 4,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.88,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 8.12,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 6,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.69,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 7,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 7.91,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 8,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.62,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 9,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 7.31,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 10,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.4,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 7.74,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 7.57,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.94,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.82,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.39,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.88,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.87,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.18,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.46,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 6.61,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.44,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.02,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.68,
+   "confidence": 0.98,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 4.58,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.99,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.23,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 3,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 4.6,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 4,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.21,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.09,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 6,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.37,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 7,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.17,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 8,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.17,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 9,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.25,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 10,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.22,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.48,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.07,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 4.57,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 4.94,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 3,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.49,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 4,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.62,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.12,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 6,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 4.96,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 7,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.01,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 8,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.28,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 9,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.47,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 10,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.96,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.07,
+   "confidence": 0.9,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.35,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.79,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.05,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.92,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 4,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.98,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 5,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.7,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.18,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 7,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.56,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 8,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.91,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.96,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 10,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.35,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 3.92,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.55,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 3.95,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.27,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 6.8,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.72,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 7.79,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.42,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.16,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.42,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.37,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 7.17,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 6.46,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  }
+ ]
+}

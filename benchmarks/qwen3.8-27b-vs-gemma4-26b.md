@@ -155,7 +155,8 @@ There is no axis on which qwen3.8:27b is the better choice for this workload. A
 dense 27B is simply the wrong shape for an agent that makes many sequential LLM
 calls per sweep.
 
-**Secondary recommendations:**
+**Secondary recommendations** (items 2 and 3 were actioned the same day — see
+the follow-up section at the end of this document):
 
 1. **Keep Ollama v0.32.13.** It was pulled in to make this benchmark possible,
    but it earns its place independently: ~13% more throughput and a tighter
@@ -172,6 +173,99 @@ calls per sweep.
    alerts whose correct action depends on reading the precedent's *outcome*
    rather than its presence; multi-alert correlation where the cheap answer is
    wrong; and alerts that should be `log_only` despite critical severity.
+
+---
+
+# Follow-up, 2026-08-16 — both recommendations actioned
+
+## 1. Rollback pin swapped to qwen3.8:27b
+
+`qwen3.6:27b` removed from ubuntu-llm-01; `qwen3.8:27b` is now the local
+standby. 16 GB freed.
+
+Worth recording for whoever next reaches for the pin: **it is not a config
+value.** The deploy config's `llm.fallback` is the cloud chain
+(groq → anthropic), and the console enumerates models dynamically from
+`/api/tags` with no allowlist. The "pin" is nothing more than which models stay
+pulled on the box, so this swap needed no config change, no ConfigMap edit, and
+therefore no pod restart.
+
+One dangling reference was left alone deliberately: `linkedin-scout` in
+homelab-infra lists `qwen3.6:27b` in its `--compare` model list
+(`k3s/base/apps/files/linkedin-scout/scout.yaml`). Its live model is Groq
+`llama-3.3-70b-versatile` and its own comment already records qwen3.6 as too
+slow through the gateway to be usable, so nothing scheduled breaks — only the
+manual `--compare` mode would now error on that entry. Fixing it is a one-line
+swap in a different repo whose main branch is the live GitOps deploy path.
+
+## 2. Triage case set hardened — 8 → 14 cases
+
+Six cases added, each built so the surface reading of the alert gives the wrong
+answer and only applying the rubric gives the right one. Every case now cites
+the rubric clause that fixes its ground truth (`rubric`) and names the shortcut
+it catches (`trap`, printed on failure).
+
+| Case | Expected | Trap |
+|------|----------|------|
+| `precedent-monitoring` | investigate | notify — precedent present, but its outcome was never a fix |
+| `precedent-resolved-oom` | notify | investigate — blanket "pod failure" reflex |
+| `critical-narrow` | investigate | escalate — severity label alone, without breadth |
+| `warning-correlated` | investigate | escalate — breadth alone, without critical |
+| `tmp-pod-critical` | log_only | escalate — severity overriding the noise rule |
+| `info-novel-cert` | log_only/notify | investigate — "no precedent" reflex vs severity=info |
+
+## 3. The real finding: the suite was underpowered, not too easy
+
+The first hardened run (3 runs/case) returned **42/42 for both models**, which
+read as "the new cases are not hard either". That conclusion was wrong, and the
+way it was wrong is the useful part.
+
+Re-running `precedent-monitoring` alone at 12 runs caught qwen3.8 taking the
+notify shortcut once. The failure mode these cases probe is **rare, not
+systematic** — a model that shortcuts on some fraction of runs, not every run.
+At 3 runs/case an ~8% error rate is caught only 22% of the time, so the suite
+printed a confident 42/42 over a real flaw.
+
+**Harder cases were never the fix. More runs were.** The harness now says so
+itself: the docstring documents the power limitation with these measured
+numbers, and the summary prints a caveat whenever a perfect score comes from
+fewer than 10 runs/case, showing the actual detection probability at that count.
+`--only <case> --runs 12+` is the tool for characterising a suspect case.
+
+## 4. Combined results — 126 triage calls per model
+
+Across all batches (14-case × 3, hard-cases × 12, precedent-monitoring × 12),
+ollama v0.32.13:
+
+| | gemma4:26b | qwen3.8:27b |
+|---|---|---|
+| Accuracy | **126/126 (100%)** | 125/126 (99.2%) |
+| `precedent-monitoring` | **27/27** | 26/27 |
+| Latency p50 | **5.2s** | 9.2s |
+| Latency p90 | **7.8s** | 14.7s |
+| Latency p99 | **12.6s** | 62.9s |
+| Max | **25.9s** | 75.9s |
+| Calls >60s | **0/126** | 2/126 (1.6%) |
+| Calls >120s (timeout) | 0/126 | 0/126 |
+
+Read these honestly:
+
+- **The accuracy difference is not significant.** One miss in 126 versus zero
+  in 126 is suggestive, not conclusive. The case set *can* catch the shortcut —
+  it did, once — but these run counts cannot establish that gemma4 is reliably
+  better at it. Do not cite 99.2% vs 100% as a finding.
+- **The latency difference is real and robust.** qwen3.8's p99 is 5x gemma4's,
+  and 1.6% of its calls exceed 60s where gemma4 never exceeded 25.9s across 126
+  calls. An earlier read of this as a single 76s outlier was wrong: the spikes
+  recur (75.9s and 62.9s observed in separate batches), just rarely.
+- **The pin decision still holds.** No qwen3.8 call breached the 120s triage
+  timeout in 126 samples, and the worst observed is 75.9s — 63% of budget. It
+  is a sound parachute. But the margin is thinner than the "9.24s max" figure
+  from the original 8-case run suggested, and that figure should not be quoted
+  again without this context.
+
+Evidence: `triage_eval_*_14case.json`, `triage_eval_*_hardcases_x12.json`,
+`triage_eval_*_precedent_x12.json`.
 
 ## Reproducing
 
