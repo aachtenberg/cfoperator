@@ -65,8 +65,8 @@ kubectl -n argocd annotate application homelab-root \
 ```
 
 ## Cluster Architecture
-- **Control plane**: `raspberrypi` (192.168.0.167). `kubectl` runs locally against the kubeconfig — no SSH.
-- **CFOperator node**: `ubuntu-llm-01` (SSH name) = `headless-gpu` (k3s node name) at 192.168.0.150. GPU taint, hostNetwork on `:8083` for the agent.
+- **Control plane**: `raspberrypi` (10.0.0.10). `kubectl` runs locally against the kubeconfig — no SSH.
+- **CFOperator node**: `ubuntu-llm-01` (SSH name) = `headless-gpu` (k3s node name) at 10.0.0.14. GPU taint, hostNetwork on `:8083` for the agent.
 - **Namespace**: `apps`
 - **Manifests**: [`homelab-infra/k3s/base/apps/cfoperator.yml`](https://github.com/aachtenberg/homelab-infra/blob/main/k3s/base/apps/cfoperator.yml) + [`cfoperator-event-runtime.yml`](https://github.com/aachtenberg/homelab-infra/blob/main/k3s/base/apps/cfoperator-event-runtime.yml)
 

@@ -14,7 +14,7 @@ Production is k3s + ArgoCD GitOps. **A single `git push` is the deploy path** �
 | `cfoperator-executor` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-executor` (own image, context `executor/`) — a disposable Job per remediation, not a Deployment | — |
 | `cfoperator-worker` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-worker` (own image, context `worker/`) — deep-investigation worker | — |
 
-Both agent pods are scheduled on `headless-gpu` (k3s name) = `ubuntu-llm-01` = 192.168.0.150. Namespace: `apps`. Control plane runs `kubectl` locally — no SSH needed.
+Both agent pods are scheduled on `headless-gpu` (k3s name) = `ubuntu-llm-01` = 10.0.0.14. Namespace: `apps`. Control plane runs `kubectl` locally — no SSH needed.
 
 The MCP and bridge Deployments reuse the agent image, so anything that produces a
 new agent tag rolls them too. See [mcp-server.md](mcp-server.md),

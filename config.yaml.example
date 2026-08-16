@@ -1,33 +1,40 @@
 # CFOperator Configuration
 # Copy to config.yaml and customize for your environment
 
-# Observability Backends (Pluggable!)
+# Observability Backends
+#
+# Every backend named in this file is one that ships and is registered in
+# `observability/__init__.py`. This file deliberately lists no aspirational
+# alternatives: if a backend is not named below, it does not exist yet, and a
+# config naming it fails at startup. See docs/infrastructure-config.md for the
+# shipped / planned / not-planned matrix and for how to write your own.
 observability:
-  # Metrics backend - choose one:
+  # Metrics backend. Shipped: prometheus
   metrics:
-    backend: prometheus  # or: victoria_metrics, datadog, influxdb
+    backend: prometheus
     url: http://prometheus:9090
     timeout: 30
 
-  # Logs backend - choose one:
+  # Logs backend. Shipped: loki
   logs:
-    backend: loki  # or: elasticsearch, splunk, cloudwatch
+    backend: loki
     url: http://loki:3100
     timeout: 30
 
-  # Container runtimes - one or many (like notifications):
+  # Container runtimes - one or many (like notifications).
+  # Shipped: kubernetes, docker, prometheus (bare-metal discovery)
   containers:
     - backend: kubernetes
     - backend: prometheus    # bare-metal Docker via Prometheus discovery + SSH
-      ssh_user: aachten
+      ssh_user: sre
     # - backend: docker      # direct Docker API
     #   hosts:
     #     local: unix:///var/run/docker.sock
     #     worker-1: tcp://worker-1:2375
 
-  # Alerts backend - choose one:
+  # Alerts backend. Shipped: alertmanager
   alerts:
-    backend: alertmanager  # or: pagerduty, opsgenie
+    backend: alertmanager
     url: http://alertmanager:9093
 
   # Notifications backend - choose one or many:
@@ -287,12 +294,18 @@ git:
 
 # Remediation (Phase B) — turn a verified needs_action investigation into a
 # concrete fix proposal. See docs/remediation-pipeline.md.
-# Default OFF. Even when enabled, this build only DRY-RUNS: it attaches a patch
-# candidate or a precise decline reason to the investigation result; it never
-# opens a PR or changes the cluster. `open_prs` is reserved for a later phase.
+#
+# Defaults OFF. With `enabled: true` alone the agent DRY-RUNS: it attaches a
+# patch candidate or a precise decline reason to the investigation result and
+# stops there.
+#
+# With `open_prs: true` it opens a real pull request against the manifest repo
+# below. It still never touches the running cluster — the merge button is the
+# only thing that deploys, and that stays a human's. Bounded by
+# `max_open_prs` so a bad night cannot flood the repo.
 remediation:
   enabled: false
-  open_prs: false          # reserved; live PR opening is not implemented yet
+  open_prs: false          # open a PR on the manifest repo (human merges it)
   deep_open_prs: false     # deep-investigation diffs -> PRs (same gates + shared cap)
   default_repo: homelab-infra   # which `git.repos[].name` owns manifests to patch
 

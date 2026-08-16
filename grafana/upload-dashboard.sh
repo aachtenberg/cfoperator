@@ -40,13 +40,21 @@ AUTH_HEADER="Authorization: Bearer ${GRAFANA_CLOUD_API_KEY:-}"
 if [[ -z "$API_BASE_URL" ]] || [[ -z "${GRAFANA_CLOUD_API_KEY:-}" ]]; then
     if [[ -n "${GRAFANA_ADMIN_PASSWORD:-}" ]]; then
         API_MODE="local"
-        API_BASE_URL="${GRAFANA_URL:-http://192.168.0.167:30091}"
+        # No baked-in default: this used to carry one site's LAN address, which
+        # is both a privacy leak in a public repo and a silent misfire for
+        # everyone else. Ask for it explicitly.
+        if [[ -z "${GRAFANA_URL:-}" ]]; then
+            echo "❌ GRAFANA_URL is required for local mode"
+            echo "   e.g. GRAFANA_URL=http://grafana.example:30091"
+            exit 1
+        fi
+        API_BASE_URL="$GRAFANA_URL"
         AUTH_HEADER="Authorization: Basic $(printf 'admin:%s' "$GRAFANA_ADMIN_PASSWORD" | base64 -w0)"
     else
         echo "❌ Missing Grafana credentials"
         echo "Required one of:"
         echo "  - GRAFANA_CLOUD_URL and GRAFANA_CLOUD_API_KEY"
-        echo "  - GRAFANA_ADMIN_PASSWORD (and optional GRAFANA_URL for local k3s Grafana)"
+        echo "  - GRAFANA_ADMIN_PASSWORD and GRAFANA_URL (for local k3s Grafana)"
         exit 1
     fi
 fi

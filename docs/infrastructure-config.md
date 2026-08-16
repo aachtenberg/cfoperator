@@ -6,18 +6,43 @@ CFOperator is designed to monitor **heterogeneous infrastructure** - not just Do
 
 - 🖥️ **Bare metal servers** (Raspberry Pis, x86 servers)
 - 🐳 **Docker containers** (any host running Docker)
-- ☸️ **Kubernetes pods** (if you add clusters)
-- 💾 **Databases** (PostgreSQL, InfluxDB, Redis, etc.)
-- 🌐 **Applications** (Immich, Home Assistant, custom services)
-- 📊 **Any system with metrics/logs** (Prometheus, Loki, Datadog, Dynatrace)
+- ☸️ **Kubernetes pods**
+- 💾 **Databases** (anything exporting metrics Prometheus can scrape)
+- 🌐 **Applications** (any service with metrics or logs)
+
+## What actually ships
+
+This is the whole list. A backend not in the **Shipped** column does not exist
+in this build, and a `config.yaml` naming it fails at startup — so treat the
+other two columns as intent, not as configuration you can write today.
+
+The shipped metrics/logs/containers/alerts backends are exactly what
+`observability/__init__.py` registers. Outbound notification sinks are wired in
+`event_runtime` instead (that is where `ntfy` lives). If this table and the code
+ever disagree, the code is right and this table is a bug.
+
+| Capability | Shipped | Planned | Not planned |
+|---|---|---|---|
+| Metrics | `prometheus` | VictoriaMetrics (Prometheus-compatible, likely small) | Datadog, Dynatrace, New Relic |
+| Logs | `loki` | — | Elasticsearch, Splunk, CloudWatch |
+| Containers | `kubernetes`, `docker`, `prometheus` (bare-metal discovery) | — | Nomad, ECS |
+| Alerts (ingest) | `alertmanager` | — | PagerDuty, Opsgenie |
+| Notifications (out) | `slack`, `discord`, `ntfy` | — | PagerDuty, Opsgenie, email |
+
+**Why so short?** The design bet is that Prometheus + Loki + Alertmanager covers
+the target user — a self-hosted shop that will not send its logs to a SaaS. The
+"not planned" column is not a backlog: those are the vendors whose customers are
+already served by that vendor's own AI features. If you need one, open an
+*integration request* issue — that is the demand signal that decides whether it
+gets built, and writing your own is documented below.
 
 ## Core Principle: Observability-First
 
 CFOperator doesn't need direct access to **run** your infrastructure.
 It needs access to **observe** your infrastructure:
 
-1. **Metrics APIs** - Prometheus, Datadog, Dynatrace, VictoriaMetrics
-2. **Log APIs** - Loki, Elasticsearch, Datadog Logs, CloudWatch
+1. **Metrics APIs** - Prometheus
+2. **Log APIs** - Loki
 3. **Container APIs** - Docker API, Kubernetes API
 4. **SSH access** - For troubleshooting when observability isn't enough
 
@@ -119,29 +144,27 @@ CFOperator connects to your existing observability infrastructure:
 
 ```yaml
 observability:
-  # Metrics - choose what you're using
+  # Metrics. Shipped: prometheus
   metrics:
-    backend: prometheus  # or: victoria_metrics, datadog, dynatrace
+    backend: prometheus
     url: http://10.0.0.1:9090
     timeout: 30
-    # For Datadog/Dynatrace:
-    # api_key: ${DATADOG_API_KEY}
-    # site: us5.datadoghq.com
 
-  # Logs - choose what you're using
+  # Logs. Shipped: loki
   logs:
-    backend: loki  # or: elasticsearch, datadog, splunk
+    backend: loki
     url: http://10.0.0.1:3100
     timeout: 30
 
-  # Containers - multiple backends possible
+  # Containers - multiple backends possible.
+  # Shipped: kubernetes, docker, prometheus (bare-metal discovery)
   containers:
-    backend: docker  # or: kubernetes, podman
+    backend: docker
     hosts:
       local: unix:///var/run/docker.sock
       # If remote Docker APIs are exposed:
-      # pi2: tcp://10.0.0.2:2375
-      # pi3: tcp://10.0.0.3:2375
+      # node-2: tcp://10.0.0.2:2375
+      # node-3: tcp://10.0.0.3:2375
 
   # Kubernetes (if you have a cluster)
   # kubernetes:
@@ -233,102 +256,77 @@ Every 30 minutes, CFOperator:
    - "immich-ml always OOMs after Pi2 reboots" → increase memory limit
    - "influxdb writes fail when loki is busy" → I/O contention
 
-## Pluggable Architecture
+## Writing your own backend
 
-CFOperator's observability backends are **pluggable**. You can swap implementations without changing the agent code:
+The observability layer is an interface, not a fixed list. Nothing below ships —
+this is the extension path if the shipped set does not cover you, and the
+example is deliberately a vendor CFOperator has no plans to support, to make the
+point that you do not need us to.
 
-### Example: Switching from Prometheus to Datadog
+The agent never learns a vendor's query language. It calls
+`query_metric("cpu_usage{host=pi2}")` and your adapter translates; that is the
+whole contract.
 
-**Before (Prometheus):**
-```yaml
-observability:
-  metrics:
-    backend: prometheus
-    url: http://10.0.0.1:9090
-```
-
-**After (Datadog):**
-```yaml
-observability:
-  metrics:
-    backend: datadog
-    api_key: ${DATADOG_API_KEY}
-    site: us5.datadoghq.com
-```
-
-CFOperator's LLM doesn't care - it still calls `query_metric("cpu_usage{host=pi2}")` and the backend adapter translates to Datadog's query language.
-
-### Example: Adding Dynatrace
-
-Create `observability/dynatrace.py`:
+**1. Implement the interface.** Create `observability/mymetrics.py`:
 
 ```python
-class DynatraceMetrics(MetricsBackend):
+from .base import MetricsBackend
+
+class MyMetrics(MetricsBackend):
     def query(self, query: str) -> Dict[str, Any]:
-        # Translate PromQL to Dynatrace DQL
-        # Call Dynatrace API
-        # Return normalized result
-        pass
+        # Translate the PromQL-shaped query to your vendor's language,
+        # call their API, and return the normalized result shape.
+        ...
 ```
 
-Update `config.yaml`:
+**2. Register it** in `observability/__init__.py` — import it and add it to
+`__all__`. That file is the single source of truth for what the config loader
+will accept, which is why the matrix at the top of this document is checkable
+against it.
+
+**3. Name it in config:**
+
 ```yaml
 observability:
   metrics:
-    backend: dynatrace
-    api_token: ${DYNATRACE_API_TOKEN}
-    environment: abc12345.live.dynatrace.com
+    backend: mymetrics
+    api_token: ${MY_API_TOKEN}
 ```
 
-## Example: Multi-Cloud Infrastructure
+If you build one that others would want, an integration request issue plus a PR
+is the fastest route to it shipping.
 
-CFOperator can monitor hybrid infrastructure:
+## Hybrid and multi-site infrastructure
+
+Hosts can live anywhere you can reach — on-prem, a VPS, a cloud VM — as long as
+the metrics land in the Prometheus you point CFOperator at, and SSH (if you want
+the troubleshooting path) reaches them.
 
 ```yaml
 infrastructure:
   hosts:
     # On-premises
-    raspberrypi:
+    primary:
       address: 10.0.0.1
       role: primary
       ssh: {...}
 
-    # AWS EC2
+    # Cloud VM, reachable over VPN/private networking
     app-server-1:
-      address: 10.0.1.50  # VPN/private IP
+      address: 10.0.1.50
       role: application
       ssh:
         user: ubuntu
-        key_path: ~/.ssh/aws-key.pem
+        key_path: ~/.ssh/cloud-key.pem
       monitoring:
-        - cloudwatch
         - docker
-
-    # GCP VM
-    db-server-1:
-      address: 10.1.0.20
-      role: database
-      ssh:
-        user: admin
-        key_path: ~/.ssh/gcp-key
-      monitoring:
-        - stackdriver
-        - postgresql
-
-observability:
-  metrics:
-    # Aggregate from multiple sources
-    backends:
-      - type: prometheus
-        url: http://10.0.0.1:9090
-        scope: homelab
-      - type: cloudwatch
-        region: us-east-1
-        scope: aws
-      - type: stackdriver
-        project: my-gcp-project
-        scope: gcp
 ```
+
+**Note the limitation honestly:** there is one metrics backend and one logs
+backend per deployment. Aggregating several metrics sources under one agent
+(a `backends:` *list*) is **not implemented** — if you need on-prem and a cloud
+provider's native monitoring together, today you point CFOperator at whichever
+Prometheus sees both, or run an agent per site.
 
 ## Next Steps
 

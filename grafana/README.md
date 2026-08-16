@@ -163,9 +163,16 @@ This will:
 The upload helper supports both:
 
 - Grafana Cloud via `GRAFANA_CLOUD_URL` and `GRAFANA_CLOUD_API_KEY`
-- Local k3s Grafana via `GRAFANA_ADMIN_PASSWORD` and optional `GRAFANA_URL`
+- Local k3s Grafana via `GRAFANA_ADMIN_PASSWORD` **and** `GRAFANA_URL`
 
-For this homelab, local Grafana defaults to `http://192.168.0.167:30091`.
+`GRAFANA_URL` is required for local mode — there is no default. It used to
+fall back to one site's LAN address, which was wrong for everyone else.
+
+```bash
+GRAFANA_URL=http://grafana.example:30091 \
+GRAFANA_ADMIN_PASSWORD=... \
+  ./upload-dashboard.sh
+```
 
 ### Option 2: Import via Grafana UI
 

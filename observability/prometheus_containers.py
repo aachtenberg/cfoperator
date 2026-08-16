@@ -20,7 +20,7 @@ class PrometheusContainers(ContainerBackend):
     - Works with existing infrastructure (Prometheus + SSH keys)
     """
 
-    def __init__(self, prometheus_url: str, ssh_user: str = 'aachten'):
+    def __init__(self, prometheus_url: str, ssh_user: str = 'sre'):
         """
         Initialize Prometheus container backend.
 
