@@ -1,0 +1,437 @@
+{
+ "summary": {
+  "model": "qwen3.8:27b",
+  "ollama_version": "0.32.13",
+  "runs": 24,
+  "json_valid_rate": 1.0,
+  "action_accuracy": 1.0,
+  "latency_mean_s": 5.97,
+  "latency_max_s": 9.24,
+  "errors": 0
+ },
+ "per_case": {
+  "watchdog": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "log_only"
+   ]
+  },
+  "smoke-test-pod": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "log_only"
+   ]
+  },
+  "known-sdcard": {
+   "expected": [
+    "notify"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "notify"
+   ]
+  },
+  "info-severity": {
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "log_only",
+    "notify"
+   ]
+  },
+  "novel-oom": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "novel-imagepull": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "controlplane-down": {
+   "expected": [
+    "escalate"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "escalate"
+   ]
+  },
+  "correlated-outage": {
+   "expected": [
+    "escalate"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "escalate"
+   ]
+  }
+ },
+ "results": [
+  {
+   "case": "watchdog",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 3.03,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 1.9,
+   "confidence": 0.99,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 2.67,
+   "confidence": 0.99,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 3.83,
+   "confidence": 0.97,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 3.3,
+   "confidence": 0.97,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.33,
+   "confidence": 0.97,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.93,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.35,
+   "confidence": 0.93,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 6.49,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.08,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 9.24,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 8.96,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 6.2,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 7.24,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.53,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.73,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.98,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.33,
+   "confidence": 0.92,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 0,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 5.86,
+   "confidence": 0.97,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 1,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 5.07,
+   "confidence": 0.97,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 2,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 4.87,
+   "confidence": 0.97,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 0,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 8.4,
+   "confidence": 0.93,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 1,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 7.99,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 2,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 4.86,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  }
+ ]
+}
