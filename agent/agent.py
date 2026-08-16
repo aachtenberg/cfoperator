@@ -1238,10 +1238,12 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             recommendation = self._extract_recommendation(response_text)
 
             # Phase-B remediation: for a confirmed needs_action, see if this is a
-            # case we can propose a concrete fix for (dry-run only). Default off;
-            # never opens a PR in this build. Conservative by design — it mostly
-            # turns a vague "needs_action" into either a candidate patch or a
-            # precise decline reason (see remediation.py + the design doc).
+            # case we can propose a concrete fix for. Default off; dry-run
+            # unless `remediation.open_prs` is set, in which case this can open
+            # a real (human-merge-gated) PR. Never touches the running cluster
+            # either way. Conservative by design — it mostly turns a vague
+            # "needs_action" into either a candidate patch or a precise decline
+            # reason (see remediation.py + the design doc).
             proposal = self._maybe_propose_remediation(outcome, alert_info, trigger)
 
             findings = {

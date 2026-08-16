@@ -407,8 +407,13 @@ def _get_file(client: Any, repo: str, path: str, ref: str) -> Optional[tuple]:
 
 class RemediationProposer:
     """IO wrapper: fetch a pod's scheduling state, build a Proposal, and
-    (only when ``open_prs`` is set) open a PR. Phase B keeps live PR opening
-    deferred — ``open_prs`` defaults False and the live path is a guarded TODO.
+    (only when ``open_prs`` is set) open a PR.
+
+    ``open_prs`` defaults False, so the default behaviour is dry-run. When it
+    is set the PR path is live and real — ``open_pr`` below actually branches,
+    commits and opens against the manifest repo. It is bounded by
+    ``max_open_prs`` and stops at the pull request: merging stays a human's
+    decision, and nothing here mutates a running cluster.
     """
 
     def __init__(self, k8s_tools: Any, repos: Optional[List[Dict[str, Any]]] = None,

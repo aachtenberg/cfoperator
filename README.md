@@ -1,8 +1,43 @@
-# CFOperator - Continuous Feedback Operator
+# CFOperator — a self-hosted AI SRE agent
 
-**v1.0.8** — Autonomous infrastructure monitoring agent with proactive intelligence (agent + event_runtime split).
+**Despite the name, this is not a Kubernetes operator.** It is a self-hosted
+agent that watches your infrastructure, investigates alerts with an LLM, and
+proposes fixes as pull requests. It runs on your hardware against your
+Prometheus, and it never sends your telemetry to anyone — including us. There is
+no phone-home, no version ping, no usage analytics.
 
-CFOperator runs continuously in the background, monitoring your fleet via an OODA loop (Observe → Orient → Decide → Act), predicting issues before they become alerts, and surfacing insights through a chat UI.
+**v1.0.8**
+
+## What it actually does
+
+```
+alert → triage → investigate → propose a fix → open a GitOps PR → verify after merge
+```
+
+Each step is real and running in production:
+
+- **Triage** — every Alertmanager alert is classified `log_only` / `notify` /
+  `investigate` / `escalate` by a local LLM, so only the alerts that deserve one
+  cost you an investigation.
+- **Investigate** — the agent queries Prometheus, Loki, Kubernetes and Docker
+  through a tool loop, checks the finding against past investigations held in a
+  pgvector knowledge base, and writes a verdict.
+- **Propose** — for the fix classes it understands, it produces a concrete diff
+  against your manifest repo.
+- **Open a PR** — and stop there. **It never mutates a running cluster.** The
+  merge button is the deploy path and it stays a human's. This is a deliberate
+  design limit, not a missing feature.
+- **Verify** — after the merge it checks whether the thing it claimed to fix is
+  actually healthy, and downgrades its own verdict if not.
+
+It also runs a proactive sweep every 30 minutes rather than waiting to be
+paged, and answers questions in chat, Slack, or any MCP host.
+
+**Requirements:** Prometheus and Alertmanager. Loki for logs. An LLM — a local
+Ollama model is the default and the tested path; cloud providers work as a
+fallback chain. Supported integrations are listed honestly in
+[docs/infrastructure-config.md](docs/infrastructure-config.md) — the list is
+short, and that page says so.
 
 ## Architecture
 
@@ -43,12 +78,12 @@ CFOperator agent (Docker container)
 │   ├── Embeddings: nomic-embed-text via Ollama (768 dims, HNSW index)
 │   └── Offline Buffer: JSON Lines fallback
 │
-├── Observability (Pluggable)
-│   ├── Metrics: Prometheus / Victoria Metrics / Datadog / InfluxDB
-│   ├── Logs: Loki / Elasticsearch / Splunk / CloudWatch
+├── Observability (pluggable interface; this is the whole shipped list)
+│   ├── Metrics: Prometheus
+│   ├── Logs: Loki
 │   ├── Alerts: handled by event_runtime (Alertmanager → /v1/investigate)
-│   ├── Containers: Kubernetes + Docker (multi-runtime)
-│   └── Notifications: handled by event_runtime (Slack + Discord)
+│   ├── Containers: Kubernetes + Docker + Prometheus bare-metal discovery
+│   └── Notifications: handled by event_runtime (Slack + Discord + ntfy)
 │
 ├── LLM Fallback Chain
 │   └── Configured Ollama instances (in priority order) → optional paid escalation
