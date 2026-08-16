@@ -1,0 +1,436 @@
+{
+ "summary": {
+  "model": "gemma4:26b",
+  "ollama_version": "0.30.5",
+  "runs": 24,
+  "json_valid_rate": 1.0,
+  "action_accuracy": 1.0,
+  "latency_mean_s": 5.53,
+  "latency_max_s": 12.58,
+  "errors": 0
+ },
+ "per_case": {
+  "watchdog": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "log_only"
+   ]
+  },
+  "smoke-test-pod": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "log_only"
+   ]
+  },
+  "known-sdcard": {
+   "expected": [
+    "notify"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "notify"
+   ]
+  },
+  "info-severity": {
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "notify"
+   ]
+  },
+  "novel-oom": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "novel-imagepull": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "investigate"
+   ]
+  },
+  "controlplane-down": {
+   "expected": [
+    "escalate"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "escalate"
+   ]
+  },
+  "correlated-outage": {
+   "expected": [
+    "escalate"
+   ],
+   "correct": 3,
+   "of": 3,
+   "actions": [
+    "escalate"
+   ]
+  }
+ },
+ "results": [
+  {
+   "case": "watchdog",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 5.59,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 3.78,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 3.99,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.57,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 4.25,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 3.29,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 7.32,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.86,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 5.95,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 4.81,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 12.58,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 7.13,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.62,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.36,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.27,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 0,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.61,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.82,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 2,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 5.33,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 0,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 5.03,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 1,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 4.58,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 2,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 5.18,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 0,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 5.33,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 1,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 4.72,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 2,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 5.84,
+   "confidence": 1.0,
+   "error": null,
+   "raw": null
+  }
+ ]
+}
