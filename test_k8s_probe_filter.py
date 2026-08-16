@@ -20,7 +20,7 @@ REAL_CLIENT_LINE = (
 )
 PICO_TIMEOUT_LINE = (
     "2026-05-23T10:00:12: Client pico_202ef2a82ef0a5af "
-    "[192.168.0.213:52730] disconnected: exceeded timeout."
+    "[10.0.0.30:52730] disconnected: exceeded timeout."
 )
 
 

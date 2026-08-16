@@ -134,16 +134,16 @@ of the fleet's logs.
 (Claude Code: `claude mcp add cfoperator -e CFOP_AGENT_URL=... -- python -m mcp_server`)
 
 **LAN hosts (Streamable HTTP, since 2026-07-30):** the MCP endpoint is
-exposed at `http://192.168.0.150:8090/mcp` via hostPort (the pod is pinned
+exposed at `http://10.0.0.14:8090/mcp` via hostPort (the pod is pinned
 to headless-gpu). Auth: `Authorization: Bearer <token from the
 cfoperator-mcp Secret>`. Defense-in-depth: the `CFOP-8090-GUARD` iptables
 chain (same ansible playbook as the 8083 guard) allows only cluster
 sources, the WireGuard backhaul, and the operator workstation
-(192.168.0.224) — hooked into INPUT **and** FORWARD because hostPort
+(10.0.0.20) — hooked into INPUT **and** FORWARD because hostPort
 traffic is DNAT'd. Example workstation config (Claude Code):
 
 ```bash
-claude mcp add --transport http cfoperator http://192.168.0.150:8090/mcp \
+claude mcp add --transport http cfoperator http://10.0.0.14:8090/mcp \
   --header "Authorization: Bearer $(kubectl -n apps get secret cfoperator-mcp -o jsonpath='{.data.token}' | base64 -d)"
 ```
 
@@ -167,7 +167,7 @@ kubectl -n apps create secret generic cfoperator-mcp \
 headless-gpu (homelab-infra `ansible/deploy-cfoperator-8083-guard.yml`)
 restricts the agent port to cluster sources — a NetworkPolicy could not do
 this because the agent is a hostNetwork pod. Direct LAN browsing to
-`192.168.0.150:8083` requires being in `guard_allowed_cidrs` or using
+`10.0.0.14:8083` requires being in `guard_allowed_cidrs` or using
 `kubectl port-forward svc/cfoperator 8083:8083`.
 
 ## Error shape

@@ -50,8 +50,18 @@ class TestInit:
     def test_strips_trailing_slash(self, backend):
         assert backend.prometheus_url == "http://prom:9090"
 
-    def test_default_ssh_user(self):
-        assert PrometheusContainers("http://prom:9090").ssh_user == "aachten"
+    def test_default_ssh_user_is_generic(self):
+        # Two separate jobs, deliberately:
+        #   - pin "sre" so changing the documented placeholder is a conscious
+        #     edit rather than a drive-by (config.yaml.example shows it too);
+        #   - assert it is not the maintainer's username, which is the property
+        #     that actually matters in a public repo and the regression this
+        #     exists to catch.
+        # Deployments always set ssh_user explicitly, so the default is only
+        # ever a placeholder.
+        default = PrometheusContainers("http://prom:9090").ssh_user
+        assert default == "sre"
+        assert "aachten" not in default
 
 
 class TestListContainers:

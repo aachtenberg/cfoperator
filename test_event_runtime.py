@@ -491,7 +491,7 @@ def test_k3s_provider_discovers_nodes_and_collects_metrics():
                     {
                         "metric": {
                             "node": "raspberrypi",
-                            "internal_ip": "192.168.0.167",
+                            "internal_ip": "10.0.0.10",
                             "kernel_version": "6.1.0-rpi7-rpi-v8",
                             "kubelet_version": "v1.31.4+k3s1",
                             "os_image": "Debian GNU/Linux 12",

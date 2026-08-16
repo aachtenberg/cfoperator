@@ -1,0 +1,71 @@
+name: Bug report
+description: Something behaves differently than documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: this project deliberately ships a **short** list of
+        integrations. If the problem is "backend X isn't supported", that's an
+        [integration request](?template=integration_request.yml), not a bug.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        Agent or event_runtime logs around the failure.
+
+        **Please redact.** Logs from this agent routinely carry hostnames,
+        internal IPs, and alert text about your infrastructure. Nothing here is
+        worth leaking your topology over.
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: The `config.yaml` section involved, with secrets and addresses redacted.
+      render: yaml
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Image tag or commit sha.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: llm
+    attributes:
+      label: Which LLM backend
+      description: Most investigation-quality issues turn out to be model-dependent, so this is usually the first question asked.
+      options:
+        - Ollama (local)
+        - Anthropic
+        - Groq
+        - Gemini
+        - Other / several
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: e.g. `gemma4:26b`. If the agent misbehaved rather than crashed, this matters more than anything else in this form.
+    validations:
+      required: false

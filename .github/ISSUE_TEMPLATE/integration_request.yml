@@ -1,0 +1,59 @@
+name: Integration request
+description: Ask for a backend that isn't shipped (Datadog, Splunk, CloudWatch, …)
+labels: ["integration-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The shipped backend list is deliberately short — Prometheus, Loki,
+        Alertmanager, Kubernetes, Docker, Slack, Discord, ntfy. See the
+        shipped/planned/not-planned matrix in
+        [docs/infrastructure-config.md](../blob/main/docs/infrastructure-config.md).
+
+        **This form is how that list grows.** Nothing on the "not planned"
+        column is refused forever; it's waiting for someone to say they need it.
+        Filing this is a genuine vote, and it's also the fastest way to find out
+        that writing your own adapter is easier than you'd think — the agent
+        never learns a vendor's query language, your adapter translates.
+
+  - type: input
+    id: backend
+    attributes:
+      label: Which backend
+      description: e.g. VictoriaMetrics, Datadog, CloudWatch, PagerDuty.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: role
+    attributes:
+      label: In which role
+      options:
+        - Metrics
+        - Logs
+        - Containers
+        - Alerts (ingest)
+        - Notifications (outbound)
+    validations:
+      required: true
+
+  - type: textarea
+    id: situation
+    attributes:
+      label: What's your situation
+      description: |
+        The useful part. Is this the only thing standing between you and
+        running CFOperator, or a nice-to-have alongside a Prometheus you
+        already have? Roughly what scale — how many hosts, how many alerts a
+        day? No need to be precise or to name your employer.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Would you be up for writing it
+      description: Adapters are one class plus a registry line; there's a walkthrough in the infrastructure-config doc. A "no" here doesn't weaken the request.
+      options:
+        - label: I'd be willing to contribute the adapter or test it against my setup
+          required: false

@@ -1,6 +1,6 @@
 # Ollama Inference Latency Benchmark
 
-**Model:** `qwen3-coder:latest` | **Endpoint:** `http://192.168.0.150:11434` | **Iterations:** 5 | **Date:** 2026-04-04 18:19 UTC
+**Model:** `qwen3-coder:latest` | **Endpoint:** `http://10.0.0.14:11434` | **Iterations:** 5 | **Date:** 2026-04-04 18:19 UTC
 
 ---
 
