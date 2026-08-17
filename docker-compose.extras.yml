@@ -1,0 +1,21 @@
+# Hybrid-fleet overlay (the `extras` of the trial compose): SSH fleet access
+# and direct Docker-runtime observation. NOT part of the getting-started path —
+# the default compose must run without keys or sockets.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.extras.yml up -d
+#
+# Supersedes the old dev compose's network_mode: host + ~/.ssh + docker.sock
+# arrangement: capabilities are preserved as an explicit opt-in overlay, but
+# networking stays bridged — reach LAN hosts by address, not by borrowing the
+# host's stack. (host networking and published ports are mutually exclusive in
+# compose, and the trial's guard test forbids it in the default file.)
+
+services:
+  agent:
+    volumes:
+      - ~/.ssh:/root/.ssh:ro                      # SSH keys for fleet access
+      - /var/run/docker.sock:/var/run/docker.sock # local Docker observation
+
+  event-runtime:
+    volumes:
+      - ~/.ssh:/root/.ssh:ro

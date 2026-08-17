@@ -12,8 +12,12 @@ ENV/
 dist/
 build/
 
-# Config
+# Config — the operator's live site config, which is never committed. The
+# pattern is unanchored, so it also matches nested paths: the compose trial's
+# starter config is a shipped artifact and has to be excepted explicitly, or a
+# fresh clone has nothing to bind-mount and the stack fails to start.
 config.yaml
+!deploy/compose/config.yaml
 .env
 *.secret
 secrets/
