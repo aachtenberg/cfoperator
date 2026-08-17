@@ -48,7 +48,18 @@ It needs access to **observe** your infrastructure:
 
 ## Configuration Approach
 
+For config *mechanics* — how the file is merged over defaults, what `profile:`
+does, and the full annotated option list — see
+[config-reference.md](config-reference.md). This section is about describing a
+fleet.
+
 ### Infrastructure Hosts
+
+**Optional.** CFOperator discovers workloads from the Kubernetes API and from
+Prometheus targets at runtime, so a getting-started config declares no hosts at
+all. A static inventory is an overlay that unlocks the hybrid-fleet tier: the
+SSH and host-discovery tools, and baseline drift against expected services.
+Leave it out and those tools log that they are disabled; nothing else changes.
 
 Define your fleet in `config.yaml`:
 

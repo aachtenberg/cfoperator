@@ -90,39 +90,34 @@ def test_starter_config_is_valid_and_inventory_free():
     cfg = _load("deploy/compose/config.yaml")
     assert "infrastructure" not in cfg, (
         "the starter config grew a host inventory — discovery, not inventory, "
-        "is the trial contract (CFOP-26)"
+        "is the trial contract"
     )
-    obs = cfg["observability"]
-    assert obs["metrics"]["backend"] == "prometheus"
-    assert "containers" not in obs, "no container-runtime section in the trial"
-    assert cfg["llm"]["primary"]["provider"] == "ollama"
+    assert "observability" not in cfg, (
+        "the starter config went back to the canonical long form — the trial "
+        "config is the short alias form, which is the surface a getting-started "
+        "file (and the Helm chart) should template"
+    )
+    assert cfg["profile"] == "investigate", "the trial must default to read-only"
+    assert cfg["llm"]["backend"] == "ollama"
+    assert "prometheus" in cfg and "alertmanager" in cfg
 
 
-def test_starter_config_satisfies_every_hard_indexed_key():
-    """A present config file suppresses the built-in defaults entirely, so any
-    key the agent reads with ``config['x']['y']`` must exist here or the main
-    loop dies with KeyError on the first sweep.
+def test_starter_config_relies_on_merged_defaults():
+    """The predecessor of this test asserted the *opposite*: that the starter
+    config spelled out every key the agent hard-indexes, because a config file
+    that existed suppressed the built-in defaults wholesale and a missing
+    ``ooda`` crash-looped the main loop with KeyError.
 
-    Guarding the class rather than today's keys: this reads the agent source
-    and fails when a NEW hard-indexed key appears without the starter config
-    learning about it. It becomes vestigial once CFOP-26 merges partial config
-    over complete defaults — delete it then, deliberately.
+    Partial configs now merge over complete defaults, so spelling those
+    sections out is no longer required — and re-adding them would quietly
+    re-couple the trial config to internals it should not know about. This
+    guards that they stay gone.
     """
-    import re
-
-    source = (REPO / "agent" / "agent.py").read_text()
-    pairs = set(re.findall(r"self\.config\['([a-z_]+)'\]\['([a-z_]+)'\]", source))
-    assert {("ooda", "sweep"), ("database", "host")} <= pairs, (
-        "the hard-indexing pattern this test parses for has changed — reread "
-        "agent.py and update the guard rather than deleting it"
-    )
-
     cfg = _load("deploy/compose/config.yaml")
-    for top, nested in sorted(pairs):
-        assert top in cfg, f"agent.py hard-indexes config['{top}'] — missing from starter config"
-        assert nested in cfg[top], (
-            f"agent.py hard-indexes config['{top}']['{nested}'] — missing from "
-            "starter config; the agent will KeyError on boot"
+    for section in ("ooda", "llm_fallback", "git", "skills"):
+        assert section not in cfg, (
+            f"{section!r} is back in the starter config — it has a working "
+            "default, so naming it here is noise the trial user must read"
         )
 
 

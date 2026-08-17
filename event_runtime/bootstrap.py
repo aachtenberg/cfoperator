@@ -6,6 +6,11 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
+# Config semantics shared with the agent — one loader, one default schema, so
+# the two consumers of config.yaml cannot drift. `cfshared` is stdlib-only (it
+# imports PyYAML lazily) precisely so this runtime keeps its portable posture.
+from cfshared import config as shared_config
+
 from .defaults import (
     HostContextProvider,
     JsonFileScheduler,
@@ -427,70 +432,25 @@ def _default_scheduler_jobstore_url(schedule_dir: str, pg_settings: dict) -> str
 
 
 def _load_root_config(config_path: str | None = None) -> dict:
-    """Load the expanded root YAML config when available."""
-    _load_env_file(config_path)
-    if config_path is None:
-        config_path = os.getenv("CONFIG_PATH")
-    if not config_path:
-        return {}
+    """Load the root config, merged over the shared default schema.
 
-    try:
-        import yaml  # type: ignore[import-untyped]
-
-        with open(config_path, "r") as fh:
-            cfg = yaml.safe_load(fh) or {}
-        if not isinstance(cfg, dict):
-            return {}
-        expanded = _expand_env_vars(cfg)
-        return expanded if isinstance(expanded, dict) else {}
-    except Exception as exc:
-        import logging as _logging
-        _logging.getLogger(__name__).warning(
-            "Failed to load root config from %s, using empty config: %s", config_path, exc
-        )
-        return {}
+    Delegates to ``cfshared.config`` so this runtime and the agent resolve the
+    same file identically. This used to return ``{}`` on anything unexpected and
+    then apply its own per-field ``env -> config -> literal`` fallbacks inline;
+    those fallbacks still exist below, but they now sit on top of a config that
+    always has the expected shape rather than compensating for its absence.
+    """
+    return shared_config.load_config(config_path)
 
 
 def _load_env_file(config_path: str | None = None) -> None:
     """Load a colocated .env file so runtime config placeholders resolve consistently."""
-    path_candidates: list[Path] = []
-    if config_path:
-        path_candidates.append(Path(config_path).expanduser().resolve().parent / ".env")
-    else:
-        config_env = os.getenv("CONFIG_PATH", "").strip()
-        if config_env:
-            path_candidates.append(Path(config_env).expanduser().resolve().parent / ".env")
-    path_candidates.append(Path.cwd() / ".env")
-
-    seen: set[Path] = set()
-    for candidate in path_candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        if candidate.exists():
-            for raw_line in candidate.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                if not key:
-                    continue
-                value = value.strip()
-                if value and value[0] == value[-1] and value[0] in {'"', "'"}:
-                    value = value[1:-1]
-                os.environ.setdefault(key, value)
+    shared_config.load_env_file(config_path)
 
 
 def _expand_env_vars(config: object) -> object:
     """Recursively expand ${VAR} references in config values."""
-    if isinstance(config, dict):
-        return {key: _expand_env_vars(value) for key, value in config.items()}
-    if isinstance(config, list):
-        return [_expand_env_vars(item) for item in config]
-    if isinstance(config, str) and config.startswith("${") and config.endswith("}"):
-        return os.getenv(config[2:-1], "")
-    return config
+    return shared_config.expand_env_vars(config)
 
 
 def _env_flag(name: str, default: bool) -> bool:

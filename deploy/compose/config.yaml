@@ -1,72 +1,41 @@
-# Starter config for the docker-compose trial (CFOP-25).
+# Starter config for the docker-compose trial.
 #
-# Deliberately tiny: every value arrives as an environment variable from
-# docker-compose.yml / .env, and only the sections a k8s-free trial needs are
-# present — no host inventory, no SSH, no container-runtime section. The full
-# reference lives in config.yaml.example and docs/infrastructure-config.md.
+# Everything not named here comes from the default schema in cfshared/config.py
+# and is merged under this file, so what remains is exactly the endpoints and
+# choices that are specific to running under compose. No host inventory, no
+# container runtime (the trial is not in-cluster, so autodetection stays off),
+# no ooda block — those all default correctly now.
 #
-# INTERIM ARTIFACT: CFOP-26 (config collapse) will teach the loader to merge a
-# partial file over complete defaults, at which point this file shrinks further
-# or disappears. Until then, what is listed here is the effective config —
-# absent sections stay absent.
+# Values arrive as environment variables from docker-compose.yml / .env; an
+# empty variable leaves that feature off rather than half-configured.
 
-observability:
-  metrics:
-    backend: prometheus
-    url: ${PROMETHEUS_URL}
-
-  logs:
-    backend: loki
-    url: ${LOKI_URL}
-
-  alerts:
-    backend: alertmanager
-    url: ${ALERTMANAGER_URL}
-
-  notifications:
-    - backend: slack
-      webhook_url: ${SLACK_WEBHOOK_URL}
-    - backend: discord
-      webhook_url: ${DISCORD_WEBHOOK_URL}
+# Read-only by default: observe, triage, investigate, notify, never propose a
+# change. Switch to `remediate` to let the queue/executor/PR flags take effect.
+profile: investigate
 
 llm:
-  primary:
-    provider: ollama
-    url: ${OLLAMA_URL}
-    model: ${OLLAMA_MODEL}
-    timeout: 180
+  backend: ollama
+  url: ${OLLAMA_URL}
+  model: ${OLLAMA_MODEL}
 
-  # Optional paid fallbacks — skipped when the key is empty.
-  fallback:
-    - provider: anthropic
-      model: claude-sonnet-5
-      api_key: ${ANTHROPIC_API_KEY}
-    - provider: groq
-      model: llama-3.3-70b-versatile
-      api_key: ${GROQ_API_KEY}
+prometheus:
+  url: ${PROMETHEUS_URL}
 
-  embeddings:
-    provider: ollama
-    url: ${OLLAMA_URL}
-    model: nomic-embed-text
+alertmanager:
+  url: ${ALERTMANAGER_URL}
 
+loki:
+  url: ${LOKI_URL}
+
+notify:
+  slack_webhook: ${SLACK_WEBHOOK_URL}
+  discord_webhook: ${DISCORD_WEBHOOK_URL}
+
+# Named explicitly rather than left to the postgres:5432/cfoperator defaults,
+# because the compose file lets POSTGRES_DB / POSTGRES_USER be overridden in
+# .env and the loader only env-fills the password.
 database:
   host: ${POSTGRES_HOST}
-  port: 5432
   database: ${POSTGRES_DB}
   user: ${POSTGRES_USER}
   password: ${POSTGRES_PASSWORD}
-
-# Required until CFOP-26: agent.py reads `config['ooda']['sweep']` with hard
-# indexing, and a config file that exists suppresses the built-in defaults
-# entirely — so omitting this section does not fall back, it crash-loops the
-# main loop with KeyError: 'ooda'. Found by booting the stack, not by tests.
-ooda:
-  alert_check_interval: 30
-  sweep_interval: 1800
-  sweep:
-    metrics: true
-    logs: true
-    containers: false        # no container backend configured in the trial
-    baseline_drift: true
-    learning_consolidation: true

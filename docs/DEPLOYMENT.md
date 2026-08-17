@@ -29,9 +29,12 @@ code you wait for its build job rather than merging a bump PR.
 
 ### What the image contains
 
-The Dockerfile copies `agent/`, `tools/`, `skills/`, `ui/`, `observability/`,
-`event_runtime/`, `mcp_server/`, `bridge/`, `auth/`, `scripts/`, `web_server.py`,
-and `web_auth.py`. The last four matter operationally: `web_server.py` and
+The Dockerfile copies `cfshared/`, `agent/`, `tools/`, `skills/`, `ui/`,
+`observability/`, `event_runtime/`, `mcp_server/`, `bridge/`, `auth/`,
+`scripts/`, `web_server.py`, and `web_auth.py`. `cfshared/` holds the config
+loader that `agent/` and `event_runtime/` both import at module load, so it has
+the same all-or-nothing character as the four below. The last four matter
+operationally: `web_server.py` and
 `mcp_server/server.py` both import `auth.bootstrap` at module load, so omitting
 `auth/` crash-loops the agent and the MCP pod rather than degrading them, and
 `scripts/create_admin.py` is the lockout recovery path in
@@ -66,7 +69,19 @@ kubectl -n argocd get application homelab-root  # check Sync + Health
 
 ### Workflow `paths-ignore`
 
-The build workflow skips on pushes that only touch: `**.md`, `docs/**`, `benchmarks/**`, `cfassist/**`, `cfassist-go/**`, `cfshared/**`, `llm-gateway/**`, `grafana/**`, `observability/**`. Pushes that ONLY touch those paths won't produce a new image — that's intentional (they don't affect what runs in the cluster), but be aware of it if you expect a new tag and none appears.
+The build workflow skips on pushes that only touch: `**.md`, `docs/**`, `benchmarks/**`, `cfassist/**`, `cfassist-go/**`, `llm-gateway/**`, `grafana/**`. Pushes that ONLY touch those paths won't produce a new image — that's intentional (they don't affect what runs in the cluster), but be aware of it if you expect a new tag and none appears.
+
+**The rule for this list: a path may only be ignored if it is not baked into the
+image.** `cfshared/**` was on it until the package existed — it is now COPYed by
+the Dockerfile and imported at module load by both the agent and
+`event_runtime`, so a `cfshared`-only fix that never built would have been a
+silent no-op deploy. It was removed for that reason.
+
+`observability/**` is still listed and is in the same position: the Dockerfile
+copies it and the agent imports it. Left as-is here only because changing the
+deploy trigger for an unrelated package does not belong in a config-loader
+change — but it is a real trap, and the next person to edit only
+`observability/prometheus.py` will hit it.
 
 ## Common Change Types
 

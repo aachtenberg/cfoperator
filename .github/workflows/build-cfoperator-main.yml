@@ -26,7 +26,6 @@ on:
       - 'benchmarks/**'
       - 'cfassist/**'
       - 'cfassist-go/**'
-      - 'cfshared/**'
       - 'llm-gateway/**'
       - 'grafana/**'
       - 'observability/**'
