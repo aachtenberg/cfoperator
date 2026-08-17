@@ -975,7 +975,15 @@ def test_portable_runtime_bootstrap_uses_local_paths(monkeypatch, tmp_path: Path
     # short-circuit on empty webhook_url.
     monkeypatch.setenv("SLACK_WEBHOOK_URL", "")
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "")
-    monkeypatch.delenv("CONFIG_PATH", raising=False)
+    # Empty file, not delenv: load_config resolves an unset CONFIG_PATH to
+    # "config.yaml" in the cwd, i.e. the operator's live site config when run
+    # from the repo root. This test dispatches a real alert, and sinks come
+    # from that file's observability.notifications — blanking the Slack and
+    # Discord variables does not cover an ntfy block or a webhook written as a
+    # literal rather than as ${VAR}.
+    _empty = tmp_path / "no-config.yaml"
+    _empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("CONFIG_PATH", str(_empty))
     runtime = build_portable_runtime()
 
     health = runtime.health()
@@ -1953,7 +1961,17 @@ def test_bootstrap_no_git_plugins_without_config(monkeypatch, tmp_path):
 
 
 def test_bootstrap_loads_github_token_from_config_env_file(monkeypatch, tmp_path):
-    """Bootstrap should resolve git.github.token from a colocated .env file via config.yaml."""
+    """Bootstrap should resolve git.github.token from a colocated .env file via config.yaml.
+
+    Opts out of the suite-wide CFOP_NO_DOTENV (see conftest.py) because this
+    test is specifically about .env resolution — using a .env it writes itself.
+
+    chdir is part of that: load_env_file also walks Path.cwd()/".env", so
+    opting back in from the repo root would pull the developer's real
+    credentials in via os.environ.setdefault, which monkeypatch does not undo.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CFOP_NO_DOTENV", raising=False)
     config_path = tmp_path / "config.yaml"
     env_path = tmp_path / ".env"
     config_path.write_text(
@@ -2546,7 +2564,14 @@ def test_bootstrap_notification_sinks_from_env(tmp_path, monkeypatch):
     # Set to empty rather than deleting — _load_env_file uses setdefault,
     # so a deleted var gets re-populated from .env in the repo root.
     monkeypatch.setenv("DISCORD_WEBHOOK_URL", "")
-    monkeypatch.delenv("CONFIG_PATH", raising=False)
+    # Empty file, not delenv — see the comment in
+    # test_portable_runtime_bootstrap_uses_local_paths. This test asserts
+    # exactly one sink built from the environment; a live
+    # observability.notifications list from the repo-root config.yaml would
+    # add sinks and break that count.
+    _empty = tmp_path / "no-config.yaml"
+    _empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("CONFIG_PATH", str(_empty))
 
     runtime = build_portable_runtime()
 

@@ -156,8 +156,65 @@ def test_the_legacy_config_stays_unprofiled():
     assert merged["profile"] is None
 
 
+# Substrings that mark a config key as carrying a credential. Deliberately
+# broad: a false positive costs one unreadable diff line, a false negative
+# prints a live secret.
+#
+# `dsn` and `jobstore_url` are here because a connection string embeds its
+# password in a single scalar — `event_runtime/scheduler_backends.py` ships a
+# `_redact_dsn()` for exactly that reason, so this tree already knows they are
+# credential carriers. `private_key` for the same reason in the other
+# direction: nothing about the name says "secret", and the value is one.
+_SECRET_KEY_HINTS = (
+    "api_key",
+    "token",
+    "password",
+    "secret",
+    "webhook",
+    "dsn",
+    "jobstore_url",
+    "private_key",
+)
+
+
+def _is_secret_key(key: str) -> bool:
+    return any(hint in key.lower() for hint in _SECRET_KEY_HINTS)
+
+
+def _redact(value, key: str = ""):
+    """Structure-preserving copy with credential-shaped leaves masked.
+
+    This assertion output is the whole reason CFOP-44 exists: resolved config
+    carries real API keys, database passwords and GitHub tokens, and a failing
+    diff used to render them verbatim into a message that people paste into
+    issues, PRs and chat.
+
+    Walks lists as well as dicts. `llm.fallback` is a *list* of provider dicts
+    and `_leaf_diffs` does not recurse into lists, so the entire list is
+    repr'd as one leaf — masking only scalars would have missed the four API
+    keys that were the worst of the disclosure.
+
+    Empty values are left visible: `'' -> '<redacted>'` still tells the reader
+    which side changed, which is the diagnostic the diff exists to give.
+    """
+    if isinstance(value, dict):
+        return {k: _redact(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        # Carry the parent key down. A list of dicts (llm.fallback) redacts on
+        # its own keys either way, but a list of *scalars* under a secret name
+        # — `tokens: ["ghp_…"]` — has no key of its own, and dropping the
+        # parent here would print it.
+        return [_redact(item, key) for item in value]
+    if key and _is_secret_key(key) and value not in ("", None):
+        return "<redacted>"
+    return value
+
+
 def _leaf_diffs(old, new, path: str = ""):
-    """Yield human-readable descriptions of leaves that changed value."""
+    """Yield human-readable descriptions of leaves that changed value.
+
+    Values are redacted before rendering — see `_redact`.
+    """
     if isinstance(old, dict):
         if not isinstance(new, dict):
             yield f"{path or '<root>'}: dict -> {type(new).__name__}"
@@ -169,7 +226,75 @@ def _leaf_diffs(old, new, path: str = ""):
             yield from _leaf_diffs(old_value, new[key], f"{path}.{key}")
         return
     if old != new:
-        yield f"{path}: {old!r} -> {new!r}"
+        leaf = path.rsplit(".", 1)[-1]
+        yield f"{path}: {_redact(old, leaf)!r} -> {_redact(new, leaf)!r}"
+
+
+def test_config_diffs_never_render_credential_values():
+    """The diff must report *that* a secret changed, never *what* it is.
+
+    Guards the disclosure directly: with a local .env present this helper was
+    printing live API keys, a database password and a GitHub token, in a
+    message people paste into issues and chat. Sentinels stand in for the real
+    thing so this test never needs a credential of its own.
+    """
+    sentinel = "SENTINEL_MUST_NOT_APPEAR"
+    old = {
+        "llm": {"fallback": [{"provider": "groq", "api_key": ""}]},
+        "database": {"password": ""},
+        "git": {"github": {"token": ""}},
+        "observability": {"notifications": [{"webhook_url": ""}]},
+        # A list of bare scalars under a secret-shaped name: no inner key to
+        # match on, so the parent has to carry down.
+        "auth": {"tokens": []},
+        # A connection string hides its password inside one scalar.
+        "scheduler": {"jobstore_url": ""},
+        "event_runtime": {"pg": {"dsn": ""}},
+    }
+    new = {
+        "llm": {"fallback": [{"provider": "groq", "api_key": f"gsk_{sentinel}"}]},
+        "database": {"password": f"pw_{sentinel}"},
+        "git": {"github": {"token": f"ghp_{sentinel}"}},
+        "observability": {"notifications": [{"webhook_url": f"https://{sentinel}"}]},
+        "auth": {"tokens": [f"ghp_{sentinel}", f"cfop_{sentinel}"]},
+        "scheduler": {"jobstore_url": f"postgresql://u:{sentinel}@h/db"},
+        "event_runtime": {"pg": {"dsn": f"postgresql://u:{sentinel}@h/db"}},
+    }
+
+    rendered = "\n".join(_leaf_diffs(old, new))
+
+    assert sentinel not in rendered, (
+        "a credential value reached the assertion output:\n" + rendered
+    )
+    # Still diagnostic: every changed path is named, including the ones inside
+    # lists, which are the cases that do not recurse.
+    for expected_path in (
+        ".database.password",
+        ".git.github.token",
+        ".llm.fallback",
+        ".auth.tokens",
+        ".scheduler.jobstore_url",
+        ".event_runtime.pg.dsn",
+    ):
+        assert expected_path in rendered, f"{expected_path} vanished from the diff"
+
+
+def test_the_suite_does_not_inherit_an_ambient_dotenv(tmp_path, monkeypatch):
+    """conftest.py sets CFOP_NO_DOTENV; prove it actually stops the read.
+
+    Mutation-check: clear CFOP_NO_DOTENV and this fails, because the planted
+    file is then loaded — which is exactly what was happening with the real
+    .env before CFOP-44.
+    """
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("CFOP_DOTENV_SENTINEL=leaked\n", encoding="utf-8")
+    monkeypatch.delenv("CFOP_DOTENV_SENTINEL", raising=False)
+
+    cfg.load_env_file()
+
+    assert os.getenv("CFOP_DOTENV_SENTINEL") is None, (
+        "an ambient .env was read into the test process"
+    )
 
 
 def test_example_config_still_names_only_shipped_backends():
@@ -685,6 +810,17 @@ def test_unset_env_var_expands_to_empty_not_the_literal(tmp_path, monkeypatch):
 
 
 def test_colocated_env_file_is_loaded(tmp_path, monkeypatch):
+    # conftest sets CFOP_NO_DOTENV for the whole suite so nobody's real .env
+    # leaks in. This test is *about* .env loading, so it opts back in.
+    #
+    # chdir is not optional here: load_env_file always also walks
+    # Path.cwd()/".env", so opting back in while sitting in the repo root
+    # reads the developer's real file. It copies in via os.environ.setdefault,
+    # which monkeypatch does not roll back — it only restores keys it set
+    # itself — so those credentials would outlive this test and expand into
+    # later fixtures. That is the disclosure this whole change exists to stop.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CFOP_NO_DOTENV", raising=False)
     monkeypatch.delenv("CFOP_TEST_DOTENV", raising=False)
     (tmp_path / ".env").write_text('CFOP_TEST_DOTENV="http://from-dotenv:9090"\n', encoding="utf-8")
     path = _write(tmp_path, """
@@ -697,6 +833,11 @@ def test_colocated_env_file_is_loaded(tmp_path, monkeypatch):
 
 
 def test_real_env_beats_the_dotenv_file(tmp_path, monkeypatch):
+    # Must opt back in like the test above, or the planted .env is never read
+    # and this only proves "a monkeypatched variable wins" — which is not the
+    # precedence the name claims. chdir for the same reason as above.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CFOP_NO_DOTENV", raising=False)
     monkeypatch.setenv("CFOP_TEST_PRECEDENCE", "http://real-env:9090")
     (tmp_path / ".env").write_text("CFOP_TEST_PRECEDENCE=http://dotenv:9090\n", encoding="utf-8")
     path = _write(tmp_path, """

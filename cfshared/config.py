@@ -303,7 +303,20 @@ def load_env_file(config_path: str | None = None) -> None:
 
     ``setdefault`` throughout: the real environment always beats the file, which
     is what makes a committed ``.env`` safe to keep next to a config.
+
+    Set ``CFOP_NO_DOTENV`` to opt a process out entirely. That exists because
+    the test suite must not inherit the developer's credentials: it used to,
+    and a failing config assertion rendered live API keys, a database password
+    and a GitHub token into its output (CFOP-44).
+
+    A kill switch rather than a list of variables to blank, deliberately. The
+    suite already blanked the two webhook variables and was still leaking six
+    credentials, because ``.env`` grew and the list did not. Anything keyed on
+    variable *names* rots the same way; this is keyed on the mechanism.
     """
+    if os.getenv("CFOP_NO_DOTENV", "").strip():
+        return
+
     candidates: list[Path] = []
     if config_path:
         candidates.append(Path(config_path).expanduser().resolve().parent / ".env")
