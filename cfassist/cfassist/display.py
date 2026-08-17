@@ -76,6 +76,22 @@ class Display:
         self._emit_rich(f"[separator]{sep}[/separator]")
         self._emit_rich()
 
+    def show_briefing(self, text):
+        """Render an attach briefing verbatim.
+
+        ``markup=False`` and ``highlight=False`` matter: a briefing is API text
+        the operator did not write, and it routinely contains square brackets
+        (log lines, `[tool]` traces, JSON). Left to Rich's default markup
+        parsing those become style tags and chunks of the incident silently
+        vanish from the screen.
+        """
+        rendered = self._render(text, markup=False, highlight=False)
+        if self._callback:
+            self._callback(rendered + "\n")
+        else:
+            self.console.print(text, markup=False, highlight=False)
+            self.console.print()
+
     def show_response(self, text):
         """Render a complete response as markdown."""
         rendered = self._render(Markdown(text))

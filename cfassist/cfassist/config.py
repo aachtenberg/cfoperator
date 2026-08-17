@@ -1,5 +1,6 @@
 """Configuration loading with YAML and ${VAR} environment variable expansion."""
 
+import copy
 import os
 from pathlib import Path
 
@@ -15,6 +16,14 @@ DEFAULTS = {
         "url": "http://localhost:11434",
         "model": "llama3.2",
         "temperature": 0.7,
+    },
+    # CFOperator API endpoint for `cfassist attach` (CFOP-29). Left blank so the
+    # environment (CFOP_AGENT_URL / CFOP_API_TOKEN, the same names the MCP server
+    # reads) fills it in — see cfoperator.resolve_endpoint for the precedence.
+    "cfoperator": {
+        "url": "",
+        "token": "",
+        "timeout": 30,
     },
     "context": {
         "directory": str(DEFAULT_CONFIG_DIR / "context"),
@@ -76,7 +85,10 @@ def load_config(config_path=None):
     Priority: file values > defaults. Environment variables in ${VAR}
     syntax are expanded in all string values.
     """
-    config = DEFAULTS.copy()
+    # deepcopy, not .copy(): the shallow copy shared every nested section with
+    # DEFAULTS, so `config["llm"]["model"] = ...` in cli.py was mutating the
+    # module-level default for the rest of the process.
+    config = copy.deepcopy(DEFAULTS)
 
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
 
@@ -84,7 +96,7 @@ def load_config(config_path=None):
         with open(path) as f:
             file_config = yaml.safe_load(f) or {}
         file_config = _expand_env_vars(file_config)
-        config = _deep_merge(DEFAULTS, file_config)
+        config = _deep_merge(config, file_config)
 
     # Expand ~ in directory paths
     for section in ("context", "memory"):
@@ -140,6 +152,16 @@ tools:
   read_file:
     enabled: true
     max_lines: 500
+
+# CFOperator API — used by `cfassist attach <investigation-id>` to pull an
+# investigation, its remediation rows and related knowledge into the session.
+# Both values fall back to the CFOP_AGENT_URL / CFOP_API_TOKEN environment
+# variables when left blank. Mint a token at <console>/admin?tab=tokens; a
+# read-scoped one is enough, because attach never writes.
+cfoperator:
+  url: ""
+  token: "${CFOP_API_TOKEN}"
+  timeout: 30
 
 # Override the default system prompt:
 # system_prompt: |

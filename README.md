@@ -231,6 +231,14 @@ docker compose up -d
 
 A standalone single-binary CLI assistant for SRE and systems administration. Cross-compiles to any platform — no Python or runtime dependencies needed.
 
+> **Two implementations.** `cfassist-go/` is the released binary documented
+> below. `cfassist/` is a Python package with the same REPL/one-shot/pipe modes
+> **plus `cfassist attach <investigation-id>`**, which opens a session briefed
+> with a CFOperator investigation — the command Slack alerts tell you to paste
+> (see [docs/cockpit.md](docs/cockpit.md)). The Go binary does not implement
+> `attach` yet; it recognises the verb and points you at the Python package
+> rather than passing it to the LLM as a question.
+
 ### Install
 
 ```bash
@@ -369,6 +377,7 @@ fails at fixture setup without one.
 
 ### Interfaces
 - [docs/auth.md](docs/auth.md) — Console users, roles, API tokens, lockout/rotation runbooks
+- [docs/cockpit.md](docs/cockpit.md) — Alert → `cfassist attach <id>` → an agent session briefed with the investigation
 - [docs/mcp-server.md](docs/mcp-server.md) — MCP facade: tools, resources, prompts, scopes, host setup
 - [docs/slack-bridge.md](docs/slack-bridge.md) — Slack Socket Mode bot and its runtimes
 - [docs/mcp-server-plan.md](docs/mcp-server-plan.md) — MCP design/contract and phase history

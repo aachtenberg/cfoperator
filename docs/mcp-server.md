@@ -8,6 +8,9 @@ never imports the knowledge base or DB layers.
 
 - Design/contract/history: [mcp-server-plan.md](mcp-server-plan.md)
 - Slack bridge (a consumer of this server): [slack-bridge.md](slack-bridge.md)
+- Using this server as an incident cockpit, plus a copy-pasteable
+  `.mcp.json`: [cockpit.md](cockpit.md) and
+  [examples/cfoperator.mcp.json](examples/cfoperator.mcp.json)
 - **Deployed since 2026-07-29**: `cfoperator-mcp` Deployment in `apps`,
   Streamable HTTP at `http://cfoperator-mcp.apps.svc.cluster.local:8090/mcp`,
   bearer token in the `cfoperator-mcp` Secret, `investigate` scope.

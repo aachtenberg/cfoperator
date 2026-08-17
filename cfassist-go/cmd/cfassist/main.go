@@ -54,10 +54,53 @@ Pipe data in for analysis mode.`,
 	}
 }
 
+// attachVerb is the cockpit handoff verb printed into every
+// investigation-bearing CFOperator notification (see
+// event_runtime/notifications.py). It is implemented in the Python cfassist,
+// not here.
+const attachVerb = "attach"
+
+// attachNotice returns a signpost when the user invoked the attach verb, which
+// this build does not implement.
+//
+// Without it the word falls through to one-shot mode and the binary asks the
+// LLM the literal question "attach 1889" — a confident, useless answer to a
+// command the operator pasted out of a Slack alert mid-incident. A clear "wrong
+// binary, here is the right one" beats a silent wrong turn.
+func attachNotice(args []string) (string, bool) {
+	if len(args) == 0 || args[0] != attachVerb {
+		return "", false
+	}
+	target := "<investigation-id>"
+	if len(args) > 1 {
+		target = args[1]
+	}
+	return fmt.Sprintf(`cfassist %s is not available in this build.
+
+%s briefs a session with a CFOperator investigation, and currently ships in the
+Python cfassist only:
+
+    pip install ./cfassist        # from a cfoperator checkout
+    cfassist %s %s
+
+To read the briefing without a session (any agent, any machine):
+
+    cfassist %s %s --print
+
+See docs/cockpit.md.`, attachVerb, attachVerb, attachVerb, target, attachVerb, target), true
+}
+
 func run(cmd *cobra.Command, args []string) error {
 	if flagVersion {
 		fmt.Printf("cfassist %s\n", config.Version)
 		return nil
+	}
+
+	// Checked before config/LLM setup: this path must not need a reachable
+	// model to tell the operator they are on the wrong binary.
+	if notice, ok := attachNotice(args); ok {
+		fmt.Fprintln(os.Stderr, notice)
+		os.Exit(2)
 	}
 
 	// Load config

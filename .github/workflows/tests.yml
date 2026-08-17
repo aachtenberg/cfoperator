@@ -30,9 +30,15 @@ jobs:
           cache-dependency-path: requirements.txt
 
       - name: Install dependencies
+        # cfassist is installed from its own pyproject rather than having its
+        # deps (click / rich / prompt-toolkit) copied into requirements.txt:
+        # it ships as a standalone pip package for the operator's workstation,
+        # so its dependency list belongs to it. Without this the cfassist suite
+        # fails at import.
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install -e ./cfassist
           pip install pytest
 
       - name: Run test suites
@@ -72,6 +78,13 @@ jobs:
           run "observability" "${root}" observability
           run "auth" "${root}" auth
 
+          # cfassist ships as its own package, so the package directory (not
+          # the tests directory) goes on the path. The repo root is still
+          # needed: cfassist/tests/test_attach_contract.py imports
+          # event_runtime to check that the `cfassist attach` line Slack prints
+          # is a verb cfassist still implements.
+          run "cfassist" "${root}/cfassist:${root}" cfassist/tests
+
           run "root-level" "${root}" \
             test_web_auth.py test_web_auth_db.py test_auth_integration.py \
             test_console_nav.py test_console_brand.py test_console_llm_switcher.py \
@@ -81,3 +94,20 @@ jobs:
             test_compose_trial.py
 
           exit "${fail}"
+
+  # cfassist-go had tests but nothing ever ran them: release-cfassist.yml only
+  # cross-compiles, and on a tag. Its own job rather than a step in `pytest` so
+  # a Go failure is distinguishable at a glance from a Python one.
+  gotest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cfassist-go/go.mod
+          cache-dependency-path: cfassist-go/go.sum
+
+      - name: Run Go tests
+        working-directory: cfassist-go
+        run: go test ./...

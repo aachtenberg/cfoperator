@@ -1,4 +1,4 @@
-"""CLI entry point — REPL (TUI), one-shot, and pipe modes."""
+"""CLI entry point — REPL (TUI), one-shot, pipe, and `attach` modes."""
 
 import sys
 import threading
@@ -20,6 +20,17 @@ from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 
 from cfassist import __version__
+from cfassist.briefing import (
+    ATTACH_GUIDANCE,
+    ATTACH_VERB,
+    build_briefing,
+    parse_investigation_ref,
+)
+from cfassist.cfoperator import (
+    CFOperatorClient,
+    CFOperatorError,
+    resolve_endpoint,
+)
 from cfassist.config import load_config, ensure_directories, DEFAULT_CONFIG_DIR
 from cfassist.client import LLMClient
 from cfassist.display import Display
@@ -82,8 +93,13 @@ def _run_turn(client, tools, display, messages, system_prompt, user_input):
     return result
 
 
-def _run_tui(config, client, tools, system_prompt, context_count):
-    """Run the full-screen TUI REPL."""
+def _run_tui(config, client, tools, system_prompt, context_count, preamble=None):
+    """Run the full-screen TUI REPL.
+
+    ``preamble`` is printed into the output pane before the first prompt — used
+    by `attach` so the operator reads the same briefing the model was seeded
+    with, rather than having to ask it what it knows.
+    """
     messages = []
     history_file = DEFAULT_CONFIG_DIR / "history"
 
@@ -109,6 +125,8 @@ def _run_tui(config, client, tools, system_prompt, context_count):
     display.show_welcome(
         config["llm"]["provider"], config["llm"]["model"], context_count
     )
+    if preamble:
+        display.show_briefing(preamble)
 
     # --- Input area (bottom pane) ---
     input_area = TextArea(
@@ -139,6 +157,11 @@ def _run_tui(config, client, tools, system_prompt, context_count):
             display.show_welcome(
                 config["llm"]["provider"], config["llm"]["model"], context_count
             )
+            # /clear drops the transcript, not the attachment: the briefing is
+            # in the system prompt and the model is still attached, so redraw it
+            # rather than leave the operator looking at an empty session.
+            if preamble:
+                display.show_briefing(preamble)
             return
         if cmd in ("/help", "help"):
             display.show_info("Commands: /clear, /exit, /help")
@@ -239,36 +262,101 @@ def _run_tui(config, client, tools, system_prompt, context_count):
     client.close()
 
 
-@click.command()
-@click.argument("question", nargs=-1)
-@click.option("--config", "config_path", default=None, help="Path to config file")
-@click.option("--model", default=None, help="Override LLM model")
-@click.option("--url", default=None, help="Override LLM endpoint URL")
-@click.option("--version", is_flag=True, help="Show version")
-def main(question, config_path, model, url, version):
-    """cfassist — CLI assistant for SRE and systems administration.
+def _shared_options(fn):
+    """Options accepted at both the group and the subcommand level.
 
-    Run without arguments for interactive mode.
-    Pass a question for one-shot mode.
-    Pipe data in for analysis mode.
+    Both levels, because `cfassist --model m "question"` was valid when this
+    was one flat command (click accepts options in any position there) and must
+    stay valid now that it is a group. `_merged` resolves the two.
     """
-    if version:
-        click.echo(f"cfassist {__version__}")
-        return
+    for option in reversed([
+        click.option("--config", "config_path", default=None,
+                     help="Path to config file"),
+        click.option("--model", default=None, help="Override LLM model"),
+        click.option("--url", default=None, help="Override LLM endpoint URL"),
+    ]):
+        fn = option(fn)
+    return fn
 
-    # Load config
+
+def _merged(ctx, config_path, model, url):
+    """Subcommand options win; the group's are the fallback."""
+    shared = (ctx.obj if ctx is not None else None) or {}
+    return (config_path or shared.get("config_path"),
+            model or shared.get("model"),
+            url or shared.get("url"))
+
+
+def _prepare(config_path, model, url):
+    """Load config, apply CLI overrides, build the system prompt."""
     config = load_config(config_path)
     ensure_directories(config)
 
-    # Apply CLI overrides
     if model:
         config["llm"]["model"] = model
     if url:
         config["llm"]["url"] = url
 
-    # Load context
     context_text, context_count = _load_context(config)
-    system_prompt = _build_system_prompt(config, context_text)
+    return config, _build_system_prompt(config, context_text), context_count
+
+
+class _DefaultCommandGroup(click.Group):
+    """A Group whose unrecognised first argument is treated as a question.
+
+    cfassist has always been invoked as ``cfassist <free-form question>``.
+    CFOP-29 adds a real verb (``attach``), and a plain Group would turn every
+    existing invocation into "No such command 'why'". Unknown first arguments
+    therefore fall through to ``chat``, which carries the original behaviour.
+
+    The alternative considered — sniffing for the literal word "attach" at the
+    head of the question — was rejected: it cannot tell ``cfassist attach 1889``
+    from ``cfassist "attach the log to the ticket"`` without inspecting whether
+    the *next* token happens to be an integer, and a verb whose recognition
+    depends on its argument's type is not a verb.
+    """
+
+    DEFAULT_COMMAND = "chat"
+
+    def resolve_command(self, ctx, args):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            default = self.commands.get(self.DEFAULT_COMMAND)
+            if default is None:
+                raise
+            # Hand the arguments over untouched; `chat` takes them as nargs=-1.
+            return default.name, default, args
+
+
+@click.group(cls=_DefaultCommandGroup, invoke_without_command=True)
+@_shared_options
+@click.option("--version", is_flag=True, help="Show version")
+@click.pass_context
+def main(ctx, config_path, model, url, version):
+    """cfassist — CLI assistant for SRE and systems administration.
+
+    Run without arguments for interactive mode.
+    Pass a question for one-shot mode.
+    Pipe data in for analysis mode.
+    Run `cfassist attach <investigation-id>` to open a session briefed with a
+    CFOperator investigation.
+    """
+    ctx.obj = {"config_path": config_path, "model": model, "url": url}
+    if version:
+        click.echo(f"cfassist {__version__}")
+        ctx.exit()
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(chat, question=())
+
+
+@main.command()
+@click.argument("question", nargs=-1)
+@_shared_options
+@click.pass_context
+def chat(ctx, question, config_path, model, url):
+    """Ask a question, or drop into the interactive REPL."""
+    config, system_prompt, context_count = _prepare(*_merged(ctx, config_path, model, url))
 
     # Join question arguments into a single string
     question_text = " ".join(question) if question else None
@@ -334,3 +422,88 @@ def main(question, config_path, model, url, version):
         sys.exit(1)
 
     _run_tui(config, client, tools, system_prompt, context_count)
+
+
+def fetch_briefing(config, investigation_ref):
+    """Pull an investigation and render its briefing. Read-only throughout.
+
+    Split out from the command body so the network shape and the rendering can
+    be exercised without click, and so a caller that only wants the text (the
+    ``--print`` path, a future MCP/pod tier) does not drag in the LLM client.
+    """
+    investigation_id = parse_investigation_ref(investigation_ref)
+    url, token, timeout = resolve_endpoint(config.get("cfoperator"))
+    if not token:
+        raise CFOperatorError(
+            "No CFOperator API token configured",
+            hint="export CFOP_API_TOKEN=… (mint one at "
+                 f"{url}/admin?tab=tokens) or set cfoperator.token in "
+                 "~/.cfassist/config.yaml",
+        )
+    with CFOperatorClient(url=url, token=token, timeout=timeout) as cf:
+        context = cf.collect_attach_context(investigation_id)
+    return build_briefing(context)
+
+
+@main.command(name=ATTACH_VERB)
+@click.argument("investigation", metavar="<investigation-id>")
+@click.argument("question", nargs=-1)
+@_shared_options
+@click.option("--print", "print_only", is_flag=True,
+              help="Print the briefing and exit; start no session")
+@click.pass_context
+def attach(ctx, investigation, question, config_path, model, url, print_only):
+    """Open a session briefed with CFOperator investigation <investigation-id>.
+
+    Pulls the investigation, its operator triage, any linked remediation queue
+    rows and related knowledge-base learnings, seeds them as session context,
+    and drops into the REPL. Everything it does against CFOperator is a read.
+    """
+    display = Display()
+
+    # Validate the reference before any config or directory work: a typo should
+    # cost a one-line error, not a config write and a network round trip.
+    try:
+        parse_investigation_ref(investigation)
+    except ValueError as exc:
+        display.show_error(str(exc), hint="Usage: cfassist attach <investigation-id>")
+        sys.exit(2)
+
+    config, system_prompt, context_count = _prepare(*_merged(ctx, config_path, model, url))
+
+    try:
+        briefing = fetch_briefing(config, investigation)
+    except CFOperatorError as exc:
+        display.show_error(exc.message, hint=exc.hint)
+        sys.exit(1)
+
+    # --print is the neutral-contract escape hatch: the briefing is CFOperator's
+    # product, and an operator who drives a different agent should be able to
+    # pipe it there rather than being forced through this REPL.
+    if print_only:
+        click.echo(briefing)
+        return
+
+    system_prompt = f"{system_prompt}\n\n{ATTACH_GUIDANCE}\n{briefing}"
+
+    llm = LLMClient(config)
+    tools = ToolRegistry(config)
+
+    ok, err = llm.check_connection()
+    if not ok:
+        display.show_error(err, hint="Is the LLM server running?")
+        sys.exit(1)
+
+    question_text = " ".join(question).strip() if question else ""
+    if question_text:
+        display.show_welcome(
+            config["llm"]["provider"], config["llm"]["model"], context_count
+        )
+        display.show_briefing(briefing)
+        messages = []
+        _run_turn(llm, tools, display, messages, system_prompt, question_text)
+        _save_and_cleanup(config, messages)
+        llm.close()
+        return
+
+    _run_tui(config, llm, tools, system_prompt, context_count, preamble=briefing)
