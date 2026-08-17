@@ -49,16 +49,6 @@ def _percent(numerator: float | int | None, denominator: float | int | None) -> 
     return round((float(numerator) / float(denominator)) * 100.0, 2)
 
 
-def _expand_env_vars(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {key: _expand_env_vars(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_expand_env_vars(item) for item in value]
-    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-        return os.getenv(value[2:-1], "")
-    return value
-
-
 def _read_meminfo(proc_dir: Path) -> Dict[str, int]:
     values: Dict[str, int] = {}
     path = proc_dir / "meminfo"
@@ -876,24 +866,21 @@ def load_host_observability_config_from_env() -> Dict[str, Any]:
 
 
 def load_host_observability_config_from_yaml(config_path: str | None = None) -> Dict[str, Any]:
-    """Load host observability config from the repository YAML config when available."""
+    """Load host observability config from the repository YAML config when available.
+
+    Reads through ``cfshared.config`` rather than parsing the YAML a third time,
+    so this block resolves against the same merged defaults as everything else.
+    """
     candidate = config_path or os.getenv("CONFIG_PATH", "config.yaml")
     if not candidate:
         return {}
     path = Path(os.path.expanduser(candidate))
     if not path.exists():
         return {}
-    try:
-        import yaml  # type: ignore
-    except ImportError:
-        return {}
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = yaml.safe_load(handle) or {}
-    except Exception as exc:
-        logger.warning("Failed to load host observability YAML config from %s: %s", path, exc)
-        return {}
-    payload = _expand_env_vars(payload)
+
+    from cfshared import config as shared_config
+
+    payload = shared_config.load_config(str(path))
     if not isinstance(payload, dict):
         return {}
 

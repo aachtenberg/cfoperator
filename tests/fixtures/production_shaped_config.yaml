@@ -1,0 +1,311 @@
+# REDACTED CLONE of the live cfoperator-deploy ConfigMap — addresses, SSH users,
+# node names and repo owners replaced. Its VALUE is its shape: which keys
+# production actually sets and, more importantly, which it OMITS. Do not "tidy"
+# it by adding the missing sections; the omissions are the test.
+
+# CFOperator Configuration - Kubernetes Deployment
+# Uses llm-gateway for LLM routing with automatic failover
+
+# Observability Backends
+observability:
+  metrics:
+    backend: prometheus
+    url: ${PROMETHEUS_URL}
+    timeout: 30
+
+  logs:
+    backend: loki
+    url: ${LOKI_URL}
+    timeout: 30
+
+  containers:
+    - backend: kubernetes
+    - backend: prometheus
+      ssh_user: sre
+
+  alerts:
+    backend: alertmanager
+    url: ${ALERTMANAGER_URL}
+
+  notifications:
+    - backend: alertmanager
+      url: ${ALERTMANAGER_URL}
+    - backend: slack
+      webhook_url: ${SLACK_WEBHOOK_URL}
+    # discord disabled 2026-07-13: webhook returns 403 (revoked); re-add with a fresh webhook if wanted
+
+# LLM Configuration - direct to Ollama (hostNetwork can't resolve cluster DNS)
+llm:
+  primary:
+    provider: ollama
+    url: ${OLLAMA_DIRECT_URL}
+    model: gemma4:26b
+
+  # Fallback handled by llm-gateway, but keep as backup config
+  fallback:
+    - provider: groq
+      model: llama-3.3-70b-versatile
+      api_key: ${GROQ_API_KEY}
+    - provider: anthropic
+      model: claude-sonnet-4-20250514
+      api_key: ${ANTHROPIC_API_KEY}
+
+  embeddings:
+    provider: ollama
+    url: ${OLLAMA_DIRECT_URL}
+    model: nomic-embed-text
+
+# Database
+database:
+  host: ${POSTGRES_HOST}
+  port: ${POSTGRES_PORT}
+  database: ${POSTGRES_DB}
+  user: ${POSTGRES_USER}
+  password: ${POSTGRES_PASSWORD}
+
+# OODA Loop Configuration
+ooda:
+  # Reactive Alertmanager polling is owned by event_runtime now. The agent
+  # processes alerts only when event_runtime POSTs to /v1/investigate.
+  # Flipping back to true restores the agent's own Alertmanager poll if
+  # the unified pipeline needs to be rolled back.
+  reactive_poll: false
+  alert_check_interval: 10
+  sweep_interval: 1800
+
+  sweep:
+    metrics: true
+    logs: true
+    containers: true
+    baseline_drift: true
+    learning_consolidation: true
+
+  morning_summary:
+    enabled: true
+    hour_start: 11   # 7 AM EDT (UTC-4)
+    hour_end: 13     # 9 AM EDT (UTC-4)
+
+# Infrastructure Hosts (SSH Access)
+infrastructure:
+  hosts:
+    node:
+      address: 10.0.0.10
+      role: primary
+      ssh:
+        user: sre
+        key_path: /root/.ssh/id_rsa
+    node2:
+      address: 10.0.0.10
+      role: worker
+      ssh:
+        user: sre
+        key_path: /root/.ssh/id_rsa
+    node3:
+      address: 10.0.0.10
+      role: worker
+      ssh:
+        user: sre
+        key_path: /root/.ssh/id_rsa
+    node4:
+      address: 10.0.0.10
+      role: worker
+      ssh:
+        user: sre
+        key_path: /root/.ssh/id_rsa
+    node-b:
+      address: 10.0.0.10
+      role: llm
+      ssh:
+        user: sre
+        key_path: /root/.ssh/id_rsa
+    node-a:
+      address: 10.0.0.10
+      role: master
+      ssh:
+        user: sre
+        key_path: /root/.ssh/id_rsa
+
+# Event Runtime
+event_runtime:
+  scheduler:
+    backend: apscheduler
+    misfire_grace_time_seconds: 300
+  persistence:
+    postgres:
+      enabled: true
+      table_name: event_runtime_events
+  host_observability:
+    enabled: true
+    refresh_interval_seconds: 300
+    default_to_local: true
+    include_discovered_targets: true
+    providers:
+      - type: local
+      - type: ssh
+        hosts:
+          node:
+            address: 10.0.0.10
+            ssh:
+              user: sre
+              key_path: /root/.ssh/id_rsa
+          node2:
+            address: 10.0.0.10
+            ssh:
+              user: sre
+              key_path: /root/.ssh/id_rsa
+          node3:
+            address: 10.0.0.10
+            ssh:
+              user: sre
+              key_path: /root/.ssh/id_rsa
+          node4:
+            address: 10.0.0.10
+            ssh:
+              user: sre
+              key_path: /root/.ssh/id_rsa
+          node-b:
+            address: 10.0.0.10
+            ssh:
+              user: sre
+              key_path: /root/.ssh/id_rsa
+          node-a:
+            address: 10.0.0.10
+            ssh:
+              user: sre
+              key_path: /root/.ssh/id_rsa
+      - type: prometheus
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        discover: true
+      - type: k3s
+        url: http://prometheus.monitoring.svc.cluster.local:9090
+        discover: true
+
+# Remediation (Phase B). open_prs LIVE: on a qualifying needs_action
+# unschedulable-pod alert the agent opens a real PR against the manifest repo
+# (GITHUB_TOKEN has repo write). Guardrails: only the narrow non-pinned-taint
+# case (declines pinned/hostport/insufficient), secret-path refusal, one
+# branch per workload, max_open_prs cap, and PRs never auto-merge.
+# Write path validated by smoke test 2026-06-05 (homelab-infra PR #40).
+remediation:
+  enabled: true
+  open_prs: true
+  # Deep-investigation diffs -> PRs (cfop/remediate-deep-* branches).
+  # Same gates as taint remediation, shared max_open_prs cap, and PRs
+  # are proposals only — human review/merge remains the mutation path.
+  deep_open_prs: true
+  default_repo: homelab-infra
+  max_open_prs: 3
+  # Remediation queue + portable executor (see docs/REMEDIATION.md).
+  # Dark-launched: reaper is safe/on; flip feed -> drain -> verify to go
+  # live once the cfoperator-executor image is built by CI.
+  queue_feed: true
+  queue_drain: false
+  queue_reap: true
+  queue_verify: false
+  max_drain_per_tick: 2
+  executor:
+    image: ghcr.io/example-org/cfoperator-executor:main
+    namespace: apps
+    service_account: cfoperator-executor
+    secrets_name: cfoperator-secrets
+    image_pull_secret: ghcr-pull-secret
+    completion_base_url: http://cfoperator.apps.svc.cluster.local:8083/v1/remediations
+    git_repo: example-org/homelab-infra
+    git_base: main
+    active_deadline_seconds: 900
+    llm:
+      backend: anthropic
+      model: claude-opus-4-8
+      base_url: ""
+
+# Git & GitHub Integration
+git:
+  github:
+    token: ${GITHUB_TOKEN}
+  repos:
+    - name: cfoperator
+      github: example-org/cfoperator
+      branch: main
+      hosts:
+        - node-gpu
+        - node-b
+      services:
+        - cfoperator
+        - cfoperator-event-runtime
+    - name: homelab-infra
+      github: example-org/homelab-infra
+      branch: main
+      hosts:
+        - node
+        - node2
+        - node3
+        - node4
+        - node-gpu
+        - node-b
+      services:
+        - apps
+        - ai
+        - data
+        - iot
+        - monitoring
+        - infrastructure
+        - daemonsets
+        - k3s
+    - name: luna-voice-assistance
+      github: example-org/luna-voice-assistance
+      branch: main
+      hosts:
+        - node-gpu
+        - node-b
+      services:
+        - luna-brain
+    - name: esp-sensor-hub
+      github: example-org/esp-sensor-hub
+      branch: main
+      hosts:
+        - node3
+      services:
+        - esp-sensor-hub
+        - mosquitto
+        - telegraf
+    - name: esp32-lora-gateway
+      github: example-org/esp32-lora-gateway
+      branch: main
+      hosts:
+        - node3
+      services:
+        - esp32-lora-api
+        - mosquitto
+    - name: esp32-lora-sensor
+      github: example-org/esp32-lora-sensor
+      branch: main
+      hosts:
+        - node3
+      services:
+        - esp32-lora-api
+        - mosquitto
+    - name: raspberry-pi-camera-control
+      github: example-org/raspberry-pi-camera-control
+      branch: main
+      services:
+        - camera-api
+        - camera-web
+        - camera-postgres
+        - camera-postgres-exporter
+
+# Chat Interface
+chat:
+  enabled: true
+  port: 8083
+  websocket: true
+
+# Skills
+skills:
+  directory: ./skills
+  enabled:
+    - investigate-container
+    - why-restart
+    - compare-hosts
+    - investigate-pod
+    - investigate-deployment
+    - k3s-cluster-health

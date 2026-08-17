@@ -19,6 +19,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
+# Config semantics shared by agent/ and event_runtime/. Both import it at module
+# load to resolve config.yaml, so omitting it is an ImportError at startup for
+# the agent, the MCP pod and the event runtime alike — not a degraded config.
+COPY cfshared/ ./cfshared/
 COPY agent/ ./agent/
 COPY web_server.py ./
 # web_server.py imports this at module load, so a missing copy is not a

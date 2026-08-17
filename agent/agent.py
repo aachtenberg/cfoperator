@@ -69,6 +69,9 @@ from node_action_plan import (
     validate_plan as _na_validate_plan,
 )
 
+# Config semantics shared with event_runtime — one loader, one default schema.
+from cfshared import config as shared_config
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -401,77 +404,31 @@ class CFOperator:
         return {'hosts': len(new_hosts), 'added': list(added), 'removed': list(removed)}
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
-        """Load configuration from YAML file."""
-        self._load_env_file(config_path)
-        if not os.path.exists(config_path):
-            logger.warning(f"Config file {config_path} not found, using defaults")
-            return self._default_config()
+        """Load configuration, merged over the shared default schema.
 
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-
-        # Expand environment variables
-        config = self._expand_env_vars(config)
-        return config
+        Delegates to ``cfshared.config`` so the agent and the event runtime
+        resolve the same file the same way. Before CFOP-26 a config file that
+        existed at all bypassed ``_default_config()`` entirely, so every omitted
+        setting fell through to whatever literal was written at its call site.
+        """
+        return shared_config.load_config(config_path)
 
     def _load_env_file(self, config_path: str) -> None:
         """Load a colocated .env file so config.yaml placeholders resolve consistently."""
-        config_dir = Path(config_path).expanduser().resolve().parent
-        env_path = config_dir / ".env"
-        if env_path.exists():
-            for raw_line in env_path.read_text(encoding="utf-8").splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, value = line.split("=", 1)
-                key = key.strip()
-                if not key:
-                    continue
-                value = value.strip()
-                if value and value[0] == value[-1] and value[0] in {'"', "'"}:
-                    value = value[1:-1]
-                os.environ.setdefault(key, value)
+        shared_config.load_env_file(config_path)
 
     def _expand_env_vars(self, config: Any) -> Any:
         """Recursively expand ${VAR} references in config."""
-        if isinstance(config, dict):
-            return {k: self._expand_env_vars(v) for k, v in config.items()}
-        elif isinstance(config, list):
-            return [self._expand_env_vars(item) for item in config]
-        elif isinstance(config, str) and config.startswith('${') and config.endswith('}'):
-            var = config[2:-1]
-            return os.getenv(var, '')
-        return config
+        return shared_config.expand_env_vars(config)
 
     def _default_config(self) -> Dict[str, Any]:
-        """Return default configuration."""
-        return {
-            'observability': {
-                'metrics': {'backend': 'prometheus', 'url': 'http://prometheus:9090'},
-                'logs': {'backend': 'loki', 'url': 'http://loki:3100'},
-                'containers': {'backend': 'docker', 'hosts': {'local': 'unix:///var/run/docker.sock'}},
-                'alerts': {'backend': 'alertmanager', 'url': 'http://alertmanager:9093'},
-                'notifications': [{'backend': 'slack', 'webhook_url': os.getenv('SLACK_WEBHOOK_URL', '')}]
-            },
-            'database': {
-                'host': 'postgres',
-                'port': 5432,
-                'database': 'cfoperator',
-                'user': 'cfoperator',
-                'password': os.getenv('POSTGRES_PASSWORD', '')
-            },
-            'ooda': {
-                'alert_check_interval': 10,
-                'sweep_interval': 1800,
-                'sweep': {
-                    'metrics': True,
-                    'logs': True,
-                    'containers': True,
-                    'baseline_drift': True,
-                    'learning_consolidation': True
-                }
-            }
-        }
+        """Return default configuration.
+
+        Now the same schema every config is merged over, rather than a second,
+        incomplete opinion that only applied when the file was missing (it had
+        no ``llm`` section at all, so a fileless start had no model to call).
+        """
+        return shared_config.default_config()
 
     def _load_skills(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -532,20 +489,29 @@ class CFOperator:
         """Initialize pluggable observability backends based on config."""
         obs_config = self.config.get('observability', {})
 
-        # Metrics backend
+        # Metrics backend. An empty URL is the configured-off state, not an
+        # error: since CFOP-26 every config is merged over a default schema, so
+        # these sections always exist and it is the URL that says whether the
+        # operator actually has one. Logs in particular are optional.
         metrics_config = obs_config.get('metrics', {})
-        if metrics_config.get('backend') == 'prometheus':
+        if metrics_config.get('backend') == 'prometheus' and metrics_config.get('url'):
             self.metrics = PrometheusMetrics(url=metrics_config.get('url'))
             logger.info(f"Initialized Prometheus metrics backend: {metrics_config.get('url')}")
+        elif not metrics_config.get('url'):
+            logger.info("Metrics backend disabled (no observability.metrics.url configured)")
+            self.metrics = None
         else:
             logger.warning(f"Unsupported metrics backend: {metrics_config.get('backend')}")
             self.metrics = None
 
         # Logs backend
         logs_config = obs_config.get('logs', {})
-        if logs_config.get('backend') == 'loki':
+        if logs_config.get('backend') == 'loki' and logs_config.get('url'):
             self.logs = LokiLogs(url=logs_config.get('url'))
             logger.info(f"Initialized Loki logs backend: {logs_config.get('url')}")
+        elif not logs_config.get('url'):
+            logger.info("Logs backend disabled (no observability.logs.url configured)")
+            self.logs = None
         else:
             logger.warning(f"Unsupported logs backend: {logs_config.get('backend')}")
             self.logs = None
@@ -589,9 +555,12 @@ class CFOperator:
 
         # Alerts backend
         alerts_config = obs_config.get('alerts', {})
-        if alerts_config.get('backend') == 'alertmanager':
+        if alerts_config.get('backend') == 'alertmanager' and alerts_config.get('url'):
             self.alerts = AlertmanagerAlerts(url=alerts_config.get('url'))
             logger.info(f"Initialized Alertmanager backend: {alerts_config.get('url')}")
+        elif not alerts_config.get('url'):
+            logger.info("Alerts backend disabled (no observability.alerts.url configured)")
+            self.alerts = None
         else:
             logger.warning(f"Unsupported alerts backend: {alerts_config.get('backend')}")
             self.alerts = None
@@ -1676,7 +1645,21 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
 
         A DB setting (set via the operator console) wins so flags can be toggled
         live without a redeploy/restart; falls back to the config block.
+
+        The profile is a hard ceiling over both. ``load_config`` already zeroed
+        the config side, but the DB override is read live and would otherwise be
+        a way to escalate past the profile from the console — the same
+        privilege-escalation shape ``ROLE_SCOPE_CEILING`` exists to close in
+        auth/models.py.
+
+        The profile is read straight off ``self.config`` rather than through a
+        helper method: several tests drive this with a ``MagicMock`` operator
+        carrying a real config dict, and a helper would be auto-mocked into an
+        object that is neither a profile nor ``None``.
         """
+        profile = self.config.get('profile') if isinstance(self.config, dict) else None
+        if not shared_config.profile_allows(profile, shared_config.SCOPE_REMEDIATE):
+            return False
         try:
             val = self.kb.get_setting('remediation_' + name, '')
             if val not in (None, ''):
@@ -3047,7 +3030,17 @@ Return empty array if nothing notable: {{"insights": []}}"""
             services = [s.get('name', '?') for s in info.get('services', [])]
             lines.append(f"  {name} ({addr}, {role}): {', '.join(services)}")
 
-        summary = "Infrastructure hosts:\n" + "\n".join(lines)
+        if lines:
+            summary = "Infrastructure hosts:\n" + "\n".join(lines)
+        else:
+            # No static inventory is the normal case for a fresh install: the
+            # fleet is discovered from the cluster and from Prometheus instead.
+            # Saying so beats emitting an empty "Infrastructure hosts:" header,
+            # which reads to the model as "there are no hosts".
+            summary = (
+                "Infrastructure hosts: not statically configured — discover them "
+                "from the live cluster and from Prometheus targets."
+            )
 
         # Append active container runtimes
         if self.containers and hasattr(self.containers, 'runtime_names'):
