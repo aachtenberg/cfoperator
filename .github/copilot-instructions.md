@@ -56,7 +56,7 @@ Note: adding a new top-level package means adding a `COPY` for it in the `Docker
 gh pr list --repo aachtenberg/homelab-infra --search "cfoperator in:title" --state open
 ```
 
-**Workflow `paths-ignore`** (skip the build): `**.md`, `docs/**`, `benchmarks/**`, `cfassist/**`, `cfassist-go/**`, `cfshared/**`, `llm-gateway/**`, `grafana/**`, `observability/**`. Pushes that ONLY touch these don't produce a new image — intentional.
+**Workflow `paths-ignore`** (skip the build): `**.md`, `docs/**`, `benchmarks/**`, `cfassist-go/**`, `cfshared/**`, `llm-gateway/**`, `grafana/**`, `observability/**`. Pushes that ONLY touch these don't produce a new image — intentional.
 
 **Force an ArgoCD sync** instead of waiting:
 ```bash

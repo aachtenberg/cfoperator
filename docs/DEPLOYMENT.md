@@ -69,7 +69,7 @@ kubectl -n argocd get application homelab-root  # check Sync + Health
 
 ### Workflow `paths-ignore`
 
-The build workflow skips on pushes that only touch: `**.md`, `docs/**`, `benchmarks/**`, `cfassist/**`, `cfassist-go/**`, `llm-gateway/**`, `grafana/**`. Pushes that ONLY touch those paths won't produce a new image — that's intentional (they don't affect what runs in the cluster), but be aware of it if you expect a new tag and none appears.
+The build workflow skips on pushes that only touch: `**.md`, `docs/**`, `benchmarks/**`, `cfassist-go/**`, `llm-gateway/**`, `grafana/**`. Pushes that ONLY touch those paths won't produce a new image — that's intentional (they don't affect what runs in the cluster), but be aware of it if you expect a new tag and none appears.
 
 **The rule for this list: a path may only be ignored if it is not baked into the
 image.** Ignoring a path the Dockerfile COPYs means a change to it produces no

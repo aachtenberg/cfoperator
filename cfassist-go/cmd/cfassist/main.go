@@ -42,11 +42,16 @@ Pipe data in for analysis mode.`,
 		RunE:                  run,
 	}
 
-	rootCmd.Flags().StringVar(&flagConfig, "config", "", "Path to config file")
-	rootCmd.Flags().StringVar(&flagModel, "model", "", "Override LLM model")
-	rootCmd.Flags().StringVar(&flagURL, "url", "", "Override LLM endpoint URL")
-	rootCmd.Flags().StringVar(&flagProvider, "provider", "", "Select starting provider by name")
+	// Persistent, not local: `attach` seeds a real session, so it has to honour
+	// the same --config/--model/--url/--provider resolution as a plain run. Root
+	// still parses them itself, so `cfassist --model m "question"` is unchanged.
+	rootCmd.PersistentFlags().StringVar(&flagConfig, "config", "", "Path to config file")
+	rootCmd.PersistentFlags().StringVar(&flagModel, "model", "", "Override LLM model")
+	rootCmd.PersistentFlags().StringVar(&flagURL, "url", "", "Override LLM endpoint URL")
+	rootCmd.PersistentFlags().StringVar(&flagProvider, "provider", "", "Select starting provider by name")
 	rootCmd.Flags().BoolVar(&flagVersion, "version", false, "Show version")
+
+	rootCmd.AddCommand(newAttachCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -70,45 +75,12 @@ func run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("directories: %w", err)
 	}
 
-	// Resolve which provider to use: CLI flag > saved state > config default
-	activeProvider := flagProvider
-	if activeProvider == "" {
-		if saved := config.LoadState(); saved.Provider != "" {
-			// Only use saved provider if it still exists in config
-			if _, ok := cfg.Providers[saved.Provider]; ok {
-				activeProvider = saved.Provider
-			}
-		}
+	// Resolve provider (CLI flag > saved state > config default) and build the
+	// LLM client. Shared with `attach` — see resolveLLM in attach.go.
+	llm, activeProvider, err := resolveLLM(cfg)
+	if err != nil {
+		return err
 	}
-	if activeProvider == "" {
-		activeProvider = cfg.DefaultProviderName()
-	}
-	resolved := cfg.ResolveProvider(activeProvider)
-
-	// Apply saved model if same provider and no CLI override
-	if flagModel == "" {
-		if saved := config.LoadState(); saved.Model != "" && saved.Provider == activeProvider {
-			resolved.Model = saved.Model
-		}
-	}
-	// CLI overrides always win
-	if flagModel != "" {
-		resolved.Model = flagModel
-	}
-	if flagURL != "" {
-		resolved.URL = flagURL
-	}
-
-	// Create LLM client
-	llm := client.New(
-		resolved.Provider,
-		resolved.URL,
-		resolved.Model,
-		resolved.Temperature,
-		resolved.APIKey,
-	)
-	// Update cfg.LLM.ContextWindow for context tracking
-	cfg.LLM.ContextWindow = resolved.ContextWindow
 
 	// Check connection
 	if err := llm.CheckConnection(); err != nil {

@@ -15,6 +15,57 @@ logger = logging.getLogger(__name__)
 # Actions whose completion is too noisy to notify about by default.
 _DEFAULT_SKIP_ACTIONS = frozenset({"log_only"})
 
+# The cockpit handoff (CFOP-29). An operator reading an alert in Slack does not
+# want the console — they want a terminal agent on the affected machine that
+# already knows what CFOperator found. This is the one-liner that gets them
+# there, appended to every notification that actually carries an investigation.
+#
+# Deliberately plain: no backticks, no link. It has to survive being copied out
+# of Slack, Discord *and* an ntfy push on a phone, and only plain text pastes
+# identically from all three. Deep links are a later issue.
+ATTACH_COMMAND = "cfassist attach {investigation_id}"
+ATTACH_HINT_PREFIX = "Take over: "
+
+# cfassist implements this verb in Go: the verb itself is
+# cfassist-go/internal/cfoperator/briefing.go (const AttachVerb) and the command
+# is registered in cfassist-go/cmd/cfassist/attach.go. The two live in different
+# deploy artifacts — this runs in the agent image, that ships as a single binary
+# on the operator's laptop — so nothing links them at runtime and
+# test_cockpit_attach_contract.py asserts they still agree. Telling someone to
+# paste a command that no longer exists is a silent failure that only shows up
+# mid-incident.
+
+
+def _coerce_investigation_id(raw):
+    """Return a positive int investigation id, or None.
+
+    Guards the attach line against a ``result_details`` that carries something
+    unusable in ``investigation_id`` — None, "", a placeholder string, 0. A
+    printed "cfassist attach None" would be worse than no line at all, since an
+    operator would paste it mid-incident and get an argument error.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    text = str(raw or "").strip()
+    if not text.isdigit():
+        return None
+    value = int(text)
+    return value if value > 0 else None
+
+
+def _attach_hint(details: Dict | None) -> str:
+    """Return the copy-pasteable handoff line, or '' when there is no
+    investigation to attach to."""
+    result_details = (details or {}).get("result_details") or {}
+    if not isinstance(result_details, dict):
+        return ""
+    investigation_id = _coerce_investigation_id(result_details.get("investigation_id"))
+    if investigation_id is None:
+        return ""
+    return ATTACH_HINT_PREFIX + ATTACH_COMMAND.format(investigation_id=investigation_id)
+
 
 def _post_webhook(url: str, data: bytes, headers: Dict[str, str], *,
                   timeout: int, sink: str) -> bool:
@@ -101,6 +152,11 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
       - ``resolution``: when truthy, the alert announces that a previously
         reported finding is now clear — replaces the ``[severity]`` prefix
         with ``:white_check_mark: Resolved:``.
+
+    Finally, any notification whose ``result_details`` carries a usable
+    ``investigation_id`` ends with the cockpit handoff line (see
+    ``_attach_hint``) — the single paste that turns an alert into a briefed
+    terminal session.
     """
     triage = _triage_attribution(details)
     served = _served_attribution(details)
@@ -147,6 +203,14 @@ def _format_message(summary: str, *, severity: str, details: Dict | None) -> str
         for key in ("html_url", "pr_number", "issue_number", "url", "investigation_url", "investigation_id"):
             if key in result_details:
                 parts.append(f"{key}: {result_details[key]}")
+        # Last line by design: the handoff is what the operator acts on, and it
+        # should sit where a phone notification truncates least. Only the long
+        # form gets it — the `notify` branch above returns before here, and by
+        # construction it has no investigation (notify is the triage outcome
+        # meaning "show a human, no LLM dive"), so there is nothing to attach to.
+        attach_hint = _attach_hint(details)
+        if attach_hint:
+            parts.append(attach_hint)
     return "\n".join(parts)
 
 

@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "CFOperator MCP recipe — drop this in as .mcp.json (Claude Code) or merge the",
+    "'cfoperator' entry into an existing MCP host config. See docs/cockpit.md for the",
+    "alert -> investigation -> briefed-session workflow, and docs/mcp-server.md for the",
+    "full tool/resource/scope reference.",
+    "",
+    "Two entries, pick one and delete the other:",
+    "  cfoperator       — stdio; the host launches `python -m mcp_server` locally.",
+    "                     Needs this repo checked out and its requirements installed,",
+    "                     plus a reachable agent (kubectl -n apps port-forward",
+    "                     svc/cfoperator 8083:8083). CFOP_MCP_SCOPES is the grant.",
+    "  cfoperator-http  — Streamable HTTP against an already-deployed MCP server.",
+    "                     Nothing to install. The bearer is resolved against the",
+    "                     console's auth_api_tokens table, so the *token's* own scopes",
+    "                     apply and CFOP_MCP_SCOPES is not consulted.",
+    "",
+    "Scopes are a ladder: remediate > investigate > read. 'read' is enough to work an",
+    "incident (list/get investigations, list/get remediations, search knowledge);",
+    "'investigate' adds triage_alert / start_investigation / ask_sre. Never put",
+    "'remediate' in a shared host config — approve/reject belong to a deliberate",
+    "human action, not to an agent's tool loop."
+  ],
+  "mcpServers": {
+    "cfoperator": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_server"],
+      "env": {
+        "CFOP_AGENT_URL": "http://127.0.0.1:8083",
+        "CFOP_API_TOKEN": "${CFOP_API_TOKEN}",
+        "CFOP_MCP_SCOPES": "read"
+      }
+    },
+    "cfoperator-http": {
+      "type": "http",
+      "url": "http://127.0.0.1:8090/mcp",
+      "headers": {
+        "Authorization": "Bearer ${CFOP_MCP_TOKEN}"
+      }
+    }
+  }
+}

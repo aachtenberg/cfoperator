@@ -78,6 +78,24 @@ jobs:
             test_dockerfile_image.py test_config_merge.py \
             test_http_investigate.py test_k8s_probe_filter.py \
             test_triage_engine.py test_github_integration.py test_event_runtime.py \
-            test_compose_trial.py
+            test_compose_trial.py test_cockpit_attach_contract.py
 
           exit "${fail}"
+
+  # cfassist-go had tests but nothing ever ran them: release-cfassist.yml only
+  # cross-compiles, and only on a tag, so a broken Go test could sit green in
+  # `main` until release day. Its own job rather than a step in `pytest` so a Go
+  # failure is distinguishable at a glance from a Python one.
+  gotest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cfassist-go/go.mod
+          cache-dependency-path: cfassist-go/go.sum
+
+      - name: Run Go tests
+        working-directory: cfassist-go
+        run: go test ./...

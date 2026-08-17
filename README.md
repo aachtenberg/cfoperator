@@ -274,6 +274,13 @@ cfassist "what is my hostname?"
 
 # Pipe mode
 journalctl -u nginx --since '1 hour ago' | cfassist "summarize errors"
+
+# Attach to a CFOperator investigation — the alert-to-terminal handoff.
+# Every Slack/Discord/ntfy notification that carries an investigation ends
+# with this exact line. See docs/cockpit.md.
+cfassist attach 1889
+cfassist attach 1889 --print                  # briefing only, no session
+cfassist attach 1889 "did the pod recover?"   # one-shot, briefing seeded
 ```
 
 ### CLI Flags
@@ -285,6 +292,11 @@ journalctl -u nginx --since '1 hour ago' | cfassist "summarize errors"
 | `--provider` | Select LLM provider by name |
 | `--url` | Override LLM endpoint URL |
 | `--version` | Show version |
+| `--print` | (`attach` only) render the briefing to stdout and start nothing |
+
+`attach` reads the CFOperator API over `CFOP_AGENT_URL` / `CFOP_API_TOKEN` — the
+same variables the MCP server uses — or a `cfoperator:` block in the config file.
+It is read-only: a `read`-scope token is enough.
 
 ### Build from Source
 
