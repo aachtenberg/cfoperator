@@ -72,16 +72,17 @@ kubectl -n argocd get application homelab-root  # check Sync + Health
 The build workflow skips on pushes that only touch: `**.md`, `docs/**`, `benchmarks/**`, `cfassist/**`, `cfassist-go/**`, `llm-gateway/**`, `grafana/**`. Pushes that ONLY touch those paths won't produce a new image — that's intentional (they don't affect what runs in the cluster), but be aware of it if you expect a new tag and none appears.
 
 **The rule for this list: a path may only be ignored if it is not baked into the
-image.** `cfshared/**` was on it until the package existed — it is now COPYed by
-the Dockerfile and imported at module load by both the agent and
-`event_runtime`, so a `cfshared`-only fix that never built would have been a
-silent no-op deploy. It was removed for that reason.
+image.** Ignoring a path the Dockerfile COPYs means a change to it produces no
+image, no tag bump and no rollout — the fix appears to deploy and does not, then
+lands later attributed to whatever unrelated commit finally triggered a build.
 
-`observability/**` is still listed and is in the same position: the Dockerfile
-copies it and the agent imports it. Left as-is here only because changing the
-deploy trigger for an unrelated package does not belong in a config-loader
-change — but it is a real trap, and the next person to edit only
-`observability/prometheus.py` will hit it.
+Two entries broke that rule and were removed: `cfshared/**` (added before the
+package existed, then COPYed and imported at module load by both the agent and
+`event_runtime`) and `observability/**` (COPYed, imported by `agent/agent.py`).
+Both were found by review rather than by the pipeline, which is why the rule is
+now **enforced** — `test_dockerfile_image.py` cross-checks this list against the
+Dockerfile's COPY set and fails if they contradict each other. Add a path here
+only if that test still passes.
 
 ## Common Change Types
 

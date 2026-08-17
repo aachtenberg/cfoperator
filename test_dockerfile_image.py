@@ -12,6 +12,7 @@ top-level module it imports, and fails if the image would not contain it.
 """
 
 import ast
+import fnmatch
 import pathlib
 import re
 
@@ -117,3 +118,106 @@ def test_the_guard_itself_catches_a_missing_copy():
         if is_first_party(name) and name not in copied
     }
     assert "auth" in offenders
+
+
+# ---------------------------------------------------------------------------
+# The mirror of the guard above: everything the image contains must also be
+# able to *trigger* a rebuild.
+# ---------------------------------------------------------------------------
+
+BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build-cfoperator-main.yml"
+
+
+def build_paths_ignore() -> list[str]:
+    """The `paths-ignore` globs from the image-build workflow.
+
+    Parsed by hand rather than with a YAML loader so this test has no
+    dependency the rest of the root-level suite does not already carry.
+    """
+    patterns: list[str] = []
+    inside = False
+    for raw in BUILD_WORKFLOW.read_text().splitlines():
+        line = raw.strip()
+        if line.startswith("paths-ignore:"):
+            inside = True
+            continue
+        if inside:
+            if line.startswith("#"):
+                continue
+            if line.startswith("- "):
+                patterns.append(line[2:].strip().strip("'\""))
+                continue
+            if line:  # any other key ends the block
+                break
+    assert patterns, "could not parse paths-ignore — reread the workflow"
+    return patterns
+
+
+def paths_ignore_violations(patterns: list[str], copied: set[str]) -> list[str]:
+    """Ignore patterns that would suppress a rebuild for something in the image.
+
+    Extracted from the test so it can be fed a deliberately broken list — a
+    check that cannot be run against bad input cannot prove it catches bad
+    input.
+
+    Both `foo/**` and `foo/*` are treated as governing the `foo` tree. Only the
+    first spelling is in use today, but GitHub Actions honours either, and
+    `fnmatch("foo", "foo/*")` is False — so matching on the glob alone would let
+    the single-star form skip rebuilds while passing this guard.
+    """
+    violations = []
+    for pattern in patterns:
+        root = None
+        for suffix in ("/**", "/*"):
+            if pattern.endswith(suffix):
+                root = pattern[: -len(suffix)]
+                break
+        if root and root in copied:
+            violations.append(f"{pattern!r} ignores COPYed path {root!r}")
+            continue
+        # Catches file-level entries (a future `config.yaml.example`); `**.md`
+        # and friends match nothing in the COPY set and fall through here.
+        for path in copied:
+            if fnmatch.fnmatch(path, pattern):
+                violations.append(f"{pattern!r} matches COPYed path {path!r}")
+    return violations
+
+
+def test_no_ignored_path_is_baked_into_the_image():
+    """A path the Dockerfile COPYs must never be in `paths-ignore`.
+
+    Merging to main *is* the deploy here: CI builds the image and commits the
+    tag to cfoperator-deploy, which ArgoCD rolls. If a COPYed path is ignored,
+    a change to it produces no image, no tag bump and no rollout — the fix
+    appears to deploy and does not, then lands later attributed to whatever
+    unrelated commit finally triggered a build.
+
+    This has now happened twice (`cfshared/**`, then `observability/**`), both
+    caught by review rather than by anything automatic. Hence this test: the
+    rule is cheap to state and evidently easy to break.
+    """
+    violations = paths_ignore_violations(build_paths_ignore(), copied_paths())
+    assert not violations, (
+        "build-cfoperator-main.yml would skip the image build for a change to "
+        "something that ships in the image, so the change would never deploy:\n  "
+        + "\n  ".join(violations)
+        + "\n\nA path may only be in paths-ignore if it is NOT COPYed by the "
+        "Dockerfile. See docs/DEPLOYMENT.md."
+    )
+
+
+def test_the_paths_ignore_guard_catches_a_reintroduced_entry():
+    """Re-add the entry that actually shipped broken and confirm it is flagged.
+
+    Runs the real matcher against a mutated list, rather than re-deriving a
+    constant and asserting it equals itself.
+    """
+    copied = copied_paths()
+    assert "observability" in copied, "premise moved: observability is not COPYed"
+
+    for spelling in ("observability/**", "observability/*"):
+        violations = paths_ignore_violations(build_paths_ignore() + [spelling], copied)
+        assert any("observability" in v for v in violations), (
+            f"the guard missed {spelling!r}, which Actions honours and which "
+            "would silently skip rebuilds for a package that ships in the image"
+        )
