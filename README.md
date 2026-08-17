@@ -186,14 +186,54 @@ Sweep models sometimes hallucinate findings — e.g., reporting "immich-ml conta
 
 ## Quick Start
 
+From clone to a completed investigation. You need Docker, a Prometheus, and an
+LLM — Ollama locally, or an API key.
+
 ```bash
-cp config.yaml.example config.yaml
-# Edit config.yaml with your host IPs
-cp .env.example .env
-# Add POSTGRES_PASSWORD, GITHUB_TOKEN, and provider/webhook secrets to .env
-docker compose up -d
-# Access UI: http://localhost:8083
+cp .env.example .env          # three values matter; the rest have defaults
+docker compose up -d          # postgres + agent + event-runtime + console
 ```
+
+The stack seeds itself on first boot: it creates an admin, mints the service
+token event_runtime needs, and generates a session secret. Nothing to configure
+by hand, and no `config.yaml` to author — the trial ships its own.
+
+```bash
+docker compose logs bootstrap | grep password    # your generated admin password
+open http://localhost:8083                       # log in as `admin`
+```
+
+Then put a real alert through it:
+
+```bash
+./scripts/demo-alert.sh
+```
+
+The script asks *your* Prometheus what is actually true and builds the alert
+from that — a genuinely down target if you have one, otherwise a verification
+task about a healthy one. It is deliberately not a fabricated Kubernetes alert:
+a trial has no cluster, so that can only ever end in "I could not check".
+
+You get triage, a real investigation, and the line that matters:
+
+```
+  investigation #2 -> resolved  (9 tool calls, 48s)
+  model: ollama/gemma4:26b
+  recommendation: No action needed
+
+      cfassist attach 2
+```
+
+That last command drops you into a terminal session **already briefed** on the
+investigation — the same line CFOperator puts on every Slack, Discord and ntfy
+notification, so an alert is one paste away from context. See
+[docs/cockpit.md](docs/cockpit.md).
+
+Running on Kubernetes instead, or wiring your own fleet? See
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
+[docs/config-reference.md](docs/config-reference.md). The SSH host inventory,
+Timescale, MCP and the deep-investigation tier are all optional overlays — none
+of them are needed to investigate your first alert.
 
 ## Usage
 
