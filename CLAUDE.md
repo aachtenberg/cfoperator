@@ -80,6 +80,8 @@ shared header, not to assert today's markup. Mutation-check a new guard once
 - Request a Copilot review.
 - Subscribe to PR activity and drive it to green — a CI failure on your own PR
   ends with either a pushed fix or a reply explaining the blocker.
+- When reviewing a PR (`/review`), post findings as GitHub review comments on
+  the PR. Do not only report them in chat.
 
 ### 6. Close the loop in Plane
 
