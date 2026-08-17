@@ -206,6 +206,93 @@ def test_format_message_surfaces_investigation_url_and_id():
     assert "investigation_id: 123" in text
 
 
+# ---- _format_message: the cockpit attach line (CFOP-29) -------------------
+#
+# The one-paste handoff from an alert to a briefed terminal session. What is
+# guarded here is the *condition* — a notification carrying a real
+# investigation gets a usable command, and one that does not gets no command
+# at all — rather than the wording of the line.
+
+
+def test_investigation_bearing_notification_ends_with_the_attach_line():
+    text = _format_message(
+        "Action completed: investigate",
+        severity="warning",
+        details={
+            "alert_summary": "Pod foo not ready",
+            "action": "investigate",
+            "result_message": "needs_action",
+            "result_details": {"investigation_id": 1889},
+        },
+    )
+    # Last line by design: it is what the operator acts on, and it survives the
+    # truncation a phone notification applies from the bottom least often.
+    assert text.splitlines()[-1] == "Take over: cfassist attach 1889"
+
+
+def test_no_investigation_means_no_attach_line():
+    text = _format_message(
+        "Action completed: open_issue",
+        severity="warning",
+        details={
+            "alert_summary": "Pod foo not ready",
+            "action": "open_issue",
+            "result_message": "opened",
+            "result_details": {"issue_number": 12},
+        },
+    )
+    assert "cfassist attach" not in text
+
+
+@pytest.mark.parametrize("value", [None, "", 0, "0", -3, "abc", "12x", True, {"id": 1}])
+def test_unusable_investigation_ids_produce_no_attach_line(value):
+    """Mutation check for the coercion guard: drop it and several of these
+    render 'cfassist attach None' / 'cfassist attach True', a command an
+    operator would paste mid-incident and get an argument error from.
+
+    ``True`` is in the list because bool is a subclass of int in Python, so a
+    naive ``isinstance(raw, int)`` check turns it into 'attach 1' — an attach
+    to a real but entirely unrelated investigation.
+    """
+    text = _format_message(
+        "Action completed: investigate",
+        severity="warning",
+        details={
+            "alert_summary": "Pod foo not ready",
+            "action": "investigate",
+            "result_message": "done",
+            "result_details": {"investigation_id": value},
+        },
+    )
+    assert "cfassist attach" not in text
+
+
+def test_notify_stays_a_single_line():
+    """Triage 'notify' exists to cut Slack volume and by construction has no
+    investigation to attach to, so it must not grow a second line."""
+    text = _format_message(
+        "Action completed: notify",
+        severity="warning",
+        details={
+            "action": "notify",
+            "alert_summary": "Disk 81% on pi4",
+            "result_details": {"investigation_id": 1889},
+        },
+    )
+    assert len(text.splitlines()) == 1
+    assert "cfassist attach" not in text
+
+
+def test_attach_line_is_plain_text_so_it_pastes_from_any_sink():
+    """No backticks, no markup: the same body goes to Slack, Discord and an
+    ntfy push, and only plain text copies identically out of all three."""
+    from event_runtime.notifications import ATTACH_COMMAND
+
+    rendered = ATTACH_COMMAND.format(investigation_id=1889)
+    assert rendered == "cfassist attach 1889"
+    assert not any(ch in rendered for ch in "`*_<>|")
+
+
 # ---- HTTPInvestigateActionHandler ----------------------------------------
 
 

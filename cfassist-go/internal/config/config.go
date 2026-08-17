@@ -85,12 +85,26 @@ type ToolsConfig struct {
 	ReadFile ReadFileToolConfig `yaml:"read_file"`
 }
 
+// CFOperatorConfig points `cfassist attach` at a CFOperator agent API.
+//
+// Not a new credential mechanism: leaving both fields empty falls back to the
+// CFOP_AGENT_URL / CFOP_API_TOKEN environment variables that mcp_server/client.py
+// already reads, so a workstation set up for the MCP server needs nothing here.
+// The token is the console's database-backed bearer (minted at
+// /admin?tab=tokens); `read` scope is enough, since attach only makes GETs.
+type CFOperatorConfig struct {
+	URL     string  `yaml:"url"`
+	Token   string  `yaml:"token"`
+	Timeout float64 `yaml:"timeout"`
+}
+
 type Config struct {
 	LLM               LLMConfig                 `yaml:"llm"`
 	Providers         map[string]ProviderConfig `yaml:"providers"`
 	Context           ContextConfig             `yaml:"context"`
 	Memory            MemoryConfig              `yaml:"memory"`
 	Tools             ToolsConfig               `yaml:"tools"`
+	CFOperator        CFOperatorConfig          `yaml:"cfoperator"`
 	SystemPrompt      string                    `yaml:"system_prompt"`
 	MaxToolIterations int                       `yaml:"max_tool_iterations"`
 }
@@ -298,6 +312,15 @@ tools:
   read_file:
     enabled: true
     max_lines: 500
+
+# CFOperator agent API — used by 'cfassist attach <investigation-id>'.
+# Both fields are optional: unset, they fall back to CFOP_AGENT_URL and
+# CFOP_API_TOKEN, the same variables the MCP server reads. attach is read-only,
+# so a token with 'read' scope is enough.
+# cfoperator:
+#   url: http://127.0.0.1:8083
+#   token: ${CFOP_API_TOKEN}
+#   timeout: 30
 
 max_tool_iterations: 50  # max tool calls per conversation turn
 
