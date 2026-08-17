@@ -26,9 +26,11 @@ on:
       - 'benchmarks/**'
       - 'cfassist/**'
       - 'cfassist-go/**'
+      # Only paths that are NOT baked into the image belong here. A path the
+      # Dockerfile COPYs must trigger a rebuild, or a change to it silently
+      # never deploys. test_dockerfile_image.py enforces this.
       - 'llm-gateway/**'
       - 'grafana/**'
-      - 'observability/**'
   workflow_dispatch:
 
 permissions:
