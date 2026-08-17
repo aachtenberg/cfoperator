@@ -80,6 +80,40 @@ topk(5, sum by (from_provider, to_provider) (
 ))
 ```
 
+### Empty Final Responses
+
+Some models — gemma4:26b most of all — end the tool loop with a message that
+has neither tool calls nor text. `_handle_empty_final` sends one nudge and
+grants a bonus round; a second empty raises `EmptyLLMResponseError` and rotates
+the provider chain. This counter is how you tell those two apart per model,
+which is the number to look at when picking a local model.
+
+```promql
+# Empty finals by provider, model, and disposition
+#   nudged    = first empty; nudge sent, usually recovered (a formatting quirk)
+#   exhausted = second empty; provider chain rotated (the model failing the task)
+cfoperator_llm_empty_final_responses_total{provider="ollama", model="gemma4:26b", disposition="nudged"}
+
+# Example query: what fraction of chat turns need a second prompt, per model?
+# cfoperator_llm_requests_total is incremented once per _chat_with_tools call
+# (success and error alike), so it is the right denominator.
+sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="nudged"}[1h]))
+/ sum by (model) (rate(cfoperator_llm_requests_total[1h]))
+
+# Example query: how often the nudge FAILS to rescue the turn — the
+# model-quality signal, as opposed to the formatting-quirk signal above
+sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="exhausted"}[1h]))
+/ sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="nudged"}[1h]))
+
+# Example query: models that burn provider rotations on empty finals
+topk(5, sum by (provider, model) (
+  rate(cfoperator_llm_empty_final_responses_total{disposition="exhausted"}[24h])
+))
+```
+
+Both series are cumulative counters reset by every agent restart, so read them
+as rates over a window — a raw total says nothing about a model's behaviour.
+
 ### Embedding Operations
 
 ```promql

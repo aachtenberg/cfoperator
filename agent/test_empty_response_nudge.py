@@ -15,6 +15,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from prometheus_client import REGISTRY
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -151,6 +152,82 @@ def test_nonempty_response_unaffected(monkeypatch):
     assert result['response'].startswith('Fine.')
     assert all(EMPTY_RESPONSE_NUDGE != m.get('content')
                for p in fake.payloads for m in p['messages'])
+
+
+# ---- LLM_EMPTY_FINALS counter (CFOP-28) -----------------------------------
+#
+# The nudge above recovers the turn silently, so an operator choosing between
+# local models had no way to see which of them needs the second prompt. These
+# guard the *shape* of that counter, not a number: a first empty and a second
+# empty must land on distinct series, and the series must be per provider and
+# per model. Each test uses its own model label and asserts a delta, so it is
+# immune to increments from the other tests sharing this process.
+
+
+def _empty_finals(model, disposition, provider='ollama'):
+    value = REGISTRY.get_sample_value(
+        'cfoperator_llm_empty_final_responses_total',
+        {'provider': provider, 'model': model, 'disposition': disposition})
+    return value or 0.0
+
+
+def test_first_empty_counts_as_nudged():
+    model = 'counter-probe-first'
+    before_nudged = _empty_finals(model, 'nudged')
+    before_exhausted = _empty_finals(model, 'exhausted')
+
+    sent, budget = CFOperator._handle_empty_final(
+        False, 1, 5, [], 'ollama', model)
+
+    assert sent is True
+    assert budget == 2
+    assert _empty_finals(model, 'nudged') == before_nudged + 1
+    # A recovered formatting quirk must not be recorded as a model failure.
+    assert _empty_finals(model, 'exhausted') == before_exhausted
+
+
+def test_second_empty_counts_distinctly_as_exhausted():
+    model = 'counter-probe-second'
+    before_nudged = _empty_finals(model, 'nudged')
+    before_exhausted = _empty_finals(model, 'exhausted')
+
+    with pytest.raises(EmptyLLMResponseError):
+        CFOperator._handle_empty_final(True, 1, 5, [], 'ollama', model)
+
+    assert _empty_finals(model, 'exhausted') == before_exhausted + 1
+    # The give-up must not inflate the "nudge absorbed it" series — that is
+    # the whole point of splitting them.
+    assert _empty_finals(model, 'nudged') == before_nudged
+
+
+def test_empty_finals_are_labelled_per_provider_and_model():
+    """An empty final for one model/provider must not show up under another."""
+    mine, other = 'counter-probe-mine', 'counter-probe-other'
+    before_other = _empty_finals(other, 'nudged')
+    before_other_provider = _empty_finals(mine, 'nudged', provider='groq')
+    before_mine = _empty_finals(mine, 'nudged')
+
+    CFOperator._handle_empty_final(False, 1, 5, [], 'ollama', mine)
+
+    assert _empty_finals(mine, 'nudged') == before_mine + 1
+    assert _empty_finals(other, 'nudged') == before_other
+    assert _empty_finals(mine, 'nudged', provider='groq') == before_other_provider
+
+
+def test_tool_loop_reaches_the_counter(monkeypatch):
+    """The chokepoint must stay wired to the real loop, not just be callable."""
+    model = 'counter-probe-loop'
+    op = _operator()
+    fake = _FakePost({model: [
+        _ollama_msg(content=''),
+        _ollama_msg(content='Healthy.\nSTATUS: resolved\nRECOMMENDATION: No action needed'),
+    ]})
+    before = _empty_finals(model, 'nudged')
+
+    result = _run(op, fake, monkeypatch, model=model)
+
+    assert 'STATUS: resolved' in result['response']
+    assert _empty_finals(model, 'nudged') == before + 1
 
 
 if __name__ == "__main__":

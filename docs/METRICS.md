@@ -200,6 +200,23 @@ cfoperator_llm_errors_total{provider="groq", error_type="RateLimitError"}
 cfoperator_llm_fallbacks_total{from_provider="ollama", to_provider="groq"}
 ```
 
+### Empty Final Responses
+```promql
+# Tool-loop turns that ended with an empty final message (no tool calls, no
+# text), by what the agent did about it
+cfoperator_llm_empty_final_responses_total{provider="ollama", model="gemma4:26b", disposition="nudged"}
+cfoperator_llm_empty_final_responses_total{provider="ollama", model="gemma4:26b", disposition="exhausted"}
+```
+
+`disposition` separates two signals that mean different things:
+
+| Value | What happened | How to read it |
+|---|---|---|
+| `nudged` | First empty of the turn. `EMPTY_RESPONSE_NUDGE` was appended and one bonus round granted. | A formatting quirk the loop absorbs — the benchmark recovered 19/19 this way. Costs one extra round-trip. |
+| `exhausted` | Second empty. `EmptyLLMResponseError` raised, provider chain rotates. | The model failing the task. Costs a whole extra provider attempt. |
+
+See `docs/llm-observability.md` for the per-model rate queries.
+
 ### Embedding Operations
 ```promql
 # Embedding generation requests
