@@ -1,43 +1,157 @@
-version: '3.8'
+# CFOperator trial compose (CFOP-25): postgres + bootstrap + agent + event-runtime.
+#
+# Design intent: `docker compose up` on a clean machine with Docker only.
+# Three values matter (.env): an LLM (OLLAMA_URL or a paid API key), your
+# PROMETHEUS_URL, and optionally a notify webhook. Everything else defaults.
+#
+#   cp .env.example .env   # edit the three values
+#   docker compose up -d
+#   open http://localhost:8083  (admin credentials: see `docker compose logs bootstrap`)
+#
+# Deliberately absent from this file: network_mode: host, ~/.ssh mounts, and
+# docker.sock. Those are the hybrid-fleet overlay — see docker-compose.extras.yml.
+# test_compose_trial.py enforces their absence here; do not add them back.
+
+name: cfoperator
 
 services:
-  cfoperator:
-    build: .
-    container_name: cfoperator
-    ports:
-      - "8083:8083"  # HTTP/WebSocket
+  postgres:
+    image: pgvector/pgvector:pg16
     environment:
-      # Database connection
-      - POSTGRES_HOST=${POSTGRES_HOST:-localhost}
-      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
-      - POSTGRES_DB=${POSTGRES_DB:-cfoperator}
-      - POSTGRES_USER=${POSTGRES_USER:-cfoperator}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-
-      # LLM API keys
-      - OLLAMA_URL=${OLLAMA_URL:-http://localhost:11434}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-
-      # Observability backends
-      - PROMETHEUS_URL=${PROMETHEUS_URL:-http://localhost:9090}
-      - LOKI_URL=${LOKI_URL:-http://localhost:3100}
-      - ALERTMANAGER_URL=${ALERTMANAGER_URL:-http://localhost:9093}
-
-      # Notifications
-      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
-      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL}
-
-      # Config
-      - CONFIG_PATH=/app/config.yaml
+      POSTGRES_DB: ${POSTGRES_DB:-cfoperator}
+      POSTGRES_USER: ${POSTGRES_USER:-cfoperator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cfoperator}
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./skills:/app/skills:ro
-      - /var/run/docker.sock:/var/run/docker.sock  # Docker access
-      - ~/.ssh:/root/.ssh:ro  # SSH keys for fleet access
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cfoperator} -d ${POSTGRES_DB:-cfoperator}"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
     restart: unless-stopped
-    network_mode: host  # Use host network to access Prometheus/Loki/PostgreSQL
 
-# Ensure PostgreSQL is running and accessible before starting CFOperator
+  # One-shot first-boot seeding: admin user + event-runtime API token.
+  # Idempotent — safe on every `up`. See scripts/compose_bootstrap.py.
+  bootstrap:
+    build: .
+    image: cfoperator:local
+    command: ["python", "scripts/compose_bootstrap.py"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-cfoperator}
+      POSTGRES_USER: ${POSTGRES_USER:-cfoperator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cfoperator}
+      CFOP_ADMIN_USERNAME: ${CFOP_ADMIN_USERNAME:-admin}
+      CFOP_ADMIN_PASSWORD: ${CFOP_ADMIN_PASSWORD:-}
+    volumes:
+      - shared-run:/shared
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  agent:
+    build: .
+    image: cfoperator:local
+    # Sources the session secret bootstrap generated — without it every login
+    # is a 500, because web_auth.py leaves app.secret_key unset.
+    command:
+      - sh
+      - -c
+      - "set -a; [ -f /shared/agent.env ] && . /shared/agent.env; set +a; exec python -m agent"
+    ports:
+      # Overridable because 8083 is often already taken — notably on a machine
+      # that is itself running CFOperator.
+      - "${CFOP_CONSOLE_PORT:-8083}:8083"
+    environment:
+      CONFIG_PATH: /app/config.yaml
+      # Auth store + knowledge base share the bundled Postgres.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-cfoperator}
+      POSTGRES_USER: ${POSTGRES_USER:-cfoperator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cfoperator}
+      KNOWLEDGE_BASE_PG_HOST: postgres
+      KNOWLEDGE_BASE_PG_PORT: "5432"
+      KNOWLEDGE_BASE_PG_DATABASE: ${POSTGRES_DB:-cfoperator}
+      KNOWLEDGE_BASE_PG_USER: ${POSTGRES_USER:-cfoperator}
+      KNOWLEDGE_BASE_PG_PASSWORD: ${POSTGRES_PASSWORD:-cfoperator}
+      # Observability targets (host.docker.internal reaches the docker host).
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:9090}
+      LOKI_URL: ${LOKI_URL:-}
+      ALERTMANAGER_URL: ${ALERTMANAGER_URL:-}
+      # LLM
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      XAI_API_KEY: ${XAI_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Notify — a blank webhook leaves that sink off rather than half-configured.
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      # Signs session cookies. Bootstrap generates and persists one into
+      # /shared/agent.env, which this service sources; set it here only to pin
+      # your own. Nothing is generated per-process — an unset secret makes
+      # login fail with a 500.
+      CFOP_SESSION_SECRET: ${CFOP_SESSION_SECRET:-}
+      # Only needed for the remediation PR loop.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # Sweep findings flow into the event runtime's noise pipeline.
+      CFOP_EVENT_RUNTIME_URL: http://event-runtime:8080
+    volumes:
+      - ./deploy/compose/config.yaml:/app/config.yaml:ro
+      - shared-run:/shared:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/api/health >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  event-runtime:
+    build: .
+    image: cfoperator:local
+    # The API token is minted at first boot and lives on the shared volume —
+    # it cannot be in .env because it does not exist until bootstrap runs.
+    command:
+      - sh
+      - -c
+      - "set -a; [ -f /shared/event-runtime.env ] && . /shared/event-runtime.env; set +a; exec python -m event_runtime serve --port 8080"
+    environment:
+      CONFIG_PATH: /app/config.yaml
+      CFOP_AGENT_URL: http://agent:8083
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-cfoperator}
+      POSTGRES_USER: ${POSTGRES_USER:-cfoperator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cfoperator}
+      PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:9090}
+      LOKI_URL: ${LOKI_URL:-}
+      ALERTMANAGER_URL: ${ALERTMANAGER_URL:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
+    volumes:
+      - ./deploy/compose/config.yaml:/app/config.yaml:ro
+      - shared-run:/shared:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  shared-run:
