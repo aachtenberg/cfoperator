@@ -101,8 +101,15 @@ def test_returns_false_on_transport_error(monkeypatch):
     assert NtfyNotificationSink(base_url="http://n", topic="t").notify("x") is False
 
 
-def test_bootstrap_builds_ntfy_from_env(monkeypatch):
-    monkeypatch.delenv("CONFIG_PATH", raising=False)
+def test_bootstrap_builds_ntfy_from_env(monkeypatch, tmp_path):
+    # Point CONFIG_PATH at an empty file rather than deleting it. Deleting used
+    # to mean "no config"; cfshared.config.load_config now falls back to
+    # "config.yaml" relative to the cwd, which is the developer's live site
+    # config when the suite runs from the repo root — and its ntfy block then
+    # supplies the priority map this test asserts comes from the environment.
+    empty_config = tmp_path / "empty.yaml"
+    empty_config.write_text("", encoding="utf-8")
+    monkeypatch.setenv("CONFIG_PATH", str(empty_config))
     monkeypatch.setenv("NTFY_URL", "http://ntfy")
     monkeypatch.setenv("NTFY_TOPIC", "homelab")
     monkeypatch.setenv("NTFY_PRIORITY_MAP", '{"warning": "5"}')
