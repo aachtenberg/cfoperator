@@ -451,6 +451,25 @@ def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence) 
     )
 
 
+def remediation_approve_conflict(row) -> Optional[str]:
+    """Why a row must NOT be handed to the executor, or None if approvable.
+
+    Pure policy (same posture as remediation_is_auto_eligible): 'manual' means
+    human-only work by definition — there is nothing for the executor to
+    mechanize, so Approve would only burn a Job that parks the row right back
+    at needs-human behind a misleading error (CFOP-49, observed live on row
+    #42). The two legitimate exits for a manual row are Reclassify (then
+    approve) or do-by-hand + Resolve. Enforced at the API so every caller
+    (console, MCP, future clients) hits the same wall.
+    """
+    if (row or {}).get('remediation_class') == 'manual':
+        return ("manual-class rows are human-only work — the executor has "
+                "nothing to mechanize. Reclassify it (gitops-patch / "
+                "k8s-action / node-action) if the executor should attempt it, "
+                "or do it by hand and Resolve.")
+    return None
+
+
 def _investigation_remediation_id(findings) -> Optional[int]:
     """The queue row an investigation's needs_action fed (or deduped onto)."""
     f = findings if isinstance(findings, dict) else {}
@@ -3706,6 +3725,16 @@ class KnowledgeBase:
         with self.session_scope() as session:
             r = session.query(RemediationQueue).filter_by(id=remediation_id).first()
             return remediation_row_dict(r) if r else None
+
+    @staticmethod
+    def remediation_approve_conflict(row) -> Optional[str]:
+        """Method access to the module-level policy for API-layer callers.
+
+        web_server reaches everything through ``operator.kb`` and imports
+        nothing from ``agent/``; exposing the pure function as a (delegated)
+        method keeps that boundary intact.
+        """
+        return remediation_approve_conflict(row)
 
     def reclassify_remediation(self, remediation_id: int, remediation_class: Optional[str] = None,
                                risk: Optional[str] = None, confidence: Optional[float] = None,

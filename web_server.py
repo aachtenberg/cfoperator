@@ -878,8 +878,22 @@ class WebServer:
         @self.app.route('/api/remediations/<int:remediation_id>/approve', methods=['POST'])
         @require_role(ROLE_ADMIN)
         def approve_remediation(remediation_id):
-            """Send a row to the executor: status -> queued."""
+            """Send a row to the executor: status -> queued.
+
+            Refused (409) for manual-class rows — human-only work has nothing
+            for the executor to mechanize, and queuing it burns a Job that
+            lands right back at needs-human (CFOP-49). The API is the gate so
+            the console, MCP, and any future caller hit the same wall.
+            """
             try:
+                row = self.operator.kb.get_remediation(remediation_id)
+                if not row:
+                    return jsonify({'error': 'not found'}), 404
+                conflict = self.operator.kb.remediation_approve_conflict(row)
+                if conflict:
+                    return jsonify({'error': conflict,
+                                    'remediation_class': row.get('remediation_class'),
+                                    'action': 'reclassify'}), 409
                 ok = self.operator.kb.update_remediation_status(remediation_id, 'queued')
                 if not ok:
                     return jsonify({'error': 'not found'}), 404

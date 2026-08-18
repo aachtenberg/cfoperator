@@ -236,12 +236,15 @@ async function detail(id){
     <span class="x" onclick="closeDetail()">×</span>
     <h2 style="margin:0 0 8px">Remediation #${r.id}</h2>
     <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
-      <button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>
+      ${r.remediation_class==='manual'
+        ? `<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify first</button>`
+        : `<button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>`}
       <button class="chip" onclick="showResolve(${r.id})">✔ Resolve</button>
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
-      <button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify</button>
+      ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify</button>`}
       ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">🔎 Investigation #${r.investigation_id}</button>`:''}
     </div>
+    ${r.remediation_class==='manual'?`<div class="muted" style="margin:0 0 8px">manual = human-only work: the executor has nothing to run. Reclassify it (gitops-patch / k8s-action / node-action) for the executor, or do it by hand and ✔ Resolve.</div>`:''}
     <div id="actionform"></div>
     <div class="kv">${badge(r.status,SC[r.status]||'--text-muted')} ${badge(r.risk,RC[r.risk]||'--text-muted')}
       <span class="muted">${esc(r.remediation_class)} · conf ${r.confidence==null?'—':r.confidence}</span></div>
@@ -323,7 +326,13 @@ async function runFeed(){
 async function act(id,verb,body,okmsg){
   try{ const r=await fetch(`/api/remediations/${id}/${verb}`,{method:'POST',
         headers:{'Content-Type':'application/json'}, body:body?JSON.stringify(body):null});
-       if(!r.ok){ toast(verb+' failed ('+r.status+')','err'); return; } }
+       if(!r.ok){
+         // Surface the server's reason (e.g. the 409 manual-class refusal),
+         // not just a bare status code — the reason tells the operator the
+         // legitimate next step.
+         let msg=verb+' failed ('+r.status+')';
+         try{ const e=await r.json(); if(e && e.error) msg=String(e.error); }catch(_){}
+         toast(msg,'err'); return; } }
   catch(e){ toast(verb+' failed','err'); return; }
   toast(okmsg||(verb+' ok'),'ok'); await load(); detail(id);
 }
