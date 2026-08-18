@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -135,9 +136,58 @@ def parse_selected_path(reply: str, files: list) -> Optional[str]:
     return min(hits)[1] if hits else None
 
 
+_FILE_WINDOW_DEFAULT_CAP = 120_000
+
+_IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_.:/-]{5,}")
+
+
+def _recommendation_identifiers(recommendation: str) -> list:
+    """Distinctive tokens worth anchoring a file window on.
+
+    CamelCase alert names and dashed/dotted/underscored resource names — not
+    plain English words, which occur everywhere and would anchor arbitrarily.
+    Longest first so 'CronJobNotSucceedingBackstop' beats 'kube_cronjob'.
+    """
+    tokens = _IDENTIFIER.findall(recommendation or "")
+    distinctive = [t for t in tokens
+                   if re.search(r"[-_./:]", t) or re.search(r"[a-z][A-Z]", t)]
+    return sorted(set(distinctive), key=len, reverse=True)
+
+
+def select_file_window(content: str, recommendation: str, cap: int) -> Tuple[str, bool, Optional[str]]:
+    """The slice of the file the diff model gets to see: (window, cut, anchor).
+
+    A file over the cap used to be head-truncated, which silently amputated
+    any target past the cut (row #42: the rule to edit was at line 506 of a
+    file whose first 16k chars end at line ~382) — the model then correctly
+    produced no diff and the failure was blamed on it. Instead, center a
+    cap-sized window on the first identifier from the recommendation found in
+    the file, snapped to line boundaries. Window-relative hunk positions are
+    fine: apply_unified_diff falls back to a unique whole-file context search.
+    Head-truncate only when no identifier matches.
+    """
+    if len(content) <= cap:
+        return content, False, None
+    for token in _recommendation_identifiers(recommendation):
+        idx = content.find(token)
+        if idx == -1:
+            continue
+        start = max(0, idx - cap // 2)
+        end = min(len(content), start + cap)
+        start = max(0, end - cap)
+        start = content.rfind("\n", 0, start) + 1  # snap to whole lines
+        newline = content.find("\n", end)
+        end = newline if newline != -1 else len(content)
+        return content[start:end], True, token
+    return content[:cap], True, None
+
+
 def build_diff_prompt(template_text: str, work_order: Dict[str, Any], repo: str,
                       path: str, content: str) -> str:
-    """Pass 2: render remediation.md with the real file content for a clean diff."""
+    """Pass 2: render remediation.md with the real file content for a clean diff.
+
+    ``content`` is already windowed by select_file_window — no slicing here.
+    """
     payload = work_order.get("payload") or {}
     fields = {
         "{recommendation}": str(payload.get("recommendation", "")),
@@ -145,7 +195,7 @@ def build_diff_prompt(template_text: str, work_order: Dict[str, Any], repo: str,
         "{context}": str(payload.get("rendered_context", "")),
         "{repo}": repo,
         "{path}": path,
-        "{file_content}": content[:16000],
+        "{file_content}": content,
         "{target}": json.dumps(payload.get("target") or {}),
     }
     out = template_text
@@ -300,10 +350,19 @@ def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any
         return build_completion_payload(work_order, "needs-human", None,
                                         f"could not fetch {path}", None)
 
-    # Pass 2 — produce a diff against the real content.
+    # Pass 2 — produce a diff against the real content (windowed if oversized).
+    try:
+        cap = int((env.get("CFOP_EXEC_MAX_FILE_CHARS") or "").strip() or _FILE_WINDOW_DEFAULT_CAP)
+    except ValueError:
+        cap = _FILE_WINDOW_DEFAULT_CAP
+    window, cut, anchor = select_file_window(
+        content, str(payload.get("recommendation") or ""), cap)
+    if cut:
+        logger.info("file window: %s is %d chars (cap %d), anchored on %r",
+                    path, len(content), cap, anchor)
     templates_dir = Path(env.get("CFOP_TEMPLATES_DIR", str(Path.home() / "templates")))
     template_text = (templates_dir / "remediation.md").read_text(encoding="utf-8")
-    report = llm.complete(build_diff_prompt(template_text, work_order, repo, path, content))
+    report = llm.complete(build_diff_prompt(template_text, work_order, repo, path, window))
     diff = extract_diff_block(report)
 
     pr_result: Optional[Dict[str, Any]] = None
@@ -316,9 +375,17 @@ def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any
         )
 
     status, pr_url, detail = classify_result(diff, pr_result)
+    # A no-diff on a cut file is an input-preparation problem, not a model
+    # problem — say so, or the operator debugs the wrong thing (row #42).
+    if not diff and cut:
+        where = f"a window around '{anchor}'" if anchor else "the head of the file"
+        detail += (f" (input was cut: {path} is {len(content)} chars, "
+                   f"cap {cap}; model saw {where})")
     # Surface the proposed diff + chosen file so a decline is debuggable in the console.
     result = dict(pr_result or {})
     result["target_file"] = path
+    if cut:
+        result["file_window"] = {"file_chars": len(content), "cap": cap, "anchor": anchor}
     if diff:
         result["proposed_diff"] = diff[:6000]
     return build_completion_payload(work_order, status, pr_url, detail, result)
