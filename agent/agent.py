@@ -95,6 +95,14 @@ REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remedia
 # provider) | degraded (ladder exhausted -> manual/high). CFOP-48: how often
 # each rung rescues a classification, so the ladder is tuned on data.
 REMEDIATION_CLASSIFIER = Counter('cfoperator_remediation_classifier_total', 'needs_action classifier outcomes', ['result'])
+
+# The classifier prompt's worked example. Deliberately a SAFE object — manual/
+# high, sub-gate confidence, no real repo — because the few-shot failure mode
+# of small local models is parroting the example, and a parroted example must
+# land needs-human, never auto-queue a PR (PR #134 review). Guarded by a test
+# that asserts this object can never clear the auto gate.
+_CLASSIFIER_SAFE_EXAMPLE = {"remediation_class": "manual", "risk": "high",
+                            "confidence": 0.4, "host": "", "repo": ""}
 REMEDIATION_SPAWNED = Counter('cfoperator_remediation_executor_spawned_total', 'Executor Jobs spawned by the drainer', ['result'])
 REMEDIATION_OUTCOME = Counter('cfoperator_remediation_outcome_total', 'Terminal remediation outcomes', ['outcome'])
 REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediations recovered from dead executor leases')
@@ -2365,14 +2373,18 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             return None
 
     def _classify_needs_action_recommendation(self, trigger: str, recommendation: str,
-                                              alert_info: Dict[str, Any]) -> Dict[str, Any]:
+                                              alert_info: Dict[str, Any],
+                                              report: str = '') -> Dict[str, Any]:
         """Classify a needs_action recommendation into queue hints (CFOP-46/48).
 
         A separate LLM call over the extracted recommendation — the
         investigation prompt itself stays untouched, so this cannot regress the
         load-bearing STATUS:/RECOMMENDATION: parsing. Shares the class rubric
         with the morning summary (_REMEDIATION_CLASS_RUBRIC) so there is one
-        definition of the classes.
+        definition of the classes. The classifier sees the trigger, labels,
+        recommendation, and an excerpt of the investigation's findings — not
+        the tool trace — so the prompt template carries real weight and its
+        worked example must never be an auto-eligible object.
 
         Failure escalates before it parks (CFOP-48 — the operator's direction
         is autonomy, with the human gate at the PR merge button):
@@ -2381,14 +2393,15 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
           2. unparseable -> nudge-retry: quote the malformed output back with a
              corrective message (the PR #76 pattern — recovered 19/19 there)
           3. still unparseable -> one attempt on the first provider in the
-             chain whose (backend, model) differs from the one that answered
+             chain whose (backend, model) has not already answered this ladder
           4. only then degrade to manual/high with no confidence — a
              needs-human row that can never clear the auto gate
 
-        A confidently-classified result is NOT capped: grounded in a real
-        investigation, it may clear the auto-execute gate (gitops-patch /
-        k8s-action, low risk, >=0.8) and open a PR unattended. Malformed output
-        is never salvaged into a classification — parse or degrade.
+        A confidently-classified result is NOT capped: it may clear the
+        auto-execute gate (gitops-patch / k8s-action, low risk, >=0.8) and open
+        a PR unattended — the mutation path stays a human-merge-gated PR.
+        Malformed output is never salvaged into a classification — parse or
+        degrade.
         """
         fallback = {'remediation_class': 'manual', 'risk': 'high',
                     'confidence': None, 'host': None, 'repo': None}
@@ -2400,16 +2413,19 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             '"risk": "low|med|high", "confidence": 0.0, '
             '"host": "affected host or empty", '
             '"repo": "owning GitOps repo slug or empty"}\n'
-            'Example of a complete, correct response:\n'
-            '{"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.85, '
-            '"host": "", "repo": "aachtenberg/homelab-infra"}\n\n'
+            "Example of a correctly FORMATTED response (the values here are "
+            "placeholders — judge the actual recommendation on its merits):\n"
+            f"{json.dumps(_CLASSIFIER_SAFE_EXAMPLE)}\n\n"
             f"{_REMEDIATION_CLASS_RUBRIC}"
             "Be conservative with risk."
         )
         labels = alert_info.get('labels') or (alert_info.get('details') or {}).get('labels') or {}
+        findings_part = (f"Investigation findings excerpt:\n{str(report)[:600]}\n"
+                         if str(report or '').strip() else "")
         user_msg = (
             f"Alert: {str(trigger)[:300]}\n"
             f"Labels: {json.dumps(labels, default=str)[:300]}\n"
+            f"{findings_part}"
             f"Recommendation: {str(recommendation)[:800]}\n\nClassify."
         )
         messages = [{'role': 'user', 'content': user_msg}]
@@ -2426,6 +2442,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if parsed is not None:
             REMEDIATION_CLASSIFIER.labels(result='ok').inc()
             return parsed
+        # Every (backend, model) that already answered this ladder with garbage.
+        # The fallback wrapper may itself have rotated (transport errors), so
+        # rung 3 must skip ALL of them, not just the first (PR #134 review).
+        answered = {(result.get('backend'), result.get('model'))}
 
         # Rung 2 — nudge: quote the malformed output back at the same chain.
         bad = str(result.get('response', ''))
@@ -2447,16 +2467,16 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             if parsed is not None:
                 REMEDIATION_CLASSIFIER.labels(result='nudged').inc()
                 return parsed
+            answered.add((retry.get('backend'), retry.get('model')))
         except Exception as e:
             logger.warning(f"Remediation classifier nudge retry failed: {e}")
 
-        # Rung 3 — escalate: first provider in the chain that is a different
-        # (backend, model) than the one that produced the bad output.
-        served = (result.get('backend'), result.get('model'))
+        # Rung 3 — escalate: first provider in the chain that has not already
+        # produced garbage on this ladder.
         try:
             other = next(((ptype, url, mname)
                           for ptype, url, mname in self._get_provider_chain('auto')
-                          if (ptype, mname) != served), None)
+                          if (ptype, mname) not in answered), None)
         except Exception:
             other = None
         if other is not None:
@@ -2489,11 +2509,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         an unknown class or risk is passed through for
         normalize_remediation_fields to default conservatively.
 
-        Confidence is clamped to [0, 1] but NOT capped below the auto gate
-        (CFOP-48): an investigation-path classification is grounded in a real
-        investigation, and a confident gitops-patch/k8s-action at low risk is
-        allowed to auto-queue and become a human-merge-gated PR. The summary
-        path keeps its own _SUMMARY_CONFIDENCE_CAP — hunches stay capped.
+        Confidence is NOT capped below the auto gate (CFOP-48): a confident
+        gitops-patch/k8s-action at low risk is allowed to auto-queue and become
+        a human-merge-gated PR. The summary path keeps its own
+        _SUMMARY_CONFIDENCE_CAP — hunches stay capped. A value above 1 means
+        the model ignored the 0–1 scale — the opposite of calibrated — so it
+        becomes None (cannot clear the gate), not a clamp to certainty
+        (PR #134 review). Negatives clamp to 0, which is harmless.
         """
         text = (response_text or '').strip()
         start, end = text.find('{'), text.rfind('}')
@@ -2506,7 +2528,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if not isinstance(payload, dict) or not payload.get('remediation_class'):
             return None
         conf = payload.get('confidence')
-        conf = min(max(float(conf), 0.0), 1.0) if isinstance(conf, (int, float)) else None
+        if isinstance(conf, (int, float)):
+            conf = max(float(conf), 0.0) if conf <= 1.0 else None
+        else:
+            conf = None
         return {
             'remediation_class': str(payload.get('remediation_class')),
             'risk': str(payload.get('risk') or 'high'),
@@ -2558,7 +2583,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             logger.info(f"Investigation #{investigation_id}: inline proposer already opened a PR; "
                         "not enqueuing a second driver for the same fix")
             return None
-        hints = self._classify_needs_action_recommendation(trigger, rec, alert_info)
+        hints = self._classify_needs_action_recommendation(trigger, rec, alert_info,
+                                                           report=response_text)
         details = dict(hints)
         if not details.get('host'):
             ai = alert_info or {}
