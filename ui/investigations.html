@@ -133,6 +133,17 @@ function remDrawerLine(r){
   if(prUrl) return `<div class="kv"><b>remediation</b> <a href="${esc(prUrl)}" target="_blank" rel="noopener noreferrer">PR opened ↗</a></div>`;
   return r.outcome==='needs_action' ? `<div class="kv"><b>remediation</b> <span class="muted">none proposed</span></div>` : '';
 }
+// Institutional-memory citations (CFOP-31): findings.similar_past records the
+// past investigations the orient phase actually fed into the prompt — a fact
+// about this run, not the LLM's prose. Ids link back into this page's drawer.
+function similarBlock(f){
+  const s=f.similar_past||[];
+  if(!s.length) return '';
+  return `<h3>Similar past investigations</h3>`+s.map(p=>
+    `<div class="kv">${p.id!=null?`<a href="#" onclick="event.preventDefault();detail(${Number(p.id)})">#${Number(p.id)}</a> `:''}`+
+    `${badge(p.outcome,OC[p.outcome]||'--text-muted')} ${esc((p.trigger||'').slice(0,110))}`+
+    `<span class="muted"> (similarity ${Number(p.similarity||0).toFixed(2)})</span></div>`).join('');
+}
 function paint(){
   const c={}; ALL.forEach(r=>c[r.outcome]=(c[r.outcome]||0)+1);
   const seen=OUTCOMES.filter(o=>c[o]);
@@ -168,6 +179,7 @@ async function detail(id){
     <div class="kv"><b>started</b> ${esc(r.started_at)}${r.completed_at?' · <b>completed</b> '+esc(r.completed_at):''}</div>
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
     ${remDrawerLine(r)}
+    ${similarBlock(f)}
     ${f.recommendation?`<h3>Recommendation</h3><pre>${esc(f.recommendation)}</pre>`:''}
     ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
     <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;

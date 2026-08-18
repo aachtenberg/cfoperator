@@ -1,0 +1,66 @@
+name: Demo e2e (kind)
+
+# CFOP-31: one fault, end to end, on a real kind cluster — per release, not
+# per PR (a ~20-minute job would double every PR's wall clock; tests.yml
+# stays the fast gate). The LLM is demo/ci/llm_stub.py: this job asserts
+# pipeline mechanics (fault -> firing alert -> Alertmanager poll -> triage ->
+# investigation recorded -> second investigation cites the first), which must
+# be deterministic; model quality has its own harness (benchmarks/).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kind-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Start the scripted LLM
+        # The compose default OLLAMA_URL is host.docker.internal:11434, which
+        # host-gateway maps to this runner — so the stub needs no compose
+        # changes, only the model name.
+        run: |
+          python3 demo/ci/llm_stub.py 11434 &
+          echo "OLLAMA_MODEL=demo-stub" >> "$GITHUB_ENV"
+          for i in $(seq 1 10); do
+            curl -fsS http://localhost:11434/api/tags >/dev/null && break
+            sleep 1
+          done
+
+      - name: Stand up the demo (kind + kube-prometheus-stack + compose)
+        run: demo/up.sh
+
+      - name: 'Fault 1: crashloop -> investigation'
+        run: |
+          demo/fault.sh crashloop
+          demo/ci/assert_pipeline.sh first 900
+
+      - name: 'Fault 2: same class -> cites the first (memory beat)'
+        run: |
+          demo/fault.sh clear
+          sleep 30
+          demo/fault.sh crashloop
+          demo/ci/assert_pipeline.sh cited 900
+
+      - name: Dump state on failure
+        if: failure()
+        run: |
+          docker compose -f docker-compose.yml -f demo/docker-compose.demo.yml logs --tail 300 agent event-runtime || true
+          KUBECONFIG=demo/.kube/host-config kubectl get pods -A || true
+          KUBECONFIG=demo/.kube/host-config kubectl -n demo-faults describe pods || true
+
+      - name: Tear down
+        if: always()
+        run: demo/down.sh

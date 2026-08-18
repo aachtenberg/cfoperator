@@ -1,0 +1,37 @@
+# kube-prometheus-stack values for the kind demo (CFOP-31).
+#
+# Lean on purpose: the demo needs Prometheus + Alertmanager + kube-state-metrics
+# (the fault alerts are KSM expressions). Grafana is off — CFOperator's console
+# is the point of the demo, and the chart boots minutes faster without it.
+#
+# NodePorts instead of port-forwards: the CFOperator containers sit on kind's
+# docker network, where <node-container>:<nodePort> is directly routable.
+# 15s intervals so a fault becomes a firing alert inside the 15-minute budget.
+
+grafana:
+  enabled: false
+
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30090
+  prometheusSpec:
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 2h
+    resources:
+      requests:
+        cpu: 100m
+        memory: 400Mi
+
+alertmanager:
+  service:
+    type: NodePort
+    nodePort: 30093
+  alertmanagerSpec:
+    # event_runtime polls the Alertmanager API; nothing routes to receivers.
+    # Short group_wait so a firing alert is visible to the poll immediately.
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi

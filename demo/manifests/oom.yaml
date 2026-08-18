@@ -1,0 +1,27 @@
+# Fault: OOMKill. Allocates memory in 1MiB shell-variable chunks against a
+# 32Mi limit until the kernel kills it. busybox only — no external stress
+# image to pull.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __NAME__
+  namespace: demo-faults
+  labels:
+    app: cfop-demo-fault
+    fault: oom
+spec:
+  restartPolicy: Always
+  containers:
+    - name: hog
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - 'a=""; while true; do a="$a$(head -c 1048576 /dev/zero | tr "\0" x)"; done'
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 200m
+          memory: 32Mi

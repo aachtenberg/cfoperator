@@ -1,0 +1,53 @@
+# Kind-demo override (CFOP-31). Layered over the trial compose:
+#
+#   docker compose -f docker-compose.yml -f demo/docker-compose.demo.yml up -d
+#
+# What it changes, and why:
+#
+# - Joins agent + event-runtime to kind's docker network, so the containers
+#   resolve the cluster node by name (cfop-demo-control-plane) and executor
+#   Jobs running *inside* kind can call back out to the agent through the
+#   `cfop-demo-agent` alias. No published ports beyond what the trial exposes.
+# - Points Prometheus/Alertmanager at the in-cluster kube-prometheus-stack
+#   NodePorts. CFOP_EVENT_RUNTIME_ALERTMANAGER_URL is the env that actually
+#   registers the Alertmanager poll source (event_runtime/bootstrap.py) —
+#   ALERTMANAGER_URL alone only informs the agent's config.
+# - Mounts the kubeconfig `demo/up.sh` writes (`kind get kubeconfig
+#   --internal`, so the server address resolves on the kind network) and sets
+#   KUBECONFIG; K8sTools shells out to kubectl, which honors it.
+# - CFOP_DEMO_CONFIG swaps in demo/config-remediate.yaml for the PR-loop
+#   variant; the default keeps the trial's read-only investigate profile.
+
+services:
+  agent:
+    environment:
+      KUBECONFIG: /demo/kubeconfig
+      PROMETHEUS_URL: http://cfop-demo-control-plane:30090
+      ALERTMANAGER_URL: http://cfop-demo-control-plane:30093
+      # Remediate variant only (ignored under profile: investigate): where
+      # executor Jobs run, how they reach back, and which repo they PR.
+      CFOP_EXECUTOR_NAMESPACE: cfop-demo
+      CFOP_EXECUTOR_COMPLETION_BASE_URL: http://cfop-demo-agent:8083/v1/remediations
+      CFOP_GIT_REPO: ${CFOP_GIT_REPO:-}
+    volumes:
+      - ${CFOP_DEMO_CONFIG:-./deploy/compose/config.yaml}:/app/config.yaml:ro
+      - shared-run:/shared:ro
+      - ./demo/.kube:/demo:ro
+    networks:
+      default: {}
+      kind:
+        aliases:
+          - cfop-demo-agent
+
+  event-runtime:
+    environment:
+      PROMETHEUS_URL: http://cfop-demo-control-plane:30090
+      ALERTMANAGER_URL: http://cfop-demo-control-plane:30093
+      CFOP_EVENT_RUNTIME_ALERTMANAGER_URL: http://cfop-demo-control-plane:30093
+    networks:
+      default: {}
+      kind: {}
+
+networks:
+  kind:
+    external: true

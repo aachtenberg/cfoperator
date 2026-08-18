@@ -806,6 +806,32 @@ class CFOperator:
 
         return context
 
+    @staticmethod
+    def _similar_past_citations(context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Trim the orient-phase similar-investigation hits for persistence.
+
+        The hits already went into the prompt, but a citation that lives only
+        in the prompt is invisible afterwards — whether the report mentions it
+        is up to the LLM. Persisting the hits into ``findings['similar_past']``
+        makes "this investigation was informed by these past ones" a recorded
+        fact the console and the kind demo can assert on (CFOP-31).
+        """
+        cited = []
+        for inv in (context.get('similar_investigations') or [])[:3]:
+            try:
+                cited.append({
+                    'id': inv.get('id'),
+                    'trigger': str(inv.get('trigger') or '')[:200],
+                    'outcome': inv.get('outcome'),
+                    'similarity': inv.get('similarity')
+                        or inv.get('combined_score')
+                        or inv.get('vector_similarity')
+                        or 0,
+                })
+            except AttributeError:
+                continue
+        return cited
+
     def run_investigation(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """Run one investigation end-to-end for a single alert dict.
 
@@ -1275,6 +1301,9 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 'provider': f"{provider_type}/{model}",
                 'recommendation': recommendation,
             }
+            similar_past = self._similar_past_citations(context)
+            if similar_past:
+                findings['similar_past'] = similar_past
             if verify_note:
                 findings['outcome_verification'] = verify_note
             if proposal is not None:

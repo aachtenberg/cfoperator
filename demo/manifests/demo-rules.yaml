@@ -1,0 +1,47 @@
+# Fast-firing alert rules for the demo faults (CFOP-31).
+#
+# The stock kube-prometheus-stack rules for these conditions wait 15 minutes
+# before firing — correct for production, useless for a 15-minute demo. These
+# fire in ~1 minute and are scoped to the demo-faults namespace so nothing
+# else in the cluster can trip them.
+#
+# The `release: kps` label is what the chart's default ruleSelector matches;
+# demo/up.sh installs the chart under that release name. Rename one, rename
+# both. Every alert carries namespace + pod labels (native to the KSM metrics)
+# so the agent's k8s probes know what to look at.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cfop-demo-faults
+  namespace: monitoring
+  labels:
+    release: kps
+spec:
+  groups:
+    - name: cfop-demo-faults
+      interval: 15s
+      rules:
+        - alert: DemoPodCrashLooping
+          expr: max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff", namespace="demo-faults"}[2m]) >= 1
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} is in CrashLoopBackOff'
+            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} is crash-looping.'
+        - alert: DemoPodUnschedulable
+          expr: kube_pod_status_unschedulable{namespace="demo-faults"} == 1
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} is unschedulable (Pending)'
+            description: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} cannot be scheduled onto any node.'
+        - alert: DemoPodOOMKilled
+          expr: max_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled", namespace="demo-faults"}[5m]) >= 1
+          for: 30s
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Pod {{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled'
+            description: 'Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} was killed for exceeding its memory limit.'

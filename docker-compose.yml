@@ -138,6 +138,10 @@ services:
       PROMETHEUS_URL: ${PROMETHEUS_URL:-http://host.docker.internal:9090}
       LOKI_URL: ${LOKI_URL:-}
       ALERTMANAGER_URL: ${ALERTMANAGER_URL:-}
+      # The poll source registers on this env specifically (bootstrap.py);
+      # ALERTMANAGER_URL alone only informs the agent's config, so without
+      # this line an .env ALERTMANAGER_URL silently never polled (CFOP-31).
+      CFOP_EVENT_RUNTIME_ALERTMANAGER_URL: ${ALERTMANAGER_URL:-}
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
