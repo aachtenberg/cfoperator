@@ -212,4 +212,7 @@ def test_run_diff_prompt_gets_the_window_not_the_head():
          patch.object(entrypoint, "list_repo_files", return_value=["k8s/base/apps/ollama.yaml"]), \
          patch.object(entrypoint, "get_file", return_value=big):
         run(_env(CFOP_REMEDIATION_JSON=json.dumps(order), CFOP_EXEC_MAX_FILE_CHARS="500"))
-    assert "CronJobNotSucceedingBackstop" in seen[1]  # pass-2 prompt contains the target region
+    # Assert on the FILE line, not the bare identifier — the recommendation text
+    # is substituted into the same prompt, so the bare token is always present
+    # and asserting on it would pass even against a head-truncated file.
+    assert "CronJobNotSucceedingBackstop: here" in seen[1]
