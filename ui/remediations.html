@@ -388,8 +388,12 @@ async function viewInvestigation(id){
     `<h3>Investigation #${id} — ${esc(inv.outcome)}</h3><pre>${esc(JSON.stringify(inv.findings,null,2))}</pre>`;
 }
 
+// Deep link from /investigations: /remediations#42 opens that row's drawer.
+function openFromHash(){ const m=location.hash.match(/^#(\d+)$/); if(m) detail(+m[1]); }
+window.addEventListener('hashchange', openFromHash);
+
 loadFlags();
-load(); setInterval(()=>{ load(); loadFlags(); }, 15000);
+load().then(openFromHash); setInterval(()=>{ load(); loadFlags(); }, 15000);
 </script>
 </body>
 </html>

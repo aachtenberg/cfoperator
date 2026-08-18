@@ -3396,9 +3396,12 @@ class KnowledgeBase:
         the queue is the single ledger of everything that wants doing. Unknown
         classes fall back to 'manual'.
 
-        ``dedupe_key`` (also stored in ``payload``) suppresses duplicates: if a
-        non-terminal row already carries the same key, returns None instead of
-        enqueuing again — so a recurring sweep finding doesn't pile up daily.
+        ``dedupe_key`` suppresses duplicates: if a non-terminal row already
+        carries the same key, returns None instead of enqueuing again — so a
+        recurring sweep finding doesn't pile up daily. The match runs against
+        ``payload['dedupe_key']``, which this function does NOT inject — the
+        caller must put the key in the payload as well as the kwarg, or the
+        key silently never matches anything.
         """
         remediation_class, risk = normalize_remediation_fields(remediation_class, risk)
         status = 'queued' if remediation_is_auto_eligible(
@@ -3431,6 +3434,24 @@ class KnowledgeBase:
                  remediation_class=remediation_class, risk=risk,
                  confidence=confidence, status=status)
             return queue_id
+
+    def find_open_remediation_by_dedupe_key(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
+        """Return the non-terminal remediation row carrying ``dedupe_key``, or None.
+
+        The read half of the dedupe contract above: lets a feed ask "is this
+        problem already on the worklist?" before dispatching another
+        investigation for it (CFOP-46 part D). Same terminal-state semantics
+        as the enqueue-side suppression — a resolved/rejected row does not
+        match, so a genuine recurrence is investigated again.
+        """
+        if not dedupe_key:
+            return None
+        with self.session_scope() as session:
+            row = session.query(RemediationQueue).filter(
+                RemediationQueue.status.notin_(('resolved', 'rejected')),
+                RemediationQueue.payload['dedupe_key'].astext == dedupe_key,
+            ).first()
+            return remediation_row_dict(row) if row else None
 
     def claim_next_remediation(
         self,
