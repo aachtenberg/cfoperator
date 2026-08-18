@@ -794,10 +794,15 @@ def _console_client():
     import os
     import threading as _t
 
+    from knowledge_base import KnowledgeBase
+
     operator = MagicMock()
     operator.kb.update_remediation_status.return_value = True
     operator.kb.get_remediation.return_value = {"id": 7, "status": "resolved"}
     operator.kb.reclassify_remediation.return_value = {"id": 7, "status": "queued"}
+    # Real policy, not a truthy Mock — a bare MagicMock here would make the
+    # approve handler 409 every row and silently invert what these tests see.
+    operator.kb.remediation_approve_conflict = KnowledgeBase.remediation_approve_conflict
     operator._REMEDIATION_FLAGS = ("queue_feed", "queue_drain")
     server = WebServer.__new__(WebServer)
     server.operator = operator
@@ -1303,3 +1308,36 @@ def test_kb_method_delegates_to_policy():
         {"remediation_class": "manual"}) is not None
     assert KnowledgeBase.remediation_approve_conflict(
         {"remediation_class": "gitops-patch"}) is None
+
+
+def test_approve_endpoint_refuses_manual_rows_over_http():
+    # The live defect was an HTTP POST (PR #135 review) — pin the handler, not
+    # only the policy: 409 + reason + action hint, and no status write.
+    client, op = _console_client()
+    op.kb.get_remediation.return_value = {"id": 7, "status": "needs-human",
+                                          "remediation_class": "manual"}
+    resp = client.post("/api/remediations/7/approve")
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["action"] == "reclassify"
+    assert "Reclassify" in body["error"] and "Resolve" in body["error"]
+    assert body["remediation_class"] == "manual"
+    op.kb.update_remediation_status.assert_not_called()
+
+
+def test_approve_endpoint_queues_mechanizable_rows_over_http():
+    # Row #42 after its reclassify — the happy path the refusal must not eat.
+    client, op = _console_client()
+    op.kb.get_remediation.return_value = {"id": 7, "status": "needs-human",
+                                          "remediation_class": "gitops-patch"}
+    resp = client.post("/api/remediations/7/approve")
+    assert resp.status_code == 200
+    op.kb.update_remediation_status.assert_called_once_with(7, "queued")
+
+
+def test_approve_endpoint_404_when_row_missing():
+    client, op = _console_client()
+    op.kb.get_remediation.return_value = None
+    resp = client.post("/api/remediations/7/approve")
+    assert resp.status_code == 404
+    op.kb.update_remediation_status.assert_not_called()

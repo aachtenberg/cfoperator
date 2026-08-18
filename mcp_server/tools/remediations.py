@@ -32,6 +32,10 @@ def register(mcp, client, settings):
     async def approve_remediation(remediation_id: int) -> dict:
         """Approve a remediation: hands the row to the executor (status -> queued).
 
+        Refused with 409/conflict for manual-class rows — human-only work has
+        nothing for the executor to mechanize. Reclassify it first
+        (gitops-patch / k8s-action / node-action) or resolve it by hand.
+
         Requires scope: remediate.
         """
         return await guarded(
