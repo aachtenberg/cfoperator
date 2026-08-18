@@ -451,6 +451,29 @@ def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence) 
     )
 
 
+def _investigation_remediation_id(findings) -> Optional[int]:
+    """The queue row an investigation's needs_action fed (or deduped onto)."""
+    f = findings if isinstance(findings, dict) else {}
+    rid = f.get('remediation_id')
+    return rid if isinstance(rid, int) else None
+
+
+def _investigation_remediation_pr_url(findings) -> Optional[str]:
+    """URL of an inline-proposer PR opened for this investigation, or None.
+
+    The inline unschedulable-pod path opens its PR directly and deliberately
+    skips the queue (one fix, one driver) — the only trace is
+    findings.remediation_proposal.remediation_pr. Surfacing it keeps the
+    console's explicit "none proposed" copy true.
+    """
+    f = findings if isinstance(findings, dict) else {}
+    prop = f.get('remediation_proposal')
+    pr = prop.get('remediation_pr') if isinstance(prop, dict) else None
+    if isinstance(pr, dict) and pr.get('status') == 'opened' and pr.get('html_url'):
+        return str(pr['html_url'])
+    return None
+
+
 def remediation_row_dict(r) -> Dict[str, Any]:
     """Serialize a RemediationQueue row for the read API / operator console."""
     return {
@@ -2213,7 +2236,12 @@ class KnowledgeBase:
                     "trigger": inv.trigger,
                     "outcome": inv.outcome,
                     "duration_seconds": inv.duration_seconds,
-                    "tool_calls_count": inv.tool_calls_count
+                    "tool_calls_count": inv.tool_calls_count,
+                    # Where the recommendation went (CFOP-46): a queue row id,
+                    # and/or the inline proposer's PR — so the console list can
+                    # say "none" only when neither exists.
+                    "remediation_id": _investigation_remediation_id(inv.findings),
+                    "remediation_pr_url": _investigation_remediation_pr_url(inv.findings),
                 }
                 for inv in investigations
             ]
@@ -3396,9 +3424,12 @@ class KnowledgeBase:
         the queue is the single ledger of everything that wants doing. Unknown
         classes fall back to 'manual'.
 
-        ``dedupe_key`` (also stored in ``payload``) suppresses duplicates: if a
-        non-terminal row already carries the same key, returns None instead of
-        enqueuing again — so a recurring sweep finding doesn't pile up daily.
+        ``dedupe_key`` suppresses duplicates: if a non-terminal row already
+        carries the same key, returns None instead of enqueuing again — so a
+        recurring sweep finding doesn't pile up daily. The match runs against
+        ``payload['dedupe_key']``, which this function does NOT inject — the
+        caller must put the key in the payload as well as the kwarg, or the
+        key silently never matches anything.
         """
         remediation_class, risk = normalize_remediation_fields(remediation_class, risk)
         status = 'queued' if remediation_is_auto_eligible(
@@ -3431,6 +3462,24 @@ class KnowledgeBase:
                  remediation_class=remediation_class, risk=risk,
                  confidence=confidence, status=status)
             return queue_id
+
+    def find_open_remediation_by_dedupe_key(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
+        """Return the non-terminal remediation row carrying ``dedupe_key``, or None.
+
+        The read half of the dedupe contract above: lets a feed ask "is this
+        problem already on the worklist?" before dispatching another
+        investigation for it (CFOP-46 part D). Same terminal-state semantics
+        as the enqueue-side suppression — a resolved/rejected row does not
+        match, so a genuine recurrence is investigated again.
+        """
+        if not dedupe_key:
+            return None
+        with self.session_scope() as session:
+            row = session.query(RemediationQueue).filter(
+                RemediationQueue.status.notin_(('resolved', 'rejected')),
+                RemediationQueue.payload['dedupe_key'].astext == dedupe_key,
+            ).first()
+            return remediation_row_dict(row) if row else None
 
     def claim_next_remediation(
         self,

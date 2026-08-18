@@ -117,6 +117,25 @@ _HUMAN_ONLY_SHAPED = re.compile(
     r'\b(physically|hardware|power\s+supply|power\s+strip|sd\s+card|'
     r'replace|swap\s+it|wiring|console|hard-?cycle)\b', re.I)
 
+# The one definition of what the remediation classes mean. Shared verbatim by
+# the morning-summary prompt and the needs_action recommendation classifier so
+# the two feeds cannot drift apart on what "gitops-patch" or "manual" covers.
+_REMEDIATION_CLASS_RUBRIC = (
+    "Classify remediation_class honestly:\n"
+    "- investigate: the next step is to GATHER EVIDENCE you can collect "
+    "yourself — check pod/job logs, query metrics/Loki, confirm an endpoint "
+    "responds, look for a pattern. PREFER THIS over manual for anything "
+    "'check/verify/confirm/investigate/monitor'; the agent will investigate "
+    "autonomously rather than ask a human.\n"
+    "- gitops-patch: a single manifest change in a GitOps repo (set repo: "
+    "aachtenberg/homelab-infra for cluster apps, aachtenberg/cfoperator-deploy "
+    "for cfoperator/event-runtime itself).\n"
+    "- k8s-action: a reversible in-cluster verb (rollout restart, delete pod).\n"
+    "- node-action: a host change over ssh/ansible (DNS, files, systemd).\n"
+    "- manual: genuinely needs a human's hands or judgement (hardware, wiring, "
+    "a risky decision) — NOT something you could investigate first.\n"
+)
+
 # Triggers that describe a *recoverable* runtime condition — if the pod is
 # healthy now, the thing the alert worried about has cleared. Used by the
 # Tier-1 noise filter (early-exit + needs_action downgrade). See
@@ -1228,6 +1247,16 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # reason (see remediation.py + the design doc).
             proposal = self._maybe_propose_remediation(outcome, alert_info, trigger)
 
+            # CFOP-46: a needs_action recommendation must land somewhere
+            # actionable, not dead-end in a read-only list. Classify it (cheap
+            # one-shot call) and enqueue through the existing queue gates; the
+            # row links back here via investigation_id and lands needs-human.
+            remediation_id = None
+            if outcome == 'needs_action':
+                remediation_id = self._queue_needs_action_remediation(
+                    inv_id, trigger, alert_info, recommendation, response_text,
+                    provider=f"{provider_type}/{model}", proposal=proposal)
+
             findings = {
                 'response': response_text[:5000],
                 'tool_calls': tool_calls_count,
@@ -1238,6 +1267,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 findings['outcome_verification'] = verify_note
             if proposal is not None:
                 findings['remediation_proposal'] = proposal.to_details()
+            if remediation_id:
+                findings['remediation_id'] = remediation_id
 
             # Update investigation record
             self.kb.update_investigation(
@@ -1272,6 +1303,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 details['remediation'] = recommendation
             if proposal is not None:
                 details['remediation_proposal'] = proposal.to_details()
+            if remediation_id:
+                details['remediation_id'] = remediation_id
             return self._build_action_result(
                 success=outcome != 'failed',
                 message=message,
@@ -2276,6 +2309,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
 
         Off unless ``remediation.queue_feed`` is set. No-op when the investigator
         didn't classify the recommendation (no ``remediation_class``).
+
+        ``details.dedupe_key`` (optional) suppresses duplicates while an earlier
+        row for the same underlying problem is still open. It must land in both
+        the ``queue_remediation`` kwarg and the payload — the KB filters on
+        ``payload['dedupe_key']`` and does not inject it itself.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_feed'):
@@ -2285,6 +2323,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             return None
         risk = str(details.get('risk') or 'high')
         confidence = details.get('confidence')
+        dedupe_key = str(details.get('dedupe_key') or '') or None
         payload = {
             'recommendation': str(details.get('recommendation') or ''),
             'rendered_context': str(details.get('report') or '')[:5000],
@@ -2295,6 +2334,14 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         provider = details.get('provider')
         if provider:
             payload['provider'] = str(provider)
+        repo = str(details.get('repo') or '').strip()
+        if repo:
+            payload['repo'] = repo
+        source = str(details.get('source') or 'deep-investigation')
+        if details.get('source'):
+            payload['source'] = source
+        if dedupe_key:
+            payload['dedupe_key'] = dedupe_key
         try:
             rid = self.kb.queue_remediation(
                 remediation_class=str(rclass),
@@ -2303,16 +2350,192 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 host_id=str(details.get('host') or 'default'),
                 risk=risk,
                 confidence=confidence,
+                dedupe_key=dedupe_key,
             )
             if rid:
-                self._count_enqueued('deep-investigation', str(rclass), risk, confidence)
+                self._count_enqueued(source, str(rclass), risk, confidence)
             return rid
         except Exception as e:
             logger.error(f"Failed to queue remediation from investigation #{investigation_id}: {e}",
                          exc_info=True)
             return None
 
+    def _classify_needs_action_recommendation(self, trigger: str, recommendation: str,
+                                              alert_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Classify a needs_action recommendation into queue hints (CFOP-46).
+
+        A separate one-shot LLM call over the extracted recommendation — the
+        investigation prompt itself stays untouched, so this cannot regress the
+        load-bearing STATUS:/RECOMMENDATION: parsing. Shares the class rubric
+        with the morning summary (_REMEDIATION_CLASS_RUBRIC) so there is one
+        definition of the classes.
+
+        Degrades downward: any failure (LLM unreachable, unparseable output)
+        returns manual/high with no confidence — a needs-human row, never
+        auto-eligible. Confidence is capped at _SUMMARY_CONFIDENCE_CAP for the
+        same reason as the summary path: a cheap classifier's self-reported
+        confidence must not clear the auto-execute gate.
+        """
+        fallback = {'remediation_class': 'manual', 'risk': 'high',
+                    'confidence': None, 'host': None, 'repo': None}
+        system_prompt = (
+            "You classify one infrastructure fix recommendation for a remediation "
+            "queue. Respond ONLY with a JSON object, no other text:\n"
+            '{"remediation_class": "gitops-patch|k8s-action|node-action|investigate|manual", '
+            '"risk": "low|med|high", "confidence": 0.0, '
+            '"host": "affected host or empty", '
+            '"repo": "owning GitOps repo slug or empty"}\n\n'
+            f"{_REMEDIATION_CLASS_RUBRIC}"
+            "Be conservative with risk."
+        )
+        labels = alert_info.get('labels') or (alert_info.get('details') or {}).get('labels') or {}
+        user_msg = (
+            f"Alert: {str(trigger)[:300]}\n"
+            f"Labels: {json.dumps(labels, default=str)[:300]}\n"
+            f"Recommendation: {str(recommendation)[:800]}\n\nClassify."
+        )
+        try:
+            result = self._chat_with_tools_with_fallback(
+                messages=[{'role': 'user', 'content': user_msg}],
+                system_context=system_prompt,
+                max_iterations=1,  # one-shot classification — no tool loop
+            )
+        except Exception as e:
+            logger.warning(f"Remediation classifier LLM unavailable, degrading to manual/high: {e}")
+            return fallback
+        parsed = self._parse_remediation_classification(result.get('response', ''))
+        if parsed is None:
+            logger.warning("Remediation classifier returned unparseable output, "
+                           f"degrading to manual/high: {str(result.get('response', ''))[:200]}")
+            return fallback
+        return parsed
+
+    @staticmethod
+    def _parse_remediation_classification(response_text: str) -> Optional[Dict[str, Any]]:
+        """Extract classification hints from raw classifier output, or None.
+
+        Tolerates markdown fences and surrounding prose (same posture as
+        _parse_triage_response). Values are only coerced, never invented:
+        an unknown class or risk is passed through for
+        normalize_remediation_fields to default conservatively.
+        """
+        text = (response_text or '').strip()
+        start, end = text.find('{'), text.rfind('}')
+        if start == -1 or end <= start:
+            return None
+        try:
+            payload = json.loads(text[start:end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict) or not payload.get('remediation_class'):
+            return None
+        conf = payload.get('confidence')
+        conf = min(float(conf), _SUMMARY_CONFIDENCE_CAP) if isinstance(conf, (int, float)) else None
+        return {
+            'remediation_class': str(payload.get('remediation_class')),
+            'risk': str(payload.get('risk') or 'high'),
+            'confidence': conf,
+            'host': (str(payload.get('host') or '').strip() or None),
+            'repo': (str(payload.get('repo') or '').strip() or None),
+        }
+
+    @staticmethod
+    def _investigation_dedupe_key(alert_info: Dict[str, Any], recommendation: str) -> str:
+        """Stable dedupe key for a needs_action enqueue (CFOP-46 part C).
+
+        Precedence: a dispatch-stamped key (summary/sweep re-dispatch loop
+        breaking) > the Alertmanager fingerprint (stable per firing labelset —
+        collapses the six differently-worded Celery investigations) > a hash
+        over normalized (host, recommendation) for manually-triggered
+        investigations that have no alert behind them.
+        """
+        ai = alert_info or {}
+        stamped = str(ai.get('dedupe_key') or '').strip()
+        if stamped:
+            return stamped
+        fingerprint = str(ai.get('fingerprint') or '').strip()
+        if fingerprint:
+            return f"alert-{fingerprint}"
+        labels = ai.get('labels') or (ai.get('details') or {}).get('labels') or {}
+        host = str(ai.get('host') or labels.get('instance') or labels.get('node') or '')
+        basis = re.sub(r'\s+', ' ', f"{host}|{recommendation}".lower()).strip()
+        return 'inv-' + hashlib.sha1(basis.encode('utf-8')).hexdigest()[:16]
+
+    def _queue_needs_action_remediation(self, investigation_id: int, trigger: str,
+                                        alert_info: Dict[str, Any], recommendation: str,
+                                        response_text: str, provider: str,
+                                        proposal=None) -> Optional[int]:
+        """Route a needs_action investigation's recommendation into the queue.
+
+        The missing feed from CFOP-46: classify the recommendation (cheap
+        one-shot call), then enqueue through the existing gates. Skipped when
+        the inline unschedulable-pod proposer already opened a PR for this
+        investigation — one fix must not get two drivers; a decline still
+        enqueues. Empty / "no action" recommendations enqueue nothing.
+        """
+        if not self._remediation_flag('queue_feed'):
+            return None
+        rec = str(recommendation or '').strip()
+        if not rec or rec.lower().startswith('no action') or rec.lower() in ('none', 'n/a', 'nothing'):
+            return None
+        if proposal is not None and (getattr(proposal, 'pr_result', None) or {}).get('status') == 'opened':
+            logger.info(f"Investigation #{investigation_id}: inline proposer already opened a PR; "
+                        "not enqueuing a second driver for the same fix")
+            return None
+        hints = self._classify_needs_action_recommendation(trigger, rec, alert_info)
+        details = dict(hints)
+        if not details.get('host'):
+            ai = alert_info or {}
+            labels = ai.get('labels') or (ai.get('details') or {}).get('labels') or {}
+            details['host'] = ai.get('host') or labels.get('instance') or labels.get('node')
+        details.update({
+            'recommendation': rec,
+            'report': response_text,
+            'provider': provider,
+            'source': 'investigation',
+            'dedupe_key': self._investigation_dedupe_key(alert_info, rec),
+        })
+        rid = self._maybe_queue_remediation(investigation_id, details)
+        if rid:
+            logger.info(f"Investigation #{investigation_id} needs_action -> remediation #{rid} "
+                        f"({details.get('remediation_class')}, risk={details.get('risk')})")
+            return rid
+        # Deduped (or enqueue failed): a repeat firing must still link to the
+        # open row covering it, or the console shows "none proposed" while the
+        # row sits on the worklist under the first investigation's id.
+        existing = self._open_remediation_for_key(details['dedupe_key'])
+        if existing:
+            logger.info(f"Investigation #{investigation_id} needs_action deduped onto "
+                        f"open remediation #{existing.get('id')}")
+            return existing.get('id')
+        return None
+
     _SEVERITY_RISK = {'critical': 'high', 'warning': 'med', 'info': 'low'}
+
+    @staticmethod
+    def _dispatch_dedupe_key(host: str, title: str) -> str:
+        """Stable key for a summary/sweep-dispatched investigation (CFOP-46 D).
+
+        Slug over (host, finding title) — the two fields that identify the
+        underlying problem across mornings, unlike the per-run sweep finding id
+        or the reworded recommendation text. Stamped into the dispatched alert
+        so the eventual needs_action enqueue carries it, which is what lets the
+        next morning's feed see "already handled" and stop re-investigating.
+        """
+        slug = re.sub(r'[^a-z0-9]+', '-', f"{host} {title}".lower()).strip('-')[:80]
+        return f"inv-dispatch-{slug}"
+
+    def _open_remediation_for_key(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
+        """Non-terminal remediation row carrying this dedupe key, or None.
+
+        Fails open (None) on any KB error: dispatching an investigation is the
+        long-standing behavior, suppression is the optimization.
+        """
+        try:
+            return self.kb.find_open_remediation_by_dedupe_key(dedupe_key)
+        except Exception as e:
+            logger.warning(f"Could not check open remediations for '{dedupe_key}': {e}")
+            return None
 
     @staticmethod
     def _recommendation_is_investigate_shaped(text: str) -> bool:
@@ -2352,11 +2575,27 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 finding = str(f.get('finding') or '').strip()
                 title = finding or rec[:80]
                 if self._recommendation_is_investigate_shaped(rec):
+                    # CFOP-46 D: investigate once. If an earlier dispatch of
+                    # this problem landed needs_action, its remediation row is
+                    # still open under this key — re-gathering the same
+                    # evidence IS the loop. Terminal rows (resolved/rejected)
+                    # re-admit a genuine recurrence.
+                    host = f.get('resource_name') or f.get('namespace') or ''
+                    dispatch_key = self._dispatch_dedupe_key(host, title)
+                    open_row = self._open_remediation_for_key(dispatch_key)
+                    if open_row:
+                        logger.info(
+                            f"Skipping re-investigation of '{title}': remediation "
+                            f"#{open_row.get('id')} (investigation "
+                            f"#{open_row.get('investigation_id')}) is still open")
+                        handled += 1
+                        continue
                     try:
                         self.enqueue_investigation({
                             'summary': f"{title}: {rec}"[:300],
                             'source': 'sweep-investigate',
-                            'host': f.get('resource_name') or f.get('namespace') or '',
+                            'host': host,
+                            'dedupe_key': dispatch_key,
                         })
                         dispatched += 1
                         handled += 1
@@ -2479,6 +2718,17 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 or (rclass == 'manual' and self._recommendation_is_investigate_shaped(rec))
             )
             if route_investigate:
+                # CFOP-46 D: same loop-break as the sweep path — an open
+                # remediation row under this key means an earlier dispatch
+                # already landed needs_action; don't re-gather the evidence.
+                dispatch_key = self._dispatch_dedupe_key(str(r.get('host') or ''), title)
+                open_row = self._open_remediation_for_key(dispatch_key)
+                if open_row:
+                    logger.info(
+                        f"Skipping re-investigation of '{title}': remediation "
+                        f"#{open_row.get('id')} (investigation "
+                        f"#{open_row.get('investigation_id')}) is still open")
+                    continue
                 try:
                     # Preserve mutation-class proposals for the investigator;
                     # investigate / mislabelled-manual get no suffix.
@@ -2486,7 +2736,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                               if rclass in _SUMMARY_MUTATION_CLASSES else '')
                     self.enqueue_investigation({'summary': f"{title}: {rec}{suffix}"[:300],
                                                 'source': 'summary-investigate',
-                                                'host': r.get('host')})
+                                                'host': r.get('host'),
+                                                'dedupe_key': dispatch_key})
                     dispatched += 1
                 except Exception as e:
                     logger.warning(f"could not dispatch investigation for '{title}': {e}")
@@ -6031,19 +6282,7 @@ IMPORTANT:
             f'"risk": "low|med|high", "confidence": 0.0, '
             f'"repo": "owning GitOps repo slug or empty"}}]}}\n'
             f"```\n"
-            f"Classify remediation_class honestly:\n"
-            f"- investigate: the next step is to GATHER EVIDENCE you can collect "
-            f"yourself — check pod/job logs, query metrics/Loki, confirm an endpoint "
-            f"responds, look for a pattern. PREFER THIS over manual for anything "
-            f"'check/verify/confirm/investigate/monitor'; the agent will investigate "
-            f"autonomously rather than ask a human.\n"
-            f"- gitops-patch: a single manifest change in a GitOps repo (set repo: "
-            f"aachtenberg/homelab-infra for cluster apps, aachtenberg/cfoperator-deploy "
-            f"for cfoperator/event-runtime itself).\n"
-            f"- k8s-action: a reversible in-cluster verb (rollout restart, delete pod).\n"
-            f"- node-action: a host change over ssh/ansible (DNS, files, systemd).\n"
-            f"- manual: genuinely needs a human's hands or judgement (hardware, wiring, "
-            f"a risky decision) — NOT something you could investigate first.\n"
+            f"{_REMEDIATION_CLASS_RUBRIC}"
             f"Be conservative with risk."
         )
 

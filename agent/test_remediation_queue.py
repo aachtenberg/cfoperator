@@ -527,6 +527,12 @@ def _feed_op(feed=True):
     op._parse_summary_recommendations = CFOperator._parse_summary_recommendations
     op._recommendation_is_investigate_shaped = CFOperator._recommendation_is_investigate_shaped
     op._feed_remediations_from_sweeps = lambda reports: CFOperator._feed_remediations_from_sweeps(op, reports)
+    # CFOP-46 loop-break: default to "no open remediation" so dispatch tests
+    # exercise the dispatch path; a bare MagicMock (truthy) would silently skip
+    # every dispatch and pass tests that no longer guard anything.
+    op._dispatch_dedupe_key = CFOperator._dispatch_dedupe_key
+    op._open_remediation_for_key = lambda key: CFOperator._open_remediation_for_key(op, key)
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
     return _wire_flags(op)
 
 
@@ -969,3 +975,207 @@ def test_store_deep_investigation_stamps_provider_and_pr_attempt():
     assert args[1]["pr_attempt"]["status"] == "declined"
     assert "single-file" in args[1]["pr_attempt"]["detail"]
     assert kwargs.get("pr_url") is None
+
+
+# ---- CFOP-46: needs_action investigations feed the queue ----------------------
+
+
+def _na_op(feed=True):
+    """Op wired for _queue_needs_action_remediation with the real queue helpers."""
+    op = _wire_flags(MagicMock())
+    op.config = {"remediation": {"queue_feed": feed}}
+    op.kb.queue_remediation.return_value = 9
+    op._count_enqueued = MagicMock()
+    op._investigation_dedupe_key = CFOperator._investigation_dedupe_key
+    op._maybe_queue_remediation = lambda inv_id, details: CFOperator._maybe_queue_remediation(
+        op, inv_id, details)
+    op._queue_needs_action_remediation = lambda *a, **k: CFOperator._queue_needs_action_remediation(
+        op, *a, **k)
+    op._open_remediation_for_key = lambda key: CFOperator._open_remediation_for_key(op, key)
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    return op
+
+
+def test_needs_action_enqueues_with_dedupe_key_in_both_places():
+    op = _na_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.5,
+        "host": None, "repo": "aachtenberg/homelab-infra"})
+    alert = {"fingerprint": "abc123", "labels": {"instance": "raspberrypi5"}}
+    rid = op._queue_needs_action_remediation(
+        2195, "Promtail OOM", alert, "raise memory limit to 512Mi", "report text",
+        provider="ollama/gemma4:26b")
+    assert rid == 9
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["remediation_class"] == "gitops-patch"
+    assert kw["investigation_id"] == 2195
+    # The KB filters on payload['dedupe_key'] and does NOT inject it: the key
+    # must be in both the kwarg and the payload or dedupe silently never fires.
+    assert kw["dedupe_key"] == "alert-abc123"
+    assert kw["payload"]["dedupe_key"] == "alert-abc123"
+    assert kw["payload"]["provider"] == "ollama/gemma4:26b"
+    assert kw["payload"]["repo"] == "aachtenberg/homelab-infra"
+    assert kw["payload"]["source"] == "investigation"
+    assert kw["host_id"] == "raspberrypi5"  # from alert labels when the classifier gives none
+    op._count_enqueued.assert_called_once_with("investigation", "gitops-patch", "low", 0.5)
+
+
+def test_needs_action_skips_empty_no_action_and_opened_pr():
+    op = _na_op()
+    op._classify_needs_action_recommendation = MagicMock()
+    assert op._queue_needs_action_remediation(1, "t", {}, "", "r", provider="p") is None
+    assert op._queue_needs_action_remediation(1, "t", {}, "No action needed", "r", provider="p") is None
+    # inline unschedulable-pod proposer already opened a PR -> one fix, one driver
+    prop = MagicMock()
+    prop.pr_result = {"status": "opened", "html_url": "https://x"}
+    assert op._queue_needs_action_remediation(1, "t", {}, "fix it", "r",
+                                              provider="p", proposal=prop) is None
+    op._classify_needs_action_recommendation.assert_not_called()
+    op.kb.queue_remediation.assert_not_called()
+    # a *declined* inline proposal must still enqueue
+    op._classify_needs_action_recommendation.return_value = {
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": None, "repo": None}
+    declined = MagicMock()
+    declined.pr_result = None
+    assert op._queue_needs_action_remediation(1, "t", {}, "fix it", "r",
+                                              provider="p", proposal=declined) == 9
+
+
+def test_needs_action_flag_off_spends_no_llm_call():
+    op = _na_op(feed=False)
+    op._classify_needs_action_recommendation = MagicMock()
+    assert op._queue_needs_action_remediation(1, "t", {}, "fix it", "r", provider="p") is None
+    op._classify_needs_action_recommendation.assert_not_called()
+    op.kb.queue_remediation.assert_not_called()
+
+
+def test_classifier_llm_failure_degrades_to_needs_human():
+    op = MagicMock()
+    op._chat_with_tools_with_fallback = MagicMock(side_effect=RuntimeError("no providers"))
+    hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
+    assert hints == {"remediation_class": "manual", "risk": "high",
+                     "confidence": None, "host": None, "repo": None}
+    # and that degraded row can never clear the auto-execute gate
+    nc, nr = normalize_remediation_fields(hints["remediation_class"], hints["risk"])
+    assert remediation_is_auto_eligible(nc, nr, hints["confidence"]) is False
+
+
+def test_classifier_unparseable_degrades_to_needs_human():
+    op = MagicMock()
+    op._parse_remediation_classification = CFOperator._parse_remediation_classification
+    op._chat_with_tools_with_fallback = MagicMock(
+        return_value={"response": "sure, sounds like a config problem to me"})
+    hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
+    assert hints["remediation_class"] == "manual"
+    assert hints["risk"] == "high"
+    assert hints["confidence"] is None
+
+
+def test_parse_remediation_classification():
+    parse = CFOperator._parse_remediation_classification
+    out = parse('```json\n{"remediation_class": "gitops-patch", "risk": "low", '
+                '"confidence": 0.9, "host": "pi5", "repo": "o/r"}\n```')
+    assert out["remediation_class"] == "gitops-patch"
+    # capped: a cheap text-only classifier's self-reported confidence must not
+    # clear the >= 0.8 auto gate, so needs-human is the landing state by construction
+    assert out["confidence"] == _SUMMARY_CONFIDENCE_CAP
+    assert out["host"] == "pi5" and out["repo"] == "o/r"
+    assert parse("no json here") is None
+    assert parse('{"risk": "low"}') is None  # class is mandatory
+    # unknown/other classes pass through for normalize_remediation_fields to default
+    assert parse('{"remediation_class": "investigate"}')["remediation_class"] == "investigate"
+
+
+def test_investigation_dedupe_key_precedence_and_stability():
+    key = CFOperator._investigation_dedupe_key
+    # dispatch stamp (summary/sweep loop-break) wins over everything
+    assert key({"dedupe_key": "inv-dispatch-x", "fingerprint": "f"}, "rec") == "inv-dispatch-x"
+    # then the Alertmanager fingerprint: stable per firing labelset, so six
+    # differently-worded investigations of one alert collapse to one row
+    assert key({"fingerprint": "f00d"}, "rec") == "alert-f00d"
+    # no-alert fallback: stable, whitespace/case-insensitive, host-sensitive
+    a = key({"labels": {"instance": "pi5"}}, "Raise  Memory Limit")
+    b = key({"labels": {"instance": "pi5"}}, "raise memory limit")
+    assert a == b and a.startswith("inv-")
+    assert key({"labels": {"instance": "pi4"}}, "raise memory limit") != a
+
+
+def test_feed_from_sweeps_skips_when_remediation_open():
+    op = _feed_op()
+    op.kb.find_open_remediation_by_dedupe_key.return_value = {"id": 44, "investigation_id": 2195}
+    reports = [{"findings": [
+        {"id": "f1", "finding": "Promtail OOM", "remediation": "Check promtail memory usage",
+         "severity": "warning", "resource_name": "promtail"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1  # handled, not re-dispatched
+    op.enqueue_investigation.assert_not_called()
+    op.kb.queue_remediation.assert_not_called()
+
+
+def test_feed_from_sweeps_stamps_dispatch_key():
+    op = _feed_op()
+    reports = [{"findings": [
+        {"id": "f1", "finding": "Promtail OOM", "remediation": "Check promtail memory usage",
+         "severity": "warning", "resource_name": "promtail"}]}]
+    CFOperator._feed_remediations_from_sweeps(op, reports)
+    arg = op.enqueue_investigation.call_args.args[0]
+    assert arg["dedupe_key"] == CFOperator._dispatch_dedupe_key("promtail", "Promtail OOM")
+    # the key the feed checked is the key it stamped — one contract end to end
+    op.kb.find_open_remediation_by_dedupe_key.assert_called_once_with(arg["dedupe_key"])
+
+
+def test_feed_from_summary_skips_when_remediation_open():
+    op = _feed_op()
+    op.kb.find_open_remediation_by_dedupe_key.return_value = {"id": 44, "investigation_id": 2195}
+    n = CFOperator._feed_remediations_from_summary(op, _SUMMARY_MISLABELLED_MANUAL, [])
+    assert n == 0
+    op.enqueue_investigation.assert_not_called()
+
+
+def test_feed_dispatch_fails_open_on_kb_error():
+    # Suppression is the optimization; dispatching is the long-standing behavior.
+    op = _feed_op()
+    op.kb.find_open_remediation_by_dedupe_key.side_effect = RuntimeError("db down")
+    reports = [{"findings": [
+        {"id": "f1", "finding": "Promtail OOM", "remediation": "Check promtail memory",
+         "severity": "warning", "resource_name": "promtail"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
+    op.enqueue_investigation.assert_called_once()
+
+
+def test_needs_action_deduped_repeat_links_to_open_row():
+    # A repeat firing whose enqueue is dedupe-suppressed must still return the
+    # open row's id, or the console shows "none proposed" on the repeat
+    # investigation while the row sits on the worklist (PR #131 review).
+    op = _na_op()
+    op.kb.queue_remediation.return_value = None  # dedupe-suppressed by the KB
+    op.kb.find_open_remediation_by_dedupe_key.return_value = {"id": 44, "status": "needs-human"}
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.5,
+        "host": None, "repo": None})
+    rid = op._queue_needs_action_remediation(
+        2200, "same alert again", {"fingerprint": "abc123"}, "same fix", "r",
+        provider="ollama/gemma4:26b")
+    assert rid == 44
+    op.kb.find_open_remediation_by_dedupe_key.assert_called_once_with("alert-abc123")
+    # and with no open row either, the repeat genuinely has nothing to link
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    assert op._queue_needs_action_remediation(
+        2200, "same alert again", {"fingerprint": "abc123"}, "same fix", "r",
+        provider="ollama/gemma4:26b") is None
+
+
+def test_investigation_findings_remediation_helpers():
+    from knowledge_base import (_investigation_remediation_id,
+                                _investigation_remediation_pr_url)
+    assert _investigation_remediation_id({"remediation_id": 7}) == 7
+    assert _investigation_remediation_id({"remediation_id": "7"}) is None  # ints only
+    assert _investigation_remediation_id(None) is None
+    pr = {"remediation_proposal": {"remediation_pr": {
+        "status": "opened", "html_url": "https://github.com/x/y/pull/9"}}}
+    assert _investigation_remediation_pr_url(pr) == "https://github.com/x/y/pull/9"
+    # declines and malformed shapes surface nothing
+    assert _investigation_remediation_pr_url({"remediation_proposal": {
+        "remediation_pr": {"status": "declined", "detail": "no manifest"}}}) is None
+    assert _investigation_remediation_pr_url({"remediation_proposal": "junk"}) is None
+    assert _investigation_remediation_pr_url({}) is None

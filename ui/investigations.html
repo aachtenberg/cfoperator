@@ -71,7 +71,7 @@
 <script src="/nav.js" defer></script>
 <div class="filters" id="filters"></div>
 <table>
-  <thead><tr><th>ID</th><th>Outcome</th><th>Trigger</th><th>Duration</th><th>Started</th></tr></thead>
+  <thead><tr><th>ID</th><th>Outcome</th><th>Trigger</th><th>Remediation</th><th>Duration</th><th>Started</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" class="empty" hidden>No investigations match this filter.</div>
@@ -82,7 +82,7 @@
 const OUTCOMES = ['resolved','needs_action','monitoring','escalated','escalate','failed','in_progress','retry'];
 const OC = {resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',escalated:'--red',
   escalate:'--red',failed:'--red',in_progress:'--text-muted',retry:'--purple'};
-let filter='', ALL=[];
+let filter='', ALL=[], REMS={}, REMID={};
 function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
 function badge(t,v){ const c=color(v); return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(t)||'—'}</span>`; }
 // Quotes are escaped too: these values also land inside HTML attributes,
@@ -94,7 +94,41 @@ function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.
 
 async function load(){
   try{ ALL=(await (await fetch('/api/investigations?limit=80')).json()).investigations||[]; }catch(e){ return; }
+  // Linked remediation rows (CFOP-46): map investigation_id -> newest row so a
+  // needs_action investigation shows where its recommendation went — or,
+  // explicitly, that it went nowhere. Server-side filter was rejected in
+  // CFOP-29; the list is newest-first, so first-seen wins.
+  try{
+    const rows=(await (await fetch('/api/remediations?limit=500')).json()).remediations||[];
+    REMS={}; REMID={};
+    rows.forEach(r=>{ if(r.investigation_id!=null && !(r.investigation_id in REMS)) REMS[r.investigation_id]=r; REMID[r.id]=r; });
+  }catch(e){ /* linkage is enhancement — the table still renders without it */ }
   paint(); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
+}
+// LLM-adjacent URLs: only http(s) reaches href (same posture as remediations.html).
+function safeUrl(u){ try{ const p=new URL(String(u==null?'':u), window.location.href);
+  return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
+function remLink(r){
+  // Deduped repeats carry only the id (the map keys the row under the FIRST
+  // investigation); resolve through REMID so they still get a status chip.
+  const m=REMS[r.id] || (r.remediation_id ? (REMID[r.remediation_id]||{id:r.remediation_id,status:''}) : null);
+  if(m) return `<a href="/remediations#${m.id}" onclick="event.stopPropagation()">#${m.id}${m.status?' '+esc(m.status):''}</a>`;
+  const pr=safeUrl(r.remediation_pr_url);
+  if(pr) return `<a href="${esc(pr)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">PR ↗</a>`;
+  return r.outcome==='needs_action' ? '<span class="muted">none</span>' : '';
+}
+// Drawer line: on needs_action, "no remediation" must be stated, not inferred
+// from absence. findings.remediation_id covers rows newer than the 500-row map;
+// an inline-proposer PR (findings.remediation_proposal.remediation_pr) counts
+// as a remediation too — that path deliberately bypasses the queue.
+function remDrawerLine(r){
+  const f=r.findings||{};
+  const m=REMS[r.id] || (f.remediation_id ? (REMID[f.remediation_id]||{id:f.remediation_id, status:''}) : null);
+  if(m) return `<div class="kv"><b>remediation</b> <a href="/remediations#${m.id}">#${m.id}${m.status?' ('+esc(m.status)+')':''}</a></div>`;
+  const pr=(f.remediation_proposal||{}).remediation_pr||{};
+  const prUrl=pr.status==='opened'?safeUrl(pr.html_url):'';
+  if(prUrl) return `<div class="kv"><b>remediation</b> <a href="${esc(prUrl)}" target="_blank" rel="noopener noreferrer">PR opened ↗</a></div>`;
+  return r.outcome==='needs_action' ? `<div class="kv"><b>remediation</b> <span class="muted">none proposed</span></div>` : '';
 }
 function paint(){
   const c={}; ALL.forEach(r=>c[r.outcome]=(c[r.outcome]||0)+1);
@@ -109,6 +143,7 @@ function paint(){
       <td class="mono">#${r.id}</td>
       <td>${badge(r.outcome, OC[r.outcome]||'--text-muted')}</td>
       <td class="trig">${esc(r.trigger||'').slice(0,140)}</td>
+      <td>${remLink(r)}</td>
       <td class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':'—'}</td>
       <td class="muted">${age(r.started_at)}</td></tr>`).join('');
 }
@@ -129,6 +164,7 @@ async function detail(id){
     <div class="kv"><b>trigger</b> ${esc(r.trigger)}</div>
     <div class="kv"><b>started</b> ${esc(r.started_at)}${r.completed_at?' · <b>completed</b> '+esc(r.completed_at):''}</div>
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
+    ${remDrawerLine(r)}
     ${f.recommendation?`<h3>Recommendation</h3><pre>${esc(f.recommendation)}</pre>`:''}
     ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
     <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;
