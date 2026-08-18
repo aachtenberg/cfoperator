@@ -1275,3 +1275,31 @@ def test_investigation_findings_remediation_helpers():
         "remediation_pr": {"status": "declined", "detail": "no manifest"}}}) is None
     assert _investigation_remediation_pr_url({"remediation_proposal": "junk"}) is None
     assert _investigation_remediation_pr_url({}) is None
+
+
+# ---- CFOP-49: Approve must refuse manual-class rows ---------------------------
+
+
+def test_remediation_approve_conflict_policy():
+    from knowledge_base import remediation_approve_conflict
+    # manual = human-only: refuse with a reason that names the legitimate exits
+    reason = remediation_approve_conflict({"id": 42, "remediation_class": "manual"})
+    assert reason is not None
+    assert "Reclassify" in reason and "Resolve" in reason
+    # every mechanizable class stays approvable — this is exactly what row #42
+    # needed after its reclassify, so the happy path is the regression pin
+    for rclass in ("gitops-patch", "k8s-action", "node-action"):
+        assert remediation_approve_conflict({"remediation_class": rclass}) is None
+    # absent/malformed rows are not this policy's problem (the handler 404s first)
+    assert remediation_approve_conflict(None) is None
+    assert remediation_approve_conflict({}) is None
+
+
+def test_kb_method_delegates_to_policy():
+    # web_server reaches the policy through operator.kb (it imports nothing
+    # from agent/); the staticmethod must stay wired to the module function.
+    from knowledge_base import KnowledgeBase
+    assert KnowledgeBase.remediation_approve_conflict(
+        {"remediation_class": "manual"}) is not None
+    assert KnowledgeBase.remediation_approve_conflict(
+        {"remediation_class": "gitops-patch"}) is None
