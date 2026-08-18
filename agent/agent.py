@@ -211,6 +211,19 @@ LLM_LATENCY = Histogram(
 )
 LLM_ERRORS = Counter('cfoperator_llm_errors_total', 'LLM errors by provider', ['provider', 'error_type'])
 LLM_FALLBACKS = Counter('cfoperator_llm_fallbacks_total', 'LLM fallback chain activations', ['from_provider', 'to_provider'])
+# Empty final responses from the tool loop (see _handle_empty_final). The
+# `disposition` label keeps two very different signals apart:
+#   nudged    - first empty of the turn. EMPTY_RESPONSE_NUDGE sent, one bonus
+#               round granted; the benchmark recovered 19/19 this way. A
+#               formatting quirk the loop absorbs.
+#   exhausted - second empty. EmptyLLMResponseError raised and the provider
+#               chain rotates. The model failing the task, at the cost of a
+#               whole extra provider attempt.
+# Collapsing them into one number cannot distinguish "gemma4 needs a second
+# prompt sometimes" from "gemma4 cannot finish the job". Divide by
+# cfoperator_llm_requests_total (incremented once per _chat_with_tools call,
+# success and error alike) for the per-model rate.
+LLM_EMPTY_FINALS = Counter('cfoperator_llm_empty_final_responses_total', 'Tool-loop turns that ended with an empty final message', ['provider', 'model', 'disposition'])
 EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding generation requests', ['result'])
 EMBEDDING_CACHE_HITS = Counter('cfoperator_embedding_cache_hits_total', 'Embedding cache hits vs misses', ['result'])
 
@@ -4608,12 +4621,24 @@ Only return the JSON array, no other text."""
         where _extract_status('') silently classifies it as 'monitoring'
         (investigations #1880/#1884/#1885/#1889).
 
+        Both branches increment LLM_EMPTY_FINALS, labelled by provider/model,
+        because until now the only trace an empty final left was the warning
+        below — there was no way to answer "does gemma4 need two attempts on
+        40% of investigations, or 4%?". This is the single chokepoint every
+        provider branch funnels through, so counting here (rather than at the
+        three call sites) is what keeps a provider from quietly stopping
+        counting.
+
         Returns the updated (empty_nudge_sent, iteration_budget).
         """
         if empty_nudge_sent:
+            LLM_EMPTY_FINALS.labels(provider=provider_type, model=model,
+                                    disposition='exhausted').inc()
             raise EmptyLLMResponseError(
                 f"{provider_type}/{model} returned an empty final response "
                 f"even after the nudge retry")
+        LLM_EMPTY_FINALS.labels(provider=provider_type, model=model,
+                                disposition='nudged').inc()
         logger.warning(
             f"[CHAT] empty final response from {provider_type}/{model} — "
             f"nudging once for an answer")
