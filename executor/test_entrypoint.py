@@ -136,3 +136,80 @@ def test_run_needs_human_when_no_diff():
          patch.object(entrypoint, "get_file", return_value="x\n"):
         payload = run(_env())
     assert payload["status"] == "needs-human" and payload["pr_url"] is None
+
+
+# ---- file windowing (CFOP-50) -------------------------------------------------
+
+
+def test_select_file_window_under_cap_is_untouched():
+    win, cut, anchor = entrypoint.select_file_window("small file\n", "fix Thing-One", 100)
+    assert (win, cut, anchor) == ("small file\n", False, None)
+
+
+def test_select_file_window_anchors_on_recommendation_identifier():
+    # The #42 shape: the target rule sits past the cap, in a big file.
+    filler = "\n".join(f"line-{i}: unrelated" for i in range(400))
+    target = "  - alert: CronJobNotSucceedingBackstop\n    expr: kube_cronjob_ok == 0"
+    content = filler + "\n" + target + "\n" + "\n".join("tail" for _ in range(50)) + "\n"
+    cap = 2000
+    assert len(content) > cap
+    win, cut, anchor = entrypoint.select_file_window(
+        content, "Exclude suspended CronJobs in the CronJobNotSucceedingBackstop rule", cap)
+    assert cut is True
+    assert anchor == "CronJobNotSucceedingBackstop"
+    assert "CronJobNotSucceedingBackstop" in win  # the head-truncation bug showed a file without it
+    assert len(win) <= cap + 200  # cap plus line-boundary slack
+    # whole lines only: no half-line at the start
+    assert win == content[content.find(win):content.find(win) + len(win)]
+
+
+def test_select_file_window_head_truncates_without_identifier():
+    content = "x" * 500
+    win, cut, anchor = entrypoint.select_file_window(content, "just fix things please", 100)
+    assert (cut, anchor) == (True, None)
+    assert win == content[:100]
+
+
+def test_recommendation_identifiers_ranked_and_filtered():
+    ids = entrypoint._recommendation_identifiers(
+        "Change resources.limits.memory for promtail-daemonset; see CronJobNotSucceedingBackstop")
+    assert ids[0] == "CronJobNotSucceedingBackstop"  # longest distinctive token first
+    assert "resources.limits.memory" in ids and "promtail-daemonset" in ids
+    # plain English words are not anchors
+    assert "Change" not in ids
+
+
+def test_run_no_diff_on_cut_file_names_the_truncation():
+    big = "\n".join(f"pad-{i}" for i in range(300)) + "\nCronJobNotSucceedingBackstop: here\n"
+    order = dict(_WORK_ORDER)
+    order["payload"] = dict(order["payload"],
+                            recommendation="Fix the CronJobNotSucceedingBackstop rule")
+    llm = _SeqLLM(["k8s/base/apps/ollama.yaml", "no diff, sorry"])
+    with patch.object(entrypoint, "make_llm", return_value=llm), \
+         patch.object(entrypoint, "list_repo_files", return_value=["k8s/base/apps/ollama.yaml"]), \
+         patch.object(entrypoint, "get_file", return_value=big):
+        payload = run(_env(CFOP_REMEDIATION_JSON=json.dumps(order),
+                           CFOP_EXEC_MAX_FILE_CHARS="500"))
+    assert payload["status"] == "needs-human"
+    assert "input was cut" in payload["detail"]          # never blame the model for an amputated input
+    assert "CronJobNotSucceedingBackstop" in payload["detail"]
+    assert payload["result"]["file_window"]["cap"] == 500
+
+
+def test_run_diff_prompt_gets_the_window_not_the_head():
+    """The model must SEE the anchored region — guard against regressing to [:cap]."""
+    big = "\n".join(f"pad-{i}" for i in range(300)) + "\nCronJobNotSucceedingBackstop: here\n"
+    order = dict(_WORK_ORDER)
+    order["payload"] = dict(order["payload"],
+                            recommendation="Fix the CronJobNotSucceedingBackstop rule")
+    seen = []
+    class _SpyLLM:
+        def __init__(self): self.i = 0
+        def complete(self, prompt):
+            seen.append(prompt); self.i += 1
+            return "k8s/base/apps/ollama.yaml" if self.i == 1 else "no diff"
+    with patch.object(entrypoint, "make_llm", return_value=_SpyLLM()), \
+         patch.object(entrypoint, "list_repo_files", return_value=["k8s/base/apps/ollama.yaml"]), \
+         patch.object(entrypoint, "get_file", return_value=big):
+        run(_env(CFOP_REMEDIATION_JSON=json.dumps(order), CFOP_EXEC_MAX_FILE_CHARS="500"))
+    assert "CronJobNotSucceedingBackstop" in seen[1]  # pass-2 prompt contains the target region
