@@ -1061,15 +1061,106 @@ def test_classifier_llm_failure_degrades_to_needs_human():
     assert remediation_is_auto_eligible(nc, nr, hints["confidence"]) is False
 
 
-def test_classifier_unparseable_degrades_to_needs_human():
+def _classifier_op():
+    """Op wired for the classification ladder with real parse + no providers."""
     op = MagicMock()
     op._parse_remediation_classification = CFOperator._parse_remediation_classification
+    op._get_provider_chain = MagicMock(return_value=[])  # no escalation target
+    return op
+
+
+_GOOD_CLASSIFICATION = ('{"remediation_class": "gitops-patch", "risk": "low", '
+                        '"confidence": 0.9, "host": "", "repo": "o/r"}')
+
+
+def test_classifier_ladder_exhausted_degrades_to_needs_human():
+    op = _classifier_op()
     op._chat_with_tools_with_fallback = MagicMock(
-        return_value={"response": "sure, sounds like a config problem to me"})
+        return_value={"response": "sure, sounds like a config problem to me",
+                      "backend": "ollama", "model": "gemma4:26b"})
     hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
     assert hints["remediation_class"] == "manual"
     assert hints["risk"] == "high"
     assert hints["confidence"] is None
+    # the ladder ran: initial call + nudge retry (no distinct provider to escalate to)
+    assert op._chat_with_tools_with_fallback.call_count == 2
+    # and the degraded result can never clear the auto gate
+    nc, nr = normalize_remediation_fields(hints["remediation_class"], hints["risk"])
+    assert remediation_is_auto_eligible(nc, nr, hints["confidence"]) is False
+
+
+def test_classifier_nudge_rescues_bad_shape():
+    # The row-#42 failure mode: findings-array first, correct object after the
+    # corrective retry that quotes the malformed output back (PR #76 pattern).
+    op = _classifier_op()
+    bad = '[{"severity": "info", "finding": "wrong shape"}]'
+    op._chat_with_tools_with_fallback = MagicMock(side_effect=[
+        {"response": bad, "backend": "ollama", "model": "gemma4:26b"},
+        {"response": _GOOD_CLASSIFICATION, "backend": "ollama", "model": "gemma4:26b"},
+    ])
+    hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
+    assert hints["remediation_class"] == "gitops-patch"
+    assert hints["confidence"] == 0.9
+    # the cap-lift happy path: a nudge-rescued confident classification CAN
+    # clear the auto gate (PR #134 review — assert the positive, not only the
+    # degraded negative)
+    nc, nr = normalize_remediation_fields(hints["remediation_class"], hints["risk"])
+    assert remediation_is_auto_eligible(nc, nr, hints["confidence"]) is True
+    retry_messages = op._chat_with_tools_with_fallback.call_args_list[1].kwargs["messages"]
+    assert any(bad[:50] in str(m.get("content")) for m in retry_messages)  # quoted back
+    assert any("single JSON object" in str(m.get("content")) for m in retry_messages)
+
+
+def test_classifier_escalates_to_distinct_provider():
+    # Nudge fails too -> one attempt on the first provider whose (backend, model)
+    # differs from the one that answered wrongly; primary is skipped.
+    op = _classifier_op()
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": "still not json", "backend": "ollama", "model": "gemma4:26b"})
+    op._get_provider_chain = MagicMock(return_value=[
+        ("ollama", "http://llm:11434", "gemma4:26b"),
+        ("anthropic", "", "claude-sonnet-5"),
+    ])
+    op._chat_with_tools = MagicMock(return_value={"response": _GOOD_CLASSIFICATION})
+    hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
+    assert hints["remediation_class"] == "gitops-patch"
+    esc = op._chat_with_tools.call_args.kwargs
+    assert esc["provider_type"] == "anthropic" and esc["model"] == "claude-sonnet-5"
+    nc, nr = normalize_remediation_fields(hints["remediation_class"], hints["risk"])
+    assert remediation_is_auto_eligible(nc, nr, hints["confidence"]) is True
+
+
+def test_classifier_escalation_skips_every_provider_that_answered():
+    # The fallback wrapper rotates on transport errors, so the first call and
+    # the nudge may be served by DIFFERENT providers. Rung 3 must skip all of
+    # them, not just the first (PR #134 review) — else it re-asks a model that
+    # just produced garbage on this very ladder.
+    op = _classifier_op()
+    op._chat_with_tools_with_fallback = MagicMock(side_effect=[
+        {"response": "junk", "backend": "ollama", "model": "gemma4:26b"},
+        {"response": "more junk", "backend": "anthropic", "model": "claude-sonnet-5"},
+    ])
+    op._get_provider_chain = MagicMock(return_value=[
+        ("ollama", "http://llm:11434", "gemma4:26b"),
+        ("anthropic", "", "claude-sonnet-5"),
+        ("groq", "", "gpt-oss-120b"),
+    ])
+    op._chat_with_tools = MagicMock(return_value={"response": _GOOD_CLASSIFICATION})
+    hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
+    assert hints["remediation_class"] == "gitops-patch"
+    esc = op._chat_with_tools.call_args.kwargs
+    assert esc["provider_type"] == "groq" and esc["model"] == "gpt-oss-120b"
+
+
+def test_classifier_prompt_example_is_never_auto_eligible():
+    # Small local models parrot few-shot examples. If the prompt's worked
+    # example were an auto-gate-clearing tuple with a real repo, a parroted
+    # response would auto-queue a PR without classifying anything
+    # (PR #134 review). The example must land needs-human.
+    ex = agent_mod._CLASSIFIER_SAFE_EXAMPLE
+    nc, nr = normalize_remediation_fields(ex["remediation_class"], ex["risk"])
+    assert remediation_is_auto_eligible(nc, nr, ex["confidence"]) is False
+    assert not ex["repo"]  # never a real GitOps slug the executor could target
 
 
 def test_parse_remediation_classification():
@@ -1077,9 +1168,14 @@ def test_parse_remediation_classification():
     out = parse('```json\n{"remediation_class": "gitops-patch", "risk": "low", '
                 '"confidence": 0.9, "host": "pi5", "repo": "o/r"}\n```')
     assert out["remediation_class"] == "gitops-patch"
-    # capped: a cheap text-only classifier's self-reported confidence must not
-    # clear the >= 0.8 auto gate, so needs-human is the landing state by construction
-    assert out["confidence"] == _SUMMARY_CONFIDENCE_CAP
+    # NOT capped (CFOP-48): a confident classification may clear the >= 0.8
+    # auto gate; the PR merge button is the human gate. This is the assertion
+    # that keeps the cap-lift from regressing silently.
+    assert out["confidence"] == 0.9
+    # above the 0-1 scale = uncalibrated -> None (cannot clear the gate),
+    # never clamped up to certainty; negatives clamp to harmless 0
+    assert parse('{"remediation_class": "manual", "confidence": 7}')["confidence"] is None
+    assert parse('{"remediation_class": "manual", "confidence": -1}')["confidence"] == 0.0
     assert out["host"] == "pi5" and out["repo"] == "o/r"
     assert parse("no json here") is None
     assert parse('{"risk": "low"}') is None  # class is mandatory
