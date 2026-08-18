@@ -320,3 +320,16 @@ def test_open_pr_allowed_under_cap():
         open_prs=True, github=gh, max_open_prs=3)
     res = proposer.open_pr(prop, "batch", "batch-worker")
     assert res["status"] == "opened"
+
+
+def test_parse_and_apply_numberless_hunk_header():
+    """Vendored twin of executor/test_diff.py's CFOP-51 guard — both copies of
+    the parser must tolerate bare '@@' headers (position is context-verified)."""
+    from remediation import parse_unified_diff, apply_unified_diff
+    text = "x\ny\n  expr: old\n  for: 30m\n"
+    d = ("--- a/rules.yml\n+++ b/rules.yml\n@@\n"
+         "-  expr: old\n+  expr: new\n   for: 30m\n")
+    parsed = parse_unified_diff(d)
+    assert parsed is not None
+    patched = apply_unified_diff(text, parsed[1])
+    assert patched is not None and "expr: new" in patched
