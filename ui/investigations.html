@@ -105,8 +105,11 @@ async function load(){
   }catch(e){ /* linkage is enhancement — the table still renders without it */ }
   paint(); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
-// LLM-adjacent URLs: only http(s) reaches href (same posture as remediations.html).
-function safeUrl(u){ try{ const p=new URL(String(u==null?'':u), window.location.href);
+// LLM-adjacent URLs: only http(s) reaches href (same posture as
+// remediations.html). Empty/null must return '' — new URL('', base) resolves
+// to the page itself and rendered phantom links (CFOP-52).
+function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
+  try{ const p=new URL(s, window.location.href);
   return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
 function remLink(r){
   // Deduped repeats carry only the id (the map keys the row under the FIRST
