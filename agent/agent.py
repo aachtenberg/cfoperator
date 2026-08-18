@@ -2499,7 +2499,16 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if rid:
             logger.info(f"Investigation #{investigation_id} needs_action -> remediation #{rid} "
                         f"({details.get('remediation_class')}, risk={details.get('risk')})")
-        return rid
+            return rid
+        # Deduped (or enqueue failed): a repeat firing must still link to the
+        # open row covering it, or the console shows "none proposed" while the
+        # row sits on the worklist under the first investigation's id.
+        existing = self._open_remediation_for_key(details['dedupe_key'])
+        if existing:
+            logger.info(f"Investigation #{investigation_id} needs_action deduped onto "
+                        f"open remediation #{existing.get('id')}")
+            return existing.get('id')
+        return None
 
     _SEVERITY_RISK = {'critical': 'high', 'warning': 'med', 'info': 'low'}
 

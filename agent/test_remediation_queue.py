@@ -991,6 +991,8 @@ def _na_op(feed=True):
         op, inv_id, details)
     op._queue_needs_action_remediation = lambda *a, **k: CFOperator._queue_needs_action_remediation(
         op, *a, **k)
+    op._open_remediation_for_key = lambda key: CFOperator._open_remediation_for_key(op, key)
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
     return op
 
 
@@ -1139,3 +1141,41 @@ def test_feed_dispatch_fails_open_on_kb_error():
          "severity": "warning", "resource_name": "promtail"}]}]
     assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
     op.enqueue_investigation.assert_called_once()
+
+
+def test_needs_action_deduped_repeat_links_to_open_row():
+    # A repeat firing whose enqueue is dedupe-suppressed must still return the
+    # open row's id, or the console shows "none proposed" on the repeat
+    # investigation while the row sits on the worklist (PR #131 review).
+    op = _na_op()
+    op.kb.queue_remediation.return_value = None  # dedupe-suppressed by the KB
+    op.kb.find_open_remediation_by_dedupe_key.return_value = {"id": 44, "status": "needs-human"}
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.5,
+        "host": None, "repo": None})
+    rid = op._queue_needs_action_remediation(
+        2200, "same alert again", {"fingerprint": "abc123"}, "same fix", "r",
+        provider="ollama/gemma4:26b")
+    assert rid == 44
+    op.kb.find_open_remediation_by_dedupe_key.assert_called_once_with("alert-abc123")
+    # and with no open row either, the repeat genuinely has nothing to link
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    assert op._queue_needs_action_remediation(
+        2200, "same alert again", {"fingerprint": "abc123"}, "same fix", "r",
+        provider="ollama/gemma4:26b") is None
+
+
+def test_investigation_findings_remediation_helpers():
+    from knowledge_base import (_investigation_remediation_id,
+                                _investigation_remediation_pr_url)
+    assert _investigation_remediation_id({"remediation_id": 7}) == 7
+    assert _investigation_remediation_id({"remediation_id": "7"}) is None  # ints only
+    assert _investigation_remediation_id(None) is None
+    pr = {"remediation_proposal": {"remediation_pr": {
+        "status": "opened", "html_url": "https://github.com/x/y/pull/9"}}}
+    assert _investigation_remediation_pr_url(pr) == "https://github.com/x/y/pull/9"
+    # declines and malformed shapes surface nothing
+    assert _investigation_remediation_pr_url({"remediation_proposal": {
+        "remediation_pr": {"status": "declined", "detail": "no manifest"}}}) is None
+    assert _investigation_remediation_pr_url({"remediation_proposal": "junk"}) is None
+    assert _investigation_remediation_pr_url({}) is None

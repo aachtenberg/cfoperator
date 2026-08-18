@@ -451,6 +451,29 @@ def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence) 
     )
 
 
+def _investigation_remediation_id(findings) -> Optional[int]:
+    """The queue row an investigation's needs_action fed (or deduped onto)."""
+    f = findings if isinstance(findings, dict) else {}
+    rid = f.get('remediation_id')
+    return rid if isinstance(rid, int) else None
+
+
+def _investigation_remediation_pr_url(findings) -> Optional[str]:
+    """URL of an inline-proposer PR opened for this investigation, or None.
+
+    The inline unschedulable-pod path opens its PR directly and deliberately
+    skips the queue (one fix, one driver) — the only trace is
+    findings.remediation_proposal.remediation_pr. Surfacing it keeps the
+    console's explicit "none proposed" copy true.
+    """
+    f = findings if isinstance(findings, dict) else {}
+    prop = f.get('remediation_proposal')
+    pr = prop.get('remediation_pr') if isinstance(prop, dict) else None
+    if isinstance(pr, dict) and pr.get('status') == 'opened' and pr.get('html_url'):
+        return str(pr['html_url'])
+    return None
+
+
 def remediation_row_dict(r) -> Dict[str, Any]:
     """Serialize a RemediationQueue row for the read API / operator console."""
     return {
@@ -2213,7 +2236,12 @@ class KnowledgeBase:
                     "trigger": inv.trigger,
                     "outcome": inv.outcome,
                     "duration_seconds": inv.duration_seconds,
-                    "tool_calls_count": inv.tool_calls_count
+                    "tool_calls_count": inv.tool_calls_count,
+                    # Where the recommendation went (CFOP-46): a queue row id,
+                    # and/or the inline proposer's PR — so the console list can
+                    # say "none" only when neither exists.
+                    "remediation_id": _investigation_remediation_id(inv.findings),
+                    "remediation_pr_url": _investigation_remediation_pr_url(inv.findings),
                 }
                 for inv in investigations
             ]

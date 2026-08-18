@@ -104,16 +104,29 @@ async function load(){
   }catch(e){ /* linkage is enhancement — the table still renders without it */ }
   paint(); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
+// LLM-adjacent URLs: only http(s) reaches href (same posture as remediations.html).
+function safeUrl(u){ try{ const p=new URL(String(u==null?'':u), window.location.href);
+  return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
 function remLink(r){
   const m=REMS[r.id];
   if(m) return `<a href="/remediations#${m.id}" onclick="event.stopPropagation()">#${m.id} ${esc(m.status)}</a>`;
+  // deduped repeats / rows past the 500-row map carry the id in the row itself
+  if(r.remediation_id) return `<a href="/remediations#${r.remediation_id}" onclick="event.stopPropagation()">#${r.remediation_id}</a>`;
+  const pr=safeUrl(r.remediation_pr_url);
+  if(pr) return `<a href="${esc(pr)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">PR ↗</a>`;
   return r.outcome==='needs_action' ? '<span class="muted">none</span>' : '';
 }
 // Drawer line: on needs_action, "no remediation" must be stated, not inferred
-// from absence. findings.remediation_id covers rows newer than the 500-row map.
+// from absence. findings.remediation_id covers rows newer than the 500-row map;
+// an inline-proposer PR (findings.remediation_proposal.remediation_pr) counts
+// as a remediation too — that path deliberately bypasses the queue.
 function remDrawerLine(r){
-  const m=REMS[r.id] || ((r.findings||{}).remediation_id ? {id:(r.findings||{}).remediation_id, status:''} : null);
+  const f=r.findings||{};
+  const m=REMS[r.id] || (f.remediation_id ? {id:f.remediation_id, status:''} : null);
   if(m) return `<div class="kv"><b>remediation</b> <a href="/remediations#${m.id}">#${m.id}${m.status?' ('+esc(m.status)+')':''}</a></div>`;
+  const pr=(f.remediation_proposal||{}).remediation_pr||{};
+  const prUrl=pr.status==='opened'?safeUrl(pr.html_url):'';
+  if(prUrl) return `<div class="kv"><b>remediation</b> <a href="${esc(prUrl)}" target="_blank" rel="noopener noreferrer">PR opened ↗</a></div>`;
   return r.outcome==='needs_action' ? `<div class="kv"><b>remediation</b> <span class="muted">none proposed</span></div>` : '';
 }
 function paint(){
