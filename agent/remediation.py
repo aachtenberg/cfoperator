@@ -232,10 +232,16 @@ def parse_unified_diff(diff_text: str) -> Optional[tuple]:
             path = raw[2:] if raw.startswith("b/") else raw
             continue
         if line.startswith("@@"):
-            m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@", line)
-            if not m or path is None:
+            if path is None:
                 return None
-            current = {"old_start": int(m.group(1)), "old": [], "new": []}
+            # Position numbers are a hint only — apply_unified_diff verifies by
+            # exact context (unique whole-file search fallback). Models routinely
+            # emit bare "@@" headers; requiring the numbers declined correct
+            # diffs while adding no safety (CFOP-51). Absent -> None: no claimed
+            # position, so apply skips the positional attempt and requires the
+            # context to be unique in the whole file.
+            m = re.match(r"^@@ -(\d+)", line)
+            current = {"old_start": int(m.group(1)) if m else None, "old": [], "new": []}
             hunks.append(current)
             continue
         if current is None:
@@ -254,6 +260,8 @@ def parse_unified_diff(diff_text: str) -> Optional[tuple]:
             return None  # malformed hunk body
     if not path or not hunks:
         return None
+    if any(not h["old"] and not h["new"] for h in hunks):
+        return None  # header-only hunk (e.g. "@@ bad hunk @@" with no body)
     return path, [(h["old_start"], h["old"], h["new"]) for h in hunks]
 
 
@@ -269,8 +277,14 @@ def apply_unified_diff(text: str, hunks: List[tuple]) -> Optional[str]:
     for old_start, old, new in hunks:
         if not old:
             return None  # pure-insertion hunks lack anchoring context
-        idx = old_start - 1 + offset
-        if lines[idx:idx + len(old)] != old:
+        idx = None
+        if old_start is not None:
+            at = old_start - 1 + offset
+            if lines[at:at + len(old)] == old:
+                idx = at
+        if idx is None:
+            # No stated position (bare "@@" header) or the stated one didn't
+            # match: the context must occur exactly once, or we decline.
             matches = [
                 i for i in range(len(lines) - len(old) + 1)
                 if lines[i:i + len(old)] == old

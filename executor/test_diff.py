@@ -42,3 +42,31 @@ def test_extract_diff_block():
     block = extract_diff_block(report)
     assert block is not None and block.startswith("--- a/")
     assert extract_diff_block("no diff here") is None
+
+
+def test_parse_and_apply_numberless_hunk_header():
+    """The #42 shape (CFOP-51): a correct diff with a bare '@@' header must
+    parse and apply via the unique-context fallback — the position numbers
+    are a hint the applier never needed."""
+    text = "\n".join(f"pad-{i}" for i in range(20)) + "\n  expr: old\n  for: 30m\n"
+    d = ("--- a/rules.yml\n"
+         "+++ b/rules.yml\n"
+         "@@\n"
+         "-  expr: old\n"
+         "+  expr: new\n"
+         "   for: 30m\n")
+    parsed = parse_unified_diff(d)
+    assert parsed is not None
+    path, hunks = parsed
+    assert path == "rules.yml" and hunks[0][0] is None  # no claimed position
+    patched = apply_unified_diff(text, hunks)
+    assert patched is not None and "expr: new" in patched and "expr: old" not in patched
+
+
+def test_numberless_hunk_ambiguous_context_still_declines():
+    # Tolerant parsing must not weaken the applier: two identical candidate
+    # blocks -> ambiguous -> decline, exactly as with numbered headers.
+    text = "a\nb\na\nb\n"
+    d = "--- a/f\n+++ b/f\n@@\n-a\n+A\n b\n"
+    path, hunks = parse_unified_diff(d)
+    assert apply_unified_diff(text, hunks) is None

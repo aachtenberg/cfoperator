@@ -162,8 +162,11 @@ function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
   c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 // Remediation payloads carry LLM-authored URLs; only http(s) reaches href so a
-// javascript: link cannot execute in the console.
-function safeUrl(u){ try{ const p=new URL(String(u==null?'':u), window.location.href);
+// javascript: link cannot execute in the console. Empty/null must return '' —
+// new URL('', base) resolves to the page itself, which rendered a phantom
+// "PR ↗" linking back to the console on rows with no PR (CFOP-52).
+function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
+  try{ const p=new URL(s, window.location.href);
   return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
 function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
   const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);

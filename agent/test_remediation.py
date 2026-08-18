@@ -320,3 +320,28 @@ def test_open_pr_allowed_under_cap():
         open_prs=True, github=gh, max_open_prs=3)
     res = proposer.open_pr(prop, "batch", "batch-worker")
     assert res["status"] == "opened"
+
+
+def test_parse_and_apply_numberless_hunk_header():
+    """Vendored twin of executor/test_diff.py's CFOP-51 guard — both copies of
+    the parser must tolerate bare '@@' headers (position is context-verified)."""
+    from remediation import parse_unified_diff, apply_unified_diff
+    text = "x\ny\n  expr: old\n  for: 30m\n"
+    d = ("--- a/rules.yml\n+++ b/rules.yml\n@@\n"
+         "-  expr: old\n+  expr: new\n   for: 30m\n")
+    parsed = parse_unified_diff(d)
+    assert parsed is not None
+    assert parsed[1][0][0] is None  # bare header claims no position
+    patched = apply_unified_diff(text, parsed[1])
+    assert patched is not None and "expr: new" in patched
+
+
+def test_numberless_hunk_ambiguous_context_still_declines():
+    """The load-bearing half of the CFOP-51 tolerance, mirrored so the vendored
+    copies cannot drift: an unclaimed position must NOT be trusted as line 1 —
+    ambiguous context declines even when the block happens to match at the top."""
+    from remediation import parse_unified_diff, apply_unified_diff
+    text = "a\nb\na\nb\n"
+    d = "--- a/f\n+++ b/f\n@@\n-a\n+A\n b\n"
+    _path, hunks = parse_unified_diff(d)
+    assert apply_unified_diff(text, hunks) is None
