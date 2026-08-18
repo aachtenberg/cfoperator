@@ -91,6 +91,10 @@ INVESTIGATION_QUEUE_REJECTED = Counter('cfoperator_investigation_queue_rejected_
 INVESTIGATION_POSTBACK = Counter('cfoperator_investigation_postback_total', 'Investigation completions posted back to event_runtime', ['status'])
 REMEDIATION_QUEUE = Gauge('cfoperator_remediation_queue', 'Remediation queue rows by status', ['status'])
 REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remediations enqueued', ['source', 'remediation_class', 'eligible'])
+# result: ok (first try) | nudged (corrective retry) | escalated (distinct
+# provider) | degraded (ladder exhausted -> manual/high). CFOP-48: how often
+# each rung rescues a classification, so the ladder is tuned on data.
+REMEDIATION_CLASSIFIER = Counter('cfoperator_remediation_classifier_total', 'needs_action classifier outcomes', ['result'])
 REMEDIATION_SPAWNED = Counter('cfoperator_remediation_executor_spawned_total', 'Executor Jobs spawned by the drainer', ['result'])
 REMEDIATION_OUTCOME = Counter('cfoperator_remediation_outcome_total', 'Terminal remediation outcomes', ['outcome'])
 REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediations recovered from dead executor leases')
@@ -2362,29 +2366,43 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
 
     def _classify_needs_action_recommendation(self, trigger: str, recommendation: str,
                                               alert_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Classify a needs_action recommendation into queue hints (CFOP-46).
+        """Classify a needs_action recommendation into queue hints (CFOP-46/48).
 
-        A separate one-shot LLM call over the extracted recommendation — the
+        A separate LLM call over the extracted recommendation — the
         investigation prompt itself stays untouched, so this cannot regress the
         load-bearing STATUS:/RECOMMENDATION: parsing. Shares the class rubric
         with the morning summary (_REMEDIATION_CLASS_RUBRIC) so there is one
         definition of the classes.
 
-        Degrades downward: any failure (LLM unreachable, unparseable output)
-        returns manual/high with no confidence — a needs-human row, never
-        auto-eligible. Confidence is capped at _SUMMARY_CONFIDENCE_CAP for the
-        same reason as the summary path: a cheap classifier's self-reported
-        confidence must not clear the auto-execute gate.
+        Failure escalates before it parks (CFOP-48 — the operator's direction
+        is autonomy, with the human gate at the PR merge button):
+
+          1. one-shot call
+          2. unparseable -> nudge-retry: quote the malformed output back with a
+             corrective message (the PR #76 pattern — recovered 19/19 there)
+          3. still unparseable -> one attempt on the first provider in the
+             chain whose (backend, model) differs from the one that answered
+          4. only then degrade to manual/high with no confidence — a
+             needs-human row that can never clear the auto gate
+
+        A confidently-classified result is NOT capped: grounded in a real
+        investigation, it may clear the auto-execute gate (gitops-patch /
+        k8s-action, low risk, >=0.8) and open a PR unattended. Malformed output
+        is never salvaged into a classification — parse or degrade.
         """
         fallback = {'remediation_class': 'manual', 'risk': 'high',
                     'confidence': None, 'host': None, 'repo': None}
         system_prompt = (
             "You classify one infrastructure fix recommendation for a remediation "
-            "queue. Respond ONLY with a JSON object, no other text:\n"
+            "queue. Respond ONLY with a SINGLE JSON object — never an array, "
+            "never a findings list — no other text:\n"
             '{"remediation_class": "gitops-patch|k8s-action|node-action|investigate|manual", '
             '"risk": "low|med|high", "confidence": 0.0, '
             '"host": "affected host or empty", '
-            '"repo": "owning GitOps repo slug or empty"}\n\n'
+            '"repo": "owning GitOps repo slug or empty"}\n'
+            'Example of a complete, correct response:\n'
+            '{"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.85, '
+            '"host": "", "repo": "aachtenberg/homelab-infra"}\n\n'
             f"{_REMEDIATION_CLASS_RUBRIC}"
             "Be conservative with risk."
         )
@@ -2394,21 +2412,73 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             f"Labels: {json.dumps(labels, default=str)[:300]}\n"
             f"Recommendation: {str(recommendation)[:800]}\n\nClassify."
         )
+        messages = [{'role': 'user', 'content': user_msg}]
         try:
             result = self._chat_with_tools_with_fallback(
-                messages=[{'role': 'user', 'content': user_msg}],
-                system_context=system_prompt,
+                messages=messages, system_context=system_prompt,
                 max_iterations=1,  # one-shot classification — no tool loop
             )
         except Exception as e:
             logger.warning(f"Remediation classifier LLM unavailable, degrading to manual/high: {e}")
+            REMEDIATION_CLASSIFIER.labels(result='degraded').inc()
             return fallback
         parsed = self._parse_remediation_classification(result.get('response', ''))
-        if parsed is None:
-            logger.warning("Remediation classifier returned unparseable output, "
-                           f"degrading to manual/high: {str(result.get('response', ''))[:200]}")
-            return fallback
-        return parsed
+        if parsed is not None:
+            REMEDIATION_CLASSIFIER.labels(result='ok').inc()
+            return parsed
+
+        # Rung 2 — nudge: quote the malformed output back at the same chain.
+        bad = str(result.get('response', ''))
+        logger.info(f"Remediation classifier output unparseable, nudging: {bad[:200]}")
+        nudge_messages = messages + [
+            {'role': 'assistant', 'content': bad[:2000]},
+            {'role': 'user', 'content': (
+                "That response is not the required format. Reply again with "
+                "ONLY the single JSON object described in the instructions — "
+                "one object with remediation_class/risk/confidence/host/repo, "
+                "not an array, no prose.")},
+        ]
+        try:
+            retry = self._chat_with_tools_with_fallback(
+                messages=nudge_messages, system_context=system_prompt,
+                max_iterations=1,
+            )
+            parsed = self._parse_remediation_classification(retry.get('response', ''))
+            if parsed is not None:
+                REMEDIATION_CLASSIFIER.labels(result='nudged').inc()
+                return parsed
+        except Exception as e:
+            logger.warning(f"Remediation classifier nudge retry failed: {e}")
+
+        # Rung 3 — escalate: first provider in the chain that is a different
+        # (backend, model) than the one that produced the bad output.
+        served = (result.get('backend'), result.get('model'))
+        try:
+            other = next(((ptype, url, mname)
+                          for ptype, url, mname in self._get_provider_chain('auto')
+                          if (ptype, mname) != served), None)
+        except Exception:
+            other = None
+        if other is not None:
+            ptype, url, mname = other
+            try:
+                esc = self._chat_with_tools(
+                    provider_type=ptype, url=url, model=mname,
+                    messages=messages, system_context=system_prompt,
+                    max_iterations=1,
+                )
+                parsed = self._parse_remediation_classification(esc.get('response', ''))
+                if parsed is not None:
+                    logger.info(f"Remediation classifier escalated to {ptype}/{mname}")
+                    REMEDIATION_CLASSIFIER.labels(result='escalated').inc()
+                    return parsed
+            except Exception as e:
+                logger.warning(f"Remediation classifier escalation to {ptype}/{mname} failed: {e}")
+
+        logger.warning("Remediation classifier ladder exhausted, degrading to manual/high: "
+                       f"{bad[:200]}")
+        REMEDIATION_CLASSIFIER.labels(result='degraded').inc()
+        return fallback
 
     @staticmethod
     def _parse_remediation_classification(response_text: str) -> Optional[Dict[str, Any]]:
@@ -2418,6 +2488,12 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         _parse_triage_response). Values are only coerced, never invented:
         an unknown class or risk is passed through for
         normalize_remediation_fields to default conservatively.
+
+        Confidence is clamped to [0, 1] but NOT capped below the auto gate
+        (CFOP-48): an investigation-path classification is grounded in a real
+        investigation, and a confident gitops-patch/k8s-action at low risk is
+        allowed to auto-queue and become a human-merge-gated PR. The summary
+        path keeps its own _SUMMARY_CONFIDENCE_CAP — hunches stay capped.
         """
         text = (response_text or '').strip()
         start, end = text.find('{'), text.rfind('}')
@@ -2430,7 +2506,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if not isinstance(payload, dict) or not payload.get('remediation_class'):
             return None
         conf = payload.get('confidence')
-        conf = min(float(conf), _SUMMARY_CONFIDENCE_CAP) if isinstance(conf, (int, float)) else None
+        conf = min(max(float(conf), 0.0), 1.0) if isinstance(conf, (int, float)) else None
         return {
             'remediation_class': str(payload.get('remediation_class')),
             'risk': str(payload.get('risk') or 'high'),
