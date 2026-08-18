@@ -82,7 +82,7 @@
 const OUTCOMES = ['resolved','needs_action','monitoring','escalated','escalate','failed','in_progress','retry'];
 const OC = {resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',escalated:'--red',
   escalate:'--red',failed:'--red',in_progress:'--text-muted',retry:'--purple'};
-let filter='', ALL=[], REMS={};
+let filter='', ALL=[], REMS={}, REMID={};
 function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
 function badge(t,v){ const c=color(v); return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(t)||'—'}</span>`; }
 // Quotes are escaped too: these values also land inside HTML attributes,
@@ -100,7 +100,8 @@ async function load(){
   // CFOP-29; the list is newest-first, so first-seen wins.
   try{
     const rows=(await (await fetch('/api/remediations?limit=500')).json()).remediations||[];
-    REMS={}; rows.forEach(r=>{ if(r.investigation_id!=null && !(r.investigation_id in REMS)) REMS[r.investigation_id]=r; });
+    REMS={}; REMID={};
+    rows.forEach(r=>{ if(r.investigation_id!=null && !(r.investigation_id in REMS)) REMS[r.investigation_id]=r; REMID[r.id]=r; });
   }catch(e){ /* linkage is enhancement — the table still renders without it */ }
   paint(); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
@@ -108,10 +109,10 @@ async function load(){
 function safeUrl(u){ try{ const p=new URL(String(u==null?'':u), window.location.href);
   return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
 function remLink(r){
-  const m=REMS[r.id];
-  if(m) return `<a href="/remediations#${m.id}" onclick="event.stopPropagation()">#${m.id} ${esc(m.status)}</a>`;
-  // deduped repeats / rows past the 500-row map carry the id in the row itself
-  if(r.remediation_id) return `<a href="/remediations#${r.remediation_id}" onclick="event.stopPropagation()">#${r.remediation_id}</a>`;
+  // Deduped repeats carry only the id (the map keys the row under the FIRST
+  // investigation); resolve through REMID so they still get a status chip.
+  const m=REMS[r.id] || (r.remediation_id ? (REMID[r.remediation_id]||{id:r.remediation_id,status:''}) : null);
+  if(m) return `<a href="/remediations#${m.id}" onclick="event.stopPropagation()">#${m.id}${m.status?' '+esc(m.status):''}</a>`;
   const pr=safeUrl(r.remediation_pr_url);
   if(pr) return `<a href="${esc(pr)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">PR ↗</a>`;
   return r.outcome==='needs_action' ? '<span class="muted">none</span>' : '';
@@ -122,7 +123,7 @@ function remLink(r){
 // as a remediation too — that path deliberately bypasses the queue.
 function remDrawerLine(r){
   const f=r.findings||{};
-  const m=REMS[r.id] || (f.remediation_id ? {id:f.remediation_id, status:''} : null);
+  const m=REMS[r.id] || (f.remediation_id ? (REMID[f.remediation_id]||{id:f.remediation_id, status:''}) : null);
   if(m) return `<div class="kv"><b>remediation</b> <a href="/remediations#${m.id}">#${m.id}${m.status?' ('+esc(m.status)+')':''}</a></div>`;
   const pr=(f.remediation_proposal||{}).remediation_pr||{};
   const prUrl=pr.status==='opened'?safeUrl(pr.html_url):'';
