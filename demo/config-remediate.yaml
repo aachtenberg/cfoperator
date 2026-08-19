@@ -39,8 +39,9 @@ remediation:
   queue_drain: true
   queue_reap: true
   queue_verify: true
-
-executor:
-  namespace: cfop-demo
-  completion_base_url: http://cfop-demo-agent:8083/v1/remediations
-  git_repo: ${CFOP_GIT_REPO}
+  # _executor_config() reads remediation.executor — a top-level executor: block
+  # is silently ignored (which is exactly how the first cut of this file shipped).
+  executor:
+    namespace: cfop-demo
+    completion_base_url: http://cfop-demo-agent:8083/v1/remediations
+    git_repo: ${CFOP_GIT_REPO}

@@ -29,8 +29,9 @@ alertmanager:
     type: NodePort
     nodePort: 30093
   alertmanagerSpec:
-    # event_runtime polls the Alertmanager API; nothing routes to receivers.
-    # Short group_wait so a firing alert is visible to the poll immediately.
+    # event_runtime polls the Alertmanager API; nothing routes to receivers,
+    # and alerts are visible to the API as soon as they arrive — routing
+    # timers like group_wait don't gate the poll, so none are tuned here.
     resources:
       requests:
         cpu: 10m

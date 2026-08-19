@@ -64,7 +64,6 @@ note "Prometheus:   http://cfop-demo-control-plane:30090 (from the kind network)
 note "Alertmanager: http://cfop-demo-control-plane:30093"
 
 # ── 3. remediate-variant substrate (optional) ────────────────────────────────
-COMPOSE_ENV=()
 if [[ "$REMEDIATE" == 1 ]]; then
   say "Preparing executor namespace + secrets (remediate variant)"
   kubectl apply -f demo/manifests/executor-setup.yaml >/dev/null

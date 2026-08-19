@@ -127,7 +127,12 @@ def test_executor_callback_host_is_an_alias_the_override_creates():
     aliases = o["services"]["agent"]["networks"]["kind"]["aliases"]
     remediate = yaml.safe_load(
         re.sub(r"\$\{[^}]*\}", "x", (DEMO / "config-remediate.yaml").read_text()))
-    host = re.match(r"https?://([^:/]+)", remediate["executor"]["completion_base_url"]).group(1)
+    # _executor_config() reads remediation.executor — a top-level executor:
+    # block is silently ignored (the first cut of this file shipped that way,
+    # and this test pinned the dead key right along with it).
+    assert "executor" not in remediate, "top-level executor: is dead config"
+    executor = remediate["remediation"]["executor"]
+    host = re.match(r"https?://([^:/]+)", executor["completion_base_url"]).group(1)
     assert host in aliases, \
         f"executor Jobs will call {host}, but the agent's kind-network aliases are {aliases}"
 
@@ -141,7 +146,7 @@ def test_remediate_config_actually_lifts_the_profile_ceiling():
         "flags under profile: investigate are ceilinged off — the variant would demo nothing"
     for flag in ("queue_feed", "queue_drain", "queue_reap", "queue_verify"):
         assert remediate["remediation"].get(flag) is True
-    ns = remediate["executor"]["namespace"]
+    ns = remediate["remediation"]["executor"]["namespace"]
     docs = _manifest("executor-setup.yaml")
     assert any(d["kind"] == "Namespace" and d["metadata"]["name"] == ns for d in docs)
     assert any(d["kind"] == "ServiceAccount" and d["metadata"]["name"] == "cfoperator-executor"

@@ -25,7 +25,7 @@ Usage: python3 demo/ci/llm_stub.py [port]   (default 11434)
 
 import json
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "demo-stub"
 DIM = 768  # nomic-embed-text dimension; must match the pgvector column
@@ -96,4 +96,6 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 11434
     print(f"llm-stub listening on :{port} (model {MODEL})", flush=True)
-    HTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    # Threading: triage and embedding calls can overlap on a slow runner, and
+    # a single-threaded server would serialize them into timeout territory.
+    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

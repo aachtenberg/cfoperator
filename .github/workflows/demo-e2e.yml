@@ -27,6 +27,12 @@ jobs:
         with:
           install_only: true
 
+      - name: Install helm
+        # kind-action's install_only puts kind + kubectl on PATH but NOT helm,
+        # and ubuntu-latest doesn't ship it — up.sh's binary preflight would
+        # die after the cluster half already ran.
+        uses: azure/setup-helm@v4
+
       - name: Start the scripted LLM
         # The compose default OLLAMA_URL is host.docker.internal:11434, which
         # host-gateway maps to this runner — so the stub needs no compose

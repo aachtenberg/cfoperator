@@ -86,6 +86,19 @@ def test_citations_are_trimmed_not_dumped():
     assert all(set(c) == {'id', 'trigger', 'outcome', 'similarity'} for c in cited)
 
 
+def test_initialize_schema_ensures_the_embeddings_table():
+    """The production bug behind this seam: nothing ever created
+    investigation_embeddings, so fresh installs had embeddings writes and
+    similar-investigation search silently dead. Deleting the ensure call from
+    initialize_schema leaves every behavioral test green (none of them run
+    against postgres), so pin the call at source level."""
+    import inspect
+    from knowledge_base import KnowledgeBase
+    src = inspect.getsource(KnowledgeBase.initialize_schema)
+    assert "_ensure_investigation_embeddings_table" in src
+    assert hasattr(KnowledgeBase, "_ensure_investigation_embeddings_table")
+
+
 def test_vector_only_shape_also_cites():
     """The vector-only fallback path returns 'similarity' instead of
     'combined_score'; both shapes must survive persistence."""
