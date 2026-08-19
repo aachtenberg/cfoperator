@@ -216,6 +216,44 @@ def require_role(role: str):
     return decorator
 
 
+def require_token_scope(scope: str):
+    """Gate a route on a token scope, for routes any logged-in user may call
+    but a token needs a specific grant for (e.g. POST /api/learnings needs
+    ``investigate``).
+
+    require_role() cannot express this: token scopes collapse to a role there
+    (remediate -> admin, anything else -> member), so a read-only dashboard
+    token would pass a member-level role gate. Session users pass here — their
+    write access is what membership means, and admin-only routes still use
+    require_role. Denies by default when identity is unknown.
+    """
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            auth = getattr(g, "cfop_auth", None)
+            if auth is not None and auth.disabled:
+                return fn(*args, **kwargs)
+
+            token = current_token()
+            if token is not None:
+                if token.has_scope(scope):
+                    return fn(*args, **kwargs)
+                return jsonify({
+                    "error": "forbidden",
+                    "detail": f"this action requires the {scope} scope",
+                }), 403
+            # Session users: DB mode sets g.cfop_user; legacy env mode only has
+            # the session cookie (its single operator can do everything).
+            if current_user() is not None or session.get("cfop_user"):
+                return fn(*args, **kwargs)
+            return jsonify({"error": "authentication required"}), 401
+
+        return wrapper
+
+    return decorator
+
+
 class ConsoleAuth:
     """Holds the configured credentials and installs the Flask hooks."""
 

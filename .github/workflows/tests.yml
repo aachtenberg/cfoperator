@@ -65,7 +65,7 @@ jobs:
             echo "::endgroup::"
           }
 
-          for d in agent tools event_runtime executor changerecord worker mcp_server/tests bridge/tests; do
+          for d in agent tools event_runtime executor changerecord discovery worker mcp_server/tests bridge/tests; do
             run "${d}" "${root}/${d}:${root}" "${d}"
           done
 
