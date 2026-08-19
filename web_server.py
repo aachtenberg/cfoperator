@@ -22,7 +22,7 @@ from flask import Flask, request, jsonify, redirect, send_from_directory
 import time
 import requests
 
-from web_auth import ROLE_ADMIN, install_auth, require_role
+from web_auth import ROLE_ADMIN, install_auth, require_role, require_token_scope
 from auth.bootstrap import init_auth_store
 from auth.routes import build_auth_blueprint
 
@@ -1053,6 +1053,85 @@ class WebServer:
             except Exception as e:
                 logger.error(f"KB search failed: {e}")
                 return jsonify({'error': str(e), 'results': []}), 500
+
+        @self.app.route('/api/learnings', methods=['POST'])
+        @require_token_scope('investigate')
+        def create_learning():
+            """Write seam for out-of-process components (CFOP-47).
+
+            The discovery pass — and later the cockpit write-back (CFOP-37) —
+            seed learnings through here rather than touching the DB: the KB
+            schema stays private to the monolith and token scopes stay the
+            security model. Provenance (source / inferred / confidence) is
+            folded into tags rather than new columns, so nothing needs a
+            migration and the stamps are searchable.
+
+            applies_when is required: store_learning() auto-deprecates a
+            learning without a trigger condition (retrieval can never match
+            it), so accepting one would report success while seeding nothing.
+            """
+            body = request.get_json(silent=True)
+            if not isinstance(body, dict):
+                return jsonify({'error': 'JSON object body required'}), 400
+            missing = [f for f in ('learning_type', 'title', 'description', 'applies_when')
+                       if not str(body.get(f) or '').strip()]
+            if missing:
+                return jsonify({'error': f"missing required fields: {', '.join(missing)}"}), 400
+            allowed_types = ('pattern', 'solution', 'root_cause', 'antipattern', 'insight')
+            learning_type = str(body['learning_type']).strip()
+            if learning_type not in allowed_types:
+                return jsonify({'error': f"learning_type must be one of {allowed_types}"}), 400
+
+            tags = [str(t).strip() for t in (body.get('tags') or [])
+                    if isinstance(t, (str, int, float)) and str(t).strip()][:20]
+            source = str(body.get('source') or '').strip()
+            if source:
+                tags.append(f'source:{source[:50]}')
+            if body.get('inferred'):
+                tags.append('inferred')
+            confidence = body.get('confidence')
+            if isinstance(confidence, (int, float)) and 0 <= confidence <= 1:
+                tags.append(f'confidence:{confidence:.2f}')
+
+            try:
+                learning_id = self.operator.kb.store_learning({
+                    'learning_type': learning_type,
+                    'title': str(body['title']).strip()[:500],
+                    'description': str(body['description']).strip()[:20000],
+                    'applies_when': str(body['applies_when']).strip()[:5000],
+                    'solution_steps': body.get('solution_steps'),
+                    'services': [str(s).strip() for s in (body.get('services') or [])
+                                 if str(s).strip()][:20],
+                    'tags': tags,
+                    'category': (str(body['category']).strip()[:100]
+                                 if body.get('category') else None),
+                })
+            except Exception as e:
+                logger.error(f"store learning failed: {e}")
+                return jsonify({'error': str(e)}), 500
+            if not learning_id or learning_id < 0:
+                # The buffered KB returns -1 when the DB is unreachable; that is
+                # an outage, and 201 here would vanish the learning silently.
+                return jsonify({'error': 'knowledge base unavailable'}), 503
+            return jsonify({'id': learning_id, 'tags': tags}), 201
+
+        @self.app.route('/api/learnings/<int:learning_id>', methods=['DELETE'])
+        @require_role(ROLE_ADMIN)
+        def delete_learning(learning_id):
+            """Retire one learning (soft: deprecate, reversible in the DB).
+
+            The reviewability contract for discovery-seeded learnings — wrong
+            inferred context must be individually removable, because it feeds
+            every future investigation's orient phase.
+            """
+            try:
+                ok = self.operator.kb.deprecate_learning(learning_id)
+            except Exception as e:
+                logger.error(f"deprecate learning {learning_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+            if not ok:
+                return jsonify({'error': 'not found'}), 404
+            return jsonify({'id': learning_id, 'deprecated': True})
 
         @self.app.route('/api/sweep-reports')
         def sweep_reports():

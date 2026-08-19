@@ -59,6 +59,11 @@ def build_app(monkeypatch, store, **overrides):
     def investigations():
         return jsonify({"investigations": []})
 
+    @app.route("/api/learnings", methods=["POST"])
+    @web_auth.require_token_scope("investigate")
+    def create_learning():
+        return jsonify({"id": 1})
+
     @app.route("/")
     def index():
         return "<html>console</html>"
@@ -162,6 +167,43 @@ def test_read_only_token_cannot_approve(monkeypatch, store):
     assert c.get("/api/investigations", headers={"Authorization": f"Bearer {secret}"}).status_code == 200
     r = c.post("/api/remediations/1/approve", headers={"Authorization": f"Bearer {secret}"})
     assert r.status_code == 403
+
+
+def test_read_only_token_cannot_write_learnings(monkeypatch, store):
+    """require_role can't express this gate: token scopes collapse to a role
+    there (read -> member), and members may write learnings — so without a
+    scope check a dashboard credential could seed the KB."""
+    admin = store.create_user("root", PASSWORD, role=ROLE_ADMIN)
+    _row, secret = store.create_token("dashboard", ["read"], created_by=admin["id"])
+    c = build_app(monkeypatch, store).test_client()
+
+    r = c.post("/api/learnings", json={}, headers={"Authorization": f"Bearer {secret}"})
+    assert r.status_code == 403
+    assert "investigate" in r.get_json()["detail"]
+
+
+def test_investigate_token_can_write_learnings(monkeypatch, store):
+    admin = store.create_user("root", PASSWORD, role=ROLE_ADMIN)
+    _row, secret = store.create_token("discovery", ["investigate"], created_by=admin["id"])
+    c = build_app(monkeypatch, store).test_client()
+
+    r = c.post("/api/learnings", json={}, headers={"Authorization": f"Bearer {secret}"})
+    assert r.status_code == 200
+    assert r.get_json()["id"] == 1
+
+
+def test_member_session_can_write_learnings(monkeypatch, store):
+    store.create_user("bob", PASSWORD, role=ROLE_MEMBER)
+    c = build_app(monkeypatch, store).test_client()
+    assert c.post("/login", json={"username": "bob", "password": PASSWORD}).status_code == 200
+
+    assert c.post("/api/learnings", json={}).status_code == 200
+
+
+def test_anonymous_cannot_write_learnings(monkeypatch, store):
+    store.create_user("root", PASSWORD, role=ROLE_ADMIN)
+    c = build_app(monkeypatch, store).test_client()
+    assert c.post("/api/learnings", json={}).status_code == 401
 
 
 def test_revoked_token_is_refused(monkeypatch, store):
