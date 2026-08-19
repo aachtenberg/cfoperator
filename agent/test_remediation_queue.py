@@ -533,6 +533,14 @@ def _feed_op(feed=True):
     op._dispatch_dedupe_key = CFOperator._dispatch_dedupe_key
     op._open_remediation_for_key = lambda key: CFOperator._open_remediation_for_key(op, key)
     op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    # CFOP-53: mutation-shaped recs now go through the classifier. Default the
+    # stub to a degraded result so legacy-path tests stay on the direct-manual
+    # path deliberately (not via an exception); classified-lane tests override.
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": None, "repo": None})
+    op._maybe_queue_remediation = (
+        lambda inv_id, details: CFOperator._maybe_queue_remediation(op, inv_id, details))
     return _wire_flags(op)
 
 
@@ -590,10 +598,123 @@ def test_feed_from_sweeps_queues_human_only_manual():
     ]}]
     assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
     op.enqueue_investigation.assert_not_called()
+    # CFOP-53 regression guard: genuinely human work never spends a classifier
+    # call — the _HUMAN_ONLY_SHAPED gate keeps it on the direct-manual path.
+    op._classify_needs_action_recommendation.assert_not_called()
     kwargs = op.kb.queue_remediation.call_args.kwargs
     assert kwargs["remediation_class"] == "manual"
     assert kwargs["risk"] == "high"
     assert kwargs["dedupe_key"] == "sweep-f1"
+
+
+def test_feed_from_sweeps_classifies_mutation_shaped():
+    # CFOP-53 (live row #43): concrete "change this" recs are the ones most
+    # like executor work — they must reach the classifier and enqueue with a
+    # real class/confidence/provider instead of hardcoded manual/None.
+    op = _feed_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
+        "host": None, "repo": None})
+    reports = [{
+        "sweep_meta": {"provider": "ollama", "model": "gemma4:26b"},
+        "findings": [
+            {"id": "f43", "finding": "plane-api readiness flaps",
+             "evidence": "probe timeout 1s under inference load",
+             "remediation": "Increase readinessProbe timeoutSeconds to 5 for plane-api",
+             "severity": "warning", "namespace": "plane"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
+    op._classify_needs_action_recommendation.assert_called_once()
+    op.enqueue_investigation.assert_not_called()
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["remediation_class"] == "gitops-patch"
+    assert kwargs["confidence"] == 0.9
+    assert kwargs["risk"] == "low"
+    assert kwargs["investigation_id"] is None  # no source investigation
+    assert kwargs["host_id"] == "plane"  # falls back to the finding's namespace
+    assert kwargs["dedupe_key"] == "sweep-f43"
+    payload = kwargs["payload"]
+    assert payload["provider"] == "ollama/gemma4:26b"
+    assert payload["dedupe_key"] == "sweep-f43"  # in both places (KB contract)
+    assert "probe timeout 1s" in payload["rendered_context"]
+
+
+def test_feed_from_sweeps_classifier_degrade_falls_back_to_manual():
+    # Fail toward current behavior: a degraded classification (manual with no
+    # confidence) must not change what the feed did before CFOP-53 — direct
+    # manual enqueue with severity-derived risk, never a dropped finding.
+    op = _feed_op()  # harness default stub IS the degrade shape
+    reports = [{"findings": [
+        {"id": "f1", "finding": "promtail OOM",
+         "remediation": "Increase memory limit for promtail",
+         "severity": "warning", "resource_name": "promtail"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
+    op._classify_needs_action_recommendation.assert_called_once()
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["remediation_class"] == "manual"
+    assert kwargs["risk"] == "med"  # severity-derived, not the degrade's 'high'
+    assert kwargs["dedupe_key"] == "sweep-f1"
+    assert kwargs["payload"]["finding"] == "promtail OOM"  # legacy payload shape
+
+
+def test_feed_from_sweeps_classifier_exception_falls_back_to_manual():
+    op = _feed_op()
+    op._classify_needs_action_recommendation = MagicMock(side_effect=RuntimeError("llm down"))
+    reports = [{"findings": [
+        {"id": "f1", "finding": "promtail OOM",
+         "remediation": "Increase memory limit for promtail",
+         "severity": "critical", "resource_name": "promtail"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["remediation_class"] == "manual"
+    assert kwargs["dedupe_key"] == "sweep-f1"
+
+
+def test_feed_from_sweeps_classifier_investigate_dispatches():
+    # The rubric prefers 'investigate' for borderline recs the
+    # _INVESTIGATE_SHAPED regex missed. Enqueuing that class would normalize
+    # it to 'manual' (not in _REMEDIATION_CLASSES) and park the row — the
+    # opposite of what the same class does everywhere else.
+    op = _feed_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "investigate", "risk": "low", "confidence": 0.7,
+        "host": None, "repo": None})
+    reports = [{"findings": [
+        {"id": "f7", "finding": "Loki flushes slow",
+         "remediation": "Correlate flush latency with ingester restarts",
+         "severity": "warning", "resource_name": "loki"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1
+    op.kb.queue_remediation.assert_not_called()
+    op.enqueue_investigation.assert_called_once()
+    arg = op.enqueue_investigation.call_args.args[0]
+    assert arg["source"] == "sweep-investigate"
+    assert arg["dedupe_key"] == CFOperator._dispatch_dedupe_key("loki", "Loki flushes slow")
+
+
+def test_maybe_queue_remediation_truncates_host_id():
+    # RemediationQueue.host_id is String(64); an over-long k8s resource name
+    # must not reject the INSERT after classification already succeeded.
+    op = _wire_flags(MagicMock())
+    op.config = {"remediation": {"queue_feed": True}}
+    op.kb.queue_remediation.return_value = 5
+    details = {"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
+               "recommendation": "r", "host": "a" * 100}
+    assert CFOperator._maybe_queue_remediation(op, None, details) == 5
+    assert op.kb.queue_remediation.call_args.kwargs["host_id"] == "a" * 64
+
+
+def test_feed_from_sweeps_classified_dedupe_not_double_enqueued():
+    # A deduped classified row must not fall through and try the manual path —
+    # one finding, one queue_remediation call.
+    op = _feed_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
+        "host": "plane", "repo": None})
+    op.kb.queue_remediation.return_value = None  # deduped by kb
+    reports = [{"findings": [
+        {"id": "f43", "remediation": "Increase readinessProbe timeoutSeconds",
+         "severity": "warning", "namespace": "plane"}]}]
+    assert CFOperator._feed_remediations_from_sweeps(op, reports) == 0
+    op.kb.queue_remediation.assert_called_once()
 
 
 def test_feed_from_sweeps_dedup_not_counted():

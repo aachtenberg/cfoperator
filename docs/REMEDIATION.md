@@ -115,7 +115,10 @@ stateDiagram-v2
   - deep-investigation results carrying `remediation_class` (`_maybe_queue_remediation`)
   - morning-summary **structured recommendations** (`_feed_remediations_from_summary`),
     with raw sweep-finding fallback; `investigate`-class recs are **dispatched as
-    autonomous investigations**, not queued as needs-human
+    autonomous investigations**, not queued as needs-human. Mutation-shaped sweep
+    recs go through the **CFOP-48 classifier + auto-queue gates** (CFOP-53) —
+    only genuinely human-shaped recs enqueue directly as `manual`, and classifier
+    degrade/failure falls back to that manual path rather than dropping a finding
   - manual operator-authored: `POST /api/remediations`
 - **Worker thread** (`_remediation_worker_loop`) — reaper · drainer · verify, off
   the OODA loop so a long sweep can't starve them.

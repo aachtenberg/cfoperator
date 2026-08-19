@@ -2345,8 +2345,12 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         elig = remediation_is_auto_eligible(nc, nr, confidence)
         REMEDIATION_ENQUEUED.labels(source=source, remediation_class=nc, eligible=str(elig).lower()).inc()
 
-    def _maybe_queue_remediation(self, investigation_id: int, details: Dict[str, Any]) -> Optional[int]:
-        """Enqueue a remediation from an investigation's structured hints.
+    def _maybe_queue_remediation(self, investigation_id: Optional[int],
+                                 details: Dict[str, Any]) -> Optional[int]:
+        """Enqueue a remediation from structured classification hints.
+
+        ``investigation_id`` is None for rows with no source investigation —
+        the classified sweep-feed path (CFOP-53) enqueues through here too.
 
         Off unless ``remediation.queue_feed`` is set. No-op when the investigator
         didn't classify the recommendation (no ``remediation_class``).
@@ -2388,7 +2392,9 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 remediation_class=str(rclass),
                 payload=payload,
                 investigation_id=investigation_id,
-                host_id=str(details.get('host') or 'default'),
+                # String(64) column — a long k8s resource name would reject the
+                # INSERT, dropping the row after classification succeeded.
+                host_id=str(details.get('host') or 'default')[:64],
                 risk=risk,
                 confidence=confidence,
                 dedupe_key=dedupe_key,
@@ -2687,8 +2693,15 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         Off unless ``remediation.queue_feed`` is set. Investigate-shaped
         recommendations (check/verify/monitor/…) are dispatched as autonomous
         investigations — the agent gathers evidence itself rather than parking
-        them as needs-human. Only genuinely human-shaped recs enqueue as
-        ``manual``. Deduped by finding id for the manual path.
+        them as needs-human. Mutation-shaped recs (concrete "change this")
+        go through the CFOP-48 classifier + auto-queue gates, same as a
+        needs_action investigation — they are the recs *most* like executor
+        work, and hardcoding them ``manual`` dead-parked them with no
+        class/confidence stamp (CFOP-53, live row #43). Only genuinely
+        human-shaped recs enqueue directly as ``manual``; classifier
+        degrade/failure falls back to that same path so a finding is never
+        dropped because classification hiccupped. Deduped by finding id on
+        every non-investigate path.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_feed'):
@@ -2733,6 +2746,65 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     except Exception as e:
                         logger.warning(f"could not dispatch sweep investigation for '{title}': {e}")
                     continue
+                provider = _llm_provider_tag(rep.get('sweep_meta') or {})
+                if not _HUMAN_ONLY_SHAPED.search(rec):
+                    # CFOP-53: mutation-shaped recs get the same classify →
+                    # gate lane as needs_action investigations. A confident
+                    # gitops-patch/k8s-action at low risk auto-queues; parked
+                    # rows still carry class/confidence/provider so they say
+                    # why. Degrade (manual + no confidence) or a classifier
+                    # error falls through to the legacy manual enqueue below.
+                    try:
+                        hints = self._classify_needs_action_recommendation(
+                            title, rec,
+                            {'labels': {k: v for k, v in (
+                                ('namespace', f.get('namespace')),
+                                ('resource', f.get('resource_name'))) if v}},
+                            report=str(f.get('evidence') or ''))
+                        if hints.get('remediation_class') == 'investigate':
+                            # The rubric prefers investigate for borderline
+                            # recs the _INVESTIGATE_SHAPED regex missed. Honor
+                            # it like the shaped branch above — enqueuing would
+                            # coerce the unknown class to 'manual' (not in
+                            # _REMEDIATION_CLASSES) and park the row.
+                            host = f.get('resource_name') or f.get('namespace') or ''
+                            dispatch_key = self._dispatch_dedupe_key(host, title)
+                            if not self._open_remediation_for_key(dispatch_key):
+                                self.enqueue_investigation({
+                                    'summary': f"{title}: {rec}"[:300],
+                                    'source': 'sweep-investigate',
+                                    'host': host,
+                                    'dedupe_key': dispatch_key,
+                                })
+                                dispatched += 1
+                            handled += 1
+                            continue
+                        degraded = (hints.get('remediation_class') == 'manual'
+                                    and hints.get('confidence') is None)
+                        if not degraded:
+                            details = dict(hints)
+                            if not details.get('host'):
+                                details['host'] = (f.get('resource_name')
+                                                   or f.get('namespace'))
+                            details.update({
+                                'recommendation': rec,
+                                'report': '\n'.join(
+                                    p for p in (finding, str(f.get('evidence') or ''))
+                                    if p),
+                                'source': 'morning-summary/sweep',
+                                'dedupe_key': key,
+                            })
+                            if provider:
+                                details['provider'] = provider
+                            rid = self._maybe_queue_remediation(None, details)
+                            if rid:
+                                enq += 1
+                                handled += 1
+                            continue
+                    except Exception as e:
+                        logger.warning(
+                            f"sweep rec classification failed for '{title}', "
+                            f"falling back to manual enqueue: {e}")
                 try:
                     payload = {
                         'recommendation': rec,
@@ -2744,7 +2816,6 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                         'source': 'morning-summary/sweep',
                         'dedupe_key': key,
                     }
-                    provider = _llm_provider_tag(rep.get('sweep_meta') or {})
                     if provider:
                         payload['provider'] = provider
                     rid = self.kb.queue_remediation(
@@ -2763,7 +2834,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     logger.error(f"sweep->remediation enqueue failed: {e}", exc_info=True)
         if handled:
             logger.info(f"Fed {handled} sweep finding(s): "
-                        f"{dispatched} investigation(s), {enq} manual remediation(s)")
+                        f"{dispatched} investigation(s), {enq} queue row(s)")
         return handled
 
     def feed_remediations_from_recent_sweeps(self, limit: int = 10) -> int:
@@ -2843,6 +2914,15 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # (check/verify/monitor/…) is also dispatched — the cheap model
             # often defaults to manual for "check CoreDNS" style items.
             # Only genuinely human-only manuals still queue.
+            #
+            # Deliberate policy split with the sweep path (CFOP-53): the sweep
+            # feed runs mutation-shaped recs through the dedicated CFOP-48
+            # classifier (fresh call, shared rubric, escalation ladder) and its
+            # verdict can auto-queue. The class labels HERE are the summary
+            # model's own JSON self-labels — no second opinion — which is why
+            # they are dispatch-only. Trust the classifier's classification,
+            # not the summarizer's; do not "unify" the two feeds by loosening
+            # this one.
             route_investigate = (
                 rclass == 'investigate'
                 or rclass in _SUMMARY_MUTATION_CLASSES
