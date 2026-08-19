@@ -280,3 +280,34 @@ func captureStdout(t *testing.T, fn func()) string {
 	os.Stdout = orig
 	return <-done
 }
+
+// --- cockpit session token (CFOP-32) -----------------------------------------
+
+func TestSwapSessionTokenIsWhatAChildActuallyReads(t *testing.T) {
+	// The env var children inherit and every client reads is CFOP_API_TOKEN.
+	// The swap must put the minted secret THERE — a side-channel variable
+	// would leave the standing laptop token on exactly the path the session
+	// credential exists to shrink.
+	t.Setenv(cfoperator.EnvAPIToken, "standing-laptop-token")
+
+	restore := swapSessionToken("cfop_minted_session_secret")
+	if got := os.Getenv(cfoperator.EnvAPIToken); got != "cfop_minted_session_secret" {
+		t.Fatalf("child-visible %s = %q, want the minted secret", cfoperator.EnvAPIToken, got)
+	}
+
+	restore()
+	if got := os.Getenv(cfoperator.EnvAPIToken); got != "standing-laptop-token" {
+		t.Fatalf("after restore %s = %q, want the standing token back", cfoperator.EnvAPIToken, got)
+	}
+}
+
+func TestSwapSessionTokenRestoresAnUnsetEnvToUnset(t *testing.T) {
+	// A laptop configured via config.yaml has no env token at all; restore
+	// must not invent one.
+	os.Unsetenv(cfoperator.EnvAPIToken)
+	restore := swapSessionToken("cfop_minted")
+	restore()
+	if _, present := os.LookupEnv(cfoperator.EnvAPIToken); present {
+		t.Fatalf("%s should be unset again after restore", cfoperator.EnvAPIToken)
+	}
+}

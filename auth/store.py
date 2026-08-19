@@ -283,6 +283,7 @@ class AuthStore:
         created_by: Optional[int] = None,
         creator_role: str = ROLE_ADMIN,
         expires_in_days: Optional[int] = None,
+        ttl_seconds: Optional[int] = None,
     ) -> tuple[dict, str]:
         """Mint a token. Returns ``(row, secret)`` — the secret is never recoverable."""
         label = (label or "").strip()
@@ -305,10 +306,19 @@ class AuthStore:
 
         secret = mint_token()
         expires_at = None
+        if expires_in_days is not None and ttl_seconds is not None:
+            raise AuthError("set expires_in_days or ttl_seconds, not both")
         if expires_in_days is not None:
             if expires_in_days <= 0:
                 raise AuthError("expires_in_days must be positive")
             expires_at = utcnow() + timedelta(days=expires_in_days)
+        # Seconds-granular expiry for cockpit session tokens (CFOP-32): a
+        # session credential's TTL is hours, and day granularity would leave a
+        # leaked token alive long after the session it belonged to.
+        if ttl_seconds is not None:
+            if ttl_seconds <= 0:
+                raise AuthError("ttl_seconds must be positive")
+            expires_at = utcnow() + timedelta(seconds=ttl_seconds)
 
         session = self._session()
         try:

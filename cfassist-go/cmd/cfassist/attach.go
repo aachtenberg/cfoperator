@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/cfoperator"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
@@ -41,8 +42,11 @@ be piped into whatever agent the operator actually drives.
 Pass a trailing question to get a one-shot answer against the briefing instead
 of an interactive session.
 
-Read-only: attach makes GET requests and nothing else. Approving or rejecting a
-remediation happens in the console or through the MCP server.
+The data plane is read-only: investigation/remediation/KB reads are GET-only in
+the transport itself. Approving or rejecting a remediation happens in the
+console or through the MCP server. The one write an interactive session makes
+is to its own credential: it mints a short-lived session token on start and
+revokes it on exit (see --session-ttl / --no-session-token).
 
 The CFOperator address is --agent-url (or CFOP_AGENT_URL / cfoperator.url in the
 config). The global --url flag is the *LLM* endpoint and does not point here —
@@ -59,6 +63,14 @@ were a model server, which is a natural thing to type against a port-forward.`,
 		"CFOperator agent URL (default: CFOP_AGENT_URL, or cfoperator.url from config)")
 	cmd.Flags().BoolVar(&flagAttachPrint, "print", false,
 		"Render the briefing to stdout and exit without starting a session")
+	// Cockpit session token (CFOP-32): interactive sessions carry a credential
+	// that dies with them instead of the operator's standing token.
+	cmd.Flags().Duration("session-ttl", 4*time.Hour,
+		"TTL of the per-session cockpit token (revoked on exit; expiry covers unclean exits)")
+	cmd.Flags().Bool("no-session-token", false,
+		"Do not mint a per-session cockpit token")
+	cmd.Flags().Bool("remediate", false,
+		"Request the remediate scope on the session token (your account's ceiling still applies)")
 	return cmd
 }
 
@@ -144,12 +156,65 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		return runNonInteractive(cfg, llm, toolReg, systemPrompt, question)
 	}
 
+	// Cockpit session token (CFOP-32): interactive sessions get a credential
+	// bound to this investigation that dies with the session — revoked on
+	// clean exit below, expired by TTL on unclean ones. --print and one-shot
+	// questions mint nothing: there is no session for a token to die with.
+	// Minting is best-effort on purpose: against an agent that predates the
+	// TTL mint the briefing is still the product, so we warn and continue.
+	if noTok, _ := cmd.Flags().GetBool("no-session-token"); !noTok {
+		ttl, _ := cmd.Flags().GetDuration("session-ttl")
+		scopes := []string{"investigate"}
+		if rem, _ := cmd.Flags().GetBool("remediate"); rem {
+			scopes = []string{"remediate"}
+		}
+		mint := cfoperator.NewSessionTokenClient(url, token, 30*time.Second)
+		if sess, mintErr := mint.Mint(investigationID, scopes, ttl); mintErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: no session token: %v\n", mintErr)
+		} else {
+			// Point CFOP_API_TOKEN — the variable every client actually reads
+			// (ResolveEndpoint, mcp_server) — at the dying credential, so the
+			// session's children inherit it INSTEAD of the operator's standing
+			// token. Exporting a second variable alongside would leave the
+			// standing token on exactly the path this feature exists to shrink.
+			// The mint client keeps the standing token on its struct, so the
+			// revoke below still authenticates after the swap.
+			restore := swapSessionToken(sess.Secret)
+			fmt.Printf("session token %s (%s…, scopes %s, TTL %s) — revoked on exit\n",
+				sess.Label, sess.Prefix, strings.Join(scopes, ","), ttl)
+			defer func() {
+				restore()
+				if revErr := mint.Revoke(sess.ID); revErr != nil {
+					fmt.Fprintf(os.Stderr,
+						"warning: could not revoke session token %s (it expires in %s anyway): %v\n",
+						sess.Prefix, ttl, revErr)
+				}
+			}()
+		}
+	}
+
 	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider)
 	if err != nil {
 		return err
 	}
 	config.SaveState(result.Provider, result.Model)
 	return nil
+}
+
+// swapSessionToken points CFOP_API_TOKEN at the minted session secret and
+// returns the restore for the clean-exit defer. Overwrite, not augment: the
+// point is that a child inspecting its environment finds the credential that
+// dies with the session, and only that one.
+func swapSessionToken(secret string) (restore func()) {
+	prior, had := os.LookupEnv(cfoperator.EnvAPIToken)
+	os.Setenv(cfoperator.EnvAPIToken, secret)
+	return func() {
+		if had {
+			os.Setenv(cfoperator.EnvAPIToken, prior)
+		} else {
+			os.Unsetenv(cfoperator.EnvAPIToken)
+		}
+	}
 }
 
 // formatAPIError renders a CFOperator error with its operator-facing hint on a

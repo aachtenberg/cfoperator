@@ -246,6 +246,22 @@ def build_auth_blueprint(store) -> Blueprint:
             except (TypeError, ValueError):
                 raise AuthError("expires_in_days must be a number")
 
+        # Cockpit session tokens (CFOP-32): seconds-granular TTL, plus an
+        # investigation id recorded in the audit row — binding starts as an
+        # audit fact, not an enforcement field.
+        ttl_seconds = data.get("ttl_seconds")
+        if ttl_seconds is not None:
+            try:
+                ttl_seconds = int(ttl_seconds)
+            except (TypeError, ValueError):
+                raise AuthError("ttl_seconds must be a number")
+        investigation_id = data.get("investigation_id")
+        if investigation_id is not None:
+            try:
+                investigation_id = int(investigation_id)
+            except (TypeError, ValueError):
+                raise AuthError("investigation_id must be a number")
+
         row, secret = store.create_token(
             data.get("label") or "",
             scopes or [],
@@ -255,9 +271,14 @@ def build_auth_blueprint(store) -> Blueprint:
             # what keeps a member from minting itself a remediate credential.
             creator_role=_effective_role() or ROLE_MEMBER,
             expires_in_days=expires_in_days,
+            ttl_seconds=ttl_seconds,
         )
-        audit(EVENT_TOKEN_CREATED, target=row["token_prefix"],
-              token_id=row["id"], label=row["label"], scopes=row["scopes"])
+        detail = {"token_id": row["id"], "label": row["label"], "scopes": row["scopes"]}
+        if investigation_id is not None:
+            detail["investigation_id"] = investigation_id
+        if ttl_seconds is not None:
+            detail["ttl_seconds"] = ttl_seconds
+        audit(EVENT_TOKEN_CREATED, target=row["token_prefix"], **detail)
         # The only moment the secret exists in cleartext anywhere: the store
         # keeps a SHA-256 digest and never the value, so a caller that loses
         # this response has to mint a new token.

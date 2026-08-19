@@ -363,3 +363,56 @@ def test_database_failure_returns_503_not_403(store, admin):
     r = c.post("/api/auth/tokens", json={"label": "x", "scopes": ["read"]})
     assert r.status_code == 503
     assert r.get_json()["error"] == "authentication backend unavailable"
+
+
+# ---- cockpit session tokens (CFOP-32) ---------------------------------
+
+
+def test_cockpit_mint_carries_ttl_and_investigation_into_audit(store, admin):
+    c = login(build_app(store), "root")
+
+    r = c.post("/api/auth/tokens", json={
+        "label": "cockpit-inv-1889", "scopes": ["investigate"],
+        "ttl_seconds": 3600, "investigation_id": 1889})
+    assert r.status_code == 201
+    body = r.get_json()
+    assert store.verify_token(body["secret"]) is not None
+    assert body["expires_at"] is not None
+
+    # Binding starts as an audit fact: the mint row must say which
+    # investigation this credential belonged to.
+    events = store.recent_audit(event="token.created")
+    assert events and events[0]["detail"]["investigation_id"] == 1889
+    assert events[0]["detail"]["ttl_seconds"] == 3600
+
+
+def test_cockpit_revoke_kills_the_session_token(store, admin):
+    """Done-when: the token stops working at detach."""
+    c = login(build_app(store), "root")
+    body = c.post("/api/auth/tokens", json={
+        "label": "cockpit-inv-7", "scopes": ["investigate"],
+        "ttl_seconds": 3600, "investigation_id": 7}).get_json()
+    assert store.verify_token(body["secret"]) is not None
+
+    assert c.delete(f"/api/auth/tokens/{body['id']}").status_code == 200
+    assert store.verify_token(body["secret"]) is None
+    assert store.recent_audit(event="token.revoked")
+
+
+def test_member_cockpit_mint_cannot_reach_remediate(store, admin, member):
+    """--remediate on attach is a request, not a grant: the ceiling holds on
+    the short-lived path exactly as it does on standing tokens."""
+    c = login(build_app(store), "alice")
+    r = c.post("/api/auth/tokens", json={
+        "label": "cockpit-inv-9", "scopes": ["remediate"],
+        "ttl_seconds": 3600, "investigation_id": 9})
+    assert r.status_code == 400
+    assert "cannot grant" in r.get_json()["error"]
+
+
+def test_bad_ttl_and_investigation_are_400(store, admin):
+    c = login(build_app(store), "root")
+    assert c.post("/api/auth/tokens", json={
+        "label": "x", "scopes": ["read"], "ttl_seconds": "soon"}).status_code == 400
+    assert c.post("/api/auth/tokens", json={
+        "label": "x", "scopes": ["read"], "investigation_id": "later"}).status_code == 400
