@@ -1,0 +1,47 @@
+# Demo config for the remediation (PR-loop) variant of the kind demo.
+#
+# Identical to deploy/compose/config.yaml except: the profile is `remediate`
+# (the trial default `investigate` hard-ceilings every remediation flag off),
+# the queue flags are on, and the executor block tells the drain where to run
+# Jobs (the demo kind cluster) and how those Jobs call back (the compose
+# agent's alias on the kind network — see demo/docker-compose.demo.yml).
+#
+# Used via:  CFOP_DEMO_CONFIG=./demo/config-remediate.yaml demo/up.sh --remediate
+
+profile: remediate
+
+llm:
+  backend: ollama
+  url: ${OLLAMA_URL}
+  model: ${OLLAMA_MODEL}
+
+prometheus:
+  url: ${PROMETHEUS_URL}
+
+alertmanager:
+  url: ${ALERTMANAGER_URL}
+
+loki:
+  url: ${LOKI_URL}
+
+notify:
+  slack_webhook: ${SLACK_WEBHOOK_URL}
+  discord_webhook: ${DISCORD_WEBHOOK_URL}
+
+database:
+  host: ${POSTGRES_HOST}
+  database: ${POSTGRES_DB}
+  user: ${POSTGRES_USER}
+  password: ${POSTGRES_PASSWORD}
+
+remediation:
+  queue_feed: true
+  queue_drain: true
+  queue_reap: true
+  queue_verify: true
+  # _executor_config() reads remediation.executor — a top-level executor: block
+  # is silently ignored (which is exactly how the first cut of this file shipped).
+  executor:
+    namespace: cfop-demo
+    completion_base_url: http://cfop-demo-agent:8083/v1/remediations
+    git_repo: ${CFOP_GIT_REPO}

@@ -79,7 +79,7 @@ jobs:
             test_http_investigate.py test_k8s_probe_filter.py \
             test_triage_engine.py test_github_integration.py test_event_runtime.py \
             test_compose_trial.py test_cockpit_attach_contract.py \
-            test_demo_alert.py
+            test_demo_alert.py test_demo_kind.py
 
           exit "${fail}"
 

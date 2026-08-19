@@ -57,3 +57,6 @@ Thumbs.db
 # not source). Kept out of the tree so a benchmark run does not dirty the repo.
 tool_calling_results.json
 sweep_comparison_results.json
+
+# Kind-demo local state (kubeconfigs are credentials; demo/up.sh rewrites them)
+demo/.kube/

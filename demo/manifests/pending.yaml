@@ -1,0 +1,32 @@
+# Fault: unschedulable pod. demo/fault.sh taints every node with
+# cfop-demo=fault:NoSchedule first; this pod carries no matching toleration,
+# so it sits Pending with an untolerated-taint scheduler message.
+#
+# Shape matters (test_demo_kind.py guards it): the add-toleration proposer in
+# agent/remediation.py DECLINES pods that already carry tolerations or that
+# are pinned via nodeSelector/nodeName — this manifest must have none of
+# those, or the remediation variant demos a decline instead of a patch PR.
+#
+# For the PR-loop variant, a copy of this manifest is what lives in your
+# scratch GitHub repo; the executor's proposed diff adds the toleration there.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __NAME__
+  namespace: demo-faults
+  labels:
+    app: cfop-demo-fault
+    fault: pending
+spec:
+  restartPolicy: Always
+  containers:
+    - name: idle
+      image: busybox:1.36
+      command: ["sh", "-c", "sleep infinity"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 50m
+          memory: 32Mi

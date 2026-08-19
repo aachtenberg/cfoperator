@@ -1146,6 +1146,14 @@ class KnowledgeBase:
         as "initialized" (ResilientKnowledgeBase retries on that signal).
         """
         Base.metadata.create_all(self.engine)
+        # Ensure investigation_embeddings exists BEFORE ensure_fts_schema, which
+        # ALTERs it. Until CFOP-31's fresh-install demo, nothing ever created
+        # this table (the production DB predates the code and was built by
+        # hand), so on every new install store_investigation_embedding and the
+        # similar-investigation search both failed silently — the
+        # institutional-memory feature was dead exactly where it was being
+        # shown off.
+        self._ensure_investigation_embeddings_table()
         # Ensure FTS columns exist (added after initial schema)
         self.ensure_fts_schema()
         # Ensure learning_embeddings table exists for semantic search on learnings
@@ -1218,6 +1226,43 @@ class KnowledgeBase:
         except Exception as e:
             _log("error", "Could not ensure investigations.valid_outcome constraint", error=str(e))
             return False
+
+    def _ensure_investigation_embeddings_table(self):
+        """Create investigation_embeddings if it doesn't exist.
+
+        Mirrors _ensure_learning_embeddings_table. The UNIQUE on
+        investigation_id is load-bearing: store_investigation_embedding
+        upserts with ON CONFLICT (investigation_id). search_tsv is created
+        here directly; ensure_fts_schema keeps backfilling it for databases
+        that predate the column.
+        """
+        try:
+            from sqlalchemy import text
+            with self.session_scope() as session:
+                session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS investigation_embeddings (
+                        id SERIAL PRIMARY KEY,
+                        investigation_id INTEGER NOT NULL UNIQUE
+                            REFERENCES investigations(id) ON DELETE CASCADE,
+                        embedding vector(768),
+                        embedding_model VARCHAR(100) NOT NULL,
+                        embedding_text TEXT NOT NULL,
+                        search_tsv tsvector,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """))
+                session.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_investigation_embeddings_vector
+                    ON investigation_embeddings USING hnsw (embedding vector_cosine_ops)
+                    WITH (m = 16, ef_construction = 64)
+                """))
+                session.execute(text("""
+                    CREATE INDEX IF NOT EXISTS idx_investigation_embeddings_tsv
+                    ON investigation_embeddings USING gin (search_tsv)
+                """))
+                session.commit()
+        except Exception as e:
+            _log("error", "investigation_embeddings table setup failed", error=str(e))
 
     def _ensure_learning_embeddings_table(self):
         """Create learning_embeddings table if it doesn't exist."""

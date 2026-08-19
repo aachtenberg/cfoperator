@@ -1,0 +1,20 @@
+# Remediate-variant substrate (CFOP-31): the namespace + ServiceAccount the
+# agent's drain loop spawns executor Jobs into (config: executor.namespace).
+# GitOps-class executor Jobs never touch the cluster — their only output is a
+# GitHub PR + a completion POST back to the agent — so the SA needs no RBAC.
+#
+# The Job also expects a `cfoperator-secrets` Secret here (GITHUB_TOKEN
+# required, ANTHROPIC_API_KEY optional); demo/up.sh creates it from your
+# environment rather than a manifest, so tokens never land in a file.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cfop-demo
+  labels:
+    app.kubernetes.io/managed-by: cfoperator-demo
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cfoperator-executor
+  namespace: cfop-demo

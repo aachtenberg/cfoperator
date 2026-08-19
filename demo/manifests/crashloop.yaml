@@ -1,0 +1,25 @@
+# Fault: CrashLoopBackOff. A pod whose only container exits 1 immediately;
+# restartPolicy Always turns that into the canonical crash loop.
+# __NAME__ is stamped by demo/fault.sh so repeat runs (the memory beat) get
+# distinct pods and therefore distinct — but similar — alerts.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: __NAME__
+  namespace: demo-faults
+  labels:
+    app: cfop-demo-fault
+    fault: crashloop
+spec:
+  restartPolicy: Always
+  containers:
+    - name: boom
+      image: busybox:1.36
+      command: ["sh", "-c", "echo 'demo fault: exiting'; exit 1"]
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 50m
+          memory: 32Mi
