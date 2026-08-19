@@ -290,3 +290,27 @@ def test_bootstrap_token_minted_and_idempotent(store, tmp_path, monkeypatch):
     assert new_secret != secret
     assert store.verify_token(secret) is None, "orphaned token must be revoked"
     assert store.verify_token(new_secret) is not None
+
+
+def test_bootstrap_db_only_skips_file_seeding(store, monkeypatch):
+    """CFOP-30: the Helm chart provides session secret + API token via
+    Secrets; its bootstrap Job runs DB-only. Without the flag honored, every
+    `helm upgrade` would revoke + remint a DB token nobody reads (idempotence
+    is keyed on a file that lives in the Job's emptyDir)."""
+    import scripts.compose_bootstrap as boot
+
+    calls = []
+    monkeypatch.setattr(boot, "wait_for_db", lambda *a: calls.append("db") or store)
+    monkeypatch.setattr(boot, "ensure_pgvector", lambda: calls.append("pgvector"))
+    monkeypatch.setattr(boot, "seed_admin", lambda s: calls.append("admin"))
+    monkeypatch.setattr(boot, "ensure_session_secret", lambda: calls.append("session"))
+    monkeypatch.setattr(boot, "ensure_event_runtime_token", lambda s: calls.append("token"))
+
+    monkeypatch.setenv("CFOP_BOOTSTRAP_DB_ONLY", "true")
+    assert boot.main() == 0
+    assert calls == ["db", "pgvector", "admin"]
+
+    calls.clear()
+    monkeypatch.delenv("CFOP_BOOTSTRAP_DB_ONLY")
+    assert boot.main() == 0
+    assert calls == ["db", "pgvector", "admin", "session", "token"]

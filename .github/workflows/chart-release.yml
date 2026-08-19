@@ -1,0 +1,32 @@
+name: Chart release
+
+# CFOP-30: publish the chart to ghcr as OCI on version tags. Chart version and
+# appVersion both become the tag, matching the image/deploy release flow.
+# Install with:
+#   helm install cfoperator oci://ghcr.io/aachtenberg/charts/cfoperator -f values.yaml
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Package and push
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          helm package charts/cfoperator --version "$VERSION" --app-version "$VERSION"
+          helm push "cfoperator-${VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"

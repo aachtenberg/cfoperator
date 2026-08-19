@@ -1,0 +1,16 @@
+# CFOP-30: the public k8s trial path. `helm install` with a ~15-line values
+# file replaces the trial compose's compose half; the homelab's private
+# cfoperator-deploy/ArgoCD story is unaffected and stays the prod path.
+apiVersion: v2
+name: cfoperator
+description: >-
+  Self-hosted AI SRE: alert triage, LLM investigations with a compounding
+  knowledge base, and GitOps-bounded remediation gated at the PR merge button.
+type: application
+# Chart version in-tree; the release workflow overrides --version with the
+# git tag so published chart versions track releases.
+version: 0.1.0
+appVersion: "1.0.8"
+home: https://github.com/aachtenberg/cfoperator
+sources:
+  - https://github.com/aachtenberg/cfoperator

@@ -1,0 +1,105 @@
+{{/* Alert ingest -> triage -> investigate dispatch. Mirrors the compose
+     `event-runtime` service. CFOP_EVENT_RUNTIME_ALERTMANAGER_URL is the
+     load-bearing line: the poll source registers on that env specifically —
+     ALERTMANAGER_URL alone only informs the agent's config, and without this
+     a configured Alertmanager silently never polls (the CFOP-31 defect). */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-event-runtime
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/name: cfoperator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: event-runtime
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-event-runtime
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cfoperator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: event-runtime
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cfoperator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: event-runtime
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      initContainers:
+{{ include "cfoperator.waitForDb" . | indent 8 }}
+      containers:
+        - name: event-runtime
+          image: {{ include "cfoperator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "event_runtime", "serve", "--port", "8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: CONFIG_PATH
+              value: /app/config/config.yaml
+            - name: CFOP_AGENT_URL
+              value: http://{{ include "cfoperator.fullname" . }}-agent:{{ .Values.console.service.port }}
+{{ include "cfoperator.dbEnv" . | indent 12 }}
+            - name: PROMETHEUS_URL
+              value: {{ .Values.prometheus.url | quote }}
+            - name: LOKI_URL
+              value: {{ .Values.loki.url | quote }}
+            - name: ALERTMANAGER_URL
+              value: {{ .Values.alertmanager.url | quote }}
+            - name: CFOP_EVENT_RUNTIME_ALERTMANAGER_URL
+              value: {{ .Values.alertmanager.url | quote }}
+            - name: OLLAMA_URL
+              value: {{ .Values.llm.url | quote }}
+            - name: OLLAMA_MODEL
+              value: {{ .Values.llm.model | quote }}
+            - name: SLACK_WEBHOOK_URL
+              value: {{ .Values.notify.slackWebhook | quote }}
+            - name: DISCORD_WEBHOOK_URL
+              value: {{ .Values.notify.discordWebhook | quote }}
+            - name: CFOP_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: api-token
+            - name: CFOP_COMPLETION_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: completion-secret
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.eventRuntime.resources }}
+          resources:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cfoperator.fullname" . }}-config

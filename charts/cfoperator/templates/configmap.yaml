@@ -1,0 +1,53 @@
+{{/* Mirrors deploy/compose/config.yaml: only endpoints and choices specific
+     to this install; everything else comes from the default schema in
+     cfshared/config.py, merged under this file. Values arrive as env vars on
+     the pods (whole-value ${VAR} fill) so secrets stay out of the ConfigMap. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-config
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+data:
+  config.yaml: |
+    profile: {{ .Values.profile }}
+
+    llm:
+      backend: {{ .Values.llm.backend }}
+      url: ${OLLAMA_URL}
+      model: ${OLLAMA_MODEL}
+
+    prometheus:
+      url: ${PROMETHEUS_URL}
+
+    alertmanager:
+      url: ${ALERTMANAGER_URL}
+
+    loki:
+      url: ${LOKI_URL}
+
+    notify:
+      slack_webhook: ${SLACK_WEBHOOK_URL}
+      discord_webhook: ${DISCORD_WEBHOOK_URL}
+
+    database:
+      host: ${POSTGRES_HOST}
+      database: ${POSTGRES_DB}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+{{- if eq .Values.profile "remediate" }}
+
+    # _executor_config() reads remediation.executor — a top-level executor:
+    # block is silently ignored (learned the hard way in the demo, CFOP-31).
+    remediation:
+      queue_feed: true
+      queue_drain: true
+      queue_reap: true
+      queue_verify: true
+      executor:
+        namespace: {{ .Release.Namespace }}
+        image: {{ .Values.remediate.executorImage }}
+        secrets_name: {{ include "cfoperator.fullname" . }}-generated
+        completion_base_url: http://{{ include "cfoperator.fullname" . }}-agent:{{ .Values.console.service.port }}/v1/remediations
+        git_repo: {{ .Values.remediate.gitRepo }}
+{{- end }}

@@ -1,0 +1,13 @@
+# Values for the chart-ci kind install test: the ~15-line getting-started
+# shape. The LLM/Prometheus endpoints don't need to answer for pods to go
+# Ready — the install test proves the chart wires up, not the pipeline
+# (the fault e2e lives in the demo harness, CFOP-31).
+llm:
+  url: http://ollama.invalid:11434
+  model: llama3.1:8b
+prometheus:
+  url: http://prometheus.invalid:9090
+notify:
+  slackWebhook: ""
+postgres:
+  storage: 1Gi

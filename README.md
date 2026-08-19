@@ -372,6 +372,7 @@ make all            # all platforms
 | `changerecord/` | Change-record microservice for the node-action lane ([docs](docs/REMEDIATION.md)) |
 | `worker/` | Deep-investigation worker + forensics templates ([docs](docs/deep-investigation.md)) |
 | `discovery/` | One-shot fleet characterization that seeds the KB (report-only without an agent) ([docs](docs/DISCOVERY.md)) |
+| `charts/cfoperator/` | Helm chart — the k8s trial path, three required values, investigate/remediate profiles ([docs](docs/HELM.md)) |
 | `scripts/` | Operator scripts shipped in the image (`create_admin.py`, `mcp_smoke.py`) |
 | `.github/workflows/tests.yml` | pytest suites on every PR and push to `main` |
 | `.mcp.json` | Dev-tooling MCP servers for agentic sessions in this repo (Plane, workspace `cfoperator`; needs `PLANE_API_KEY` in the environment) |

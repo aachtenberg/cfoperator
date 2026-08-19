@@ -1,0 +1,83 @@
+{{/* The values-level expression of the scope ladder (CFOP-30):
+     investigate = read-only, cluster-wide observation; remediate adds write
+     access to exactly one resource — batch Jobs in the release namespace
+     (create for the drainer's spawn, delete for the reaper). GitOps-class
+     executor Jobs themselves need no RBAC: their only output is a GitHub PR
+     and a completion POST back to the agent. */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cfoperator.fullname" . }}
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-read
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services, endpoints, events, nodes, namespaces, persistentvolumeclaims, persistentvolumes]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, daemonsets, statefulsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods, nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-read
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "cfoperator.fullname" . }}-read
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cfoperator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if eq .Values.profile "remediate" }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-executor-spawn
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, watch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-executor-spawn
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "cfoperator.fullname" . }}-executor-spawn
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cfoperator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+---
+{{/* The SA executor Jobs run as. No RBAC on purpose (see header comment). */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cfoperator-executor
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+{{- end }}

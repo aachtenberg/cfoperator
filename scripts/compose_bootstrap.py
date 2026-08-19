@@ -171,9 +171,21 @@ def ensure_session_secret() -> None:
 
 
 def main() -> int:
-    store = wait_for_db()
+    # The Helm chart raises this to match the agent init's 300s: a slow
+    # first-time image/PVC provision can outlive the compose default and fail
+    # the post-install hook while the Deployments would still have waited.
+    store = wait_for_db(int(os.getenv("CFOP_BOOTSTRAP_DB_TIMEOUT", "90") or 90))
     ensure_pgvector()
     seed_admin(store)
+    # The Helm chart (CFOP-30) provides CFOP_SESSION_SECRET and CFOP_API_TOKEN
+    # via Kubernetes Secrets — there is no shared volume between its bootstrap
+    # Job and the service pods, and re-running the file-keyed token idempotence
+    # against an emptyDir would revoke + remint a DB token nobody reads on
+    # every `helm upgrade`. DB-only mode stops after the database seeding.
+    if os.getenv("CFOP_BOOTSTRAP_DB_ONLY", "").lower() in ("1", "true", "yes"):
+        log("CFOP_BOOTSTRAP_DB_ONLY set — file-based seeding skipped")
+        log("bootstrap complete")
+        return 0
     ensure_session_secret()
     ensure_event_runtime_token(store)
     log("bootstrap complete")
