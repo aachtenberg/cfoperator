@@ -33,7 +33,8 @@ llm:
   # falls back to the normal provider chain on any failure or unparseable
   # response; when unset, triage uses the primary chain unchanged. Meant for a
   # small fine-tuned model that answers the triage rubric fast; investigations
-  # are unaffected. (CFOP-57)
+  # are unaffected. The console Admin -> LLM tab can override this live
+  # (DB over config; 'off' there disables despite this key). (CFOP-57/58)
   # triage_model: cfop-triage-ministral3:v1-q4
 
 # Metrics. Shipped backend: prometheus.

@@ -251,6 +251,13 @@
         <label for="model-select">Model</label>
         <select id="model-select"><option value="">—</option></select>
       </div>
+      <div class="field">
+        <label for="triage-model">Triage model</label>
+        <select id="triage-model" onchange="onTriageModelChange()"
+                title="Dedicated triage classifier (CFOP-57/58). Overrides llm.triage_model live; 'off' disables despite config.">
+          <option value="">(use config)</option>
+        </select>
+      </div>
       <div class="field-row">
         <span class="muted">Allow paid LLM fallback</span>
         <label class="toggle-switch" title="Allow fallback to paid LLM providers">
@@ -702,9 +709,12 @@ async function loadEffective(){
     const col = p.available ? '--accent' : '--text-muted';
     return `<div class="eff-row"><span>${esc(p.name)} <span class="muted">(${esc(p.id)})</span></span>${badge(avail, col)}</div>`;
   }).join('');
+  const tm = await api('/api/settings/triage_model');
+  const triage = (tm.ok && tm.data && tm.data.effective) || '';
   card.innerHTML =
     `<div class="eff-row"><span>Selected backend</span><span class="mono">${esc(backend||'auto')}</span></div>` +
     `<div class="eff-row"><span>Selected model</span><span class="mono">${esc(model)||'—'}</span></div>` +
+    `<div class="eff-row"><span>Triage model</span><span class="mono">${esc(triage)||'—'}</span></div>` +
     `<div class="eff-row"><span>Paid fallback</span>${badge(paid?'enabled':'disabled', paid?'--orange':'--text-muted')}</div>` +
     `<div style="margin-top:10px" class="muted">Providers</div>${rows}`;
 }
@@ -758,6 +768,40 @@ async function loadProvidersAndSettings(){
 
   const fb = await api('/api/settings/fallback');
   if(fb.ok) document.getElementById('fallback-toggle').checked = !!fb.data.allow_paid_escalation;
+
+  await loadTriageModel();
+}
+async function loadTriageModel(){
+  // Options: "(use config)" = clear the DB override, "off" = disable despite
+  // config, plus whatever ollama has pulled. The triage model is an ollama
+  // tag by contract (served from llm.primary.url), so the ollama list is the
+  // right source regardless of the selected chat backend.
+  const sel = document.getElementById('triage-model');
+  const [tm, models] = await Promise.all([
+    api('/api/settings/triage_model'),
+    api('/api/models/ollama'),
+  ]);
+  const cfg = (tm.ok && tm.data && tm.data.config) || '';
+  const db = (tm.ok && tm.data && tm.data.db) || '';
+  const opts = [`<option value="">(use config${cfg ? ': ' + esc(cfg) : ''})</option>`,
+                `<option value="off">off — disable triage model</option>`];
+  ((models.ok && models.data && models.data.models) || []).forEach(m => {
+    opts.push(`<option value="${esc(m)}">${esc(m)}</option>`);
+  });
+  // A DB value not in the pulled list (model deleted from ollama) must stay
+  // visible rather than silently snapping to "(use config)".
+  const known = ['', 'off'].concat((models.ok && models.data && models.data.models) || []);
+  if(db && !known.includes(db)) opts.push(`<option value="${esc(db)}">${esc(db)} (not pulled)</option>`);
+  sel.innerHTML = opts.join('');
+  sel.value = db;
+}
+function onTriageModelChange(){
+  const model = document.getElementById('triage-model').value;
+  fetch('/api/settings/triage_model', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({model})
+  }).then(r => { if(!r.ok) toast('failed to save triage model','err'); else { toast('triage model → '+(model||'config'),'ok'); loadEffective(); }})
+    .catch(() => toast('failed to save triage model','err'));
 }
 function onBackendChange(){
   const backend = document.getElementById('llm-backend').value;
