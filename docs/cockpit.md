@@ -157,8 +157,31 @@ from both sides: the Go transport test asserts a non-GET never reaches the
 socket, and `test_cockpit_attach_contract.py` asserts the allowlist itself has
 not grown.
 
-Short-lived per-investigation tokens (so an attach can be scoped and expire) are
-CFOP-32; today `attach` presents your own console token.
+### Session tokens: minted at attach, dead at detach (CFOP-32)
+
+An interactive `attach` mints a short-lived token for the session (label
+`cockpit-inv-<id>`, default scope `investigate`, default TTL 4h —
+`--session-ttl` to change, `--no-session-token` to opt out). The binding to
+the investigation is **recorded at mint** — audit detail plus the label — not
+enforced at verify; tightening that is future work. For the session's
+lifetime, `CFOP_API_TOKEN` — the variable every client and child process
+actually reads — is overwritten with the minted secret, so children inherit
+the dying credential instead of the operator's standing one. On clean exit
+the token is revoked and the environment restored; TTL covers unclean exits —
+a leaked cockpit token from yesterday is useless today. Mint and revoke land
+in the audit log with the investigation id.
+
+`--remediate` *requests* the remediate scope; the server's role→scope ceiling
+decides (a member can never mint above their own ceiling). `--print` and
+one-shot questions mint nothing — there is no session for a token to die with.
+Minting is best-effort against older agents: a failed mint warns and the
+briefing proceeds on your standing token.
+
+The mint/revoke calls deliberately do not go through the read-only client:
+they use their own transport (`sessiontoken.go`) whose allowlist is exactly
+`POST /api/auth/tokens` and `DELETE /api/auth/tokens/<id>`, so the GET-only
+guard above stays intact and this client can't be bent toward approve/reject
+either.
 
 ## 3. Any MCP client as the cockpit
 
@@ -202,5 +225,4 @@ its own token and its own scope rather than widening the shared one.
 - **No write-back.** What you and the agent work out in the session does not
   land back on the investigation (CFOP-37). Today, if it matters, put it in the
   console.
-- **No scoped tokens.** CFOP-32; see above.
 - **No deep links.** Copy-paste is the interface.

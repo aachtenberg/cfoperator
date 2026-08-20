@@ -332,3 +332,63 @@ def test_token_hash_is_stable_and_distinct():
     assert hash_token(a) == hash_token(a)
     assert hash_token(a) != hash_token(b)
     assert len(hash_token(a)) == 64
+
+
+# ---- cockpit session tokens (CFOP-32) ---------------------------------
+
+
+def test_ttl_seconds_sets_subday_expiry(store, admin):
+    from datetime import timedelta
+
+    from auth.models import utcnow
+
+    row, secret = store.create_token(
+        "cockpit-inv-9", ["investigate"], created_by=admin["id"], ttl_seconds=4 * 3600)
+    assert store.verify_token(secret) is not None
+    # The point of the parameter: expiry inside the day, which
+    # expires_in_days cannot express.
+    from datetime import datetime, timezone
+
+    assert row["expires_at"] is not None
+    expires_at = datetime.fromisoformat(row["expires_at"])
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    remaining = expires_at - utcnow()
+    assert timedelta(0) < remaining <= timedelta(hours=4)
+
+
+def test_ttl_expired_session_token_stops_working(store, admin):
+    """Done-when: a leaked cockpit token from yesterday is useless today."""
+    from datetime import timedelta
+
+    from auth.models import ApiToken, utcnow
+
+    _row, secret = store.create_token(
+        "cockpit-inv-9", ["investigate"], created_by=admin["id"], ttl_seconds=60)
+    assert store.verify_token(secret) is not None
+
+    session = store._session()
+    token = session.query(ApiToken).first()
+    token.expires_at = utcnow() - timedelta(seconds=1)
+    session.commit()
+    session.close()
+
+    assert store.verify_token(secret) is None
+
+
+def test_ttl_and_days_are_mutually_exclusive(store, admin):
+    with pytest.raises(AuthError):
+        store.create_token("both", ["read"], created_by=admin["id"],
+                           expires_in_days=1, ttl_seconds=60)
+
+
+def test_nonpositive_ttl_refused(store, admin):
+    with pytest.raises(AuthError):
+        store.create_token("zero", ["read"], created_by=admin["id"], ttl_seconds=0)
+
+
+def test_member_ceiling_applies_to_ttl_tokens_too(store):
+    """The short-lived path must not become a ceiling bypass."""
+    with pytest.raises(AuthError):
+        store.create_token("cockpit-inv-9", ["remediate"],
+                           creator_role=ROLE_MEMBER, ttl_seconds=60)
