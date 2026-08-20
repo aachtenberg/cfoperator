@@ -16,10 +16,16 @@ name: Build cfoperator on main
 #
 # The cfoperator pod is pinned to headless-gpu (amd64); single-arch build.
 # Add arm64 if scheduling ever changes.
+#
+# v* tag pushes also build here (CFOP-56): they publish the version as the
+# image tag so the Helm chart can pin a release instead of floating :main.
+# Tag builds do NOT move :main and do NOT bump the deploy repo — the homelab
+# deploy path stays main-push-only.
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -53,9 +59,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tag
+      - name: Compute tags
         id: tag
-        run: echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        # Branch build: floating :main + immutable :main-<sha7> (deploy bump
+        # consumes the latter). Tag build: the version only — :main must not
+        # move on a release, or a rollback tag would silently roll the fleet.
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "tags=$IMAGE:$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "tags=$IMAGE:main,$IMAGE:main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -65,9 +83,7 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/cfoperator:main
-            ghcr.io/${{ github.repository_owner }}/cfoperator:${{ steps.tag.outputs.tag }}
+          tags: ${{ steps.tag.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -92,9 +108,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tag
+      - name: Compute tags
         id: tag
-        run: echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        # Same branch/tag split as build-and-push above.
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator-worker
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "tags=$IMAGE:$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$IMAGE:main,$IMAGE:main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push worker
         uses: docker/build-push-action@v5
@@ -104,9 +128,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha,scope=worker
           cache-to: type=gha,mode=max,scope=worker
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/cfoperator-worker:main
-            ghcr.io/${{ github.repository_owner }}/cfoperator-worker:${{ steps.tag.outputs.tag }}
+          tags: ${{ steps.tag.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -130,9 +152,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tag
+      - name: Compute tags
         id: tag
-        run: echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        # Same branch/tag split as build-and-push above.
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator-executor
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "tags=$IMAGE:$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$IMAGE:main,$IMAGE:main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push executor
         uses: docker/build-push-action@v5
@@ -142,9 +172,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha,scope=executor
           cache-to: type=gha,mode=max,scope=executor
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/cfoperator-executor:main
-            ghcr.io/${{ github.repository_owner }}/cfoperator-executor:${{ steps.tag.outputs.tag }}
+          tags: ${{ steps.tag.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -170,9 +198,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute tag
+      - name: Compute tags
         id: tag
-        run: echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        # Same branch/tag split as build-and-push above.
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator-changerecord
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "tags=$IMAGE:$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$IMAGE:main,$IMAGE:main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build and push changerecord
         uses: docker/build-push-action@v5
@@ -182,15 +218,17 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha,scope=changerecord
           cache-to: type=gha,mode=max,scope=changerecord
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/cfoperator-changerecord:main
-            ghcr.io/${{ github.repository_owner }}/cfoperator-changerecord:${{ steps.tag.outputs.tag }}
+          tags: ${{ steps.tag.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
   bump-deploy-repo:
     needs: build-and-push
+    # Homelab deploys follow main pushes only. A v* tag build publishes images
+    # for the chart/demo audience and must not touch the deploy repo — pointing
+    # ArgoCD at a release tag would freeze the fleet on it.
+    if: github.ref_type == 'branch'
     runs-on: ubuntu-latest
     # Serialize bumps so two quick pushes can't race on the deploy repo's main.
     concurrency:
