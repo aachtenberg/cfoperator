@@ -60,3 +60,7 @@ sweep_comparison_results.json
 
 # Kind-demo local state (kubeconfigs are credentials; demo/up.sh rewrites them)
 demo/.kube/
+
+# Fine-tuning datasets — built from real homelab investigation history by
+# scripts/build_triage_dataset.py; the repo is public, the data is not.
+benchmarks/datasets/

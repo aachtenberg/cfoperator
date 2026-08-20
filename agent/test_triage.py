@@ -192,6 +192,102 @@ def test_run_triage_falls_back_when_llm_picks_invalid_action():
     assert result["action"] == "investigate"
 
 
+# ---- run_triage: dedicated triage model (CFOP-57) -------------------------
+#
+# These guard the routing *class* of regression, not today's model names:
+# a configured llm.triage_model must lead, its failure must land in the
+# standard chain, and an absent key must leave the standard path untouched.
+
+
+def test_run_triage_uses_configured_triage_model_first():
+    op = _operator()
+    op.config = {"llm": {
+        "triage_model": "cfop-triage:test",
+        "primary": {"url": "http://ollama:11434"},
+    }}
+    op._chat_with_tools = MagicMock(return_value={
+        "response": '{"action": "notify", "reason": "resolved precedent", "confidence": 0.85}',
+        "tool_calls": 0,
+    })
+    op._chat_with_tools_with_fallback = MagicMock()
+    result = op.run_triage(_alert())
+    assert result["action"] == "notify"
+    # The decision is attributed to the triage model, not the primary.
+    assert result["backend"] == "ollama"
+    assert result["model"] == "cfop-triage:test"
+    # The standard chain was never consulted.
+    op._chat_with_tools_with_fallback.assert_not_called()
+    # The targeted call went to ollama with the configured model, one-shot.
+    kwargs = op._chat_with_tools.call_args.kwargs
+    assert kwargs["provider_type"] == "ollama"
+    assert kwargs["model"] == "cfop-triage:test"
+    assert kwargs["url"] == "http://ollama:11434"
+    assert kwargs["max_iterations"] == 1
+
+
+def test_run_triage_triage_model_failure_falls_into_standard_chain():
+    """A broken triage model must degrade to exactly the no-override
+    behavior — the full chain starting at the primary — never to a dropped
+    alert and never straight to paid providers."""
+    op = _operator()
+    op.config = {"llm": {
+        "triage_model": "cfop-triage:test",
+        "primary": {"url": "http://ollama:11434"},
+    }}
+    op._chat_with_tools = MagicMock(side_effect=RuntimeError("model not found"))
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": '{"action": "investigate", "reason": "novel", "confidence": 0.6}',
+        "tool_calls": 0,
+        "backend": "ollama",
+        "model": "gemma4:26b",
+    })
+    result = op.run_triage(_alert())
+    assert result["action"] == "investigate"
+    assert result["model"] == "gemma4:26b"
+    op._chat_with_tools_with_fallback.assert_called_once()
+
+
+def test_run_triage_triage_model_unparseable_falls_into_standard_chain():
+    """A 200 with unparseable text from the dedicated model is a failure of
+    that model, not of triage: it must consult the standard chain, not take
+    the terminal unparseable->investigate default. This is the family's
+    known failure mode (ollama dumps ministral tool-call syntax as text)."""
+    op = _operator()
+    op.config = {"llm": {
+        "triage_model": "cfop-triage:test",
+        "primary": {"url": "http://ollama:11434"},
+    }}
+    op._chat_with_tools = MagicMock(return_value={
+        "response": "loki_query[ARGS]{}",  # no JSON decision anywhere
+        "tool_calls": 0,
+    })
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": '{"action": "notify", "reason": "precedent", "confidence": 0.8}',
+        "tool_calls": 0,
+        "backend": "ollama",
+        "model": "gemma4:26b",
+    })
+    result = op.run_triage(_alert())
+    assert result["action"] == "notify"
+    assert result["model"] == "gemma4:26b"
+    op._chat_with_tools_with_fallback.assert_called_once()
+
+
+def test_run_triage_without_triage_model_never_makes_targeted_call():
+    op = _operator()  # config = {} — no triage_model
+    op._chat_with_tools = MagicMock()
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": '{"action": "notify", "reason": "precedent", "confidence": 0.8}',
+        "tool_calls": 0,
+        "backend": "ollama",
+        "model": "gemma4:26b",
+    })
+    result = op.run_triage(_alert())
+    assert result["action"] == "notify"
+    op._chat_with_tools.assert_not_called()
+    op._chat_with_tools_with_fallback.assert_called_once()
+
+
 def test_run_triage_includes_similar_investigations_when_embeddings_available():
     op = _operator()
     op.embeddings.is_available.return_value = True

@@ -28,6 +28,13 @@ llm:
   backend: ollama
   url: http://localhost:11434
   model: qwen3:14b/no_think   # /no_think disables deliberative mode
+  # Optional dedicated triage classifier (an ollama model tag, served from the
+  # same URL as the primary). When set, alert triage tries this model first and
+  # falls back to the normal provider chain on any failure or unparseable
+  # response; when unset, triage uses the primary chain unchanged. Meant for a
+  # small fine-tuned model that answers the triage rubric fast; investigations
+  # are unaffected. (CFOP-57)
+  # triage_model: cfop-triage-ministral3:v1-q4
 
 # Metrics. Shipped backend: prometheus.
 prometheus:

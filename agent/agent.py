@@ -951,21 +951,62 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
             "Classify."
         )
 
-        try:
-            result = self._chat_with_tools_with_fallback(
-                messages=[{'role': 'user', 'content': user_msg}],
-                system_context=system_prompt,
-                max_iterations=1,  # one-shot classification — no tool loop
-            )
-        except Exception as e:
-            logger.warning(f"Triage LLM unavailable, defaulting to investigate: {e}")
-            return {
-                'action': 'investigate',
-                'reason': f'triage LLM unavailable ({type(e).__name__})',
-                'confidence': 0.0,
-                'backend': None,
-                'model': None,
-            }
+        # CFOP-57: a dedicated triage model (the fine-tuned local classifier)
+        # takes the first shot when configured. This is deliberately a single
+        # targeted attempt rather than a model override on the fallback call:
+        # _get_provider_chain never emits two ollama entries, so an override
+        # that failed would skip the primary local model and land directly on
+        # paid providers. Failing here instead drops into the untouched call
+        # below, so the chain after a triage-model failure is byte-identical
+        # to the no-override configuration.
+        result = None
+        triage_model = self.config.get('llm', {}).get('triage_model')
+        if triage_model:
+            primary_cfg = self.config.get('llm', {}).get('primary', {}) or {}
+            triage_url = primary_cfg.get('url', os.getenv('OLLAMA_URL', ''))
+            try:
+                result = self._chat_with_tools(
+                    provider_type='ollama', url=triage_url, model=triage_model,
+                    messages=[{'role': 'user', 'content': user_msg}],
+                    system_context=system_prompt,
+                    max_iterations=1,  # one-shot classification — no tool loop
+                )
+                result['backend'] = 'ollama'
+                result['model'] = triage_model
+                # Unparseable output counts as failure too, not just raised
+                # exceptions: this family's known failure mode is a 200 whose
+                # tool-call syntax ollama dumps as raw text (ollama#16934).
+                # Without this check that lands on the "unparseable ->
+                # investigate" default below and the standard chain is never
+                # consulted, silently degrading every triage to investigate.
+                if self._parse_triage_response(
+                        result.get('response', '').strip()) is None:
+                    logger.warning(
+                        f"Triage model {triage_model} returned unparseable "
+                        "response; using standard provider chain")
+                    result = None
+            except Exception as e:
+                logger.warning(
+                    f"Triage model {triage_model} failed "
+                    f"({type(e).__name__}: {e}); using standard provider chain")
+                result = None
+
+        if result is None:
+            try:
+                result = self._chat_with_tools_with_fallback(
+                    messages=[{'role': 'user', 'content': user_msg}],
+                    system_context=system_prompt,
+                    max_iterations=1,  # one-shot classification — no tool loop
+                )
+            except Exception as e:
+                logger.warning(f"Triage LLM unavailable, defaulting to investigate: {e}")
+                return {
+                    'action': 'investigate',
+                    'reason': f'triage LLM unavailable ({type(e).__name__})',
+                    'confidence': 0.0,
+                    'backend': None,
+                    'model': None,
+                }
 
         # The fallback chain reports which provider actually served the call,
         # not just the configured primary — surface it so Slack can show

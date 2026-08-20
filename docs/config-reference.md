@@ -183,6 +183,13 @@ llm:
       model: claude-3-5-sonnet-20241022
       api_key: ${ANTHROPIC_API_KEY}
 
+  # Optional dedicated triage classifier (an ollama model tag, served from
+  # llm.primary.url). When set, alert triage tries this model first and falls
+  # back to the normal chain on any failure or unparseable response; when
+  # unset, triage uses the primary chain unchanged. Investigations are
+  # unaffected. (CFOP-57)
+  # triage_model: cfop-triage-ministral3:v1-q4
+
   # Embeddings (for semantic search)
   embeddings:
     provider: ollama

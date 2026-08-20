@@ -1,0 +1,374 @@
+{
+ "summary": {
+  "model": "ministral-3:14b",
+  "ollama_version": "0.32.13",
+  "runs": 24,
+  "json_valid_rate": 1.0,
+  "action_accuracy": 0.3333,
+  "latency_mean_s": 0.91,
+  "latency_max_s": 1.11,
+  "errors": 0
+ },
+ "per_case": {
+  "precedent-monitoring": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 4,
+   "of": 12,
+   "actions": [
+    "investigate",
+    "notify"
+   ]
+  },
+  "critical-narrow": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 4,
+   "of": 12,
+   "actions": [
+    "investigate",
+    "notify"
+   ]
+  }
+ },
+ "results": [
+  {
+   "case": "precedent-monitoring",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 1.01,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.84,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.87,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 3,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.85,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.86,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.84,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.84,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.84,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.87,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.87,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.88,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.89,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 1.0,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 1,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.93,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.96,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.92,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 4,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.88,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.97,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 1.11,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.93,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.96,
+   "confidence": 0.85,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.88,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 10,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.92,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 11,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.92,
+   "confidence": 0.95,
+   "error": null,
+   "raw": null
+  }
+ ]
+}
