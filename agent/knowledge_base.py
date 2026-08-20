@@ -1158,6 +1158,11 @@ class KnowledgeBase:
         self.ensure_fts_schema()
         # Ensure learning_embeddings table exists for semantic search on learnings
         self._ensure_learning_embeddings_table()
+        # embedding_cache is written by EmbeddingCache._put_to_db, which (like
+        # everything touching this table before CFOP-54) only ever existed in
+        # the hand-built production DB — fresh installs lost the persistent
+        # cache silently because the read/write failures are debug-level.
+        self._ensure_embedding_cache_table()
         # Widen investigations.outcome CHECK if the vocabulary grew since this
         # database was created (create_all never alters an existing table)
         outcome_ok = self._ensure_outcome_constraint()
@@ -1263,6 +1268,29 @@ class KnowledgeBase:
                 session.commit()
         except Exception as e:
             _log("error", "investigation_embeddings table setup failed", error=str(e))
+
+    def _ensure_embedding_cache_table(self):
+        """Create embedding_cache if it doesn't exist.
+
+        Schema mirrors the hand-built production table exactly: embedding is
+        TEXT, not vector — EmbeddingCache._put_to_db binds a string literal
+        and _get_from_db json-parses it back, so a vector column here would
+        diverge from what the only reader/writer expects.
+        """
+        try:
+            from sqlalchemy import text
+            with self.session_scope() as session:
+                session.execute(text("""
+                    CREATE TABLE IF NOT EXISTS embedding_cache (
+                        hash_key VARCHAR(64) PRIMARY KEY,
+                        embedding_model VARCHAR(100) NOT NULL,
+                        embedding TEXT NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                """))
+                session.commit()
+        except Exception as e:
+            _log("error", "embedding_cache table setup failed", error=str(e))
 
     def _ensure_learning_embeddings_table(self):
         """Create learning_embeddings table if it doesn't exist."""
