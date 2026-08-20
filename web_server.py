@@ -24,7 +24,14 @@ import requests
 
 from web_auth import ROLE_ADMIN, install_auth, require_role, require_token_scope
 from auth.bootstrap import init_auth_store
-from auth.routes import build_auth_blueprint
+from auth.models import EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER
+# The cockpit spawn mints a session token server-side, and it must resolve the
+# caller exactly as POST /api/auth/tokens does — same role ceiling, same audit
+# actor. Importing those helpers is deliberate: a second copy of "who is
+# calling" is how the two answers start disagreeing.
+from auth.routes import _actor, _caller_user_id, _effective_role, build_auth_blueprint
+from auth.store import AuthError
+from cockpit_spawn import CockpitSpawnError, CockpitSpawner, build_cockpit_config, clamp_ttl
 
 # WebSocket support - disabled because Waitress (WSGI) doesn't support it
 # The UI uses HTTP polling via /api/chat instead
@@ -1059,6 +1066,54 @@ class WebServer:
             """Operator console: recent investigations + conclusions."""
             return send_from_directory('ui', 'investigations.html')
 
+        # ---- cockpit (CFOP-35) ------------------------------------------
+        # Spawn the ephemeral cockpit Job for an investigation. Server-side
+        # rather than "cfassist creates the Job" because the console button
+        # (CFOP-59) needs this same path, and because the guards — dedupe,
+        # concurrency cap, token mint, audit — must be central rather than
+        # re-implemented in every client that grows a spawn button.
+        #
+        # Admin-gated: this creates a workload and mints a credential. It hands
+        # out no shell of its own — the pod's identity is read-only and the
+        # interactive attach is the operator's own kubectl.
+        @self.app.route('/api/cockpit/spawn', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def spawn_cockpit():
+            body = json_object()
+            try:
+                investigation_id = int(body.get('investigation_id'))
+            except (TypeError, ValueError):
+                return jsonify({'error': 'investigation_id is required'}), 400
+
+            try:
+                inv = self.operator.kb.get_investigation(investigation_id)
+            except Exception as e:
+                logger.error(f"cockpit spawn: investigation lookup failed: {e}")
+                return jsonify({'error': str(e)}), 500
+            if not inv:
+                # A cockpit exists to work an investigation. Spawning one for an
+                # id that does not exist would produce a pod whose first act is
+                # to fail fetching its own briefing.
+                return jsonify({'error': 'not found'}), 404
+
+            ttl = clamp_ttl(body.get('ttl_seconds'),
+                            self._cockpit_spawner().config.ttl_seconds)
+            try:
+                result = self._cockpit_spawner().spawn(
+                    investigation_id,
+                    host=str(inv.get('host_id') or ''),
+                    ttl_seconds=ttl,
+                )
+            except CockpitSpawnError as e:
+                logger.warning(f"cockpit spawn refused for #{investigation_id}: {e}")
+                return jsonify({'error': str(e)}), e.status
+            except Exception as e:
+                logger.error(f"cockpit spawn failed for #{investigation_id}: {e}",
+                             exc_info=True)
+                return jsonify({'error': str(e)}), 500
+
+            return jsonify(result), 200 if result.get('status') == 'existing' else 201
+
         @self.app.route('/api/kb/search')
         def kb_search():
             """Thin KB search for the MCP facade (search_knowledge tool).
@@ -1314,6 +1369,72 @@ class WebServer:
                 finally:
                     logger.info("WebSocket client disconnected")
                     self.ws_clients.remove(ws)
+
+    # ---- cockpit (CFOP-35) ----------------------------------------------
+
+    def _cockpit_spawner(self) -> CockpitSpawner:
+        """The cockpit Job launcher, built once from the agent's config.
+
+        Lazy rather than built in ``__init__`` so an install with no cockpit
+        image configured pays nothing for it, and so tests can substitute a
+        spawner with an injected kubectl runner before the first call.
+        """
+        spawner = getattr(self, '_cockpit', None)
+        if spawner is None:
+            spawner = CockpitSpawner(
+                build_cockpit_config(getattr(self.operator, 'config', None)),
+                token_minter=self._mint_cockpit_token,
+                token_revoker=self._revoke_cockpit_token,
+            )
+            self._cockpit = spawner
+        return spawner
+
+    def _mint_cockpit_token(self, investigation_id: int, ttl_seconds: int) -> Dict[str, Any]:
+        """Mint the pod's credential through the CFOP-32 session-token path.
+
+        Same store call, same role ceiling and same audit event as
+        ``POST /api/auth/tokens`` — the cockpit is one more caller of that
+        mint, not a second way to create credentials. ``investigate`` scope
+        only: the cockpit reads, and the write path stays the PR/console gate
+        even from inside a pod on the affected node.
+        """
+        store = getattr(self, 'auth_store', None)
+        if store is None:
+            raise CockpitSpawnError(
+                'the token store is unavailable, so no per-investigation session '
+                'token can be minted', 503)
+        try:
+            row, secret = store.create_token(
+                f"cockpit-inv-{investigation_id}",
+                ['investigate'],
+                created_by=_caller_user_id(),
+                creator_role=_effective_role() or ROLE_MEMBER,
+                ttl_seconds=ttl_seconds,
+            )
+        except AuthError as e:
+            # The auth API's rule, kept here: the caller got it wrong (400) and
+            # the database being down (503) must never be reported as the same
+            # thing, and neither is a permission decision.
+            raise CockpitSpawnError(str(e), 400)
+        except Exception as e:
+            logger.error(f"cockpit token mint failed: {e}", exc_info=True)
+            raise CockpitSpawnError('authentication backend unavailable', 503)
+        store.record(EVENT_TOKEN_CREATED, actor=_actor(), target=row['token_prefix'],
+                     source_ip=request.remote_addr, token_id=row['id'],
+                     label=row['label'], scopes=row['scopes'],
+                     investigation_id=investigation_id, ttl_seconds=ttl_seconds,
+                     cockpit=True)
+        return {'id': row['id'], 'prefix': row['token_prefix'], 'secret': secret}
+
+    def _revoke_cockpit_token(self, token_id: int) -> None:
+        """Undo a mint whose Job never started."""
+        store = getattr(self, 'auth_store', None)
+        if store is None:
+            return
+        row = store.revoke_token(token_id, actor=_actor())
+        store.record(EVENT_TOKEN_REVOKED, actor=_actor(), target=row['token_prefix'],
+                     source_ip=request.remote_addr, token_id=row['id'],
+                     label=row['label'], cockpit=True)
 
     def _handle_ws_message(self, ws, data: Dict[str, Any]):
         """Handle incoming WebSocket message."""

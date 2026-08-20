@@ -10,7 +10,7 @@ read the Slack alert, open a terminal, start a coding agent, and type "check
 investigation 1889" so it can go query the API itself. That works, and it beats
 the console, which is why it is worth productizing rather than arguing with.
 
-Three pieces, in the order you meet them.
+Four pieces, in the order you meet them.
 
 ## 1. The alert tells you the command
 
@@ -218,10 +218,91 @@ restate them.
 button. If you need a remediate-capable consumer, give it its own deployment,
 its own token and its own scope rather than widening the shared one.
 
-## What v0 deliberately is not
+## 4. `--spawn`: the session on the affected infrastructure (CFOP-35)
 
-- **No spawn.** `attach` runs wherever you run it. It does not start a pod, a
-  container or a session on the affected host — that is CFOP-35 / CFOP-36.
+Everything above briefs a session *wherever you already are*. `--spawn` puts it
+where the incident is:
+
+```bash
+cfassist attach 1889 --spawn
+```
+
+One flag on the command the alert already told you to run. It asks the agent to
+launch an ephemeral Job, waits for the pod, and attaches your terminal to the
+briefed session running inside it:
+
+```
+cockpit spawned: apps/cfop-cockpit-1889-142233 (pinned to node raspberrypi4)
+session token cfop_9f2a… — pod and token expire in 4h0m0s
+attaching (kubectl attach -it -n apps job/cfop-cockpit-1889-142233) — detach with ctrl-p ctrl-q; exit ends the cockpit
+```
+
+Use it and destroy it, keep the memory: the compute is disposable, the state
+stays central.
+
+**Where it lands.** If the investigation is host-level, the pod is pinned to
+that node with a `nodeSelector` — kubectl, ssh and the node's own view are then
+local. The interesting case is the one that made the issue worth writing: the
+affected node is frequently the *cordoned* one. A cockpit tolerates nothing, so
+any `NoSchedule`/`NoExecute` taint (cordon, NotReady, pressure) means it spawns
+adjacent and says so, rather than sitting `Pending` while you wait.
+
+**What it can do.** Nothing you could not do by reading. The pod runs as
+`cfoperator-cockpit`: read-only cluster-wide, no exec, no write verbs, no
+secrets — the same posture as the deep-investigation worker. Remediation still
+goes through the PR and the console gate, from inside a cockpit exactly as from
+outside one.
+
+**What it costs.** `activeDeadlineSeconds` is the session TTL (4h by default,
+`--session-ttl` to change, 12h ceiling), `ttlSecondsAfterFinished` is an hour,
+and `backoffLimit` is 0. Close the laptop, lose the VPN, forget it entirely: the
+Job dies on its deadline and takes its credential with it. Two cockpits may run
+at once; a second `--spawn` for the same investigation lands you back in the
+one you already have rather than starting another.
+
+**The credential.** The agent mints the per-investigation session token
+(CFOP-32's mint path, `investigate` scope, the pod's TTL) and delivers it as a
+short-lived Secret the Job references. It is never an `env` value in the
+manifest — anything that can read Jobs could read it there, including the
+cockpit's own service account — and it is never in the HTTP response either, so
+it stays out of your shell history. The Secret is owned by the Job, so
+Kubernetes' garbage collection removes it with the Job.
+
+**Who may spawn.** Admin only: this creates a workload and mints a credential.
+Members keep plain `attach`.
+
+**The terminal is your kubectl.** The agent hands back coordinates; the attach
+is `kubectl attach -it` running on your machine, with your cluster credentials.
+No service account in this system holds `pods/exec` or `pods/attach`, and tier 1
+deliberately does not add one — an operator spawning a cockpit from a laptop
+already has cluster access. The agent-side PTY bridge is only needed by the
+console drawer (CFOP-59), and that is where that RBAC decision belongs.
+
+### Enabling it
+
+Spawning is a cluster write, so it is off until the RBAC exists:
+
+```bash
+helm upgrade … --set cockpit.enabled=true
+```
+
+which creates the read-only `cfoperator-cockpit` service account the pod runs
+as, and grants the agent Jobs plus `create` (only) on Secrets in the release
+namespace. Without it the endpoint answers, kubectl refuses, and you get a
+`kubectl create failed: jobs is forbidden` — a loud failure, not a silent one.
+
+The image is `ghcr.io/aachtenberg/cfoperator-cockpit:main` (amd64 + arm64,
+because the affected node is frequently a Pi). It derives from the worker image
+— kubectl, ssh, claude-code, non-root uid 10001 — and adds cfassist.
+
+## What tier 1 deliberately is not
+
+- **No agent-side terminal.** The attach needs kubectl on your machine. A
+  browser cockpit needs a PTY bridge in the agent — CFOP-59.
+- **No janitor beyond Kubernetes'.** TTL and ownership GC clean tier 1. Tiers 2
+  and 3 (a cockpit that outlives its Job, or its cluster) are CFOP-36.
+- **No remediate profile.** There is one cockpit identity and it is read-only.
+  A write-capable cockpit waits until something actually needs one.
 - **No write-back.** What you and the agent work out in the session does not
   land back on the investigation (CFOP-37). Today, if it matters, put it in the
   console.

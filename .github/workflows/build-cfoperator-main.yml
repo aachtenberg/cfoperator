@@ -30,7 +30,11 @@ on:
       - '**.md'
       - 'docs/**'
       - 'benchmarks/**'
-      - 'cfassist-go/**'
+      # cfassist-go/** used to be ignored here — correctly, while the Go tree
+      # shipped only as a release binary. CFOP-35 bakes it into the cockpit
+      # image (cockpit/Dockerfile builds it from source), so ignoring it would
+      # mean a cfassist fix never reaches the cockpit pods. The cost is that a
+      # CLI-only change now rebuilds the other three images too.
       # Only paths that are NOT baked into the image belong here. A path the
       # Dockerfile COPYs must trigger a rebuild, or a change to it silently
       # never deploys. test_dockerfile_image.py enforces this.
@@ -172,6 +176,63 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha,scope=executor
           cache-to: type=gha,mode=max,scope=executor
+          tags: ${{ steps.tag.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+  # cfoperator-cockpit: the ephemeral interactive Job image (CFOP-35). Derives
+  # FROM the worker image, so it must build after it — `needs` rather than a
+  # parallel stanza, or a cockpit build would silently pin whichever worker
+  # :main happened to be published last.
+  build-cockpit:
+    needs: build-worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: tag
+        # Same branch/tag split as build-and-push above, and the base worker
+        # image is resolved to the *same* tag: a release cockpit built on a
+        # floating :main base would not be a release.
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator-cockpit
+          WORKER: ghcr.io/${{ github.repository_owner }}/cfoperator-worker
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "tags=$IMAGE:$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "worker=$WORKER:$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$IMAGE:main,$IMAGE:main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            echo "worker=$WORKER:main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push cockpit
+        uses: docker/build-push-action@v5
+        with:
+          # Repo root, not cockpit/: the image builds cfassist from
+          # cfassist-go/ (no published cfassist release implements `attach`),
+          # so the Go tree has to be in the build context.
+          context: .
+          file: cockpit/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            WORKER_IMAGE=${{ steps.tag.outputs.worker }}
+          cache-from: type=gha,scope=cockpit
+          cache-to: type=gha,mode=max,scope=cockpit
           tags: ${{ steps.tag.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}

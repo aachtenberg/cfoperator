@@ -34,6 +34,12 @@ GO_ROOT = REPO_ROOT / "cfassist-go"
 GO_BRIEFING = GO_ROOT / "internal" / "cfoperator" / "briefing.go"
 GO_ATTACH_CMD = GO_ROOT / "cmd" / "cfassist" / "attach.go"
 GO_MAIN = GO_ROOT / "cmd" / "cfassist" / "main.go"
+# Cockpit tier 1 (CFOP-35): the same split-artifact problem one level up — the
+# CLI spawns over an HTTP endpoint the agent registers, and the two ship
+# separately, so the path has to be asserted across the seam like the verb is.
+GO_SPAWN_CMD = GO_ROOT / "cmd" / "cfassist" / "spawn.go"
+GO_SPAWN_CLIENT = GO_ROOT / "internal" / "cfoperator" / "spawn.go"
+WEB_SERVER = REPO_ROOT / "web_server.py"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-cfassist.yml"
 
 
@@ -157,3 +163,58 @@ def test_go_attach_is_read_only_by_construction():
             f"{forbidden} was added to the attach allowlist; attach must only GET"
         )
     assert "MethodGet" in body
+
+
+# ---- cockpit spawn: the second cross-artifact seam (CFOP-35) ----------------
+
+
+def test_spawn_is_a_flag_on_attach_not_a_separate_verb():
+    """`cfassist attach 1889 --spawn` is one edit away from the line Slack
+    already prints. A separate `cfassist cockpit` verb would mean the
+    notification's command could not be turned into a spawn by adding a flag,
+    which is the whole ergonomic claim of tier 1."""
+    assert '"spawn"' in GO_ATTACH_CMD.read_text(), (
+        "--spawn is no longer registered on attach; docs/cockpit.md documents "
+        "it as an attach flag")
+
+
+def test_the_spawn_path_matches_the_route_the_agent_registers():
+    """The CFOP-29 verb problem, one level up: the CLI and the agent ship as
+    different artifacts, so a renamed route is a silent failure that only
+    surfaces mid-incident. Reading both sides is the link.
+
+    Mutation check: change SpawnPath in spawn.go (or the Flask route) and this
+    goes red.
+    """
+    match = re.search(r'const\s+SpawnPath\s*=\s*"([^"]+)"', GO_SPAWN_CLIENT.read_text())
+    assert match, f"SpawnPath is no longer declared in {GO_SPAWN_CLIENT.name}"
+    go_path = match.group(1)
+
+    routes = re.findall(r"@self\.app\.route\('([^']+)',\s*methods=\['POST'\]\)",
+                        WEB_SERVER.read_text(encoding="utf-8"))
+    assert go_path in routes, (
+        f"cfassist POSTs {go_path} but web_server.py registers no such POST route")
+
+
+def test_the_cockpit_terminal_is_the_operators_own_kubectl():
+    """No service identity in this system holds pods/exec or pods/attach, and
+    tier 1 deliberately does not add one: the operator's laptop already has
+    cluster credentials. If the attach ever moves server-side (the CFOP-59
+    console drawer), that RBAC decision has to be made deliberately — and this
+    test is what makes moving it a conscious act rather than a refactor."""
+    source = GO_SPAWN_CMD.read_text()
+    assert 'kubectlBinary = "kubectl"' in source, (
+        "the cockpit TTY is no longer the operator's own kubectl")
+    assert '"attach", "-it"' in source, "the interactive attach argv is gone"
+
+
+def test_the_spawn_client_cannot_be_bent_into_another_call():
+    """Same guard-in-the-transport rule as the read-only client above: the
+    spawn transport admits one method on one path, checked before the socket
+    opens."""
+    source = GO_SPAWN_CLIENT.read_text()
+    assert "method != http.MethodPost || path != SpawnPath" in source, (
+        "the spawn client's one-method-one-path allowlist is gone")
+    for forbidden in ("MethodPut", "MethodPatch", "MethodDelete"):
+        assert f"http.{forbidden}," not in source, (
+            f"{forbidden} appears in the spawn transport; it may only POST its own path")

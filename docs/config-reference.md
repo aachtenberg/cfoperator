@@ -92,6 +92,7 @@ breaking change to existing configs for cosmetic gain.
 | SSH host inventory / hybrid fleet | `infrastructure.hosts`, `event_runtime.host_observability.providers` | [infrastructure-config.md](infrastructure-config.md) |
 | Deep-investigation tier | `event_runtime.deep_investigation` | [deep-investigation.md](deep-investigation.md) |
 | Remediation queue, executor, PRs | `remediation` | [remediation-pipeline.md](remediation-pipeline.md) |
+| Incident cockpit (`attach --spawn`) | `cockpit` | [cockpit.md](cockpit.md) |
 | Git / GitHub repo mapping | `git` | [remediation-pipeline.md](remediation-pipeline.md) |
 | Event-runtime persistence & scheduling | `event_runtime.persistence`, `event_runtime.scheduler` | [event-runtime-quickstart.md](event-runtime-quickstart.md) |
 | MCP server | env-driven | [mcp-server.md](mcp-server.md) |
@@ -371,6 +372,25 @@ remediation:
   queue_drain: false
   queue_reap: false
   queue_verify: false
+
+# Incident cockpit — the ephemeral pod `cfassist attach <id> --spawn` launches
+# (docs/cockpit.md). Every key is optional; the defaults below are what the
+# spawner uses when this block is absent. The corresponding CFOP_COCKPIT_* env
+# vars win over the file, because they are set by the same manifest that sets
+# the image tag.
+cockpit:
+  namespace: apps
+  image: ghcr.io/aachtenberg/cfoperator-cockpit:main
+  service_account: cfoperator-cockpit   # read-only; needs the chart's cockpit.enabled
+  agent_url: http://cfoperator.apps.svc.cluster.local:8083   # what the POD calls
+  ttl_seconds: 14400          # activeDeadlineSeconds — the session, and its token
+  ttl_after_finished_seconds: 3600
+  max_concurrent: 2
+  # The model the in-pod session talks to. Defaults to the agent's own
+  # llm.primary.url / llm.primary.model (where the loader puts the flat llm.url
+  # and llm.model keys), so the cockpit and the investigation share a model.
+  # llm_url: http://ollama:11434
+  # llm_model: gemma4:26b
 
 # Skills
 skills:

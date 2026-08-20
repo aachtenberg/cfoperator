@@ -206,6 +206,59 @@ def test_no_ignored_path_is_baked_into_the_image():
     )
 
 
+COCKPIT_DOCKERFILE = ROOT / "cockpit" / "Dockerfile"
+
+
+def cockpit_copied_paths() -> set[str]:
+    """Repo paths the cockpit image bakes in.
+
+    ``COPY --from=<stage>`` lines take their source from an earlier build stage
+    rather than from the build context, so they are not repo inputs and must not
+    be treated as ones.
+    """
+    paths = set()
+    for line in COCKPIT_DOCKERFILE.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("COPY "):
+            continue
+        tokens = stripped.split()[1:]
+        if any(t.startswith("--from=") for t in tokens):
+            continue
+        sources = [t for t in tokens if not t.startswith("--")][:-1]
+        paths.update(s.rstrip("/") for s in sources)
+    return paths
+
+
+def test_no_ignored_path_is_baked_into_the_cockpit_image():
+    """The same rule as above, for the fourth image.
+
+    ``cfassist-go/**`` was correctly in ``paths-ignore`` while the Go tree only
+    shipped as a release binary. CFOP-35 builds it into the cockpit image, which
+    silently inverts that: an ignored path that is now baked in means a cfassist
+    fix never reaches a cockpit pod, and the failure mode is "the fix appears to
+    deploy and does not".
+    """
+    assert cockpit_copied_paths(), "could not parse cockpit/Dockerfile COPY lines"
+    violations = paths_ignore_violations(build_paths_ignore(), cockpit_copied_paths())
+    assert not violations, (
+        "build-cfoperator-main.yml would skip the cockpit image build for a "
+        "change to something that ships in it:\n  " + "\n  ".join(violations))
+
+
+def test_the_cockpit_paths_ignore_guard_catches_the_entry_that_used_to_be_there():
+    """Runs the real matcher against the mutated list, so the check above is
+    demonstrably not vacuous."""
+    copied = cockpit_copied_paths()
+    assert any(p.startswith("cfassist-go") for p in copied), (
+        "premise moved: the cockpit image no longer bakes in cfassist-go")
+
+    for spelling in ("cfassist-go/**", "cfassist-go/*"):
+        violations = paths_ignore_violations(build_paths_ignore() + [spelling], copied)
+        assert any("cfassist-go" in v for v in violations), (
+            f"the guard missed {spelling!r}, which would silently skip cockpit "
+            "rebuilds for the CLI that runs inside it")
+
+
 def test_the_paths_ignore_guard_catches_a_reintroduced_entry():
     """Re-add the entry that actually shipped broken and confirm it is flagged.
 
