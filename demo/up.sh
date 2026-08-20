@@ -81,7 +81,12 @@ docker compose -f docker-compose.yml -f demo/docker-compose.demo.yml up -d --bui
 
 say "Waiting for the agent to come up (first boot initializes the KB — a few minutes)"
 for i in $(seq 1 120); do
-  if curl -fsS "http://localhost:${CFOP_CONSOLE_PORT:-8083}/api/health" >/dev/null 2>&1; then
+  # 127.0.0.1, not localhost: curl resolves localhost to ::1 first, and the
+  # agent container's IPv6 published-port path resets after the handshake
+  # (dual-network container; kind + compose default). curl only falls back to
+  # IPv4 on connect failure, not on an established-then-reset connection, so
+  # the probe fails forever while the demo is actually healthy.
+  if curl -fsS "http://127.0.0.1:${CFOP_CONSOLE_PORT:-8083}/api/health" >/dev/null 2>&1; then
     break
   fi
   [[ "$i" == 120 ]] && die "agent did not become healthy — docker compose logs agent"
