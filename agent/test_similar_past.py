@@ -106,3 +106,24 @@ def test_vector_only_shape_also_cites():
     op = _operator(captured)
     _run(op, [{'id': 9, 'trigger': 'x', 'outcome': 'resolved', 'similarity': 0.9}])
     assert captured['findings']['similar_past'][0]['similarity'] == 0.9
+
+
+def test_initialize_schema_ensures_the_embedding_cache_table():
+    """CFOP-54: same defect class as investigation_embeddings, second table.
+    EmbeddingCache._put_to_db/_get_from_db read and write embedding_cache but
+    nothing created it, so fresh installs silently lost the persistent cache
+    (failures are debug-level). Pin the ensure call at source level, and pin
+    the DDL to the exact columns _put_to_db inserts — the consuming side must
+    read what the producing side writes."""
+    import inspect
+    from knowledge_base import KnowledgeBase
+    src = inspect.getsource(KnowledgeBase.initialize_schema)
+    assert "_ensure_embedding_cache_table" in src
+    assert hasattr(KnowledgeBase, "_ensure_embedding_cache_table")
+
+    ddl = inspect.getsource(KnowledgeBase._ensure_embedding_cache_table)
+    assert "CREATE TABLE IF NOT EXISTS embedding_cache" in ddl
+    # Columns _put_to_db inserts; embedding must stay TEXT (the writer binds a
+    # string literal, the reader json-parses it — vector would diverge).
+    for column in ("hash_key", "embedding_model", "embedding TEXT", "created_at"):
+        assert column in ddl, f"embedding_cache DDL missing {column}"
