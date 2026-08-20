@@ -1,0 +1,137 @@
+{{/* The agent: OODA loop + console (:8083) + remediation drainer. Mirrors the
+     compose `agent` service env-for-env — test_helm_chart.py guards the
+     load-bearing names against drift. */}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-agent
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+spec:
+  type: {{ .Values.console.service.type }}
+  selector:
+    app.kubernetes.io/name: cfoperator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: agent
+  ports:
+    - name: console
+      port: {{ .Values.console.service.port }}
+      targetPort: 8083
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-agent
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate   # one OODA loop per install; two racing drainers would double-spawn
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cfoperator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cfoperator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: agent
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "cfoperator.fullname" . }}
+      initContainers:
+{{ include "cfoperator.waitForDb" . | indent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "cfoperator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: console
+              containerPort: 8083
+          env:
+            - name: CONFIG_PATH
+              value: /app/config/config.yaml
+{{ include "cfoperator.dbEnv" . | indent 12 }}
+            - name: KNOWLEDGE_BASE_PG_HOST
+              value: {{ include "cfoperator.pgHost" . | quote }}
+            - name: KNOWLEDGE_BASE_PG_PORT
+              value: {{ include "cfoperator.pgPort" . | quote }}
+            - name: KNOWLEDGE_BASE_PG_DATABASE
+              value: {{ include "cfoperator.pgDatabase" . | quote }}
+            - name: KNOWLEDGE_BASE_PG_USER
+              value: {{ include "cfoperator.pgUser" . | quote }}
+            - name: KNOWLEDGE_BASE_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: postgres-password
+            - name: PROMETHEUS_URL
+              value: {{ .Values.prometheus.url | quote }}
+            - name: LOKI_URL
+              value: {{ .Values.loki.url | quote }}
+            - name: ALERTMANAGER_URL
+              value: {{ .Values.alertmanager.url | quote }}
+            - name: OLLAMA_URL
+              value: {{ .Values.llm.url | quote }}
+            - name: OLLAMA_MODEL
+              value: {{ .Values.llm.model | quote }}
+            - name: SLACK_WEBHOOK_URL
+              value: {{ .Values.notify.slackWebhook | quote }}
+            - name: DISCORD_WEBHOOK_URL
+              value: {{ .Values.notify.discordWebhook | quote }}
+            - name: CFOP_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: session-secret
+            - name: CFOP_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: api-token
+            - name: CFOP_COMPLETION_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: completion-secret
+            - name: CFOP_EVENT_RUNTIME_URL
+              value: http://{{ include "cfoperator.fullname" . }}-event-runtime:8080
+{{- if eq .Values.profile "remediate" }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: GITHUB_TOKEN
+{{- end }}
+          envFrom:
+            - secretRef:
+                name: {{ include "cfoperator.fullname" . }}-llm
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 8083
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 8083
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            failureThreshold: 6
+          {{- with .Values.agent.resources }}
+          resources:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cfoperator.fullname" . }}-config

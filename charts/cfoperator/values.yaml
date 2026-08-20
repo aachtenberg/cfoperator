@@ -1,0 +1,97 @@
+# CFOperator chart values.
+#
+# Three values matter (same contract as the docker-compose trial): an LLM,
+# your Prometheus URL, and optionally a notify webhook. Everything else
+# defaults. A getting-started values file:
+#
+#   llm:
+#     url: http://ollama.example:11434
+#     model: llama3.1:8b
+#   prometheus:
+#     url: http://kps-kube-prometheus-stack-prometheus.monitoring:9090
+#   alertmanager:
+#     url: http://kps-kube-prometheus-stack-alertmanager.monitoring:9093
+#   notify:
+#     slackWebhook: https://hooks.slack.com/services/...
+
+# investigate (default): observe, triage, investigate, notify — read-only
+# RBAC, every remediation flag hard-ceilinged off by the profile.
+# remediate: adds the remediation queue, executor Jobs, and the PR loop —
+# requires remediate.gitRepo + remediate.githubToken.
+profile: investigate
+
+image:
+  repository: ghcr.io/aachtenberg/cfoperator
+  # The build workflow publishes :main and :main-<sha> — release-versioned
+  # image tags don't exist yet, so the appVersion is NOT a valid default here.
+  tag: main
+  # Always because the default tag floats: IfNotPresent would pin whichever
+  # :main a node pulled first, and `helm upgrade` would silently never move.
+  # Pin tag to a :main-<sha> and set IfNotPresent for reproducible installs.
+  pullPolicy: Always
+
+llm:
+  # ollama (any OpenAI-compat endpoint the agent's ollama backend reaches) or
+  # a hosted key below. REQUIRED: llm.url for the ollama backend, or an API key.
+  backend: ollama
+  url: ""
+  model: llama3.1:8b
+  anthropicApiKey: ""
+  groqApiKey: ""
+  xaiApiKey: ""
+  geminiApiKey: ""
+
+prometheus:
+  url: ""            # REQUIRED
+
+# Optional — blank leaves the feature off rather than half-configured.
+alertmanager:
+  url: ""
+loki:
+  url: ""
+
+notify:
+  slackWebhook: ""
+  discordWebhook: ""
+
+admin:
+  username: admin
+  # Empty: the bootstrap Job generates one and prints it ONCE in its log
+  # (kubectl logs job/<release>-cfoperator-bootstrap).
+  password: ""
+
+postgres:
+  # Bundled pgvector StatefulSet (default). Set bundled: false and fill
+  # external.* to bring your own — it must allow CREATE EXTENSION vector,
+  # or embeddings stay off.
+  bundled: true
+  image: pgvector/pgvector:pg16
+  storage: 5Gi
+  storageClassName: ""
+  database: cfoperator
+  username: cfoperator
+  password: ""       # generated once and kept across upgrades when empty
+  external:
+    host: ""
+    port: 5432
+    database: cfoperator
+    username: cfoperator
+    password: ""
+
+console:
+  service:
+    type: ClusterIP
+    port: 8083
+
+# Only read when profile: remediate.
+remediate:
+  gitRepo: ""        # owner/repo the executor opens PRs against — REQUIRED
+  githubToken: ""    # PR credential — REQUIRED (or pre-create the secret)
+  executorImage: ghcr.io/aachtenberg/cfoperator-executor:main
+  # Executor Jobs also read ANTHROPIC_API_KEY from the remediate secret when
+  # set; llm.anthropicApiKey is reused for it automatically.
+
+agent:
+  resources: {}
+eventRuntime:
+  resources: {}

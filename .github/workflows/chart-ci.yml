@@ -1,0 +1,67 @@
+name: Chart CI
+
+# CFOP-30: lint + a real `helm install` on kind for every chart change.
+# OCI publish on version tags lives in chart-release.yml — a tag push must
+# publish regardless of what the tagged commit touched, and a `paths` filter
+# on a combined trigger would silently skip it.
+
+on:
+  pull_request:
+    paths:
+      - 'charts/**'
+      - '.github/workflows/chart-ci.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'charts/**'
+
+permissions:
+  contents: read
+
+jobs:
+  lint-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ubuntu-latest does not contractually ship helm (demo-e2e.yml documents
+      # the same finding); finding it on today's image is luck, not a contract.
+      - uses: azure/setup-helm@v4
+
+      - name: Helm lint
+        run: |
+          helm lint charts/cfoperator
+          helm template cfoperator charts/cfoperator -f charts/cfoperator/ci/kind-values.yaml > /dev/null
+          # The two hard requirements must actually be hard: templating with
+          # no values must fail, or the "three values" contract is decorative.
+          if helm template cfoperator charts/cfoperator > /dev/null 2>&1; then
+            echo "::error::chart templated successfully with no required values set"
+            exit 1
+          fi
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: chart-ci
+
+      - name: Install chart
+        run: |
+          helm install cfoperator charts/cfoperator \
+            -f charts/cfoperator/ci/kind-values.yaml \
+            --namespace cfop --create-namespace \
+            --wait --timeout 10m
+
+      - name: Pods are green
+        if: always()
+        run: |
+          kubectl -n cfop get pods
+          kubectl -n cfop get events --sort-by=.lastTimestamp | tail -30
+          # bootstrap Job must have seeded an admin (its log says so)
+          kubectl -n cfop logs job/cfoperator-bootstrap | grep -E "seeded admin|an active admin exists"
+
+      - name: Console answers
+        run: |
+          kubectl -n cfop port-forward svc/cfoperator-agent 8083:8083 &
+          sleep 3
+          curl -fsS http://localhost:8083/api/health
+

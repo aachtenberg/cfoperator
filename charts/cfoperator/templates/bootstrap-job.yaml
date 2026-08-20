@@ -1,0 +1,50 @@
+{{/* First-boot database seeding: auth schema, pgvector extension, and the
+     first admin (password generated and printed ONCE in this Job's log when
+     admin.password is unset). DB-only mode — session secret and API token
+     come from the chart's generated Secret, not files (CFOP_BOOTSTRAP_DB_ONLY).
+     Idempotent, so it re-runs on every upgrade; before-hook-creation keeps the
+     previous Job's log around until the next upgrade. */}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-bootstrap
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cfoperator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: bootstrap
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: {{ include "cfoperator.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "scripts/compose_bootstrap.py"]
+          env:
+{{ include "cfoperator.dbEnv" . | indent 12 }}
+            - name: CFOP_BOOTSTRAP_DB_ONLY
+              value: "true"
+            # Match the agent init's 300s window — a first-time PVC/image
+            # provision can outlive the compose default of 90s.
+            - name: CFOP_BOOTSTRAP_DB_TIMEOUT
+              value: "300"
+            - name: CFOP_ADMIN_USERNAME
+              value: {{ .Values.admin.username | quote }}
+            - name: CFOP_ADMIN_PASSWORD
+              value: {{ .Values.admin.password | quote }}
+          volumeMounts:
+            # Images older than the DB-only flag still write their seed files;
+            # give them a throwaway /shared so the Job succeeds either way.
+            - name: shared
+              mountPath: /shared
+      volumes:
+        - name: shared
+          emptyDir: {}
