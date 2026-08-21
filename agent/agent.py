@@ -117,7 +117,8 @@ _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 # through the investigation pipeline (capable model + real tools) instead of
 # becoming a remediation directly, and the model's self-reported confidence is
 # clamped so a confident hallucination can't look authoritative in the queue.
-_SUMMARY_MUTATION_CLASSES = ('node-action', 'gitops-patch', 'k8s-action')
+_SUMMARY_MUTATION_CLASSES = ('node-action', 'gitops-patch', 'k8s-action',
+                             'k8s-imperative')
 _SUMMARY_CONFIDENCE_CAP = 0.5
 
 # Sweep/summary recs that say "check/verify/…" are evidence-gathering the agent
@@ -143,10 +144,16 @@ _REMEDIATION_CLASS_RUBRIC = (
     "- gitops-patch: a single manifest change in a GitOps repo (set repo: "
     "aachtenberg/homelab-infra for cluster apps, aachtenberg/cfoperator-deploy "
     "for cfoperator/event-runtime itself).\n"
-    "- k8s-action: a reversible in-cluster verb — rollout restart, delete "
-    "pod, scale a deployment, cordon a node, or create a one-off Job from a "
-    "CronJob to capture logs. It acts on the cluster with kubectl; "
-    "node-action is only for ssh onto a host.\n"
+    "- k8s-action: an in-cluster change that can be expressed as a MANIFEST "
+    "EDIT in the GitOps repo — scale a deployment (replicas), a rollout "
+    "restart (annotation bump), a resource-limit change. The executor "
+    "applies these by opening a PR, so if the fix cannot be written as a "
+    "file change it is NOT this class.\n"
+    "- k8s-imperative: a one-off kubectl verb with no manifest equivalent — "
+    "create a Job from a CronJob to capture logs, delete a pod, cordon a "
+    "node. Real and often correct, but nothing executes it today: it parks "
+    "for a human. Choose it anyway when it is the honest answer; a wrong "
+    "k8s-action wastes an executor run and still parks.\n"
     "- node-action: a host change over ssh/ansible (DNS, files, systemd).\n"
     "- manual: genuinely needs a human's hands or judgement (hardware, wiring, "
     "a risky decision) — NOT something you could investigate first.\n"
@@ -2517,7 +2524,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             "You classify one infrastructure fix recommendation for a remediation "
             "queue. Respond ONLY with a SINGLE JSON object — never an array, "
             "never a findings list — no other text:\n"
-            '{"remediation_class": "gitops-patch|k8s-action|node-action|investigate|manual", '
+            '{"remediation_class": "gitops-patch|k8s-action|k8s-imperative|'
+            'node-action|investigate|manual", '
             '"risk": "low|med|high", "confidence": 0.0, '
             '"host": "affected host or empty", '
             '"repo": "owning GitOps repo slug or empty"}\n'
@@ -6582,7 +6590,8 @@ IMPORTANT:
             f"```json\n"
             f'{{"recommendations": [{{"title": "short label", '
             f'"recommendation": "the concrete next step", "host": "affected host or empty", '
-            f'"remediation_class": "gitops-patch|k8s-action|node-action|investigate|manual", '
+            f'"remediation_class": "gitops-patch|k8s-action|k8s-imperative|'
+            f'node-action|investigate|manual", '
             f'"risk": "low|med|high", "confidence": 0.0, '
             f'"repo": "owning GitOps repo slug or empty"}}]}}\n'
             f"```\n"

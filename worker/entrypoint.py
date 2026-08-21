@@ -51,10 +51,14 @@ _STATUS_TO_OUTCOME = {
 # remediation drainer can route and risk-gate it. These are diagnostic
 # (read-only) classifications, not actions; the worker stays strictly read-only.
 #   gitops-patch: a manifest change to homelab-infra (paired with a ```diff block)
-#   k8s-action:   a reversible in-cluster verb (rollout restart, delete pod, scale)
+#   k8s-action:   an in-cluster change expressible as a MANIFEST EDIT
+#                 (scale replicas, rollout restart via annotation)
+#   k8s-imperative: a one-off kubectl verb with no manifest equivalent
+#                 (create Job from CronJob, delete pod, cordon) — parks for a human
 #   node-action:  a node-state change (DNS, files, systemd) via ssh/ansible
 #   manual:       needs human judgement; not safely mechanizable
-_VALID_REMEDIATION_CLASSES = ("gitops-patch", "k8s-action", "node-action", "manual")
+_VALID_REMEDIATION_CLASSES = ("gitops-patch", "k8s-action", "k8s-imperative",
+                              "node-action", "manual")
 _VALID_RISKS = ("low", "med", "high")
 
 # Read-only tool allowlist. --permission-mode dontAsk auto-denies anything

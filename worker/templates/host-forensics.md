@@ -53,11 +53,13 @@ When STATUS is needs_action or escalate, also classify how the RECOMMENDATION
 could be applied so it can be routed for remediation (these are read-only
 classifications — do NOT apply anything yourself):
 
-REMEDIATION_CLASS: <one of: gitops-patch | k8s-action | node-action | manual>
+REMEDIATION_CLASS: <one of: gitops-patch | k8s-action | k8s-imperative | node-action | manual>
   - gitops-patch: a manifest change in the homelab-infra GitOps repo. Use this
     only when you included exactly one ```diff block above.
-  - k8s-action: a reversible in-cluster verb (kubectl rollout restart, delete
-    pod, scale) — no manifest change needed.
+  - k8s-action: an in-cluster change expressible as a manifest edit (scale
+    replicas, rollout restart via annotation) — the executor opens a PR
+  - k8s-imperative: a one-off kubectl verb with no manifest equivalent
+    (create Job from CronJob, delete pod, cordon) — parks for a human
   - node-action: a node-state change (DNS/resolv.conf, files, systemd) applied
     over ssh/ansible.
   - manual: needs human judgement or is not safely mechanizable.

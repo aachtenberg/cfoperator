@@ -368,7 +368,7 @@ function showReclassify(id){
     `<button type="button" class="chip pick ${v===cur?'active':''}" data-g="${group}" data-v="${v}" onclick="pick(this)">${v}</button>`).join(' ');
   document.getElementById('actionform').innerHTML =
     `<div class="actform" style="flex-direction:column;align-items:stretch;gap:10px">
-       <div><span class="muted">class</span><br>${pickRow('class',['gitops-patch','k8s-action','node-action','manual'],cls)}</div>
+       <div><span class="muted">class</span><br>${pickRow('class',['gitops-patch','k8s-action','k8s-imperative','node-action','manual'],cls)}</div>
        <div><span class="muted">risk</span><br>${pickRow('risk',['low','med','high'],risk)}</div>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
          <span class="muted">repo</span>

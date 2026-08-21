@@ -145,6 +145,14 @@ they toggle live (no redeploy) from the console pipeline bar.
 Auto-execute gate (enqueue → `queued` vs `needs-human`): class ∈
 {`gitops-patch`,`k8s-action`} **and** `risk == low` **and** `confidence ≥ 0.8`.
 
+A class is auto-eligible only if the executor can run it. `k8s-action` means
+"expressible as a manifest edit" — the executor applies it by opening a PR.
+`k8s-imperative` (a one-off kubectl verb: create a Job from a CronJob, delete
+a pod, cordon a node) is deliberately **not** auto-eligible and has no runner:
+it parks `needs-human`, and reaching the executor by human approval fails fast
+naming the missing path rather than spending two LLM passes on a diff that
+cannot exist. See CFOP-61.
+
 ## Imperative lane change records
 
 `node-action` remediations run a gated command plan over SSH. Console approve

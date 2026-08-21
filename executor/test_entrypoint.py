@@ -216,3 +216,34 @@ def test_run_diff_prompt_gets_the_window_not_the_head():
     # is substituted into the same prompt, so the bare token is always present
     # and asserting on it would pass even against a head-truncated file.
     assert "CronJobNotSucceedingBackstop: here" in seen[1]
+
+
+def test_class_with_no_runner_fails_fast_naming_the_gap(monkeypatch):
+    """CFOP-61: k8s-imperative reaches run() only by human approval (it is
+    never auto-eligible). Falling through to run_gitops would spend two LLM
+    passes to report 'model produced no applicable diff' — blaming the model
+    for a missing execution path. Live row #49 was exactly that.
+
+    Mutation check: drop the _NO_EXECUTOR_PATH branch from run() and this
+    goes red (the gitops path is reached and the LLM is called).
+    """
+    order = dict(_WORK_ORDER, remediation_class="k8s-imperative")
+    called = []
+    monkeypatch.setattr(entrypoint, "run_gitops",
+                        lambda *a, **k: called.append("gitops"))
+
+    out = entrypoint.run(_env(CFOP_REMEDIATION_JSON=json.dumps(order)))
+
+    assert called == [], "the GitOps path must not run for a class with no runner"
+    assert out["status"] == "needs-human"
+    assert "no executor path" in out["detail"]
+    assert "k8s-imperative" in out["detail"]
+    # The message has to tell the operator what to do next, not just refuse.
+    assert "reclassify" in out["detail"].lower()
+
+
+def test_every_no_runner_class_is_a_real_class():
+    """A typo in _NO_EXECUTOR_PATH would silently route a live class to the
+    GitOps path instead of failing fast."""
+    valid = {"gitops-patch", "k8s-action", "k8s-imperative", "node-action", "manual"}
+    assert set(entrypoint._NO_EXECUTOR_PATH) <= valid

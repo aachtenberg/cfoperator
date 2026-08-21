@@ -35,6 +35,7 @@ def register(mcp, client, settings):
         Refused with 409/conflict for manual-class rows — human-only work has
         nothing for the executor to mechanize. Reclassify it first
         (gitops-patch / k8s-action / node-action) or resolve it by hand.
+        k8s-imperative is honest but has no runner yet: it parks for a human.
 
         Requires scope: remediate.
         """

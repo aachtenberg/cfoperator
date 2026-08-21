@@ -41,6 +41,14 @@ from nodeaction import (
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("cfop-executor")
 
+# Classes this image has no runner for. They are never auto-eligible (see
+# _AUTO_REMEDIATION_CLASSES), so one only arrives when a human approved the
+# row — and the GitOps path cannot express a one-off cluster verb as a file
+# diff, so falling through would burn two LLM passes to say "model produced no
+# applicable diff". Remove a class from here in the change that gives it a
+# runner, never before (CFOP-61).
+_NO_EXECUTOR_PATH = ("k8s-imperative",)
+
 
 def load_work_order(env: Dict[str, str]) -> Dict[str, Any]:
     """Parse the CFOP_REMEDIATION_JSON env work order into a dict."""
@@ -211,8 +219,21 @@ def run(env: Dict[str, str]) -> Dict[str, Any]:
     file-aware, two-pass GitOps path that opens a PR.
     """
     work_order = load_work_order(env)
-    if (work_order.get("remediation_class") or "").strip() == "node-action":
+    rclass = (work_order.get("remediation_class") or "").strip()
+    if rclass == "node-action":
         return run_node_action(env, work_order)
+    if rclass in _NO_EXECUTOR_PATH:
+        # Fail where the cause is legible. These classes reach run() only by a
+        # human approving the row (they are never auto-eligible), and falling
+        # through to run_gitops would spend two LLM passes to report "model
+        # produced no applicable diff" — which blames the model for a missing
+        # execution path. Live row #49 is exactly that story (CFOP-61).
+        return build_completion_payload(
+            work_order, "needs-human", None,
+            f"no executor path for remediation_class '{rclass}': nothing here "
+            "can run a one-off cluster verb. Apply it by hand and resolve the "
+            "row, or reclassify it gitops-patch/k8s-action if the fix can be "
+            "written as a manifest change.", None)
     return run_gitops(env, work_order)
 
 
