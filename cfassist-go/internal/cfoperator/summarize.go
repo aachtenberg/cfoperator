@@ -71,6 +71,11 @@ type SessionSummary struct {
 	// than discarded — losing the only record of a session is worse — but
 	// never presented as if it were a distillation.
 	Degraded bool `json:"-"`
+	// DroppedLearning is set when the model produced a learning that could
+	// never be retrieved and it was discarded here. Reported rather than
+	// implied: silently nilling it leaves the operator believing the session
+	// simply had nothing to teach, which is a different fact.
+	DroppedLearning string `json:"-"`
 }
 
 var fencedJSON = regexp.MustCompile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")
@@ -104,8 +109,10 @@ func ParseSummary(reply string) (*SessionSummary, bool) {
 
 	// A learning the model filled in halfway is dropped here rather than sent
 	// to be auto-deprecated server-side. Both end with nothing retrievable in
-	// the KB; only one of them tells the operator it happened.
+	// the KB; only one of them tells the operator it happened — which is what
+	// DroppedLearning carries out to the caller.
 	if s.Learning != nil && !s.Learning.Valid() {
+		s.DroppedLearning = describeIncompleteLearning(s.Learning)
 		s.Learning = nil
 	}
 	s.Commands = trimList(s.Commands, 20, 300)
@@ -198,6 +205,26 @@ func SessionExchanges(messages []client.Message) int {
 		}
 	}
 	return n
+}
+
+// describeIncompleteLearning names what was missing, so the warning says which
+// half of the model's answer to distrust rather than just that one existed.
+func describeIncompleteLearning(l *Learning) string {
+	var missing []string
+	if strings.TrimSpace(l.Title) == "" {
+		missing = append(missing, "title")
+	}
+	if strings.TrimSpace(l.Description) == "" {
+		missing = append(missing, "description")
+	}
+	if strings.TrimSpace(l.AppliesWhen) == "" {
+		missing = append(missing, "applies_when")
+	}
+	title := strings.TrimSpace(l.Title)
+	if title == "" {
+		title = "(untitled)"
+	}
+	return fmt.Sprintf("%q is missing %s", title, strings.Join(missing, " and "))
 }
 
 func trimList(items []string, maxItems, maxLen int) []string {

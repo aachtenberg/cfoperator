@@ -764,6 +764,24 @@ A session with no exchanges — attached, read the briefing, left — records
 nothing either way. There is nothing to distil, and a row saying "a human looked
 and said nothing" is noise in a place that has to stay worth reading.
 
+### Which sessions carry it
+
+Write-back is a cfassist feature, and each tier gets its cfassist differently —
+so they gain it at different moments:
+
+| Session | Gets cfassist from | Has write-back |
+|---|---|---|
+| tier `pod`, tier `container` | the cockpit image, built from the tree | as soon as the image rolls |
+| tier `host`, tier `ssh` | the pinned `cfassist-v<version>` release | once that release carries it |
+| a plain `attach` on your machine | whatever binary is on your PATH | once you upgrade it |
+
+This is the same property `cockpit.cfassist_version` already documents, seen
+from the other side: a host tier runs a *released* binary on purpose, so that
+a session is reproducible and not whatever happened to be on main. The cost is
+that a new cfassist feature reaches those two tiers a release later than the
+other two. A session on an old binary simply does not write back — there is no
+error, because nothing tried.
+
 ### Who is allowed to write it
 
 The session itself, using the short-lived token minted for it (§2). Both writes

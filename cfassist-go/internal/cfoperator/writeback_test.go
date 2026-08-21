@@ -319,3 +319,35 @@ func TestSummaryPromptDemandsATriggerCondition(t *testing.T) {
 		}
 	}
 }
+
+// TestADroppedLearningIsReportedNotJustDiscarded: docs/cockpit.md §6 promises
+// the operator a warning when the model produced a learning that could never be
+// retrieved. Nilling it inside ParseSummary and saying nothing leaves them
+// believing the session simply had nothing to teach — a different fact, and a
+// wrong one.
+func TestADroppedLearningIsReportedNotJustDiscarded(t *testing.T) {
+	s, ok := ParseSummary(`{"outcome":"resolved","summary":"did a thing","learning":
+		{"learning_type":"solution","title":"a title","description":"a description"}}`)
+	if !ok {
+		t.Fatal("the summary itself should parse")
+	}
+	if s.Learning != nil {
+		t.Fatal("the learning should still be dropped")
+	}
+	if s.DroppedLearning == "" {
+		t.Fatal("the drop must be reportable, not silent")
+	}
+	if !strings.Contains(s.DroppedLearning, "applies_when") {
+		t.Errorf("the report should name what was missing, got %q", s.DroppedLearning)
+	}
+	if !strings.Contains(s.DroppedLearning, "a title") {
+		t.Errorf("the report should name the learning, got %q", s.DroppedLearning)
+	}
+}
+
+func TestACompleteLearningReportsNoDrop(t *testing.T) {
+	s, _ := ParseSummary(goodReply)
+	if s.DroppedLearning != "" {
+		t.Errorf("nothing was dropped, but the summary says %q", s.DroppedLearning)
+	}
+}

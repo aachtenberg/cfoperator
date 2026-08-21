@@ -86,6 +86,14 @@ func writeBackSession(cmd *cobra.Command, investigationID int, url, token string
 		record.Summary = summary.Summary
 		record.Commands = summary.Commands
 		learning = summary.Learning
+		if summary.DroppedLearning != "" {
+			// The model tried to teach something and could not say when it
+			// applies. Saying so beats the silence that reads as "this session
+			// had nothing to teach" — a different fact, and a wrong one.
+			fmt.Fprintf(os.Stderr, "warning: the session's learning was not stored: "+
+				"%s — a learning with no trigger condition would be auto-deprecated "+
+				"and never retrieved\n", summary.DroppedLearning)
+		}
 	}
 
 	wb := cfoperator.NewWriteBackClient(url, token, 30*time.Second)

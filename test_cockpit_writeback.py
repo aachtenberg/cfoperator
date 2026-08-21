@@ -13,6 +13,7 @@ These guard the three things that make that true rather than merely attempted:
 
 import json
 import os
+import pathlib
 import threading
 
 import pytest
@@ -383,3 +384,59 @@ def test_a_degraded_row_reads_as_degraded():
                            tool_output=None, success=False)])
     assert out[0]["degraded"] is True
     assert out[0]["detail"] == {}, "a null detail must not become a null deref downstream"
+
+
+# --------------------------------------------------------------------------
+# the constraint that would have made all of the above a 500 (CFOP-20's lesson)
+# --------------------------------------------------------------------------
+
+def _kb_module():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent / "agent"))
+    import knowledge_base
+    return knowledge_base
+
+
+def test_the_event_type_check_admits_a_cockpit_session():
+    """REGRESSION GUARD, and the one that matters most in this file.
+
+    ``investigation_events`` carries a CHECK on ``event_type``. It was written
+    with four values, and ``create_all`` never alters an existing table — so a
+    write-back storing ``cockpit_session`` would have failed the INSERT on
+    every database in existence, 500'd the endpoint, and shown the operator
+    "the session was NOT recorded" at the end of every session.
+
+    Nothing else here could catch it: the endpoint tests fake the knowledge
+    base, so the suite never inserts into this table. This asserts the
+    *rendered constraint*, which is the thing the database actually enforces.
+    """
+    kb = _kb_module()
+    assert kb.COCKPIT_SESSION_EVENT in kb.VALID_EVENT_TYPES
+    assert kb.constraint_admits_outcomes(
+        kb.EVENT_TYPE_CHECK_SQL, {kb.COCKPIT_SESSION_EVENT}), (
+        f"the CHECK would reject a cockpit session: {kb.EVENT_TYPE_CHECK_SQL}")
+
+
+def test_the_event_type_check_is_generated_not_hand_written():
+    """Two hand-maintained lists is exactly how 'needs_action' became
+    unwritable on investigations (CFOP-20) and 'k8s-imperative' on the
+    remediation queue (PR #150). Third table, same rule."""
+    kb = _kb_module()
+    assert kb.constraint_admits_outcomes(kb.EVENT_TYPE_CHECK_SQL, set(kb.VALID_EVENT_TYPES))
+    source = (pathlib.Path(__file__).parent / "agent" / "knowledge_base.py").read_text()
+    assert "CheckConstraint(EVENT_TYPE_CHECK_SQL, name='valid_event_type')" in source, (
+        "the event-type CHECK is spelled out again instead of generated from "
+        "VALID_EVENT_TYPES")
+
+
+def test_an_existing_database_gets_the_constraint_widened_at_boot():
+    """``create_all`` only creates. Every prod database predates this event
+    type, so the widener has to run — and has to run in the process that then
+    writes, before the first write that needs it."""
+    source = (pathlib.Path(__file__).parent / "agent" / "knowledge_base.py").read_text()
+    assert "_ensure_event_type_constraint" in source
+    init = source[source.index("def initialize_schema"):]
+    init = init[:init.index("\n    def ")]
+    assert "_ensure_event_type_constraint()" in init, (
+        "the widener exists but nothing calls it at schema init")

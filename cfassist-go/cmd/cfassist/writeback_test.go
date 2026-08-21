@@ -284,3 +284,26 @@ func TestWriteBackTargetUsesWhatTheCockpitToldIt(t *testing.T) {
 		t.Errorf("target = %s/%s, want what the spawn put in the environment", tier, host)
 	}
 }
+
+// TestTheDroppedLearningWarningReachesTheOperator closes the loop the unit test
+// opens: ParseSummary reports the drop, and this is what puts it on their
+// screen. The docs promise this exact warning.
+func TestTheDroppedLearningWarningReachesTheOperator(t *testing.T) {
+	var calls []wbCall
+	srv := wbAgent(t, &calls)
+	stubSummarizer(t, &cfoperator.SessionSummary{
+		Outcome: "resolved", Summary: "s", Learning: nil,
+		DroppedLearning: `"stale CIFS handle" is missing applies_when`,
+	}, nil)
+
+	stderr := captureStderr(t, func() {
+		writeBackSession(wbCmd(t), 1889, srv.URL, "tok", nil, wbMessages, time.Now(), "pod", "")
+	})
+	if !strings.Contains(stderr, "was not stored") ||
+		!strings.Contains(stderr, "applies_when") {
+		t.Errorf("the operator was not told the learning was dropped; stderr was:\n%s", stderr)
+	}
+	if len(calls) != 1 || calls[0].Path == cfoperator.LearningsPath {
+		t.Errorf("a dropped learning must not be sent anyway: %+v", calls)
+	}
+}
