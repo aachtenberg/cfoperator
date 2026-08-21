@@ -15,31 +15,116 @@ Production is k3s + ArgoCD GitOps. **`git push` is the deploy path** — no rsyn
 | `cfoperator-worker` | cfoperator-deploy | `cfoperator-worker` — deep investigation | — |
 | `cfoperator-cockpit` | none (agent builds the Job at spawn) | `cfoperator-cockpit` — one Job per `attach --spawn` | — |
 
-All manifests live in the private **cfoperator-deploy** repo, which ArgoCD's standalone `cfoperator` Application syncs; the public repo holds no topology. All images are `ghcr.io/aachtenberg/…`. Namespace `apps`; both agent pods on `headless-gpu` = `ubuntu-llm-01` = 10.0.0.14. Control plane runs `kubectl` locally.
+All manifests live in the private **cfoperator-deploy** repo, which ArgoCD's standalone `cfoperator` Application syncs; the public repo holds no topology. All images are `ghcr.io/aachtenberg/…`. Namespace `apps`; both agent pods on `headless-gpu` = `ubuntu-llm-01` = 192.168.0.150 (hostNetwork, so that is also the console's address). Control plane runs `kubectl` locally.
 
 `build-cfoperator-main.yml` builds all five images per run, each pushed as floating `:main` and immutable `:main-<sha7>`. **Only the agent tag auto-bumps**; worker/executor/changerecord/cockpit track `:main`, so wait for the build job — there is nothing to merge for them either. The cockpit build `needs:` worker — it derives from it.
 
 Per-workload config: [mcp-server.md](mcp-server.md), [slack-bridge.md](slack-bridge.md), [REMEDIATION.md](REMEDIATION.md).
 
-## Cockpit: one-time deploy-repo changes
+## Cockpit: deploy-repo changes
 
-`cfassist attach --spawn` is inert until these land. Nothing else depends on them. The Helm chart does the same behind `cockpit.enabled` / `cockpit.ssh.secretName` — see [cockpit.md](cockpit.md).
+`cfassist attach --spawn` is inert until these land in **cfoperator-deploy**. Nothing else depends on them. (The Helm chart carries the equivalent behind `cockpit.enabled` / `cockpit.ssh.secretName`, for external installs — see [cockpit.md](cockpit.md).)
 
-**Tier 1 (pod)** — `cfoperator-rbac.yml`:
+### 1. Tier 1: pod spawn — `cfoperator-rbac.yml`
 
-- `cfoperator-cockpit` ServiceAccount + read-only ClusterRole/binding, copied from `cfoperator-worker-readonly` (no exec, no write, no secrets).
-- On the existing `cfoperator-jobs` Role: `create` on `secrets`. **`create` only** — `get` would make the launcher a way to read every secret in the namespace; the Job owns the Secret, so GC covers deletion.
+Add `secrets: create` to the existing `cfoperator-jobs` Role:
 
-Missing → `jobs is forbidden` / `secrets is forbidden` at spawn.
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cfoperator-jobs
+  namespace: apps
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+# Cockpit (CFOP-35): the pod's short-lived session token is written to a Secret
+# the Job references. `create` ONLY — `get` would make the launcher a way to
+# read every secret in apps, and the Job owns the Secret so GC covers deletion.
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create"]
+```
 
-**Tiers 2/3 (non-cluster hosts)** — agent Deployment:
+Append the cockpit identity (same posture as `cfoperator-worker-readonly`):
 
-- Mount `cfop-forensics-ssh` at `/cockpit-ssh`, `defaultMode: 0440`. **A staging dir, not `~/.ssh`** — secret volumes are group-readable and ssh refuses such a key with a network-looking error. The agent copies to `~/.ssh` at 0600 on first use.
-- `CFOP_COCKPIT_SSH_SECRET_DIR=/cockpit-ssh`
-- `CFOP_COCKPIT_SSH_USER=<user>`
-- `CFOP_COCKPIT_HOST_AGENT_URL=http://<agent-as-the-fleet-sees-it>:8083` — **required**. `cockpit.agent_url` is cluster DNS and a Pi cannot resolve it, so host tiers 400 until this is set.
+```yaml
+---
+# The cockpit Job's identity (CFOP-35): strictly read-only. Deliberately NO
+# exec, NO write verbs, NO secrets, NO configmaps — a cockpit is a place to
+# look from; the write path stays the PR/console gate.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cfoperator-cockpit
+  namespace: apps
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cfoperator-cockpit-readonly
+rules:
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "namespaces", "nodes", "events", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["batch"]
+  resources: ["jobs", "cronjobs"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["metrics.k8s.io"]
+  resources: ["nodes", "pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cfoperator-cockpit-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cfoperator-cockpit-readonly
+subjects:
+- kind: ServiceAccount
+  name: cfoperator-cockpit
+  namespace: apps
+```
 
-Missing → tier 1 still works; host tiers report "could not be probed" and fall back to a cluster pod. Host inventory comes from `infrastructure.hosts` in the agent's config — no change needed.
+Missing → `kubectl create failed: jobs is forbidden` / `secrets is forbidden` at spawn.
+
+### 2. Tiers 2/3: non-cluster hosts — `cfoperator.yml`
+
+**One env var.** Add to the `cfoperator` container's `env:`:
+
+```yaml
+            # Cockpit tiers 2/3 (CFOP-36): the agent URL a session on a
+            # NON-cluster host calls. Not cockpit.agent_url — that is cluster
+            # DNS, which a Pi cannot resolve. Host tiers 400 until this is set.
+            - name: CFOP_COCKPIT_HOST_AGENT_URL
+              value: "http://192.168.0.150:8083"
+```
+
+**The ssh key needs no work.** The `ssh-perms` initContainer already stages `cfop-forensics-ssh` into `/root/.ssh/id_rsa` (0600, root-owned), both containers mount that emptyDir, and every `infrastructure.hosts[*].ssh.key_path` in the ConfigMap already points at it. `CFOP_COCKPIT_SSH_SECRET_DIR` / `CFOP_COCKPIT_SSH_USER` exist for installs without that staging — this one does not need them.
+
+Missing → tier 1 still works; host tiers report "the affected host could not be probed" and fall back to a cluster pod.
+
+### Verify
+
+```bash
+kubectl -n apps get sa cfoperator-cockpit
+kubectl auth can-i create jobs    -n apps --as=system:serviceaccount:apps:cfoperator   # yes
+kubectl auth can-i create secrets -n apps --as=system:serviceaccount:apps:cfoperator   # yes
+kubectl auth can-i get    secrets -n apps --as=system:serviceaccount:apps:cfoperator   # no
+kubectl auth can-i create pods/exec -n apps \
+  --as=system:serviceaccount:apps:cfoperator-cockpit                                   # no
+
+# End to end against a real investigation id
+cfassist attach <id> --spawn                                   # tier 1: pod
+cfassist attach <id> --spawn --host raspberrypi4 --tier ssh    # host tier smoke test
+kubectl -n apps get jobs -l cfop.dev/role=cockpit
+```
 
 ## What the image contains
 
