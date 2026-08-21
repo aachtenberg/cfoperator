@@ -1061,6 +1061,46 @@ class WebServer:
                 logger.error(f"get investigation {investigation_id} failed: {e}")
                 return jsonify({'error': str(e)}), 500
 
+        # Operator triage of an investigation (CFOP-65). Until now the
+        # investigations table was append-only from the console's side: the
+        # read API returned triage_action/operator_notes but nothing could set
+        # them, so an operator who had verified a fix had no way to say so —
+        # and an attached cfassist session told a human to use a console
+        # control that did not exist.
+        #
+        # Only 'resolved' and 'ack' are accepted here. 'retry'/'context' need
+        # the re-investigation path wired (enqueue_investigation is the live
+        # one, not the dead InvestigationQueue table) and 'suppress' needs a
+        # reader in the alert path before the button would mean anything.
+        _INVESTIGATION_TRIAGE_ACTIONS = ('resolved', 'ack')
+
+        @self.app.route('/api/investigations/<int:investigation_id>/triage', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def triage_investigation_api(investigation_id):
+            body = json_object()
+            action = str(body.get('action') or '').strip()
+            if action not in _INVESTIGATION_TRIAGE_ACTIONS:
+                return jsonify({
+                    'error': f'action must be one of '
+                             f'{", ".join(_INVESTIGATION_TRIAGE_ACTIONS)}'}), 400
+            note = str(body.get('note') or '').strip()[:2000] or None
+            try:
+                # Deliberately NOT passing outcome=, though the KB helper
+                # supports it. `outcome` is the agent's own conclusion and it
+                # is what find_similar_investigations_hybrid cites as
+                # precedent to future triage decisions — overwriting it with
+                # an operator verdict would edit the corpus that later
+                # classifications reason from. The human's verdict lives in
+                # triage_action; the agent's finding stays intact.
+                ok = self.operator.kb.update_investigation_triage(
+                    investigation_id, action, operator_notes=note)
+                if not ok:
+                    return jsonify({'error': 'not found'}), 404
+                return jsonify(self.operator.kb.get_investigation(investigation_id))
+            except Exception as e:
+                logger.error(f"triage investigation {investigation_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
         @self.app.route('/investigations')
         def investigations_page():
             """Operator console: recent investigations + conclusions."""

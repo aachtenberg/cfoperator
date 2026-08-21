@@ -387,7 +387,13 @@ class AgentSettings(Base):
 
 
 class InvestigationQueue(Base):
-    """Queue for investigations requested via dashboard triage actions."""
+    """Queue for investigations requested via dashboard triage actions.
+
+    DEAD as of CFOP-65: nothing writes or reads this table. The live
+    re-investigation path is ``CFOperator.enqueue_investigation`` (used by
+    ``/v1/investigate``). If console-driven retry/context is built, route it
+    through that rather than reviving a second mechanism, and delete this.
+    """
     __tablename__ = 'investigation_queue'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -2416,6 +2422,12 @@ class KnowledgeBase:
                     "completed_at": inv.completed_at.isoformat() if inv.completed_at else None,
                     "trigger": inv.trigger,
                     "outcome": inv.outcome,
+                    # The operator's verdict, distinct from the agent's
+                    # `outcome`. The list needs it so a row resolved by a human
+                    # stops sitting in the needs_action pile looking unhandled
+                    # (CFOP-65). The drill-in already returned it, which is what
+                    # made the omission easy to miss.
+                    "triage_action": inv.triage_action,
                     "duration_seconds": inv.duration_seconds,
                     "tool_calls_count": inv.tool_calls_count,
                     # Where the recommendation went (CFOP-46): a queue row id,
@@ -3986,6 +3998,11 @@ class KnowledgeBase:
                 }
             return None
 
+    # Reachable from the console since CFOP-65, but only for the 'resolved'
+    # and 'ack' actions. 'retry'/'context' would need the re-investigation
+    # path wired (enqueue_investigation is the live one — the
+    # InvestigationQueue table below is dead), and 'suppress' needs a reader
+    # first (see add_suppression_pattern).
     def update_investigation_triage(
         self,
         investigation_id: int,
@@ -4009,6 +4026,12 @@ class KnowledgeBase:
 
     # ============================= Suppression Patterns =================================
 
+    # UNIMPLEMENTED SUBSYSTEM (CFOP-65). Nothing calls these and, more to the
+    # point, NOTHING READS suppression_patterns — no alert or triage path
+    # filters against them. Wiring a "suppress" button to this would write
+    # rows that change no behaviour. Before building it, decide whether
+    # suppression is distinct from the triage rubric's existing log_only
+    # class, or is just an operator-taught log_only.
     def add_suppression_pattern(
         self,
         service_name: str,
