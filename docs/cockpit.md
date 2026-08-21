@@ -10,7 +10,7 @@ read the Slack alert, open a terminal, start a coding agent, and type "check
 investigation 1889" so it can go query the API itself. That works, and it beats
 the console, which is why it is worth productizing rather than arguing with.
 
-Four pieces, in the order you meet them.
+Five pieces, in the order you meet them.
 
 ## 1. The alert tells you the command
 
@@ -284,11 +284,12 @@ Kubernetes' garbage collection removes it with the Job.
 **Who may spawn.** Admin only: this creates a workload and mints a credential.
 Members keep plain `attach`.
 
-**The terminal is your kubectl.** The agent hands back coordinates; the attach
-is `kubectl attach -it` running on your machine, with your cluster credentials.
-No service account in this system holds `pods/exec` or `pods/attach`, and tier 1
-deliberately does not add one — an operator spawning a cockpit from a laptop
-already has cluster access. The agent-side PTY bridge is only needed by the
+**The terminal is yours.** The agent hands back coordinates — as argv, never as
+a command string to hand a shell — and the attach runs on your machine with
+your credentials: `kubectl attach -it` in the cluster, `ssh -t` outside it. No
+service account in this system holds `pods/exec` or `pods/attach`, and the
+ladder deliberately does not add one — an operator spawning a cockpit from a
+laptop already has that access. The agent-side PTY bridge is only needed by the
 console drawer (CFOP-59), and that is where that RBAC decision belongs.
 
 ### Enabling it
@@ -308,15 +309,376 @@ The image is `ghcr.io/aachtenberg/cfoperator-cockpit:main` (amd64 + arm64,
 because the affected node is frequently a Pi). It derives from the worker image
 — kubectl, ssh, claude-code, non-root uid 10001 — and adds cfassist.
 
-## What tier 1 deliberately is not
+## 5. Cockpits on hosts outside the cluster (CFOP-36)
 
-- **No agent-side terminal.** The attach needs kubectl on your machine. A
-  browser cockpit needs a PTY bridge in the agent — CFOP-59.
-- **No janitor beyond Kubernetes'.** TTL and ownership GC clean tier 1. Tiers 2
-  and 3 (a cockpit that outlives its Job, or its cluster) are CFOP-36.
+Everything above puts the session in the cluster. Most of this fleet is not in
+the cluster — bare Pis, the GPU box, VMs — and those are the machines where you
+most want a shell, because the journal, the disks and `ip neigh` are only there.
+
+So `--spawn` follows the fleet. **Same command, nothing new to learn:**
+
+```bash
+cfassist attach 1889 --spawn
+```
+
+CFOperator works out which machine the incident is about, asks that machine what
+it can run, and puts the session there. If it is a cluster node you get the pod
+from §4. If it is a Pi with docker you get a container. If it is a Pi with
+nothing you get a process. You type the same thing either way.
+
+### The ladder at a glance
+
+| If the host has… | you get tier | isolation | what cleans it up |
+|---|---|---|---|
+| membership in the cluster | `pod` | a pod, read-only service account | Kubernetes (`activeDeadlineSeconds` + GC) |
+| docker or podman, on amd64/arm64 | `container` | a container | a `timeout` wrapper, then the janitor |
+| `systemd-run` and a systemd manager | `host` | **none** | a transient timer, then the janitor |
+| none of the above | `ssh` | **none** | the janitor only |
+
+Reading down that table, only two things change: how well the session is walled
+off from the host, and what removes it afterwards. Everything else is identical
+— same briefing, same model, same commands, same TTL, same dying credential.
+
+```mermaid
+flowchart TD
+    A["cfassist attach 1889 --spawn"] --> B{"Which machine is<br/>this incident about?"}
+    B -->|"nothing names one"| P1["tier pod<br/><i>unpinned, in the cluster</i>"]
+    B -->|"a name"| C{"Is it a cluster node?"}
+    C -->|yes| P2["tier pod<br/><i>pinned to that node</i>"]
+    C -->|"no, and not in<br/>infrastructure.hosts"| P3["tier pod<br/><i>nowhere to ssh — said out loud</i>"]
+    C -->|"no, but we can ssh to it"| D["one ssh round trip:<br/>arch? docker? systemd?"]
+    D -->|"unreachable"| P4["tier pod<br/><i>reason reported</i>"]
+    D -->|"docker/podman<br/>+ amd64/arm64"| T2["tier container"]
+    D -->|"systemd-run<br/>+ a manager to own the unit"| T3["tier host"]
+    D -->|"neither"| T4["tier ssh<br/><i>best-effort</i>"]
+```
+
+### Setting it up
+
+Two things, on top of the `cockpit.enabled` from §4. Tier 1 needs neither — if
+you only ever spawn into the cluster you can skip this whole section.
+
+**1. Put the host in the inventory.** The host tiers reach machines by ssh, so
+CFOperator has to know the address and the login. This is the same
+`infrastructure.hosts` block the SSH tools and the host sweep already use — if
+you have those working, you are already done. See
+[infrastructure-config.md](infrastructure-config.md).
+
+```yaml
+infrastructure:
+  hosts:
+    raspberrypi5:
+      address: 10.0.0.15
+      ssh:
+        user: sre
+        key_path: /root/.ssh/id_rsa
+```
+
+The **key of the block** (`raspberrypi5`) is the name CFOperator matches against
+alerts and findings, so make it the name your alerts actually use.
+
+**2. Give the agent a key.** Tier 1 only ever talks to Kubernetes; tiers 2/3
+log in to machines, and the agent pod has no key by default. On Helm:
+
+```bash
+helm upgrade cfoperator charts/cfoperator \
+  --set cockpit.enabled=true \
+  --set cockpit.ssh.secretName=cfop-forensics-ssh \
+  --set cockpit.ssh.user=sre
+```
+
+`cfop-forensics-ssh` is the keypair the deep-investigation worker and the
+node-action executor already use, so on an existing install this secret exists
+already. Deploying by hand instead? [DEPLOYMENT.md](DEPLOYMENT.md) has the
+manifest change (mount the secret at `/cockpit-ssh`, set
+`CFOP_COCKPIT_SSH_SECRET_DIR` and `CFOP_COCKPIT_SSH_USER`).
+
+**3. Tell the session how to call home.** This one is easy to miss and the
+spawn refuses without it, on purpose.
+
+```yaml
+cockpit:
+  host_agent_url: http://10.0.0.14:8083   # the agent, as the FLEET sees it
+```
+
+`cockpit.agent_url` — the one that already exists — is *what the pod calls*,
+and it defaults to cluster DNS. A Pi cannot resolve
+`cfoperator.apps.svc.cluster.local`, so a host-tier session set up with it
+would attach fine and then fail to fetch its own briefing: a briefed session
+with no briefing, discovered from inside. One knob cannot serve both runtimes,
+so tiers 2/3 get their own, and a spawn that would use a cluster-only name is
+refused up front with this key named.
+
+The same applies to `llm.primary.url`, for the same reason and without the
+guard: it has to be an address the fleet can reach, not `127.0.0.1`.
+
+**4. Check it took.** Name the host and the rung explicitly, so the test is of
+the ssh key and nothing else:
+
+```bash
+cfassist attach 1889 --spawn --host raspberrypi5 --tier ssh
+```
+
+`--tier ssh` is the useful smoke test: it is the rung every reachable host has,
+so it works even on a machine with no docker and no systemd. Read the first two
+lines of output — they say which machine and which tier, which is the whole
+question. If you get `could not be probed (Permission denied (publickey))`,
+step 2 has not landed; if you get `is not in infrastructure.hosts`, step 1 has
+not; and if you get `only resolves inside the cluster`, step 3 has not.
+
+Fixed one of them? Just run it again. A failed probe is cached for seconds, not
+minutes, precisely so that mounting the key and retrying works the way you
+would expect it to.
+
+### Using it: a bare Pi, start to finish
+
+An alert fires about `raspberrypi5`, CFOperator investigates and cannot fix it,
+and Slack gives you the line it always gives you. You add one flag:
+
+```console
+$ cfassist attach 1889 --spawn
+cockpit spawned: raspberrypi5:cfop-cockpit-1889 (process on raspberrypi5 — user transient timer expires it in 14400s)
+  target: from the remediation queued off this investigation
+session token cfop_9f2a… — session and token expire in 4h0m0s
+  no isolation at this tier: the session runs directly on the host, and the short-lived token is the security model
+attaching (ssh -t sre@10.0.0.15 /tmp/cfop-cockpit-1889/run) — exit ends the cockpit; the TTL ends it either way
+
+cockpit — investigation #1889 — no isolation: this session runs directly on the host
+the session token dies with this session, or at its TTL.
+
+[briefing loads: what CFOperator observed, concluded, and queued]
+
+> the NIC is down again isn't it — check dmesg and ip neigh
+```
+
+You are now on the Pi, in a session that already knows what happened, with the
+model reading the same investigation you are. Ordinary shell commands work; so
+does asking the model to run them.
+
+When you are finished, `exit`. The session ends, and the credential and the
+binary it used are deleted on the way out. If you close the laptop instead, the
+TTL does it four hours later; if something goes wrong with the TTL, the janitor
+does it within fifteen minutes. **You do not have to clean up after yourself.**
+
+And you can run the same command again straight away. A second `--spawn` for an
+investigation whose session is still alive puts you back in *that* session
+rather than starting a second one; if the previous one has ended, the leftovers
+are cleared before the new one starts — a stopped container still holds its
+name, and a still-armed self-destruct timer would otherwise fire on the new
+session.
+
+The same thing on a docker host reads almost identically — the difference is one
+word in the first line (`docker container on ubuntu-llm-01`), no isolation
+warning, and `ctrl-p ctrl-q` detaches without ending the session.
+
+### Reading the output
+
+Five lines, and each answers a question you would otherwise have to go looking
+for mid-incident:
+
+```
+cockpit spawned: raspberrypi5:cfop-cockpit-1889 (process on raspberrypi5 — …)
+                 └── where it went, and what it is called
+  target: from the remediation queued off this investigation
+          └── HOW that machine was chosen — the one to check when it looks wrong
+session token cfop_9f2a… — session and token expire in 4h0m0s
+              └── when this stops working, whatever you do
+  no isolation at this tier: …
+  └── only printed at tiers `host` and `ssh`; the absence of this line is meaningful
+attaching (ssh -t sre@10.0.0.15 …) — exit ends the cockpit; …
+          └── the exact command running on YOUR machine, and how to leave
+```
+
+The `target:` line is the one worth reading twice. Landing on the wrong box is
+otherwise only discoverable once you are inside it, wondering why the disk looks
+fine.
+
+### Overriding the choice
+
+Two flags, both `--spawn` only. Passing either without `--spawn` is refused
+rather than ignored — a plain `attach` already runs on your machine, so there
+would be nothing for them to act on.
+
+**`--host <name>` picks the machine.** Resolution is a heuristic over the
+remediation rows and the trigger text, and you can see things it cannot:
+
+```bash
+cfassist attach 1889 --spawn --host raspberrypi5
+```
+
+The name is the key from `infrastructure.hosts`, or a cluster node name. The
+output then reads `target: requested by the caller`, so it is obvious later
+that the machine was your choice and not CFOperator's.
+
+**`--tier pod|container|host|ssh` picks the runtime:**
+
+```bash
+cfassist attach 1889 --spawn --tier container
+```
+
+If that tier is not available you get an error naming what is missing and what
+is available instead — **never a quiet downgrade to something weaker.** If you
+asked for a container because you wanted the container boundary, silently
+handing you a bare process on the host would be the worst possible answer.
+
+`--tier pod` is worth knowing: it forces a cluster pod for a finding about a
+bare host, which is what you want when the host itself is the thing that is
+broken and you would rather look at it from next door.
+
+### Checking on sessions, and cleaning up by hand
+
+You should not need to, but mid-incident "what did I leave running" is a fair
+question.
+
+```bash
+# containers, on any docker host
+ssh sre@10.0.0.20 'docker ps --filter label=cfop.dev/role=cockpit'
+
+# process sessions, on any host
+ssh sre@10.0.0.15 'ls -d /tmp/cfop-cockpit-* 2>/dev/null'
+
+# pods, in the cluster
+kubectl get jobs -n apps -l cfop.dev/role=cockpit
+
+# remove one by hand (the janitor would get it within a cycle anyway)
+ssh sre@10.0.0.15 'rm -rf /tmp/cfop-cockpit-1889'
+ssh sre@10.0.0.20 'docker rm -f cfop-cockpit-1889'
+```
+
+Every artifact is named `cfop-cockpit-<investigation-id>`, on every tier and in
+every runtime, so one name finds the pod, the container and the directory.
+
+Two cockpits may run at once *per runtime*: two in the cluster, and two on each
+host. The host half is not tidiness — every session mints a token onto a
+machine that has no cluster-side ceiling above it, so something has to bound
+how many there can be. Your own session never counts against you: re-running
+your command returns the cockpit you already have.
+
+The janitor runs on the agent every fifteen minutes and removes anything whose
+recorded expiry has passed. Change the interval in the console settings
+(`cockpit_reap_interval`, in seconds) or with
+`cockpit.janitor_interval_seconds` in config; the console setting wins, so you
+can change it without a redeploy.
+
+### When it does not work
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `tier pod — the affected host is neither a cluster node nor a configured ssh host` | the name CFOperator resolved is not one it knows how to reach, so it put you in the cluster instead | add it to `infrastructure.hosts`, using the name your alerts use |
+| `tier 'ssh' … (the host is not in infrastructure.hosts, so it was never probed)` | the same thing, but you forced a host tier, so it refused rather than quietly giving you a pod | same fix — or drop `--tier` and take the pod |
+| `the affected host could not be probed (Permission denied (publickey))` — and you get a pod | the agent has no usable key for that host | setup step 2; check the secret is mounted and `cockpit.ssh.user` matches the host's login |
+| `the affected host could not be probed (No route to host)` — and you get a pod | the host is down or unreachable *from the agent* | this is a finding, not a bug: a session on an unreachable box is impossible, and the pod you got can still investigate it |
+| `tier 'container' was requested but is not available … (neither docker nor podman is installed); available: pod, host, ssh` | you forced a rung the host does not have | drop `--tier`, or pick one of the listed ones |
+| `kubectl create failed: jobs is forbidden` | tier 1's RBAC is not applied | see the CFOP-35 section in [DEPLOYMENT.md](DEPLOYMENT.md) |
+| `could not fetch cfassist-linux-arm64 from cfassist-v0.9.0 …; is the release tagged?` | the pinned cfassist version has no published release | tag it, or pin an older one with `CFOP_COCKPIT_CFASSIST_VERSION` |
+| `only resolves inside the cluster … set cockpit.host_agent_url` | the session would have been told to call the pod's address | setup step 3 |
+| `cockpit concurrency cap reached` | two cockpits are already running — in the cluster, or on that host | exit one (the message names them), or attach without `--spawn` |
+| `spawning a cockpit is admin-only` | you are a member | ask an admin, or use plain `attach` — the briefing is the same |
+| the session starts but the model never answers | the session cannot reach the LLM | check `llm.primary.url` is an address reachable *from the fleet*, not `127.0.0.1` |
+| the session starts but the briefing is empty or errors | the session cannot reach the agent | same shape as the row above, for `cockpit.host_agent_url` |
+| you fixed the cause and the same error came back | not the probe cache — failures are only held for seconds | look again: the message names what it actually tried |
+| it landed on the wrong machine | the host was resolved from something misleading | read the `target:` line, then re-run with `--host <name>` |
+| `--tier only applies to --spawn` | you passed `--tier` or `--host` without `--spawn` | add `--spawn`, or drop the flag — a plain attach runs here, not there |
+
+Notice the pattern in the first three rows: **not knowing how to reach a host
+is not an error.** An unreachable host and a host with no inventory entry both
+fall back to a pod in the cluster and say so on the first line, because a
+cockpit next to the problem beats no cockpit at all. They only become errors
+when you forced a host tier with `--tier` — at which point refusing is the
+right answer, since you asked for something specific.
+
+---
+
+The rest of this section is *why* it works this way. Skip it unless something
+surprised you.
+
+### How the machine gets chosen
+
+Not from the investigation's `host_id`. That field reads like the answer and is
+not one: it is the area-of-responsibility column for multi-agent installs, and a
+normal install sets it to `cfoperator` on every row. Reading it is what made
+tier 1's `nodeSelector` a no-op for its whole life — every spawn asked the
+cluster for a node called `cfoperator`, got nothing, and reported "spawned
+anywhere". The order that actually works is:
+
+1. `--host` on the command, if you gave one;
+2. the `host_id` of a remediation queued off this investigation — that one *is*
+   derived from the finding;
+3. a configured host named in the trigger or the findings, matched on whole
+   names so `raspberrypi4` never matches `raspberrypi45`;
+4. none, in which case tier 1 spawns unpinned, as it always did.
+
+Guessing beyond the configured inventory has no upside: an unconfigured name has
+no address and no credential, so the spawn would fail one step later anyway —
+and a wrong guess puts you on the wrong machine mid-incident.
+
+### How the runtime gets chosen
+
+One ssh round trip asks the host what it has — architecture, `docker`, `podman`,
+`systemd-run`, whether there is a systemd manager to own a transient unit — and
+the answer is cached for fifteen minutes. **Detection, not configuration:**
+nothing is declared per host, and a host that loses docker drops a rung by
+itself rather than erroring.
+
+It asks with `command -v` rather than `docker info`, because `info` connects to
+the daemon and blocks for seconds on a host where docker is installed but
+stopped — and this probe runs while you are waiting for a shell.
+
+`systemd-run` being installed is not enough on its own. As a non-root ssh user
+it needs either a running user systemd manager or passwordless sudo that the
+deployment has explicitly allowed (`cockpit.allow_sudo`, default off). Without
+one of those the self-destruct timer cannot be created, and a tier whose cleanup
+silently does not exist is worse than the honest `ssh` rung that admits it.
+
+### What each tier gives up
+
+At tier 2 the token reaches the container through the ssh connection's stdin,
+never through the command line, so it stays out of the host's process table. It
+is still visible to `docker inspect` — that is the honest step down from tier 1,
+where the credential lives in a Kubernetes Secret the manifest only references,
+and it is bounded by the TTL either way.
+
+At tiers 3 and 3b **there is no isolation left, and the short-lived token is the
+security model.** The session runs as your ssh user, directly on the host.
+`--spawn` says so on the way in, every time. In exchange you get what a pod on a
+different machine cannot give you: that host's journal, its disks, its ARP
+table, its `dmesg`.
+
+Tier 3 also differs in *when* the session starts. At tiers 1 and 2 something is
+already running and your attach joins it; at tier 3 there is nothing to run it
+in, so the session starts when your ssh executes the delivered runner. What that
+costs is survival across a dropped connection — reattaching needs a multiplexer
+on the host, which is CFOP-59's problem. What it does *not* cost is the expiry:
+the credential and the binary are removed at the deadline whether anyone
+attached or not.
+
+### Why the janitor keeps no list
+
+Kubernetes reaps tier 1 for free. Nothing reaps a container or a `/tmp`
+directory on a Pi, and the sessions that leak are by definition the ones nobody
+is watching — the laptop that closed, the VPN that dropped.
+
+So the janitor does not track what it spawned. It enumerates `cfop-cockpit-*` by
+name and reads the expiry each artifact carries, which is deliberately stronger:
+an agent that restarted, or a previous agent instance, leaves sessions no list of
+ours would remember, and those are exactly the orphans the bottom rung produces.
+Kill `-9` your ssh mid-cockpit and the host is clean within a cycle.
+
+The expiry is an integer written at spawn — a container label, a file in the
+session directory — rather than a creation date read back later, because
+`docker ps` renders dates differently across versions and locales, and a janitor
+that misreads one either spares an orphan or kills a live session.
+
+## What the cockpit deliberately is not, yet
+
+- **No agent-side terminal.** The attach needs kubectl or ssh on your machine.
+  A browser cockpit needs a PTY bridge in the agent — CFOP-59.
 - **No remediate profile.** There is one cockpit identity and it is read-only.
   A write-capable cockpit waits until something actually needs one.
 - **No write-back.** What you and the agent work out in the session does not
   land back on the investigation (CFOP-37). Today, if it matters, put it in the
   console.
+- **No reattach after a drop.** Tiers 1 and 2 survive one (the pod and the
+  container keep running); tier 3 does not. `tmux` is probed for and recorded
+  against the day CFOP-59 needs it.
 - **No deep links.** Copy-paste is the interface.

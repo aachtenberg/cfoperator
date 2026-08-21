@@ -33,8 +33,10 @@ COPY web_auth.py ./
 # MCP pod on the deploy that introduced them, with :8083 refusing connections.
 COPY auth/ ./auth/
 # The cockpit Job launcher behind POST /api/cockpit/spawn — imported by
-# web_server.py at module load, so the same rule applies again.
+# web_server.py at module load, so the same rule applies again. cockpit_ladder
+# is tiers 2/3 of the same endpoint (CFOP-36) and is imported beside it.
 COPY cockpit_spawn.py ./
+COPY cockpit_ladder.py ./
 # docs/auth.md's lockout runbook is `kubectl exec ... python
 # scripts/create_admin.py`, which is the recovery path for having no usable
 # admin — it has to exist in the image to be worth documenting.

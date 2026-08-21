@@ -50,11 +50,44 @@ Until both land, the endpoint answers and `kubectl` refuses with
 chart expresses the same thing behind `cockpit.enabled` (see
 [cockpit.md](cockpit.md)).
 
+### Cockpit host tiers (a second, independent deploy-repo change)
+
+Tiers 2/3 of the ladder (CFOP-36) put the session on a host that is not in the
+cluster, which the agent reaches by **ssh** — so unlike tier 1 it needs a key in
+the agent pod. That is a different grant from the RBAC above and is deliberately
+separate: one lets the agent create Jobs in its own namespace, this one gives it
+a credential to log in to machines with.
+
+In `cfoperator-deploy`, on the agent Deployment:
+
+* mount the existing `cfop-forensics-ssh` secret (the keypair the
+  deep-investigation worker and the node-action executor already use) at
+  `/cockpit-ssh`, `defaultMode: 0440` — **a staging directory, not `~/.ssh`**: a
+  secret volume is root-owned and group-readable, and ssh refuses a private key
+  like that with an error that reads like a network problem. The agent copies it
+  to `~/.ssh` at 0600 on first use, exactly as the executor does;
+* `CFOP_COCKPIT_SSH_SECRET_DIR=/cockpit-ssh` and `CFOP_COCKPIT_SSH_USER=<user>`;
+* `CFOP_COCKPIT_HOST_AGENT_URL=http://<agent-as-the-fleet-sees-it>:8083`.
+  **Not optional in practice.** `cockpit.agent_url` is what the *pod* calls and
+  is cluster DNS; a Pi cannot resolve it, so a host-tier session set up with it
+  would attach and then fail to fetch its own briefing. The spawn refuses
+  rather than allowing that, so without this variable tiers 2/3 answer with a
+  400 naming it.
+
+Nothing else changes: the host inventory is already `infrastructure.hosts` in
+the config the agent reads. Until the mount lands, tier 1 keeps working and the
+host tiers fail at the probe with `Permission denied (publickey)` — which the
+ladder reports as "the affected host could not be probed" and degrades to a pod
+in the cluster rather than failing silently.
+
+The chart does the same behind `cockpit.ssh.secretName` (empty by default).
+
 ### What the image contains
 
 The Dockerfile copies `cfshared/`, `agent/`, `tools/`, `skills/`, `ui/`,
 `observability/`, `event_runtime/`, `mcp_server/`, `bridge/`, `auth/`,
-`scripts/`, `web_server.py`, `web_auth.py`, and `cockpit_spawn.py`. `cfshared/` holds the config
+`scripts/`, `web_server.py`, `web_auth.py`, `cockpit_spawn.py`, and
+`cockpit_ladder.py`. `cfshared/` holds the config
 loader that `agent/` and `event_runtime/` both import at module load, so it has
 the same all-or-nothing character as the four below. The last four matter
 operationally: `web_server.py` and

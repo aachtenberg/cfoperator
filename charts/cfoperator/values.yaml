@@ -99,6 +99,26 @@ remediate:
 # (cfoperator-cockpit) is read-only whether or not this is on.
 cockpit:
   enabled: false
+  # Tiers 2/3 of the ladder (CFOP-36): a cockpit on a host that is not in the
+  # cluster — a docker container, or the released cfassist under a transient
+  # systemd unit. Both are reached by ssh from the agent, so unlike tier 1 they
+  # need a key in the agent pod. Separate from `enabled` because it is a
+  # different grant: `enabled` lets the agent create Jobs in its own namespace,
+  # this one gives it a credential to log in to machines with. Off unless a
+  # secret is named.
+  #
+  # The secret holds the private key (any filename; the first key in the secret
+  # is used, matching the executor's `cfop-forensics-ssh` convention). The user
+  # is the fallback for hosts whose infrastructure.hosts entry does not set one.
+  ssh:
+    secretName: ""
+    user: sre
+  # The agent URL a session on a NON-cluster host calls. `agent_url` (in the
+  # config file) is what the pod calls and is cluster DNS, which a Pi cannot
+  # resolve — so a host-tier spawn is refused until this is set, rather than
+  # producing a session that attaches and then cannot fetch its briefing.
+  # Reachable from the fleet: a LAN address or an ingress, not a loopback.
+  hostAgentUrl: ""
 
 agent:
   resources: {}

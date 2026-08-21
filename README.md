@@ -232,7 +232,13 @@ You get triage, a real investigation, and the line that matters:
 
 That last command drops you into a terminal session **already briefed** on the
 investigation — the same line CFOperator puts on every Slack, Discord and ntfy
-notification, so an alert is one paste away from context. See
+notification, so an alert is one paste away from context.
+
+Add `--spawn` and the session runs *on the affected machine* instead of on your
+laptop, with a credential that expires with it and nothing left behind
+afterwards. It follows the fleet rather than the cluster: a pod on a Kubernetes
+node, a container on a docker host, a plain process on a bare Pi — same command,
+and only the isolation and the cleanup differ. See
 [docs/cockpit.md](docs/cockpit.md).
 
 Running on Kubernetes instead, or wiring your own fleet? See
@@ -423,6 +429,7 @@ fails at fixture setup without one.
 
 ### Getting Started
 - [README.md](README.md) — This file (architecture, quick start)
+- [docs/cockpit.md](docs/cockpit.md) — From an alert to a briefed session, on your laptop or on the affected machine
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — Deploy checklist and quick commands
 - [docs/infrastructure-config.md](docs/infrastructure-config.md) — Fleet configuration
 - [docs/event-runtime-quickstart.md](docs/event-runtime-quickstart.md) — Alert ingest → triage → investigate flow, env vars

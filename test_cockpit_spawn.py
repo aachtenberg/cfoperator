@@ -99,7 +99,9 @@ class _FakeKubectl:
 
 
 def _minter(recorder=None):
-    def mint(investigation_id, ttl_seconds):
+    # **kwargs: the ladder (CFOP-36) passes the chosen tier and host through to
+    # the mint so the audit row can answer "which runtime did this session get".
+    def mint(investigation_id, ttl_seconds, **kwargs):
         if recorder is not None:
             recorder.append((investigation_id, ttl_seconds))
         return {"id": 7, "prefix": "cfop_abcd", "secret": TOKEN_SECRET}
@@ -508,11 +510,55 @@ def test_spawn_endpoint_never_returns_the_token():
     assert body["token_prefix"] == "cfop_abcd"
 
 
-def test_spawn_endpoint_pins_the_investigations_node():
+def test_spawn_endpoint_never_pins_from_the_investigations_host_id():
+    """REGRESSION GUARD (CFOP-36). This test used to assert the opposite, and
+    the behaviour it pinned was a defect: ``Investigation.host_id`` is the
+    area-of-responsibility field, which ``agent.py`` sets to ``'cfoperator'``
+    on every row. Pinning from it meant every spawn asked the cluster for a
+    node called ``cfoperator``, got nothing, and reported "not a cluster node
+    — spawned anywhere". The nodeSelector never once fired in production.
+
+    Which host the incident is on now comes from the remediation rows fed off
+    the investigation (their host_id IS finding-derived) or from the trigger
+    text; see cockpit_ladder.resolve_target_host.
+    """
     spawner, kubectl, _ = _spawner(node={"spec": {}})
-    client, _ = _client(spawner=spawner, investigation={"id": 1889, "host_id": "raspberrypi4"})
+    client, _ = _client(spawner=spawner,
+                        investigation={"id": 1889, "host_id": "cfoperator",
+                                       "trigger": "Pod immich-kiosk-0 not ready"})
     client.post("/api/cockpit/spawn", json={"investigation_id": 1889})
-    assert ["get", "node", "-o", "json", "--", "raspberrypi4"] == kubectl.calls[1][0]
+    for args, _stdin in kubectl.calls:
+        assert "cfoperator" not in args[-1:], (
+            f"the agent's own host_id was used as a node name: {args}")
+
+
+def test_spawn_endpoint_pins_the_node_the_caller_names():
+    """The console button and `--host` both land here, and this is the path
+    that produced a real nodeSelector once the ladder started resolving hosts."""
+    spawner, kubectl, _ = _spawner(node={"spec": {}})
+    client, _ = _client(spawner=spawner, investigation={"id": 1889, "host_id": "cfoperator"})
+    resp = client.post("/api/cockpit/spawn",
+                       json={"investigation_id": 1889, "host": "raspberrypi4"})
+    lookups = [a for a, _ in kubectl.calls if a[:2] == ["get", "node"]]
+    assert lookups == [["get", "node", "-o", "json", "--", "raspberrypi4"]], (
+        "the node must be looked up exactly once: the ladder asks whether the "
+        "host is in the cluster and the spawn asks whether to pin to it, and "
+        "two answers that disagree put the session somewhere neither meant")
+    body = resp.get_json()
+    assert body["placement"]["node"] == "raspberrypi4"
+    assert "caller" in body["host_provenance"]
+
+
+def test_spawn_endpoint_answers_with_a_tier_and_an_attach_argv():
+    """Every tier answers in the same shape, so the client never has to know
+    which runtime it is attaching to (CFOP-36)."""
+    spawner, _, _ = _spawner(node={"spec": {}})
+    client, _ = _client(spawner=spawner)
+    body = client.post("/api/cockpit/spawn", json={"investigation_id": 1889}).get_json()
+    assert body["tier"] == "pod"
+    assert body["attach_argv"][0] == "kubectl"
+    assert body["attach_command"] == " ".join(body["attach_argv"])
+    assert "tier pod" in body["tier_note"]
 
 
 def test_a_host_that_looks_like_a_flag_stays_an_argument():

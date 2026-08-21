@@ -45,6 +45,15 @@ logger = logging.getLogger("cfoperator.cockpit")
 JOB_ROLE_LABEL = "cfop.dev/role"
 JOB_ROLE_VALUE = "cockpit"
 COCKPIT_LABEL = "cfop-cockpit"
+# Tier 1's name in the ladder (CFOP-36). Defined here rather than imported from
+# cockpit_ladder so the dependency runs one way: the ladder builds on tier 1,
+# not the other way round.
+TIER_POD = "pod"
+
+#: "the caller did not look this up", which is not the same as "the caller
+#: looked and there is no such node" — the second is a decision worth
+#: inheriting, the first is a lookup still to do.
+_UNRESOLVED = object()
 
 DEFAULT_IMAGE = "ghcr.io/aachtenberg/cfoperator-cockpit:main"
 DEFAULT_SERVICE_ACCOUNT = "cfoperator-cockpit"
@@ -64,7 +73,7 @@ DEFAULT_MAX_CONCURRENT = 2
 TOKEN_ENV = "CFOP_API_TOKEN"
 
 _KubectlRunner = Callable[[Sequence[str], Optional[str]], Tuple[int, str, str]]
-_TokenMinter = Callable[[int, int], Dict[str, Any]]
+_TokenMinter = Callable[..., Dict[str, Any]]
 _TokenRevoker = Callable[[int], None]
 
 
@@ -189,12 +198,19 @@ class CockpitSpawner:
     # ---- the launch ---------------------------------------------------------
 
     def spawn(self, investigation_id: int, *, host: str = "",
-              ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
+              ttl_seconds: Optional[int] = None,
+              node: Any = _UNRESOLVED) -> Dict[str, Any]:
         """Create the cockpit Job (and its token Secret) for an investigation.
 
         Returns the coordinates the caller needs to attach. Raises
         :class:`CockpitSpawnError` with an HTTP status for every refusal, so a
         deduped spawn and a failed one are never confused.
+
+        ``node`` may be passed pre-resolved by a caller that already looked the
+        host up — the ladder does, to decide tier 1 versus tiers 2/3 (CFOP-36).
+        Looking it up twice would not only cost a second API call: the two
+        answers could disagree about whether a host is in the cluster, and the
+        session would land somewhere neither decision intended.
         """
         cfg = self._config
         ttl = clamp_ttl(ttl_seconds if ttl_seconds is not None else cfg.ttl_seconds,
@@ -209,10 +225,12 @@ class CockpitSpawner:
             if job.get("investigation") == str(investigation_id):
                 return {
                     "status": "existing",
+                    "tier": TIER_POD,
                     "job_name": job.get("name", ""),
                     "namespace": cfg.namespace,
                     "investigation_id": investigation_id,
                     "pod_selector": f"{COCKPIT_LABEL}={investigation_id}",
+                    "attach_argv": self.attach_argv(job.get("name", "")),
                     "attach_command": self.attach_command(job.get("name", "")),
                     # No new token and no new placement decision: this is the
                     # cockpit that already exists, reported as such rather than
@@ -223,13 +241,16 @@ class CockpitSpawner:
             raise CockpitSpawnError(
                 f"cockpit concurrency cap reached ({cfg.max_concurrent} active)", 429)
 
-        node, placement_note = self._placement(host)
+        node, placement_note = self._placement(host, node)
 
         if self._mint is None:
             raise CockpitSpawnError(
                 "no token store: a cockpit cannot be spawned without a "
                 "per-investigation session token", 503)
-        token = self._mint(investigation_id, ttl)
+        # tier/host ride along into the audit row: "which runtime did this
+        # session get, and on what" is the first question asked of a cockpit
+        # after the fact, and the token mint is the one event every tier shares.
+        token = self._mint(investigation_id, ttl, tier=TIER_POD, host=node or "")
 
         job_name = self._job_name(investigation_id)
         secret_name = f"{job_name}-token"
@@ -277,23 +298,36 @@ class CockpitSpawner:
                     job_name, investigation_id, placement_note, ttl)
         return {
             "status": "spawned",
+            "tier": TIER_POD,
             "job_name": job_name,
             "namespace": cfg.namespace,
             "investigation_id": investigation_id,
             "pod_selector": f"{COCKPIT_LABEL}={investigation_id}",
+            "attach_argv": self.attach_argv(job_name),
             "attach_command": self.attach_command(job_name),
             "ttl_seconds": ttl,
             "placement": {"node": node or "", "note": placement_note},
             "token_prefix": str(token.get("prefix") or ""),
         }
 
+    def attach_argv(self, job_name: str) -> List[str]:
+        """The operator-side attach, as argv. Deliberately *their* kubectl: no
+        service identity in this system holds pods/attach or pods/exec, and an
+        operator spawning a cockpit from a laptop has cluster credentials by
+        definition. The agent-side PTY bridge the console drawer needs is
+        CFOP-59's problem, and that is where the RBAC question gets decided.
+
+        argv rather than only a string because the client *executes* this: a
+        command string would have to go through a shell on the operator's
+        machine. Every tier answers in the same shape (CFOP-36), so the client
+        never has to know which runtime it is attaching to.
+        """
+        return ["kubectl", "attach", "-it", "-n", self._config.namespace,
+                f"job/{job_name}"]
+
     def attach_command(self, job_name: str) -> str:
-        """The operator-side attach. Deliberately *their* kubectl: no service
-        identity in this system holds pods/attach or pods/exec, and an operator
-        spawning a cockpit from a laptop has cluster credentials by definition.
-        The agent-side PTY bridge the console drawer needs is CFOP-59's problem,
-        and that is where the RBAC question gets decided."""
-        return f"kubectl attach -it -n {self._config.namespace} job/{job_name}"
+        """The same attach, rendered for a human to read or paste."""
+        return " ".join(self.attach_argv(job_name))
 
     # ---- guards -------------------------------------------------------------
 
@@ -330,7 +364,33 @@ class CockpitSpawner:
             })
         return active
 
-    def _placement(self, host: str) -> Tuple[Optional[str], str]:
+    def get_node(self, host: str) -> Optional[Dict[str, Any]]:
+        """The cluster node named ``host``, or None if there is no such node.
+
+        Split out of ``_placement`` because the CFOP-36 ladder asks a different
+        question of the same call — "is this a cluster node at all", which
+        decides tier 1 versus tiers 2/3 — and two kubectl invocations that
+        could disagree about whether a host is in the cluster would put a
+        session in the wrong place.
+        """
+        host = (host or "").strip()
+        if not host:
+            return None
+        # `--` before the name: host is ultimately alert-derived, and a value
+        # starting with `-` would otherwise be parsed as a kubectl flag.
+        code, out, stderr = self._kubectl(["get", "node", "-o", "json", "--", host], None)
+        if code != 0:
+            logger.info("cockpit: %s is not a cluster node (%s)", host, stderr.strip()[:200])
+            return None
+        try:
+            node = json.loads(out)
+        except (ValueError, AttributeError):
+            logger.warning("cockpit: node %s returned unreadable JSON", host)
+            return None
+        return node if isinstance(node, dict) else None
+
+    def _placement(self, host: str,
+                   node: Any = _UNRESOLVED) -> Tuple[Optional[str], str]:
         """Resolve the nodeSelector for a host-level finding.
 
         The unschedulable case from the issue is the interesting one: the node
@@ -343,20 +403,13 @@ class CockpitSpawner:
         if not host:
             return None, "no affected node on the investigation — spawned anywhere"
 
-        # `--` before the name: host comes from the investigation's host_id,
-        # which is ultimately alert-derived, and a value starting with `-`
-        # would otherwise be parsed as a kubectl flag.
-        code, out, stderr = self._kubectl(["get", "node", "-o", "json", "--", host], None)
-        if code != 0:
+        if node is _UNRESOLVED:
+            node = self.get_node(host)
+        if node is None:
             # Not a cluster node (a bare host, a VM, a typo): nothing to pin to.
-            # Not an error — most investigations are not host-level.
-            logger.info("cockpit placement: %s is not a schedulable cluster node (%s)",
-                        host, stderr.strip()[:200])
+            # Not an error — most investigations are not host-level, and the
+            # ones that are on a *bare* host are the ladder's tiers 2/3.
             return None, f"{host} is not a cluster node — spawned anywhere"
-        try:
-            node = json.loads(out)
-        except (ValueError, AttributeError):
-            return None, f"could not read node {host} — spawned anywhere"
 
         spec = node.get("spec") or {}
         if spec.get("unschedulable"):
