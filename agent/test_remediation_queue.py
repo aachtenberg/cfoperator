@@ -1309,6 +1309,80 @@ def test_parse_remediation_classification():
     assert parse('{"remediation_class": "investigate"}')["remediation_class"] == "investigate"
 
 
+# ---- CFOP-60: an incoherent classification is not a classification --------
+#
+# Live row #49: `kubectl create job --from=cronjob/... -n data` came back as
+# node-action with host null, confidence 1.0. node-action means "a host change
+# over ssh/ansible", so with no host the row can never execute — it rode the
+# queue to the executor, died on "node-action execution not enabled", and
+# parked needs-human. These guard the CLASS (a class whose required field the
+# model left empty is untrustworthy), not this one model's quirk.
+
+
+def test_node_action_without_a_host_is_not_a_classification():
+    parse = CFOperator._parse_remediation_classification
+    # Row #49's actual shape: confident, well-formed JSON, incoherent answer.
+    assert parse('{"remediation_class": "node-action", "risk": "low", '
+                 '"confidence": 1.0, "host": "", "repo": ""}') is None
+    assert parse('{"remediation_class": "node-action", "confidence": 0.9}') is None
+    assert parse('{"remediation_class": "node-action", "host": "   "}') is None
+    # With a host it is coherent and parses as before.
+    ok = parse('{"remediation_class": "node-action", "risk": "med", '
+               '"confidence": 0.8, "host": "raspberrypi5"}')
+    assert ok is not None and ok["host"] == "raspberrypi5"
+
+
+def test_other_classes_do_not_require_a_host():
+    # Only node-action needs somewhere to ssh. A k8s-action acts on the
+    # cluster and a gitops-patch on a repo, so a missing host is normal —
+    # over-tightening here would park perfectly good rows.
+    parse = CFOperator._parse_remediation_classification
+    for rclass in ("k8s-action", "gitops-patch", "investigate", "manual"):
+        out = parse('{"remediation_class": "%s", "confidence": 0.9}' % rclass)
+        assert out is not None, rclass
+        assert out["host"] is None
+
+
+def test_incoherent_node_action_nudges_instead_of_dead_parking():
+    """Row #49 end-to-end: the ladder gets a second opinion rather than
+    accepting a class that cannot execute."""
+    op = _classifier_op()
+    incoherent = ('{"remediation_class": "node-action", "risk": "low", '
+                  '"confidence": 1.0, "host": "", "repo": ""}')
+    op._chat_with_tools_with_fallback = MagicMock(side_effect=[
+        {"response": incoherent, "backend": "ollama", "model": "gemma4:26b"},
+        {"response": _GOOD_CLASSIFICATION, "backend": "ollama", "model": "gemma4:26b"},
+    ])
+    hints = CFOperator._classify_needs_action_recommendation(
+        op, "reservoir-ingest CronJob failing",
+        "kubectl create job --from=cronjob/reservoir-ingest test-run -n data", {})
+    # Second opinion accepted; the dead-parking node-action never survives.
+    assert hints["remediation_class"] == "gitops-patch"
+    assert op._chat_with_tools_with_fallback.call_count == 2
+
+
+def test_kubectl_verbs_have_somewhere_to_land_in_the_rubric():
+    """The rubric is the only definition of the classes and is shared verbatim
+    by both feeds. Row #49 drifted because k8s-action's examples were all
+    restart/destroy verbs, so a create verb had no anchor."""
+    rubric = agent_mod._REMEDIATION_CLASS_RUBRIC
+    assert "k8s-action" in rubric and "node-action" in rubric
+    lower = rubric.lower()
+    assert "create" in lower, "a create verb must have somewhere to land"
+    assert "kubectl" in lower, "the kubectl/ssh boundary must be stated, not implied"
+
+
+def test_investigate_shaped_covers_inspect_and_capture():
+    """Row #49's rec was evidence-gathering in intent ('capture real-time logs
+    and inspect the error output') but used neither word the regex knew."""
+    shaped = CFOperator._recommendation_is_investigate_shaped
+    assert shaped("inspect the scrape container's error output") is True
+    assert shaped("trigger a test run to capture real-time logs") is True
+    # The human-only exclusion still wins over an evidence-gathering verb.
+    assert shaped("inspect the SD card and replace it if worn") is False
+    assert shaped("restart the deployment") is False
+
+
 def test_investigation_dedupe_key_precedence_and_stability():
     key = CFOperator._investigation_dedupe_key
     # dispatch stamp (summary/sweep loop-break) wins over everything
