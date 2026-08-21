@@ -16,14 +16,16 @@
 # Multi-arch (amd64 + arm64): the affected node is frequently a Pi, and the
 # whole point of tier 1 is landing on the affected node.
 
-# cfassist is built from source rather than pulled from a GitHub release: no
-# published cfassist release implements `attach` at all (the verb landed in
-# 2026-08, the newest release is cfassist-v0.7.2 from 2026-05), so a release
-# binary would produce an image whose entrypoint fails with "unknown command".
-# Building from the tree also keeps the in-pod CLI and the agent it talks to on
-# the same commit, which a floating release tag could not promise.
-ARG GO_IMAGE=golang:1.25-bookworm
-ARG WORKER_IMAGE=ghcr.io/aachtenberg/cfoperator-worker:main
+# cfassist is built from source rather than pulled from a GitHub release, and
+# the reason has changed since this was written. Originally: no release
+# implemented `attach` at all. Now they do — but building from the tree is the
+# better property anyway, because it guarantees the in-pod CLI is on the same
+# commit as the agent it talks to, which a floating release tag cannot promise.
+#
+# Consequence: this binary reports the tree's Version, which is NOT the same
+# artifact as the release of that number. Tiers 3/3b (cockpit_ladder.py) DO
+# fetch the release, so those two must be kept in step — bump
+# internal/config/config.go and DEFAULT_CFASSIST_VERSION together, then tag.
 
 # Cross-compiled on the build platform (Go does this natively), so the arm64
 # image costs no QEMU emulation — the final stage below is COPY-only.

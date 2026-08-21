@@ -102,7 +102,7 @@ credential.
 0. Install the binary, if you have not:
 
    ```bash
-   gh release download cfassist-v0.7.1 -R aachtenberg/cfoperator \
+   gh release download cfassist-v0.9.0 -R aachtenberg/cfoperator \
      --pattern 'cfassist-linux-arm64'
    chmod +x cfassist-linux-arm64
    sudo mv cfassist-linux-arm64 /usr/local/bin/cfassist
@@ -570,7 +570,7 @@ can change it without a redeploy.
 | `the affected host could not be probed (No route to host)` — and you get a pod | the host is down or unreachable *from the agent* | this is a finding, not a bug: a session on an unreachable box is impossible, and the pod you got can still investigate it |
 | `tier 'container' was requested but is not available … (neither docker nor podman is installed); available: pod, host, ssh` | you forced a rung the host does not have | drop `--tier`, or pick one of the listed ones |
 | `kubectl create failed: jobs is forbidden` | tier 1's RBAC is not applied | see the CFOP-35 section in [DEPLOYMENT.md](DEPLOYMENT.md) |
-| `could not fetch cfassist-linux-arm64 from cfassist-v0.9.0 …; is the release tagged?` | the pinned cfassist version has no published release | tag it, or pin an older one with `CFOP_COCKPIT_CFASSIST_VERSION` |
+| `could not fetch cfassist-linux-arm64 from cfassist-v<version> …; is the release tagged?` | the pinned cfassist version has no published release | tag it, or pin an older one with `CFOP_COCKPIT_CFASSIST_VERSION` |
 | `only resolves inside the cluster … set cockpit.host_agent_url` | the session would have been told to call the pod's address | setup step 3 |
 | `cockpit concurrency cap reached` | two cockpits are already running — in the cluster, or on that host | exit one (the message names them), or attach without `--spawn` |
 | `spawning a cockpit is admin-only` | you are a member | ask an admin, or use plain `attach` — the briefing is the same |
