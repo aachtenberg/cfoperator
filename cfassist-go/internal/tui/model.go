@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -27,6 +28,23 @@ const (
 	fixedHeight     = statusBarHeight + separatorHeight + inputAreaHeight
 )
 
+// Attachment is the CFOperator investigation a session is attached to.
+//
+// Nil for a plain `cfassist` session, and every use of it is nil-guarded: the
+// plain session must render exactly as it did before attach existed, which is
+// what TestPlainSessionStatusBarCarriesNothingExtra holds us to.
+//
+// It exists because the TUI runs on the alternate screen buffer. `attach`
+// prints the briefing before starting the program, and the alt screen makes
+// that print invisible for the whole session — so an operator who pasted a
+// Slack line had no indication of what they were attached to (CFOP-63). The
+// briefing goes into the scrollback and the id into the status bar instead.
+type Attachment struct {
+	ID       int    // investigation id, e.g. 2242
+	Title    string // short human label; the investigation's trigger
+	Briefing string // the full rendered briefing, seeded into the scrollback
+}
+
 type model struct {
 	viewport       viewport.Model
 	textarea       textarea.Model
@@ -38,6 +56,7 @@ type model struct {
 	llm            *client.LLMClient
 	toolReg        *tools.Registry
 	systemPrompt   string
+	attachment     *Attachment
 	width          int
 	height         int
 	program        *tea.Program
@@ -69,8 +88,8 @@ var slashCommands = []string{
 	"/use",
 }
 
-// New creates a new TUI model.
-func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string) *model {
+// New creates a new TUI model. attachment is nil for a plain session.
+func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment) *model {
 	// Text area for input
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question..."
@@ -116,6 +135,7 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 		llm:            llm,
 		toolReg:        toolReg,
 		systemPrompt:   systemPrompt,
+		attachment:     attachment,
 		renderer:       r,
 		mdStyle:        mdStyle,
 		providers:      providers,
@@ -125,8 +145,32 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 
 	// Build welcome banner
 	m.appendWelcome(contextCount)
+	// …then the briefing, if this session is attached to one.
+	m.appendBriefing()
 
 	return m
+}
+
+// appendBriefing seeds the scrollback with the briefing the model was given.
+//
+// The whole point: on the alternate screen the operator cannot see anything
+// attach printed before the program started, so the copy that matters is this
+// one. It goes in as plain text — the briefing already carries its own rules
+// and indentation, and running it through the markdown renderer would reflow
+// the alignment it uses to stay readable.
+func (m *model) appendBriefing() {
+	if m.attachment == nil || strings.TrimSpace(m.attachment.Briefing) == "" {
+		return
+	}
+	m.outputLines = append(m.outputLines,
+		strings.Split(m.attachment.Briefing, "\n")...,
+	)
+	m.outputLines = append(m.outputLines,
+		"",
+		dimStyle.Render("  Attached — this briefing is also in the model's context. "+
+			"The status bar keeps the investigation id in view."),
+		"",
+	)
 }
 
 func (m *model) appendWelcome(contextCount int) {
@@ -387,6 +431,17 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 		m.messages = nil
 		m.outputLines = nil
 		m.appendWelcome(0)
+		// /clear means "clear the screen", so the briefing does not come back —
+		// it is still in the system prompt, and re-printing a few hundred lines
+		// is not what anyone asked for. One line says the session is still
+		// attached; the status bar is the durable record.
+		if m.attachment != nil {
+			m.outputLines = append(m.outputLines,
+				dimStyle.Render(fmt.Sprintf("  Still attached to investigation #%d.",
+					m.attachment.ID)),
+				"",
+			)
+		}
 		if m.ready {
 			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
 			m.viewport.GotoBottom()
@@ -594,6 +649,96 @@ func (m *model) runConversationCmd(userInput string) tea.Cmd {
 	}
 }
 
+// attachSeparator joins the id and the title in the status bar.
+const attachSeparator = " · "
+
+// attachSegment renders the status bar's "#<id> · <title>" segment within
+// budget columns. Returns "" when nothing meaningful fits, and never returns
+// something wider than budget.
+//
+// The truncation has a priority, because an operator attaching from a phone or
+// a Pi console is the case this feature was reported from: the *id* is what
+// correlates the session with Slack and the console, so the title is what gets
+// cut, and below the width of the id alone the segment vanishes rather than
+// printing half an id — "#22" for investigation 2242 is worse than nothing.
+//
+// The title is flattened to a single printable line here rather than at the
+// call site: an investigation's trigger is frequently a multi-line alert body,
+// and a newline reaching the status bar would tear the layout apart. Doing it
+// here means no constructor of an Attachment can get it wrong.
+func attachSegment(a *Attachment, budget int) string {
+	if a == nil || budget < 1 {
+		return ""
+	}
+
+	id := ""
+	if a.ID > 0 {
+		id = fmt.Sprintf("#%d", a.ID)
+	}
+	title := flattenToLine(a.Title)
+
+	switch {
+	case id == "" && title == "":
+		return ""
+	case id == "":
+		return truncateToWidth(title, budget)
+	case title == "":
+		if lipgloss.Width(id) > budget {
+			return ""
+		}
+		return id
+	}
+
+	full := id + attachSeparator + title
+	if lipgloss.Width(full) <= budget {
+		return full
+	}
+	if lipgloss.Width(id) > budget {
+		return ""
+	}
+	if short := truncateToWidth(title, budget-lipgloss.Width(id)-lipgloss.Width(attachSeparator)); short != "" {
+		return id + attachSeparator + short
+	}
+	return id
+}
+
+// flattenToLine collapses any run of whitespace to a single space and drops
+// non-printable runes, so an alert body cannot inject a newline or an escape
+// sequence into the status bar.
+func flattenToLine(text string) string {
+	var b strings.Builder
+	for _, r := range strings.Join(strings.Fields(text), " ") {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// truncateToWidth cuts text to budget columns, spending one of them on an
+// ellipsis so a cut is visible rather than looking like the whole title.
+func truncateToWidth(text string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	if lipgloss.Width(text) <= budget {
+		return text
+	}
+	out := ""
+	for _, r := range text {
+		next := out + string(r)
+		if lipgloss.Width(next) > budget-1 {
+			break
+		}
+		out = next
+	}
+	out = strings.TrimRight(out, " ")
+	if out == "" {
+		return ""
+	}
+	return out + "…"
+}
+
 func (m *model) View() string {
 	if !m.ready {
 		return "Initializing..."
@@ -627,11 +772,33 @@ func (m *model) View() string {
 	// Pad middle with spaces to push right side to the edge
 	// statusStyle has Padding(0,1) which adds 2 chars, so content width is width-2
 	contentWidth := m.width - 2
-	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		gap = 1
+
+	// The attachment sits between the two existing segments and only ever
+	// spends what they leave over, minus the gutters that keep it from butting
+	// up against them (one column left, two right). So it cannot push
+	// provider:model or the stats off the bar, and the bar cannot outgrow
+	// contentWidth and wrap onto a second line — it shortens itself instead,
+	// and disappears entirely on a terminal too narrow to hold even the id.
+	mid := ""
+	if m.attachment != nil {
+		mid = attachSegment(m.attachment,
+			contentWidth-lipgloss.Width(left)-lipgloss.Width(right)-3)
 	}
-	statusText := left + strings.Repeat(" ", gap) + right
+
+	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
+	statusText := ""
+	if mid == "" {
+		if gap < 1 {
+			gap = 1
+		}
+		statusText = left + strings.Repeat(" ", gap) + right
+	} else {
+		gap -= lipgloss.Width(mid) + 1 // the gutter between left and mid
+		if gap < 1 {
+			gap = 1
+		}
+		statusText = left + " " + mid + strings.Repeat(" ", gap) + right
+	}
 	statusBar := statusStyle.Width(m.width).Render(statusText)
 
 	// Separator
@@ -657,8 +824,9 @@ type RunResult struct {
 }
 
 // Run starts the TUI application and returns the final provider/model on exit.
-func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string) (RunResult, error) {
-	m := New(cfg, llm, toolReg, systemPrompt, contextCount, providers, activeProvider)
+// attachment is nil for a plain session and set by `cfassist attach`.
+func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment) (RunResult, error) {
+	m := New(cfg, llm, toolReg, systemPrompt, contextCount, providers, activeProvider, attachment)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	m.program = p
 

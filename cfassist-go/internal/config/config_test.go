@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -213,6 +214,60 @@ func TestEnsureDirectories(t *testing.T) {
 	if _, err := os.Stat(cfg.Memory.Directory); os.IsNotExist(err) {
 		t.Error("memory directory was not created")
 	}
+}
+
+// TestDefaultConfigOffersAReachableAgentExample guards the template an operator
+// meets on their first run (CFOP-63).
+//
+// `attach` runs from wherever the operator is — that is its whole point — so a
+// loopback example under `cfoperator:` is wrong everywhere except on the agent
+// host itself, and it is wrong in the direction that costs the most time: it
+// looks plausible, and produces a connection refused with no clue that the
+// address is the problem.
+func TestDefaultConfigOffersAReachableAgentExample(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatalf("writeDefaultConfig: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+
+	section := cfoperatorSection(t, string(body))
+	if !strings.Contains(section, "url:") {
+		t.Fatal("the cfoperator block no longer shows a url example to copy")
+	}
+	for _, line := range strings.Split(section, "\n") {
+		if !strings.Contains(line, "url:") {
+			continue
+		}
+		for _, loopback := range []string{"127.0.0.1", "localhost", "::1"} {
+			if strings.Contains(line, loopback) {
+				t.Errorf("the cfoperator.url example points at this machine (%q); "+
+					"attach talks to the agent host", strings.TrimSpace(line))
+			}
+		}
+	}
+	if !strings.Contains(section, "CFOP_AGENT_URL") {
+		t.Error("the block should name CFOP_AGENT_URL — it is the other way to set the address")
+	}
+}
+
+// cfoperatorSection returns the config template's cfoperator block: everything
+// from its heading comment to the next top-level key.
+func cfoperatorSection(t *testing.T, content string) string {
+	t.Helper()
+	start := strings.Index(content, "# CFOperator agent API")
+	if start < 0 {
+		t.Fatal("the default config no longer mentions the CFOperator agent API; " +
+			"a first run would have nothing to point at the agent")
+	}
+	rest := content[start:]
+	if end := strings.Index(rest, "\nmax_tool_iterations"); end > 0 {
+		rest = rest[:end]
+	}
+	return rest
 }
 
 func TestExpandPath(t *testing.T) {

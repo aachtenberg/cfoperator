@@ -148,6 +148,36 @@ func TestUnauthorizedCarriesMintHint(t *testing.T) {
 	}
 }
 
+// TestUnreachableAgentHintNamesTheAddressFixes: "cannot reach the agent" is
+// most often "the URL points at the wrong host", and the two things that fix
+// that are the env var and the config block. The hint used to name only
+// `kubectl port-forward`, which silently assumes kubectl and a kubeconfig on
+// this machine — an assumption that fails on exactly the hardware attach is for
+// (CFOP-63 was reported from a Raspberry Pi) and leaves the operator with
+// nothing to act on.
+func TestUnreachableAgentHintNamesTheAddressFixes(t *testing.T) {
+	// A closed httptest server: an address the OS will refuse, rather than a
+	// guessed port that might turn out to be in use on the runner.
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	dead := srv.URL
+	srv.Close()
+
+	c := New(dead, "test-token", 2*time.Second)
+	_, err := c.GetInvestigation(1889)
+	var apiErr *Error
+	if !asError(err, &apiErr) {
+		t.Fatalf("expected *Error, got %v", err)
+	}
+	for _, want := range []string{EnvAgentURL, "cfoperator:", "config.yaml"} {
+		if !strings.Contains(apiErr.Hint, want) {
+			t.Errorf("unreachable-agent hint should name %s, got %q", want, apiErr.Hint)
+		}
+	}
+	if !strings.Contains(apiErr.Hint, dead) {
+		t.Errorf("the hint should quote the address that failed (%s), got %q", dead, apiErr.Hint)
+	}
+}
+
 func TestNonJSONResponseIsAnError(t *testing.T) {
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`<html>a proxy login page</html>`))

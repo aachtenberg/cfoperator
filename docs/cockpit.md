@@ -53,6 +53,12 @@ briefing; seeds that briefing as session context; and drops you into the usual
 cfassist TUI. The session starts already knowing what happened, so the first
 thing you type is "what do we do", not "what happened".
 
+The session says what it is attached to, both times you need it: the briefing
+opens the scrollback, so you can read what the model was told, and the status
+bar carries `#<id> · <trigger>` for the life of the session, shortening the
+trigger and then dropping it on a narrow terminal so that the id — the thing
+that ties the session to Slack and the console — is the last part to go.
+
 Other shapes:
 
 ```bash
@@ -130,7 +136,7 @@ credential.
 
    ```yaml
    cfoperator:
-     url: http://127.0.0.1:8083
+     url: http://192.168.1.50:8083   # the agent host, not this machine
      token: ${CFOP_API_TOKEN}
      timeout: 30
    ```
@@ -138,6 +144,13 @@ credential.
    Config values win; the environment fills in whatever the file leaves blank.
    These are the same variable names `mcp_server` reads, so a workstation
    already set up for MCP needs nothing new.
+
+   > **The URL is the agent's host, as reachable from where you are.** A
+   > loopback address is right only when cfassist runs *on* the agent host, or
+   > through the port-forward below — which is the opposite of attach's point.
+   > The default config file cfassist writes on first run shows the LAN form for
+   > that reason. It writes that file before it calls the agent, so a first run
+   > against the wrong address still leaves you something to edit.
 
 3. If the agent is in-cluster, `:8083` is firewalled to cluster sources (see
    [mcp-server.md](mcp-server.md)); from a workstation use

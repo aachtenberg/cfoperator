@@ -93,6 +93,27 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("config: %w", err)
 	}
 
+	// Scaffold ~/.cfassist BEFORE talking to the agent (CFOP-63).
+	//
+	// EnsureDirectories is what writes the default config.yaml, and the config
+	// is where an operator sets the agent URL. Running it after the fetch —
+	// where it used to live — meant that a first run against an unreachable
+	// agent died at the fetch and left nothing behind: no file to edit, and no
+	// hint that a `cfoperator:` block exists. That is exactly the reported
+	// path: install the binary, paste the Slack line, get a connection error,
+	// have nowhere to put the URL.
+	//
+	// --print is excluded on purpose. docs/cockpit.md promises it "makes the
+	// API calls and nothing else"; scaffolding a directory tree out of a pipe
+	// would break that promise to solve a first-run problem a pipe does not
+	// have. Everything that starts something — interactive, one-shot question,
+	// --spawn — scaffolds first.
+	if !flagAttachPrint {
+		if err := config.EnsureDirectories(cfg); err != nil {
+			return fmt.Errorf("directories: %w", err)
+		}
+	}
+
 	// --- fetch and render ---------------------------------------------------
 
 	// An explicit --agent-url beats the config file, which already beats the
@@ -133,10 +154,6 @@ func runAttach(cmd *cobra.Command, args []string) error {
 
 	// --- seed a session -----------------------------------------------------
 
-	if err := config.EnsureDirectories(cfg); err != nil {
-		return fmt.Errorf("directories: %w", err)
-	}
-
 	llm, activeProvider, err := resolveLLM(cfg)
 	if err != nil {
 		return err
@@ -166,10 +183,27 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// Show the operator the same briefing the model got. They are about to ask
 	// questions against it; hiding it would make the session's answers
 	// unauditable.
+	//
+	// This print is the primary-buffer copy: it is what a one-shot question or
+	// a redirect to a file sees, and it is what remains on the terminal after
+	// an interactive session exits. It is NOT what an interactive operator
+	// reads during the session — the TUI runs on the alternate screen, which
+	// hides it until exit. The copy that does the work there is the one seeded
+	// into the scrollback via tui.Attachment below (CFOP-63).
 	fmt.Println(briefing)
 
 	if question != "" {
 		return runNonInteractive(cfg, llm, toolReg, systemPrompt, question)
+	}
+
+	// What the status bar and the scrollback show for the life of the session.
+	// The trigger is the "brief title": it is the alert or condition that
+	// started the investigation, which is what an operator recognises.
+	facts := cfoperator.InvestigationFacts(attachCtx.Investigation)
+	attachment := &tui.Attachment{
+		ID:       investigationID,
+		Title:    facts.Trigger,
+		Briefing: briefing,
 	}
 
 	// Cockpit session token (CFOP-32): interactive sessions get a credential
@@ -209,7 +243,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider)
+	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider, attachment)
 	if err != nil {
 		return err
 	}
