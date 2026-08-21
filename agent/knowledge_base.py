@@ -317,6 +317,26 @@ class Investigation(Base):
     )
 
 
+#: Event type for a cockpit session's write-back (CFOP-37). A distinct type
+#: rather than a flag on the investigation, so the sessions can be selected
+#: without scanning every tool call an investigation made.
+COCKPIT_SESSION_EVENT = "cockpit_session"
+
+#: Everything ``investigation_events.event_type`` may hold.
+#:
+#: Generated into the CHECK below rather than spelled out a second time — the
+#: CFOP-20 lesson, now on its third table. Adding a value here without
+#: regenerating the constraint is exactly how 'needs_action' came to be
+#: unwritable on investigations and 'k8s-imperative' unwritable on the
+#: remediation queue.
+VALID_EVENT_TYPES = ("tool_call", "reasoning", "action", "error",
+                     COCKPIT_SESSION_EVENT)
+
+EVENT_TYPE_CHECK_SQL = "event_type IN ({})".format(
+    ", ".join(f"'{e}'" for e in sorted(VALID_EVENT_TYPES))
+)
+
+
 class InvestigationEvent(Base):
     """Individual events within an investigation - tool calls, reasoning, actions, errors."""
     __tablename__ = 'investigation_events'
@@ -344,7 +364,7 @@ class InvestigationEvent(Base):
     error_message = Column(Text)
 
     __table_args__ = (
-        CheckConstraint("event_type IN ('tool_call', 'reasoning', 'action', 'error')", name='valid_event_type'),
+        CheckConstraint(EVENT_TYPE_CHECK_SQL, name='valid_event_type'),
         Index('idx_inv_events_investigation', 'investigation_id'),
         Index('idx_inv_events_time', 'event_at', postgresql_using='btree', postgresql_ops={'event_at': 'DESC'}),
         Index('idx_inv_events_type', 'event_type'),
@@ -1194,9 +1214,13 @@ class KnowledgeBase:
         # Same problem, same shape, different table: remediation_queue's class
         # CHECK was written when there were four classes (CFOP-61 added a fifth).
         class_ok = self._ensure_remediation_class_constraint()
+        # Third table, same shape: investigation_events' type CHECK was written
+        # with four types (CFOP-37 added cockpit_session for session write-back).
+        event_ok = self._ensure_event_type_constraint()
         _log("info", "Knowledge base schema initialized",
-             outcome_constraint_ok=outcome_ok, remediation_class_constraint_ok=class_ok)
-        return outcome_ok and class_ok
+             outcome_constraint_ok=outcome_ok, remediation_class_constraint_ok=class_ok,
+             event_type_constraint_ok=event_ok)
+        return outcome_ok and class_ok and event_ok
 
     def _ensure_outcome_constraint(self) -> bool:
         """Rebuild investigations.valid_outcome to match VALID_OUTCOMES.
@@ -1324,6 +1348,67 @@ class KnowledgeBase:
             return True
         except Exception as e:
             _log("error", "Could not ensure remediation_queue.valid_remediation_class "
+                          "constraint", error=str(e))
+            return False
+
+    def _ensure_event_type_constraint(self) -> bool:
+        """Rebuild investigation_events.valid_event_type to match
+        VALID_EVENT_TYPES.
+
+        The CFOP-20 problem for the third time, and the third table it has
+        bitten: ``create_all`` only ever *creates*, so every database that
+        predates a new event type keeps the CHECK that rejects it. Caught in
+        review of CFOP-37, before it shipped — the cockpit write-back writes
+        ``cockpit_session``, the four-value CHECK would have refused the
+        INSERT, the endpoint would have 500'd, and the operator would have
+        seen "the session was NOT recorded" at the end of every session.
+
+        Unit tests could not have found it: they fake the knowledge base, so
+        nothing in the suite ever inserts into this table. The guard that does
+        find it is the contract test asserting COCKPIT_SESSION_EVENT appears in
+        the rendered constraint.
+        """
+        try:
+            with self.session_scope() as session:
+                current = session.execute(text("""
+                    SELECT pg_get_constraintdef(c.oid)
+                    FROM pg_constraint c
+                    WHERE c.conname = 'valid_event_type'
+                      AND c.conrelid = to_regclass('investigation_events')
+                """)).scalar()
+
+                if constraint_admits_outcomes(current, set(VALID_EVENT_TYPES)):
+                    return True
+
+                _log("info", "Widening investigation_events.valid_event_type CHECK",
+                     existing=current, types=sorted(VALID_EVENT_TYPES))
+                session.execute(text(
+                    "ALTER TABLE investigation_events "
+                    "DROP CONSTRAINT IF EXISTS valid_event_type"
+                ))
+                session.execute(text(
+                    "ALTER TABLE investigation_events ADD CONSTRAINT "
+                    f"valid_event_type CHECK ({EVENT_TYPE_CHECK_SQL})"
+                ))
+
+            with self.session_scope() as session:
+                after = session.execute(text("""
+                    SELECT pg_get_constraintdef(c.oid)
+                    FROM pg_constraint c
+                    WHERE c.conname = 'valid_event_type'
+                      AND c.conrelid = to_regclass('investigation_events')
+                """)).scalar()
+            if not constraint_admits_outcomes(after, set(VALID_EVENT_TYPES)):
+                present = set(_SQL_STRING_LITERAL.findall(after or ""))
+                missing = sorted(set(VALID_EVENT_TYPES) - present)
+                _log("error", "investigation_events.valid_event_type still rejects known "
+                              "event types; events of these types will fail to persist",
+                     missing=missing, constraint=after)
+                return False
+            _log("info", "investigation_events.valid_event_type up to date", constraint=after)
+            return True
+        except Exception as e:
+            _log("error", "Could not ensure investigation_events.valid_event_type "
                           "constraint", error=str(e))
             return False
 
@@ -2129,6 +2214,79 @@ class KnowledgeBase:
             session.add(event)
             session.flush()
             return event.id
+
+    def record_cockpit_session(
+        self,
+        investigation_id: int,
+        summary: str,
+        outcome: str,
+        actor: str,
+        detail: Optional[Dict[str, Any]] = None,
+        degraded: bool = False,
+    ) -> int:
+        """Append one cockpit session's write-back to an investigation (CFOP-37).
+
+        A method rather than the caller passing ``COCKPIT_SESSION_EVENT`` to
+        ``record_investigation_event``: the event vocabulary is this module's,
+        and ``web_server`` cannot import it anyway — ``agent/__init__`` pulls in
+        ``agent.py``, which uses bare imports and only resolves with ``agent/``
+        itself on the path. Keeping the constant here means one definition and
+        no cross-package import that works in the image and fails in a test.
+        """
+        return self.record_investigation_event(
+            investigation_id,
+            COCKPIT_SESSION_EVENT,
+            reasoning_text=summary,
+            action_type=outcome,
+            action_target=actor,
+            tool_output=detail or {},
+            # success=False marks a session whose summary could not be distilled
+            # and is stored as a raw tail. The read side surfaces it as
+            # `degraded` so nobody mistakes a transcript fragment for a summary.
+            success=not degraded,
+        )
+
+    def get_cockpit_sessions(self, investigation_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Cockpit sessions worked against this investigation, newest first.
+
+        Stored as investigation *events* rather than merged into ``findings``
+        (CFOP-37). ``findings`` is what ``find_similar_investigations_hybrid``
+        cites as precedent to later triage decisions, and the triage endpoint
+        already records the rule: the agent's finding stays intact, the human's
+        verdict lives elsewhere. A session summary is a human verdict by
+        another name, so it appends beside the investigation instead of editing
+        it — which also means no migration and no way to lose the original.
+        """
+        with self.session_scope() as session:
+            return self._cockpit_sessions(session, investigation_id, limit)
+
+    @staticmethod
+    def _cockpit_sessions(session, investigation_id: int, limit: int) -> List[Dict[str, Any]]:
+        """The query, taking a session so ``get_investigation`` can reuse its own.
+
+        Nesting ``session_scope`` would work and would quietly hold a second
+        pooled connection for the length of the outer call — on the console's
+        hot path, where every investigation drill-in goes through it.
+        """
+        rows = (session.query(InvestigationEvent)
+                .filter(InvestigationEvent.investigation_id == investigation_id,
+                        InvestigationEvent.event_type == COCKPIT_SESSION_EVENT)
+                .order_by(InvestigationEvent.event_at.desc())
+                .limit(limit).all())
+        return [
+            {
+                "recorded_at": e.event_at.isoformat() if e.event_at else None,
+                "outcome": e.action_type,
+                "actor": e.action_target,
+                "summary": e.reasoning_text,
+                # tool_output is the structured half: tier, host, duration, the
+                # commands that mattered, the learning id if one was seeded.
+                # JSONB, so it costs no schema.
+                "detail": e.tool_output if isinstance(e.tool_output, dict) else {},
+                "degraded": not e.success,
+            }
+            for e in rows
+        ]
 
     def get_investigation_events(self, investigation_id: int) -> List[Dict[str, Any]]:
         """Get all events for an investigation in chronological order."""
@@ -4010,7 +4168,14 @@ class KnowledgeBase:
                     "parent_investigation_id": inv.parent_investigation_id,
                     "operator_notes": inv.operator_notes,
                     "triage_action": inv.triage_action,
-                    "host_id": inv.host_id
+                    "host_id": inv.host_id,
+                    # What humans worked out in a cockpit against this
+                    # investigation (CFOP-37). Read here rather than through a
+                    # second endpoint because every consumer that wants the
+                    # investigation wants this too — the console drawer, the
+                    # attach briefing, and the chat tool all go through this
+                    # one call, and a session nobody can see is not write-back.
+                    "sessions": self._cockpit_sessions(session, investigation_id, 10),
                 }
             return None
 

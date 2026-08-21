@@ -411,6 +411,19 @@ func BuildBriefing(ctx *AttachContext, maxReportChars int) string {
 		out = append(out, "", "Operator triage:", indent(truncate(note, 1500)))
 	}
 
+	// Prior cockpit sessions come *before* the agent's recommendation, and that
+	// ordering is the point rather than a layout preference: "a human already
+	// tried X and it did not work" changes how the recommendation below reads.
+	// It sits beside operator triage because it is the same kind of fact — what
+	// a person concluded — just with more of the working shown (CFOP-37).
+	if sessions := cockpitSessions(ctx.Investigation); len(sessions) > 0 {
+		out = append(out, "", fmt.Sprintf("Previous cockpit sessions (%d, newest first):",
+			len(sessions)))
+		for _, row := range sessions {
+			out = append(out, formatSession(row))
+		}
+	}
+
 	if f.Recommendation != "" {
 		out = append(out, "", "Recommendation:", indent(truncate(f.Recommendation, 1500)))
 	}
@@ -475,4 +488,83 @@ func BuildBriefing(ctx *AttachContext, maxReportChars int) string {
 
 	out = append(out, rule)
 	return strings.Join(out, "\n")
+}
+
+// cockpitSessions pulls the write-back rows off the investigation.
+//
+// They ride on the investigation rather than arriving from an endpoint of their
+// own: every consumer that wants the investigation wants these too, and a
+// second round trip would be one more thing to degrade separately mid-incident.
+func cockpitSessions(inv map[string]any) []map[string]any {
+	raw, ok := inv["sessions"].([]any)
+	if !ok {
+		return nil
+	}
+	rows := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if row, ok := item.(map[string]any); ok {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+// formatSession renders one prior session. Outcome first: "what happened" is
+// what decides whether the rest is worth reading.
+func formatSession(row map[string]any) string {
+	outcome := strings.TrimSpace(asString(row["outcome"]))
+	if outcome == "" {
+		outcome = "unrecorded"
+	}
+	head := "  - " + outcome
+	if actor := strings.TrimSpace(asString(row["actor"])); actor != "" {
+		head += " by " + actor
+	}
+	if at := strings.TrimSpace(asString(row["recorded_at"])); at != "" {
+		head += " (" + at + ")"
+	}
+
+	detail, _ := row["detail"].(map[string]any)
+	if where := sessionWhere(detail); where != "" {
+		head += " — " + where
+	}
+	lines := []string{head}
+
+	// A degraded row is a raw transcript tail, not a summary. Saying so stops
+	// the next reader treating a fragment as a conclusion.
+	if degraded, _ := row["degraded"].(bool); degraded {
+		lines = append(lines, "    (summary unavailable — raw session tail)")
+	}
+	if summary := strings.TrimSpace(asString(row["summary"])); summary != "" {
+		lines = append(lines, indent(truncate(summary, 1200)))
+	}
+	if detail != nil {
+		if cmds, ok := detail["commands"].([]any); ok && len(cmds) > 0 {
+			lines = append(lines, "    commands:")
+			for _, c := range cmds {
+				if text := strings.TrimSpace(asString(c)); text != "" {
+					lines = append(lines, "      $ "+truncate(text, 200))
+				}
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// sessionWhere renders the tier/host pair a session ran on, when it had one.
+func sessionWhere(detail map[string]any) string {
+	if detail == nil {
+		return ""
+	}
+	tier := strings.TrimSpace(asString(detail["tier"]))
+	host := strings.TrimSpace(asString(detail["host"]))
+	switch {
+	case tier != "" && host != "":
+		return "tier " + tier + " on " + host
+	case tier != "":
+		return "tier " + tier
+	case host != "":
+		return "on " + host
+	}
+	return ""
 }

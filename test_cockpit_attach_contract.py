@@ -353,3 +353,89 @@ def test_the_documented_spawn_flags_exist_on_the_command():
         assert field in payload.group(1), (
             f"the spawn request no longer carries {field}; the flag would be "
             "accepted on the command line and silently dropped on the wire")
+
+
+# ---- write-back (CFOP-37) ---------------------------------------------------
+
+GO_WRITEBACK_CLIENT = GO_ROOT / "internal" / "cfoperator" / "writeback.go"
+GO_SUMMARIZE = GO_ROOT / "internal" / "cfoperator" / "summarize.go"
+
+
+def test_the_write_back_client_cannot_be_bent_into_another_call():
+    """Fourth instance of the guard-in-the-transport rule, and the one that
+    matters most: this client runs holding a credential, at the end of a
+    session, when nobody is watching."""
+    source = GO_WRITEBACK_CLIENT.read_text(encoding="utf-8")
+    assert "write-back client refuses" in source, (
+        "the write-back transport's allowlist is gone")
+    for forbidden in ("MethodPut", "MethodPatch", "MethodDelete"):
+        assert f"http.{forbidden}," not in source, (
+            f"{forbidden} appears in the write-back transport; it may only POST "
+            "its own two paths")
+
+
+def test_the_write_back_endpoints_exist_on_both_sides():
+    """The CLI and the agent ship separately, so the two paths write-back POSTs
+    to are asserted across the seam — the same rule the spawn path follows."""
+    source = GO_WRITEBACK_CLIENT.read_text(encoding="utf-8")
+    web = WEB_SERVER.read_text(encoding="utf-8")
+
+    assert 'LearningsPath = "/api/learnings"' in source
+    assert "@self.app.route('/api/learnings', methods=['POST'])" in web, (
+        "cfassist writes learnings to a route web_server.py no longer registers")
+
+    assert '"/api/investigations/" + strconv.Itoa(investigationID) + "/session"' in source
+    assert "'/api/investigations/<int:investigation_id>/session'" in web, (
+        "cfassist records sessions on a route web_server.py no longer registers")
+
+
+def test_write_back_travels_on_the_sessions_own_scope():
+    """Both write-back endpoints must take `investigate` — the scope the
+    cockpit session token is minted with. Raise either to an admin role and the
+    credential that dies with the session can no longer record what the session
+    learned, which is the one thing it exists to do."""
+    web = WEB_SERVER.read_text(encoding="utf-8")
+    for route in ("'/api/learnings', methods=['POST']",
+                  "'/api/investigations/<int:investigation_id>/session'"):
+        idx = web.index(route)
+        following = web[idx:idx + 400]
+        assert "@require_token_scope('investigate')" in following, (
+            f"the route at {route} no longer accepts the session's own scope")
+
+
+def test_the_session_outcome_vocabulary_matches_on_both_sides():
+    """One client inventing a word is how a vocabulary drifts; the agent 400s
+    on anything it does not know, so the two lists have to agree."""
+    go_src = GO_WRITEBACK_CLIENT.read_text(encoding="utf-8")
+    web = WEB_SERVER.read_text(encoding="utf-8")
+
+    go_block = re.search(r"var SessionOutcomes = \[\]string\{(.*?)\}", go_src, re.DOTALL)
+    py_block = re.search(r"_SESSION_OUTCOMES = \((.*?)\)", web, re.DOTALL)
+    assert go_block and py_block, "the outcome vocabularies moved"
+    go_words = set(re.findall(r'"([a-z_]+)"', go_block.group(1)))
+    py_words = set(re.findall(r"'([a-z_]+)'", py_block.group(1)))
+    assert go_words == py_words, (
+        f"cfassist sends {sorted(go_words)} but the agent accepts {sorted(py_words)}")
+
+
+def test_the_docs_write_back_promises_are_the_flags_that_exist():
+    """docs/cockpit.md §6 tells operators what exit does and how to turn it
+    off. A doc that promises a flag the CLI does not register fails at the
+    worst possible moment."""
+    doc = COCKPIT_DOC.read_text(encoding="utf-8")
+    attach = GO_ATTACH_CMD.read_text(encoding="utf-8")
+    assert '"no-writeback"' in attach, "attach no longer registers --no-writeback"
+    assert "--no-writeback" in doc
+    for promise in ("session recorded on investigation",
+                    "session not recorded (--no-writeback)",
+                    "raw tail"):
+        assert promise in doc, f"docs/cockpit.md no longer documents {promise!r}"
+
+
+def test_write_back_is_opt_out_not_opt_in():
+    """A default-off memory feature is one nobody remembers to turn on, and the
+    whole issue is that knowledge currently dies with the terminal."""
+    attach = GO_ATTACH_CMD.read_text(encoding="utf-8")
+    idx = attach.index('"no-writeback"')
+    assert "false" in attach[idx:idx + 120], (
+        "--no-writeback no longer defaults to false; write-back would be opt-in")

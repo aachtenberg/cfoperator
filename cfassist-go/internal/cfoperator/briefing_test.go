@@ -329,3 +329,80 @@ func TestAttachGuidanceStatesTheTwoTraps(t *testing.T) {
 		}
 	}
 }
+
+// --- prior cockpit sessions in the briefing (CFOP-37) ------------------------
+
+// TestBriefingLeadsWithWhatAHumanAlreadyFound is the compounding half of
+// write-back: recording a session is only worth doing if the NEXT session opens
+// with it. And it comes before the agent's own recommendation because "a person
+// already tried X and it did not work" changes how you read the recommendation.
+func TestBriefingLeadsWithWhatAHumanAlreadyFound(t *testing.T) {
+	ctx := &AttachContext{
+		Investigation: map[string]any{
+			"id": float64(1889), "trigger": "mount hung", "outcome": "needs_action",
+			"findings": map[string]any{"recommendation": "raise the timeout"},
+			"sessions": []any{
+				map[string]any{
+					"recorded_at": "2026-08-21T12:00:00+00:00",
+					"outcome":     "mitigated",
+					"actor":       "admin",
+					"summary":     "the share was stale; a remount cleared it",
+					"detail": map[string]any{
+						"tier": "host", "host": "raspberrypi5",
+						"commands": []any{"systemctl restart mnt-nas.mount"},
+					},
+				},
+			},
+		},
+	}
+	out := BuildBriefing(ctx, 4000)
+
+	for _, want := range []string{
+		"Previous cockpit sessions (1", "mitigated", "by admin",
+		"tier host on raspberrypi5", "a remount cleared it",
+		"$ systemctl restart mnt-nas.mount",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("briefing is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "Previous cockpit sessions") > strings.Index(out, "raise the timeout") {
+		t.Error("prior sessions should come before the agent's recommendation — " +
+			"what a human already tried changes how the recommendation reads")
+	}
+}
+
+func TestBriefingMarksASessionThatIsOnlyARawTail(t *testing.T) {
+	ctx := &AttachContext{Investigation: map[string]any{
+		"id": float64(1), "trigger": "t",
+		"sessions": []any{map[string]any{
+			"outcome": "inconclusive", "summary": "user: what happened",
+			"degraded": true,
+		}},
+	}}
+	out := BuildBriefing(ctx, 4000)
+	if !strings.Contains(out, "raw session tail") {
+		t.Errorf("a degraded session must not read as a conclusion:\n%s", out)
+	}
+}
+
+func TestBriefingOmitsTheSectionWhenThereAreNoSessions(t *testing.T) {
+	out := BuildBriefing(&AttachContext{Investigation: map[string]any{
+		"id": float64(1), "trigger": "t"}}, 4000)
+	if strings.Contains(out, "cockpit sessions") {
+		t.Error("an investigation nobody has worked should not advertise an empty section")
+	}
+}
+
+// TestBriefingSurvivesAMalformedSessionsField: `sessions` arrives from JSON an
+// older agent may not send at all, and a type assertion that panicked here
+// would take the whole briefing — and the session — with it.
+func TestBriefingSurvivesAMalformedSessionsField(t *testing.T) {
+	for _, bad := range []any{nil, "not a list", []any{"not an object", 42}} {
+		out := BuildBriefing(&AttachContext{Investigation: map[string]any{
+			"id": float64(1), "trigger": "t", "sessions": bad}}, 4000)
+		if !strings.Contains(out, "CFOperator briefing") {
+			t.Errorf("briefing broke on sessions=%v", bad)
+		}
+	}
+}

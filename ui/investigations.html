@@ -184,10 +184,36 @@ async function detail(id){
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
     ${remDrawerLine(r)}
     ${triageBlock(r)}
+    ${sessionsBlock(r)}
     ${similarBlock(f)}
     ${f.recommendation?`<h3>Recommendation</h3><pre>${esc(f.recommendation)}</pre>`:''}
     ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
     <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;
+}
+// Cockpit sessions (CFOP-37) — what humans worked out against this
+// investigation, appended beside it rather than merged into `findings`. Placed
+// above the agent's own recommendation on purpose: someone reading this drawer
+// wants "has a person already been here, and what did they find" before they
+// read what the model proposed.
+function sessionsBlock(r){
+  const rows=r.sessions||[];
+  if(!rows.length) return '';
+  return `<h3>Cockpit sessions (${rows.length})</h3>`+rows.map(s=>{
+    const d=s.detail||{};
+    const where=[d.tier?'tier '+esc(d.tier):'', d.host?esc(d.host):''].filter(Boolean).join(' · ');
+    const meta=[where, d.duration_seconds?Math.round(d.duration_seconds)+'s':'',
+                d.exchanges?d.exchanges+' exchanges':'', d.model?esc(d.model):'']
+               .filter(Boolean).join(' · ');
+    // A degraded row is a raw transcript tail, not a summary. Labelled so it is
+    // never read as a conclusion the session actually reached.
+    const warn=s.degraded?' '+badge('raw tail','--orange'):'';
+    const learn=d.learning_id?` <span class="muted">→ learning #${d.learning_id}</span>`:'';
+    const cmds=(d.commands||[]).length
+      ? `<pre>${(d.commands||[]).map(c=>'$ '+esc(c)).join('\n')}</pre>` : '';
+    return `<div class="kv">${badge(s.outcome||'unrecorded','--accent')}${warn}
+        <span class="muted">${esc(s.actor||'')}${meta?' · '+meta:''}${s.recorded_at?' · '+esc(s.recorded_at):''}</span>${learn}</div>
+      <pre>${esc(s.summary||'')}</pre>${cmds}`;
+  }).join('');
 }
 // Operator triage (CFOP-65). Records the human's verdict in triage_action;
 // the agent's own `outcome` is deliberately left alone, because that is what

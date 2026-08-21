@@ -10,7 +10,7 @@ read the Slack alert, open a terminal, start a coding agent, and type "check
 investigation 1889" so it can go query the API itself. That works, and it beats
 the console, which is why it is worth productizing rather than arguing with.
 
-Five pieces, in the order you meet them.
+Six pieces, in the order you meet them.
 
 ## 1. The alert tells you the command
 
@@ -669,15 +669,161 @@ session directory — rather than a creation date read back later, because
 `docker ps` renders dates differently across versions and locales, and a janitor
 that misreads one either spares an orphan or kills a live session.
 
+## 6. What the session leaves behind (CFOP-37)
+
+The cockpit's whole claim is *use it and destroy it, keep the memory*. Sections
+1–5 are the "destroy it" half. This is the memory.
+
+Without it, a cockpit is a terminal that happens to start briefed: the pod
+dies, the container is reaped, the `/tmp` directory is removed, and everything
+you worked out goes with them. CFOperator's knowledge base keeps only what the
+autonomous agent found — never what you found.
+
+### What happens when you exit
+
+Nothing to remember and nothing to type. On the way out, the session asks the
+model it has been talking to for a summary of itself, and posts the result back
+before its credential is revoked:
+
+```console
+> exit
+learning #142 stored: Stale CIFS handle after a NAS reboot
+session recorded on investigation #1889: resolved (14 exchanges, 10m40s)
+```
+
+Two writes, and the second is the one that always happens:
+
+- **The session record** — outcome, a few sentences of what was checked and
+  found, the commands that mattered, and where you were (tier, host, duration).
+  It appends *beside* the investigation; it never edits what the agent
+  concluded, because that is the corpus later triage decisions reason from.
+- **A learning**, only if the session concluded something reusable. Most
+  sessions do not — you looked, it was a false alarm, you left — and a
+  knowledge base that gains an entry per session degrades faster than one that
+  gains none. When there is one, it is what makes the *next* incident cheaper.
+
+### Where it shows up
+
+Three places, and each is a different reader:
+
+| Where | Shows | Why there |
+|---|---|---|
+| `/investigations` drawer | every session on that investigation, above the agent's recommendation | someone triaging wants "has a person already been here" first |
+| the next `cfassist attach <same id>` | the same sessions, in the briefing | the next session opens knowing what the last one tried |
+| a *different* investigation of the same alert class | the **learning**, via the KB search every briefing and triage does | this is the compounding: a fix found once is cited the next time the class fires |
+
+That third row is the one worth watching for. It is the difference between a
+knowledge base of what the agent learned and one of what the team learned.
+
+### Why a learning needs `applies_when`
+
+A learning is stored with a **trigger condition** — the observable symptom that
+should bring someone back to it. Not a restatement of the title: a symptom
+someone would actually notice.
+
+This is not a style rule. Retrieval matches on it, so a learning without one can
+never be found — and the knowledge base auto-deprecates it on arrival rather
+than letting it dilute search. The session's summarizer is told this, and
+cfassist drops a half-filled learning before sending it, so you get a warning
+instead of a silent no-op:
+
+```
+warning: the session's learning was not stored: refusing to store a learning
+  with no trigger condition — it would be auto-deprecated and never retrieved
+```
+
+### When the model cannot summarize
+
+Local models have bad days. The session is still recorded — the raw tail of the
+transcript, explicitly marked:
+
+```
+warning: could not summarize the session (…) — recording the raw tail instead
+session recorded on investigation #1889: inconclusive (9 exchanges, 4m02s)
+```
+
+The console and the briefing both label it `raw tail`, so nobody reads a
+transcript fragment as a conclusion the session reached. Losing the only record
+of a session would be worse; presenting a fragment as a summary would be worse
+still.
+
+### Turning it off
+
+```bash
+cfassist attach 1889 --no-writeback
+```
+
+Opt-*out*, deliberately: a default-off memory feature is one nobody remembers to
+turn on. It says what it discarded, in the units you just spent:
+
+```
+session not recorded (--no-writeback): 14 exchanges on investigation #1889 discarded
+```
+
+A session with no exchanges — attached, read the briefing, left — records
+nothing either way. There is nothing to distil, and a row saying "a human looked
+and said nothing" is noise in a place that has to stay worth reading.
+
+### Which sessions carry it
+
+Write-back is a cfassist feature, and each tier gets its cfassist differently —
+so they gain it at different moments:
+
+| Session | Gets cfassist from | Has write-back |
+|---|---|---|
+| tier `pod`, tier `container` | the cockpit image, built from the tree | as soon as the image rolls |
+| tier `host`, tier `ssh` | the pinned `cfassist-v<version>` release | once that release carries it |
+| a plain `attach` on your machine | whatever binary is on your PATH | once you upgrade it |
+
+This is the same property `cockpit.cfassist_version` already documents, seen
+from the other side: a host tier runs a *released* binary on purpose, so that
+a session is reproducible and not whatever happened to be on main. The cost is
+that a new cfassist feature reaches those two tiers a release later than the
+other two. A session on an old binary simply does not write back — there is no
+error, because nothing tried.
+
+### Who is allowed to write it
+
+The session itself, using the short-lived token minted for it (§2). Both writes
+take the `investigate` scope that token already carries, so **the credential
+that dies with the session is the one that records what the session learned** —
+no standing credential, no admin role, nothing left behind that could write
+again tomorrow.
+
+That is also why the write happens *before* the token is revoked on exit, which
+is the one piece of ordering in `attach` that is explicit rather than deferred.
+
+### When it does not work
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `the session was NOT recorded on investigation #N` | the write failed — agent unreachable, or the token expired mid-session | the transcript is still on your screen; the console's triage note is the manual path |
+| `the session's learning was not stored` | the model produced a learning with no trigger condition | nothing to do: the session record still landed, and a learning nothing could retrieve was worth less than the warning |
+| `could not summarize the session` | the model failed or answered with prose | nothing to do: the raw tail was recorded and is marked as such |
+| `write-back needs the investigate scope` | the session ran on a `read`-scoped token | mint with `investigate` (the default for `attach`); `--no-session-token` sessions write with whatever standing token you have |
+| nothing printed at all on exit | there were no exchanges, or `--no-writeback` | expected — see above |
+
+### What write-back deliberately is not
+
+- **Not the transcript.** What leaves the machine is a summary and a few
+  commands, not your scrollback. A tier-3 session's output is whatever you
+  typed on a production host, and it has no business being shipped by default.
+- **Not a changerecord entry.** The issue asked for one; that service's contract
+  is an approval workflow for a *proposed* change (a remediation id, a command
+  list, an executor image) and a session is none of those — it already happened
+  and needed no approval. The same facts land in the audit log, beside the
+  `token.created` and `token.revoked` rows for the same session.
+- **Not automatic triage.** Recording that you resolved something does not set
+  the investigation's `triage_action`. That is still a deliberate click in the
+  console, because it is a claim about the incident rather than about your
+  session.
+
 ## What the cockpit deliberately is not, yet
 
 - **No agent-side terminal.** The attach needs kubectl or ssh on your machine.
   A browser cockpit needs a PTY bridge in the agent — CFOP-59.
 - **No remediate profile.** There is one cockpit identity and it is read-only.
   A write-capable cockpit waits until something actually needs one.
-- **No write-back.** What you and the agent work out in the session does not
-  land back on the investigation (CFOP-37). Today, if it matters, put it in the
-  console.
 - **No reattach after a drop.** Tiers 1 and 2 survive one (the pod and the
   container keep running); tier 3 does not. `tmux` is probed for and recorded
   against the day CFOP-59 needs it.

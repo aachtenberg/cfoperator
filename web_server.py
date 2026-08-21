@@ -24,7 +24,8 @@ import requests
 
 from web_auth import ROLE_ADMIN, install_auth, require_role, require_token_scope
 from auth.bootstrap import init_auth_store
-from auth.models import EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER
+from auth.models import (
+    EVENT_COCKPIT_SESSION, EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
 # The cockpit spawn mints a session token server-side, and it must resolve the
 # caller exactly as POST /api/auth/tokens does — same role ceiling, same audit
 # actor. Importing those helpers is deliberate: a second copy of "who is
@@ -43,6 +44,16 @@ from cockpit_ladder import (
 WEBSOCKET_AVAILABLE = False
 
 logger = logging.getLogger("cfoperator.web")
+
+
+def _positive_int(value: Any) -> int:
+    """Coerce a client-supplied count. Junk and negatives read as 0 rather than
+    raising: a session record is worth keeping even when one of its numbers is
+    nonsense, and the summary is the part that matters."""
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
 
 
 def json_object() -> Dict[str, Any]:
@@ -1170,6 +1181,104 @@ class WebServer:
             result['host_provenance'] = provenance
             result['tier_note'] = tier_note
             return jsonify(result), 200 if result.get('status') == 'existing' else 201
+
+        # ---- cockpit write-back (CFOP-37) --------------------------------
+        # What a human and an agent worked out in a cockpit, coming back from
+        # the session that is about to be destroyed. "Compute disposable, state
+        # central" only holds if the state actually arrives.
+        #
+        # Scope, not role: this is written by the SESSION, using the
+        # per-investigation token minted for it (CFOP-32, `investigate` scope)
+        # — the same scope POST /api/learnings already takes. Gating on admin
+        # would mean the credential that dies with the session cannot record
+        # what the session learned, which is the one thing it exists to do.
+        _SESSION_OUTCOMES = ('resolved', 'mitigated', 'diagnosed',
+                             'no_change', 'inconclusive', 'escalated')
+
+        @self.app.route('/api/investigations/<int:investigation_id>/session',
+                        methods=['POST'])
+        @require_token_scope('investigate')
+        def record_cockpit_session(investigation_id):
+            """Append one cockpit session to an investigation.
+
+            Deliberately an *append*, never an edit of ``findings``: that field
+            is the corpus later triage decisions reason from, and the rule that
+            the agent's finding stays intact while a human's verdict lives
+            elsewhere is already recorded on the triage endpoint below. A
+            session summary is a human verdict by another name.
+            """
+            body = json_object()
+            summary = str(body.get('summary') or '').strip()
+            if not summary:
+                # A session record with no summary is a row that says a human
+                # was here and nothing about what they found — worse than
+                # nothing, because it looks like write-back working.
+                return jsonify({'error': 'summary is required'}), 400
+
+            outcome = str(body.get('outcome') or 'inconclusive').strip().lower()
+            if outcome not in _SESSION_OUTCOMES:
+                return jsonify({
+                    'error': f"outcome must be one of {', '.join(_SESSION_OUTCOMES)}"}), 400
+
+            try:
+                inv = self.operator.kb.get_investigation(investigation_id)
+            except Exception as e:
+                logger.error(f"cockpit session: investigation lookup failed: {e}")
+                return jsonify({'error': str(e)}), 500
+            if not inv:
+                return jsonify({'error': 'not found'}), 404
+
+            detail = {
+                'tier': str(body.get('tier') or '')[:32],
+                'host': str(body.get('host') or '')[:64],
+                'duration_seconds': _positive_int(body.get('duration_seconds')),
+                'exchanges': _positive_int(body.get('exchanges')),
+                'commands': [str(c).strip()[:300] for c in (body.get('commands') or [])
+                             if str(c).strip()][:20],
+                'learning_id': _positive_int(body.get('learning_id')) or None,
+                'model': str(body.get('model') or '')[:120],
+            }
+            # A summary the client could not distil is stored as the raw tail,
+            # marked. Losing it would throw away the only record of the session;
+            # presenting it as a summary would be a lie about its quality.
+            degraded = bool(body.get('degraded'))
+            actor = _actor() or 'unknown'
+
+            try:
+                self.operator.kb.record_cockpit_session(
+                    investigation_id,
+                    summary=summary[:20000],
+                    outcome=outcome,
+                    actor=actor[:255],
+                    detail=detail,
+                    degraded=degraded,
+                )
+            except Exception as e:
+                logger.error(f"cockpit session write-back for #{investigation_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
+            # The audit half of the issue's "who attached, scope, tier,
+            # duration, outcome". It lands here rather than in changerecord:
+            # that service's Intent is an approval workflow for a proposed
+            # change (remediation_id, commands, executor image), and a session
+            # is none of those — it already happened and needed no approval.
+            # CFOP-32 already writes mint/revoke here with actor, investigation
+            # and scopes; CFOP-36 added tier and host. This closes the row.
+            store = getattr(self, 'auth_store', None)
+            if store is not None:
+                store.record(EVENT_COCKPIT_SESSION, actor=actor,
+                             target=f"investigation:{investigation_id}",
+                             source_ip=request.remote_addr,
+                             investigation_id=investigation_id, outcome=outcome,
+                             tier=detail['tier'], host=detail['host'],
+                             duration_seconds=detail['duration_seconds'],
+                             learning_id=detail['learning_id'], degraded=degraded)
+
+            logger.info("cockpit session recorded on #%s by %s (%s, tier=%s, %ss)",
+                        investigation_id, actor, outcome, detail['tier'] or '-',
+                        detail['duration_seconds'])
+            return jsonify({'investigation_id': investigation_id,
+                            'outcome': outcome, 'degraded': degraded}), 201
 
         @self.app.route('/api/kb/search')
         def kb_search():
