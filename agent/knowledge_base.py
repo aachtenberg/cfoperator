@@ -414,6 +414,12 @@ class InvestigationQueue(Base):
 # classes at/above this confidence enter 'queued' (drainable by the executor);
 # everything else is recorded as 'needs-human'. Mirrors the worker-side
 # classification — keep the class list in sync with _VALID_REMEDIATION_CLASSES.
+#
+# A class belongs here only if the executor can actually run it. 'k8s-imperative'
+# is deliberately absent (CFOP-61): a one-off kubectl verb has no manifest to
+# patch, so the executor's GitOps path cannot express it and auto-draining one
+# spends a Job plus two LLM passes to reach needs-human anyway (live row #49).
+# Add it here in the same change that gives the executor a path to run it.
 _AUTO_REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action')
 _AUTO_REMEDIATION_MIN_CONFIDENCE = 0.8
 # Reaper: an in-flight lease older than this (no terminal transition) is
@@ -421,8 +427,21 @@ _AUTO_REMEDIATION_MIN_CONFIDENCE = 0.8
 _REMEDIATION_LEASE_TIMEOUT_S = 1800
 _REMEDIATION_MAX_ATTEMPTS = 3
 _REMEDIATION_INFLIGHT = ('claimed', 'executing')
-_REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action', 'node-action', 'manual')
+_REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action', 'k8s-imperative',
+                        'node-action', 'manual')
 _REMEDIATION_RISKS = ('low', 'med', 'high')
+
+# Rendered from _REMEDIATION_CLASSES rather than written out again, so the
+# table's CHECK cannot fall behind the tuple normalize_remediation_fields
+# validates against. It did exactly that when k8s-imperative was added
+# (PR #150 review): normalize let the new class through and the INSERT then
+# died on a four-class CHECK, so the class that exists to PARK rows would
+# have failed to record them at all. Widened at startup by
+# _ensure_remediation_class_constraint — create_all never alters an existing
+# table, so the model alone does not reach a database that already exists.
+REMEDIATION_CLASS_CHECK_SQL = "remediation_class IN ({})".format(
+    ", ".join(f"'{c}'" for c in sorted(_REMEDIATION_CLASSES))
+)
 
 
 def normalize_remediation_fields(remediation_class: str, risk: str):
@@ -558,7 +577,7 @@ class RemediationQueue(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "remediation_class IN ('gitops-patch', 'k8s-action', 'node-action', 'manual')",
+            REMEDIATION_CLASS_CHECK_SQL,
             name='valid_remediation_class'),
         CheckConstraint("risk IN ('low', 'med', 'high')", name='valid_remediation_risk'),
         CheckConstraint(
@@ -1166,8 +1185,12 @@ class KnowledgeBase:
         # Widen investigations.outcome CHECK if the vocabulary grew since this
         # database was created (create_all never alters an existing table)
         outcome_ok = self._ensure_outcome_constraint()
-        _log("info", "Knowledge base schema initialized", outcome_constraint_ok=outcome_ok)
-        return outcome_ok
+        # Same problem, same shape, different table: remediation_queue's class
+        # CHECK was written when there were four classes (CFOP-61 added a fifth).
+        class_ok = self._ensure_remediation_class_constraint()
+        _log("info", "Knowledge base schema initialized",
+             outcome_constraint_ok=outcome_ok, remediation_class_constraint_ok=class_ok)
+        return outcome_ok and class_ok
 
     def _ensure_outcome_constraint(self) -> bool:
         """Rebuild investigations.valid_outcome to match VALID_OUTCOMES.
@@ -1230,6 +1253,72 @@ class KnowledgeBase:
             return True
         except Exception as e:
             _log("error", "Could not ensure investigations.valid_outcome constraint", error=str(e))
+            return False
+
+    def _ensure_remediation_class_constraint(self) -> bool:
+        """Rebuild remediation_queue.valid_remediation_class to match
+        _REMEDIATION_CLASSES.
+
+        Exactly the CFOP-20 problem on a second table: ``create_all`` only
+        ever *creates*, so a database made before a class joined the
+        vocabulary keeps the narrower CHECK. Found in review of PR #150 —
+        ``normalize_remediation_fields`` would pass 'k8s-imperative' through
+        and the INSERT would then die on a four-class CHECK, with
+        ``_maybe_queue_remediation`` swallowing the exception into None. The
+        class whose entire purpose is to PARK a row would have silently
+        failed to record one.
+
+        Runs at startup in the process that goes on to write the queue, so
+        the widening precedes the first write that needs it.
+        """
+        try:
+            with self.session_scope() as session:
+                current = session.execute(text("""
+                    SELECT pg_get_constraintdef(c.oid)
+                    FROM pg_constraint c
+                    WHERE c.conname = 'valid_remediation_class'
+                      AND c.conrelid = to_regclass('remediation_queue')
+                """)).scalar()
+
+                # Nothing to do on the common restart. constraint_admits_outcomes
+                # is vocabulary-agnostic — it compares the set of quoted
+                # literals, which is what makes it reusable here.
+                if constraint_admits_outcomes(current, set(_REMEDIATION_CLASSES)):
+                    return True
+
+                _log("info", "Widening remediation_queue.valid_remediation_class CHECK",
+                     existing=current, classes=sorted(_REMEDIATION_CLASSES))
+                session.execute(text(
+                    "ALTER TABLE remediation_queue "
+                    "DROP CONSTRAINT IF EXISTS valid_remediation_class"
+                ))
+                session.execute(text(
+                    "ALTER TABLE remediation_queue ADD CONSTRAINT "
+                    f"valid_remediation_class CHECK ({REMEDIATION_CLASS_CHECK_SQL})"
+                ))
+
+            # Verify in a fresh transaction, loudly: a silent failure here
+            # turns a classification change into a persistence failure.
+            with self.session_scope() as session:
+                after = session.execute(text("""
+                    SELECT pg_get_constraintdef(c.oid)
+                    FROM pg_constraint c
+                    WHERE c.conname = 'valid_remediation_class'
+                      AND c.conrelid = to_regclass('remediation_queue')
+                """)).scalar()
+            if not constraint_admits_outcomes(after, set(_REMEDIATION_CLASSES)):
+                present = set(_SQL_STRING_LITERAL.findall(after or ""))
+                missing = sorted(set(_REMEDIATION_CLASSES) - present)
+                _log("error", "remediation_queue.valid_remediation_class still rejects "
+                              "known classes; remediations of these classes will fail "
+                              "to persist", missing=missing, constraint=after)
+                return False
+            _log("info", "remediation_queue.valid_remediation_class up to date",
+                 constraint=after)
+            return True
+        except Exception as e:
+            _log("error", "Could not ensure remediation_queue.valid_remediation_class "
+                          "constraint", error=str(e))
             return False
 
     def _ensure_investigation_embeddings_table(self):
