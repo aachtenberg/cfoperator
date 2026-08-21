@@ -94,9 +94,13 @@ metadata:
        path stays the PR/console gate even from a pod on the affected node.
      * the agent's own SA — gains exactly what launching one needs: Jobs in the
        release namespace, plus `create` (only) on secrets for the short-lived
-       token the pod reads its briefing with. No `get` on secrets, so this is
-       not a way to read anything already there, and no `delete` either: the
-       Secret is owned by the Job, so Kubernetes GC removes it.
+       token the pod reads its briefing with. No `get` on secrets, so under THIS
+       chart the launcher is not a way to read anything already there, and no
+       `delete` either: the Secret is owned by the Job, so Kubernetes GC removes
+       it. (That first clause is a property of the chart, not of the grant. An
+       install whose agent already reads secrets cluster-wide — the homelab
+       deploy repo does — gets the narrowness of `create` without the
+       conclusion; see docs/DEPLOYMENT.md "Agent secrets read".)
 
      Off by default (cockpit.enabled) because spawning is a cluster write, and
      the investigate profile's whole claim is that it makes none. */}}

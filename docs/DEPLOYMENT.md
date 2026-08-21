@@ -40,8 +40,9 @@ rules:
   resources: ["jobs"]
   verbs: ["create", "get", "list", "watch", "delete"]
 # Cockpit (CFOP-35): the pod's short-lived session token is written to a Secret
-# the Job references. `create` ONLY — `get` would make the launcher a way to
-# read every secret in apps, and the Job owns the Secret so GC covers deletion.
+# the Job references. `create` only, and no `delete` — the Job owns the Secret,
+# so GC removes it. (This SA already has cluster-wide `get` on secrets via
+# cfoperator-role, so withholding it here narrows nothing.)
 - apiGroups: [""]
   resources: ["secrets"]
   verbs: ["create"]
@@ -116,7 +117,6 @@ Missing → tier 1 still works; host tiers report "the affected host could not b
 kubectl -n apps get sa cfoperator-cockpit
 kubectl auth can-i create jobs    -n apps --as=system:serviceaccount:apps:cfoperator   # yes
 kubectl auth can-i create secrets -n apps --as=system:serviceaccount:apps:cfoperator   # yes
-kubectl auth can-i get    secrets -n apps --as=system:serviceaccount:apps:cfoperator   # no
 kubectl auth can-i create pods/exec -n apps \
   --as=system:serviceaccount:apps:cfoperator-cockpit                                   # no
 
@@ -125,6 +125,36 @@ cfassist attach <id> --spawn                                   # tier 1: pod
 cfassist attach <id> --spawn --host raspberrypi4 --tier ssh    # host tier smoke test
 kubectl -n apps get jobs -l cfop.dev/role=cockpit
 ```
+
+`can-i get secrets` also answers **yes**. That is pre-existing and not something
+the cockpit added — `cfoperator-role` lists `secrets` in its cluster-wide read
+rule. So the "`create` only, so this is not a way to read secrets" reasoning is
+the *chart's*, where the agent has no secrets read; it does not describe this
+deployment. `create` is still the minimal addition, it is just not the thing
+standing between the agent and a secret. See [Agent secrets read](#agent-secrets-read).
+
+## Agent secrets read
+
+`cfoperator-role` grants the agent SA cluster-wide `get`/`list`/`watch` on
+`secrets` and `configmaps` — predating the cockpit and unrelated to it:
+
+```yaml
+- apiGroups: [""]
+  resources: ["pods", "pods/log", "services", "endpoints", "namespaces", "nodes", "events", "configmaps", "secrets", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
+```
+
+**No tool currently reaches secret values.** The only tool taking an arbitrary
+resource type is `k8s_describe`, which runs `kubectl describe` — that prints key
+names and byte counts, not contents. Every `-o json` call in `tools/k8s.py` is
+hardcoded to pods / deployments / services / ingresses / events / nodes /
+namespaces.
+
+So it is a **latent grant held by convention, not by RBAC**: one generically
+typed `-o json` tool away from being a live exposure. The Helm chart does not
+grant it. Narrowing means dropping `secrets` (and probably `configmaps`) from
+that rule and confirming nothing regresses — worth doing deliberately, not as a
+side effect of an unrelated change.
 
 ## What the image contains
 
