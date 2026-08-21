@@ -81,3 +81,93 @@ metadata:
   labels:
 {{ include "cfoperator.labels" . | indent 4 }}
 {{- end }}
+{{- if .Values.cockpit.enabled }}
+---
+{{/* Incident cockpit (CFOP-35): an ephemeral interactive Job the operator
+     attaches to with their own kubectl.
+
+     Two identities, deliberately unequal:
+
+     * cfoperator-cockpit — what the POD runs as. Read-only, cluster-wide,
+       mirroring the deep-investigation worker: NO exec, NO write verbs, NO
+       secrets, NO configmaps. A cockpit is a place to look from, and the write
+       path stays the PR/console gate even from a pod on the affected node.
+     * the agent's own SA — gains exactly what launching one needs: Jobs in the
+       release namespace, plus `create` (only) on secrets for the short-lived
+       token the pod reads its briefing with. No `get` on secrets, so this is
+       not a way to read anything already there, and no `delete` either: the
+       Secret is owned by the Job, so Kubernetes GC removes it.
+
+     Off by default (cockpit.enabled) because spawning is a cluster write, and
+     the investigate profile's whole claim is that it makes none. */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cfoperator-cockpit
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-cockpit-readonly
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, services, endpoints, events, nodes, namespaces, persistentvolumeclaims]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [deployments, daemonsets, statefulsets, replicasets]
+    verbs: [get, list, watch]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods, nodes]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-cockpit-readonly
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "cfoperator.fullname" . }}-cockpit-readonly
+subjects:
+  - kind: ServiceAccount
+    name: cfoperator-cockpit
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-cockpit-spawn
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+rules:
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [create, get, list, watch, delete]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-cockpit-spawn
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "cfoperator.fullname" . }}-cockpit-spawn
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "cfoperator.fullname" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

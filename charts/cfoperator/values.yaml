@@ -91,6 +91,15 @@ remediate:
   # Executor Jobs also read ANTHROPIC_API_KEY from the remediate secret when
   # set; llm.anthropicApiKey is reused for it automatically.
 
+# Incident cockpit (CFOP-35): `cfassist attach <id> --spawn` launches an
+# ephemeral, read-only pod on the affected node and drops the operator into a
+# briefed session inside it. Off by default because spawning is a cluster
+# write — a Job plus a short-lived token Secret in the release namespace — and
+# the investigate profile's claim is that it makes none. The pod's own identity
+# (cfoperator-cockpit) is read-only whether or not this is on.
+cockpit:
+  enabled: false
+
 agent:
   resources: {}
 eventRuntime:

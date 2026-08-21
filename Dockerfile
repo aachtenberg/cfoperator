@@ -32,6 +32,9 @@ COPY web_auth.py ./
 # auth.bootstrap at module load. Leaving it out crash-looped the agent and the
 # MCP pod on the deploy that introduced them, with :8083 refusing connections.
 COPY auth/ ./auth/
+# The cockpit Job launcher behind POST /api/cockpit/spawn — imported by
+# web_server.py at module load, so the same rule applies again.
+COPY cockpit_spawn.py ./
 # docs/auth.md's lockout runbook is `kubectl exec ... python
 # scripts/create_admin.py`, which is the recovery path for having no usable
 # admin — it has to exist in the image to be worth documenting.

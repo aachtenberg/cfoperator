@@ -13,6 +13,7 @@ Production is k3s + ArgoCD GitOps. **A single `git push` is the deploy path** �
 | `cfoperator-changerecord` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-changerecord` (own image, context `changerecord/`) | ClusterIP |
 | `cfoperator-executor` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-executor` (own image, context `executor/`) — a disposable Job per remediation, not a Deployment | — |
 | `cfoperator-worker` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-worker` (own image, context `worker/`) — deep-investigation worker | — |
+| `cfoperator-cockpit` | none — the agent builds the Job manifest at spawn time | `ghcr.io/aachtenberg/cfoperator-cockpit` (own image, `FROM` the worker image, built from the repo root with `cockpit/Dockerfile`) — one interactive Job per `cfassist attach --spawn` | — |
 
 Both agent pods are scheduled on `headless-gpu` (k3s name) = `ubuntu-llm-01` = 10.0.0.14. Namespace: `apps`. Control plane runs `kubectl` locally — no SSH needed.
 
@@ -21,17 +22,39 @@ new agent tag rolls them too. See [mcp-server.md](mcp-server.md),
 [slack-bridge.md](slack-bridge.md), and [REMEDIATION.md](REMEDIATION.md) for each
 one's own configuration and secrets.
 
-`build-cfoperator-main.yml` builds all four images in one run — agent, worker,
-executor, changerecord — each pushed as both a floating `:main` and an immutable
-`:main-<sha7>`. Only the agent tag is auto-bumped on homelab-infra; the worker,
-executor, and changerecord Deployments/Jobs track `:main`, so after changing that
-code you wait for its build job rather than merging a bump PR.
+`build-cfoperator-main.yml` builds all five images in one run — agent, worker,
+executor, changerecord, cockpit — each pushed as both a floating `:main` and an
+immutable `:main-<sha7>`. Only the agent tag is auto-bumped on homelab-infra;
+the worker, executor, changerecord and cockpit Deployments/Jobs track `:main`,
+so after changing that code you wait for its build job rather than merging a
+bump PR. The cockpit build `needs:` the worker build, because it derives from
+that image — and because it bakes in `cfassist-go/`, that path is no longer in
+`paths-ignore`, so a CLI-only change now rebuilds all five.
+
+### Cockpit RBAC (a manual, one-time deploy-repo change)
+
+`cfassist attach <id> --spawn` (CFOP-35) needs two things the deploy repo does
+not have yet, both in `cfoperator-rbac.yml`:
+
+* a `cfoperator-cockpit` ServiceAccount in `apps` with a read-only ClusterRole
+  and binding, copied from `cfoperator-worker-readonly` (no exec, no write, no
+  secrets, no configmaps) — this is what the pod runs as;
+* on the existing `cfoperator-jobs` Role, `create` on `secrets` (jobs are
+  already there) — the agent writes the pod's short-lived session token to a
+  Secret the Job references. `create` only: `get` would make the launcher a way
+  to read every secret in the namespace, and the Secret is owned by the Job, so
+  garbage collection removes it without a `delete` grant.
+
+Until both land, the endpoint answers and `kubectl` refuses with
+`jobs is forbidden` / `secrets is forbidden` — loudly, at spawn time. The Helm
+chart expresses the same thing behind `cockpit.enabled` (see
+[cockpit.md](cockpit.md)).
 
 ### What the image contains
 
 The Dockerfile copies `cfshared/`, `agent/`, `tools/`, `skills/`, `ui/`,
 `observability/`, `event_runtime/`, `mcp_server/`, `bridge/`, `auth/`,
-`scripts/`, `web_server.py`, and `web_auth.py`. `cfshared/` holds the config
+`scripts/`, `web_server.py`, `web_auth.py`, and `cockpit_spawn.py`. `cfshared/` holds the config
 loader that `agent/` and `event_runtime/` both import at module load, so it has
 the same all-or-nothing character as the four below. The last four matter
 operationally: `web_server.py` and

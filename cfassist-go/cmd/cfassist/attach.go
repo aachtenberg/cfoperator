@@ -16,7 +16,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var flagAttachPrint bool
+var (
+	flagAttachPrint bool
+	flagAttachSpawn bool
+)
 
 // newAttachCmd builds `cfassist attach <investigation-id> [question]`.
 //
@@ -71,6 +74,10 @@ were a model server, which is a natural thing to type against a port-forward.`,
 		"Do not mint a per-session cockpit token")
 	cmd.Flags().Bool("remediate", false,
 		"Request the remediate scope on the session token (your account's ceiling still applies)")
+	// Cockpit tier 1 (CFOP-35): run the session on the affected infrastructure
+	// instead of on this laptop.
+	cmd.Flags().BoolVar(&flagAttachSpawn, "spawn", false,
+		"Spawn an ephemeral cockpit pod on the cluster and attach to it (admin; needs kubectl)")
 	return cmd
 }
 
@@ -99,6 +106,15 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	url, token, timeout := cfoperator.ResolveEndpoint(
 		agentURL, cfg.CFOperator.Token, cfg.CFOperator.Timeout, os.Getenv,
 	)
+
+	// --spawn takes over before any of the local work below: the pod fetches
+	// its own briefing (with a token minted for it that this laptop never
+	// sees), and seeding a local session as well would render the briefing
+	// twice and mint a credential nothing needs.
+	if flagAttachSpawn {
+		return runSpawn(cmd, investigationID, url, token, question)
+	}
+
 	api := cfoperator.New(url, token, timeout)
 
 	attachCtx, err := api.CollectAttachContext(investigationID, 5, 200)

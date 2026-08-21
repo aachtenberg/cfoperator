@@ -79,14 +79,91 @@ def test_executor_secret_keys_match_manifest_builder():
     assert 'secrets_name: {{ include "cfoperator.fullname" . }}-generated' in cm
 
 
-def test_read_only_profile_grants_no_write_verbs():
-    """The investigate profile's ClusterRole is the tameness claim in RBAC
-    form: get/list/watch only. Write verbs live exclusively inside the
-    remediate-profile block."""
+WRITE_VERBS = ("create", "update", "patch", "delete", "deletecollection",
+               "escalate", "impersonate")
+
+
+def unconditional(template: str) -> str:
+    """The part of a template that renders for a *default* install.
+
+    Everything inside a ``{{- if }}`` block is dropped, at any nesting depth.
+    Used to be a split on the remediate conditional; CFOP-35 added a second
+    opt-in block (cockpit.enabled), and a split on one marker would have
+    stopped noticing write verbs added after it.
+    """
+    kept, depth = [], 0
+    for line in template.splitlines():
+        stripped = line.strip()
+        if re.match(r"\{\{-?\s*if\b", stripped):
+            depth += 1
+            continue
+        if re.match(r"\{\{-?\s*end\b", stripped):
+            depth = max(0, depth - 1)
+            continue
+        if depth == 0:
+            kept.append(line)
+    return "\n".join(kept)
+
+
+def test_the_conditional_stripper_is_not_vacuous():
+    """A helper that quietly kept everything would make the guard below pass on
+    any chart at all."""
+    doc = ('always: here\n'
+           '{{- if .Values.something }}\n'
+           '    verbs: [create]\n'
+           '{{- end }}\n'
+           '    verbs: [get]\n')
+    kept = unconditional(doc)
+    assert "create" not in kept, "conditional content was not stripped"
+    assert "get" in kept and "always: here" in kept, "unconditional content was lost"
+
+
+def test_a_default_install_grants_no_write_verbs():
+    """The investigate profile's RBAC is the tameness claim in RBAC form:
+    get/list/watch only. Every write verb has to sit behind an explicit opt-in
+    — the remediate profile, or cockpit.enabled."""
     rbac = (CHART / "templates" / "rbac.yaml").read_text()
-    investigate_part = rbac.split('{{- if eq .Values.profile "remediate" }}')[0]
-    verb_lines = "\n".join(l for l in investigate_part.splitlines() if "verbs:" in l)
-    assert verb_lines, "no verbs lines found in the investigate-profile RBAC"
-    for verb in ("create", "update", "patch", "delete", "deletecollection", "escalate", "impersonate"):
+    verb_lines = "\n".join(l for l in unconditional(rbac).splitlines() if "verbs:" in l)
+    assert verb_lines, "no verbs lines found in the default-install RBAC"
+    for verb in WRITE_VERBS:
         assert not re.search(rf"\b{verb}\b", verb_lines), (
-            f"read-only ClusterRole grants write verb {verb!r}")
+            f"a default install's RBAC grants write verb {verb!r}")
+
+
+def _cockpit_block(rbac: str) -> str:
+    """The cockpit RBAC, i.e. what `cockpit.enabled` turns on."""
+    marker = "{{- if .Values.cockpit.enabled }}"
+    assert marker in rbac, "the cockpit RBAC is no longer gated on cockpit.enabled"
+    return rbac.split(marker, 1)[1]
+
+
+def test_the_cockpit_pod_identity_is_read_only():
+    """The pod an operator sits inside runs as cfoperator-cockpit, which mirrors
+    the deep-investigation worker: no exec, no write, no secrets. A cockpit is a
+    place to look from — the write path stays the PR/console gate even from a
+    pod on the affected node."""
+    block = _cockpit_block((CHART / "templates" / "rbac.yaml").read_text())
+    cluster_role = block.split("kind: ClusterRole", 1)[1].split("---", 1)[0]
+
+    verb_lines = "\n".join(l for l in cluster_role.splitlines() if "verbs:" in l)
+    assert verb_lines, "the cockpit ClusterRole has no rules"
+    for verb in WRITE_VERBS:
+        assert not re.search(rf"\b{verb}\b", verb_lines), (
+            f"the cockpit service account may {verb!r} — it must be read-only")
+    for forbidden in ("pods/exec", "pods/attach", "secrets", "configmaps"):
+        assert forbidden not in cluster_role, (
+            f"the cockpit service account can reach {forbidden}")
+
+
+def test_the_agents_cockpit_grant_can_create_secrets_but_never_read_them():
+    """The token Secret is created by the agent and deleted by ownership GC, so
+    `create` is the whole grant. `get` would turn the launcher into a way to
+    read every secret in the namespace; `delete` would let it remove them."""
+    block = _cockpit_block((CHART / "templates" / "rbac.yaml").read_text())
+    lines = [l.strip() for l in block.splitlines()]
+    idx = [i for i, l in enumerate(lines) if l == "resources: [secrets]"]
+    assert idx, "the cockpit spawn Role no longer names secrets at all"
+    for i in idx:
+        verbs = next(l for l in lines[i:] if l.startswith("verbs:"))
+        assert verbs == "verbs: [create]", (
+            f"the agent's secret grant is {verbs!r}; it may only create")
