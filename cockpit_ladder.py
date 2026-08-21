@@ -60,6 +60,7 @@ from cockpit_spawn import (
     TOKEN_ENV,
     CockpitConfig,
     CockpitSpawnError,
+    cockpit_llm_url,
 )
 
 logger = logging.getLogger("cfoperator.cockpit.ladder")
@@ -643,6 +644,9 @@ class HostCockpitSpawner:
         # agent is a briefed session with no briefing, and it would fail *after*
         # the operator attached.
         host_agent_url(self._config)
+        # Same check for the model endpoint, and the tier decides: a container
+        # has its own network namespace, a host process does not.
+        cockpit_llm_url(_as_cockpit_config(self._config), tier)
 
         caps = self.probe(host)
         live = self._live_sessions(host, caps)
@@ -1154,6 +1158,15 @@ _SESSION_LISTING = (
     + str(MAX_TTL_SECONDS) + " )); "
     "printf '%s %s\\n' \"${d%/}\" \"$e\"; done"
 )
+
+
+def _as_cockpit_config(cfg: "HostLadderConfig") -> CockpitConfig:
+    """Adapt the ladder's config to the shape ``cockpit_llm_url`` validates.
+
+    A three-line adapter rather than a second copy of the loopback rule: the
+    rule is one fact about one value, and two of them would eventually disagree.
+    """
+    return CockpitConfig(llm_url=cfg.llm_url, llm_model=cfg.llm_model)
 
 
 def cancel_reap_unit_command(name: str, *, user: bool = True, sudo: bool = False) -> str:

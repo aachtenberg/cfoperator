@@ -107,6 +107,37 @@ Missing → `kubectl create failed: jobs is forbidden` / `secrets is forbidden` 
               value: "http://192.168.0.150:8083"
 ```
 
+### 3. The in-pod model URL — `cfoperator.yml`
+
+The session inherits the agent's `llm.primary.url` so it talks to the model the
+investigation ran on. That is `${OLLAMA_DIRECT_URL}` = `http://localhost:11434`,
+which is correct **only** from the agent pod — it is `hostNetwork: true` on the
+box ollama runs on. A cockpit pod is not, so its `localhost` is itself. Set the
+address the *cluster* reaches ollama at:
+
+```yaml
+            # The in-pod cockpit session's model. NOT OLLAMA_DIRECT_URL — that
+            # is loopback, correct for this hostNetwork agent and meaningless in
+            # a normal pod, whose localhost is itself.
+            - name: CFOP_COCKPIT_LLM_URL
+              value: "http://192.168.0.150:11434"
+```
+
+Confirm the value from any host that is not the LLM box (the control plane will
+do) before setting it — if this refuses, ollama is bound loopback-only and no
+pod can reach it either:
+
+```bash
+curl -fsS http://192.168.0.150:11434/api/tags | head -c 200
+```
+
+Missing → the spawn is refused with this key named. Before that guard existed it
+attached fine and then failed inside the session with `dial tcp [::1]:11434:
+connect: connection refused`, which points at ollama rather than at the config.
+
+Tiers `host` and `ssh` are exempt: those sessions run directly on the machine,
+so loopback is right there whenever ollama is on that host.
+
 **The ssh key needs no work.** The `ssh-perms` initContainer already stages `cfop-forensics-ssh` into `/root/.ssh/id_rsa` (0600, root-owned), both containers mount that emptyDir, and every `infrastructure.hosts[*].ssh.key_path` in the ConfigMap already points at it. `CFOP_COCKPIT_SSH_SECRET_DIR` / `CFOP_COCKPIT_SSH_USER` exist for installs without that staging — this one does not need them.
 
 Missing → tier 1 still works; host tiers report "the affected host could not be probed" and fall back to a cluster pod.

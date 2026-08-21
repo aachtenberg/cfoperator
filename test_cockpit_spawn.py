@@ -34,7 +34,9 @@ from cockpit_spawn import (
     CockpitConfig,
     CockpitSpawnError,
     CockpitSpawner,
+    TIER_POD,
     build_cockpit_config,
+    cockpit_llm_url,
     clamp_ttl,
 )
 
@@ -690,3 +692,58 @@ def test_the_endpoint_refuses_when_there_is_no_token_store():
         token_minter=server._mint_cockpit_token)
     resp = client.post("/api/cockpit/spawn", json={"investigation_id": 1889})
     assert resp.status_code == 503
+
+
+# ---- the model URL a session can actually reach (CFOP-35 follow-up) ---------
+
+
+def test_a_loopback_model_url_is_refused_before_the_pod_exists():
+    """REGRESSION GUARD, found on the first real spawn in production.
+
+    The session inherits the agent's ``llm.primary.url`` so it talks to the same
+    model the investigation ran on. The agent is hostNetwork alongside ollama,
+    so that URL is loopback — and a pod copying it resolves to itself. The
+    operator attached successfully and *then* got "connection refused" naming
+    ollama rather than the config.
+
+    Refusing at spawn is the same fix the reviewer asked for on the agent URL
+    (CFOP-36): one value whose correct form differs by runtime cannot be
+    inherited blind.
+    """
+    for url in ("http://localhost:11434", "http://127.0.0.1:11434", "http://[::1]:11434"):
+        with pytest.raises(CockpitSpawnError) as exc:
+            cockpit_llm_url(CockpitConfig(llm_url=url), TIER_POD)
+        assert exc.value.status == 400
+        assert "CFOP_COCKPIT_LLM_URL" in str(exc.value)
+
+
+def test_a_reachable_model_url_passes():
+    cfg = CockpitConfig(llm_url="http://192.168.0.150:11434")
+    assert cockpit_llm_url(cfg, TIER_POD) == "http://192.168.0.150:11434"
+
+
+def test_no_model_url_is_not_an_error():
+    """Unset means "use cfassist's own default", which is a different decision
+    from "set to something that cannot work"."""
+    assert cockpit_llm_url(CockpitConfig(llm_url=""), TIER_POD) == ""
+
+
+def test_a_host_tier_may_use_loopback():
+    """A tier-3 session runs directly on the machine, so loopback is correct
+    there whenever ollama is on that host. The rule is about network
+    namespaces, not about the string."""
+    cfg = CockpitConfig(llm_url="http://localhost:11434")
+    assert cockpit_llm_url(cfg, "host") == "http://localhost:11434"
+    assert cockpit_llm_url(cfg, "ssh") == "http://localhost:11434"
+
+
+def test_the_spawn_refuses_before_minting_or_creating_anything():
+    minted, kubectl = [], _FakeKubectl(node={"spec": {}})
+    spawner = CockpitSpawner(
+        CockpitConfig(namespace="apps", llm_url="http://localhost:11434"),
+        kubectl_runner=kubectl, token_minter=_minter(minted))
+    with pytest.raises(CockpitSpawnError) as exc:
+        spawner.spawn(1889)
+    assert exc.value.status == 400
+    assert minted == [], "nothing may be minted for a session that cannot reach a model"
+    assert kubectl.calls == [], "and no Job may be created either"

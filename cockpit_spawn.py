@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import subprocess
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -163,6 +164,45 @@ def build_cockpit_config(agent_config: Any = None) -> CockpitConfig:
     )
 
 
+#: Tiers whose session runs in its own network namespace, where a loopback
+#: address means "this container" and never "the machine ollama is on".
+_ISOLATED_NETWORK_TIERS = (TIER_POD, "container")
+
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]")
+
+
+def cockpit_llm_url(config: CockpitConfig, tier: str = TIER_POD) -> str:
+    """The model endpoint a cockpit session should call, or a refusal.
+
+    The session inherits the agent's ``llm.primary.url`` so it talks to the
+    same model the investigation ran on. That inheritance is right for the
+    *model* and wrong for the *address* whenever the two run in different
+    network namespaces — which is the normal case here: the agent is
+    ``hostNetwork: true`` alongside ollama, so its URL is a loopback one, and a
+    pod that copies it resolves to itself.
+
+    Caught in production on the first real spawn (CFOP-35's own comment
+    describes a different failure of the same value). Refused at spawn rather
+    than left to fail inside the session, because the operator has already
+    attached by then and the error names ollama rather than the config.
+
+    Tiers ``host`` and ``ssh`` are exempt: those sessions run directly on the
+    machine, so loopback is correct there whenever ollama is on that host.
+    """
+    url = (config.llm_url or "").strip()
+    if not url or tier not in _ISOLATED_NETWORK_TIERS:
+        return url
+    hostname = urllib.parse.urlparse(url).hostname or ""
+    if hostname in _LOOPBACK_HOSTS:
+        raise CockpitSpawnError(
+            f"the cockpit model URL ({url}) is a loopback address, which inside a "
+            f"{tier} means the session itself — set cockpit.llm_url (or "
+            f"CFOP_COCKPIT_LLM_URL) to the model as the CLUSTER reaches it. The "
+            f"agent's own llm.primary.url is loopback because the agent is "
+            f"hostNetwork; a {tier} is not.", 400)
+    return url
+
+
 def clamp_ttl(requested: Any, default: int = DEFAULT_TTL_SECONDS) -> int:
     """Bound a caller-supplied TTL. Junk reads as 'unspecified', not as zero —
     an activeDeadlineSeconds of 0 kills the pod before the operator attaches."""
@@ -215,6 +255,10 @@ class CockpitSpawner:
         cfg = self._config
         ttl = clamp_ttl(ttl_seconds if ttl_seconds is not None else cfg.ttl_seconds,
                         cfg.ttl_seconds)
+
+        # Before anything is created or minted: a session whose model URL means
+        # "itself" attaches fine and then cannot reach a model at all.
+        cockpit_llm_url(cfg, TIER_POD)
 
         active = self._active_jobs()
 

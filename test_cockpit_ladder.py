@@ -1324,3 +1324,25 @@ def test_the_operators_own_session_is_never_the_thing_that_blocks_them():
     s = spawner(ssh, max_concurrent=2)
     assert s.spawn(1889, host="raspberrypi5", tier=TIER_HOST,
                    ttl_seconds=60)["status"] == "existing"
+
+
+def test_a_container_tier_refuses_a_loopback_model_url():
+    """A container has its own network namespace, same as a pod — the agent's
+    hostNetwork loopback URL means the container itself there too."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")))
+    minted = []
+    s = spawner(ssh, minted=minted, llm_url="http://127.0.0.1:11434")
+    with pytest.raises(CockpitSpawnError) as exc:
+        s.spawn(1889, host="raspberrypi5", tier=TIER_CONTAINER, ttl_seconds=60)
+    assert exc.value.status == 400
+    assert "CFOP_COCKPIT_LLM_URL" in str(exc.value)
+    assert minted == []
+
+
+def test_a_process_tier_accepts_a_loopback_model_url():
+    """Tiers host/ssh run directly on the machine, so loopback is correct there
+    whenever ollama is on that host — the rule is about network namespaces."""
+    ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes"), "")))
+    s = spawner(ssh, llm_url="http://localhost:11434")
+    assert s.spawn(1889, host="raspberrypi5", tier=TIER_HOST,
+                   ttl_seconds=60)["status"] == "spawned"
