@@ -1,184 +1,108 @@
 # CFOperator Deployment Guide
 
-Production is k3s + ArgoCD GitOps. **A single `git push` is the deploy path** — no rsync, no SSH, no manual `kubectl apply` for application code or manifests.
+Production is k3s + ArgoCD GitOps. **`git push` is the deploy path** — no rsync, no SSH, no manual `kubectl apply`.
 
 ## Production Layout
 
 | Workload | Manifest | Image | Port |
 |----------|----------|-------|------|
-| `cfoperator` (agent + chat UI) | [k3s/base/apps/cfoperator.yml](../../homelab-infra/k3s/base/apps/cfoperator.yml) | `ghcr.io/aachtenberg/cfoperator:main-<sha7>` | `8083` (hostNetwork) |
-| `cfoperator-event-runtime` | [k3s/base/apps/cfoperator-event-runtime.yml](../../homelab-infra/k3s/base/apps/cfoperator-event-runtime.yml) | `ghcr.io/aachtenberg/cfoperator:main-<sha7>` (same image, different `command`) | `8080` (ClusterIP) |
-| `cfoperator-mcp` (MCP facade) | cfoperator-deploy repo | same image, `command: ["python", "-m", "mcp_server"]` | `8090` (ClusterIP + hostPort) |
-| `cfoperator-bridge` (Slack bot) | cfoperator-deploy repo | same image, `command: ["python", "-m", "bridge"]`, `Recreate` strategy | — (Socket Mode, outbound only) |
-| `cfoperator-changerecord` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-changerecord` (own image, context `changerecord/`) | ClusterIP |
-| `cfoperator-executor` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-executor` (own image, context `executor/`) — a disposable Job per remediation, not a Deployment | — |
-| `cfoperator-worker` | cfoperator-deploy repo | `ghcr.io/aachtenberg/cfoperator-worker` (own image, context `worker/`) — deep-investigation worker | — |
-| `cfoperator-cockpit` | none — the agent builds the Job manifest at spawn time | `ghcr.io/aachtenberg/cfoperator-cockpit` (own image, `FROM` the worker image, built from the repo root with `cockpit/Dockerfile`) — one interactive Job per `cfassist attach --spawn` | — |
+| `cfoperator` (agent + console) | cfoperator-deploy | `cfoperator:main-<sha7>` | `8083` (hostNetwork) |
+| `cfoperator-event-runtime` | cfoperator-deploy | same image, different `command` | `8080` |
+| `cfoperator-mcp` | cfoperator-deploy | same image, `-m mcp_server` | `8090` |
+| `cfoperator-bridge` (Slack) | cfoperator-deploy | same image, `-m bridge`, `Recreate` | — (outbound) |
+| `cfoperator-changerecord` | cfoperator-deploy | `cfoperator-changerecord` | ClusterIP |
+| `cfoperator-executor` | cfoperator-deploy | `cfoperator-executor` — one Job per remediation | — |
+| `cfoperator-worker` | cfoperator-deploy | `cfoperator-worker` — deep investigation | — |
+| `cfoperator-cockpit` | none (agent builds the Job at spawn) | `cfoperator-cockpit` — one Job per `attach --spawn` | — |
 
-Both agent pods are scheduled on `headless-gpu` (k3s name) = `ubuntu-llm-01` = 10.0.0.14. Namespace: `apps`. Control plane runs `kubectl` locally — no SSH needed.
+All manifests live in the private **cfoperator-deploy** repo, which ArgoCD's standalone `cfoperator` Application syncs; the public repo holds no topology. All images are `ghcr.io/aachtenberg/…`. Namespace `apps`; both agent pods on `headless-gpu` = `ubuntu-llm-01` = 10.0.0.14. Control plane runs `kubectl` locally.
 
-The MCP and bridge Deployments reuse the agent image, so anything that produces a
-new agent tag rolls them too. See [mcp-server.md](mcp-server.md),
-[slack-bridge.md](slack-bridge.md), and [REMEDIATION.md](REMEDIATION.md) for each
-one's own configuration and secrets.
+`build-cfoperator-main.yml` builds all five images per run, each pushed as floating `:main` and immutable `:main-<sha7>`. **Only the agent tag auto-bumps**; worker/executor/changerecord/cockpit track `:main`, so wait for the build job — there is nothing to merge for them either. The cockpit build `needs:` worker — it derives from it.
 
-`build-cfoperator-main.yml` builds all five images in one run — agent, worker,
-executor, changerecord, cockpit — each pushed as both a floating `:main` and an
-immutable `:main-<sha7>`. Only the agent tag is auto-bumped on homelab-infra;
-the worker, executor, changerecord and cockpit Deployments/Jobs track `:main`,
-so after changing that code you wait for its build job rather than merging a
-bump PR. The cockpit build `needs:` the worker build, because it derives from
-that image — and because it bakes in `cfassist-go/`, that path is no longer in
-`paths-ignore`, so a CLI-only change now rebuilds all five.
+Per-workload config: [mcp-server.md](mcp-server.md), [slack-bridge.md](slack-bridge.md), [REMEDIATION.md](REMEDIATION.md).
 
-### Cockpit RBAC (a manual, one-time deploy-repo change)
+## Cockpit: one-time deploy-repo changes
 
-`cfassist attach <id> --spawn` (CFOP-35) needs two things the deploy repo does
-not have yet, both in `cfoperator-rbac.yml`:
+`cfassist attach --spawn` is inert until these land. Nothing else depends on them. The Helm chart does the same behind `cockpit.enabled` / `cockpit.ssh.secretName` — see [cockpit.md](cockpit.md).
 
-* a `cfoperator-cockpit` ServiceAccount in `apps` with a read-only ClusterRole
-  and binding, copied from `cfoperator-worker-readonly` (no exec, no write, no
-  secrets, no configmaps) — this is what the pod runs as;
-* on the existing `cfoperator-jobs` Role, `create` on `secrets` (jobs are
-  already there) — the agent writes the pod's short-lived session token to a
-  Secret the Job references. `create` only: `get` would make the launcher a way
-  to read every secret in the namespace, and the Secret is owned by the Job, so
-  garbage collection removes it without a `delete` grant.
+**Tier 1 (pod)** — `cfoperator-rbac.yml`:
 
-Until both land, the endpoint answers and `kubectl` refuses with
-`jobs is forbidden` / `secrets is forbidden` — loudly, at spawn time. The Helm
-chart expresses the same thing behind `cockpit.enabled` (see
-[cockpit.md](cockpit.md)).
+- `cfoperator-cockpit` ServiceAccount + read-only ClusterRole/binding, copied from `cfoperator-worker-readonly` (no exec, no write, no secrets).
+- On the existing `cfoperator-jobs` Role: `create` on `secrets`. **`create` only** — `get` would make the launcher a way to read every secret in the namespace; the Job owns the Secret, so GC covers deletion.
 
-### Cockpit host tiers (a second, independent deploy-repo change)
+Missing → `jobs is forbidden` / `secrets is forbidden` at spawn.
 
-Tiers 2/3 of the ladder (CFOP-36) put the session on a host that is not in the
-cluster, which the agent reaches by **ssh** — so unlike tier 1 it needs a key in
-the agent pod. That is a different grant from the RBAC above and is deliberately
-separate: one lets the agent create Jobs in its own namespace, this one gives it
-a credential to log in to machines with.
+**Tiers 2/3 (non-cluster hosts)** — agent Deployment:
 
-In `cfoperator-deploy`, on the agent Deployment:
+- Mount `cfop-forensics-ssh` at `/cockpit-ssh`, `defaultMode: 0440`. **A staging dir, not `~/.ssh`** — secret volumes are group-readable and ssh refuses such a key with a network-looking error. The agent copies to `~/.ssh` at 0600 on first use.
+- `CFOP_COCKPIT_SSH_SECRET_DIR=/cockpit-ssh`
+- `CFOP_COCKPIT_SSH_USER=<user>`
+- `CFOP_COCKPIT_HOST_AGENT_URL=http://<agent-as-the-fleet-sees-it>:8083` — **required**. `cockpit.agent_url` is cluster DNS and a Pi cannot resolve it, so host tiers 400 until this is set.
 
-* mount the existing `cfop-forensics-ssh` secret (the keypair the
-  deep-investigation worker and the node-action executor already use) at
-  `/cockpit-ssh`, `defaultMode: 0440` — **a staging directory, not `~/.ssh`**: a
-  secret volume is root-owned and group-readable, and ssh refuses a private key
-  like that with an error that reads like a network problem. The agent copies it
-  to `~/.ssh` at 0600 on first use, exactly as the executor does;
-* `CFOP_COCKPIT_SSH_SECRET_DIR=/cockpit-ssh` and `CFOP_COCKPIT_SSH_USER=<user>`;
-* `CFOP_COCKPIT_HOST_AGENT_URL=http://<agent-as-the-fleet-sees-it>:8083`.
-  **Not optional in practice.** `cockpit.agent_url` is what the *pod* calls and
-  is cluster DNS; a Pi cannot resolve it, so a host-tier session set up with it
-  would attach and then fail to fetch its own briefing. The spawn refuses
-  rather than allowing that, so without this variable tiers 2/3 answer with a
-  400 naming it.
+Missing → tier 1 still works; host tiers report "could not be probed" and fall back to a cluster pod. Host inventory comes from `infrastructure.hosts` in the agent's config — no change needed.
 
-Nothing else changes: the host inventory is already `infrastructure.hosts` in
-the config the agent reads. Until the mount lands, tier 1 keeps working and the
-host tiers fail at the probe with `Permission denied (publickey)` — which the
-ladder reports as "the affected host could not be probed" and degrades to a pod
-in the cluster rather than failing silently.
+## What the image contains
 
-The chart does the same behind `cockpit.ssh.secretName` (empty by default).
+The Dockerfile COPYs named paths, not the tree: `cfshared/`, `agent/`, `tools/`, `skills/`, `ui/`, `observability/`, `event_runtime/`, `mcp_server/`, `bridge/`, `auth/`, `scripts/`, `web_server.py`, `web_auth.py`, `cockpit_spawn.py`, `cockpit_ladder.py`.
 
-### What the image contains
+Most are imported at module load, so a missing COPY crash-loops a pod rather than degrading it — `cfshared/` (agent + event-runtime), `auth/` (agent + MCP), `web_auth.py`, `cockpit_*.py`. `scripts/create_admin.py` is the lockout recovery path ([auth.md](auth.md#locked-out--no-usable-admin)).
 
-The Dockerfile copies `cfshared/`, `agent/`, `tools/`, `skills/`, `ui/`,
-`observability/`, `event_runtime/`, `mcp_server/`, `bridge/`, `auth/`,
-`scripts/`, `web_server.py`, `web_auth.py`, `cockpit_spawn.py`, and
-`cockpit_ladder.py`. `cfshared/` holds the config
-loader that `agent/` and `event_runtime/` both import at module load, so it has
-the same all-or-nothing character as the four below. The last four matter
-operationally: `web_server.py` and
-`mcp_server/server.py` both import `auth.bootstrap` at module load, so omitting
-`auth/` crash-loops the agent and the MCP pod rather than degrading them, and
-`scripts/create_admin.py` is the lockout recovery path in
-[auth.md](auth.md#locked-out--no-usable-admin) — it has to be in the image to be
-usable. `test_dockerfile_image.py` asserts these copies stay present.
+`test_dockerfile_image.py` enforces this. **Add a `COPY` for any new top-level package.**
 
 ## How a Code Change Reaches Production
 
-Before any of this: [`.github/workflows/tests.yml`](../.github/workflows/tests.yml)
-runs the pytest suites on every pull request and on pushes to `main`. It is the
-only automated gate between a branch and an image — the build workflow does not
-run tests. See the README's "Tests & CI" section for how to run the same
-per-directory invocations locally.
+[`tests.yml`](../.github/workflows/tests.yml) runs on every PR and push to `main` — the only automated gate; the build workflow runs no tests.
 
-1. **Push to `main` on cfoperator.** This triggers [`.github/workflows/build-cfoperator-main.yml`](../.github/workflows/build-cfoperator-main.yml), which builds `ghcr.io/aachtenberg/cfoperator:main-<sha7>` for `linux/amd64` and pushes to ghcr.
-2. **Auto-bump PR opens** on homelab-infra (branch `auto/bump-cfoperator-image`), editing `k3s/overlays/production/kustomization.yml`'s image override to the new immutable tag. Same PR is updated in place if it's still open from a previous push.
-3. **Merge that PR.** ArgoCD picks it up within ~3 min (`selfHeal: true` reverts manual `kubectl edit`s).
-4. **Both pods roll** with the new image, since the production overlay's image transformer rewrites `ghcr.io/aachtenberg/cfoperator` for any container that uses that name.
+**There is nothing to merge.** Push to `main` and it deploys:
 
-```
-git push cfoperator → build workflow → ghcr image → auto-bump PR on homelab-infra
-  → merge → ArgoCD sync → both pods restart with new code + deps
-```
+1. [`build-cfoperator-main.yml`](../.github/workflows/build-cfoperator-main.yml) builds and pushes `linux/amd64` images.
+2. The `bump-deploy-repo` job commits the new `:main-<sha7>` straight to **cfoperator-deploy**'s `main` (`kustomize edit set image`).
+3. ArgoCD syncs within ~3 min (`selfHeal: true` reverts manual `kubectl edit`) and both agent pods roll.
 
-Force a sync instead of waiting for the 3-min poll:
+Total: ~5 min from push. A `v*` tag build publishes versioned images but **does not** bump the deploy repo — pointing ArgoCD at a release tag would freeze the fleet on it.
+
+Force a sync instead of waiting:
 
 ```bash
-kubectl -n argocd annotate application homelab-root \
+kubectl -n argocd annotate application cfoperator \
   argocd.argoproj.io/refresh=hard --overwrite
-kubectl -n argocd get application homelab-root  # check Sync + Health
+kubectl -n argocd get application cfoperator
 ```
+
+`cfoperator` is its own Application (`k3s/base/argocd/applications/cfoperator.yml` in homelab-infra), pointed at cfoperator-deploy — not part of `homelab-root`.
 
 ### Workflow `paths-ignore`
 
-The build workflow skips on pushes that only touch: `**.md`, `docs/**`, `benchmarks/**`, `cfassist-go/**`, `llm-gateway/**`, `grafana/**`. Pushes that ONLY touch those paths won't produce a new image — that's intentional (they don't affect what runs in the cluster), but be aware of it if you expect a new tag and none appears.
+Skipped: `**.md`, `docs/**`, `benchmarks/**`, `llm-gateway/**`, `grafana/**`. A push touching only these produces no image — intentional, but worth knowing when you expect a tag and none appears.
 
-**The rule for this list: a path may only be ignored if it is not baked into the
-image.** Ignoring a path the Dockerfile COPYs means a change to it produces no
-image, no tag bump and no rollout — the fix appears to deploy and does not, then
-lands later attributed to whatever unrelated commit finally triggered a build.
-
-Two entries broke that rule and were removed: `cfshared/**` (added before the
-package existed, then COPYed and imported at module load by both the agent and
-`event_runtime`) and `observability/**` (COPYed, imported by `agent/agent.py`).
-Both were found by review rather than by the pipeline, which is why the rule is
-now **enforced** — `test_dockerfile_image.py` cross-checks this list against the
-Dockerfile's COPY set and fails if they contradict each other. Add a path here
-only if that test still passes.
+**A path may only be ignored if the Dockerfile does not COPY it.** Otherwise the change produces no image and no rollout: the fix appears to deploy, doesn't, and lands later attributed to an unrelated commit. `cfshared/**` and `observability/**` broke this and were removed; `cfassist-go/**` left the list when the cockpit image began baking it in, so a CLI-only change now rebuilds all five. `test_dockerfile_image.py` cross-checks the list against the COPY set.
 
 ## Common Change Types
 
 | Change | What ships | What you do |
 |--------|------------|-------------|
-| Python code in `agent/`, `tools/`, `skills/`, `ui/`, `event_runtime/`, `web_server.py`, `observability/` | New image tag | Push to cfoperator/main → merge auto-bump PR on homelab-infra. |
-| `auth/`, `web_auth.py`, `scripts/` | New image tag | Same. Console auth and the `create_admin.py` recovery path ship in the agent image. |
-| `mcp_server/`, `bridge/` | New image tag | Same — both Deployments reuse the agent image, so they roll on the same bump. |
-| `worker/`, `executor/`, `changerecord/` | New sibling image tag | Same workflow, separate build job. These track the floating `:main` tag — wait for the build job to finish instead of merging a bump PR (a Job re-queued too early pulls the prior `:main`). |
-| `requirements.txt` | New image tag | Same — push to cfoperator/main. |
-| `Dockerfile` | New image tag | Same. Add a `COPY` for any new top-level package, or it will be missing at runtime. |
-| YAML manifest in homelab-infra | ArgoCD apply | Push to homelab-infra/main. Force-sync if impatient. |
-| Grafana dashboard JSON | Provisioned ConfigMap | Edit `homelab-infra/k3s/base/monitoring/files/grafana-dashboards/cfoperator-dashboard.json`, push to homelab-infra/main. |
+| `agent/`, `tools/`, `skills/`, `ui/`, `event_runtime/`, `observability/`, `web_server.py` | New agent tag | Push to main. Deploys itself. |
+| `auth/`, `web_auth.py`, `scripts/` | New agent tag | Same. |
+| `mcp_server/`, `bridge/` | New agent tag | Same — both reuse the agent image. |
+| `worker/`, `executor/`, `changerecord/`, `cockpit/`, `cfassist-go/` | New sibling tags | Same push, separate build jobs. These track `:main` — **wait for the build**, don't merge a bump PR (a Job re-queued too early pulls the prior `:main`). |
+| `requirements.txt`, `Dockerfile` | New agent tag | Same. A new top-level package needs a `COPY`. |
+| cfoperator-deploy YAML (manifests, RBAC) | ArgoCD apply | Push to cfoperator-deploy/main. |
+| homelab-infra YAML (everything else in the cluster) | ArgoCD apply | Push to homelab-infra/main. |
+| Grafana dashboard | Provisioned ConfigMap | Edit `k3s/base/monitoring/files/grafana-dashboards/`, push. |
 | Secret value | Re-sealed SealedSecret | Edit `homelab-infra/secrets/.env.secrets`, run `./scripts/seal-secrets.sh`, push. |
-
-## Before Manually Bumping an Image Tag
-
-**Check first whether the auto-bump PR is already open:**
-
-```bash
-gh pr list --repo aachtenberg/homelab-infra --search "cfoperator in:title" --state open
-```
-
-If a `chore(deploy): bump cfoperator to main-<sha>` PR is open, it's the latest available image. Merge it instead of writing manifest edits by hand.
 
 ## Verification
 
 ```bash
-# Pods
 kubectl get pods -n apps -l 'app.kubernetes.io/name in (cfoperator,cfoperator-event-runtime)'
 
 # What image is actually running
 kubectl get deploy -n apps cfoperator cfoperator-event-runtime \
   -o jsonpath='{range .items[*]}{.metadata.name}{": "}{.spec.template.spec.containers[*].image}{"\n"}{end}'
 
-# Logs
 kubectl logs -n apps deploy/cfoperator -f
-kubectl logs -n apps deploy/cfoperator-event-runtime -f
 
-# event-runtime endpoints (cluster DNS; or via pod IP if hostNetwork)
+# event-runtime (via pod IP; the agent is hostNetwork)
 pod_ip=$(kubectl get pod -n apps -l app.kubernetes.io/name=cfoperator-event-runtime \
   -o jsonpath='{.items[0].status.podIP}')
 curl -fsS "http://${pod_ip}:8080/health"
@@ -187,40 +111,24 @@ curl -fsS "http://${pod_ip}:8080/metrics" | grep cfoperator_event_runtime
 
 ## Console Auth
 
-The `:8083` console authenticates against `auth_users` / `auth_api_tokens` in
-the knowledge base database: real accounts with `admin` / `member` roles, and
-individually revocable API tokens carrying `read` ⊂ `investigate` ⊂ `remediate`
-scopes. Manage both at `/users` and `/tokens`.
+`:8083` authenticates against `auth_users` / `auth_api_tokens` in the KB database — `admin` / `member` roles, revocable tokens with `read` ⊂ `investigate` ⊂ `remediate`. Managed at `/admin` and `/account`.
 
-The tables are created on start, and the first admin is seeded from the existing
-`CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` sealed secret — so shipping this
-does not lock anyone out and does not require a coordinated secret change.
+Tables are created on start; the first admin seeds from the existing `CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` sealed secret, so shipping it locks nobody out.
 
-The shared `CFOP_API_TOKEN` was **retired 2026-08-09**. `event_runtime`, `mcp`
-and `bridge` each hold their own database token, mounted *as* the env var
-`CFOP_API_TOKEN`, so callers are unchanged and revoking one breaks only that
-service. There is no plain `CFOP_API_TOKEN` key in `cfoperator-secrets` any
-more, and the agent no longer mounts one — with it unset, `web_auth.py` skips
-the legacy branch entirely. Do not re-add it.
+**The shared `CFOP_API_TOKEN` was retired 2026-08-09. Do not re-add it.** event-runtime, MCP and bridge each hold their own database token, mounted *as* that env var, so callers are unchanged and revoking one breaks only that service.
 
-With no auth database reachable, the console falls back to the legacy
-environment credentials. A database that is configured but *unreachable* returns
-503 on every non-exempt route — never 401, never open.
+No auth database → legacy env credentials. Configured but unreachable → 503 on every non-exempt route; never 401, never open.
 
-See [docs/auth.md](auth.md) for the roles table, the rollout order, and the
-lockout / token-rotation runbooks.
+Roles, rollout order and lockout runbooks: [auth.md](auth.md).
 
-## Local / Non-Production Modes
+## Local / Non-Production
 
 ```bash
-# Docker Compose for local agent development
-docker compose up -d
-
-# Direct event_runtime launch
-python3 -m event_runtime --host 0.0.0.0 --port 8080
+docker compose up -d                                    # local agent
+python3 -m event_runtime --host 0.0.0.0 --port 8080     # event runtime only
 ```
 
-See [docs/event-runtime-quickstart.md](event-runtime-quickstart.md) for local runtime usage.
+See [event-runtime-quickstart.md](event-runtime-quickstart.md).
 
 ## Prerequisites
 
@@ -231,10 +139,10 @@ See [docs/event-runtime-quickstart.md](event-runtime-quickstart.md) for local ru
 | `homelab-infra/secrets/.env.secrets` | source of truth for cluster secrets |
 | `~/.ssh/id_rsa` | SSH access for fleet operations |
 
-| Infra service | Default port | Required? |
-|---------------|--------------|-----------|
+| Infra service | Port | Required? |
+|---------------|------|-----------|
 | PostgreSQL | 5432 | Yes |
 | Prometheus | 9090 | Yes |
 | Loki | 3100 | Yes |
+| Ollama | 11434 | Yes (or a cloud LLM) |
 | Alertmanager | 9093 | Optional |
-| Ollama | 11434 | Yes (or configure cloud LLM) |
