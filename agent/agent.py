@@ -390,6 +390,7 @@ class CFOperator:
         self.last_drain = 0   # remediation drainer tick
         self.last_verify = 0   # remediation PR-reconcile tick
         self.last_metrics = 0  # remediation gauge refresh tick
+        self.last_cockpit_reap = 0  # cockpit janitor tick (CFOP-36)
         self.start_time = time.time()
         # Initialized to start_time so the first heartbeat fires after the
         # configured interval rather than immediately after the bootstrap
@@ -1857,9 +1858,46 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     self._drain_remediation_queue(); self.last_drain = now
                 if now - self.last_verify > self._get_verify_interval():
                     self._reconcile_remediation_prs(); self.last_verify = now
+                if now - self.last_cockpit_reap > self._get_cockpit_reap_interval():
+                    self._reap_cockpits(); self.last_cockpit_reap = now
             except Exception:
                 logger.exception("Remediation worker tick failed")
             time.sleep(10)
+
+    def _get_cockpit_reap_interval(self) -> int:
+        """Cockpit janitor interval: DB setting → config.yaml → default 900."""
+        try:
+            val = self.kb.get_setting('cockpit_reap_interval', '')
+            if val:
+                return max(60, min(86400, int(val)))
+        except Exception as e:
+            logger.debug(f"Invalid cockpit_reap_interval setting, using default: {e}")
+        cockpit = self.config.get('cockpit', {}) if isinstance(self.config, dict) else {}
+        return int(cockpit.get('janitor_interval_seconds', 900) or 900)
+
+    def _reap_cockpits(self) -> int:
+        """Sweep hosts for cockpit sessions that outlived their TTL (CFOP-36).
+
+        Kubernetes reaps tier 1 for nothing — activeDeadlineSeconds plus
+        ownership GC. A container or a /tmp directory on a Pi has no such
+        machinery, and the sessions that leak are exactly the ones nobody is
+        watching: the laptop that closed, the VPN that dropped. It runs on this
+        thread rather than the OODA loop for the same reason the drainer does —
+        a proactive sweep is minutes long and would starve it.
+
+        Silently a no-op when nothing is configured: the sweep is over
+        ``infrastructure.hosts``, which a cluster-only install does not have.
+        """
+        if not self.web_server:
+            return 0
+        try:
+            reaped = self.web_server.reap_cockpits()
+        except Exception as e:
+            logger.warning(f"Cockpit janitor tick failed: {e}")
+            return 0
+        if reaped:
+            logger.info(f"Cockpit janitor reaped {reaped} expired session(s)")
+        return reaped
 
     def _reap_remediations(self) -> int:
         """Recover remediations whose executor lease expired (gated, safe).

@@ -3894,6 +3894,22 @@ class KnowledgeBase:
             rows = q.order_by(RemediationQueue.created_at.desc()).limit(limit).all()
             return [remediation_row_dict(r) for r in rows]
 
+    def list_remediations_for_investigation(self, investigation_id: int,
+                                            limit: int = 10) -> List[Dict[str, Any]]:
+        """Remediation rows fed from one investigation, newest first.
+
+        Their ``host_id`` is the only place the *affected* host survives in the
+        database: it comes from the classified finding, whereas
+        ``Investigation.host_id`` is the area-of-responsibility field naming the
+        agent that ran the investigation. The cockpit ladder needs the former.
+        """
+        with self.session_scope() as session:
+            rows = (session.query(RemediationQueue)
+                    .filter_by(investigation_id=investigation_id)
+                    .order_by(RemediationQueue.created_at.desc())
+                    .limit(limit).all())
+            return [remediation_row_dict(r) for r in rows]
+
     def get_remediation(self, remediation_id: int) -> Optional[Dict[str, Any]]:
         """Fetch a single remediation row (full detail), or None."""
         with self.session_scope() as session:

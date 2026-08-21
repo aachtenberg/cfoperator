@@ -31,7 +31,12 @@ from auth.models import EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER
 # calling" is how the two answers start disagreeing.
 from auth.routes import _actor, _caller_user_id, _effective_role, build_auth_blueprint
 from auth.store import AuthError
-from cockpit_spawn import CockpitSpawnError, CockpitSpawner, build_cockpit_config, clamp_ttl
+from cockpit_spawn import (
+    TIER_POD, CockpitSpawnError, CockpitSpawner, build_cockpit_config, clamp_ttl)
+# Tiers 2/3 of the same ladder: most of this fleet is not in the cluster, and
+# the cockpit contract has to hold on a bare Pi exactly as it does in a pod.
+from cockpit_ladder import (
+    TIER_AUTO, HostCockpitSpawner, build_ladder_config, choose_tier, resolve_target_host)
 
 # WebSocket support - disabled because Waitress (WSGI) doesn't support it
 # The UI uses HTTP polling via /api/chat instead
@@ -1106,16 +1111,16 @@ class WebServer:
             """Operator console: recent investigations + conclusions."""
             return send_from_directory('ui', 'investigations.html')
 
-        # ---- cockpit (CFOP-35) ------------------------------------------
-        # Spawn the ephemeral cockpit Job for an investigation. Server-side
-        # rather than "cfassist creates the Job" because the console button
+        # ---- cockpit (CFOP-35, ladder CFOP-36) --------------------------
+        # Spawn the ephemeral cockpit for an investigation. Server-side rather
+        # than "cfassist creates the workload" because the console button
         # (CFOP-59) needs this same path, and because the guards — dedupe,
         # concurrency cap, token mint, audit — must be central rather than
         # re-implemented in every client that grows a spawn button.
         #
         # Admin-gated: this creates a workload and mints a credential. It hands
-        # out no shell of its own — the pod's identity is read-only and the
-        # interactive attach is the operator's own kubectl.
+        # out no shell of its own at any tier — the interactive attach is always
+        # the operator's own kubectl or ssh.
         @self.app.route('/api/cockpit/spawn', methods=['POST'])
         @require_role(ROLE_ADMIN)
         def spawn_cockpit():
@@ -1132,18 +1137,28 @@ class WebServer:
                 return jsonify({'error': str(e)}), 500
             if not inv:
                 # A cockpit exists to work an investigation. Spawning one for an
-                # id that does not exist would produce a pod whose first act is
-                # to fail fetching its own briefing.
+                # id that does not exist would produce a session whose first act
+                # is to fail fetching its own briefing.
                 return jsonify({'error': 'not found'}), 404
 
             ttl = clamp_ttl(body.get('ttl_seconds'),
                             self._cockpit_spawner().config.ttl_seconds)
             try:
-                result = self._cockpit_spawner().spawn(
-                    investigation_id,
-                    host=str(inv.get('host_id') or ''),
-                    ttl_seconds=ttl,
-                )
+                host, provenance = self._resolve_cockpit_host(investigation_id, inv,
+                                                              str(body.get('host') or ''))
+                tier, tier_note, node = self._choose_cockpit_tier(
+                    host, str(body.get('tier') or TIER_AUTO))
+                logger.info("cockpit for #%s: host=%r (%s) -> %s",
+                            investigation_id, host, provenance, tier_note)
+
+                if tier == TIER_POD:
+                    # The node lookup is handed on rather than repeated: two
+                    # answers to "is this host in the cluster" could differ.
+                    result = self._cockpit_spawner().spawn(
+                        investigation_id, host=host, ttl_seconds=ttl, node=node)
+                else:
+                    result = self._cockpit_ladder().spawn(
+                        investigation_id, host=host, tier=tier, ttl_seconds=ttl)
             except CockpitSpawnError as e:
                 logger.warning(f"cockpit spawn refused for #{investigation_id}: {e}")
                 return jsonify({'error': str(e)}), e.status
@@ -1152,6 +1167,8 @@ class WebServer:
                              exc_info=True)
                 return jsonify({'error': str(e)}), 500
 
+            result['host_provenance'] = provenance
+            result['tier_note'] = tier_note
             return jsonify(result), 200 if result.get('status') == 'existing' else 201
 
         @self.app.route('/api/kb/search')
@@ -1429,7 +1446,81 @@ class WebServer:
             self._cockpit = spawner
         return spawner
 
-    def _mint_cockpit_token(self, investigation_id: int, ttl_seconds: int) -> Dict[str, Any]:
+    def _cockpit_ladder(self) -> HostCockpitSpawner:
+        """Tiers 2/3 of the cockpit ladder, built once from the agent's config.
+
+        Lazy for the same reason the tier-1 spawner is: an install with no SSH
+        inventory never builds one, and a test can substitute a spawner with an
+        injected ssh runner before the first call.
+        """
+        ladder = getattr(self, '_ladder', None)
+        if ladder is None:
+            ladder = HostCockpitSpawner(
+                build_ladder_config(getattr(self.operator, 'config', None),
+                                    self._cockpit_spawner().config),
+                token_minter=self._mint_cockpit_token,
+                token_revoker=self._revoke_cockpit_token,
+            )
+            self._ladder = ladder
+        return ladder
+
+    def _resolve_cockpit_host(self, investigation_id: int, inv: Dict[str, Any],
+                              requested: str) -> tuple:
+        """Which machine the incident is on.
+
+        Explicitly *not* ``inv['host_id']`` — see ``resolve_target_host``, which
+        documents why that field reads like the answer and is not one.
+        """
+        try:
+            rows = self.operator.kb.list_remediations_for_investigation(investigation_id)
+        except Exception as e:
+            # A queue that cannot be read costs precision, not the spawn: the
+            # trigger text and the caller's own --host are still there.
+            logger.warning(f"cockpit: remediation lookup for #{investigation_id} failed: {e}")
+            rows = []
+        return resolve_target_host(
+            requested=requested,
+            remediation_hosts=[str(r.get('host_id') or '') for r in rows],
+            investigation=inv,
+            known_hosts=self._cockpit_ladder().known_host_names(),
+        )
+
+    def _choose_cockpit_tier(self, host: str, requested: str) -> tuple:
+        """Ladder decision. Returns ``(tier, note, node)`` — the node lookup
+        comes back with it so the tier-1 spawn can reuse it instead of asking
+        the cluster the same question a second time.
+
+        The ssh probe only runs when it can change the answer: a host that is a
+        schedulable cluster node is tier 1 whatever else it has installed, and
+        probing it would be a round trip spent confirming something already
+        decided.
+        """
+        ladder = self._cockpit_ladder()
+        node = self._cockpit_spawner().get_node(host) if host else None
+        caps = None
+        if host and node is None and host in ladder.config.hosts:
+            caps = ladder.probe(host)
+        tier, note = choose_tier(caps, requested=requested,
+                                 is_cluster_node=node is not None,
+                                 has_host=bool(host), allow_sudo=ladder.config.allow_sudo)
+        return tier, note, node
+
+    def reap_cockpits(self) -> int:
+        """Janitor entry point for the agent's worker loop (CFOP-36).
+
+        Kubernetes reaps tier 1 for free (activeDeadlineSeconds plus ownership
+        GC); nothing reaps a container or a /tmp directory on a Pi, and the
+        session that leaked is by definition the one whose operator's laptop
+        went away. Returns how many artifacts were removed.
+        """
+        try:
+            return len(self._cockpit_ladder().reap())
+        except Exception as e:
+            logger.warning(f"cockpit janitor sweep failed: {e}")
+            return 0
+
+    def _mint_cockpit_token(self, investigation_id: int, ttl_seconds: int, *,
+                            tier: str = TIER_POD, host: str = "") -> Dict[str, Any]:
         """Mint the pod's credential through the CFOP-32 session-token path.
 
         Same store call, same role ceiling and same audit event as
@@ -1463,7 +1554,7 @@ class WebServer:
                      source_ip=request.remote_addr, token_id=row['id'],
                      label=row['label'], scopes=row['scopes'],
                      investigation_id=investigation_id, ttl_seconds=ttl_seconds,
-                     cockpit=True)
+                     cockpit=True, tier=tier, host=host)
         return {'id': row['id'], 'prefix': row['token_prefix'], 'secret': secret}
 
     def _revoke_cockpit_token(self, token_id: int) -> None:

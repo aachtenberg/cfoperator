@@ -196,16 +196,37 @@ def test_the_spawn_path_matches_the_route_the_agent_registers():
         f"cfassist POSTs {go_path} but web_server.py registers no such POST route")
 
 
-def test_the_cockpit_terminal_is_the_operators_own_kubectl():
+def test_the_cockpit_terminal_is_the_operators_own_binary():
     """No service identity in this system holds pods/exec or pods/attach, and
-    tier 1 deliberately does not add one: the operator's laptop already has
-    cluster credentials. If the attach ever moves server-side (the CFOP-59
-    console drawer), that RBAC decision has to be made deliberately — and this
-    test is what makes moving it a conscious act rather than a refactor."""
+    the cockpit deliberately does not add one at any tier: the operator's
+    laptop already has cluster and ssh credentials. If the attach ever moves
+    server-side (the CFOP-59 console drawer), that RBAC decision has to be made
+    deliberately — and this test is what makes moving it a conscious act rather
+    than a refactor.
+
+    The tier-1 argv moved to the server when the ladder made every tier answer
+    in one shape (CFOP-36), so the guard follows it. What did not move is the
+    part that matters: the client runs argv the agent sent, on the operator's
+    machine, and the agent holds no way to open a terminal itself.
+    """
     source = GO_SPAWN_CMD.read_text()
     assert 'kubectlBinary = "kubectl"' in source, (
-        "the cockpit TTY is no longer the operator's own kubectl")
-    assert '"attach", "-it"' in source, "the interactive attach argv is gone"
+        "the cockpit readiness poll is no longer the operator's own kubectl")
+    assert "exec.Command(argv[0], argv[1:]...)" in source, (
+        "the attach no longer execs the returned argv directly — a command "
+        "string through a shell would make a confused agent a local-execution "
+        "primitive on the operator's machine")
+
+    spawner = (REPO_ROOT / "cockpit_spawn.py").read_text()
+    assert '"kubectl", "attach", "-it"' in spawner, (
+        "tier 1's attach argv is gone from the server that now answers with it")
+
+    rbac = (REPO_ROOT / "charts" / "cfoperator" / "templates" / "rbac.yaml").read_text()
+    for subresource in ("pods/exec", "pods/attach"):
+        assert subresource not in rbac, (
+            f"{subresource} appeared in the chart: some service identity can now "
+            "open a shell. That is CFOP-59's decision to make explicitly, not a "
+            "side effect of an RBAC edit")
 
 
 def test_the_spawn_client_cannot_be_bent_into_another_call():
@@ -218,3 +239,117 @@ def test_the_spawn_client_cannot_be_bent_into_another_call():
     for forbidden in ("MethodPut", "MethodPatch", "MethodDelete"):
         assert f"http.{forbidden}," not in source, (
             f"{forbidden} appears in the spawn transport; it may only POST its own path")
+
+
+# ---- the ladder's how-to (CFOP-36) ------------------------------------------
+#
+# docs/cockpit.md §5 is a how-to: it tells an operator to run specific commands
+# and to expect specific error text. A doc that lies mid-incident is worse than
+# no doc, and every one of these strings is produced by code that can be edited
+# without anyone opening the doc. So the doc is a contract too.
+
+COCKPIT_DOC = REPO_ROOT / "docs" / "cockpit.md"
+LADDER = REPO_ROOT / "cockpit_ladder.py"
+
+
+def test_the_docs_label_selectors_are_the_labels_the_code_writes():
+    """The doc tells you to find your sessions with
+    `docker ps --filter label=cfop.dev/role=cockpit` and
+    `kubectl get jobs -l cfop.dev/role=cockpit`. Rename the label and those
+    commands silently return nothing — which reads as "nothing is running",
+    the one answer a janitor doc must never give wrongly."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from cockpit_spawn import JOB_ROLE_LABEL, JOB_ROLE_VALUE
+
+    doc = COCKPIT_DOC.read_text(encoding="utf-8")
+    selector = f"{JOB_ROLE_LABEL}={JOB_ROLE_VALUE}"
+    assert f"docker ps --filter label={selector}" in doc
+    assert f"kubectl get jobs -n apps -l {selector}" in doc
+
+
+def test_the_docs_session_naming_is_the_naming_the_code_uses():
+    """"Every artifact is named cfop-cockpit-<id>" is the promise the manual
+    cleanup commands in the doc rest on."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from cockpit_ladder import session_name
+
+    doc = COCKPIT_DOC.read_text(encoding="utf-8")
+    assert session_name(1889) == "cfop-cockpit-1889"
+    assert "/tmp/cfop-cockpit-*" in doc
+    assert "cfop-cockpit-<investigation-id>" in doc
+
+
+def test_the_troubleshooting_table_quotes_errors_the_code_can_produce():
+    """Each row of "When it does not work" is keyed on text the operator sees.
+    Reword a message without the doc and the row becomes unfindable exactly
+    when someone is searching for it."""
+    doc = COCKPIT_DOC.read_text(encoding="utf-8")
+    ladder = LADDER.read_text(encoding="utf-8")
+    spawn = (REPO_ROOT / "cockpit_spawn.py").read_text(encoding="utf-8")
+    go_spawn = GO_SPAWN_CLIENT.read_text(encoding="utf-8")
+
+    for fragment, source, where in [
+        ("is not in infrastructure.hosts", ladder, "cockpit_ladder"),
+        ("the affected host could not be probed", ladder, "cockpit_ladder"),
+        ("was requested but is not available", ladder, "cockpit_ladder"),
+        ("neither docker nor podman is installed", ladder, "cockpit_ladder"),
+        ("is the release tagged?", ladder, "cockpit_ladder"),
+        ("cockpit concurrency cap reached", spawn, "cockpit_spawn"),
+        ("spawning a cockpit is admin-only", go_spawn, "the Go spawn client"),
+    ]:
+        assert fragment in doc, f"docs/cockpit.md no longer documents {fragment!r}"
+        assert fragment in source, (
+            f"{where} no longer produces {fragment!r}, but docs/cockpit.md still "
+            "tells operators to look for it")
+
+
+def test_the_documented_console_setting_is_the_one_the_agent_reads():
+    """The doc says the janitor interval is changeable live from the console.
+    That is only true while the agent reads this exact setting key."""
+    doc = COCKPIT_DOC.read_text(encoding="utf-8")
+    agent = (REPO_ROOT / "agent" / "agent.py").read_text(encoding="utf-8")
+    assert "cockpit_reap_interval" in doc
+    assert "get_setting('cockpit_reap_interval'" in agent
+
+
+def test_the_documented_tier_names_are_the_ones_the_flag_accepts():
+    """`--tier pod|container|host|ssh` is copied out of the doc and typed."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT))
+    from cockpit_ladder import VALID_TIERS
+
+    doc = COCKPIT_DOC.read_text(encoding="utf-8")
+    assert "--tier pod|container|host|ssh" in doc
+    for tier in ("pod", "container", "host", "ssh"):
+        assert tier in VALID_TIERS
+    help_text = GO_ATTACH_CMD.read_text(encoding="utf-8")
+    assert "auto|pod|container|host|ssh" in help_text, (
+        "the --tier flag's own help no longer offers what the doc documents")
+
+
+def test_the_documented_spawn_flags_exist_on_the_command():
+    """The how-to tells operators to type these. A flag documented but never
+    registered fails with "unknown flag" at the worst possible moment, and the
+    doc and the CLI ship separately."""
+    help_text = GO_ATTACH_CMD.read_text(encoding="utf-8")
+    doc = COCKPIT_DOC.read_text(encoding="utf-8")
+    for flag in ("spawn", "tier", "host", "session-ttl"):
+        assert f'"{flag}"' in help_text, f"attach no longer registers --{flag}"
+        assert f"--{flag}" in doc, f"docs/cockpit.md no longer mentions --{flag}"
+
+    # The *request payload* specifically, not the file: `"host"` also appears
+    # as a struct tag on the response, so a whole-file grep passes even when
+    # the field has been dropped from the wire. Scoped to the marshalled map.
+    client = GO_SPAWN_CLIENT.read_text(encoding="utf-8")
+    payload = re.search(r"json\.Marshal\(map\[string\]any\{(.*?)\n\t\}\)",
+                        client, re.DOTALL)
+    assert payload, "the spawn request payload is no longer a marshalled map literal"
+    for field in ('"tier"', '"host"', '"investigation_id"', '"ttl_seconds"'):
+        assert field in payload.group(1), (
+            f"the spawn request no longer carries {field}; the flag would be "
+            "accepted on the command line and silently dropped on the wire")

@@ -412,12 +412,12 @@ func TestSwapSessionTokenRestoresAnUnsetEnvToUnset(t *testing.T) {
 	}
 }
 
-// --- cockpit spawn (CFOP-35) --------------------------------------------------
+// --- cockpit spawn (CFOP-35, ladder CFOP-36) ---------------------------------
 
-// stubKubectl replaces both kubectl hooks and returns the recorded argv of the
-// interactive call. Nothing in these tests may shell out: CI has no cluster,
-// and a test that silently ran the real kubectl would be asserting the runner's
-// environment rather than this code.
+// stubKubectl replaces the kubectl poll and the attach hook, and returns the
+// recorded argv of each. Nothing in these tests may shell out: CI has no
+// cluster and no fleet, and a test that silently ran the real kubectl (or ssh)
+// would be asserting the runner's environment rather than this code.
 func stubKubectl(t *testing.T, phase string) *[][]string {
 	t.Helper()
 	// attach scaffolds ~/.cfassist before it does anything else (CFOP-63), and
@@ -425,20 +425,20 @@ func stubKubectl(t *testing.T, phase string) *[][]string {
 	// into the developer's real config directory.
 	t.Setenv("HOME", t.TempDir())
 	calls := &[][]string{}
-	origCapture, origInteractive := runKubectlCapture, runKubectlInteractive
+	origCapture, origInteractive := runKubectlCapture, runAttachInteractive
 	origInterval, origTimeout := spawnPollInterval, spawnReadyTimeout
 	spawnReadyTimeout = 50 * time.Millisecond
 	runKubectlCapture = func(args ...string) (string, error) {
 		*calls = append(*calls, append([]string{"capture"}, args...))
 		return phase, nil
 	}
-	runKubectlInteractive = func(args ...string) error {
-		*calls = append(*calls, append([]string{"interactive"}, args...))
+	runAttachInteractive = func(argv ...string) error {
+		*calls = append(*calls, append([]string{"interactive"}, argv...))
 		return nil
 	}
 	spawnPollInterval = time.Millisecond
 	t.Cleanup(func() {
-		runKubectlCapture, runKubectlInteractive = origCapture, origInteractive
+		runKubectlCapture, runAttachInteractive = origCapture, origInteractive
 		spawnPollInterval, spawnReadyTimeout = origInterval, origTimeout
 		flagAttachSpawn, flagAttachPrint = false, false
 	})
@@ -457,14 +457,17 @@ func spawnStubAgent(t *testing.T, seen *[]*http.Request) *httptest.Server {
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{
 			"status":           "spawned",
+			"tier":             cfoperator.TierPod,
 			"job_name":         "cfop-cockpit-1889-010203",
 			"namespace":        "apps",
 			"investigation_id": 1889,
 			"pod_selector":     "cfop-cockpit=1889",
-			"attach_command":   "kubectl attach -it -n apps job/cfop-cockpit-1889-010203",
-			"ttl_seconds":      14400,
-			"token_prefix":     "cfop_abcd",
-			"placement":        map[string]any{"node": "raspberrypi4", "note": "pinned to node raspberrypi4"},
+			"attach_argv": []string{"kubectl", "attach", "-it", "-n", "apps",
+				"job/cfop-cockpit-1889-010203"},
+			"attach_command": "kubectl attach -it -n apps job/cfop-cockpit-1889-010203",
+			"ttl_seconds":    14400,
+			"token_prefix":   "cfop_abcd",
+			"placement":      map[string]any{"node": "raspberrypi4", "note": "pinned to node raspberrypi4"},
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -511,7 +514,9 @@ func TestSpawnRoutesThroughTheEndpointThenTheOperatorsKubectl(t *testing.T) {
 	if attach == nil {
 		t.Fatal("no interactive kubectl call: nothing attached the operator to the cockpit")
 	}
-	want := []string{"attach", "-it", "-n", "apps", "job/cfop-cockpit-1889-010203"}
+	// The whole argv including argv[0]: the client runs what the agent sent,
+	// and the binary is part of that answer now that ssh is also a possibility.
+	want := []string{"kubectl", "attach", "-it", "-n", "apps", "job/cfop-cockpit-1889-010203"}
 	if strings.Join(attach, " ") != strings.Join(want, " ") {
 		t.Errorf("attach argv = %v, want %v", attach, want)
 	}
@@ -693,5 +698,191 @@ func TestWaitForCockpitPrefersARunningPodOverATerminalOne(t *testing.T) {
 		Namespace: "apps", JobName: "j", PodSelector: "cfop-cockpit=1889",
 	}); err != nil {
 		t.Fatalf("a Running pod should be attached to: %v", err)
+	}
+}
+
+// --- the ladder, client side (CFOP-36) ---------------------------------------
+
+// hostTierStubAgent answers as the agent does for a bare host: no namespace, no
+// Job, and an ssh argv instead of a kubectl one.
+func hostTierStubAgent(t *testing.T, tier string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":           "spawned",
+			"tier":             tier,
+			"session_name":     "cfop-cockpit-1889",
+			"host":             "raspberrypi5",
+			"investigation_id": 1889,
+			"attach_argv": []string{"ssh", "-t", "sre@10.0.0.15",
+				"/tmp/cfop-cockpit-1889/run"},
+			"attach_command":  "ssh -t sre@10.0.0.15 /tmp/cfop-cockpit-1889/run",
+			"ttl_seconds":     14400,
+			"token_prefix":    "cfop_abcd",
+			"host_provenance": "from the remediation queued off this investigation",
+			"placement": map[string]any{"node": "raspberrypi5",
+				"note": "process on raspberrypi5 — user transient timer expires it in 14400s"},
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestSpawnOnABareHostAttachesOverSSHAndNeverPollsKubectl is the ladder's whole
+// client-side claim: the client does not know what a tier is made of. It runs
+// the argv the agent sent, and it must not run the tier-1 readiness poll — there
+// is no pod to become Running, so polling would burn the timeout and then
+// report a cockpit that ended before it started.
+func TestSpawnOnABareHostAttachesOverSSHAndNeverPollsKubectl(t *testing.T) {
+	srv := hostTierStubAgent(t, cfoperator.TierHost)
+	calls := stubKubectl(t, "Running")
+
+	t.Setenv(cfoperator.EnvAgentURL, srv.URL)
+	t.Setenv(cfoperator.EnvAPIToken, "test-token")
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(cfgPath, []byte("llm:\n  provider: ollama\n"), 0o644)
+
+	root := newTestRoot()
+	root.SetOut(io.Discard)
+	root.SetArgs([]string{"attach", "1889", "--spawn", "--config", cfgPath})
+	out := captureStdout(t, func() {
+		if err := root.Execute(); err != nil {
+			t.Fatalf("attach --spawn failed: %v", err)
+		}
+	})
+
+	for _, c := range *calls {
+		if c[0] == "capture" {
+			t.Errorf("a non-pod tier must not poll kubectl for a pod phase, got %v", c)
+		}
+	}
+	if len(*calls) != 1 || (*calls)[0][0] != "interactive" {
+		t.Fatalf("expected exactly one interactive attach, got %v", *calls)
+	}
+	want := []string{"ssh", "-t", "sre@10.0.0.15", "/tmp/cfop-cockpit-1889/run"}
+	if strings.Join((*calls)[0][1:], " ") != strings.Join(want, " ") {
+		t.Errorf("attach argv = %v, want %v", (*calls)[0][1:], want)
+	}
+	// Honest degradation is only honest if it is said out loud: at this tier
+	// there is nothing between the session and the host.
+	if !strings.Contains(out, "no isolation") {
+		t.Errorf("a host-tier spawn must say it has no isolation; output was:\n%s", out)
+	}
+	if !strings.Contains(out, "raspberrypi5") {
+		t.Errorf("the operator must be told which box they landed on; output was:\n%s", out)
+	}
+	if !strings.Contains(out, "from the remediation") {
+		t.Errorf("the operator must be told how that box was chosen; output was:\n%s", out)
+	}
+}
+
+// TestTierFlagReachesTheAgent: --tier is the operator's override, and the
+// *server* decides whether it is possible. A client that resolved it locally
+// would have to know the fleet's capabilities, which is the thing the probe
+// exists to avoid.
+func TestTierFlagReachesTheAgent(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "spawned", "tier": cfoperator.TierContainer,
+			"session_name": "cfop-cockpit-1889", "host": "ubuntu-llm-01",
+			"attach_argv":    []string{"ssh", "-t", "sre@10.0.0.20", "docker", "attach", "cfop-cockpit-1889"},
+			"attach_command": "ssh -t sre@10.0.0.20 docker attach cfop-cockpit-1889",
+			"placement":      map[string]any{"node": "ubuntu-llm-01", "note": "docker container"},
+		})
+	}))
+	defer srv.Close()
+	stubKubectl(t, "Running")
+
+	t.Setenv(cfoperator.EnvAgentURL, srv.URL)
+	t.Setenv(cfoperator.EnvAPIToken, "test-token")
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(cfgPath, []byte("llm:\n  provider: ollama\n"), 0o644)
+
+	root := newTestRoot()
+	root.SetOut(io.Discard)
+	root.SetArgs([]string{"attach", "1889", "--spawn", "--tier", "container", "--config", cfgPath})
+	captureStdout(t, func() {
+		if err := root.Execute(); err != nil {
+			t.Fatalf("attach --spawn --tier container failed: %v", err)
+		}
+	})
+
+	if body["tier"] != cfoperator.TierContainer {
+		t.Errorf("tier sent = %v, want %q", body["tier"], cfoperator.TierContainer)
+	}
+}
+
+// TestSpawnOnlyFlagsWithoutSpawnAreRefused: --tier picks the runtime a --spawn
+// lands in and --host picks the machine. A plain attach runs the session on
+// this laptop, so neither has anything to act on — and silently ignoring them
+// would let someone believe they had asked for a container boundary, or for a
+// different box, and got it.
+func TestSpawnOnlyFlagsWithoutSpawnAreRefused(t *testing.T) {
+	for flag, value := range map[string]string{"tier": "container", "host": "raspberrypi5"} {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv(cfoperator.EnvAgentURL, "http://127.0.0.1:1")
+		cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+		os.WriteFile(cfgPath, []byte("llm:\n  provider: ollama\n"), 0o644)
+
+		root := newTestRoot()
+		root.SetOut(io.Discard)
+		root.SetErr(io.Discard)
+		root.SetArgs([]string{"attach", "1889", "--" + flag, value, "--config", cfgPath})
+
+		err := root.Execute()
+		if err == nil {
+			t.Fatalf("--%s without --spawn should be refused, not silently ignored", flag)
+		}
+		if !strings.Contains(err.Error(), "--"+flag) || !strings.Contains(err.Error(), "--spawn") {
+			t.Errorf("the --%s error should name both flags, got %v", flag, err)
+		}
+	}
+}
+
+// TestHostOverrideReachesTheAgent: resolution is a heuristic on the server, so
+// the override has to travel rather than be resolved here — this client has no
+// idea what the fleet is called.
+func TestHostOverrideReachesTheAgent(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"status": "spawned", "tier": cfoperator.TierSSH,
+			"session_name": "cfop-cockpit-1889", "host": "raspberrypi5",
+			"attach_argv":     []string{"ssh", "-t", "sre@10.0.0.15", "/tmp/cfop-cockpit-1889/run"},
+			"attach_command":  "ssh -t sre@10.0.0.15 /tmp/cfop-cockpit-1889/run",
+			"host_provenance": "requested by the caller",
+			"placement":       map[string]any{"node": "raspberrypi5", "note": "process on raspberrypi5"},
+		})
+	}))
+	defer srv.Close()
+	stubKubectl(t, "Running")
+
+	t.Setenv(cfoperator.EnvAgentURL, srv.URL)
+	t.Setenv(cfoperator.EnvAPIToken, "test-token")
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	os.WriteFile(cfgPath, []byte("llm:\n  provider: ollama\n"), 0o644)
+
+	root := newTestRoot()
+	root.SetOut(io.Discard)
+	root.SetArgs([]string{"attach", "1889", "--spawn", "--host", "raspberrypi5",
+		"--config", cfgPath})
+	out := captureStdout(t, func() {
+		if err := root.Execute(); err != nil {
+			t.Fatalf("attach --spawn --host failed: %v", err)
+		}
+	})
+
+	if body["host"] != "raspberrypi5" {
+		t.Errorf("host sent = %v, want raspberrypi5", body["host"])
+	}
+	if !strings.Contains(out, "requested by the caller") {
+		t.Errorf("the operator should be told the target was their own choice; got:\n%s", out)
 	}
 }

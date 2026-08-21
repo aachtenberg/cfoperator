@@ -37,17 +37,60 @@ type Placement struct {
 	Note string `json:"note"`
 }
 
-// Cockpit is a spawned (or already-running) cockpit Job.
+// Tier names, matching the server's ladder (CFOP-36). Only TierPod involves
+// kubectl; every other tier is reached over ssh.
+const (
+	TierAuto      = "auto"
+	TierPod       = "pod"
+	TierContainer = "container"
+	TierHost      = "host"
+	TierSSH       = "ssh"
+)
+
+// Cockpit is a spawned (or already-running) cockpit session, at any tier.
+//
+// AttachArgv is the field that matters: the agent decides the runtime, and this
+// client executes what it is told without knowing whether that is kubectl or
+// ssh. It is argv rather than a command string on purpose — a string would have
+// to go through a shell here, which would turn a confused or compromised agent
+// into arbitrary execution on the operator's machine. AttachCommand is the same
+// thing rendered for a human to read, and is never executed.
 type Cockpit struct {
 	Status          string    `json:"status"` // "spawned" | "existing"
+	Tier            string    `json:"tier"`
 	JobName         string    `json:"job_name"`
+	SessionName     string    `json:"session_name"`
 	Namespace       string    `json:"namespace"`
+	Host            string    `json:"host"`
 	InvestigationID int       `json:"investigation_id"`
 	PodSelector     string    `json:"pod_selector"`
+	AttachArgv      []string  `json:"attach_argv"`
 	AttachCommand   string    `json:"attach_command"`
 	TTLSeconds      int       `json:"ttl_seconds"`
 	TokenPrefix     string    `json:"token_prefix"`
 	Placement       Placement `json:"placement"`
+	HostProvenance  string    `json:"host_provenance"`
+	TierNote        string    `json:"tier_note"`
+}
+
+// Name is what to call this session in a message to the operator: the Job at
+// tier 1, the session elsewhere.
+func (c *Cockpit) Name() string {
+	if c.JobName != "" {
+		return c.JobName
+	}
+	return c.SessionName
+}
+
+// Where reads as the location: namespace/job in the cluster, or the host.
+func (c *Cockpit) Where() string {
+	if c.Tier == TierPod || c.Tier == "" {
+		return c.Namespace + "/" + c.Name()
+	}
+	if c.Host != "" {
+		return c.Host + ":" + c.Name()
+	}
+	return c.Name()
 }
 
 // SpawnClient asks the agent to launch a cockpit Job.
@@ -84,18 +127,29 @@ func (c *SpawnClient) SetHTTPClient(h *http.Client) {
 // Spawn requests a cockpit for an investigation. The session token the pod
 // uses is minted server-side and delivered to it through a Kubernetes Secret —
 // it is never in this response, and never on this laptop.
-func (c *SpawnClient) Spawn(investigationID int, ttl time.Duration) (*Cockpit, error) {
+func (c *SpawnClient) Spawn(investigationID int, ttl time.Duration, tier, host string) (*Cockpit, error) {
 	payload, _ := json.Marshal(map[string]any{
 		"investigation_id": investigationID,
 		"ttl_seconds":      int(ttl.Seconds()),
+		"tier":             strings.TrimSpace(tier),
+		// Empty means "you work it out". The agent's resolution is a heuristic
+		// over remediation rows and trigger text, so it needs an override for
+		// the case it gets wrong — and the operator staring at the incident
+		// knows which box it is.
+		"host": strings.TrimSpace(host),
 	})
 	body, err := c.do(http.MethodPost, SpawnPath, payload)
 	if err != nil {
 		return nil, err
 	}
 	var cockpit Cockpit
-	if err := json.Unmarshal(body, &cockpit); err != nil || cockpit.JobName == "" {
+	// AttachArgv, not the name: the name differs by tier, and a response
+	// nothing can be attached to is useless whatever it is called.
+	if err := json.Unmarshal(body, &cockpit); err != nil || len(cockpit.AttachArgv) == 0 {
 		return nil, newError("", "CFOperator returned an unexpected cockpit response")
+	}
+	if cockpit.Tier == "" {
+		cockpit.Tier = TierPod // an agent from before the ladder only had one
 	}
 	return &cockpit, nil
 }
@@ -151,6 +205,8 @@ func spawnHint(status int) string {
 		return "the cockpit concurrency cap is reached — exit an open cockpit, or attach without --spawn"
 	case http.StatusServiceUnavailable:
 		return "the agent could not mint a session token for the pod; check its auth database"
+	case http.StatusConflict:
+		return "the requested --tier is not available on that host; drop --tier to take the best one"
 	}
 	return ""
 }

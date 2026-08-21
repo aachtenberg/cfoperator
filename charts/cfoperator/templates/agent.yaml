@@ -107,6 +107,12 @@ spec:
                   name: {{ include "cfoperator.fullname" . }}-generated
                   key: GITHUB_TOKEN
 {{- end }}
+{{- if and .Values.cockpit.enabled .Values.cockpit.ssh.secretName }}
+            - name: CFOP_COCKPIT_SSH_SECRET_DIR
+              value: /cockpit-ssh
+            - name: CFOP_COCKPIT_SSH_USER
+              value: {{ .Values.cockpit.ssh.user | quote }}
+{{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "cfoperator.fullname" . }}-llm
@@ -114,6 +120,11 @@ spec:
             - name: config
               mountPath: /app/config
               readOnly: true
+{{- if and .Values.cockpit.enabled .Values.cockpit.ssh.secretName }}
+            - name: cockpit-ssh
+              mountPath: /cockpit-ssh
+              readOnly: true
+{{- end }}
           readinessProbe:
             httpGet:
               path: /api/health
@@ -135,3 +146,15 @@ spec:
         - name: config
           configMap:
             name: {{ include "cfoperator.fullname" . }}-config
+{{- if and .Values.cockpit.enabled .Values.cockpit.ssh.secretName }}
+        {{/* Cockpit tiers 2/3 (CFOP-36) reach non-cluster hosts by ssh, so the
+             agent needs a key. Mounted at a staging dir, not at ~/.ssh: a
+             secret volume is root-owned and group-readable, which ssh refuses
+             for a private key with an error that reads like a network problem.
+             cockpit_ladder.prepare_ssh_identity copies it to ~/.ssh at 0600 on
+             first use — the same dance the executor does for node-actions. */}}
+        - name: cockpit-ssh
+          secret:
+            secretName: {{ .Values.cockpit.ssh.secretName }}
+            defaultMode: 0440
+{{- end }}

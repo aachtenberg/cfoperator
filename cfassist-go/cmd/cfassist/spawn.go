@@ -8,12 +8,18 @@ package main
 //     short-lived session token, and puts it in a Secret. Central because the
 //     guards (dedupe, concurrency cap, audit, TTL) have to hold for the console
 //     button in CFOP-59 too, not just for whoever typed this.
-//  2. kubectl attach — the OPERATOR's own binary and the OPERATOR's own cluster
-//     credentials. No service account in this system holds pods/attach or
-//     pods/exec, and this feature deliberately does not add one: someone
-//     spawning a cockpit from a laptop already has cluster access, so widening
-//     a service identity would buy nothing and lose the property that no
-//     long-lived identity in the cluster can open a shell.
+//  2. The attach — the OPERATOR's own binary and the OPERATOR's own
+//     credentials, kubectl in the cluster and ssh outside it (CFOP-36). No
+//     service account in this system holds pods/attach or pods/exec, and this
+//     feature deliberately does not add one: someone spawning a cockpit from a
+//     laptop already has that access, so widening a service identity would buy
+//     nothing and lose the property that no long-lived identity in the cluster
+//     can open a shell.
+//
+// The client does not know which runtime it is attaching to. The agent decides
+// the tier and answers with argv; running it is all that happens here. That is
+// why the ladder could grow two rungs without this file learning what docker or
+// systemd-run are.
 
 import (
 	"errors"
@@ -39,8 +45,12 @@ var (
 
 	// Interactive: stdin/stdout/stderr are the operator's terminal, which is
 	// the whole point — this call is the cockpit.
-	runKubectlInteractive = func(args ...string) error {
-		cmd := exec.Command(kubectlBinary, args...)
+	//
+	// argv straight to exec.Command, never through a shell: the argv came over
+	// the wire from the agent, and `sh -c` on it would make a confused agent a
+	// local-execution primitive on the operator's laptop.
+	runAttachInteractive = func(argv ...string) error {
+		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 		return cmd.Run()
 	}
@@ -63,8 +73,10 @@ func runSpawn(cmd *cobra.Command, investigationID int, url, token, question stri
 	}
 
 	ttl, _ := cmd.Flags().GetDuration("session-ttl")
+	tier, _ := cmd.Flags().GetString("tier")
+	host, _ := cmd.Flags().GetString("host")
 	cockpit, err := cfoperator.NewSpawnClient(url, token, 60*time.Second).
-		Spawn(investigationID, ttl)
+		Spawn(investigationID, ttl, tier, host)
 	if err != nil {
 		return formatAPIError(err)
 	}
@@ -73,23 +85,59 @@ func runSpawn(cmd *cobra.Command, investigationID int, url, token, question stri
 	if cockpit.Status == "existing" {
 		verb = "already running"
 	}
-	fmt.Printf("cockpit %s: %s/%s (%s)\n",
-		verb, cockpit.Namespace, cockpit.JobName, cockpit.Placement.Note)
+	fmt.Printf("cockpit %s: %s (%s)\n", verb, cockpit.Where(), cockpit.Placement.Note)
+	if cockpit.HostProvenance != "" {
+		// Where the session landed is a decision the operator did not make and
+		// has to be able to check mid-incident — "the wrong box" is otherwise
+		// only discoverable by looking around once you are inside it.
+		fmt.Printf("  target: %s\n", cockpit.HostProvenance)
+	}
 	if cockpit.TTLSeconds > 0 {
-		fmt.Printf("session token %s… — pod and token expire in %s\n",
+		fmt.Printf("session token %s… — session and token expire in %s\n",
 			cockpit.TokenPrefix, (time.Duration(cockpit.TTLSeconds) * time.Second))
 	}
-
-	if err := waitForCockpit(cockpit); err != nil {
-		// The Job exists and will clean itself up; tell the operator how to get
-		// in by hand rather than leaving them with a pod they cannot find.
-		return fmt.Errorf("%w\n  hint: the cockpit is still starting — attach with: %s",
-			err, cockpit.AttachCommand)
+	if isolation := tierIsolationWarning(cockpit.Tier); isolation != "" {
+		// Honest degradation is only honest if it is said out loud, at the
+		// moment it applies. Below the container tier there is no boundary
+		// between this session and the host it runs on.
+		fmt.Println(isolation)
 	}
 
-	fmt.Printf("attaching (%s) — detach with ctrl-p ctrl-q; exit ends the cockpit\n",
-		cockpit.AttachCommand)
-	return runKubectlInteractive(cockpitAttachArgs(cockpit)...)
+	// Only tier 1 has a pod to become Running: the container is started by the
+	// spawn call itself, and the process tiers have nothing running until this
+	// attach starts it.
+	if cockpit.Tier == cfoperator.TierPod {
+		if err := waitForCockpit(cockpit); err != nil {
+			// The Job exists and will clean itself up; tell the operator how to
+			// get in by hand rather than leaving them with a pod they cannot find.
+			return fmt.Errorf("%w\n  hint: the cockpit is still starting — attach with: %s",
+				err, cockpit.AttachCommand)
+		}
+	}
+
+	fmt.Printf("attaching (%s) — %s\n", cockpit.AttachCommand, detachHint(cockpit.Tier))
+	return runAttachInteractive(cockpit.AttachArgv...)
+}
+
+// tierIsolationWarning names what the chosen tier does not give you. Empty for
+// the tiers that have a boundary.
+func tierIsolationWarning(tier string) string {
+	switch tier {
+	case cfoperator.TierHost, cfoperator.TierSSH:
+		return "  no isolation at this tier: the session runs directly on the host, " +
+			"and the short-lived token is the security model"
+	}
+	return ""
+}
+
+// detachHint differs by runtime because the escape sequence does: ctrl-p ctrl-q
+// is a docker/kubectl attach convention and means nothing to a plain ssh.
+func detachHint(tier string) string {
+	switch tier {
+	case cfoperator.TierPod, cfoperator.TierContainer:
+		return "detach with ctrl-p ctrl-q; exit ends the cockpit"
+	}
+	return "exit ends the cockpit; the TTL ends it either way"
 }
 
 // cockpitPhaseArgs asks for the phase of every pod THIS Job owns. Label
@@ -108,12 +156,6 @@ func cockpitPhaseArgs(c *cfoperator.Cockpit) []string {
 		"get", "pods", "-n", c.Namespace, "-l", "job-name=" + c.JobName,
 		"-o", "jsonpath={.items[*].status.phase}",
 	}
-}
-
-// cockpitAttachArgs is the interactive attach. `job/<name>` rather than a pod
-// name for the same reason as above.
-func cockpitAttachArgs(c *cfoperator.Cockpit) []string {
-	return []string{"attach", "-it", "-n", c.Namespace, "job/" + c.JobName}
 }
 
 // waitForCockpit blocks until the pod is Running.

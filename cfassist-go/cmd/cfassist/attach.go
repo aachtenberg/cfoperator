@@ -77,7 +77,18 @@ were a model server, which is a natural thing to type against a port-forward.`,
 	// Cockpit tier 1 (CFOP-35): run the session on the affected infrastructure
 	// instead of on this laptop.
 	cmd.Flags().BoolVar(&flagAttachSpawn, "spawn", false,
-		"Spawn an ephemeral cockpit pod on the cluster and attach to it (admin; needs kubectl)")
+		"Spawn an ephemeral cockpit on the affected infrastructure and attach to it (admin)")
+	// Cockpit tiers 2/3 (CFOP-36): the agent picks the highest runtime the
+	// affected host actually has. Forcing one that is not there is an error
+	// rather than a quiet downgrade — someone who asks for the container
+	// boundary must not silently get a process on the host instead.
+	cmd.Flags().String("tier", "auto",
+		"Cockpit runtime: auto|pod|container|host|ssh (--spawn only; fails if unavailable)")
+	// The agent resolves the affected machine from the remediation rows and the
+	// trigger text. That is a heuristic; this is the override for when it picks
+	// the wrong box, which the operator can see and it cannot.
+	cmd.Flags().String("host", "",
+		"Spawn the cockpit on this host instead of the one resolved from the investigation (--spawn only)")
 	return cmd
 }
 
@@ -134,6 +145,15 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// twice and mint a credential nothing needs.
 	if flagAttachSpawn {
 		return runSpawn(cmd, investigationID, url, token, question)
+	}
+	// --tier only means anything to the spawn: a plain attach runs the session
+	// right here, and there is no ladder to climb. Silently ignoring it would
+	// let someone believe they had asked for a container boundary.
+	for _, flag := range []string{"tier", "host"} {
+		if cmd.Flags().Changed(flag) {
+			return fmt.Errorf("--%s only applies to --spawn: "+
+				"a plain attach already runs the session on this machine", flag)
+		}
 	}
 
 	api := cfoperator.New(url, token, timeout)
