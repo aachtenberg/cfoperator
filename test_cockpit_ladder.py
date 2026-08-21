@@ -1346,3 +1346,119 @@ def test_a_process_tier_accepts_a_loopback_model_url():
     s = spawner(ssh, llm_url="http://localhost:11434")
     assert s.spawn(1889, host="raspberrypi5", tier=TIER_HOST,
                    ttl_seconds=60)["status"] == "spawned"
+
+
+# --------------------------------------------------------------------------
+# a host that is BOTH a cluster node and an ssh host
+# --------------------------------------------------------------------------
+
+def _dual_client(ssh, node_names=("raspberrypi5",), **kw):
+    """A cluster where the named hosts are ALSO nodes — which is most of a
+    homelab fleet, and the case the ladder originally got wrong."""
+    import os
+    import threading
+    from unittest.mock import MagicMock
+
+    from flask import Flask
+
+    from cockpit_spawn import CockpitSpawner
+    from web_auth import install_auth
+    from web_server import WebServer
+
+    operator = MagicMock()
+    operator.kb.get_investigation.return_value = {"id": 1889, "host_id": "cfoperator",
+                                                  "trigger": "kiosk display is black"}
+    operator.kb.list_remediations_for_investigation.return_value = [
+        {"host_id": kw.get("remediation_host", "raspberrypi5")}]
+    operator.config = {"infrastructure": {"hosts": HOSTS}}
+
+    def kubectl(args, stdin):
+        if args[:2] == ["get", "node"]:
+            wanted = args[-1]
+            if wanted in node_names:
+                return 0, '{"spec": {}}', ""
+            return 1, "", 'Error from server (NotFound)'
+        if args[:2] == ["get", "jobs"]:
+            return 0, '{"items": []}', ""
+        return 0, '{"metadata": {"uid": "uid-1"}}', ""
+
+    server = WebServer.__new__(WebServer)
+    server.operator = operator
+    server.host, server.port = "localhost", 0
+    server.app = Flask(__name__)
+    server.sock = None
+    server.ws_clients = []
+    server._chat_sessions = {}
+    server._sessions_lock = threading.Lock()
+    server.auth_store = None
+    server._cockpit = CockpitSpawner(CockpitConfig(namespace="apps"),
+                                     kubectl_runner=kubectl, token_minter=minter())
+    server._ladder = spawner(ssh)
+    server._setup_routes()
+
+    prior = os.environ.get("CFOP_AUTH_DISABLED")
+    os.environ["CFOP_AUTH_DISABLED"] = "1"
+    try:
+        install_auth(server.app, store=None)
+    finally:
+        if prior is None:
+            os.environ.pop("CFOP_AUTH_DISABLED", None)
+        else:
+            os.environ["CFOP_AUTH_DISABLED"] = prior
+    return server.app.test_client(), server
+
+
+def test_a_host_tier_can_be_forced_on_a_host_that_is_also_a_node():
+    """REGRESSION GUARD. Most of this fleet is both a Kubernetes node and an
+    infrastructure.hosts entry, and for those "give me a shell on the machine,
+    not a pod scheduled onto it" is a real request — raspberrypi4 drives a
+    physical kiosk, and a pod on that node cannot see the session, the display
+    or the USB devices the incident is about.
+
+    The probe used to be skipped for any host that was a node, so choose_tier
+    had no capabilities to honour the request with and 409'd. Correct on the
+    evidence it had, and useless."""
+    ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes"), "")))
+    client, _server = _dual_client(ssh, node_names=("raspberrypi5",))
+
+    body = client.post("/api/cockpit/spawn",
+                       json={"investigation_id": 1889, "tier": TIER_HOST}).get_json()
+    assert body["tier"] == TIER_HOST, f"forced host tier was refused: {body}"
+    assert body["host"] == "raspberrypi5"
+    assert body["attach_argv"][0] == "ssh"
+    assert ssh.matching("uname"), "the host was never probed"
+
+
+def test_auto_still_prefers_the_pod_for_a_cluster_node_without_probing():
+    """The default must not change, and must not cost an ssh round trip: a
+    node is tier 1 whatever else it has installed."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")))
+    client, _server = _dual_client(ssh, node_names=("raspberrypi5",))
+
+    body = client.post("/api/cockpit/spawn", json={"investigation_id": 1889}).get_json()
+    assert body["tier"] == TIER_POD
+    assert not ssh.calls, "auto probed a cluster node it had already decided about"
+
+
+def test_forcing_a_tier_the_node_cannot_provide_still_refuses():
+    """Probing more does not mean accepting more — a host with no container
+    runtime still cannot give you a container."""
+    ssh = FakeSSH(("uname", (0, probe_reply(), "")))
+    client, _server = _dual_client(ssh, node_names=("raspberrypi5",))
+
+    resp = client.post("/api/cockpit/spawn",
+                       json={"investigation_id": 1889, "tier": TIER_CONTAINER})
+    assert resp.status_code == 409
+    assert "docker" in resp.get_json()["error"]
+
+
+def test_forcing_pod_on_a_node_does_not_probe():
+    """`--tier pod` is the other override — look at the box from next door —
+    and it needs no capabilities from the box."""
+    ssh = FakeSSH(("uname", (0, probe_reply(), "")))
+    client, _server = _dual_client(ssh, node_names=("raspberrypi5",))
+
+    body = client.post("/api/cockpit/spawn",
+                       json={"investigation_id": 1889, "tier": TIER_POD}).get_json()
+    assert body["tier"] == TIER_POD
+    assert not ssh.calls
