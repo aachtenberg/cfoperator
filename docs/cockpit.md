@@ -393,7 +393,26 @@ already. Deploying by hand instead? [DEPLOYMENT.md](DEPLOYMENT.md) has the
 manifest change (mount the secret at `/cockpit-ssh`, set
 `CFOP_COCKPIT_SSH_SECRET_DIR` and `CFOP_COCKPIT_SSH_USER`).
 
-**3. Check it took.** Name the host and the rung explicitly, so the test is of
+**3. Tell the session how to call home.** This one is easy to miss and the
+spawn refuses without it, on purpose.
+
+```yaml
+cockpit:
+  host_agent_url: http://10.0.0.14:8083   # the agent, as the FLEET sees it
+```
+
+`cockpit.agent_url` — the one that already exists — is *what the pod calls*,
+and it defaults to cluster DNS. A Pi cannot resolve
+`cfoperator.apps.svc.cluster.local`, so a host-tier session set up with it
+would attach fine and then fail to fetch its own briefing: a briefed session
+with no briefing, discovered from inside. One knob cannot serve both runtimes,
+so tiers 2/3 get their own, and a spawn that would use a cluster-only name is
+refused up front with this key named.
+
+The same applies to `llm.primary.url`, for the same reason and without the
+guard: it has to be an address the fleet can reach, not `127.0.0.1`.
+
+**4. Check it took.** Name the host and the rung explicitly, so the test is of
 the ssh key and nothing else:
 
 ```bash
@@ -405,7 +424,11 @@ so it works even on a machine with no docker and no systemd. Read the first two
 lines of output — they say which machine and which tier, which is the whole
 question. If you get `could not be probed (Permission denied (publickey))`,
 step 2 has not landed; if you get `is not in infrastructure.hosts`, step 1 has
-not.
+not; and if you get `only resolves inside the cluster`, step 3 has not.
+
+Fixed one of them? Just run it again. A failed probe is cached for seconds, not
+minutes, precisely so that mounting the key and retrying works the way you
+would expect it to.
 
 ### Using it: a bare Pi, start to finish
 
@@ -436,6 +459,13 @@ When you are finished, `exit`. The session ends, and the credential and the
 binary it used are deleted on the way out. If you close the laptop instead, the
 TTL does it four hours later; if something goes wrong with the TTL, the janitor
 does it within fifteen minutes. **You do not have to clean up after yourself.**
+
+And you can run the same command again straight away. A second `--spawn` for an
+investigation whose session is still alive puts you back in *that* session
+rather than starting a second one; if the previous one has ended, the leftovers
+are cleared before the new one starts — a stopped container still holds its
+name, and a still-armed self-destruct timer would otherwise fire on the new
+session.
 
 The same thing on a docker host reads almost identically — the difference is one
 word in the first line (`docker container on ubuntu-llm-01`), no isolation
@@ -518,6 +548,12 @@ ssh sre@10.0.0.20 'docker rm -f cfop-cockpit-1889'
 Every artifact is named `cfop-cockpit-<investigation-id>`, on every tier and in
 every runtime, so one name finds the pod, the container and the directory.
 
+Two cockpits may run at once *per runtime*: two in the cluster, and two on each
+host. The host half is not tidiness — every session mints a token onto a
+machine that has no cluster-side ceiling above it, so something has to bound
+how many there can be. Your own session never counts against you: re-running
+your command returns the cockpit you already have.
+
 The janitor runs on the agent every fifteen minutes and removes anything whose
 recorded expiry has passed. Change the interval in the console settings
 (`cockpit_reap_interval`, in seconds) or with
@@ -535,9 +571,12 @@ can change it without a redeploy.
 | `tier 'container' was requested but is not available … (neither docker nor podman is installed); available: pod, host, ssh` | you forced a rung the host does not have | drop `--tier`, or pick one of the listed ones |
 | `kubectl create failed: jobs is forbidden` | tier 1's RBAC is not applied | see the CFOP-35 section in [DEPLOYMENT.md](DEPLOYMENT.md) |
 | `could not fetch cfassist-linux-arm64 from cfassist-v0.9.0 …; is the release tagged?` | the pinned cfassist version has no published release | tag it, or pin an older one with `CFOP_COCKPIT_CFASSIST_VERSION` |
-| `cockpit concurrency cap reached` | two cluster cockpits are already running | exit one, or attach without `--spawn` |
+| `only resolves inside the cluster … set cockpit.host_agent_url` | the session would have been told to call the pod's address | setup step 3 |
+| `cockpit concurrency cap reached` | two cockpits are already running — in the cluster, or on that host | exit one (the message names them), or attach without `--spawn` |
 | `spawning a cockpit is admin-only` | you are a member | ask an admin, or use plain `attach` — the briefing is the same |
-| the session starts but the model never answers | the in-pod/in-container session cannot reach the LLM | check `llm.primary.url` is an address reachable *from the fleet*, not `127.0.0.1` |
+| the session starts but the model never answers | the session cannot reach the LLM | check `llm.primary.url` is an address reachable *from the fleet*, not `127.0.0.1` |
+| the session starts but the briefing is empty or errors | the session cannot reach the agent | same shape as the row above, for `cockpit.host_agent_url` |
+| you fixed the cause and the same error came back | not the probe cache — failures are only held for seconds | look again: the message names what it actually tried |
 | it landed on the wrong machine | the host was resolved from something misleading | read the `target:` line, then re-run with `--host <name>` |
 | `--tier only applies to --spawn` | you passed `--tier` or `--host` without `--spawn` | add `--spawn`, or drop the flag — a plain attach runs here, not there |
 

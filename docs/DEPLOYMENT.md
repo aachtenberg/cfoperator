@@ -66,7 +66,13 @@ In `cfoperator-deploy`, on the agent Deployment:
   secret volume is root-owned and group-readable, and ssh refuses a private key
   like that with an error that reads like a network problem. The agent copies it
   to `~/.ssh` at 0600 on first use, exactly as the executor does;
-* `CFOP_COCKPIT_SSH_SECRET_DIR=/cockpit-ssh` and `CFOP_COCKPIT_SSH_USER=<user>`.
+* `CFOP_COCKPIT_SSH_SECRET_DIR=/cockpit-ssh` and `CFOP_COCKPIT_SSH_USER=<user>`;
+* `CFOP_COCKPIT_HOST_AGENT_URL=http://<agent-as-the-fleet-sees-it>:8083`.
+  **Not optional in practice.** `cockpit.agent_url` is what the *pod* calls and
+  is cluster DNS; a Pi cannot resolve it, so a host-tier session set up with it
+  would attach and then fail to fetch its own briefing. The spawn refuses
+  rather than allowing that, so without this variable tiers 2/3 answer with a
+  400 naming it.
 
 Nothing else changes: the host inventory is already `infrastructure.hosts` in
 the config the agent reads. Until the mount lands, tier 1 keeps working and the

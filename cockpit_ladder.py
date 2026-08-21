@@ -45,12 +45,14 @@ import shutil
 import stat
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from cockpit_spawn import (
     COCKPIT_LABEL,
+    DEFAULT_MAX_CONCURRENT,
     JOB_ROLE_LABEL,
     JOB_ROLE_VALUE,
     MAX_TTL_SECONDS,
@@ -427,6 +429,8 @@ class HostLadderConfig:
 
     image: str = ""
     agent_url: str = ""
+    host_agent_url: str = ""
+    max_concurrent: int = DEFAULT_MAX_CONCURRENT
     llm_url: str = ""
     llm_model: str = ""
     ssh_user: str = "sre"
@@ -473,6 +477,12 @@ def build_ladder_config(agent_config: Any, cockpit: CockpitConfig) -> HostLadder
     return HostLadderConfig(
         image=cockpit.image,
         agent_url=cockpit.agent_url,
+        # Tier 1's agent_url is cluster DNS by default and by design — it is
+        # what the POD calls. A Pi cannot resolve it. One knob cannot serve
+        # both runtimes, so tiers 2/3 get their own and fall back loudly rather
+        # than silently (see host_agent_url()).
+        host_agent_url=_str("CFOP_COCKPIT_HOST_AGENT_URL", "host_agent_url", ""),
+        max_concurrent=cockpit.max_concurrent,
         llm_url=cockpit.llm_url,
         llm_model=cockpit.llm_model,
         ssh_user=_str("CFOP_COCKPIT_SSH_USER", "ssh_user", "sre"),
@@ -492,6 +502,38 @@ def build_ladder_config(agent_config: Any, cockpit: CockpitConfig) -> HostLadder
         release_base=_str("CFOP_COCKPIT_RELEASE_BASE", "release_base", DEFAULT_RELEASE_BASE),
         hosts=dict(hosts),
     )
+
+
+#: Names that only resolve inside a Kubernetes cluster. A session on a bare
+#: host cannot fetch its own briefing from one of these, and the failure would
+#: land *after* the operator attached — a briefed session that is not briefed.
+_CLUSTER_ONLY_SUFFIXES = (".svc", ".svc.cluster.local")
+
+
+def host_agent_url(config: "HostLadderConfig") -> str:
+    """The agent URL a host tier's session should call, or a refusal.
+
+    ``cockpit.agent_url`` is documented as "what the POD calls" and defaults to
+    cluster DNS, so inheriting it for tiers 2/3 puts an unresolvable name on
+    every Pi. Rather than let that surface as a briefing that quietly fails
+    inside the session, it is a spawn-time error naming the key to set.
+    """
+    url = (config.host_agent_url or config.agent_url).strip()
+    hostname = urllib.parse.urlparse(url).hostname or ""
+    if hostname.endswith(_CLUSTER_ONLY_SUFFIXES):
+        raise CockpitSpawnError(
+            f"the cockpit agent URL ({url}) only resolves inside the cluster, so a "
+            f"session on a host outside it could not fetch its briefing — set "
+            f"cockpit.host_agent_url (or CFOP_COCKPIT_HOST_AGENT_URL) to an "
+            f"address the fleet can reach", 400)
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        # Not refused: a single-box install where the fleet host *is* the agent
+        # host is a real shape. But it is wrong far more often than it is
+        # right, so it does not pass silently.
+        logger.warning("cockpit: host-tier sessions will call %s, which means "
+                       "'the machine the session runs on'. Set "
+                       "cockpit.host_agent_url if that is not the agent.", url)
+    return url
 
 
 class HostCockpitSpawner:
@@ -533,10 +575,16 @@ class HostCockpitSpawner:
         the mistake CFOP-35 avoided with its service-account mapping. A cold
         cache costs one round trip on a spawn the operator is already waiting
         on; the alternative costs a migration.
+
+        **Failures are barely cached at all** — see ``_cache_ttl``. Caching
+        "Permission denied (publickey)" for fifteen minutes makes the fix
+        invisible: docs/cockpit.md tells an operator to mount the key and
+        retry, and the retry would answer from the cache until the agent
+        restarted. A capability is a fact about a host and keeps; a failure to
+        reach one is a fact about a moment.
         """
         cached = self._probes.get(host)
-        ttl = self._config.probe_cache_seconds
-        if cached and not refresh and (time.time() - cached.probed_at) < ttl:
+        if cached and not refresh and (time.time() - cached.probed_at) < self._cache_ttl(cached):
             return cached
 
         code, out, err = self._ssh_host(host, PROBE_SCRIPT)
@@ -554,6 +602,19 @@ class HostCockpitSpawner:
         self._probes[host] = caps
         logger.info("cockpit probe %s: %s", host, caps.error or caps.summary())
         return caps
+
+    def _cache_ttl(self, caps: HostCapabilities) -> int:
+        """How long an answer is worth keeping.
+
+        A successful probe describes the host and holds for the configured TTL.
+        A failed one describes the network at one instant, and is kept only
+        long enough to spare a single operation its second round trip (the
+        endpoint probes, then the spawn or the janitor probes again). Anything
+        longer and fixing the cause does not fix the symptom.
+        """
+        if caps.ok:
+            return self._config.probe_cache_seconds
+        return max(1, self._config.ssh_connect_timeout)
 
     def invalidate(self, host: str) -> None:
         self._probes.pop(host, None)
@@ -578,11 +639,23 @@ class HostCockpitSpawner:
                 "per-investigation session token", 503)
 
         name = session_name(investigation_id)
-        existing = self._existing_session(host, investigation_id, tier)
-        if existing:
-            return existing
+        # Before anything is created or minted: a session that cannot reach the
+        # agent is a briefed session with no briefing, and it would fail *after*
+        # the operator attached.
+        host_agent_url(self._config)
 
         caps = self.probe(host)
+        live = self._live_sessions(host, caps)
+        # Dedupe first, cap second — an operator re-running their own command
+        # must land back in their cockpit rather than be told the host is busy
+        # with a session that is theirs.
+        if name in live:
+            return self._existing_session(host, investigation_id, live[name])
+        if len(live) >= self._config.max_concurrent:
+            raise CockpitSpawnError(
+                f"cockpit concurrency cap reached on {host} "
+                f"({self._config.max_concurrent} active: {', '.join(sorted(live))})", 429)
+
         token = self._mint(investigation_id, ttl_seconds, tier=tier, host=host)
         expires_at = int(time.time()) + int(ttl_seconds)
         try:
@@ -647,7 +720,15 @@ class HostCockpitSpawner:
             self._config.image,
             str(int(ttl_seconds)), COCKPIT_ENTRYPOINT,
         ]
-        code, out, err = self._ssh_host(host, " ".join(shlex.quote(a) for a in argv),
+        # An exited namesake still owns the name, and `docker run` would 502 on
+        # it — which is the ordinary path, not an edge case: attach, `exit`, run
+        # the alert command again. `rm` without --force on purpose: a *running*
+        # namesake was already returned by the dedupe above, so anything left
+        # here is a corpse, and refusing to kill a live session is worth the
+        # rarer loud failure if the two ever race.
+        remote = (f"{shlex.quote(runtime)} rm {shlex.quote(name)} >/dev/null 2>&1; "
+                  + " ".join(shlex.quote(a) for a in argv))
+        code, out, err = self._ssh_host(host, remote,
                                         stdin=self._env_file(investigation_id, token))
         if code != 0:
             raise CockpitSpawnError(
@@ -740,12 +821,21 @@ class HostCockpitSpawner:
         """
         if tier != TIER_HOST:
             return f"process on {host} — no transient unit; the janitor reaps it"
-        prefix = ["systemd-run", "--user"] if caps.user_systemd else ["sudo", "-n", "systemd-run"]
+        user = caps.user_systemd
+        prefix = ["systemd-run", "--user"] if user else ["sudo", "-n", "systemd-run"]
         argv = prefix + [
             f"--unit={name}-reap", f"--on-active={int(ttl_seconds)}s", "--collect",
             "/bin/rm", "-rf", directory,
         ]
-        code, _out, err = self._ssh_host(host, " ".join(shlex.quote(a) for a in argv))
+        # Cancel before arming, and this is not tidiness. The unit name is
+        # stable per investigation, so a previous session's timer is still
+        # counting down on the ordinary re-run path (attach, exit, run the
+        # alert command again). Leaving it would do two bad things at once:
+        # `systemd-run` fails because the unit exists, and then the *old* timer
+        # fires and deletes the *new* session out from under the operator.
+        code, _out, err = self._ssh_host(
+            host, cancel_reap_unit_command(name, user=user, sudo=not user) + "; "
+            + " ".join(shlex.quote(a) for a in argv))
         if code != 0:
             logger.warning("cockpit %s: could not arm the self-destruct timer on %s: %s",
                            name, host, err.strip()[:200])
@@ -756,33 +846,60 @@ class HostCockpitSpawner:
 
     # ---- dedupe ------------------------------------------------------------
 
-    def _existing_session(self, host, investigation_id, tier) -> Optional[Dict[str, Any]]:
-        """Land an operator back in their own cockpit rather than beside it.
+    def _live_sessions(self, host: str, caps: HostCapabilities) -> Dict[str, str]:
+        """Cockpit sessions currently alive on ``host``: ``{name: kind}``.
+
+        One listing answers both questions a spawn has to ask — "is mine
+        already here" (dedupe) and "how many are here" (the cap). Asking them
+        separately is how the two come to disagree, and the cap is the only
+        thing bounding how many ``investigate`` tokens end up on a machine that
+        has no cluster-side ceiling above it.
+
+        Counts both kinds regardless of the tier being spawned: a box can carry
+        a container cockpit and a process cockpit at once, and "how many
+        cockpits are on this host" has one answer.
+        """
+        live: Dict[str, str] = {}
+
+        runtime = caps.container_runtime
+        if runtime:
+            argv = [runtime, "ps", "--filter", f"label={JOB_ROLE_LABEL}={JOB_ROLE_VALUE}",
+                    "--format", "{{.Names}}"]
+            code, out, _err = self._ssh_host(host, " ".join(shlex.quote(a) for a in argv))
+            if code == 0:
+                for name in out.split():
+                    if name.startswith(SESSION_PREFIX):
+                        live[name] = TIER_CONTAINER
+
+        code, out, _err = self._ssh_host(host, _SESSION_LISTING)
+        if code == 0:
+            now = time.time()
+            for directory, expires in _parse_expiry_listing(out):
+                name = os.path.basename(directory.rstrip("/"))
+                # An expired directory belongs to the janitor, not to a live
+                # session: counting it against the cap would lock an operator
+                # out of a host until the next sweep.
+                if name.startswith(SESSION_PREFIX) and (not expires or expires > now):
+                    live.setdefault(name, TIER_HOST)
+        return live
+
+    def _existing_session(self, host: str, investigation_id: int, kind: str
+                          ) -> Dict[str, Any]:
+        """Report the cockpit already there, rather than starting a second one.
 
         Same rule as tier 1's dedupe, and the same reason: re-running the
-        command the alert told you to run must not create a second session or
-        report a busy fleet.
+        command the alert told you to run must land you back in your own
+        session, not beside it and not against a busy-host error.
         """
         name = session_name(investigation_id)
-        if tier == TIER_CONTAINER:
-            caps = self.probe(host)
-            runtime = caps.container_runtime or "docker"
-            argv = [runtime, "ps", "--quiet", "--filter", f"name=^{name}$",
-                    "--filter", "status=running"]
-            code, out, _err = self._ssh_host(host, " ".join(shlex.quote(a) for a in argv))
-            if code != 0 or not out.strip():
-                return None
+        if kind == TIER_CONTAINER:
+            runtime = self.probe(host).container_runtime or "docker"
             attach_argv = self._attach_argv(host, [runtime, "attach", name])
         else:
-            directory = f"/tmp/{name}"
-            code, out, _err = self._ssh_host(
-                host, f"test -x {shlex.quote(directory)}/run && echo present")
-            if code != 0 or "present" not in out:
-                return None
-            attach_argv = self._attach_argv(host, [f"{directory}/run"], tty=True)
+            attach_argv = self._attach_argv(host, [f"/tmp/{name}/run"], tty=True)
         return {
             "status": "existing",
-            "tier": tier,
+            "tier": kind,
             "host": host,
             "investigation_id": investigation_id,
             "session_name": name,
@@ -854,12 +971,11 @@ class HostCockpitSpawner:
                 self._ssh_host(host, f"rm -rf {shlex.quote(directory)}")
                 # A unit whose timer already fired is gone (--collect); one that
                 # failed is not, and would block the next spawn of the same
-                # name. Both stop cleanly, and a missing unit is not an error.
-                self._ssh_host(
-                    host,
-                    f"systemctl --user stop {shlex.quote(name + '-reap.timer')} >/dev/null 2>&1; "
-                    f"systemctl --user reset-failed {shlex.quote(name + '-reap.service')} "
-                    ">/dev/null 2>&1; true")
+                # name. Both flavours are tried — a session armed through sudo
+                # leaves a *system* unit that `systemctl --user` cannot see, so
+                # cancelling only the user one leaves exactly the orphan this
+                # sweep exists to remove. A missing unit is not an error.
+                self._ssh_host(host, cancel_reap_unit_command(name, user=True, sudo=True))
                 reaped.append({"host": host, "name": name, "kind": "session"})
         return reaped
 
@@ -901,7 +1017,7 @@ class HostCockpitSpawner:
         """
         lines = [
             f"CFOP_INVESTIGATION_ID={investigation_id}",
-            f"CFOP_AGENT_URL={self._config.agent_url}",
+            f"CFOP_AGENT_URL={host_agent_url(self._config)}",
             f"{TOKEN_ENV}={token.get('secret') or ''}",
         ]
         if self._config.llm_url:
@@ -1033,6 +1149,29 @@ _SESSION_LISTING = (
     + str(MAX_TTL_SECONDS) + " )); "
     "printf '%s %s\\n' \"${d%/}\" \"$e\"; done"
 )
+
+
+def cancel_reap_unit_command(name: str, *, user: bool = True, sudo: bool = False) -> str:
+    """Stop and forget a session's self-destruct timer, if it has one.
+
+    Stop *and* ``reset-failed``: a unit that failed is not collected, so it
+    keeps the name and blocks the next spawn for the same investigation — which
+    is the same investigation an hour later, i.e. the normal case.
+
+    Every command is silenced and the whole thing ends in ``true``: a unit that
+    was never created is the expected state on a first spawn, and a non-zero
+    exit there would read as a failure to arm.
+    """
+    parts = []
+    unit = shlex.quote(f"{name}-reap.timer")
+    service = shlex.quote(f"{name}-reap.service")
+    if user:
+        parts += [f"systemctl --user stop {unit} {service} >/dev/null 2>&1",
+                  f"systemctl --user reset-failed {unit} {service} >/dev/null 2>&1"]
+    if sudo:
+        parts += [f"sudo -n systemctl stop {unit} {service} >/dev/null 2>&1",
+                  f"sudo -n systemctl reset-failed {unit} {service} >/dev/null 2>&1"]
+    return "; ".join(parts + ["true"])
 
 
 def session_name(investigation_id: int) -> str:

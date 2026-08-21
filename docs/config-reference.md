@@ -373,24 +373,73 @@ remediation:
   queue_reap: false
   queue_verify: false
 
-# Incident cockpit — the ephemeral pod `cfassist attach <id> --spawn` launches
-# (docs/cockpit.md). Every key is optional; the defaults below are what the
-# spawner uses when this block is absent. The corresponding CFOP_COCKPIT_* env
-# vars win over the file, because they are set by the same manifest that sets
-# the image tag.
+# Incident cockpit — the session `cfassist attach <id> --spawn` launches, in a
+# pod or on a host outside the cluster (docs/cockpit.md). Every key is
+# optional; the defaults below are what the spawner uses when this block is
+# absent. The corresponding CFOP_COCKPIT_* env vars win over the file, because
+# they are set by the same manifest that sets the image tag.
 cockpit:
+  # --- tier 1: the ephemeral pod ------------------------------------------
   namespace: apps
   image: ghcr.io/aachtenberg/cfoperator-cockpit:main
   service_account: cfoperator-cockpit   # read-only; needs the chart's cockpit.enabled
   agent_url: http://cfoperator.apps.svc.cluster.local:8083   # what the POD calls
   ttl_seconds: 14400          # activeDeadlineSeconds — the session, and its token
   ttl_after_finished_seconds: 3600
+  # Per-runtime, not fleet-wide: two cockpits in the cluster, and two on each
+  # host. The host half is what bounds how many session tokens can be sitting
+  # on a machine that has no cluster-side ceiling above it.
   max_concurrent: 2
   # The model the in-pod session talks to. Defaults to the agent's own
   # llm.primary.url / llm.primary.model (where the loader puts the flat llm.url
   # and llm.model keys), so the cockpit and the investigation share a model.
+  # It has to be an address the FLEET can reach — a loopback URL means "the
+  # machine the session runs on", which is not this one.
   # llm_url: http://ollama:11434
   # llm_model: gemma4:26b
+
+  # --- tiers 2/3: hosts outside the cluster (CFOP-36) ----------------------
+  # Reached by ssh from the agent, so unlike tier 1 these need a credential in
+  # the agent pod. Hosts themselves come from infrastructure.hosts (above) —
+  # the same inventory the SSH tools and the host sweep use.
+  #
+  # The agent URL the SESSION calls, which is not agent_url: that one is
+  # cluster DNS by design and a Pi cannot resolve it. Unset here means
+  # agent_url is used, and a spawn onto a host is REFUSED (with this key
+  # named) rather than producing a session that cannot fetch its briefing.
+  # host_agent_url: http://10.0.0.14:8083
+  #
+  # Where the chart mounts the ssh secret, and the login to use for hosts
+  # whose infrastructure.hosts entry does not set one. The directory is a
+  # staging point, not ~/.ssh: a secret volume is root-owned and
+  # group-readable, which ssh refuses for a private key, so the agent copies
+  # it to ~/.ssh at 0600 on first use.
+  # ssh_secret_dir: /cockpit-ssh
+  # ssh_user: sre
+  # ssh_key_path: ''          # explicit -i, when the staged default is wrong
+  # ssh_connect_timeout: 5
+  # ssh_command_timeout: 30
+  #
+  # How long a capability probe is trusted. Successes only: a probe FAILURE is
+  # cached for about a connect timeout, so fixing the key or the route works on
+  # the next attempt rather than fifteen minutes later.
+  # probe_cache_seconds: 900
+  #
+  # The janitor sweep — removes cockpit containers and /tmp sessions whose
+  # recorded expiry has passed. The `cockpit_reap_interval` console setting
+  # (seconds) wins over this, so it can be changed without a redeploy.
+  # janitor_interval_seconds: 900
+  #
+  # Let tier 3 create its self-destruct timer through `sudo -n systemd-run` on
+  # a host with no user systemd manager. Off by default: without it such a host
+  # degrades to the ssh tier and the janitor carries the cleanup alone.
+  # allow_sudo: false
+  #
+  # The cfassist release tiers 3/3b deliver to the host. Pinned so a session is
+  # reproducible; it must be a tag that exists, and a spawn says so loudly if
+  # it does not. Defaults to cfassist-go's own Version.
+  # cfassist_version: 0.8.1
+  # release_base: https://github.com/aachtenberg/cfoperator/releases/download
 
 # Skills
 skills:

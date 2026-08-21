@@ -113,6 +113,10 @@ spec:
             - name: CFOP_COCKPIT_SSH_USER
               value: {{ .Values.cockpit.ssh.user | quote }}
 {{- end }}
+{{- if .Values.cockpit.hostAgentUrl }}
+            - name: CFOP_COCKPIT_HOST_AGENT_URL
+              value: {{ .Values.cockpit.hostAgentUrl | quote }}
+{{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "cfoperator.fullname" . }}-llm

@@ -113,6 +113,12 @@ cockpit:
   ssh:
     secretName: ""
     user: sre
+  # The agent URL a session on a NON-cluster host calls. `agent_url` (in the
+  # config file) is what the pod calls and is cluster DNS, which a Pi cannot
+  # resolve — so a host-tier spawn is refused until this is set, rather than
+  # producing a session that attaches and then cannot fetch its briefing.
+  # Reachable from the fleet: a LAN address or an ingress, not a loopback.
+  hostAgentUrl: ""
 
 agent:
   resources: {}

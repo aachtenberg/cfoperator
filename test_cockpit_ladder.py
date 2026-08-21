@@ -32,6 +32,7 @@ from cockpit_ladder import (
     HostCapabilities,
     HostCockpitSpawner,
     HostLadderConfig,
+    host_agent_url,
     build_ladder_config,
     choose_tier,
     normalize_arch,
@@ -102,11 +103,16 @@ HOSTS = {
 
 def spawner(ssh, *, revoked=None, minted=None, binary=b"ELF-cfassist",
             **overrides) -> HostCockpitSpawner:
-    cfg = HostLadderConfig(
-        image="ghcr.io/aachtenberg/cfoperator-cockpit:main",
-        agent_url="http://cfoperator.apps.svc.cluster.local:8083",
-        llm_url="http://ollama:11434", llm_model="gemma4:26b",
-        hosts=dict(HOSTS), **overrides)
+    cfg = HostLadderConfig(**{
+        "image": "ghcr.io/aachtenberg/cfoperator-cockpit:main",
+        # The realistic pair: tier 1's URL is cluster DNS (it is what the pod
+        # calls) and the host tiers get their own, because a Pi cannot resolve
+        # the first one.
+        "agent_url": "http://cfoperator.apps.svc.cluster.local:8083",
+        "host_agent_url": "http://10.0.0.14:8083",
+        "llm_url": "http://ollama:11434", "llm_model": "gemma4:26b",
+        "hosts": dict(HOSTS),
+        **overrides})
     return HostCockpitSpawner(
         cfg,
         ssh_runner=ssh,
@@ -488,7 +494,7 @@ def test_an_existing_container_is_reported_not_duplicated():
     your own cockpit, not beside it and not against a busy-fleet error."""
     minted = []
     ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")),
-                  ("docker ps", (0, "9f2ac0ffee\n", "")))
+                  ("docker ps", (0, "cfop-cockpit-1889\n", "")))
     s = spawner(ssh, minted=minted)
     result = s.spawn(1889, host="raspberrypi5", tier=TIER_CONTAINER, ttl_seconds=14400)
     assert result["status"] == "existing"
@@ -584,6 +590,12 @@ def timer_commands(ssh):
     return [c for c in ssh.commands if "--on-active" in c]
 
 
+def armed_timer(ssh):
+    """Just the `systemd-run` that arms the timer, with the cancel prefix that
+    now precedes it stripped off."""
+    return timer_commands(ssh)[0].split("; ")[-1]
+
+
 def test_the_transient_timer_expires_the_session_even_if_nobody_attaches():
     ssh, result = host_spawn()
     timer = timer_commands(ssh)
@@ -598,8 +610,7 @@ def test_the_transient_timer_expires_the_session_even_if_nobody_attaches():
 def test_sudo_owns_the_timer_when_there_is_no_user_manager():
     ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", sudo="yes"), "")))
     _ssh, result = host_spawn(ssh=ssh, allow_sudo=True)
-    timer = timer_commands(ssh)[0]
-    assert timer.startswith("sudo -n systemd-run")
+    assert armed_timer(ssh).startswith("sudo -n systemd-run")
 
 
 def test_tier_3b_has_no_timer_and_says_so():
@@ -1102,3 +1113,214 @@ def test_the_runner_is_posix_sh_not_bash(tmp_path):
 
     directory = _materialise_session(tmp_path)
     assert subprocess.run(["/bin/sh", "-n", str(directory / "run")]).returncode == 0
+
+
+# --------------------------------------------------------------------------
+# review round 1 — the four ways the documented path broke
+# --------------------------------------------------------------------------
+
+def test_a_probe_failure_is_not_cached_for_the_success_ttl():
+    """REGRESSION GUARD. docs/cockpit.md's setup step 3 is: run the smoke test,
+    see `Permission denied (publickey)`, mount the key, retry. Caching that
+    failure for fifteen minutes makes the fix invisible — the retry answers
+    from the cache until the agent restarts, and the operator concludes the
+    mount did not work.
+
+    A capability is a fact about a host and keeps; a failure to reach one is a
+    fact about a moment.
+    """
+    replies = iter([(255, "", "Permission denied (publickey)"),
+                    (0, probe_reply(docker="yes"), "")])
+
+    def ssh(argv, stdin):
+        return next(replies)
+
+    s = spawner(ssh, probe_cache_seconds=900, ssh_connect_timeout=5)
+    failed = s.probe("raspberrypi5")
+    assert not failed.ok
+    assert s._cache_ttl(failed) <= 5, "a failure must not be kept for the success TTL"
+
+    # The helm upgrade lands and the operator retries a few seconds later.
+    s._probes["raspberrypi5"].probed_at -= 10
+    assert s.probe("raspberrypi5").docker, (
+        "the retry answered from a stale failure; the fix would look like it "
+        "had not worked")
+
+
+def test_a_successful_probe_is_still_cached():
+    """The negative-caching fix must not turn every spawn into a probe storm:
+    a capability is a fact about a host and keeps."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")))
+    s = spawner(ssh, probe_cache_seconds=900)
+    s.probe("raspberrypi5")
+    s.probe("raspberrypi5")
+    assert len(ssh.matching("uname")) == 1
+
+
+def test_a_forced_tier_reprobes_rather_than_trusting_a_cached_failure():
+    """`--tier` is what an operator reaches for after fixing something. It has
+    to look at the host again, not at what the host looked like before the fix."""
+    replies = iter([(255, "", "Permission denied (publickey)"),
+                    (0, probe_reply(systemd_run="yes", user_systemd="yes"), "")])
+
+    def ssh(argv, stdin):
+        return next(replies)
+
+    s = spawner(ssh, probe_cache_seconds=900)
+    s.probe("raspberrypi5")
+    assert s.probe("raspberrypi5", refresh=True).systemd_run
+
+
+# ---- the agent URL a host can actually resolve -----------------------------
+
+def test_a_cluster_only_agent_url_is_refused_before_anything_is_created():
+    """REGRESSION GUARD. `cockpit.agent_url` is documented as "what the POD
+    calls" and defaults to cluster DNS. Inheriting it for a host tier puts an
+    unresolvable name on the Pi, and the failure lands *after* the operator has
+    attached — a briefed session with no briefing. Better to refuse at spawn
+    and name the key to set."""
+    minted, ssh = [], FakeSSH(("uname", (0, probe_reply(systemd_run="yes"), "")))
+    s = spawner(ssh, minted=minted, host_agent_url="")
+    with pytest.raises(CockpitSpawnError) as exc:
+        s.spawn(1889, host="raspberrypi5", tier=TIER_SSH, ttl_seconds=60)
+    assert exc.value.status == 400
+    assert "cockpit.host_agent_url" in str(exc.value)
+    assert minted == [], "nothing may be minted for a session that cannot brief itself"
+    assert not ssh.calls, "and nothing may be created on the host either"
+
+
+@pytest.mark.parametrize("url", [
+    "http://cfoperator.apps.svc.cluster.local:8083",
+    "http://cfoperator.apps.svc:8083",
+])
+def test_every_shape_of_in_cluster_name_is_caught(url):
+    with pytest.raises(CockpitSpawnError):
+        host_agent_url(HostLadderConfig(agent_url=url))
+
+
+def test_the_host_url_wins_over_the_pod_url_without_changing_it():
+    """One knob cannot serve both runtimes — and CFOP_COCKPIT_AGENT_URL would
+    have retargeted the pod as a side effect of fixing the Pi."""
+    cfg = HostLadderConfig(agent_url="http://cfoperator.apps.svc.cluster.local:8083",
+                           host_agent_url="http://10.0.0.14:8083")
+    assert host_agent_url(cfg) == "http://10.0.0.14:8083"
+    assert cfg.agent_url == "http://cfoperator.apps.svc.cluster.local:8083", (
+        "tier 1 must keep calling cluster DNS; that is the address a pod can use")
+
+
+def test_the_session_is_told_the_host_reachable_url():
+    ssh, _result = host_spawn()
+    env = [s for s in ssh.stdins if s and b"CFOP_AGENT_URL" in s][0].decode()
+    assert "CFOP_AGENT_URL=http://10.0.0.14:8083" in env
+    assert "svc.cluster.local" not in env
+
+
+# ---- re-running the alert command after `exit` -----------------------------
+
+def test_an_exited_container_does_not_block_the_next_spawn():
+    """REGRESSION GUARD. The ordinary path is: spawn, work, `exit`, run the
+    alert command again. `exit` from a docker attach *stops* the container,
+    which keeps the name — so the second `docker run --name` 502s and the
+    operator is locked out for the whole TTL, which is precisely what the
+    how-to promises they will never have to think about."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")),
+                  # `docker ps` (running only) is empty: the corpse is stopped.
+                  ("docker ps", (0, "", "")),
+                  ("docker run", (0, "9f2ac0ffee\n", "")))
+    s = spawner(ssh)
+    result = s.spawn(1889, host="raspberrypi5", tier=TIER_CONTAINER, ttl_seconds=14400)
+    assert result["status"] == "spawned"
+    run = ssh.matching("docker run")[0]
+    assert run.startswith("docker rm cfop-cockpit-1889 >/dev/null 2>&1;"), (
+        f"the exited namesake is never cleared: {run}")
+
+
+def test_clearing_a_namesake_will_not_kill_a_running_one():
+    """`rm` without --force on purpose. A *running* namesake was already
+    returned by the dedupe, so anything left is a corpse — and if the two ever
+    race, failing loudly beats killing somebody's live session."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")),
+                  ("docker ps", (0, "", "")),
+                  ("docker run", (0, "abc\n", "")))
+    spawner(ssh).spawn(1889, host="raspberrypi5", tier=TIER_CONTAINER, ttl_seconds=60)
+    assert "docker rm --force" not in ssh.matching("docker run")[0]
+
+
+def test_a_still_armed_reap_timer_is_cancelled_before_the_next_is_set():
+    """REGRESSION GUARD, and the sharper half of the same bug. The reap unit is
+    named per investigation, so after `exit` the previous session's timer is
+    still counting down against the same `/tmp` path. Leaving it does two bad
+    things at once: `systemd-run` fails because the unit exists, and then the
+    OLD timer fires and deletes the NEW session out from under the operator."""
+    ssh, _result = host_spawn()
+    armed = timer_commands(ssh)[0]
+    assert "systemctl --user stop cfop-cockpit-1889-reap.timer" in armed
+    assert "reset-failed" in armed, (
+        "a failed unit is not collected, so it keeps the name and blocks the "
+        "next spawn for the same investigation")
+    assert armed.index("stop") < armed.index("--on-active"), "cancel, then arm"
+
+
+def test_the_janitor_cancels_a_sudo_armed_timer_too():
+    """A session armed through sudo leaves a *system* unit that
+    `systemctl --user` cannot see, so cancelling only the user one leaves
+    exactly the orphan the sweep exists to remove."""
+    now = 1_800_000_000
+    ssh = janitor_ssh(sessions=f"/tmp/cfop-cockpit-11 {now - 1}\n")
+    spawner(ssh).reap(["raspberrypi5"], now=now)
+    cancels = [c for c in ssh.commands if "reset-failed" in c]
+    assert cancels, "nothing cancelled the reap unit"
+    assert "systemctl --user reset-failed" in cancels[0]
+    assert "sudo -n systemctl reset-failed" in cancels[0]
+
+
+# ---- the cap that was only on tier 1 ---------------------------------------
+
+def test_host_tiers_have_a_concurrency_cap_of_their_own():
+    """REGRESSION GUARD. The cap lived in CockpitSpawner, so the ladder path
+    never asked — and every host spawn mints an `investigate` token onto a
+    machine with no cluster-side ceiling above it. "dedupe, concurrency cap,
+    token mint, audit — must be central" was true of one tier only."""
+    minted = []
+    ssh = janitor_ssh(sessions=("/tmp/cfop-cockpit-11 9999999999\n"
+                                "/tmp/cfop-cockpit-22 9999999999\n"),
+                      docker="no", systemd_run="yes", user_systemd="yes")
+    s = spawner(ssh, minted=minted, max_concurrent=2)
+    with pytest.raises(CockpitSpawnError) as exc:
+        s.spawn(1889, host="raspberrypi5", tier=TIER_HOST, ttl_seconds=60)
+    assert exc.value.status == 429
+    assert "cfop-cockpit-11" in str(exc.value), "the refusal should name what is holding it"
+    assert minted == [], "a refused spawn must not leave a token on the host"
+
+
+def test_the_cap_counts_containers_and_processes_together():
+    """A box can carry both at once, and "how many cockpits are on this host"
+    has one answer."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")),
+                  ("docker ps", (0, "cfop-cockpit-11\n", "")),
+                  ("for d in /tmp/cfop-cockpit-", (0, "/tmp/cfop-cockpit-22 9999999999\n", "")))
+    s = spawner(ssh, max_concurrent=2)
+    with pytest.raises(CockpitSpawnError) as exc:
+        s.spawn(1889, host="raspberrypi5", tier=TIER_CONTAINER, ttl_seconds=60)
+    assert exc.value.status == 429
+
+
+def test_an_expired_directory_does_not_count_against_the_cap():
+    """It belongs to the janitor, not to a session. Counting it would lock an
+    operator out of a host until the next sweep."""
+    ssh = janitor_ssh(sessions="/tmp/cfop-cockpit-11 1\n/tmp/cfop-cockpit-22 1\n",
+                      docker="no", systemd_run="yes", user_systemd="yes")
+    s = spawner(ssh, max_concurrent=2)
+    assert s.spawn(1889, host="raspberrypi5", tier=TIER_HOST,
+                   ttl_seconds=60)["status"] == "spawned"
+
+
+def test_the_operators_own_session_is_never_the_thing_that_blocks_them():
+    """Dedupe before cap, same as tier 1: re-running your own command at the
+    cap must return your cockpit, not a 429."""
+    ssh = janitor_ssh(sessions=("/tmp/cfop-cockpit-1889 9999999999\n"
+                                "/tmp/cfop-cockpit-22 9999999999\n"),
+                      docker="no", systemd_run="yes", user_systemd="yes")
+    s = spawner(ssh, max_concurrent=2)
+    assert s.spawn(1889, host="raspberrypi5", tier=TIER_HOST,
+                   ttl_seconds=60)["status"] == "existing"
