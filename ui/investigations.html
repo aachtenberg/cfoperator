@@ -146,16 +146,20 @@ function similarBlock(f){
 }
 function paint(){
   const c={}; ALL.forEach(r=>c[r.outcome]=(c[r.outcome]||0)+1);
+  const tri=ALL.filter(r=>r.triage_action).length;
   const seen=OUTCOMES.filter(o=>c[o]);
   document.getElementById('filters').innerHTML =
     `<span class="chip ${filter===''?'active':''}" onclick="setF('')">all (${ALL.length})</span>`+
-    seen.map(o=>`<span class="chip ${filter===o?'active':''}" onclick="setF('${o}')">${o} (${c[o]})</span>`).join('');
-  const rows=filter?ALL.filter(r=>r.outcome===filter):ALL;
+    seen.map(o=>`<span class="chip ${filter===o?'active':''}" onclick="setF('${o}')">${o} (${c[o]})</span>`).join('')+
+    (tri?`<span class="chip ${filter==='__triaged'?'active':''}" onclick="setF('__triaged')">triaged (${tri})</span>`:'');
+  const rows=filter==='__triaged'?ALL.filter(r=>r.triage_action)
+           :filter==='__untriaged'?ALL.filter(r=>!r.triage_action)
+           :filter?ALL.filter(r=>r.outcome===filter):ALL;
   document.getElementById('empty').hidden=rows.length>0;
   document.getElementById('rows').innerHTML=rows.map(r=>`
     <tr onclick="detail(${r.id})">
       <td class="mono">#${r.id}</td>
-      <td>${badge(r.outcome, OC[r.outcome]||'--text-muted')}</td>
+      <td>${badge(r.outcome, OC[r.outcome]||'--text-muted')}${r.triage_action?' '+badge(r.triage_action,'--accent'):''}</td>
       <td class="trig">${esc(r.trigger||'').slice(0,140)}</td>
       <td>${remLink(r)}</td>
       <td class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':'—'}</td>
@@ -179,10 +183,36 @@ async function detail(id){
     <div class="kv"><b>started</b> ${esc(r.started_at)}${r.completed_at?' · <b>completed</b> '+esc(r.completed_at):''}</div>
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
     ${remDrawerLine(r)}
+    ${triageBlock(r)}
     ${similarBlock(f)}
     ${f.recommendation?`<h3>Recommendation</h3><pre>${esc(f.recommendation)}</pre>`:''}
     ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
     <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;
+}
+// Operator triage (CFOP-65). Records the human's verdict in triage_action;
+// the agent's own `outcome` is deliberately left alone, because that is what
+// the similar-investigation search cites as precedent to future triage.
+function triageBlock(r){
+  const act=r.triage_action;
+  const state=act?`${badge(act,'--accent')}${r.operator_notes?' <span class="muted">'+esc(r.operator_notes)+'</span>':''}`
+                 :'<span class="muted">not triaged</span>';
+  return `<div class="kv"><b>operator</b> ${state}</div>
+    <div class="kv" style="gap:6px;flex-wrap:wrap">
+      <input id="tn-${r.id}" placeholder="note (optional)" style="flex:1;min-width:180px">
+      <span class="chip" onclick="triage(${r.id},'resolved')">resolve</span>
+      <span class="chip" onclick="triage(${r.id},'ack')">ack</span>
+    </div>`;
+}
+async function triage(id, action){
+  const el=document.getElementById('tn-'+id);
+  const note=el?el.value:'';
+  try{
+    const res=await fetch(`/api/investigations/${id}/triage`,{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action, note})});
+    if(!res.ok){ alert('triage failed: '+res.status+(res.status===403?' (admin only)':'')); return; }
+  }catch(e){ alert('triage failed'); return; }
+  await detail(id); load();
 }
 load(); setInterval(load, 20000);
 </script>
