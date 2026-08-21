@@ -190,9 +190,15 @@ From clone to a completed investigation. You need Docker, a Prometheus, and an
 LLM — Ollama locally, or an API key.
 
 ```bash
-cp .env.example .env          # three values matter; the rest have defaults
+./cfoperator init             # probes each answer as you give it, writes .env + config.yaml
 docker compose up -d          # postgres + agent + event-runtime + console
 ```
+
+Prefer the file? `cp .env.example .env` and edit — three values matter; the
+rest have defaults. The wizard exists because it checks the values as you type
+them: the Prometheus URL either answered or it did not, Ollama either has your
+model pulled or it does not. (`--non-interactive` reads the same variables from
+the environment, for CI.)
 
 The stack seeds itself on first boot: it creates an admin, mints the service
 token event_runtime needs, and generates a session secret. Nothing to configure
