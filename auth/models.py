@@ -232,5 +232,10 @@ EVENT_USER_DEACTIVATED = "user.deactivated"
 EVENT_PASSWORD_CHANGED = "user.password_changed"
 EVENT_TOKEN_CREATED = "token.created"
 EVENT_TOKEN_REVOKED = "token.revoked"
+#: A cockpit session recorded what it worked out (CFOP-37). Lives here
+#: rather than in changerecord because a session is not a proposed
+#: change awaiting approval — it already happened, and the actor, scope
+#: and investigation it belongs to are already this table's vocabulary.
+EVENT_COCKPIT_SESSION = "cockpit.session"
 EVENT_TOKEN_AUTH_FAIL = "token.auth_failure"
 EVENT_LEGACY_TOKEN_USED = "token.legacy_used"

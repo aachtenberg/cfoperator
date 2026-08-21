@@ -449,6 +449,12 @@ class CockpitSpawner:
             {"name": "CFOP_INVESTIGATION_ID", "value": str(investigation_id)},
             {"name": "CFOP_AGENT_URL", "value": cfg.agent_url},
             {"name": "CFOP_COCKPIT_PLACEMENT", "value": placement_note},
+            # Where this session is running, for its own write-back (CFOP-37).
+            # "resolved from a laptop" and "resolved on the affected node" are
+            # different claims about how a fix was verified, and only the
+            # session knows which one it is.
+            {"name": "CFOP_COCKPIT_TIER", "value": TIER_POD},
+            {"name": "CFOP_COCKPIT_HOST", "value": node or ""},
             {"name": "CFOP_COCKPIT_LLM_URL", "value": cfg.llm_url},
             {"name": "CFOP_COCKPIT_LLM_MODEL", "value": cfg.llm_model},
             # The credential, by reference. Never {"value": <secret>}: a Job

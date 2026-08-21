@@ -821,6 +821,11 @@ func (m *model) View() string {
 type RunResult struct {
 	Provider string
 	Model    string
+	// Messages is the session transcript, returned so `attach` can write back
+	// what the session concluded before it is destroyed (CFOP-37). Discarded
+	// by every other caller — a plain `cfassist` session has no investigation
+	// to attach it to.
+	Messages []client.Message
 }
 
 // Run starts the TUI application and returns the final provider/model on exit.
@@ -835,7 +840,8 @@ func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 		return RunResult{}, err
 	}
 	if fm, ok := finalModel.(*model); ok {
-		return RunResult{Provider: fm.activeProvider, Model: fm.llm.Model}, nil
+		return RunResult{Provider: fm.activeProvider, Model: fm.llm.Model,
+			Messages: fm.messages}, nil
 	}
 	return RunResult{Provider: activeProvider, Model: llm.Model}, nil
 }

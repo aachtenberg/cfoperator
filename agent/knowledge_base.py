@@ -317,6 +317,12 @@ class Investigation(Base):
     )
 
 
+#: Event type for a cockpit session's write-back (CFOP-37). A distinct type
+#: rather than a flag on the investigation, so the sessions can be selected
+#: without scanning every tool call an investigation made.
+COCKPIT_SESSION_EVENT = "cockpit_session"
+
+
 class InvestigationEvent(Base):
     """Individual events within an investigation - tool calls, reasoning, actions, errors."""
     __tablename__ = 'investigation_events'
@@ -2129,6 +2135,79 @@ class KnowledgeBase:
             session.add(event)
             session.flush()
             return event.id
+
+    def record_cockpit_session(
+        self,
+        investigation_id: int,
+        summary: str,
+        outcome: str,
+        actor: str,
+        detail: Optional[Dict[str, Any]] = None,
+        degraded: bool = False,
+    ) -> int:
+        """Append one cockpit session's write-back to an investigation (CFOP-37).
+
+        A method rather than the caller passing ``COCKPIT_SESSION_EVENT`` to
+        ``record_investigation_event``: the event vocabulary is this module's,
+        and ``web_server`` cannot import it anyway — ``agent/__init__`` pulls in
+        ``agent.py``, which uses bare imports and only resolves with ``agent/``
+        itself on the path. Keeping the constant here means one definition and
+        no cross-package import that works in the image and fails in a test.
+        """
+        return self.record_investigation_event(
+            investigation_id,
+            COCKPIT_SESSION_EVENT,
+            reasoning_text=summary,
+            action_type=outcome,
+            action_target=actor,
+            tool_output=detail or {},
+            # success=False marks a session whose summary could not be distilled
+            # and is stored as a raw tail. The read side surfaces it as
+            # `degraded` so nobody mistakes a transcript fragment for a summary.
+            success=not degraded,
+        )
+
+    def get_cockpit_sessions(self, investigation_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Cockpit sessions worked against this investigation, newest first.
+
+        Stored as investigation *events* rather than merged into ``findings``
+        (CFOP-37). ``findings`` is what ``find_similar_investigations_hybrid``
+        cites as precedent to later triage decisions, and the triage endpoint
+        already records the rule: the agent's finding stays intact, the human's
+        verdict lives elsewhere. A session summary is a human verdict by
+        another name, so it appends beside the investigation instead of editing
+        it — which also means no migration and no way to lose the original.
+        """
+        with self.session_scope() as session:
+            return self._cockpit_sessions(session, investigation_id, limit)
+
+    @staticmethod
+    def _cockpit_sessions(session, investigation_id: int, limit: int) -> List[Dict[str, Any]]:
+        """The query, taking a session so ``get_investigation`` can reuse its own.
+
+        Nesting ``session_scope`` would work and would quietly hold a second
+        pooled connection for the length of the outer call — on the console's
+        hot path, where every investigation drill-in goes through it.
+        """
+        rows = (session.query(InvestigationEvent)
+                .filter(InvestigationEvent.investigation_id == investigation_id,
+                        InvestigationEvent.event_type == COCKPIT_SESSION_EVENT)
+                .order_by(InvestigationEvent.event_at.desc())
+                .limit(limit).all())
+        return [
+            {
+                "recorded_at": e.event_at.isoformat() if e.event_at else None,
+                "outcome": e.action_type,
+                "actor": e.action_target,
+                "summary": e.reasoning_text,
+                # tool_output is the structured half: tier, host, duration, the
+                # commands that mattered, the learning id if one was seeded.
+                # JSONB, so it costs no schema.
+                "detail": e.tool_output if isinstance(e.tool_output, dict) else {},
+                "degraded": not e.success,
+            }
+            for e in rows
+        ]
 
     def get_investigation_events(self, investigation_id: int) -> List[Dict[str, Any]]:
         """Get all events for an investigation in chronological order."""
@@ -4010,7 +4089,14 @@ class KnowledgeBase:
                     "parent_investigation_id": inv.parent_investigation_id,
                     "operator_notes": inv.operator_notes,
                     "triage_action": inv.triage_action,
-                    "host_id": inv.host_id
+                    "host_id": inv.host_id,
+                    # What humans worked out in a cockpit against this
+                    # investigation (CFOP-37). Read here rather than through a
+                    # second endpoint because every consumer that wants the
+                    # investigation wants this too — the console drawer, the
+                    # attach briefing, and the chat tool all go through this
+                    # one call, and a session nobody can see is not write-back.
+                    "sessions": self._cockpit_sessions(session, investigation_id, 10),
                 }
             return None
 

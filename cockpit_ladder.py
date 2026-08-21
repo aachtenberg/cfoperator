@@ -729,7 +729,8 @@ class HostCockpitSpawner:
         remote = (f"{shlex.quote(runtime)} rm {shlex.quote(name)} >/dev/null 2>&1; "
                   + " ".join(shlex.quote(a) for a in argv))
         code, out, err = self._ssh_host(host, remote,
-                                        stdin=self._env_file(investigation_id, token))
+                                        stdin=self._env_file(investigation_id, token,
+                                                             tier=TIER_CONTAINER, host=host))
         if code != 0:
             raise CockpitSpawnError(
                 f"{runtime} run failed on {host}: {(err.strip() or out.strip())[:400]}", 502)
@@ -782,7 +783,7 @@ class HostCockpitSpawner:
         payload = (
             self._runner_script(investigation_id, directory, ttl_seconds, tier=tier)
             + "\n----\n"
-            + self._env_file(investigation_id, token).decode()
+            + self._env_file(investigation_id, token, tier=tier, host=host).decode()
         )
         # Runner and credential arrive as one stream split on a marker: a single
         # round trip, and the credential never reaches a command line on either
@@ -1009,7 +1010,8 @@ class HostCockpitSpawner:
         self._binaries[asset] = blob
         return blob
 
-    def _env_file(self, investigation_id: int, token: Dict[str, Any]) -> bytes:
+    def _env_file(self, investigation_id: int, token: Dict[str, Any],
+                  *, tier: str = "", host: str = "") -> bytes:
         """The session's environment, as a docker ``--env-file`` / shell prelude.
 
         Same variable names the pod entrypoint reads, because the entrypoint is
@@ -1019,6 +1021,9 @@ class HostCockpitSpawner:
             f"CFOP_INVESTIGATION_ID={investigation_id}",
             f"CFOP_AGENT_URL={host_agent_url(self._config)}",
             f"{TOKEN_ENV}={token.get('secret') or ''}",
+            # Where the session ran, for its own write-back (CFOP-37).
+            f"CFOP_COCKPIT_TIER={tier}",
+            f"CFOP_COCKPIT_HOST={host}",
         ]
         if self._config.llm_url:
             lines.append(f"CFOP_COCKPIT_LLM_URL={self._config.llm_url}")

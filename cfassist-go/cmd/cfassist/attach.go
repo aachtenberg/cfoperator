@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/cfoperator"
@@ -89,6 +90,11 @@ were a model server, which is a natural thing to type against a port-forward.`,
 	// the wrong box, which the operator can see and it cannot.
 	cmd.Flags().String("host", "",
 		"Spawn the cockpit on this host instead of the one resolved from the investigation (--spawn only)")
+	// Session write-back (CFOP-37). Opt-OUT: the whole point is that what a
+	// human works out in a session stops dying with the terminal, and a
+	// default-off memory feature is one nobody remembers to turn on.
+	cmd.Flags().Bool("no-writeback", false,
+		"Do not record what this session concluded on the investigation")
 	return cmd
 }
 
@@ -232,6 +238,18 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// questions mint nothing: there is no session for a token to die with.
 	// Minting is best-effort on purpose: against an agent that predates the
 	// TTL mint the briefing is still the product, so we warn and continue.
+	// Write-back needs the session's own credential, so the revoke cannot be a
+	// plain defer any more: LIFO would fire it before the write. `revoke` is
+	// captured here and called explicitly after the session ends, with the
+	// deferred copy left only as the crash path.
+	var revoke func()
+	defer func() {
+		if revoke != nil {
+			revoke()
+		}
+	}()
+	sessionToken := token
+
 	if noTok, _ := cmd.Flags().GetBool("no-session-token"); !noTok {
 		ttl, _ := cmd.Flags().GetDuration("session-ttl")
 		scopes := []string{"investigate"}
@@ -250,24 +268,38 @@ func runAttach(cmd *cobra.Command, args []string) error {
 			// The mint client keeps the standing token on its struct, so the
 			// revoke below still authenticates after the swap.
 			restore := swapSessionToken(sess.Secret)
+			sessionToken = sess.Secret
 			fmt.Printf("session token %s (%s…, scopes %s, TTL %s) — revoked on exit\n",
 				sess.Label, sess.Prefix, strings.Join(scopes, ","), ttl)
-			defer func() {
-				restore()
-				if revErr := mint.Revoke(sess.ID); revErr != nil {
-					fmt.Fprintf(os.Stderr,
-						"warning: could not revoke session token %s (it expires in %s anyway): %v\n",
-						sess.Prefix, ttl, revErr)
-				}
-			}()
+			var once sync.Once
+			revoke = func() {
+				once.Do(func() {
+					restore()
+					if revErr := mint.Revoke(sess.ID); revErr != nil {
+						fmt.Fprintf(os.Stderr,
+							"warning: could not revoke session token %s (it expires in %s anyway): %v\n",
+							sess.Prefix, ttl, revErr)
+					}
+				})
+			}
 		}
 	}
 
+	started := time.Now()
 	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider, attachment)
 	if err != nil {
 		return err
 	}
 	config.SaveState(result.Provider, result.Model)
+
+	// Order matters and is therefore explicit: write back with the session's
+	// own credential, THEN kill it. A deferred revoke would have run first.
+	tier, host := writeBackTarget()
+	writeBackSession(cmd, investigationID, url, sessionToken, llm, result.Messages,
+		started, tier, host)
+	if revoke != nil {
+		revoke()
+	}
 	return nil
 }
 
