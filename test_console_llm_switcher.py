@@ -58,3 +58,25 @@ def test_console_surfaces_model_list_errors_and_free_text_fallback():
     # Dialog focus moves into the popover and back to the chip.
     assert "focusLlmPopover" in html
     assert "chip.focus()" in html
+
+
+def test_admin_wires_triage_model_setting():
+    """CFOP-58: the dedicated triage model is switchable live from Admin.
+
+    Guards the wiring class: the select exists, loads and posts the settings
+    endpoint, and the endpoint's POST stays admin-gated in web_server.py —
+    a dropped decorator would let members repoint production triage.
+    """
+    html = ADMIN.read_text(encoding="utf-8")
+    assert 'id="triage-model"' in html
+    assert "/api/settings/triage_model" in html
+    assert "onTriageModelChange" in html
+    # 'off' must be offerable — disabling despite config is part of the contract.
+    assert 'value="off"' in html
+
+    src = (Path(__file__).parent / "web_server.py").read_text(encoding="utf-8")
+    idx = src.index("def set_triage_model")
+    preceding = src[:idx].rsplit("@self.app.route", 1)[1]
+    assert "require_role(ROLE_ADMIN)" in preceding, (
+        "POST /api/settings/triage_model lost its ROLE_ADMIN gate"
+    )

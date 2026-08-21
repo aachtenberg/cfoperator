@@ -187,7 +187,8 @@ llm:
   # llm.primary.url). When set, alert triage tries this model first and falls
   # back to the normal chain on any failure or unparseable response; when
   # unset, triage uses the primary chain unchanged. Investigations are
-  # unaffected. (CFOP-57)
+  # unaffected. The console Admin -> LLM tab can override this live (DB over
+  # config; 'off' there disables despite this key). (CFOP-57/58)
   # triage_model: cfop-triage-ministral3:v1-q4
 
   # Embeddings (for semantic search)

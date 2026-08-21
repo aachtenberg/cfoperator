@@ -192,6 +192,60 @@ def test_run_triage_falls_back_when_llm_picks_invalid_action():
     assert result["action"] == "investigate"
 
 
+# ---- _triage_model resolution: DB over config (CFOP-58) -------------------
+#
+# Same precedence contract as _remediation_flag: a console-set DB value wins
+# so the model can be switched live; empty/absent DB means "use config"; the
+# explicit sentinel 'off' disables despite config; a DB failure must fall
+# back to config rather than break the triage hot path.
+
+
+def _op_with(db_value, config_value):
+    op = _operator()
+    op.kb.get_setting.return_value = db_value
+    if config_value is not None:
+        op.config = {"llm": {"triage_model": config_value}}
+    return op
+
+
+def test_triage_model_db_overrides_config():
+    assert _op_with("db-model:v2", "config-model:v1")._triage_model() == "db-model:v2"
+
+
+def test_triage_model_off_sentinel_disables_despite_config():
+    for sentinel in ("off", "OFF", "none", "disabled"):
+        assert _op_with(sentinel, "config-model:v1")._triage_model() is None
+
+
+def test_triage_model_empty_db_falls_back_to_config():
+    assert _op_with("", "config-model:v1")._triage_model() == "config-model:v1"
+
+
+def test_triage_model_unset_everywhere_is_none():
+    assert _op_with("", None)._triage_model() is None
+
+
+def test_triage_model_db_failure_falls_back_to_config():
+    op = _op_with("", "config-model:v1")
+    op.kb.get_setting.side_effect = RuntimeError("db down")
+    assert op._triage_model() == "config-model:v1"
+
+
+def test_run_triage_honors_db_setting_over_config():
+    """The live-switch path: console sets a DB value and the very next triage
+    call must use it — no restart, no config change."""
+    op = _op_with("cfop-triage:db", "cfop-triage:config")
+    op.config["llm"]["primary"] = {"url": "http://ollama:11434"}
+    op._chat_with_tools = MagicMock(return_value={
+        "response": '{"action": "notify", "reason": "precedent", "confidence": 0.8}',
+        "tool_calls": 0,
+    })
+    op._chat_with_tools_with_fallback = MagicMock()
+    result = op.run_triage(_alert())
+    assert result["model"] == "cfop-triage:db"
+    assert op._chat_with_tools.call_args.kwargs["model"] == "cfop-triage:db"
+
+
 # ---- run_triage: dedicated triage model (CFOP-57) -------------------------
 #
 # These guard the routing *class* of regression, not today's model names:

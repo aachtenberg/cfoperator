@@ -496,6 +496,44 @@ class WebServer:
                 logger.warning(f"Could not persist max_tool_iterations (DB down?): {e}")
             return jsonify({'success': True, 'max_tool_iterations': val})
 
+        # Dedicated triage model (CFOP-58). DB setting overrides the
+        # llm.triage_model config key so the model can be switched or
+        # disabled live — a config-only change needs a deploy commit AND a
+        # manual rollout restart. Resolution semantics live in
+        # CFOperator._triage_model: empty DB value = unset (use config),
+        # the literal 'off' disables despite config.
+        @self.app.route('/api/settings/triage_model')
+        def get_triage_model():
+            db_val = ''
+            try:
+                db_val = self.operator.kb.get_setting('triage_model', '') or ''
+            except Exception as e:
+                logger.warning(f"Could not read triage_model setting: {e}")
+            cfg = self.operator.config.get('llm', {}) if isinstance(self.operator.config, dict) else {}
+            return jsonify({
+                'effective': self.operator._triage_model(),
+                'db': db_val,
+                'config': str(cfg.get('triage_model') or ''),
+            })
+
+        @self.app.route('/api/settings/triage_model', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def set_triage_model():
+            data = request.json or {}
+            model = str(data.get('model') or '').strip()
+            if len(model) > 200:
+                return jsonify({'error': 'model tag too long'}), 400
+            try:
+                self.operator.kb.set_setting('triage_model', model)
+            except Exception as e:
+                logger.warning(f"Could not persist triage_model (DB down?): {e}")
+                return jsonify({'error': str(e)}), 500
+            return jsonify({
+                'success': True,
+                'effective': self.operator._triage_model(),
+                'db': model,
+            })
+
         # OODA interval settings
         @self.app.route('/api/settings/ooda')
         def get_ooda_settings():

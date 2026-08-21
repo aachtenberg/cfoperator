@@ -960,7 +960,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         # below, so the chain after a triage-model failure is byte-identical
         # to the no-override configuration.
         result = None
-        triage_model = self.config.get('llm', {}).get('triage_model')
+        triage_model = self._triage_model()
         if triage_model:
             primary_cfg = self.config.get('llm', {}).get('primary', {}) or {}
             triage_url = primary_cfg.get('url', os.getenv('OLLAMA_URL', ''))
@@ -1767,6 +1767,34 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             return None
 
     _REMEDIATION_FLAGS = ('queue_feed', 'queue_drain', 'queue_reap', 'queue_verify')
+
+    def _triage_model(self) -> Optional[str]:
+        """Resolve the dedicated triage model: DB setting overrides config.
+
+        Mirrors _remediation_flag's DB-over-config semantics so the console
+        can change or disable the triage model live, without the deploy
+        commit + manual rollout restart a config-only change costs (CFOP-58).
+
+        An empty/absent DB value means "unset, use config" — the flags
+        convention — so disabling despite a config value needs an explicit
+        word: 'off' (also 'none'/'disabled') returns None regardless of
+        config. A DB read failure falls back to config rather than breaking
+        the triage hot path.
+        """
+        val = None
+        try:
+            val = self.kb.get_setting('triage_model', '')
+        except Exception as e:
+            logger.debug(f"Could not read triage_model from DB, using config: {e}")
+        if val not in (None, '') and isinstance(val, str):
+            val = val.strip()
+            if val:
+                if val.lower() in ('off', 'none', 'disabled'):
+                    return None
+                return val
+        llm_cfg = self.config.get('llm', {}) if isinstance(self.config, dict) else {}
+        cfg_val = str(llm_cfg.get('triage_model') or '').strip()
+        return cfg_val or None
 
     def _remediation_flag(self, name: str) -> bool:
         """Resolve a remediation flag: DB setting overrides config.yaml.
