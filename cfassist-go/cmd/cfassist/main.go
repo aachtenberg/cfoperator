@@ -135,7 +135,9 @@ func run(cmd *cobra.Command, args []string) error {
 	}
 
 	// --- TUI mode ---
-	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider)
+	// nil attachment: a plain session has no investigation, and renders exactly
+	// as it did before `attach` existed.
+	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider, nil)
 	if err != nil {
 		return err
 	}

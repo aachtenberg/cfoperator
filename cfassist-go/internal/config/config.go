@@ -317,8 +317,14 @@ tools:
 # Both fields are optional: unset, they fall back to CFOP_AGENT_URL and
 # CFOP_API_TOKEN, the same variables the MCP server reads. attach is read-only,
 # so a token with 'read' scope is enough.
+#
+# url is the machine RUNNING CFOPERATOR, as reachable from here — a LAN address
+# or hostname. It is NOT this workstation: attach exists to be run from
+# somewhere else. Use a loopback address only when cfassist runs on the agent
+# host itself, or through 'kubectl -n apps port-forward svc/cfoperator
+# 8083:8083' on this machine.
 # cfoperator:
-#   url: http://127.0.0.1:8083
+#   url: http://192.168.1.50:8083   # <- the agent host, not this machine
 #   token: ${CFOP_API_TOKEN}
 #   timeout: 30
 

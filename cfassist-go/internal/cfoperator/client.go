@@ -129,9 +129,18 @@ func (c *Client) do(method, path string, params url.Values) ([]byte, error) {
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return nil, newError("", "Timed out talking to CFOperator at %s", c.URL)
 		}
+		// The hint leads with the two fixes that work anywhere. It used to name
+		// only the port-forward, which quietly assumes kubectl and a kubeconfig
+		// on this machine — an assumption that fails on exactly the hardware
+		// attach is for (a Pi, a phone-tethered laptop), and leaves an operator
+		// whose real problem is "the URL points at the wrong host" with nothing
+		// to act on. Port-forward stays, third, labelled with what it needs.
 		return nil, newError(
-			"Is the agent up and reachable? "+
-				"kubectl -n apps port-forward svc/cfoperator 8083:8083",
+			fmt.Sprintf("Is the agent up, and is %s the right address? "+
+				"Set the agent host with %s=http://<agent-host>:8083, "+
+				"or a cfoperator: block (url/token) in ~/.cfassist/config.yaml. "+
+				"With kubectl here, kubectl -n apps port-forward svc/cfoperator 8083:8083 "+
+				"makes 127.0.0.1:8083 work instead.", c.URL, EnvAgentURL),
 			"Cannot reach CFOperator at %s: %v", c.URL, err,
 		)
 	}

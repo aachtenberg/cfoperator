@@ -260,6 +260,105 @@ func TestAttachPrintSurfacesTheTokenHint(t *testing.T) {
 	}
 }
 
+// --- first run has somewhere to configure the agent URL (CFOP-63) ------------
+
+// deadAgentURL is an address nothing is listening on: a httptest server that
+// has already been closed, rather than a guessed port that might be in use on
+// the runner.
+func deadAgentURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	return url
+}
+
+// TestFailedFirstRunStillLeavesAConfigToEdit is the ordering guard.
+//
+// The reported path: install the binary, paste the Slack line, get a connection
+// error — and find no config file, because the only thing that writes one ran
+// after the fetch that just failed. The operator is then told to set an address
+// with nowhere to set it. Scaffolding first makes the error actionable.
+func TestFailedFirstRunStillLeavesAConfigToEdit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(cfoperator.EnvAgentURL, deadAgentURL(t))
+	t.Setenv(cfoperator.EnvAPIToken, "test-token")
+
+	root := newTestRoot()
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"attach", "1889"})
+
+	err := root.Execute()
+	if err == nil {
+		t.Fatal("an unreachable agent should fail")
+	}
+
+	body, readErr := os.ReadFile(filepath.Join(home, ".cfassist", "config.yaml"))
+	if readErr != nil {
+		t.Fatalf("a failed first run left nothing to configure: %v", readErr)
+	}
+	if !strings.Contains(string(body), "cfoperator:") {
+		t.Error("the config written on first run has no cfoperator: block to fill in")
+	}
+
+	// The error has to point at that file, and at the variable that beats it.
+	for _, want := range []string{cfoperator.EnvAgentURL, "cfoperator:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("connection error should name %s, got %v", want, err)
+		}
+	}
+}
+
+// TestPrintScaffoldsNothing: docs/cockpit.md promises --print "makes the API
+// calls and nothing else". It is the pipe-into-another-agent path, and it does
+// not have the first-run problem the scaffolding above solves — creating a
+// directory tree and writing a file out of a pipe would be a surprise, so the
+// scaffolding is deliberately skipped here.
+func TestPrintScaffoldsNothing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/investigations/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1889, "outcome": "needs_action", "trigger": "PodUnschedulable",
+		})
+	}))
+	defer srv.Close()
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(cfoperator.EnvAgentURL, srv.URL)
+	t.Setenv(cfoperator.EnvAPIToken, "test-token")
+
+	out := captureStdout(t, func() {
+		root := newTestRoot()
+		root.SetOut(io.Discard)
+		root.SetArgs([]string{"attach", "1889", "--print"})
+		if err := root.Execute(); err != nil {
+			t.Fatalf("attach --print failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "CFOperator briefing") {
+		t.Fatalf("--print printed no briefing:\n%s", out)
+	}
+
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatalf("read home: %v", err)
+	}
+	if len(entries) != 0 {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("--print wrote %v into a fresh home; it should make the API calls and nothing else", names)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	orig := os.Stdout
@@ -321,6 +420,10 @@ func TestSwapSessionTokenRestoresAnUnsetEnvToUnset(t *testing.T) {
 // environment rather than this code.
 func stubKubectl(t *testing.T, phase string) *[][]string {
 	t.Helper()
+	// attach scaffolds ~/.cfassist before it does anything else (CFOP-63), and
+	// --spawn is on that path. A temporary HOME keeps the suite from writing
+	// into the developer's real config directory.
+	t.Setenv("HOME", t.TempDir())
 	calls := &[][]string{}
 	origCapture, origInteractive := runKubectlCapture, runKubectlInteractive
 	origInterval, origTimeout := spawnPollInterval, spawnReadyTimeout
