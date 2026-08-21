@@ -124,7 +124,8 @@ _SUMMARY_CONFIDENCE_CAP = 0.5
 # can do itself — never park them as needs-human. Exclude physically-human work
 # even when the text also contains a check/verify verb.
 _INVESTIGATE_SHAPED = re.compile(
-    r'\b(check|verify|confirm|investigate|monitor|look\s+into|examine)\b', re.I)
+    r'\b(check|verify|confirm|investigate|monitor|look\s+into|examine|'
+    r'inspect|capture)\b', re.I)
 _HUMAN_ONLY_SHAPED = re.compile(
     r'\b(physically|hardware|power\s+supply|power\s+strip|sd\s+card|'
     r'replace|swap\s+it|wiring|console|hard-?cycle)\b', re.I)
@@ -142,7 +143,10 @@ _REMEDIATION_CLASS_RUBRIC = (
     "- gitops-patch: a single manifest change in a GitOps repo (set repo: "
     "aachtenberg/homelab-infra for cluster apps, aachtenberg/cfoperator-deploy "
     "for cfoperator/event-runtime itself).\n"
-    "- k8s-action: a reversible in-cluster verb (rollout restart, delete pod).\n"
+    "- k8s-action: a reversible in-cluster verb — rollout restart, delete "
+    "pod, scale a deployment, cordon a node, or create a one-off Job from a "
+    "CronJob to capture logs. It acts on the cluster with kubectl; "
+    "node-action is only for ssh onto a host.\n"
     "- node-action: a host change over ssh/ansible (DNS, files, systemd).\n"
     "- manual: genuinely needs a human's hands or judgement (hardware, wiring, "
     "a risky decision) — NOT something you could investigate first.\n"
@@ -2608,11 +2612,31 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             conf = max(float(conf), 0.0) if conf <= 1.0 else None
         else:
             conf = None
+        rclass = str(payload.get('remediation_class'))
+        host = (str(payload.get('host') or '').strip() or None)
+        # A node-action is "a host change over ssh/ansible" — with no host
+        # there is nowhere to ssh, so the answer is incoherent rather than
+        # merely incomplete. Returning None routes it into the same
+        # nudge -> rotate -> degrade ladder that malformed output takes, which
+        # buys a real second opinion instead of guessing a class on the
+        # model's behalf. Same posture as the >1.0 confidence rule above: an
+        # incoherent value is never salvaged into a classification.
+        #
+        # This MUST stay at parse time. _queue_needs_action_remediation
+        # backfills a missing host from the alert's instance/node label, so a
+        # host-less node-action reaching that far does NOT fail at enqueue —
+        # it inherits an unrelated host and travels the queue as a real
+        # node-action. That backfill is how a kubectl-shaped recommendation
+        # gets laundered onto the SSH path (live row #49, CFOP-60: died at the
+        # executor on "node-action execution not enabled"). Moving this check
+        # below the backfill would recreate the bug.
+        if rclass == 'node-action' and not host:
+            return None
         return {
-            'remediation_class': str(payload.get('remediation_class')),
+            'remediation_class': rclass,
             'risk': str(payload.get('risk') or 'high'),
             'confidence': conf,
-            'host': (str(payload.get('host') or '').strip() or None),
+            'host': host,
             'repo': (str(payload.get('repo') or '').strip() or None),
         }
 
