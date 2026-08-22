@@ -104,15 +104,13 @@ credential.
 0. Install the binary, if you have not:
 
    ```bash
-   gh release download cfassist-v0.10.0 -R aachtenberg/cfoperator \
-     --pattern 'cfassist-linux-arm64'
-   chmod +x cfassist-linux-arm64
-   sudo mv cfassist-linux-arm64 /usr/local/bin/cfassist
+   curl -fsSL https://raw.githubusercontent.com/aachtenberg/cfoperator/main/scripts/install-cfassist.sh | sh
    ```
 
-   (Pick your platform: `linux-amd64`, `linux-arm64`, `linux-arm`,
-   `darwin-amd64`, `darwin-arm64`. Or build from source: `cd cfassist-go &&
-   make build`.)
+   Detects OS and CPU, verifies the checksum, installs to `/usr/local/bin`. It
+   deliberately does not need `gh` — the machine you most want cfassist on is a
+   Pi, and a stock Raspberry Pi OS has no `gh`. `CFASSIST_VERSION=0.10.0` pins a
+   release; `cd cfassist-go && make build` builds from source.
 
 1. Mint a token at `<console>/admin?tab=tokens`. **`read` scope is enough** —
    attach never writes (see below).

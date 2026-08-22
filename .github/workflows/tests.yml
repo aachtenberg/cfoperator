@@ -81,6 +81,7 @@ jobs:
             test_build_triage_dataset.py test_remediation_taxonomy.py \
             test_investigation_triage.py \
             test_compose_trial.py test_cockpit_attach_contract.py \
+            test_install_cfassist.py \
             test_cockpit_spawn.py test_cockpit_ladder.py test_cockpit_writeback.py \
             test_demo_alert.py test_demo_kind.py test_helm_chart.py \
             test_setup_wizard.py

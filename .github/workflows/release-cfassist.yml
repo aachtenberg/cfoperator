@@ -75,3 +75,63 @@ jobs:
           files: |
             artifacts/cfassist-*
             artifacts/checksums.txt
+
+      # The moving pointer scripts/install-cfassist.sh downloads from, so the
+      # install one-liner carries no version number and does not go stale.
+      #
+      # A dedicated tag rather than GitHub's own /releases/latest: that returns
+      # the newest release across ALL tag series in this repo (cfassist-v*,
+      # llm-gateway-v*, v*), so it would hand out the wrong artifact the first
+      # time a non-cfassist release is cut.
+      #
+      # Updated in place, never deleted first. A delete-then-create leaves a
+      # window where cfassist-latest does not exist, and if the create then
+      # fails — a bad glob, a notes parse error, a permissions blip — the
+      # documented one-liner 404s for everyone until the next version tag
+      # succeeds. A failed refresh must not be worse than a stale pointer, so
+      # the order is: ensure it exists, move the tag, clobber the assets,
+      # rewrite the notes. Every step is survivable on its own.
+      #
+      # The uploaded binaries are the ones this version tag just built, so a
+      # cfassist installed from cfassist-latest still reports its real version —
+      # the *tag* is a pointer, the *binary* never says "latest".
+      # `--latest=false` keeps the pointer from stealing the Latest badge from
+      # the numbered releases.
+      - name: Refresh the cfassist-latest pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NOTES="Moving pointer to **${GITHUB_REF_NAME}**, for the install one-liner:
+
+          \`\`\`
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install-cfassist.sh | sh
+          \`\`\`
+
+          The binaries here are the ones built by ${GITHUB_REF_NAME} and report that version. Pin an exact release with \`CFASSIST_VERSION=x.y.z\`."
+
+          if ! gh release view cfassist-latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create cfassist-latest \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --latest=false \
+              --title "cfassist latest (${GITHUB_REF_NAME})" \
+              --notes "${NOTES}"
+          fi
+
+          # Move the tag onto this release's commit. Done through the API
+          # because this job has no checkout. Non-fatal: a pointer whose tag
+          # lags is cosmetic, while a failed release job is not.
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/cfassist-latest" \
+            -f sha="${GITHUB_SHA}" -F force=true >/dev/null || \
+            echo "warning: could not move the cfassist-latest tag; assets below are still current"
+
+          gh release upload cfassist-latest \
+            artifacts/cfassist-* artifacts/checksums.txt \
+            --clobber --repo "${GITHUB_REPOSITORY}"
+
+          gh release edit cfassist-latest \
+            --repo "${GITHUB_REPOSITORY}" \
+            --latest=false \
+            --title "cfassist latest (${GITHUB_REF_NAME})" \
+            --notes "${NOTES}"
