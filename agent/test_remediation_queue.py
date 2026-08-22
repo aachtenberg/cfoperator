@@ -6,6 +6,7 @@ unattended, so it gets the same scrutiny as the worker-side classification.
 """
 
 import os
+import re
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -39,6 +40,9 @@ def _fake_op(*, drain=False, reap=False, max_per_tick=3):
     # Unset change-record URL → prepare is a no-op pass-through (homelab default).
     op._change_record_url = lambda: ""
     op._prepare_node_action_change_record = lambda work: work
+    # CFOP-71: no outstanding PRs by default, so drain tests exercise draining.
+    # A bare MagicMock is not comparable to the int cap and would TypeError.
+    op._open_remediation_pr_count = lambda: 0
     return _wire_flags(op)
 
 
@@ -428,8 +432,37 @@ def test_build_executor_manifest_node_action_disabled_no_mount():
 # ---- feed hook ---------------------------------------------------------------
 
 
+def _no_node_incident(op):
+    """Wire the real node-incident collapse (CFOP-71).
+
+    Deliberately the real method, not a None stub: with a MagicMock `tools`
+    it traverses the genuine fail-open path (unreadable nodes -> no collapse),
+    so these fixtures prove the collapse cannot fire when node readiness is
+    unknown. A bare MagicMock would be truthy and silently rewrite every
+    dedupe key.
+    """
+    op._normalize_host = CFOperator._normalize_host
+    op._notready_nodes = lambda: CFOperator._notready_nodes(op)
+    op._collapse_key_for_node_incident = (
+        lambda details: CFOperator._collapse_key_for_node_incident(op, details))
+    return op
+
+
+def _confirming_judge(op):
+    """Wire an explicitly confirming mutation judge (CFOP-70).
+
+    Auto-eligible fixtures now traverse the gate, so a test that means to
+    exercise the enqueue path has to say what the judge said. Left as a bare
+    MagicMock the gate would fail closed and the fixture would silently stop
+    testing enqueue at all.
+    """
+    op._judge_mutation_remediation = MagicMock(
+        return_value={"verdict": "confirm", "reason": "ok", "model": "claude-opus-4-8"})
+    return op
+
+
 def test_maybe_queue_remediation_feeds_when_enabled():
-    op = _wire_flags(MagicMock())
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 7
     details = {"remediation_class": "k8s-action", "risk": "low", "confidence": 0.9,
@@ -541,6 +574,8 @@ def _feed_op(feed=True):
         "host": None, "repo": None})
     op._maybe_queue_remediation = (
         lambda inv_id, details: CFOperator._maybe_queue_remediation(op, inv_id, details))
+    _confirming_judge(op)
+    _no_node_incident(op)
     return _wire_flags(op)
 
 
@@ -693,7 +728,7 @@ def test_feed_from_sweeps_classifier_investigate_dispatches():
 def test_maybe_queue_remediation_truncates_host_id():
     # RemediationQueue.host_id is String(64); an over-long k8s resource name
     # must not reject the INSERT after classification already succeeded.
-    op = _wire_flags(MagicMock())
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 5
     details = {"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
@@ -1036,7 +1071,7 @@ def test_llm_provider_tag():
 
 
 def test_maybe_queue_remediation_stamps_provider():
-    op = _wire_flags(MagicMock())
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 9
     details = {
@@ -1082,6 +1117,7 @@ def test_store_deep_investigation_stamps_provider_and_pr_attempt():
     # Use the real queue helper so provider lands in the payload.
     op._maybe_queue_remediation = lambda inv_id, details: CFOperator._maybe_queue_remediation(
         op, inv_id, details)
+    _no_node_incident(op)
 
     alert = {"summary": "CIFS mount failed"}
     result = {"details": {
@@ -1108,7 +1144,7 @@ def test_store_deep_investigation_stamps_provider_and_pr_attempt():
 
 def _na_op(feed=True):
     """Op wired for _queue_needs_action_remediation with the real queue helpers."""
-    op = _wire_flags(MagicMock())
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": feed}}
     op.kb.queue_remediation.return_value = 9
     op._count_enqueued = MagicMock()
@@ -1181,7 +1217,9 @@ def test_classifier_llm_failure_degrades_to_needs_human():
     op._chat_with_tools_with_fallback = MagicMock(side_effect=RuntimeError("no providers"))
     hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
     assert hints == {"remediation_class": "manual", "risk": "high",
-                     "confidence": None, "host": None, "repo": None}
+                     "confidence": None, "host": None, "repo": None,
+                     # the ladder ran out, so no model produced this result
+                     "classifier_backend": None, "classifier_model": None}
     # and that degraded row can never clear the auto-execute gate
     nc, nr = normalize_remediation_fields(hints["remediation_class"], hints["risk"])
     assert remediation_is_auto_eligible(nc, nr, hints["confidence"]) is False
@@ -1536,3 +1574,774 @@ def test_approve_endpoint_404_when_row_missing():
     resp = client.post("/api/remediations/7/approve")
     assert resp.status_code == 404
     op.kb.update_remediation_status.assert_not_called()
+
+
+# ---- CFOP-70: the frontier-model mutation judge -------------------------------
+#
+# The incident these guard: raspberrypi4 went NotReady, and the local classifier
+# returned gitops-patch / low / 1.0 three times for "remove the nodeSelector
+# pinning immich-kiosk to raspberrypi4". The pin is deliberate — that node drives
+# the physical TV — and an opus executor faithfully implemented the wrong
+# instruction into PRs #99, #100 and #101. Nothing had asked whether the change
+# should be made at all.
+
+# The live shape of that classification, kept verbatim as the fixture.
+_IMMICH_KIOSK_DETAILS = {
+    "remediation_class": "gitops-patch", "risk": "low", "confidence": 1.0,
+    "recommendation": ("Remove the nodeSelector kubernetes.io/hostname: raspberrypi4 "
+                       "from the immich-kiosk deployment so it can schedule elsewhere"),
+    "host": "raspberrypi4", "repo": "aachtenberg/homelab-infra",
+    "trigger": "KubeDeploymentReplicasMismatch", "report": "immich-kiosk has 0/1 ready",
+}
+
+
+def _judge_op(judge_return=None, judge_raises=None):
+    """Op wired for _maybe_queue_remediation with a controllable judge."""
+    op = _no_node_incident(_wire_flags(MagicMock()))
+    op.config = {"remediation": {"queue_feed": True}}
+    op.kb.queue_remediation.return_value = 77
+    op._count_enqueued = MagicMock()
+    if judge_raises is not None:
+        op._judge_mutation_remediation = MagicMock(side_effect=judge_raises)
+    else:
+        op._judge_mutation_remediation = MagicMock(return_value=judge_return)
+    return op
+
+
+def test_confident_mutation_does_not_enqueue_auto_eligible_without_the_judge():
+    # The core of CFOP-70: gemma4's self-reported 1.0 is no longer sufficient on
+    # its own. A downgrade verdict must strip the confidence that is the only
+    # field capable of clearing the auto gate, so the row lands needs-human.
+    op = _judge_op({"verdict": "downgrade", "model": "claude-opus-4-8",
+                    "reason": "the nodeSelector looks deliberate"})
+    assert CFOperator._maybe_queue_remediation(op, 2266, dict(_IMMICH_KIOSK_DETAILS)) == 77
+    op._judge_mutation_remediation.assert_called_once()
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["confidence"] is None
+    # class and risk are NOT rewritten — the classifier's honest read survives
+    assert kwargs["remediation_class"] == "gitops-patch" and kwargs["risk"] == "low"
+    nc, nr = normalize_remediation_fields(kwargs["remediation_class"], kwargs["risk"])
+    assert remediation_is_auto_eligible(nc, nr, kwargs["confidence"]) is False
+    assert "deliberate" in kwargs["payload"]["judge_reason"]
+
+
+@pytest.mark.parametrize("judge_result,judge_exc", [
+    # unavailable / unparseable both surface as an explicit downgrade verdict
+    ({"verdict": "downgrade", "model": "claude-opus-4-8",
+      "reason": "judge unavailable (no ANTHROPIC_API_KEY)"}, None),
+    ({"verdict": "downgrade", "model": "claude-opus-4-8",
+      "reason": "judge verdict unparseable"}, None),
+])
+def test_judge_failure_modes_park_and_never_auto_queue(judge_result, judge_exc):
+    op = _judge_op(judge_result, judge_exc)
+    CFOperator._maybe_queue_remediation(op, 1, dict(_IMMICH_KIOSK_DETAILS))
+    assert op.kb.queue_remediation.call_args.kwargs["confidence"] is None
+
+
+def test_judge_raising_parks_the_row_instead_of_escaping():
+    # _judge_mutation_remediation catches its own transport errors, so a raise
+    # here means a bug in the gate. A broken gate must not become an open gate —
+    # and it must not escape either: the needs_action caller does not wrap this
+    # call, so an exception would abort the enqueue and lose the row entirely.
+    op = _judge_op(judge_raises=RuntimeError("boom"))
+    assert CFOperator._maybe_queue_remediation(op, 1, dict(_IMMICH_KIOSK_DETAILS)) == 77
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["confidence"] is None  # parked, not executed
+    assert "boom" in kwargs["payload"]["judge_reason"]
+
+
+def test_judge_confirm_enqueues_at_full_confidence():
+    # The mutation-check the issue asks for: force confirm and the immich-kiosk
+    # case sails through exactly as it did before the gate. Without this the
+    # fail-closed assertions above would pass for a gate that blocks everything.
+    op = _judge_op({"verdict": "confirm", "model": "claude-opus-4-8", "reason": "fine"})
+    assert CFOperator._maybe_queue_remediation(op, 2266, dict(_IMMICH_KIOSK_DETAILS)) == 77
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["confidence"] == 1.0
+    nc, nr = normalize_remediation_fields(kwargs["remediation_class"], kwargs["risk"])
+    assert remediation_is_auto_eligible(nc, nr, kwargs["confidence"]) is True
+    assert "judge_reason" not in kwargs["payload"]
+
+
+def test_judge_reject_records_the_row_then_closes_it():
+    # 'reject' is not a silent drop: the queue is the single ledger, so the row
+    # exists and carries why it was refused. Terminal status also releases the
+    # dedupe key, so a genuine recurrence is judged afresh.
+    op = _judge_op({"verdict": "reject", "model": "claude-opus-4-8",
+                    "reason": "the pin is deliberate; removing it moves the kiosk off the TV"})
+    assert CFOperator._maybe_queue_remediation(op, 2266, dict(_IMMICH_KIOSK_DETAILS)) == 77
+    op.kb.queue_remediation.assert_called_once()
+    args, kwargs = op.kb.update_remediation_status.call_args
+    assert args[0] == 77 and args[1] == "rejected"
+    assert "deliberate" in kwargs["last_error"]
+
+
+@pytest.mark.parametrize("rclass,risk,conf", [
+    ("manual", "high", None),       # human-only work
+    ("investigate", "low", 0.95),   # not a mutation at all
+    ("gitops-patch", "high", 0.95),  # mutation, but not auto-eligible
+    ("gitops-patch", "low", 0.5),   # mutation, but under the confidence bar
+    ("node-action", "low", 1.0),    # never auto-eligible whatever the confidence
+])
+def test_non_auto_eligible_rows_skip_the_judge_entirely(rclass, risk, conf):
+    # No cost regression: the judge is a frontier-model call, and a row that
+    # cannot auto-execute has no unattended-mutation risk to review. It parks
+    # at needs-human on the existing gate, as it always did.
+    op = _judge_op({"verdict": "confirm", "model": "claude-opus-4-8", "reason": ""})
+    details = {"remediation_class": rclass, "risk": risk, "confidence": conf,
+               "recommendation": "do a thing", "host": "rpi4"}
+    CFOperator._maybe_queue_remediation(op, 1, details)
+    op._judge_mutation_remediation.assert_not_called()
+    op.kb.queue_remediation.assert_called_once()
+
+
+def _judging_op(complete=None, providers=("anthropic",)):
+    """Op wired to run the real judge ladder over a controllable completion."""
+    op = MagicMock()
+    op._parse_judge_verdict = CFOperator._parse_judge_verdict
+    op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    op._judge_providers = lambda: list(providers)
+    if complete is not None:
+        op._complete_judge = complete
+    return op
+
+
+def test_judge_is_pinned_to_the_model_floor_despite_a_downgraded_executor():
+    """Mirrors the node-action floor test: no config key can lower the judge."""
+    op = _judging_op(MagicMock(return_value='{"verdict": "confirm", "reason": "ok"}'))
+    op._executor_config.return_value = {"llm": {"model": "claude-haiku-4-5-20251001"}}
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "confirm"
+    assert out["backend"] == "anthropic"
+    assert out["model"] == agent_mod._ANTHROPIC_DEFAULT_EXEC_MODEL == "claude-opus-4-8"
+    # (system_prompt, user_msg, backend, model)
+    assert op._complete_judge.call_args[0][3] == "claude-opus-4-8"
+
+
+def test_no_fast_tier_model_sits_in_the_judge_seat():
+    # The peers must all be their vendor's frontier tier. A fast/mini/flash
+    # model here would do routine judging the first time the peers above it were
+    # unreachable — most of the way back to the bug CFOP-70 exists to fix, since
+    # the whole premise is that a cheap model's confident wrong answer is what
+    # opened three bad PRs.
+    # Tokens, not substrings: 'mini' is inside 'gemini', so a substring check
+    # fails a perfectly good Pro model.
+    fast_tiers = {"flash", "mini", "haiku", "lite", "turbo", "instant", "small"}
+    for backend, model in agent_mod._JUDGE_MODEL_FLOOR.items():
+        tokens = set(re.split(r"[^a-z0-9]+", model.lower()))
+        clash = tokens & fast_tiers
+        assert not clash, f"{backend} judge model {model} is a fast tier ({clash})"
+
+
+def test_every_judge_backend_has_a_pinned_frontier_model():
+    # A backend the operator can select but that has no pinned model would
+    # KeyError in the ladder; an empty one would send a model-less request.
+    assert set(agent_mod._JUDGE_MODEL_FLOOR) == {"anthropic", "xai", "gemini"}
+    assert set(agent_mod._JUDGE_DEFAULT_ORDER) == set(agent_mod._JUDGE_MODEL_FLOOR)
+    for backend, model in agent_mod._JUDGE_MODEL_FLOOR.items():
+        assert model and isinstance(model, str), backend
+    # anthropic reuses the one floor constant rather than repeating the string
+    assert (agent_mod._JUDGE_MODEL_FLOOR["anthropic"]
+            is agent_mod._ANTHROPIC_DEFAULT_EXEC_MODEL)
+
+
+def test_judge_fails_over_to_the_next_peer_when_a_vendor_is_unreachable():
+    # Availability failover, not answer-shopping: anthropic is down, so xai
+    # rules instead. Before this, one missing key parked every remediation.
+    calls = []
+
+    def complete(system, user, backend, model):
+        calls.append((backend, model))
+        if backend == "anthropic":
+            raise RuntimeError("529 overloaded")
+        return '{"verdict": "reject", "reason": "the pin is deliberate"}'
+
+    op = _judging_op(complete, providers=("anthropic", "xai"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "reject"
+    assert out["backend"] == "xai" and out["model"] == "grok-4.5"
+    assert calls == [("anthropic", "claude-opus-4-8"), ("xai", "grok-4.5")]
+
+
+def test_judge_does_not_shop_providers_for_a_parseable_answer():
+    # A model that WAS reached and answered badly is a substantive failure, not
+    # an availability one. Cycling vendors until one returns a parseable verdict
+    # is shopping for a permissive answer — and 'confirm' is the only verdict
+    # that unblocks the row. Park on the spot instead.
+    calls = []
+
+    def complete(system, user, backend, model):
+        calls.append(backend)
+        return "I reckon go for it"
+
+    op = _judging_op(complete, providers=("anthropic", "xai", "gemini"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert out["backend"] == "anthropic"          # never advanced past the first
+    assert calls == ["anthropic", "anthropic"]    # the one-shot and its nudge only
+
+
+def test_judge_with_no_keyed_provider_parks():
+    op = _judging_op(MagicMock(), providers=())
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert "no frontier judge available" in out["reason"]
+    op._complete_judge.assert_not_called()
+
+
+def test_judge_parks_when_every_peer_is_unreachable():
+    op = _judging_op(MagicMock(side_effect=RuntimeError("network down")),
+                     providers=("anthropic", "xai", "gemini"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert op._complete_judge.call_count == 3     # every peer tried
+    assert "network down" in out["reason"]
+
+
+def _providers_op(configured, keys):
+    op = MagicMock()
+    op.config = {"remediation": {"judge": {"providers": configured}}} if configured is not None \
+        else {"remediation": {}}
+    op._judge_api_key = lambda b: keys.get(b, "")
+    return op
+
+
+def test_judge_providers_defaults_to_the_full_peer_order():
+    op = _providers_op(None, {"anthropic": "k", "xai": "k", "gemini": "k"})
+    assert CFOperator._judge_providers(op) == list(agent_mod._JUDGE_DEFAULT_ORDER)
+
+
+def test_judge_providers_skips_backends_with_no_key():
+    op = _providers_op(None, {"xai": "k"})
+    assert CFOperator._judge_providers(op) == ["xai"]
+
+
+def test_judge_providers_honours_configured_order_and_drops_typos():
+    # A typo must not be treated as a new frontier tier, and must not silently
+    # produce a judge-less gate either — it is dropped, the rest still run.
+    #
+    # The typo is given a KEY on purpose: without one it would be dropped by
+    # the no-key check and this test would pass even with the whitelist gone,
+    # guarding nothing. Letting an unknown name through would KeyError on
+    # _JUDGE_MODEL_FLOOR[backend] in the ladder.
+    op = _providers_op(["gemini", "gemni", "anthropic"],
+                       {"anthropic": "k", "xai": "k", "gemini": "k", "gemni": "k"})
+    assert CFOperator._judge_providers(op) == ["gemini", "anthropic"]
+
+
+def test_judge_providers_never_emits_a_backend_without_a_pinned_model():
+    # The ladder indexes _JUDGE_MODEL_FLOOR[backend] directly, so anything this
+    # returns must be a key of it or the gate raises instead of judging.
+    op = _providers_op(["anthropic", "openai", "", None, "XAI"],
+                       {b: "k" for b in ("anthropic", "xai", "gemini", "openai")})
+    for backend in CFOperator._judge_providers(op):
+        assert backend in agent_mod._JUDGE_MODEL_FLOOR
+    # case-folded, so a capitalised entry still resolves rather than being lost
+    assert CFOperator._judge_providers(op) == ["anthropic", "xai"]
+
+
+def test_judge_providers_accepts_a_single_string():
+    op = _providers_op("xai", {"anthropic": "k", "xai": "k"})
+    assert CFOperator._judge_providers(op) == ["xai"]
+
+
+def test_judge_unavailable_downgrades_rather_than_confirming():
+    op = _judging_op(MagicMock(side_effect=RuntimeError("ANTHROPIC_API_KEY required")))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert "unavailable" in out["reason"]
+
+
+def test_judge_unparseable_nudges_once_then_downgrades():
+    op = _judging_op(MagicMock(return_value="I think you should probably do it"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert op._complete_judge.call_count == 2  # one-shot + one nudge, no third rung
+    assert "unparseable" in out["reason"]
+
+
+def test_judge_nudge_rescues_a_fenced_verdict():
+    op = _judging_op(MagicMock(side_effect=[
+        "sure thing",
+        '```json\n{"verdict": "reject", "reason": "the pin is deliberate"}\n```',
+    ]))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "reject" and "deliberate" in out["reason"]
+    # the malformed reply is quoted back on the retry (the PR #76 pattern)
+    assert "sure thing" in op._complete_judge.call_args[0][1]
+
+
+@pytest.mark.parametrize("raw", [
+    "",
+    "no json here",
+    '{"reason": "missing the verdict"}',
+    '{"verdict": "approve", "reason": "not one of the three"}',  # never coerced to confirm
+    '{"verdict": "yes"}',
+    '[{"verdict": "confirm"}]',  # array, not object
+])
+def test_parse_judge_verdict_rejects_anything_it_does_not_recognise(raw):
+    assert CFOperator._parse_judge_verdict(raw) is None
+
+
+def test_parse_judge_verdict_accepts_the_three_verdicts():
+    for v in ("confirm", "downgrade", "reject"):
+        out = CFOperator._parse_judge_verdict('{"verdict": "%s", "reason": "r"}' % v)
+        assert out == {"verdict": v, "reason": "r"}
+    # case and surrounding prose are tolerated, same as the classifier parser
+    out = CFOperator._parse_judge_verdict('Verdict below.\n{"verdict": "CONFIRM"}')
+    assert out["verdict"] == "confirm"
+
+
+def test_judge_prompt_never_frames_confirm_as_the_default():
+    # A gate whose prompt nudges toward approval is decoration. The prompt must
+    # tell the model that uncertainty means downgrade, and must name the class
+    # of mistake that actually happened (removing a deliberate constraint).
+    prompt = CFOperator._JUDGE_SYSTEM_PROMPT
+    assert "When you are unsure, downgrade" in prompt
+    assert "DELIBERATE" in prompt
+    for verdict in ("confirm", "downgrade", "reject"):
+        assert verdict in prompt
+
+
+def test_classifier_identity_is_recorded_on_the_payload():
+    # This incident needed a code read to work out which model decided to open
+    # the PR. The row now says so.
+    op = _judge_op({"verdict": "confirm", "model": "claude-opus-4-8", "reason": "ok"})
+    details = dict(_IMMICH_KIOSK_DETAILS,
+                   classifier_backend="ollama", classifier_model="gemma4:26b")
+    CFOperator._maybe_queue_remediation(op, 2266, details)
+    decided = op.kb.queue_remediation.call_args.kwargs["payload"]["decided_by"]
+    assert decided["classifier"] == {"backend": "ollama", "model": "gemma4:26b"}
+    assert decided["judge"]["model"] == "claude-opus-4-8"
+    assert decided["judge"]["verdict"] == "confirm"
+
+
+def test_classifier_stamps_the_model_that_answered():
+    op = _classifier_op()
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": _GOOD_CLASSIFICATION, "backend": "ollama", "model": "gemma4:26b"})
+    hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
+    assert hints["classifier_backend"] == "ollama"
+    assert hints["classifier_model"] == "gemma4:26b"
+
+
+# ---- CFOP-71: one dead node is one incident ----------------------------------
+#
+# raspberrypi4 went NotReady at 06:18:23Z and by 11:06 that single fact had
+# become ~15 investigations, 12 needs-human rows and 4 open PRs. The 12 rows are
+# all manual / target.host raspberrypi4, all some rewording of "physically check
+# the power and network cable". They are one fact, twelve times.
+
+# The alerts one dead node actually fired, each with its own legitimate
+# fingerprint and therefore its own dedupe key.
+_RPI4_SYMPTOMS = [
+    ("NodeNotReady", "alert-aaa1"),
+    ("KubeDeploymentReplicasMismatch", "alert-bbb2"),
+    ("KubePodNotReady", "alert-ccc3"),
+    ("KubePodNotReady", "alert-ddd4"),
+    ("ArgoCDMetricsAbsent", "alert-eee5"),
+    ("PromtailMemoryHigh", "alert-fff6"),
+]
+
+
+def _nodes_op(nodes):
+    """Op whose cluster reports these nodes, wired with the real collapse."""
+    op = _wire_flags(MagicMock())
+    op.config = {"remediation": {"queue_feed": True}}
+    op.tools.k8s_tools.get_nodes.return_value = {"success": True, "nodes": nodes}
+    op._normalize_host = CFOperator._normalize_host
+    op._notready_nodes = lambda: CFOperator._notready_nodes(op)
+    op._node_incident_dedupe_key = CFOperator._node_incident_dedupe_key
+    op._collapse_key_for_node_incident = (
+        lambda d: CFOperator._collapse_key_for_node_incident(op, d))
+    op._record_absorbed_symptom = (
+        lambda key, d: CFOperator._record_absorbed_symptom(op, key, d))
+    op._count_enqueued = MagicMock()
+    _confirming_judge(op)
+    return op
+
+
+_RPI4_DOWN = [{"name": "raspberrypi4", "ready": "False"},
+              {"name": "raspberrypi2", "ready": "True"}]
+
+
+def test_symptoms_of_a_notready_node_collapse_onto_one_row():
+    op = _nodes_op(_RPI4_DOWN)
+    op.kb.queue_remediation.return_value = 51
+    # First symptom: no incident row yet, so one is created.
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    first = CFOperator._maybe_queue_remediation(op, 2253, {
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "recommendation": "physically check the power and network cable",
+        "host": "raspberrypi4", "trigger": _RPI4_SYMPTOMS[0][0],
+        "dedupe_key": _RPI4_SYMPTOMS[0][1]})
+    assert first == 51
+    assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "node-down-raspberrypi4"
+    # and the key lands in BOTH places, or the KB filter never matches
+    assert op.kb.queue_remediation.call_args.kwargs["payload"]["dedupe_key"] == "node-down-raspberrypi4"
+
+    # Every later symptom folds onto it — no second row, whatever its own key.
+    op.kb.find_open_remediation_by_dedupe_key.return_value = {"id": 51}
+    op.kb.queue_remediation.reset_mock()
+    for trigger, key in _RPI4_SYMPTOMS[1:]:
+        rid = CFOperator._maybe_queue_remediation(op, 2260, {
+            "remediation_class": "manual", "risk": "high", "confidence": None,
+            "recommendation": "check the pod", "host": "raspberrypi4",
+            "trigger": trigger, "dedupe_key": key})
+        assert rid == 51, f"{trigger} opened its own row"
+    op.kb.queue_remediation.assert_not_called()
+    # the incident row records what it absorbed
+    absorbed = [c.args[1] for c in op.kb.record_remediation_absorbed.call_args_list]
+    assert absorbed == [t for t, _ in _RPI4_SYMPTOMS[1:]]
+
+
+def test_symptoms_on_a_ready_node_still_enqueue_independently():
+    # The collapse must be conditional, not a blanket host merge: a disk-full
+    # and a crash-looping pod on a healthy host are two problems, not one.
+    op = _nodes_op(_RPI4_DOWN)
+    op.kb.queue_remediation.return_value = 90
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    for key in ("alert-disk", "alert-crashloop"):
+        CFOperator._maybe_queue_remediation(op, 1, {
+            "remediation_class": "manual", "risk": "high", "confidence": None,
+            "recommendation": "look at it", "host": "raspberrypi2",  # Ready
+            "trigger": "t", "dedupe_key": key})
+    keys = [c.kwargs["dedupe_key"] for c in op.kb.queue_remediation.call_args_list]
+    assert keys == ["alert-disk", "alert-crashloop"]  # untouched
+    op.kb.record_remediation_absorbed.assert_not_called()
+
+
+def test_collapse_fails_open_when_node_readiness_is_unreadable():
+    # A dedupe optimisation must never be the reason a real problem goes
+    # unrecorded. Every failure to read nodes leaves the key alone.
+    for nodes_result in ({"success": False},
+                         Exception("kubectl timed out")):
+        op = _nodes_op([])
+        if isinstance(nodes_result, Exception):
+            op.tools.k8s_tools.get_nodes.side_effect = nodes_result
+        else:
+            op.tools.k8s_tools.get_nodes.return_value = nodes_result
+        op.kb.queue_remediation.return_value = 5
+        CFOperator._maybe_queue_remediation(op, 1, {
+            "remediation_class": "manual", "risk": "high", "confidence": None,
+            "recommendation": "r", "host": "raspberrypi4", "dedupe_key": "alert-x"})
+        assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "alert-x"
+
+
+def test_collapse_needs_no_k8s_tools_to_be_safe():
+    op = _nodes_op([])
+    op.tools.k8s_tools = None
+    op.kb.queue_remediation.return_value = 5
+    CFOperator._maybe_queue_remediation(op, 1, {
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "recommendation": "r", "host": "raspberrypi4", "dedupe_key": "alert-x"})
+    assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "alert-x"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("raspberrypi4", "raspberrypi4"),
+    ("raspberrypi4:9100", "raspberrypi4"),        # the Prometheus instance label
+    ("RaspberryPi4", "raspberrypi4"),
+    ("http://raspberrypi4:9100/metrics", "raspberrypi4"),
+    ("raspberrypi4.local.", "raspberrypi4.local"),
+    ("", ""),
+    (None, ""),
+])
+def test_normalize_host_strips_what_labels_carry(raw, expected):
+    assert CFOperator._normalize_host(raw) == expected
+
+
+def test_collapse_matches_an_fqdn_against_a_short_node_name():
+    op = _nodes_op(_RPI4_DOWN)
+    key = CFOperator._collapse_key_for_node_incident(op, {"host": "raspberrypi4.lan:9100"})
+    assert key == "node-down-raspberrypi4"
+
+
+def test_collapse_ignores_a_host_that_is_not_a_node():
+    # A pod or service name must not be mistaken for a node.
+    op = _nodes_op(_RPI4_DOWN)
+    assert CFOperator._collapse_key_for_node_incident(op, {"host": "immich-kiosk"}) is None
+    assert CFOperator._collapse_key_for_node_incident(op, {"host": ""}) is None
+
+
+# ---- CFOP-71: the open-PR cap reaches the executor path ----------------------
+
+
+def test_drainer_refuses_to_spawn_past_the_open_pr_cap():
+    # Four cfop/ PRs were open against a configured max_open_prs of 3, because
+    # the cap lived only in the agent-side proposer.
+    op = _fake_op(drain=True)
+    op.config["remediation"]["max_open_prs"] = 3
+    op._open_remediation_pr_count = lambda: 3
+    assert CFOperator._drain_remediation_queue(op) == 0
+    # the row is LEFT QUEUED, not claimed and not failed — no executor Job and
+    # no frontier-model diff is burned producing a PR that cannot open yet
+    op.kb.claim_next_remediation.assert_not_called()
+    op._spawn_remediation_executor.assert_not_called()
+    op.kb.fail_remediation.assert_not_called()
+
+
+def test_drainer_spawns_while_under_the_cap():
+    # Mutation-check for the cap: under it, draining is unchanged.
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["max_open_prs"] = 3
+    op._open_remediation_pr_count = lambda: 2
+    op.kb.claim_next_remediation.side_effect = [{"id": 1, "remediation_class": "gitops-patch"}]
+    assert CFOperator._drain_remediation_queue(op) == 1
+    op._spawn_remediation_executor.assert_called_once()
+
+
+def test_drainer_cap_stops_mid_tick_when_it_is_reached():
+    op = _fake_op(drain=True, max_per_tick=5)
+    op.config["remediation"]["max_open_prs"] = 2
+    counts = iter([0, 1, 2, 2, 2])
+    op._open_remediation_pr_count = lambda: next(counts)
+    op.kb.claim_next_remediation.side_effect = [
+        {"id": i, "remediation_class": "gitops-patch"} for i in range(1, 6)]
+    assert CFOperator._drain_remediation_queue(op) == 2  # stopped at the cap
+
+
+def test_open_pr_count_includes_committed_work_not_just_open_prs():
+    # The executor spawn is ASYNC: a row does not reach 'pr-open' until its Job
+    # posts back, which can be many ticks later. Counting only opened PRs let a
+    # single tick claim against a stale count and blow through the cap.
+    op = MagicMock()
+    op.kb.count_remediations_by_status.return_value = {
+        "claimed": 1, "executing": 1, "pr-open": 2, "verifying": 1,
+        "needs-human": 12, "resolved": 40,  # must NOT count toward the PR cap
+    }
+    assert CFOperator._open_remediation_pr_count(op) == 5
+    # one grouped query, not a row pull per status — the old call also capped at
+    # 50 rows, so a cap above 50 would have silently stopped counting
+    op.kb.list_remediations_by_status.assert_not_called()
+    # a transient DB error must not stall the whole queue: this is a volume
+    # guard, not a safety gate
+    op.kb.count_remediations_by_status.side_effect = RuntimeError("db down")
+    assert CFOperator._open_remediation_pr_count(op) == 0
+
+
+def test_a_spawn_burst_cannot_exceed_the_cap_within_one_tick():
+    # 1 PR already open, cap 3, 3 auto-eligible rows queued, max_drain_per_tick
+    # 3. Before the fix this spawned all three against a stale count of 1 and
+    # produced 4 open PRs against a cap of 3 — the exact defect the cap exists
+    # to prevent, reached by a spawn burst instead of duplicate symptoms.
+    state = {"pr-open": 1, "verifying": 0, "claimed": 0, "executing": 0}
+    op = _fake_op(drain=True, max_per_tick=3)
+    op.config["remediation"]["max_open_prs"] = 3
+    op.kb.count_remediations_by_status = lambda: dict(state)
+    op._open_remediation_pr_count = lambda: CFOperator._open_remediation_pr_count(op)
+    rows = [{"id": i, "remediation_class": "gitops-patch"} for i in (1, 2, 3)]
+
+    def claim(job, exclude_ids=None):
+        # the spawn is async — the row goes to 'claimed', not to 'pr-open'
+        if rows:
+            r = rows.pop(0)
+            state["claimed"] += 1
+            return r
+        return None
+
+    op.kb.claim_next_remediation = claim
+    spawned = CFOperator._drain_remediation_queue(op)
+    assert spawned == 2, "the third spawn would have made 4 PRs against a cap of 3"
+    assert state["pr-open"] + state["claimed"] == 3
+
+
+# ---- CFOP-71: recovery closes its own paperwork ------------------------------
+
+
+def test_recovered_node_auto_resolves_its_incident_row():
+    op = _nodes_op([{"name": "raspberrypi4", "ready": "True"},
+                    {"name": "raspberrypi2", "ready": "True"}])
+    op.kb.resolve_node_incidents_for_ready_hosts.return_value = [51]
+    assert CFOperator._resolve_recovered_node_incidents(op) == 1
+    hosts = op.kb.resolve_node_incidents_for_ready_hosts.call_args[0][0]
+    assert sorted(hosts) == ["raspberrypi2", "raspberrypi4"]
+
+
+def test_recovery_sweep_passes_only_ready_hosts():
+    op = _nodes_op(_RPI4_DOWN)
+    op.kb.resolve_node_incidents_for_ready_hosts.return_value = []
+    CFOperator._resolve_recovered_node_incidents(op)
+    hosts = op.kb.resolve_node_incidents_for_ready_hosts.call_args[0][0]
+    assert hosts == ["raspberrypi2"]  # the still-down node keeps its row
+
+
+def test_recovery_sweep_is_silent_when_the_cluster_is_unreadable():
+    op = _nodes_op([])
+    op.tools.k8s_tools.get_nodes.side_effect = RuntimeError("no kubectl")
+    assert CFOperator._resolve_recovered_node_incidents(op) == 0
+    op.kb.resolve_node_incidents_for_ready_hosts.assert_not_called()
+
+
+
+# ---- follow-ups from the PR #164 review --------------------------------------
+
+
+def test_judge_returning_a_non_verdict_parks_instead_of_escaping():
+    # The gate must not trust its own return shape either: a non-dict would
+    # AttributeError out of _maybe_queue_remediation, and the needs_action
+    # caller does not wrap it, so the row would be lost rather than parked.
+    for bogus in (None, "confirm", ["confirm"], 42):
+        op = _judge_op(bogus)
+        assert CFOperator._maybe_queue_remediation(op, 1, dict(_IMMICH_KIOSK_DETAILS)) == 77
+        kwargs = op.kb.queue_remediation.call_args.kwargs
+        assert kwargs["confidence"] is None, f"{bogus!r} slipped through the gate"
+        assert "no verdict" in kwargs["payload"]["judge_reason"]
+
+
+def test_folded_symptom_links_to_the_incident_even_when_absorb_fails_open():
+    # _record_absorbed_symptom fails open (None) on a transient KB error or a
+    # race with a sibling symptom's row creation. The enqueue is then refused
+    # by the KB's own dedupe, and the caller's fallback lookup must use the
+    # COLLAPSED key — with the pre-collapse per-alert key it reports "none
+    # proposed" while the incident row sits there under the node key.
+    op = _nodes_op(_RPI4_DOWN)
+    op._investigation_dedupe_key = CFOperator._investigation_dedupe_key
+    op._maybe_queue_remediation = lambda i, d: CFOperator._maybe_queue_remediation(op, i, d)
+    op._open_remediation_for_key = lambda k: CFOperator._open_remediation_for_key(op, k)
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": "raspberrypi4", "repo": None})
+    op._record_absorbed_symptom = lambda k, d: None      # fails open
+    op.kb.queue_remediation.return_value = None          # KB dedupe refuses
+    op.kb.find_open_remediation_by_dedupe_key = (
+        lambda key: {"id": 51} if key == "node-down-raspberrypi4" else None)
+
+    rid = CFOperator._queue_needs_action_remediation(
+        op, 2266, "KubePodNotReady", {"fingerprint": "abc123"},
+        "check the pod on raspberrypi4", "report", provider="p")
+    assert rid == 51, "the investigation lost its link to the incident row"
+
+
+def test_only_paperwork_rows_auto_resolve_when_a_node_recovers():
+    from knowledge_base import node_incident_is_auto_resolvable as ok
+    # pure paperwork: a notification nobody has acted on
+    assert ok("queued") is True
+    assert ok("needs-human") is True
+    # an executor holds a lease — the reaper owns these
+    assert ok("claimed") is False
+    assert ok("executing") is False
+    # a real PR is open against the row; _reconcile_remediation_prs only tracks
+    # 'pr-open', so resolving here would orphan the PR from its reconciler
+    assert ok("pr-open") is False
+    assert ok("verifying") is False
+    # an automated attempt genuinely failed: the node coming back does not mean
+    # the fix worked, and 'resolved' is the field dashboards key off
+    assert ok("failed") is False
+    # whitelist, not blacklist — an unknown status is never auto-resolved
+    assert ok("some-future-status") is False
+
+
+
+def test_node_recovery_sweep_is_not_gated_on_the_reaper_flag():
+    # It used to hang off _reap_remediations, which put the CFOP-71 recovery
+    # half behind queue_reap — a flag documented as independently enableable and
+    # defaulting to false. With reap off, a recovered node kept its stale
+    # needs-human row forever, which is most of what the collapse was for.
+    op = _nodes_op([{"name": "raspberrypi4", "ready": "True"}])
+    op.config = {"remediation": {"queue_feed": True, "queue_reap": False}}
+    _wire_flags(op)
+    op.kb.resolve_node_incidents_for_ready_hosts.return_value = [51]
+    assert CFOperator._resolve_recovered_node_incidents(op) == 1
+
+
+def test_node_recovery_sweep_is_gated_on_the_feed_that_creates_the_rows():
+    op = _nodes_op([{"name": "raspberrypi4", "ready": "True"}])
+    op.config = {"remediation": {"queue_feed": False}}
+    _wire_flags(op)
+    assert CFOperator._resolve_recovered_node_incidents(op) == 0
+    op.kb.resolve_node_incidents_for_ready_hosts.assert_not_called()
+
+
+def test_reaper_no_longer_drives_the_recovery_sweep():
+    # The two are independent ticks now; reaping must not be the thing that
+    # closes recovered incidents.
+    op = _fake_op(reap=True)
+    op.kb.requeue_stale_remediations.return_value = 0
+    CFOperator._reap_remediations(op)
+    op._resolve_recovered_node_incidents.assert_not_called()
+
+
+def test_gemini_is_not_in_the_investigation_fallback_chain():
+    # Registering gemini so the judge can reach it must not silently reroute
+    # INVESTIGATION escalation: adding it to fallback_order would put it between
+    # xAI and Anthropic, so a paid escalation that used to reach Opus would
+    # reach whatever the config's gemini entry names instead.
+    import inspect
+    src = inspect.getsource(CFOperator._get_provider_chain)
+    line = next(l for l in src.splitlines() if "fallback_order = [" in l)
+    assert "gemini" not in line, line
+    assert "anthropic" in line and "xai" in line
+    # ...but it IS a registered provider, so the judge and the admin picker
+    # can still select it by name
+    assert "gemini" in agent_mod.OPENAI_COMPAT_PROVIDERS
+
+
+def test_judge_requests_leave_headroom_for_thinking_models():
+    # The verdict is two short fields; the budget is almost all headroom. A
+    # model that reasons before answering spends it before emitting JSON, and a
+    # truncated verdict parks the row — at 1024 that looks like a stuck gate.
+    assert agent_mod._JUDGE_MAX_TOKENS >= 4096
+
+
+def test_judge_is_told_which_nodes_are_down():
+    # The prompt tells it to refuse "the node is down, so its pods being
+    # unschedulable is the node's problem" — it needs the Ready state to apply
+    # that, rather than inferring a dead node from a report that may only say
+    # "immich-kiosk has 0/1 ready".
+    op = _judging_op(MagicMock(return_value='{"verdict": "reject", "reason": "node is down"}'))
+    op._notready_nodes = lambda: {"raspberrypi4"}
+    CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    user_msg = op._complete_judge.call_args[0][1]
+    assert "raspberrypi4" in user_msg
+    assert "NOT Ready" in user_msg
+
+
+def test_judge_is_told_when_the_cluster_is_healthy():
+    op = _judging_op(MagicMock(return_value='{"verdict": "confirm", "reason": "ok"}'))
+    op._notready_nodes = lambda: set()
+    CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert "All nodes are Ready" in op._complete_judge.call_args[0][1]
+
+
+def test_judge_still_rules_when_node_state_is_unreadable():
+    # Losing the snapshot must not park a row the judge could have ruled on —
+    # the gate already fails closed for real failures, and this is context.
+    op = _judging_op(MagicMock(return_value='{"verdict": "confirm", "reason": "ok"}'))
+    op._notready_nodes = MagicMock(side_effect=RuntimeError("no kubectl"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "confirm"
+
+
+def test_sweep_human_only_recs_also_fold_onto_a_node_incident():
+    # The human-only sweep path enqueues directly rather than through
+    # _maybe_queue_remediation, so it would otherwise miss the collapse: a
+    # morning-summary echo of an already-down node would open its own row.
+    op = _feed_op()
+    op.tools.k8s_tools.get_nodes.return_value = {
+        "success": True, "nodes": [{"name": "raspberrypi4", "ready": "False"}]}
+    op._notready_nodes = lambda: CFOperator._notready_nodes(op)
+    op._collapse_key_for_node_incident = (
+        lambda d: CFOperator._collapse_key_for_node_incident(op, d))
+    op._normalize_host = CFOperator._normalize_host
+    op._node_incident_dedupe_key = CFOperator._node_incident_dedupe_key
+    op._record_absorbed_symptom = lambda k, d: 51   # incident row already open
+
+    reports = [{"findings": [{
+        "severity": "critical", "finding": "raspberrypi4 is unreachable",
+        "recommendation": "physically check the power and network cable",
+        "resource_name": "raspberrypi4", "namespace": "kube-system",
+    }]}]
+    op._feed_remediations_from_sweeps(reports)
+    op.kb.queue_remediation.assert_not_called()   # folded, not a 13th row

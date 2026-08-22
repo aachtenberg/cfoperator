@@ -103,14 +103,58 @@ REMEDIATION_CLASSIFIER = Counter('cfoperator_remediation_classifier_total', 'nee
 # that asserts this object can never clear the auto gate.
 _CLASSIFIER_SAFE_EXAMPLE = {"remediation_class": "manual", "risk": "high",
                             "confidence": 0.4, "host": "", "repo": ""}
+# verdict: confirm | downgrade | reject | unavailable | unparseable (CFOP-70).
+# The judge only ever runs on rows that would otherwise auto-execute, so this
+# counter is also the denominator for "how often did we nearly open a wrong PR".
+REMEDIATION_JUDGE = Counter('cfoperator_remediation_judge_total', 'Frontier-model verdicts on auto-eligible mutations', ['verdict'])
 REMEDIATION_SPAWNED = Counter('cfoperator_remediation_executor_spawned_total', 'Executor Jobs spawned by the drainer', ['result'])
 REMEDIATION_OUTCOME = Counter('cfoperator_remediation_outcome_total', 'Terminal remediation outcomes', ['outcome'])
 REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediations recovered from dead executor leases')
 
-# Model floor for the node-action executor (the only path that runs shell on a
-# host): used when remediation.executor.node_action.model is unset, so node-action
-# never inherits a cost downgrade applied to the generic executor model.
+# The one definition of "the model we trust with a cluster mutation". Two
+# users, both of which must never inherit a cost downgrade of the generic
+# executor model:
+#   - the node-action executor (the only path that runs shell on a host), when
+#     remediation.executor.node_action.model is unset;
+#   - the mutation judge (CFOP-70), which decides whether an auto-eligible
+#     remediation may open a PR unattended at all.
+# The node-action comment used to say "the only path that mutates the cluster".
+# That premise was too narrow: a merged GitOps PR mutates the cluster just as
+# surely as a shell command, only with ArgoCD holding the knife.
 _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
+
+# One pinned model per judge backend. Not config-overridable, for the same
+# reason node-action pins its own — the model holding the veto must not inherit
+# a cost downgrade.
+#
+# Failing OVER between vendors when one is unreachable is NOT the "escalate to a
+# lesser model" rung CFOP-70 refused. That rung was refused because it would
+# have reached the cheap LOCAL primary whose judgement is the thing under
+# review; reaching another vendor's hosted model is a different question, and it
+# is what stops one missing API key from parking every remediation.
+#
+# All three are the frontier tier of their vendor, so they are true PEERS and
+# the order is availability preference, not a quality ranking. Keep it that way:
+# the moment a fast tier appears in this map, whichever entry it is starts doing
+# routine judging the first time the peers above it are unreachable, which is
+# most of the way back to the bug CFOP-70 exists to fix.
+#
+# What failover must NEVER do is shop for a permissive answer: see
+# _judge_mutation_remediation for why an unparseable verdict parks on the spot
+# instead of asking the next provider.
+_JUDGE_MODEL_FLOOR = {
+    'anthropic': _ANTHROPIC_DEFAULT_EXEC_MODEL,
+    'xai': 'grok-4.5',
+    'gemini': 'gemini-3.1-pro',
+}
+_JUDGE_DEFAULT_ORDER = ('anthropic', 'xai', 'gemini')
+
+# The verdict itself is two short fields, so this is almost all headroom — and
+# that is the point. Models that reason before answering spend this budget
+# before emitting any JSON, and a truncated verdict is (correctly) treated as a
+# substantive failure and parks the row. At 1024 a thinking model could look
+# like a permanently stuck gate rather than a judge.
+_JUDGE_MAX_TOKENS = 4096
 
 # The morning summary is authored by the cheap, unverified primary model, so a
 # mutation-class rec from it is a HYPOTHESIS, not a diagnosis. These are routed
@@ -283,6 +327,17 @@ OPENAI_COMPAT_PROVIDERS = {
         'base_url': 'https://api.x.ai/v1',
         'key_env': 'XAI_API_KEY',
     },
+    # config.yaml, config.yaml.example ("Shipped providers: ... gemini ...")
+    # and docs/config-reference.md have all named gemini as supported, but it
+    # existed in NO code path — not here, not in _get_provider_chain's
+    # fallback_order, not in _resolve_provider's accepted backends. A gemini
+    # entry in the chain was silently inert. Registered here because Google
+    # ships an OpenAI-compatible surface, so it needs no branch of its own.
+    'gemini': {
+        'label': 'Google Gemini',
+        'base_url': 'https://generativelanguage.googleapis.com/v1beta/openai',
+        'key_env': 'GEMINI_API_KEY',
+    },
 }
 
 # Sent once when a model ends the tool loop with an empty message (no tool
@@ -329,6 +384,19 @@ class _ToolLoopStats:
             'learning_ids': self.learning_ids,
             'cached_tool_hits': self.cached_hits,
         }
+
+
+def _with_classifier_identity(hints: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp the (backend, model) that produced a classification onto its hints.
+
+    So the row records which model decided a change was safe to make unattended
+    rather than leaving it to be reconstructed from the provider chain months
+    later (CFOP-70 needed exactly that reconstruction).
+    """
+    out = dict(hints)
+    out['classifier_backend'] = str((result or {}).get('backend') or '') or None
+    out['classifier_model'] = str((result or {}).get('model') or '') or None
+    return out
 
 
 class CFOperator:
@@ -389,6 +457,7 @@ class CFOperator:
         self.last_reap = 0    # remediation reaper tick
         self.last_drain = 0   # remediation drainer tick
         self.last_verify = 0   # remediation PR-reconcile tick
+        self.last_node_recovery = 0  # node-incident auto-resolve tick (CFOP-71)
         self.last_metrics = 0  # remediation gauge refresh tick
         self.last_cockpit_reap = 0  # cockpit janitor tick (CFOP-36)
         self.start_time = time.time()
@@ -1854,6 +1923,15 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 now = time.time()
                 if now - self.last_reap > self._get_reap_interval():
                     self._reap_remediations(); self.last_reap = now
+                # Own tick, own flag. It used to hang off _reap_remediations,
+                # which put the CFOP-71 recovery half behind queue_reap — a flag
+                # documented as independently enableable and defaulting to
+                # false. With reap off, a recovered node kept its stale
+                # needs-human row forever, which is most of what the collapse
+                # was supposed to fix. It belongs with the feed that CREATES
+                # those rows instead.
+                if now - self.last_node_recovery > self._get_reap_interval():
+                    self._resolve_recovered_node_incidents(); self.last_node_recovery = now
                 if now - self.last_drain > self._get_drain_interval():
                     self._drain_remediation_queue(); self.last_drain = now
                 if now - self.last_verify > self._get_verify_interval():
@@ -1913,9 +1991,42 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             if count:
                 REMEDIATION_REAPED.inc(count)
                 logger.info(f"Reaped {count} stale remediation(s) back to the queue")
-            return count
         except Exception as e:
             logger.error(f"Remediation reaper failed: {e}", exc_info=True)
+            return 0
+        return count
+
+    def _resolve_recovered_node_incidents(self) -> int:
+        """Close node-incident rows whose node came back Ready (CFOP-71).
+
+        A node-incident row is a NOTIFICATION — "go physically check the power
+        and network cable" is human work the executor cannot mechanize, so the
+        row would sit on the worklist until someone clicks it. Recovery closing
+        its own paperwork is what actually drives the needs-human count down;
+        without it the collapse only trades twelve stale rows for one.
+
+        Only rows carrying this feed's own ``node-down-<host>`` key are
+        touched, so nothing a human or another feed created is auto-resolved.
+        """
+        if not self._remediation_flag('queue_feed'):
+            return 0  # nothing creates node-incident rows, so nothing to close
+        try:
+            k8s = getattr(getattr(self, 'tools', None), 'k8s_tools', None)
+            if not k8s:
+                return 0
+            result = k8s.get_nodes()
+            if not result.get('success'):
+                return 0
+            ready = [str(n.get('name')).lower() for n in result.get('nodes', [])
+                     if str(n.get('ready')) == 'True' and n.get('name')]
+            closed = self.kb.resolve_node_incidents_for_ready_hosts(ready)
+            if closed:
+                REMEDIATION_OUTCOME.labels(outcome='resolved').inc(len(closed))
+                logger.info(f"Auto-resolved {len(closed)} node incident(s) whose node "
+                            f"returned to Ready: {closed}")
+            return len(closed)
+        except Exception as e:
+            logger.warning(f"Node-incident recovery sweep failed: {e}")
             return 0
 
     def _drain_remediation_queue(self) -> int:
@@ -1935,12 +2046,29 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if not self._remediation_flag('queue_drain'):
             return 0
         max_per_tick = max(1, int(rcfg.get('max_drain_per_tick', 3)))
+        # CFOP-71: the open-PR cap applies to the executor path too. It was
+        # enforced only inside the agent-side proposer (remediation.py), and the
+        # executor is a separate portable service that consults nothing of the
+        # kind — which is how four cfop/ PRs came to be open against a
+        # configured max_open_prs of 3. The drainer is the seat: it already
+        # reads config, and refusing here leaves the row queued rather than
+        # burning an executor Job and a frontier-model diff to produce a PR
+        # that should not exist yet.
+        max_open_prs = int(rcfg.get('max_open_prs', 3))
         spawned = 0
         # Rows released mid-tick (awaiting approval / transient recorder errors)
         # go back to queued with the same priority — skip them for the rest of
         # this tick so they cannot starve later items via reclaim churn.
         skip_ids: set = set()
         for _ in range(max_per_tick):
+            if max_open_prs >= 0 and self._open_remediation_pr_count() >= max_open_prs:
+                # Nothing is lost: the rows stay queued and the next tick
+                # re-checks, so a merged PR unblocks the queue with no operator
+                # action. Blocking here is the point — three unreviewed PRs
+                # already await a human, and a fourth helps nobody.
+                logger.info(f"Remediation drain paused: at the open PR cap ({max_open_prs})")
+                REMEDIATION_SPAWNED.labels(result='capped').inc()
+                break
             job_name = f"cfop-executor-{uuid.uuid4().hex[:10]}"
             try:
                 work = self.kb.claim_next_remediation(job_name, exclude_ids=skip_ids)
@@ -1971,6 +2099,45 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 self.kb.fail_remediation(work['id'], f"executor spawn failed: {e}")
                 skip_ids.add(work['id'])
         return spawned
+
+    def _open_remediation_pr_count(self) -> int:
+        """Remediation PRs this pipeline currently has awaiting a human.
+
+        Counted from the queue rather than the GitHub API: the drainer runs
+        every tick, and these rows ARE the outstanding PRs.
+        _reconcile_remediation_prs clears pr-open/verifying as they are merged
+        or closed; the reaper recovers dead claims.
+
+        'claimed' and 'executing' count too, because the executor spawn is
+        ASYNC: a row does not reach 'pr-open' until its Job posts back to the
+        completion endpoint, which can be many ticks later. Counting only
+        already-open PRs let one tick claim max_drain_per_tick rows against a
+        stale count and blow straight through the cap — 1 open + 3 spawned = 4
+        against a cap of 3, which is the exact defect this cap exists to
+        prevent, just triggered by a spawn burst instead of duplicate symptoms.
+
+        Note this makes the cap depend on ``remediation.queue_verify``: with
+        the reconciler off, nothing clears 'pr-open', so the count only grows
+        and the drainer stops once it reaches the cap. That is not a bug to
+        chase — the count is accurate (those PRs really are open and
+        unreviewed) and a human Resolving the rows in the console releases it.
+        But a "stalled queue" with queue_verify off is this, not a deadlock.
+
+        Fails OPEN: a read failure returns 0 and the tick proceeds. Blocking on
+        a transient DB error would stall the whole queue, and this cap is a
+        volume guard, not a safety gate — the safety gate is CFOP-70's judge,
+        which fails closed precisely because it is one.
+        """
+        try:
+            # count_remediations_by_status is one grouped query. The old
+            # list_remediations_by_status call pulled whole rows AND capped at
+            # 50, so a cap above 50 would have silently stopped counting.
+            counts = self.kb.count_remediations_by_status() or {}
+            return sum(int(counts.get(st, 0))
+                       for st in ('claimed', 'executing', 'pr-open', 'verifying'))
+        except Exception as e:
+            logger.warning(f"Could not count open remediation PRs, not capping this tick: {e}")
+            return 0
 
     def _executor_config(self) -> Dict[str, Any]:
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
@@ -2477,6 +2644,17 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         row for the same underlying problem is still open. It must land in both
         the ``queue_remediation`` kwarg and the payload — the KB filters on
         ``payload['dedupe_key']`` and does not inject it itself.
+
+        This is the single choke point both feeds converge on, so it is also
+        where the two gates live:
+
+          - CFOP-71 collapse: while a node is NotReady, symptoms attributable
+            to it fold onto one node-incident row.
+          - CFOP-70 judge: a row that would auto-execute is reviewed by a
+            frontier model before it can. Fails closed.
+
+        Both are deliberately here rather than at the call sites — a gate a
+        future third feed can forget to call is not a gate.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_feed'):
@@ -2487,6 +2665,29 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         risk = str(details.get('risk') or 'high')
         confidence = details.get('confidence')
         dedupe_key = str(details.get('dedupe_key') or '') or None
+        # CFOP-71: while a node is NotReady, every symptom attributable to it
+        # folds onto one node-incident row rather than opening its own. The
+        # rewrite happens here, above the key, because the symptoms each carry
+        # a legitimately DIFFERENT key — collapsing inside the key function
+        # cannot see them as one incident.
+        node_key = self._collapse_key_for_node_incident(details)
+        if node_key and node_key != dedupe_key:
+            logger.info(f"Folding {rclass} for {details.get('host')} onto node incident "
+                        f"{node_key} (node is NotReady)")
+            absorbed = self._record_absorbed_symptom(node_key, details)
+            if absorbed:
+                # An incident row already exists; this symptom is now recorded
+                # on it. Return its id so the caller links to the incident
+                # instead of reporting nothing proposed.
+                return absorbed
+            dedupe_key = node_key
+            # Mutated IN PLACE, deliberately: _queue_needs_action_remediation
+            # falls back to _open_remediation_for_key(details['dedupe_key'])
+            # when this returns None, and with a local copy it would look up
+            # the pre-collapse per-alert key and report "none proposed" while
+            # the incident row sits there under the node key. Every caller
+            # builds details fresh, so there is no aliasing to worry about.
+            details['dedupe_key'] = node_key
         payload = {
             'recommendation': str(details.get('recommendation') or ''),
             'rendered_context': str(details.get('report') or '')[:5000],
@@ -2505,6 +2706,69 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             payload['source'] = source
         if dedupe_key:
             payload['dedupe_key'] = dedupe_key
+        # Which models actually made the call, recorded on the row. Before
+        # CFOP-70 the only LLM identity on a remediation was the
+        # *investigation's* provider, so reconstructing which model decided to
+        # open a PR took a code read of the provider chain. 'provider' keeps
+        # its existing meaning (the reporting LLM) so the console row does not
+        # silently change referent.
+        decided_by: Dict[str, Any] = {}
+        if details.get('classifier_model'):
+            decided_by['classifier'] = {
+                'backend': str(details.get('classifier_backend') or ''),
+                'model': str(details.get('classifier_model') or ''),
+            }
+
+        # CFOP-70: the frontier-model gate. Fires only on a row that would
+        # otherwise auto-execute — remediation_is_auto_eligible IS the risk
+        # surface, so it is the whole condition. Testing membership of
+        # _SUMMARY_MUTATION_CLASSES as well would add nothing (the auto classes
+        # are a subset) while giving the two tuples a way to drift apart.
+        nclass, nrisk = normalize_remediation_fields(str(rclass), risk)
+        verdict = None
+        if remediation_is_auto_eligible(nclass, nrisk, confidence):
+            try:
+                verdict = self._judge_mutation_remediation(details, nclass, nrisk, confidence)
+            except Exception as e:
+                # _judge_mutation_remediation catches its own transport errors,
+                # so reaching here means a bug in the gate itself. Park the row:
+                # a broken gate must not become an open gate, and the caller in
+                # _queue_needs_action_remediation does not wrap this call, so
+                # letting it escape would abort the enqueue and lose the row.
+                logger.error(f"Mutation judge raised, parking for human review: {e}",
+                             exc_info=True)
+                REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
+                verdict = {'verdict': 'downgrade', 'backend': None, 'model': None,
+                           'reason': f"judge error ({e}); parked rather than executed unattended"}
+            if not isinstance(verdict, dict):
+                # The gate must not trust its own return shape either. A
+                # non-dict here (a stray early return, a refactor, a test
+                # monkeypatch) would AttributeError out of this method and,
+                # since the needs_action caller does not wrap it, lose the row
+                # — the same escape the raise path above already had to fix.
+                logger.error(f"Mutation judge returned {type(verdict).__name__}, "
+                             "not a verdict; parking for human review")
+                REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
+                verdict = {'verdict': 'downgrade', 'backend': None, 'model': None,
+                           'reason': "judge returned no verdict; parked rather than "
+                                     "executed unattended"}
+            decided_by['judge'] = {'backend': verdict.get('backend'),
+                                   'model': verdict.get('model'),
+                                   'verdict': verdict.get('verdict'),
+                                   'reason': verdict.get('reason')}
+            if verdict.get('verdict') != 'confirm':
+                # Null the confidence rather than inflate the risk: it is the
+                # one field that can never clear the gate (the eligibility test
+                # requires confidence is not None), and it leaves the
+                # classifier's honest risk assessment visible on the row
+                # instead of overwriting it with a fiction.
+                logger.warning(
+                    f"Mutation judge {verdict.get('verdict')}: {nclass}/{nrisk} "
+                    f"parked for human review — {verdict.get('reason')}")
+                confidence = None
+                payload['judge_reason'] = str(verdict.get('reason') or '')
+        if decided_by:
+            payload['decided_by'] = decided_by
         try:
             rid = self.kb.queue_remediation(
                 remediation_class=str(rclass),
@@ -2519,11 +2783,320 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             )
             if rid:
                 self._count_enqueued(source, str(rclass), risk, confidence)
+                if verdict is not None and verdict.get('verdict') == 'reject':
+                    # Recorded, then closed. Dropping it silently would hide the
+                    # fact that something proposed a wrong change; 'rejected' is
+                    # terminal, so the dedupe key stops matching and a genuine
+                    # recurrence is judged afresh rather than suppressed forever
+                    # by one rejection.
+                    try:
+                        self.kb.update_remediation_status(
+                            rid, 'rejected',
+                            last_error=f"mutation judge rejected: {verdict.get('reason')}")
+                    except Exception as e:
+                        logger.error(f"Could not close judge-rejected remediation #{rid}: {e}")
             return rid
         except Exception as e:
             logger.error(f"Failed to queue remediation from investigation #{investigation_id}: {e}",
                          exc_info=True)
             return None
+
+    # The judge answers a DIFFERENT question than the classifier. The classifier
+    # asks "what shape is this fix?"; the judge asks "should this change be made,
+    # unattended, right now?" — which is the question nothing in the pipeline was
+    # asking when it opened three PRs to un-pin immich-kiosk from the very node
+    # that drives the TV it displays on (CFOP-70).
+    _JUDGE_SYSTEM_PROMPT = (
+        "You are the last gate before an infrastructure change is made "
+        "WITHOUT human review. A smaller model has already classified a "
+        "recommendation as safe to execute unattended; it will open a pull "
+        "request that a GitOps controller syncs to a live cluster.\n\n"
+        "You are NOT asked to improve the fix, and NOT asked to re-classify "
+        "it. You are asked one question: should this change be made, "
+        "unattended, right now?\n\n"
+        "Reasons to refuse are not limited to danger. Refuse also when:\n"
+        "- the configuration being changed looks DELIBERATE (a pin, a "
+        "nodeSelector, an affinity, a replica count of 0, a resource limit) "
+        "and nothing in the evidence explains why it is there. Removing a "
+        "constraint someone chose is not a fix; it is a guess.\n"
+        "- the recommendation treats a SYMPTOM of a larger failure. If a node "
+        "is down, its pods being unschedulable is the node's problem, not the "
+        "workloads' — moving them is a decision a human makes.\n"
+        "- the evidence does not actually support the recommendation, or the "
+        "recommendation names something the evidence never mentions.\n"
+        "- the change is irreversible, or its blast radius is wider than the "
+        "problem it solves.\n\n"
+        "Respond ONLY with a SINGLE JSON object, no other text:\n"
+        '{"verdict": "confirm|downgrade|reject", "reason": "one sentence"}\n\n'
+        "- confirm: the change is correct, proportionate, and safe to make "
+        "unattended.\n"
+        "- downgrade: it may well be right, but a human should look first. "
+        "The row is parked for review; nothing is lost.\n"
+        "- reject: the recommendation is WRONG, not merely risky — doing it "
+        "would make things worse.\n\n"
+        "When you are unsure, downgrade. A parked row costs a human two "
+        "minutes; a wrong unattended change costs an outage."
+    )
+
+    def _judge_mutation_remediation(self, details: Dict[str, Any], rclass: str,
+                                    risk: str, confidence) -> Dict[str, Any]:
+        """Frontier-model verdict on a remediation that would auto-execute (CFOP-70).
+
+        Each backend is pinned to its own model in ``_JUDGE_MODEL_FLOOR``, so a
+        cost downgrade of ``remediation.executor.llm.model`` cannot quietly
+        demote the model holding the veto: config picks which vendors are
+        eligible, never which model they run. That is the whole point of the
+        gate — the classifier deciding to open a PR ran on the cheap local
+        primary, and its self-reported confidence of 1.0 on three wrong calls
+        is exactly why a higher confidence bar would have bought nothing.
+
+        Fails CLOSED. Unavailable, unparseable after one nudge, or raising —
+        all return ``downgrade``, which parks the row for a human. This
+        deliberately inverts the CFOP-48 escalate-before-parking instinct:
+        there, the cost of parking was an operator's attention; here, the cost
+        of *not* parking is an unreviewed mutation of a live cluster.
+
+        The one escalation rung that DOES exist is peer failover, and only on
+        unreachability. CFOP-70 refused a cross-provider rung because the rung
+        it had in mind reached the cheap local primary whose judgement is the
+        thing under review; reaching another vendor's frontier model keeps the
+        tier and only changes who serves it, and it is what stops one missing
+        API key from parking every remediation. A model that WAS reached and
+        answered badly does not advance to the next peer — see the loop.
+        """
+        labels = ((details.get('alert_labels') or {})
+                  if isinstance(details.get('alert_labels'), dict) else {})
+        # The prompt tells the judge to refuse "the node is down, so its pods
+        # being unschedulable is the node's problem" — but it was never given
+        # the Ready state to apply that with, so it had to infer a dead node
+        # from a report that might only say "immich-kiosk has 0/1 ready". The
+        # collapse already pays for this call, and the DELIBERATE-constraint
+        # rule would not have caught a rec that looks like ordinary
+        # rescheduling.
+        try:
+            down = sorted(self._notready_nodes())
+        except Exception:
+            down = []
+        node_line = (f"Nodes NOT Ready right now: {', '.join(down)}\n" if down
+                     else "All nodes are Ready right now.\n")
+        user_msg = (
+            f"Alert / trigger: {str(details.get('trigger') or '')[:300]}\n"
+            f"Labels: {json.dumps(labels, default=str)[:300]}\n"
+            f"Affected host: {str(details.get('host') or 'unknown')}\n"
+            f"{node_line}"
+            f"Target repo: {str(details.get('repo') or 'unknown')}\n"
+            f"Investigation findings:\n{str(details.get('report') or '')[:2000]}\n\n"
+            f"Proposed remediation: {str(details.get('recommendation') or '')[:800]}\n"
+            f"Classified by a smaller model as: {rclass} / risk={risk} / "
+            f"confidence={confidence}\n\n"
+            "Should this be done unattended?"
+        )
+        providers = self._judge_providers()
+        if not providers:
+            logger.warning("No mutation judge provider is configured or keyed, "
+                           "parking for human review")
+            REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
+            return {'verdict': 'downgrade', 'backend': None, 'model': None,
+                    'reason': ("no frontier judge available (no API key for any of "
+                               + ', '.join(_JUDGE_DEFAULT_ORDER) +
+                               "); parked rather than executed unattended")}
+
+        last_error = None
+        for backend in providers:
+            model = _JUDGE_MODEL_FLOOR[backend]
+            try:
+                reply = self._complete_judge(self._JUDGE_SYSTEM_PROMPT, user_msg,
+                                             backend, model)
+            except Exception as e:
+                # AVAILABILITY failure — this vendor could not be reached at
+                # all, so nothing was judged. Trying the next peer is failover,
+                # not answer-shopping.
+                logger.warning(f"Mutation judge {backend}/{model} unavailable: {e}")
+                last_error = e
+                continue
+
+            parsed = self._parse_judge_verdict(reply)
+            if parsed is None:
+                # One nudge, same ladder shape as the classifier (PR #76).
+                try:
+                    reply2 = self._complete_judge(
+                        self._JUDGE_SYSTEM_PROMPT,
+                        user_msg + "\n\nYour previous reply was not the required "
+                        "format:\n" + str(reply)[:1000] + "\n\nReply again with ONLY "
+                        'the single JSON object {"verdict": ..., "reason": ...}.',
+                        backend, model)
+                    parsed = self._parse_judge_verdict(reply2)
+                except Exception as e:
+                    logger.warning(f"Mutation judge {backend} nudge failed: {e}")
+
+            if parsed is None:
+                # SUBSTANTIVE failure — this model was reached and answered, it
+                # just answered badly. Deliberately NOT retried on the next
+                # provider: cycling vendors until one returns a parseable
+                # verdict is shopping for a permissive answer, and the only
+                # answer that unblocks the row is 'confirm'. Park instead.
+                logger.warning(f"Mutation judge {backend}/{model} output unparseable, "
+                               f"parking for human review: {str(reply)[:200]}")
+                REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
+                return {'verdict': 'downgrade', 'backend': backend, 'model': model,
+                        'reason': "judge verdict unparseable; parked rather than "
+                                  "executed unattended"}
+
+            parsed['backend'] = backend
+            parsed['model'] = model
+            REMEDIATION_JUDGE.labels(verdict=parsed['verdict']).inc()
+            return parsed
+
+        # Every configured peer was unreachable.
+        logger.warning("Every mutation judge provider was unavailable, parking for human review")
+        REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
+        return {'verdict': 'downgrade', 'backend': None, 'model': None,
+                'reason': f"judge unavailable ({last_error}); parked rather than "
+                          "executed unattended"}
+
+    def _judge_providers(self) -> List[str]:
+        """Judge backends to try, in order, that actually have a key present.
+
+        Order comes from ``remediation.judge.providers`` (default
+        _JUDGE_DEFAULT_ORDER). Names outside _JUDGE_MODEL_FLOOR are dropped
+        with a warning rather than accepted — a typo must not silently produce
+        a judge-less gate, and it must not be treated as a new frontier tier.
+
+        Providers with no API key are skipped here rather than being allowed to
+        fail in the ladder, so a missing key costs nothing and the log says
+        which vendors were actually eligible.
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        jcfg = rcfg.get('judge') if isinstance(rcfg.get('judge'), dict) else {}
+        configured = jcfg.get('providers')
+        if isinstance(configured, str):
+            configured = [configured]
+        if not isinstance(configured, (list, tuple)) or not configured:
+            configured = list(_JUDGE_DEFAULT_ORDER)
+
+        out: List[str] = []
+        for name in configured:
+            backend = str(name or '').strip().lower()
+            if backend not in _JUDGE_MODEL_FLOOR:
+                logger.warning(f"Ignoring unknown mutation judge provider '{name}' "
+                               f"(known: {', '.join(sorted(_JUDGE_MODEL_FLOOR))})")
+                continue
+            if backend in out:
+                continue
+            if not self._judge_api_key(backend):
+                logger.info(f"Mutation judge provider '{backend}' has no API key, skipping")
+                continue
+            out.append(backend)
+        return out
+
+    @staticmethod
+    def _judge_api_key(backend: str) -> str:
+        """API key for a judge backend, or '' when unset."""
+        if backend == 'anthropic':
+            return os.getenv('ANTHROPIC_API_KEY', '').strip()
+        cfg = OPENAI_COMPAT_PROVIDERS.get(backend) or {}
+        return os.getenv(cfg.get('key_env', ''), '').strip() if cfg else ''
+
+    def _complete_judge(self, system_prompt: str, user_msg: str,
+                        backend: str, model: str) -> str:
+        """One completion from a frontier judge backend. Raises if unreachable.
+
+        Separate from _complete_node_action_plan because that one resolves its
+        model from config (with the floor as a default) while this one is
+        floor-pinned outright — there is no config key that can lower it.
+
+        Deliberately a plain single-shot completion rather than
+        _chat_with_tools: the judge must see exactly the evidence the pipeline
+        already gathered and rule on it. Giving it tools would let it go and
+        find different evidence, which makes the verdict unreproducible and the
+        gate slow.
+        """
+        import requests as req
+        api_key = self._judge_api_key(backend)
+        if not api_key:
+            raise RuntimeError(f"no API key for judge backend '{backend}'")
+
+        if backend == 'anthropic':
+            resp = req.post(
+                'https://api.anthropic.com/v1/messages',
+                json={
+                    'model': model,
+                    'max_tokens': _JUDGE_MAX_TOKENS,
+                    'temperature': 0,  # a veto should not be sampled differently each run
+                    'system': system_prompt,
+                    'messages': [{'role': 'user', 'content': user_msg}],
+                },
+                headers={
+                    'Content-Type': 'application/json',
+                    'x-api-key': api_key,
+                    'anthropic-version': '2023-06-01',
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            return '\n'.join(
+                b.get('text', '') for b in resp.json().get('content', [])
+                if b.get('type') == 'text'
+            )
+
+        # xAI and Gemini both speak the OpenAI chat/completions shape, so one
+        # path serves them — the same reason OPENAI_COMPAT_PROVIDERS exists.
+        cfg = OPENAI_COMPAT_PROVIDERS.get(backend)
+        if not cfg:
+            raise RuntimeError(f"unknown judge backend '{backend}'")
+        resp = req.post(
+            cfg['base_url'].rstrip('/') + '/chat/completions',
+            json={
+                'model': model,
+                'max_tokens': _JUDGE_MAX_TOKENS,
+                'temperature': 0,  # a veto should not be sampled differently each run
+                'messages': [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_msg},
+                ],
+            },
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {api_key}',
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        choices = resp.json().get('choices') or []
+        if not choices:
+            return ''
+        return str((choices[0].get('message') or {}).get('content') or '')
+
+    @staticmethod
+    def _parse_judge_verdict(response_text: str) -> Optional[Dict[str, Any]]:
+        """Extract {verdict, reason} from raw judge output, or None.
+
+        Strict in the one way that matters: an unrecognised verdict is None,
+        not a coerced 'confirm'. Same posture as
+        _parse_remediation_classification — parse or degrade, never salvage —
+        except that here degrading means the row parks, so a malformed judge
+        can only ever be more conservative than a working one.
+        """
+        text = re.sub(r'^\s*```(?:json)?|```\s*$', '', (response_text or '').strip()).strip()
+        # A findings-array is the classifier's known failure shape, and the
+        # brace scan below would happily lift the first object out of one.
+        # Doing that here would manufacture a verdict from a malformed reply —
+        # and 'confirm' is the direction that opens the gate. Refuse the shape.
+        if text.startswith('['):
+            return None
+        start, end = text.find('{'), text.rfind('}')
+        if start == -1 or end <= start:
+            return None
+        try:
+            payload = json.loads(text[start:end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        verdict = str(payload.get('verdict') or '').strip().lower()
+        if verdict not in ('confirm', 'downgrade', 'reject'):
+            return None
+        return {'verdict': verdict, 'reason': str(payload.get('reason') or '').strip()[:500]}
 
     def _classify_needs_action_recommendation(self, trigger: str, recommendation: str,
                                               alert_info: Dict[str, Any],
@@ -2556,8 +3129,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         Malformed output is never salvaged into a classification — parse or
         degrade.
         """
+        # classifier_backend/classifier_model travel with the hints so the model
+        # that made the call is recorded on the row (CFOP-70). The degraded
+        # fallback names no model because none of them produced this result —
+        # the ladder ran out.
         fallback = {'remediation_class': 'manual', 'risk': 'high',
-                    'confidence': None, 'host': None, 'repo': None}
+                    'confidence': None, 'host': None, 'repo': None,
+                    'classifier_backend': None, 'classifier_model': None}
         system_prompt = (
             "You classify one infrastructure fix recommendation for a remediation "
             "queue. Respond ONLY with a SINGLE JSON object — never an array, "
@@ -2595,7 +3173,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         parsed = self._parse_remediation_classification(result.get('response', ''))
         if parsed is not None:
             REMEDIATION_CLASSIFIER.labels(result='ok').inc()
-            return parsed
+            return _with_classifier_identity(parsed, result)
         # Every (backend, model) that already answered this ladder with garbage.
         # The fallback wrapper may itself have rotated (transport errors), so
         # rung 3 must skip ALL of them, not just the first (PR #134 review).
@@ -2620,7 +3198,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             parsed = self._parse_remediation_classification(retry.get('response', ''))
             if parsed is not None:
                 REMEDIATION_CLASSIFIER.labels(result='nudged').inc()
-                return parsed
+                return _with_classifier_identity(parsed, retry)
             answered.add((retry.get('backend'), retry.get('model')))
         except Exception as e:
             logger.warning(f"Remediation classifier nudge retry failed: {e}")
@@ -2645,7 +3223,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 if parsed is not None:
                     logger.info(f"Remediation classifier escalated to {ptype}/{mname}")
                     REMEDIATION_CLASSIFIER.labels(result='escalated').inc()
-                    return parsed
+                    return _with_classifier_identity(
+                        parsed, {'backend': ptype, 'model': mname})
             except Exception as e:
                 logger.warning(f"Remediation classifier escalation to {ptype}/{mname} failed: {e}")
 
@@ -2715,6 +3294,85 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         }
 
     @staticmethod
+    def _normalize_host(host) -> str:
+        """Bare lowercase hostname from a host field or Prometheus label.
+
+        An ``instance`` label is ``raspberrypi4:9100``, so the port has to come
+        off before anything is compared against a node name — otherwise the
+        node-incident collapse never matches the rows it exists to collapse.
+        """
+        h = str(host or '').strip().lower()
+        if not h:
+            return ''
+        h = h.split('://', 1)[-1]      # in case a URL slipped into the label
+        h = h.split('/', 1)[0]
+        if ':' in h:                   # strip :port (never an IPv6 literal here)
+            h = h.rsplit(':', 1)[0]
+        return h.strip('.')
+
+    def _notready_nodes(self) -> set:
+        """Lowercase names of nodes that are not currently Ready.
+
+        Same source _ground_truth_snapshot trusts (tools/k8s.py get_nodes,
+        which reports Ready as 'True'/'False'/'Unknown').
+
+        FAILS OPEN — any error yields the empty set, so every row enqueues
+        exactly as it did before. A dedupe optimisation must never be the
+        reason a real problem goes unrecorded; that is the same posture
+        _open_remediation_for_key takes.
+        """
+        k8s = getattr(getattr(self, 'tools', None), 'k8s_tools', None)
+        if not k8s:
+            return set()
+        try:
+            result = k8s.get_nodes()
+            if not result.get('success'):
+                return set()
+            return {str(n.get('name') or '').lower()
+                    for n in result.get('nodes', [])
+                    if str(n.get('ready')) != 'True' and n.get('name')}
+        except Exception as e:
+            logger.debug(f"Could not read node readiness for incident collapse: {e}")
+            return set()
+
+    @staticmethod
+    def _node_incident_dedupe_key(host: str) -> str:
+        """The one key every symptom of one dead node folds onto (CFOP-71)."""
+        return f"node-down-{CFOperator._normalize_host(host)}"
+
+    def _collapse_key_for_node_incident(self, details: Dict[str, Any]) -> Optional[str]:
+        """The node-incident key for this row, or None to enqueue independently.
+
+        One dead node fires many DIFFERENT alerts — node unreachable, deployment
+        not ready, four pod-not-ready-30m, ArgoCD metrics absent, promtail
+        memory. Each has its own legitimate Alertmanager fingerprint and
+        therefore its own dedupe key, which is why _investigation_dedupe_key
+        cannot collapse them: it is doing exactly the job CFOP-46 part C built
+        it for. The fan-out has to be caught a level up, when the key is chosen.
+
+        Rewriting the key rather than adding a second suppression layer means
+        everything downstream keeps working unchanged — queue_remediation's
+        existing payload['dedupe_key'] check collapses symptoms two through
+        twelve onto row one, and _queue_needs_action_remediation's existing
+        _open_remediation_for_key fallback still links each later investigation
+        to the surviving row instead of reporting "none proposed".
+
+        Conditional on the node actually being NotReady: a disk-full and a
+        crash-looping pod on a HEALTHY host are two problems, not one incident,
+        and merging them would lose the second.
+        """
+        host = self._normalize_host(details.get('host'))
+        if not host:
+            return None
+        down = self._notready_nodes()
+        if not down:
+            return None
+        # An alert's host may be the FQDN of a node registered by short name.
+        if host in down or host.split('.', 1)[0] in down:
+            return self._node_incident_dedupe_key(host.split('.', 1)[0])
+        return None
+
+    @staticmethod
     def _investigation_dedupe_key(alert_info: Dict[str, Any], recommendation: str) -> str:
         """Stable dedupe key for a needs_action enqueue (CFOP-46 part C).
 
@@ -2770,6 +3428,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             'provider': provider,
             'source': 'investigation',
             'dedupe_key': self._investigation_dedupe_key(alert_info, rec),
+            # Context the mutation judge reads (CFOP-70). Not persisted as-is:
+            # _maybe_queue_remediation picks what belongs in the payload.
+            'trigger': trigger,
+            'alert_labels': (alert_info or {}).get('labels')
+                            or ((alert_info or {}).get('details') or {}).get('labels') or {},
         })
         rid = self._maybe_queue_remediation(investigation_id, details)
         if rid:
@@ -2800,6 +3463,30 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         """
         slug = re.sub(r'[^a-z0-9]+', '-', f"{host} {title}".lower()).strip('-')[:80]
         return f"inv-dispatch-{slug}"
+
+    def _record_absorbed_symptom(self, node_key: str,
+                                 details: Dict[str, Any]) -> Optional[int]:
+        """Note a folded symptom on the open node-incident row; its id, or None.
+
+        None means no incident row exists yet, so the caller enqueues one. The
+        row keeps the list because a collapse that silently discards its inputs
+        reads as "one arbitrary symptom won the race" — the operator should be
+        able to see that twelve alerts were one dead node, which is the whole
+        finding of CFOP-71. Fails open (None) like every other read on this
+        path: worst case a second row is created, which is today's behaviour.
+        """
+        try:
+            existing = self.kb.find_open_remediation_by_dedupe_key(node_key)
+            if not existing:
+                return None
+            rid = existing.get('id')
+            summary = str(details.get('trigger') or details.get('recommendation') or '')[:200]
+            if rid and summary:
+                self.kb.record_remediation_absorbed(rid, summary)
+            return rid
+        except Exception as e:
+            logger.warning(f"Could not fold symptom onto node incident {node_key}: {e}")
+            return None
 
     def _open_remediation_for_key(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
         """Non-terminal remediation row carrying this dedupe key, or None.
@@ -2932,6 +3619,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                                     if p),
                                 'source': 'morning-summary/sweep',
                                 'dedupe_key': key,
+                                'trigger': title,
+                                'alert_labels': {k: v for k, v in (
+                                    ('namespace', f.get('namespace')),
+                                    ('resource', f.get('resource_name'))) if v},
                             })
                             if provider:
                                 details['provider'] = provider
@@ -2957,6 +3648,22 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     }
                     if provider:
                         payload['provider'] = provider
+                    # This path enqueues directly rather than through
+                    # _maybe_queue_remediation, so it would otherwise miss the
+                    # CFOP-71 collapse: a morning-summary echo of a node that is
+                    # already down ("physically check the power cable") would
+                    # open its own row beside the incident. Same rewrite, same
+                    # fail-open behaviour.
+                    sweep_host = f.get('resource_name') or f.get('namespace')
+                    node_key = self._collapse_key_for_node_incident({'host': sweep_host})
+                    if node_key and node_key != key:
+                        absorbed = self._record_absorbed_symptom(
+                            node_key, {'trigger': title, 'recommendation': rec})
+                        if absorbed:
+                            handled += 1
+                            continue
+                        key = node_key
+                        payload['dedupe_key'] = node_key
                     rid = self.kb.queue_remediation(
                         remediation_class='manual',
                         payload=payload,
@@ -5411,6 +6118,13 @@ Only return the JSON array, no other text."""
             return providers
 
         # Define fallback order: ollama -> groq -> xai -> anthropic
+        # Gemini is deliberately ABSENT here even though it is a registered
+        # provider and selectable by name. Adding it would have put it between
+        # xAI and Anthropic for every INVESTIGATION fallback, so a paid
+        # escalation that used to reach Opus would reach whatever the config's
+        # gemini entry names instead. That is a quality change to the
+        # investigation path, not the judge-gate change this was; the judge
+        # reaches Gemini through _JUDGE_MODEL_FLOOR, which pins its own model.
         fallback_order = ['ollama', 'groq', 'xai', 'anthropic']
 
         # Add other providers as fallbacks (skip the primary)
@@ -5456,7 +6170,7 @@ Only return the JSON array, no other text."""
         # For 'auto', check if user has selected a preferred backend in UI
         if backend == 'auto':
             db_backend = self.kb.get_setting('selected_backend', '')
-            if db_backend and db_backend in ('ollama', 'groq', 'anthropic', 'xai'):
+            if db_backend and db_backend in ('ollama', 'groq', 'anthropic', 'xai', 'gemini'):
                 backend = db_backend
                 logger.info(f"[PROVIDER] Using UI-selected backend: {backend}")
             else:
@@ -5493,7 +6207,7 @@ Only return the JSON array, no other text."""
                 source = 'explicit-override'
             logger.debug(f"[PROVIDER] Resolved ollama: {model} (source={source})")
             return (provider_type, url, model)
-        elif backend in ('groq', 'anthropic', 'xai'):
+        elif backend in ('groq', 'anthropic', 'xai', 'gemini'):
             url = None
             if not model:
                 # Check DB for user's model selection, fall back to config

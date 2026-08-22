@@ -496,6 +496,24 @@ def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence) 
     )
 
 
+def node_incident_is_auto_resolvable(status: str) -> bool:
+    """May a recovered node's incident row close itself? (CFOP-71)
+
+    Pure policy, same posture as remediation_is_auto_eligible, so the rule is
+    testable without a database. Deliberately a WHITELIST of rows that are
+    still pure paperwork — a node returning to Ready says nothing about
+    whether any automated work against it succeeded:
+
+      - claimed / executing: an executor holds a lease; the reaper owns them.
+      - pr-open / verifying: a real PR is open against this row, and
+        _reconcile_remediation_prs only tracks 'pr-open' — resolving it here
+        would orphan the PR from its reconciler.
+      - failed: an attempt genuinely failed. The node coming back does not
+        mean the fix worked, and 'resolved' is what dashboards key off.
+    """
+    return status in ('queued', 'needs-human')
+
+
 def remediation_approve_conflict(row) -> Optional[str]:
     """Why a row must NOT be handed to the executor, or None if approvable.
 
@@ -3831,6 +3849,67 @@ class KnowledgeBase:
                 RemediationQueue.payload['dedupe_key'].astext == dedupe_key,
             ).first()
             return remediation_row_dict(row) if row else None
+
+    def record_remediation_absorbed(self, remediation_id: int, summary: str,
+                                    limit: int = 25) -> bool:
+        """Append a folded symptom to a node-incident row's payload (CFOP-71).
+
+        Bounded and de-duplicated: a flapping alert must not grow the payload
+        without limit, and the same symptom re-firing is not new information.
+        """
+        text = str(summary or '').strip()[:200]
+        if not text:
+            return False
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return False
+            payload = dict(item.payload or {}) if isinstance(item.payload, dict) else {}
+            absorbed = list(payload.get('absorbed') or [])
+            if text in absorbed or len(absorbed) >= limit:
+                return False
+            absorbed.append(text)
+            payload['absorbed'] = absorbed
+            item.payload = payload
+            _log("info", "Remediation absorbed symptom",
+                 queue_id=remediation_id, absorbed_count=len(absorbed))
+            return True
+
+    def resolve_node_incidents_for_ready_hosts(self, ready_hosts) -> List[int]:
+        """Close open node-incident rows whose host is Ready again (CFOP-71).
+
+        A 'manual' row saying "go physically check the power cable" has no path
+        through the executor by definition — it is a notification, not a
+        remediation, and it sits on the worklist until a human clicks it. When
+        the node comes back, the paperwork should close itself; otherwise the
+        collapse only trades twelve stale needs-human rows for one.
+
+        Matched on the ``node-down-<host>`` key this feed owns, so no row a
+        human or another feed created is ever auto-resolved, and only rows that
+        are still pure paperwork ('queued' / 'needs-human') are touched — see
+        the whitelist below for why each other status is excluded. Returns the
+        ids closed.
+        """
+        keys = {f"node-down-{str(h).strip().lower()}" for h in (ready_hosts or []) if str(h).strip()}
+        if not keys:
+            return []
+        closed: List[int] = []
+        with self.session_scope() as session:
+            rows = session.query(RemediationQueue).filter(
+                RemediationQueue.status.notin_(('resolved', 'rejected')),
+                RemediationQueue.payload['dedupe_key'].astext.in_(tuple(keys)),
+            ).all()
+            for item in rows:
+                if not node_incident_is_auto_resolvable(item.status):
+                    continue
+                item.status = 'resolved'
+                item.completed_at = datetime.now(timezone.utc)
+                result = dict(item.result or {}) if isinstance(item.result, dict) else {}
+                result['auto_resolved'] = 'node returned to Ready'
+                item.result = result
+                closed.append(item.id)
+                _log("info", "Node incident auto-resolved", queue_id=item.id)
+        return closed
 
     def claim_next_remediation(
         self,

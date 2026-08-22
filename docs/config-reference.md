@@ -372,6 +372,23 @@ remediation:
   queue_drain: false
   queue_reap: false
   queue_verify: false
+  # The mutation judge (CFOP-70). Before a remediation that would auto-execute
+  # is enqueued, a FRONTIER model is asked whether the change should be made
+  # unattended at all — a different question from the one the classifier
+  # answers, and the one nothing was asking when the pipeline proposed
+  # un-pinning a deployment from the node it deliberately runs on.
+  #
+  # These are peers, tried in order, and each is pinned to its vendor's
+  # frontier model in code (_JUDGE_MODEL_FLOOR): there is no config key that
+  # can lower the model holding the veto, the same rule node-action follows.
+  # A backend with no API key present is skipped, so listing all three costs
+  # nothing and means one vendor outage does not park every remediation.
+  #
+  # Omit the block entirely to get all three in this order. Anything not in
+  # {anthropic, xai, gemini} is dropped with a warning, never treated as a new
+  # frontier tier.
+  judge:
+    providers: [anthropic, xai, gemini]
 
 # Incident cockpit — the session `cfassist attach <id> --spawn` launches, in a
 # pod or on a host outside the cluster (docs/cockpit.md). Every key is

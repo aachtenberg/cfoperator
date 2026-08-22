@@ -247,3 +247,44 @@ def test_every_no_runner_class_is_a_real_class():
     GitOps path instead of failing fast."""
     valid = {"gitops-patch", "k8s-action", "k8s-imperative", "node-action", "manual"}
     assert set(entrypoint._NO_EXECUTOR_PATH) <= valid
+
+
+# ---- CFOP-71: the PR branch key identifies the problem, not the look ---------
+#
+# One dead node produced cfop/remediate-2259, -2266 and -2268: three branches,
+# three PRs (#99, #100, #101), one change. The branch is the ONLY duplicate
+# guard on this path (github.py checks whether it already exists), and it was
+# keyed on the investigation id — which is unique by construction, so the guard
+# could never fire.
+
+
+def test_pr_dedupe_key_prefers_the_stable_queue_key():
+    from entrypoint import _pr_dedupe_key
+    stable = {"id": 63, "investigation_id": 2266,
+              "payload": {"dedupe_key": "node-down-raspberrypi4"}}
+    assert _pr_dedupe_key(stable) == "node-down-raspberrypi4"
+
+
+def test_pr_dedupe_key_is_identical_across_repeat_investigations():
+    # The whole point: a second look at the same problem must produce the same
+    # branch name, so the second PR is 'skipped' instead of opened.
+    from entrypoint import _pr_dedupe_key
+    a = {"id": 63, "investigation_id": 2266, "payload": {"dedupe_key": "alert-abc123"}}
+    b = {"id": 65, "investigation_id": 2268, "payload": {"dedupe_key": "alert-abc123"}}
+    assert _pr_dedupe_key(a) == _pr_dedupe_key(b)
+    # ... which is precisely what the old expression could not do
+    assert str(a["investigation_id"]) != str(b["investigation_id"])
+
+
+@pytest.mark.parametrize("work_order,expected", [
+    ({"id": 7, "investigation_id": 2266, "payload": {}}, "2266"),
+    ({"id": 7, "investigation_id": 2266}, "2266"),
+    ({"id": 7, "payload": None}, "7"),
+    ({"id": 7, "investigation_id": None, "payload": {"dedupe_key": ""}}, "7"),
+    ({"id": 7, "payload": {"dedupe_key": "   "}}, "7"),
+    ({"id": 7, "payload": "not-a-dict"}, "7"),
+])
+def test_pr_dedupe_key_falls_back_for_rows_without_one(work_order, expected):
+    # Rows queued before CFOP-71, and the manual-reclassify path, carry no key.
+    from entrypoint import _pr_dedupe_key
+    assert _pr_dedupe_key(work_order) == expected

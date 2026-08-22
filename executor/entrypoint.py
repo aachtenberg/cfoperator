@@ -392,7 +392,7 @@ def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any
             client, repo=repo, base=base, diff_text=diff,
             title=f"cfop: remediate {payload.get('recommendation', 'issue')[:60]}",
             body=_pr_body(work_order, report),
-            dedupe_key=f"{work_order.get('investigation_id') or work_order['id']}",
+            dedupe_key=_pr_dedupe_key(work_order),
         )
 
     status, pr_url, detail = classify_result(diff, pr_result)
@@ -410,6 +410,27 @@ def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any
     if diff:
         result["proposed_diff"] = diff[:6000]
     return build_completion_payload(work_order, status, pr_url, detail, result)
+
+
+def _pr_dedupe_key(work_order: Dict[str, Any]) -> str:
+    """The stable identifier of the PROBLEM, for the remediation branch name.
+
+    The branch is the only duplicate guard on the PR path (github.py checks
+    whether cfop/remediate-<key> already exists), so the key has to be stable
+    across repeated looks at one problem. It used to be the investigation id,
+    which is unique by construction — an identifier of the *look*, not of the
+    problem — so the guard could never fire. One dead node became
+    cfop/remediate-2259, -2266 and -2268: three branches, three PRs, one change
+    (CFOP-71).
+
+    The queue already computes a stable key and the agent already ships the
+    whole work order (payload included) in CFOP_REMEDIATION_JSON, so this is
+    simply reading what was always there. Falls back to the old expression for
+    rows queued without one.
+    """
+    payload = work_order.get("payload")
+    key = str((payload or {}).get("dedupe_key") or "").strip() if isinstance(payload, dict) else ""
+    return key or f"{work_order.get('investigation_id') or work_order['id']}"
 
 
 def _pr_body(work_order: Dict[str, Any], report: str) -> str:
