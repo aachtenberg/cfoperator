@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/cfoperator"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
 	cfcontext "github.com/aachtenberg/cfoperator/cfassist-go/internal/context"
@@ -82,13 +83,37 @@ func run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Notice the CFOperator this machine is running next to (CFOP-66), while the
+	// LLM connection is being checked. Two round trips to two different
+	// services: running them in sequence would put a probe the operator did not
+	// ask for in front of the prompt they did.
+	presenceCh := make(chan cfoperator.Presence, 1)
+	go func() {
+		if !cfg.CFOperator.Discover {
+			presenceCh <- cfoperator.Presence{}
+			return
+		}
+		presenceCh <- cfoperator.DetectFromConfig(cfg.CFOperator.URL, cfg.CFOperator.Token, os.Getenv)
+	}()
+
 	// Check connection
 	if err := llm.CheckConnection(); err != nil {
 		return fmt.Errorf("%v\n  hint: Is the LLM server running?", err)
 	}
 
+	presence := <-presenceCh
+
 	// Create tool registry
 	toolReg := tools.New(cfg)
+	// The read tool only exists where there is something to read. On a machine
+	// with no agent, a tool that can only fail teaches a model to route around
+	// it — and cfassist is an SRE CLI first.
+	if presence.Reachable {
+		url, token, timeout := cfoperator.ResolveEndpoint(
+			cfg.CFOperator.URL, cfg.CFOperator.Token, cfg.CFOperator.Timeout, os.Getenv,
+		)
+		toolReg.AddCFOperator(cfoperator.New(url, token, timeout))
+	}
 
 	// Load context files
 	contextText, contextCount := cfcontext.LoadDirectory(
@@ -103,6 +128,11 @@ func run(cmd *cobra.Command, args []string) error {
 			"Use this information when answering questions.\n\n" +
 			contextText
 	}
+	// Unconditional, including when the probe found nothing or was turned off:
+	// the identity half says what the *word* means, and on a machine with no
+	// agent the right answer is still "no CFOperator is answering here" rather
+	// than "there is no such user".
+	systemPrompt += "\n\n--- CFOperator ---\n" + presence.PromptSection()
 
 	// Join question args
 	question := strings.Join(args, " ")
@@ -137,7 +167,8 @@ func run(cmd *cobra.Command, args []string) error {
 	// --- TUI mode ---
 	// nil attachment: a plain session has no investigation, and renders exactly
 	// as it did before `attach` existed.
-	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider, nil)
+	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers,
+		activeProvider, nil, presence.BannerLine())
 	if err != nil {
 		return err
 	}

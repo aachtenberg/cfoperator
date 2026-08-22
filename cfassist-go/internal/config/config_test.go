@@ -472,3 +472,43 @@ func TestProviderTemperatureOverride(t *testing.T) {
 		t.Errorf("provider-level temperature = %f, want %f", resolved.Temperature, 0.3)
 	}
 }
+
+// Discovery is on unless it is turned off, and "absent from the file" is not
+// "turned off" — an unmarshal over Defaults() leaves untouched keys alone, and
+// that is the only reason a plain bool is safe here (CFOP-66).
+func TestCFOperatorDiscoverDefaultsOn(t *testing.T) {
+	if !Defaults().CFOperator.Discover {
+		t.Error("discovery should default on")
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("cfoperator:\n  url: http://agent:8083\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.CFOperator.Discover {
+		t.Error("a cfoperator block that says nothing about discover must not disable it")
+	}
+	if cfg.CFOperator.URL != "http://agent:8083" {
+		t.Errorf("url = %q", cfg.CFOperator.URL)
+	}
+}
+
+func TestCFOperatorDiscoverCanBeTurnedOff(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("cfoperator:\n  discover: false\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.CFOperator.Discover {
+		t.Error("discover: false was ignored")
+	}
+}
