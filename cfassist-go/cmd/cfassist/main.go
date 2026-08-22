@@ -12,6 +12,7 @@ import (
 	cfcontext "github.com/aachtenberg/cfoperator/cfassist-go/internal/context"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/conversation"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/memory"
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/skills"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tui"
 	"github.com/spf13/cobra"
@@ -105,6 +106,10 @@ func run(cmd *cobra.Command, args []string) error {
 
 	// Create tool registry
 	toolReg := tools.New(cfg)
+	// The playbooks, for the model as well as for /skill. Loaded here rather
+	// than shared with the TUI's copy: it is an embedded read plus a directory
+	// scan, and one owner per consumer beats threading state through.
+	toolReg.AddSkills(skills.Load(cfg.Skills.Directory))
 	// The read tool only exists where there is something to read. On a machine
 	// with no agent, a tool that can only fail teaches a model to route around
 	// it — and cfassist is an SRE CLI first.

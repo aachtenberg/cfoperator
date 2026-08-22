@@ -18,6 +18,7 @@ import (
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/conversation"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/memory"
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/skills"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 )
 
@@ -69,6 +70,9 @@ type model struct {
 	// cfoperatorLine is the presence probe's banner summary, kept on the model
 	// so /clear redraws it — the agent is still there after a screen wipe.
 	cfoperatorLine string
+	// skills are the playbooks this session can load: the nine embedded in the
+	// binary, plus anything in the operator's own skills directory.
+	skills []skills.Skill
 	// Tab completion state
 	completions   []string
 	completionIdx int
@@ -87,6 +91,8 @@ var slashCommands = []string{
 	"/models",
 	"/providers",
 	"/quit",
+	"/skill",
+	"/skills",
 	"/tools",
 	"/use",
 }
@@ -147,6 +153,7 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 		activeProvider: activeProvider,
 		modelCache:     make(map[string][]string),
 		cfoperatorLine: cfoperatorLine,
+		skills:         skills.Load(cfg.Skills.Directory),
 	}
 
 	// Build welcome banner
@@ -381,6 +388,20 @@ func (m *model) handleTabCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Skill names for /skill. Local, embedded and instant — unlike /model,
+		// which has to ask the provider — so there is nothing to cache.
+		if strings.HasPrefix(prefix, "/skill ") || prefix == "/skill" {
+			skillPrefix := ""
+			if len(text) > len("/skill ") {
+				skillPrefix = strings.ToLower(text[len("/skill "):])
+			}
+			for _, name := range skills.Names(m.skills) {
+				if strings.HasPrefix(strings.ToLower(name), skillPrefix) {
+					m.completions = append(m.completions, "/skill "+name)
+				}
+			}
+		}
+
 		// Add model names for /model — fetch from provider on first use, cached per provider
 		if strings.HasPrefix(prefix, "/model ") || prefix == "/model" {
 			modelPrefix := ""
@@ -542,10 +563,27 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 		}
 		return m, nil
+	case "/skills":
+		m.outputLines = append(m.outputLines, m.skillsList()...)
+		if m.ready {
+			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+			m.viewport.GotoBottom()
+		}
+		return m, nil
+	case "/skill":
+		display, _ := m.skillCommand("")
+		m.outputLines = append(m.outputLines, display...)
+		if m.ready {
+			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+			m.viewport.GotoBottom()
+		}
+		return m, nil
 	case "/help", "help":
 		m.outputLines = append(m.outputLines,
 			dimStyle.Render("Commands: /clear, /exit, /help, /tools, /models, /model <name>"),
 			dimStyle.Render("          /providers, /use <name>"),
+			dimStyle.Render(fmt.Sprintf("          /skills, /skill <name> [target]  (%d available)",
+				len(m.skills))),
 			dimStyle.Render("Tab to autocomplete commands, Ctrl-D to exit, Ctrl-C to cancel."),
 		)
 		if m.ready {
@@ -601,6 +639,25 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 			m.viewport.GotoBottom()
 		}
 		return m, nil
+	}
+
+	// /skill <name> [target] — load a playbook into this session.
+	//
+	// The prompt goes to the model, not to the scrollback: the operator sees a
+	// line saying which playbook is running against what, and the session then
+	// behaves as if they had typed the whole thing.
+	if strings.HasPrefix(lower, "/skill ") {
+		display, prompt := m.skillCommand(text[len("/skill "):])
+		m.outputLines = append(m.outputLines, display...)
+		if m.ready {
+			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+			m.viewport.GotoBottom()
+		}
+		if prompt == "" {
+			return m, nil
+		}
+		m.busy = true
+		return m, m.runConversationCmd(prompt)
 	}
 
 	// /model <name> — switch model

@@ -512,3 +512,42 @@ func TestCFOperatorDiscoverCanBeTurnedOff(t *testing.T) {
 		t.Error("discover: false was ignored")
 	}
 }
+
+// Skills live next to context and memory, and the directory is created empty on
+// purpose: an operator wondering where their own playbooks go finds the answer
+// already on disk (CFOP-69).
+func TestSkillsDirectoryDefaultsAndIsCreated(t *testing.T) {
+	cfg := Defaults()
+	if !strings.HasSuffix(cfg.Skills.Directory, "/skills") {
+		t.Errorf("skills.directory = %q, want ~/.cfassist/skills", cfg.Skills.Directory)
+	}
+
+	dir := t.TempDir()
+	cfg.Context.Directory = filepath.Join(dir, "context")
+	cfg.Memory.Directory = filepath.Join(dir, "memory")
+	cfg.Skills.Directory = filepath.Join(dir, "skills")
+	if err := EnsureDirectories(cfg); err != nil {
+		t.Fatalf("EnsureDirectories: %v", err)
+	}
+	if info, err := os.Stat(cfg.Skills.Directory); err != nil || !info.IsDir() {
+		t.Errorf("skills directory was not created: %v", err)
+	}
+}
+
+func TestSkillsDirectoryIsConfigurableAndTildeExpanded(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("skills:\n  directory: ~/my-playbooks\n"), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if strings.HasPrefix(cfg.Skills.Directory, "~") {
+		t.Errorf("~ not expanded: %q", cfg.Skills.Directory)
+	}
+	if !strings.HasSuffix(cfg.Skills.Directory, "my-playbooks") {
+		t.Errorf("skills.directory = %q", cfg.Skills.Directory)
+	}
+}
