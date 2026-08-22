@@ -355,6 +355,30 @@ cfassist attach 1889 "did the pod recover?"   # one-shot, briefing seeded
 same variables the MCP server uses — or a `cfoperator:` block in the config file.
 It is read-only: a `read`-scope token is enough.
 
+### Skills
+
+cfassist ships CFOperator's nine investigation playbooks — the same
+`skills/*/SKILL.md` files the MCP server exposes to Claude Desktop and the Slack
+bridge — **baked into the binary**, so a fresh install on a Pi with no network
+has all of them.
+
+```
+/skills                              # what they are, and what each is for
+/skill investigate-pod immich-kiosk-0   # load one, aimed at something
+```
+
+`/skill` sends the playbook to the model and prints one line to the terminal;
+the body is thousands of words and burying the incident under it helps nobody.
+
+The model has the same capability as a `skill` tool, so "why does immich-kiosk-0
+keep restarting" can reach for `why-restart` on its own rather than improvising a
+worse version of a procedure the product already has. The playbook names are in
+the tool description and constrained by an enum, so it cannot invent one.
+
+Drop your own into `~/.cfassist/skills/<name>/SKILL.md` to add a playbook or
+replace one of the built-ins — same name wins, and the listing marks it
+`(yours)`.
+
 ### It notices the agent it is running next to
 
 A plain `cfassist` — no id, no `attach` — probes that same address at startup

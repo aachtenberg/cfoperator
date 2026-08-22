@@ -12,6 +12,7 @@ import (
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
 	cfcontext "github.com/aachtenberg/cfoperator/cfassist-go/internal/context"
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/skills"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tui"
 	"github.com/spf13/cobra"
@@ -194,6 +195,9 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// probe first: the fetch above already proved this agent is reachable and
 	// that the token reads.
 	toolReg.AddCFOperator(api)
+	// An attached session is the one most likely to want a playbook: it is
+	// already looking at a class of problem the product has written one for.
+	toolReg.AddSkills(skills.Load(cfg.Skills.Directory))
 	contextText, contextCount := cfcontext.LoadDirectory(
 		cfg.Context.Directory, cfg.Context.MaxTokens*4,
 	)

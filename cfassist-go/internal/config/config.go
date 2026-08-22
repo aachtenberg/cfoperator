@@ -65,6 +65,16 @@ type ContextConfig struct {
 	MaxTokens int    `yaml:"max_tokens"`
 }
 
+// SkillsConfig points at the operator's own playbooks.
+//
+// The nine that ship with cfassist are embedded in the binary (internal/skills)
+// so a fresh install on a machine with no network has them. This directory is
+// overlaid on top by name: drop in a SKILL.md to add a playbook, or to replace
+// one of ours with your own.
+type SkillsConfig struct {
+	Directory string `yaml:"directory"`
+}
+
 type MemoryConfig struct {
 	Directory        string `yaml:"directory"`
 	MaxConversations int    `yaml:"max_conversations"`
@@ -109,6 +119,7 @@ type Config struct {
 	LLM               LLMConfig                 `yaml:"llm"`
 	Providers         map[string]ProviderConfig `yaml:"providers"`
 	Context           ContextConfig             `yaml:"context"`
+	Skills            SkillsConfig              `yaml:"skills"`
 	Memory            MemoryConfig              `yaml:"memory"`
 	Tools             ToolsConfig               `yaml:"tools"`
 	CFOperator        CFOperatorConfig          `yaml:"cfoperator"`
@@ -184,6 +195,9 @@ func Defaults() *Config {
 			Directory: filepath.Join(DefaultConfigDir(), "context"),
 			MaxTokens: 8000,
 		},
+		Skills: SkillsConfig{
+			Directory: filepath.Join(DefaultConfigDir(), "skills"),
+		},
 		Memory: MemoryConfig{
 			Directory:        filepath.Join(DefaultConfigDir(), "memory"),
 			MaxConversations: 50,
@@ -231,6 +245,7 @@ func Load(configPath string) (*Config, error) {
 
 	// Expand ~ in directory paths
 	cfg.Context.Directory = expandPath(cfg.Context.Directory)
+	cfg.Skills.Directory = expandPath(cfg.Skills.Directory)
 	cfg.Memory.Directory = expandPath(cfg.Memory.Directory)
 
 	return cfg, nil
@@ -238,9 +253,12 @@ func Load(configPath string) (*Config, error) {
 
 // EnsureDirectories creates config, context, and memory dirs if they don't exist.
 func EnsureDirectories(cfg *Config) error {
+	// Skills is created empty on purpose: an operator who wonders where their
+	// own playbooks would go finds the answer already on disk.
 	dirs := []string{
 		DefaultConfigDir(),
 		cfg.Context.Directory,
+		cfg.Skills.Directory,
 		cfg.Memory.Directory,
 	}
 	for _, d := range dirs {
@@ -310,6 +328,11 @@ providers:
 context:
   directory: ~/.cfassist/context
   max_tokens: 8000
+
+# Your own playbooks, overlaid by name on the nine built into the binary.
+# /skills lists them; /skill <name> [target] loads one into the session.
+skills:
+  directory: ~/.cfassist/skills
 
 memory:
   directory: ~/.cfassist/memory
