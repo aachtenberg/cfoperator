@@ -66,6 +66,9 @@ type model struct {
 	contextUsed    int // last prompt token count (current context usage)
 	providers      map[string]config.ProviderConfig
 	activeProvider string
+	// cfoperatorLine is the presence probe's banner summary, kept on the model
+	// so /clear redraws it — the agent is still there after a screen wipe.
+	cfoperatorLine string
 	// Tab completion state
 	completions   []string
 	completionIdx int
@@ -88,8 +91,10 @@ var slashCommands = []string{
 	"/use",
 }
 
-// New creates a new TUI model. attachment is nil for a plain session.
-func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment) *model {
+// New creates a new TUI model. attachment is nil for a plain session, and
+// cfoperatorLine is the presence probe's one-line summary (empty when no agent
+// was found) — see cfoperator.Presence.BannerLine.
+func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment, cfoperatorLine string) *model {
 	// Text area for input
 	ta := textarea.New()
 	ta.Placeholder = "Ask a question..."
@@ -141,6 +146,7 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 		providers:      providers,
 		activeProvider: activeProvider,
 		modelCache:     make(map[string][]string),
+		cfoperatorLine: cfoperatorLine,
 	}
 
 	// Build welcome banner
@@ -198,8 +204,14 @@ func (m *model) appendWelcome(contextCount int) {
 		info += dimStyle.Render(fmt.Sprintf("  (%d context files loaded)", contextCount))
 	}
 	info += dimStyle.Render("  Type /help for commands")
+	m.outputLines = append(m.outputLines, info)
+	// What the presence probe found, in the operator's own view. The model was
+	// told this; showing it here is what keeps the session's answers about
+	// CFOperator auditable instead of magic.
+	if m.cfoperatorLine != "" {
+		m.outputLines = append(m.outputLines, dimStyle.Render("  "+m.cfoperatorLine))
+	}
 	m.outputLines = append(m.outputLines,
-		info,
 		separatorStyle.Render(sep),
 		"",
 	)
@@ -830,8 +842,8 @@ type RunResult struct {
 
 // Run starts the TUI application and returns the final provider/model on exit.
 // attachment is nil for a plain session and set by `cfassist attach`.
-func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment) (RunResult, error) {
-	m := New(cfg, llm, toolReg, systemPrompt, contextCount, providers, activeProvider, attachment)
+func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment, cfoperatorLine string) (RunResult, error) {
+	m := New(cfg, llm, toolReg, systemPrompt, contextCount, providers, activeProvider, attachment, cfoperatorLine)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	m.program = p
 

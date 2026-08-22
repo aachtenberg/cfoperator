@@ -31,7 +31,7 @@ func newTestModel(t *testing.T, attachment *Attachment, width int) *model {
 	t.Helper()
 	cfg := config.Defaults()
 	llm := client.New("ollama", "http://127.0.0.1:1", "llama3.2", 0.7, "")
-	m := New(cfg, llm, tools.New(cfg), "system prompt", 0, nil, "ollama", attachment)
+	m := New(cfg, llm, tools.New(cfg), "system prompt", 0, nil, "ollama", attachment, "")
 	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: testHeight})
 	ready, ok := next.(*model)
 	if !ok {

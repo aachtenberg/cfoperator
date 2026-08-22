@@ -10,7 +10,9 @@ read the Slack alert, open a terminal, start a coding agent, and type "check
 investigation 1889" so it can go query the API itself. That works, and it beats
 the console, which is why it is worth productizing rather than arguing with.
 
-Six pieces, in the order you meet them.
+Seven pieces. The first six are the path from an alert to a session; the
+seventh is what happens when there is no alert and no id — you ssh'd into a
+box and typed `cfassist`.
 
 ## 1. The alert tells you the command
 
@@ -832,6 +834,86 @@ is the one piece of ordering in `attach` that is explicit rather than deferred.
   the investigation's `triage_action`. That is still a deliberate click in the
   console, because it is a claim about the incident rather than about your
   session.
+
+## 7. Without an id: a session notices the agent it is next to (CFOP-66)
+
+Everything above starts from an investigation id. The commonest case has no id
+at all: you are already ssh'd into a machine, you type `cfassist`, and you ask
+something about CFOperator.
+
+Before this, that went badly. `cfoperator` was a word with no meaning in a plain
+session, so the model treated it as a Unix account: `id cfoperator`, `getent
+passwd`, `ps`, `systemctl`, no hits — and then a confident report that CFOperator
+was **not running**, on a host where it was answering on :8083 and mid-
+investigation. Wrong in the most expensive direction, and reached by reasoning
+that looked sound.
+
+So a plain session now does two things at startup.
+
+**It probes.** One GET to `/api/health` at the address `attach` would use
+(`cfoperator.url` in the config → `CFOP_AGENT_URL` → `http://127.0.0.1:8083`),
+with a 1.5s ceiling, running concurrently with the LLM connection check so it
+costs no wall-clock in practice. `/api/health` is auth-exempt — the same
+exemption the kubelet probes use — so presence is established with no token at
+all. A 200 is not enough: the payload has to carry `current_investigation`
+before anything is announced, because :8083 is a well-known local port and
+whatever else answers there is not the fleet's SRE agent.
+
+**It says what it found**, in the system prompt and in one dim banner line, so
+you can see what the model was told:
+
+```
+  cfoperator v1.0.8 at http://127.0.0.1:8083 · investigating now · up 2h5m
+```
+
+Three outcomes, three different things said:
+
+| Probe | What the session is told |
+|-------|--------------------------|
+| Reachable | Where it is, what version, whether it is investigating right now, that the `cfoperator` tool reads it, and that access is read-only |
+| Reachable, no usable token | The same, plus: reads are failing, the fix is a token, say so rather than working around it |
+| Configured but silent | That *this address* did not answer — not that the fleet's agent is down, and not a reason to go hunting for a local process |
+
+And one paragraph is unconditional, including on a laptop that has never seen
+CFOperator: what the *word* means. On a machine with no agent the right answer
+is still "nothing is answering here", not "there is no such user".
+
+### The `cfoperator` tool
+
+Registered only where the probe found an instance — a tool that can only fail
+teaches a model to route around it.
+
+| Action | Returns |
+|--------|---------|
+| `health` | Up, version, investigating now or idle |
+| `list_investigations` | Recent investigations, newest first |
+| `get_investigation` | The same briefing `cfassist attach <id>` seeds, at the same 4000-char budget |
+| `list_remediations` | The queue, optionally filtered by status |
+| `get_remediation` | One row in full — payload, result, PR URL |
+| `search_knowledge` | Learnings, hybrid or FTS |
+
+It runs on the same client `attach` uses, so the GET-only transport guard
+applies unchanged: approving, rejecting and queueing remain console or MCP
+actions, and the tool cannot grow a write by accident. Long free-text fields are
+clipped per value rather than rows being dropped, because a queue dump that
+crowds an incident out of an 8k context is not a favour — and `limit` is a
+ceiling (50 rows, 25 learnings), not a suggestion, since neither
+`/api/investigations` nor `/api/remediations` caps it server-side.
+
+An attached session gets the tool too — pointed at the same agent, and swapped
+onto the per-session token when one is minted, so the session's own reads die
+with the session like everything else it does.
+
+### Turning it off
+
+```yaml
+# ~/.cfassist/config.yaml
+cfoperator:
+  discover: false
+```
+
+That skips the probe. The paragraph explaining what the word means stays: it is
+a fact about this CLI, not about this machine.
 
 ## What the cockpit deliberately is not, yet
 

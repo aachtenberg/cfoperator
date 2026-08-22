@@ -350,6 +350,24 @@ cfassist attach 1889 "did the pod recover?"   # one-shot, briefing seeded
 same variables the MCP server uses — or a `cfoperator:` block in the config file.
 It is read-only: a `read`-scope token is enough.
 
+### It notices the agent it is running next to
+
+A plain `cfassist` — no id, no `attach` — probes that same address at startup
+(one GET to the auth-exempt `/api/health`, 1.5s ceiling, concurrent with the LLM
+connection check). When something answers, the session is told where CFOperator
+is, what version, and whether it is investigating right now, and gets a
+read-only `cfoperator` tool for its investigations, remediation queue and
+knowledge base:
+
+```
+  cfoperator v1.0.8 at http://127.0.0.1:8083 · investigating now · up 2h5m
+```
+
+Without this, "can you see cfoperator?" sent the model hunting for a Unix user
+and a process, and it concluded the agent was not running while the agent was
+answering on :8083. Turn the probe off with `cfoperator: {discover: false}`.
+Details in [docs/cockpit.md](docs/cockpit.md).
+
 ### Build from Source
 
 ```bash

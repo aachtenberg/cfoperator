@@ -96,6 +96,13 @@ type CFOperatorConfig struct {
 	URL     string  `yaml:"url"`
 	Token   string  `yaml:"token"`
 	Timeout float64 `yaml:"timeout"`
+
+	// Discover controls the startup presence probe (CFOP-66): one short GET to
+	// /api/health at the resolved address, so a session on a machine that runs
+	// CFOperator knows the word names a service it can query rather than a Unix
+	// user. Defaults to true; absent from the YAML it stays true, because an
+	// unmarshal over Defaults() leaves untouched keys alone.
+	Discover bool `yaml:"discover"`
 }
 
 type Config struct {
@@ -184,6 +191,9 @@ func Defaults() *Config {
 		Tools: ToolsConfig{
 			Bash:     BashToolConfig{Enabled: true, Timeout: 30},
 			ReadFile: ReadFileToolConfig{Enabled: true, MaxLines: 500},
+		},
+		CFOperator: CFOperatorConfig{
+			Discover: true,
 		},
 		MaxToolIterations: 50,
 		SystemPrompt: "You are cfassist, a helpful SRE and systems administration assistant " +
@@ -327,6 +337,8 @@ tools:
 #   url: http://192.168.1.50:8083   # <- the agent host, not this machine
 #   token: ${CFOP_API_TOKEN}
 #   timeout: 30
+#   discover: true   # probe that address at startup so a plain session knows
+#                    # a CFOperator is there and can read it. Set false to skip.
 
 max_tool_iterations: 50  # max tool calls per conversation turn
 

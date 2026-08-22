@@ -189,6 +189,11 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	}
 
 	toolReg := tools.New(cfg)
+	// The session gets the same read client the briefing came from, so it can
+	// re-check the investigation instead of trusting a snapshot (CFOP-66). No
+	// probe first: the fetch above already proved this agent is reachable and
+	// that the token reads.
+	toolReg.AddCFOperator(api)
 	contextText, contextCount := cfcontext.LoadDirectory(
 		cfg.Context.Directory, cfg.Context.MaxTokens*4,
 	)
@@ -204,7 +209,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// snapshot, and you cannot act on CFOperator from here" before it reads
 	// anything that might tempt it to do either.
 	systemPrompt += "\n\n--- CFOperator Investigation ---\n" +
-		cfoperator.AttachGuidance + "\n" + briefing
+		cfoperator.AttachGuidance + "\n" + cfoperator.ToolGuidance + "\n\n" + briefing
 
 	// Show the operator the same briefing the model got. They are about to ask
 	// questions against it; hiding it would make the session's answers
@@ -268,6 +273,10 @@ func runAttach(cmd *cobra.Command, args []string) error {
 			// The mint client keeps the standing token on its struct, so the
 			// revoke below still authenticates after the swap.
 			restore := swapSessionToken(sess.Secret)
+			// Same swap for this process's own client — the one the cfoperator
+			// tool holds. Leaving it on the standing token would mean the
+			// session's own reads outlived the credential minted for them.
+			api.SetToken(sess.Secret)
 			sessionToken = sess.Secret
 			fmt.Printf("session token %s (%s…, scopes %s, TTL %s) — revoked on exit\n",
 				sess.Label, sess.Prefix, strings.Join(scopes, ","), ttl)
@@ -275,6 +284,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 			revoke = func() {
 				once.Do(func() {
 					restore()
+					api.SetToken(token)
 					if revErr := mint.Revoke(sess.ID); revErr != nil {
 						fmt.Fprintf(os.Stderr,
 							"warning: could not revoke session token %s (it expires in %s anyway): %v\n",
@@ -286,7 +296,12 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	}
 
 	started := time.Now()
-	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers, activeProvider, attachment)
+	// The banner line is empty here on purpose: the briefing already opens the
+	// scrollback and the status bar carries the investigation id, so a second
+	// "cfoperator is at ..." line would be noise on the one screen that has
+	// least room for it.
+	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers,
+		activeProvider, attachment, "")
 	if err != nil {
 		return err
 	}

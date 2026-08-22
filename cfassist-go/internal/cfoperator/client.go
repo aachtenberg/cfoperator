@@ -99,6 +99,17 @@ func (c *Client) SetHTTPClient(h *http.Client) {
 	}
 }
 
+// SetToken swaps the bearer this client sends.
+//
+// For `attach`: the session token is minted after the client (and the tool
+// holding it) already exist, and the whole point of that credential is that
+// everything the session does afterwards runs under it rather than under the
+// operator's standing token. Restoring on exit is the caller's job — it owns
+// the ordering (write-back, then revoke).
+func (c *Client) SetToken(token string) {
+	c.Token = strings.TrimSpace(token)
+}
+
 // do performs one request. The method allowlist is checked here, before any
 // socket is opened, so a refused method never reaches the network.
 func (c *Client) do(method, path string, params url.Values) ([]byte, error) {
@@ -186,6 +197,41 @@ func (c *Client) getJSON(path string, params url.Values, out any) error {
 
 // --- reads ------------------------------------------------------------------
 
+// Health returns the agent's /api/health payload as-is.
+//
+// The one read that works with no credentials: web_auth.py keeps /api/health
+// auth-exempt for kubelet probes, which is exactly what makes it the presence
+// probe (see presence.go). Returned raw rather than as a struct because the
+// caller shape-checks it — a 200 from something else on the port must not pass
+// as CFOperator.
+func (c *Client) Health() (map[string]any, error) {
+	var out map[string]any
+	if err := c.getJSON("/api/health", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ListInvestigations returns recent investigation summary rows, newest first.
+//
+// Summaries only: the list endpoint carries `outcome` at the top level and no
+// findings at all. GetInvestigation is the drill-in.
+func (c *Client) ListInvestigations(limit int) ([]map[string]any, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	params := url.Values{}
+	params.Set("limit", strconv.Itoa(limit))
+
+	var payload struct {
+		Investigations []map[string]any `json:"investigations"`
+	}
+	if err := c.getJSON("/api/investigations", params, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Investigations, nil
+}
+
 // GetInvestigation returns the full investigation detail.
 //
 // Note the API's shape: the list endpoint returns `outcome` at the top level but
@@ -219,6 +265,15 @@ func (c *Client) ListRemediations(status string, limit int) ([]map[string]any, e
 		return nil, err
 	}
 	return payload.Remediations, nil
+}
+
+// GetRemediation returns one queue row in full: payload, result, PR URL.
+func (c *Client) GetRemediation(id int) (map[string]any, error) {
+	var row map[string]any
+	if err := c.getJSON("/api/remediations/"+strconv.Itoa(id), nil, &row); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // RemediationsForInvestigation returns the queue rows linked to one
