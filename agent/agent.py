@@ -123,6 +123,27 @@ REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediation
 # surely as a shell command, only with ArgoCD holding the knife.
 _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 
+# The mutation judge's frontier tier: one pinned model per backend. Not
+# config-overridable, for the same reason node-action pins its own — the model
+# holding the veto must not inherit a cost downgrade.
+#
+# These three are PEERS. The judge failing OVER between them when a provider is
+# unavailable is NOT the "escalate to a lesser model" rung CFOP-70 refused:
+# that rung was refused because it would have reached the cheap local primary
+# whose judgement is the thing under review. Reaching a different vendor's
+# frontier model instead keeps the tier and only changes who serves it — and it
+# is what stops one missing API key from parking every remediation.
+#
+# What failover must NEVER do is shop for a permissive answer: see
+# _judge_mutation_remediation for why an unparseable verdict parks on the spot
+# instead of asking the next provider.
+_JUDGE_MODEL_FLOOR = {
+    'anthropic': _ANTHROPIC_DEFAULT_EXEC_MODEL,
+    'xai': 'grok-4',
+    'gemini': 'gemini-2.5-pro',
+}
+_JUDGE_DEFAULT_ORDER = ('anthropic', 'xai', 'gemini')
+
 # The morning summary is authored by the cheap, unverified primary model, so a
 # mutation-class rec from it is a HYPOTHESIS, not a diagnosis. These are routed
 # through the investigation pipeline (capable model + real tools) instead of
@@ -293,6 +314,17 @@ OPENAI_COMPAT_PROVIDERS = {
         'label': 'xAI Grok',
         'base_url': 'https://api.x.ai/v1',
         'key_env': 'XAI_API_KEY',
+    },
+    # config.yaml, config.yaml.example ("Shipped providers: ... gemini ...")
+    # and docs/config-reference.md have all named gemini as supported, but it
+    # existed in NO code path — not here, not in _get_provider_chain's
+    # fallback_order, not in _resolve_provider's accepted backends. A gemini
+    # entry in the chain was silently inert. Registered here because Google
+    # ships an OpenAI-compatible surface, so it needs no branch of its own.
+    'gemini': {
+        'label': 'Google Gemini',
+        'base_url': 'https://generativelanguage.googleapis.com/v1beta/openai',
+        'key_env': 'GEMINI_API_KEY',
     },
 }
 
@@ -2679,7 +2711,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 logger.error(f"Mutation judge raised, parking for human review: {e}",
                              exc_info=True)
                 REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
-                verdict = {'verdict': 'downgrade', 'model': _ANTHROPIC_DEFAULT_EXEC_MODEL,
+                verdict = {'verdict': 'downgrade', 'backend': None, 'model': None,
                            'reason': f"judge error ({e}); parked rather than executed unattended"}
             if not isinstance(verdict, dict):
                 # The gate must not trust its own return shape either. A
@@ -2690,10 +2722,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 logger.error(f"Mutation judge returned {type(verdict).__name__}, "
                              "not a verdict; parking for human review")
                 REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
-                verdict = {'verdict': 'downgrade', 'model': _ANTHROPIC_DEFAULT_EXEC_MODEL,
+                verdict = {'verdict': 'downgrade', 'backend': None, 'model': None,
                            'reason': "judge returned no verdict; parked rather than "
                                      "executed unattended"}
-            decided_by['judge'] = {'model': verdict.get('model'),
+            decided_by['judge'] = {'backend': verdict.get('backend'),
+                                   'model': verdict.get('model'),
                                    'verdict': verdict.get('verdict'),
                                    'reason': verdict.get('reason')}
             if verdict.get('verdict') != 'confirm':
@@ -2810,68 +2843,180 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             f"confidence={confidence}\n\n"
             "Should this be done unattended?"
         )
-        model = _ANTHROPIC_DEFAULT_EXEC_MODEL
-        try:
-            reply = self._complete_judge(self._JUDGE_SYSTEM_PROMPT, user_msg, model)
-        except Exception as e:
-            logger.warning(f"Mutation judge unavailable, parking for human review: {e}")
+        providers = self._judge_providers()
+        if not providers:
+            logger.warning("No mutation judge provider is configured or keyed, "
+                           "parking for human review")
             REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
-            return {'verdict': 'downgrade', 'model': model,
-                    'reason': f"judge unavailable ({e}); parked rather than executed unattended"}
-        parsed = self._parse_judge_verdict(reply)
-        if parsed is None:
-            # One nudge, same ladder shape as the classifier (PR #76 pattern).
-            try:
-                reply2 = self._complete_judge(
-                    self._JUDGE_SYSTEM_PROMPT,
-                    user_msg + "\n\nYour previous reply was not the required "
-                    "format:\n" + str(reply)[:1000] + "\n\nReply again with ONLY "
-                    'the single JSON object {"verdict": ..., "reason": ...}.',
-                    model)
-                parsed = self._parse_judge_verdict(reply2)
-            except Exception as e:
-                logger.warning(f"Mutation judge nudge failed: {e}")
-        if parsed is None:
-            logger.warning("Mutation judge output unparseable, parking for human review: "
-                           f"{str(reply)[:200]}")
-            REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
-            return {'verdict': 'downgrade', 'model': model,
-                    'reason': "judge verdict unparseable; parked rather than executed unattended"}
-        parsed['model'] = model
-        REMEDIATION_JUDGE.labels(verdict=parsed['verdict']).inc()
-        return parsed
+            return {'verdict': 'downgrade', 'backend': None, 'model': None,
+                    'reason': ("no frontier judge available (no API key for any of "
+                               + ', '.join(_JUDGE_DEFAULT_ORDER) +
+                               "); parked rather than executed unattended")}
 
-    def _complete_judge(self, system_prompt: str, user_msg: str, model: str) -> str:
-        """One Anthropic completion for the mutation judge.
+        last_error = None
+        for backend in providers:
+            model = _JUDGE_MODEL_FLOOR[backend]
+            try:
+                reply = self._complete_judge(self._JUDGE_SYSTEM_PROMPT, user_msg,
+                                             backend, model)
+            except Exception as e:
+                # AVAILABILITY failure — this vendor could not be reached at
+                # all, so nothing was judged. Trying the next peer is failover,
+                # not answer-shopping.
+                logger.warning(f"Mutation judge {backend}/{model} unavailable: {e}")
+                last_error = e
+                continue
+
+            parsed = self._parse_judge_verdict(reply)
+            if parsed is None:
+                # One nudge, same ladder shape as the classifier (PR #76).
+                try:
+                    reply2 = self._complete_judge(
+                        self._JUDGE_SYSTEM_PROMPT,
+                        user_msg + "\n\nYour previous reply was not the required "
+                        "format:\n" + str(reply)[:1000] + "\n\nReply again with ONLY "
+                        'the single JSON object {"verdict": ..., "reason": ...}.',
+                        backend, model)
+                    parsed = self._parse_judge_verdict(reply2)
+                except Exception as e:
+                    logger.warning(f"Mutation judge {backend} nudge failed: {e}")
+
+            if parsed is None:
+                # SUBSTANTIVE failure — this model was reached and answered, it
+                # just answered badly. Deliberately NOT retried on the next
+                # provider: cycling vendors until one returns a parseable
+                # verdict is shopping for a permissive answer, and the only
+                # answer that unblocks the row is 'confirm'. Park instead.
+                logger.warning(f"Mutation judge {backend}/{model} output unparseable, "
+                               f"parking for human review: {str(reply)[:200]}")
+                REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
+                return {'verdict': 'downgrade', 'backend': backend, 'model': model,
+                        'reason': "judge verdict unparseable; parked rather than "
+                                  "executed unattended"}
+
+            parsed['backend'] = backend
+            parsed['model'] = model
+            REMEDIATION_JUDGE.labels(verdict=parsed['verdict']).inc()
+            return parsed
+
+        # Every configured peer was unreachable.
+        logger.warning("Every mutation judge provider was unavailable, parking for human review")
+        REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
+        return {'verdict': 'downgrade', 'backend': None, 'model': None,
+                'reason': f"judge unavailable ({last_error}); parked rather than "
+                          "executed unattended"}
+
+    def _judge_providers(self) -> List[str]:
+        """Judge backends to try, in order, that actually have a key present.
+
+        Order comes from ``remediation.judge.providers`` (default
+        _JUDGE_DEFAULT_ORDER). Names outside _JUDGE_MODEL_FLOOR are dropped
+        with a warning rather than accepted — a typo must not silently produce
+        a judge-less gate, and it must not be treated as a new frontier tier.
+
+        Providers with no API key are skipped here rather than being allowed to
+        fail in the ladder, so a missing key costs nothing and the log says
+        which vendors were actually eligible.
+        """
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        jcfg = rcfg.get('judge') if isinstance(rcfg.get('judge'), dict) else {}
+        configured = jcfg.get('providers')
+        if isinstance(configured, str):
+            configured = [configured]
+        if not isinstance(configured, (list, tuple)) or not configured:
+            configured = list(_JUDGE_DEFAULT_ORDER)
+
+        out: List[str] = []
+        for name in configured:
+            backend = str(name or '').strip().lower()
+            if backend not in _JUDGE_MODEL_FLOOR:
+                logger.warning(f"Ignoring unknown mutation judge provider '{name}' "
+                               f"(known: {', '.join(sorted(_JUDGE_MODEL_FLOOR))})")
+                continue
+            if backend in out:
+                continue
+            if not self._judge_api_key(backend):
+                logger.info(f"Mutation judge provider '{backend}' has no API key, skipping")
+                continue
+            out.append(backend)
+        return out
+
+    @staticmethod
+    def _judge_api_key(backend: str) -> str:
+        """API key for a judge backend, or '' when unset."""
+        if backend == 'anthropic':
+            return os.getenv('ANTHROPIC_API_KEY', '').strip()
+        cfg = OPENAI_COMPAT_PROVIDERS.get(backend) or {}
+        return os.getenv(cfg.get('key_env', ''), '').strip() if cfg else ''
+
+    def _complete_judge(self, system_prompt: str, user_msg: str,
+                        backend: str, model: str) -> str:
+        """One completion from a frontier judge backend. Raises if unreachable.
 
         Separate from _complete_node_action_plan because that one resolves its
         model from config (with the floor as a default) while this one is
         floor-pinned outright — there is no config key that can lower it.
+
+        Deliberately a plain single-shot completion rather than
+        _chat_with_tools: the judge must see exactly the evidence the pipeline
+        already gathered and rule on it. Giving it tools would let it go and
+        find different evidence, which makes the verdict unreproducible and the
+        gate slow.
         """
         import requests as req
-        api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
+        api_key = self._judge_api_key(backend)
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY required to judge a mutation-class remediation")
+            raise RuntimeError(f"no API key for judge backend '{backend}'")
+
+        if backend == 'anthropic':
+            resp = req.post(
+                'https://api.anthropic.com/v1/messages',
+                json={
+                    'model': model,
+                    'max_tokens': 1024,
+                    'system': system_prompt,
+                    'messages': [{'role': 'user', 'content': user_msg}],
+                },
+                headers={
+                    'Content-Type': 'application/json',
+                    'x-api-key': api_key,
+                    'anthropic-version': '2023-06-01',
+                },
+                timeout=120,
+            )
+            resp.raise_for_status()
+            return '\n'.join(
+                b.get('text', '') for b in resp.json().get('content', [])
+                if b.get('type') == 'text'
+            )
+
+        # xAI and Gemini both speak the OpenAI chat/completions shape, so one
+        # path serves them — the same reason OPENAI_COMPAT_PROVIDERS exists.
+        cfg = OPENAI_COMPAT_PROVIDERS.get(backend)
+        if not cfg:
+            raise RuntimeError(f"unknown judge backend '{backend}'")
         resp = req.post(
-            'https://api.anthropic.com/v1/messages',
+            cfg['base_url'].rstrip('/') + '/chat/completions',
             json={
                 'model': model,
                 'max_tokens': 1024,
-                'system': system_prompt,
-                'messages': [{'role': 'user', 'content': user_msg}],
+                'temperature': 0,  # a veto should not be sampled differently each run
+                'messages': [
+                    {'role': 'system', 'content': system_prompt},
+                    {'role': 'user', 'content': user_msg},
+                ],
             },
             headers={
                 'Content-Type': 'application/json',
-                'x-api-key': api_key,
-                'anthropic-version': '2023-06-01',
+                'Authorization': f'Bearer {api_key}',
             },
             timeout=120,
         )
         resp.raise_for_status()
-        return '\n'.join(
-            b.get('text', '') for b in resp.json().get('content', [])
-            if b.get('type') == 'text'
-        )
+        choices = resp.json().get('choices') or []
+        if not choices:
+            return ''
+        return str((choices[0].get('message') or {}).get('content') or '')
 
     @staticmethod
     def _parse_judge_verdict(response_text: str) -> Optional[Dict[str, Any]]:
@@ -5908,7 +6053,7 @@ Only return the JSON array, no other text."""
             return providers
 
         # Define fallback order: ollama -> groq -> xai -> anthropic
-        fallback_order = ['ollama', 'groq', 'xai', 'anthropic']
+        fallback_order = ['ollama', 'groq', 'xai', 'gemini', 'anthropic']
 
         # Add other providers as fallbacks (skip the primary)
         primary_type = primary[0] if primary else None
@@ -5953,7 +6098,7 @@ Only return the JSON array, no other text."""
         # For 'auto', check if user has selected a preferred backend in UI
         if backend == 'auto':
             db_backend = self.kb.get_setting('selected_backend', '')
-            if db_backend and db_backend in ('ollama', 'groq', 'anthropic', 'xai'):
+            if db_backend and db_backend in ('ollama', 'groq', 'anthropic', 'xai', 'gemini'):
                 backend = db_backend
                 logger.info(f"[PROVIDER] Using UI-selected backend: {backend}")
             else:
@@ -5990,7 +6135,7 @@ Only return the JSON array, no other text."""
                 source = 'explicit-override'
             logger.debug(f"[PROVIDER] Resolved ollama: {model} (source={source})")
             return (provider_type, url, model)
-        elif backend in ('groq', 'anthropic', 'xai'):
+        elif backend in ('groq', 'anthropic', 'xai', 'gemini'):
             url = None
             if not model:
                 # Check DB for user's model selection, fall back to config

@@ -16,8 +16,11 @@ from agent import CFOperator, OPENAI_COMPAT_PROVIDERS
 
 # --- registry ---------------------------------------------------------------
 
-def test_registry_has_groq_and_xai():
-    assert set(OPENAI_COMPAT_PROVIDERS) == {"groq", "xai"}
+def test_registry_has_the_openai_compatible_providers():
+    # gemini joined groq and xai: it was named in config.yaml, config.yaml.example
+    # and docs/config-reference.md as shipped, but existed in no code path, so a
+    # gemini entry in the fallback chain was silently inert.
+    assert set(OPENAI_COMPAT_PROVIDERS) == {"groq", "xai", "gemini"}
     for cfg in OPENAI_COMPAT_PROVIDERS.values():
         assert cfg["base_url"].startswith("https://")
         assert cfg["key_env"] and cfg["label"]

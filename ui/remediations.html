@@ -287,8 +287,9 @@ function decidedByHtml(d){
   const j=d.judge;
   if(j && (j.model||j.verdict)){
     const V={confirm:'--accent',downgrade:'--orange',reject:'--red'};
+    const jm=[j.backend,j.model].filter(Boolean).join('/');
     rows.push(`<div class="kv"><b>mutation judge</b> ${j.verdict?badge(j.verdict,V[j.verdict]||'--text-muted'):''}
-      ${j.model?`<span class="mono">${esc(j.model)}</span>`:''}
+      ${jm?`<span class="mono">${esc(jm)}</span>`:''}
       ${j.reason?`<div class="muted">${esc(j.reason)}</div>`:''}</div>`);
   }
   return rows.join('');

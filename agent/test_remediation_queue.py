@@ -1694,24 +1694,148 @@ def test_non_auto_eligible_rows_skip_the_judge_entirely(rclass, risk, conf):
     op.kb.queue_remediation.assert_called_once()
 
 
-def test_judge_is_pinned_to_the_model_floor_despite_a_downgraded_executor():
-    """Mirrors the node-action floor test: no config key can lower the judge."""
+def _judging_op(complete=None, providers=("anthropic",)):
+    """Op wired to run the real judge ladder over a controllable completion."""
     op = MagicMock()
-    op._executor_config.return_value = {"llm": {"model": "claude-haiku-4-5-20251001"}}
-    op._complete_judge = MagicMock(return_value='{"verdict": "confirm", "reason": "ok"}')
     op._parse_judge_verdict = CFOperator._parse_judge_verdict
     op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    op._judge_providers = lambda: list(providers)
+    if complete is not None:
+        op._complete_judge = complete
+    return op
+
+
+def test_judge_is_pinned_to_the_model_floor_despite_a_downgraded_executor():
+    """Mirrors the node-action floor test: no config key can lower the judge."""
+    op = _judging_op(MagicMock(return_value='{"verdict": "confirm", "reason": "ok"}'))
+    op._executor_config.return_value = {"llm": {"model": "claude-haiku-4-5-20251001"}}
     out = CFOperator._judge_mutation_remediation(
         op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
     assert out["verdict"] == "confirm"
+    assert out["backend"] == "anthropic"
     assert out["model"] == agent_mod._ANTHROPIC_DEFAULT_EXEC_MODEL == "claude-opus-4-8"
-    assert op._complete_judge.call_args[0][2] == "claude-opus-4-8"
+    # (system_prompt, user_msg, backend, model)
+    assert op._complete_judge.call_args[0][3] == "claude-opus-4-8"
+
+
+def test_every_judge_backend_has_a_pinned_frontier_model():
+    # A backend the operator can select but that has no pinned model would
+    # KeyError in the ladder; an empty one would send a model-less request.
+    assert set(agent_mod._JUDGE_MODEL_FLOOR) == {"anthropic", "xai", "gemini"}
+    assert set(agent_mod._JUDGE_DEFAULT_ORDER) == set(agent_mod._JUDGE_MODEL_FLOOR)
+    for backend, model in agent_mod._JUDGE_MODEL_FLOOR.items():
+        assert model and isinstance(model, str), backend
+    # anthropic reuses the one floor constant rather than repeating the string
+    assert (agent_mod._JUDGE_MODEL_FLOOR["anthropic"]
+            is agent_mod._ANTHROPIC_DEFAULT_EXEC_MODEL)
+
+
+def test_judge_fails_over_to_the_next_peer_when_a_vendor_is_unreachable():
+    # Availability failover, not answer-shopping: anthropic is down, so xai
+    # rules instead. Before this, one missing key parked every remediation.
+    calls = []
+
+    def complete(system, user, backend, model):
+        calls.append((backend, model))
+        if backend == "anthropic":
+            raise RuntimeError("529 overloaded")
+        return '{"verdict": "reject", "reason": "the pin is deliberate"}'
+
+    op = _judging_op(complete, providers=("anthropic", "xai"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "reject"
+    assert out["backend"] == "xai" and out["model"] == "grok-4"
+    assert calls == [("anthropic", "claude-opus-4-8"), ("xai", "grok-4")]
+
+
+def test_judge_does_not_shop_providers_for_a_parseable_answer():
+    # A model that WAS reached and answered badly is a substantive failure, not
+    # an availability one. Cycling vendors until one returns a parseable verdict
+    # is shopping for a permissive answer — and 'confirm' is the only verdict
+    # that unblocks the row. Park on the spot instead.
+    calls = []
+
+    def complete(system, user, backend, model):
+        calls.append(backend)
+        return "I reckon go for it"
+
+    op = _judging_op(complete, providers=("anthropic", "xai", "gemini"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert out["backend"] == "anthropic"          # never advanced past the first
+    assert calls == ["anthropic", "anthropic"]    # the one-shot and its nudge only
+
+
+def test_judge_with_no_keyed_provider_parks():
+    op = _judging_op(MagicMock(), providers=())
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert "no frontier judge available" in out["reason"]
+    op._complete_judge.assert_not_called()
+
+
+def test_judge_parks_when_every_peer_is_unreachable():
+    op = _judging_op(MagicMock(side_effect=RuntimeError("network down")),
+                     providers=("anthropic", "xai", "gemini"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert op._complete_judge.call_count == 3     # every peer tried
+    assert "network down" in out["reason"]
+
+
+def _providers_op(configured, keys):
+    op = MagicMock()
+    op.config = {"remediation": {"judge": {"providers": configured}}} if configured is not None \
+        else {"remediation": {}}
+    op._judge_api_key = lambda b: keys.get(b, "")
+    return op
+
+
+def test_judge_providers_defaults_to_the_full_peer_order():
+    op = _providers_op(None, {"anthropic": "k", "xai": "k", "gemini": "k"})
+    assert CFOperator._judge_providers(op) == list(agent_mod._JUDGE_DEFAULT_ORDER)
+
+
+def test_judge_providers_skips_backends_with_no_key():
+    op = _providers_op(None, {"xai": "k"})
+    assert CFOperator._judge_providers(op) == ["xai"]
+
+
+def test_judge_providers_honours_configured_order_and_drops_typos():
+    # A typo must not be treated as a new frontier tier, and must not silently
+    # produce a judge-less gate either — it is dropped, the rest still run.
+    #
+    # The typo is given a KEY on purpose: without one it would be dropped by
+    # the no-key check and this test would pass even with the whitelist gone,
+    # guarding nothing. Letting an unknown name through would KeyError on
+    # _JUDGE_MODEL_FLOOR[backend] in the ladder.
+    op = _providers_op(["gemini", "gemni", "anthropic"],
+                       {"anthropic": "k", "xai": "k", "gemini": "k", "gemni": "k"})
+    assert CFOperator._judge_providers(op) == ["gemini", "anthropic"]
+
+
+def test_judge_providers_never_emits_a_backend_without_a_pinned_model():
+    # The ladder indexes _JUDGE_MODEL_FLOOR[backend] directly, so anything this
+    # returns must be a key of it or the gate raises instead of judging.
+    op = _providers_op(["anthropic", "openai", "", None, "XAI"],
+                       {b: "k" for b in ("anthropic", "xai", "gemini", "openai")})
+    for backend in CFOperator._judge_providers(op):
+        assert backend in agent_mod._JUDGE_MODEL_FLOOR
+    # case-folded, so a capitalised entry still resolves rather than being lost
+    assert CFOperator._judge_providers(op) == ["anthropic", "xai"]
+
+
+def test_judge_providers_accepts_a_single_string():
+    op = _providers_op("xai", {"anthropic": "k", "xai": "k"})
+    assert CFOperator._judge_providers(op) == ["xai"]
 
 
 def test_judge_unavailable_downgrades_rather_than_confirming():
-    op = MagicMock()
-    op._complete_judge = MagicMock(side_effect=RuntimeError("ANTHROPIC_API_KEY required"))
-    op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    op = _judging_op(MagicMock(side_effect=RuntimeError("ANTHROPIC_API_KEY required")))
     out = CFOperator._judge_mutation_remediation(
         op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
     assert out["verdict"] == "downgrade"
@@ -1719,10 +1843,7 @@ def test_judge_unavailable_downgrades_rather_than_confirming():
 
 
 def test_judge_unparseable_nudges_once_then_downgrades():
-    op = MagicMock()
-    op._complete_judge = MagicMock(return_value="I think you should probably do it")
-    op._parse_judge_verdict = CFOperator._parse_judge_verdict
-    op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    op = _judging_op(MagicMock(return_value="I think you should probably do it"))
     out = CFOperator._judge_mutation_remediation(
         op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
     assert out["verdict"] == "downgrade"
@@ -1731,13 +1852,10 @@ def test_judge_unparseable_nudges_once_then_downgrades():
 
 
 def test_judge_nudge_rescues_a_fenced_verdict():
-    op = MagicMock()
-    op._complete_judge = MagicMock(side_effect=[
+    op = _judging_op(MagicMock(side_effect=[
         "sure thing",
         '```json\n{"verdict": "reject", "reason": "the pin is deliberate"}\n```',
-    ])
-    op._parse_judge_verdict = CFOperator._parse_judge_verdict
-    op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    ]))
     out = CFOperator._judge_mutation_remediation(
         op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
     assert out["verdict"] == "reject" and "deliberate" in out["reason"]
