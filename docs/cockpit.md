@@ -626,7 +626,12 @@ probing it would spend a round trip confirming a decision already made. In every
 other case — including whenever a host tier is *explicitly asked for*, node or
 not — one ssh round trip asks the host what it has: architecture, `docker`, `podman`,
 `systemd-run`, whether there is a systemd manager to own a transient unit — and
-the answer is cached for fifteen minutes. **Detection, not configuration:**
+the answer is cached for fifteen minutes — **except when you pass `--tier`,
+which always looks again.** That is the flag you reach for after changing
+something on the box, so trusting a cached "no docker" from before you installed
+it would make the fix invisible. (A *failed* probe is barely cached either, for
+the same reason — see the smoke test in Setting it up.) **Detection, not
+configuration:**
 nothing is declared per host, and a host that loses docker drops a rung by
 itself rather than erroring.
 

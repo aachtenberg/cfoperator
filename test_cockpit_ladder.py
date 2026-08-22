@@ -871,12 +871,16 @@ def test_the_session_name_is_stable_across_spawns():
 # POST /api/cockpit/spawn, through the ladder
 # --------------------------------------------------------------------------
 
-def _ladder_client(ssh, *, investigation=None, hosts=None, remediations=()):
+def _ladder_client(ssh, *, investigation=None, hosts=None, remediations=(),
+                   node_names=()):
     """The real WebServer routes with a real HostCockpitSpawner behind them.
 
-    The tier-1 spawner is stubbed to a kubectl that knows no nodes, which is
-    what makes the endpoint take the ladder: every host in this fixture is
-    outside the cluster.
+    ``node_names`` is which of the configured hosts are ALSO cluster nodes.
+    Empty (the default) is a cluster that contains none of them, which is what
+    makes the endpoint take the ladder at all. Naming one gives the
+    dual-membership shape most of a real fleet has — a machine that is both a
+    Kubernetes node and an ``infrastructure.hosts`` entry — which is where the
+    forced-tier bug lived.
     """
     import os
     import threading
@@ -911,6 +915,8 @@ def _ladder_client(ssh, *, investigation=None, hosts=None, remediations=()):
     # investigations that name no machine at all.
     def kubectl(args, stdin):
         if args[:2] == ["get", "node"]:
+            if args[-1] in node_names:
+                return 0, '{"spec": {}}', ""
             return 1, "", 'Error from server (NotFound): nodes "x" not found'
         if args[:2] == ["get", "jobs"]:
             return 0, '{"items": []}', ""
@@ -1352,62 +1358,6 @@ def test_a_process_tier_accepts_a_loopback_model_url():
 # a host that is BOTH a cluster node and an ssh host
 # --------------------------------------------------------------------------
 
-def _dual_client(ssh, node_names=("raspberrypi5",), **kw):
-    """A cluster where the named hosts are ALSO nodes — which is most of a
-    homelab fleet, and the case the ladder originally got wrong."""
-    import os
-    import threading
-    from unittest.mock import MagicMock
-
-    from flask import Flask
-
-    from cockpit_spawn import CockpitSpawner
-    from web_auth import install_auth
-    from web_server import WebServer
-
-    operator = MagicMock()
-    operator.kb.get_investigation.return_value = {"id": 1889, "host_id": "cfoperator",
-                                                  "trigger": "kiosk display is black"}
-    operator.kb.list_remediations_for_investigation.return_value = [
-        {"host_id": kw.get("remediation_host", "raspberrypi5")}]
-    operator.config = {"infrastructure": {"hosts": HOSTS}}
-
-    def kubectl(args, stdin):
-        if args[:2] == ["get", "node"]:
-            wanted = args[-1]
-            if wanted in node_names:
-                return 0, '{"spec": {}}', ""
-            return 1, "", 'Error from server (NotFound)'
-        if args[:2] == ["get", "jobs"]:
-            return 0, '{"items": []}', ""
-        return 0, '{"metadata": {"uid": "uid-1"}}', ""
-
-    server = WebServer.__new__(WebServer)
-    server.operator = operator
-    server.host, server.port = "localhost", 0
-    server.app = Flask(__name__)
-    server.sock = None
-    server.ws_clients = []
-    server._chat_sessions = {}
-    server._sessions_lock = threading.Lock()
-    server.auth_store = None
-    server._cockpit = CockpitSpawner(CockpitConfig(namespace="apps"),
-                                     kubectl_runner=kubectl, token_minter=minter())
-    server._ladder = spawner(ssh)
-    server._setup_routes()
-
-    prior = os.environ.get("CFOP_AUTH_DISABLED")
-    os.environ["CFOP_AUTH_DISABLED"] = "1"
-    try:
-        install_auth(server.app, store=None)
-    finally:
-        if prior is None:
-            os.environ.pop("CFOP_AUTH_DISABLED", None)
-        else:
-            os.environ["CFOP_AUTH_DISABLED"] = prior
-    return server.app.test_client(), server
-
-
 def test_a_host_tier_can_be_forced_on_a_host_that_is_also_a_node():
     """REGRESSION GUARD. Most of this fleet is both a Kubernetes node and an
     infrastructure.hosts entry, and for those "give me a shell on the machine,
@@ -1419,7 +1369,8 @@ def test_a_host_tier_can_be_forced_on_a_host_that_is_also_a_node():
     had no capabilities to honour the request with and 409'd. Correct on the
     evidence it had, and useless."""
     ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes"), "")))
-    client, _server = _dual_client(ssh, node_names=("raspberrypi5",))
+    client, _server = _ladder_client(ssh, node_names=("raspberrypi5",),
+                                     remediations=["raspberrypi5"])
 
     body = client.post("/api/cockpit/spawn",
                        json={"investigation_id": 1889, "tier": TIER_HOST}).get_json()
@@ -1433,7 +1384,8 @@ def test_auto_still_prefers_the_pod_for_a_cluster_node_without_probing():
     """The default must not change, and must not cost an ssh round trip: a
     node is tier 1 whatever else it has installed."""
     ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")))
-    client, _server = _dual_client(ssh, node_names=("raspberrypi5",))
+    client, _server = _ladder_client(ssh, node_names=("raspberrypi5",),
+                                     remediations=["raspberrypi5"])
 
     body = client.post("/api/cockpit/spawn", json={"investigation_id": 1889}).get_json()
     assert body["tier"] == TIER_POD
@@ -1444,7 +1396,8 @@ def test_forcing_a_tier_the_node_cannot_provide_still_refuses():
     """Probing more does not mean accepting more — a host with no container
     runtime still cannot give you a container."""
     ssh = FakeSSH(("uname", (0, probe_reply(), "")))
-    client, _server = _dual_client(ssh, node_names=("raspberrypi5",))
+    client, _server = _ladder_client(ssh, node_names=("raspberrypi5",),
+                                     remediations=["raspberrypi5"])
 
     resp = client.post("/api/cockpit/spawn",
                        json={"investigation_id": 1889, "tier": TIER_CONTAINER})
@@ -1456,9 +1409,62 @@ def test_forcing_pod_on_a_node_does_not_probe():
     """`--tier pod` is the other override — look at the box from next door —
     and it needs no capabilities from the box."""
     ssh = FakeSSH(("uname", (0, probe_reply(), "")))
-    client, _server = _dual_client(ssh, node_names=("raspberrypi5",))
+    client, _server = _ladder_client(ssh, node_names=("raspberrypi5",),
+                                     remediations=["raspberrypi5"])
 
     body = client.post("/api/cockpit/spawn",
                        json={"investigation_id": 1889, "tier": TIER_POD}).get_json()
     assert body["tier"] == TIER_POD
     assert not ssh.calls
+
+
+def test_a_forced_tier_busts_a_stale_probe_rather_than_trusting_it():
+    """REGRESSION GUARD, and the second half of the publickey-then-retry hole.
+
+    `--tier` is what an operator types *after* changing the box — installing
+    docker, mounting a key. A single request against a cold cache is green
+    whether or not `refresh=` is passed, so this drives two: the first caches
+    "no docker", the operator installs it, and the second must look again.
+
+    Without the refresh the second call answers from the stale capabilities and
+    409s on a host that can now do exactly what was asked.
+    """
+    state = {"docker": "no"}
+
+    def ssh(argv, stdin):
+        remote = argv[-1]
+        if "uname" in remote:
+            return 0, probe_reply(docker=state["docker"]), ""
+        if "docker ps" in remote:
+            return 0, "", ""
+        return 0, "9f2ac0ffee\n", ""
+
+    client, _server = _ladder_client(ssh, node_names=("raspberrypi5",),
+                                     remediations=["raspberrypi5"])
+
+    # First spawn: no docker on the box, so the container tier is impossible.
+    first = client.post("/api/cockpit/spawn",
+                        json={"investigation_id": 1889, "tier": TIER_CONTAINER})
+    assert first.status_code == 409
+    assert "neither docker nor podman" in first.get_json()["error"]
+
+    # The operator installs docker and immediately retries — inside the
+    # fifteen-minute probe TTL, which is the whole point.
+    state["docker"] = "yes"
+    second = client.post("/api/cockpit/spawn",
+                         json={"investigation_id": 1889, "tier": TIER_CONTAINER})
+    assert second.status_code == 201, (
+        f"the retry answered from a stale probe: {second.get_json()}")
+    assert second.get_json()["tier"] == TIER_CONTAINER
+
+
+def test_auto_still_answers_from_the_cache_on_a_second_request():
+    """The refresh is scoped to an explicit --tier: `auto` must not turn every
+    spawn into a fresh round trip across the fleet."""
+    ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes"), "")))
+    client, _server = _ladder_client(ssh, remediations=["raspberrypi5"])
+
+    client.post("/api/cockpit/spawn", json={"investigation_id": 1889})
+    client.post("/api/cockpit/spawn", json={"investigation_id": 1889})
+    assert len(ssh.matching("uname")) == 1, (
+        "auto re-probed a host it had already asked about")
