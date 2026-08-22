@@ -496,6 +496,24 @@ def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence) 
     )
 
 
+def node_incident_is_auto_resolvable(status: str) -> bool:
+    """May a recovered node's incident row close itself? (CFOP-71)
+
+    Pure policy, same posture as remediation_is_auto_eligible, so the rule is
+    testable without a database. Deliberately a WHITELIST of rows that are
+    still pure paperwork — a node returning to Ready says nothing about
+    whether any automated work against it succeeded:
+
+      - claimed / executing: an executor holds a lease; the reaper owns them.
+      - pr-open / verifying: a real PR is open against this row, and
+        _reconcile_remediation_prs only tracks 'pr-open' — resolving it here
+        would orphan the PR from its reconciler.
+      - failed: an attempt genuinely failed. The node coming back does not
+        mean the fix worked, and 'resolved' is what dashboards key off.
+    """
+    return status in ('queued', 'needs-human')
+
+
 def remediation_approve_conflict(row) -> Optional[str]:
     """Why a row must NOT be handed to the executor, or None if approvable.
 
@@ -3867,8 +3885,10 @@ class KnowledgeBase:
         collapse only trades twelve stale needs-human rows for one.
 
         Matched on the ``node-down-<host>`` key this feed owns, so no row a
-        human or another feed created is ever auto-resolved. Returns the ids
-        closed.
+        human or another feed created is ever auto-resolved, and only rows that
+        are still pure paperwork ('queued' / 'needs-human') are touched — see
+        the whitelist below for why each other status is excluded. Returns the
+        ids closed.
         """
         keys = {f"node-down-{str(h).strip().lower()}" for h in (ready_hosts or []) if str(h).strip()}
         if not keys:
@@ -3880,8 +3900,7 @@ class KnowledgeBase:
                 RemediationQueue.payload['dedupe_key'].astext.in_(tuple(keys)),
             ).all()
             for item in rows:
-                # An executor holds a lease on these; let the reaper own them.
-                if item.status in ('claimed', 'executing'):
+                if not node_incident_is_auto_resolvable(item.status):
                     continue
                 item.status = 'resolved'
                 item.completed_at = datetime.now(timezone.utc)

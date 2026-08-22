@@ -2049,8 +2049,17 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         """Remediation PRs this pipeline currently has awaiting a human.
 
         Counted from the queue rather than the GitHub API: the drainer runs
-        every tick, and 'pr-open'/'verifying' rows ARE the outstanding PRs.
-        _reconcile_remediation_prs clears them as they are merged or closed.
+        every tick, and these rows ARE the outstanding PRs.
+        _reconcile_remediation_prs clears pr-open/verifying as they are merged
+        or closed; the reaper recovers dead claims.
+
+        'claimed' and 'executing' count too, because the executor spawn is
+        ASYNC: a row does not reach 'pr-open' until its Job posts back to the
+        completion endpoint, which can be many ticks later. Counting only
+        already-open PRs let one tick claim max_drain_per_tick rows against a
+        stale count and blow straight through the cap — 1 open + 3 spawned = 4
+        against a cap of 3, which is the exact defect this cap exists to
+        prevent, just triggered by a spawn burst instead of duplicate symptoms.
 
         Note this makes the cap depend on ``remediation.queue_verify``: with
         the reconciler off, nothing clears 'pr-open', so the count only grows
@@ -2066,7 +2075,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         """
         try:
             return sum(len(self.kb.list_remediations_by_status(st))
-                       for st in ('pr-open', 'verifying'))
+                       for st in ('claimed', 'executing', 'pr-open', 'verifying'))
         except Exception as e:
             logger.warning(f"Could not count open remediation PRs, not capping this tick: {e}")
             return 0
@@ -2613,7 +2622,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 # instead of reporting nothing proposed.
                 return absorbed
             dedupe_key = node_key
-            details = dict(details, dedupe_key=node_key)
+            # Mutated IN PLACE, deliberately: _queue_needs_action_remediation
+            # falls back to _open_remediation_for_key(details['dedupe_key'])
+            # when this returns None, and with a local copy it would look up
+            # the pre-collapse per-alert key and report "none proposed" while
+            # the incident row sits there under the node key. Every caller
+            # builds details fresh, so there is no aliasing to worry about.
+            details['dedupe_key'] = node_key
         payload = {
             'recommendation': str(details.get('recommendation') or ''),
             'rendered_context': str(details.get('report') or '')[:5000],
@@ -2666,6 +2681,18 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
                 verdict = {'verdict': 'downgrade', 'model': _ANTHROPIC_DEFAULT_EXEC_MODEL,
                            'reason': f"judge error ({e}); parked rather than executed unattended"}
+            if not isinstance(verdict, dict):
+                # The gate must not trust its own return shape either. A
+                # non-dict here (a stray early return, a refactor, a test
+                # monkeypatch) would AttributeError out of this method and,
+                # since the needs_action caller does not wrap it, lose the row
+                # — the same escape the raise path above already had to fix.
+                logger.error(f"Mutation judge returned {type(verdict).__name__}, "
+                             "not a verdict; parking for human review")
+                REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
+                verdict = {'verdict': 'downgrade', 'model': _ANTHROPIC_DEFAULT_EXEC_MODEL,
+                           'reason': "judge returned no verdict; parked rather than "
+                                     "executed unattended"}
             decided_by['judge'] = {'model': verdict.get('model'),
                                    'verdict': verdict.get('verdict'),
                                    'reason': verdict.get('reason')}

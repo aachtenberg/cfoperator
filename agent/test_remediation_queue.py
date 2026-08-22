@@ -1975,15 +1975,45 @@ def test_drainer_cap_stops_mid_tick_when_it_is_reached():
     assert CFOperator._drain_remediation_queue(op) == 2  # stopped at the cap
 
 
-def test_open_pr_count_reads_the_queue_and_fails_open():
+def test_open_pr_count_includes_committed_work_not_just_open_prs():
+    # The executor spawn is ASYNC: a row does not reach 'pr-open' until its Job
+    # posts back, which can be many ticks later. Counting only opened PRs let a
+    # single tick claim against a stale count and blow through the cap.
+    counts = {"claimed": 1, "executing": 1, "pr-open": 2, "verifying": 1}
     op = MagicMock()
     op.kb.list_remediations_by_status.side_effect = (
-        lambda st: [{"id": 1}, {"id": 2}] if st == "pr-open" else [{"id": 3}])
-    assert CFOperator._open_remediation_pr_count(op) == 3  # pr-open + verifying
+        lambda st: [{"id": i} for i in range(counts.get(st, 0))])
+    assert CFOperator._open_remediation_pr_count(op) == 5
     # a transient DB error must not stall the whole queue: this is a volume
     # guard, not a safety gate
     op.kb.list_remediations_by_status.side_effect = RuntimeError("db down")
     assert CFOperator._open_remediation_pr_count(op) == 0
+
+
+def test_a_spawn_burst_cannot_exceed_the_cap_within_one_tick():
+    # 1 PR already open, cap 3, 3 auto-eligible rows queued, max_drain_per_tick
+    # 3. Before the fix this spawned all three against a stale count of 1 and
+    # produced 4 open PRs against a cap of 3 — the exact defect the cap exists
+    # to prevent, reached by a spawn burst instead of duplicate symptoms.
+    state = {"pr-open": [{"id": 100}], "verifying": [], "claimed": [], "executing": []}
+    op = _fake_op(drain=True, max_per_tick=3)
+    op.config["remediation"]["max_open_prs"] = 3
+    op.kb.list_remediations_by_status = lambda st: state.get(st, [])
+    op._open_remediation_pr_count = lambda: CFOperator._open_remediation_pr_count(op)
+    rows = [{"id": i, "remediation_class": "gitops-patch"} for i in (1, 2, 3)]
+
+    def claim(job, exclude_ids=None):
+        # the spawn is async — the row goes to 'claimed', not to 'pr-open'
+        if rows:
+            r = rows.pop(0)
+            state["claimed"].append(r)
+            return r
+        return None
+
+    op.kb.claim_next_remediation = claim
+    spawned = CFOperator._drain_remediation_queue(op)
+    assert spawned == 2, "the third spawn would have made 4 PRs against a cap of 3"
+    assert len(state["pr-open"]) + len(state["claimed"]) == 3
 
 
 # ---- CFOP-71: recovery closes its own paperwork ------------------------------
@@ -2011,3 +2041,62 @@ def test_recovery_sweep_is_silent_when_the_cluster_is_unreadable():
     op.tools.k8s_tools.get_nodes.side_effect = RuntimeError("no kubectl")
     assert CFOperator._resolve_recovered_node_incidents(op) == 0
     op.kb.resolve_node_incidents_for_ready_hosts.assert_not_called()
+
+
+
+# ---- follow-ups from the PR #164 review --------------------------------------
+
+
+def test_judge_returning_a_non_verdict_parks_instead_of_escaping():
+    # The gate must not trust its own return shape either: a non-dict would
+    # AttributeError out of _maybe_queue_remediation, and the needs_action
+    # caller does not wrap it, so the row would be lost rather than parked.
+    for bogus in (None, "confirm", ["confirm"], 42):
+        op = _judge_op(bogus)
+        assert CFOperator._maybe_queue_remediation(op, 1, dict(_IMMICH_KIOSK_DETAILS)) == 77
+        kwargs = op.kb.queue_remediation.call_args.kwargs
+        assert kwargs["confidence"] is None, f"{bogus!r} slipped through the gate"
+        assert "no verdict" in kwargs["payload"]["judge_reason"]
+
+
+def test_folded_symptom_links_to_the_incident_even_when_absorb_fails_open():
+    # _record_absorbed_symptom fails open (None) on a transient KB error or a
+    # race with a sibling symptom's row creation. The enqueue is then refused
+    # by the KB's own dedupe, and the caller's fallback lookup must use the
+    # COLLAPSED key — with the pre-collapse per-alert key it reports "none
+    # proposed" while the incident row sits there under the node key.
+    op = _nodes_op(_RPI4_DOWN)
+    op._investigation_dedupe_key = CFOperator._investigation_dedupe_key
+    op._maybe_queue_remediation = lambda i, d: CFOperator._maybe_queue_remediation(op, i, d)
+    op._open_remediation_for_key = lambda k: CFOperator._open_remediation_for_key(op, k)
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": "raspberrypi4", "repo": None})
+    op._record_absorbed_symptom = lambda k, d: None      # fails open
+    op.kb.queue_remediation.return_value = None          # KB dedupe refuses
+    op.kb.find_open_remediation_by_dedupe_key = (
+        lambda key: {"id": 51} if key == "node-down-raspberrypi4" else None)
+
+    rid = CFOperator._queue_needs_action_remediation(
+        op, 2266, "KubePodNotReady", {"fingerprint": "abc123"},
+        "check the pod on raspberrypi4", "report", provider="p")
+    assert rid == 51, "the investigation lost its link to the incident row"
+
+
+def test_only_paperwork_rows_auto_resolve_when_a_node_recovers():
+    from knowledge_base import node_incident_is_auto_resolvable as ok
+    # pure paperwork: a notification nobody has acted on
+    assert ok("queued") is True
+    assert ok("needs-human") is True
+    # an executor holds a lease — the reaper owns these
+    assert ok("claimed") is False
+    assert ok("executing") is False
+    # a real PR is open against the row; _reconcile_remediation_prs only tracks
+    # 'pr-open', so resolving here would orphan the PR from its reconciler
+    assert ok("pr-open") is False
+    assert ok("verifying") is False
+    # an automated attempt genuinely failed: the node coming back does not mean
+    # the fix worked, and 'resolved' is the field dashboards key off
+    assert ok("failed") is False
+    # whitelist, not blacklist — an unknown status is never auto-resolved
+    assert ok("some-future-status") is False
