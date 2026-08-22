@@ -1599,16 +1599,32 @@ class WebServer:
         comes back with it so the tier-1 spawn can reuse it instead of asking
         the cluster the same question a second time.
 
-        The ssh probe only runs when it can change the answer: a host that is a
-        schedulable cluster node is tier 1 whatever else it has installed, and
-        probing it would be a round trip spent confirming something already
-        decided.
+        The ssh probe runs when it can change the answer, which is two cases:
+
+        * the host is not a cluster node, so a pod is not where the session
+          belongs; or
+        * a host tier was *explicitly asked for*. Most of this fleet is both —
+          a Kubernetes node and an entry in ``infrastructure.hosts`` — and for
+          those, "give me a shell on the machine, not a pod scheduled onto it"
+          is a real and frequent request. raspberrypi4 is the clearest case: it
+          drives a physical kiosk, and a pod on that node cannot see the
+          session, the display or the USB devices the incident is about.
+          Without this branch the probe never ran for such a host, so
+          ``choose_tier`` had no capabilities to honour the request with and
+          refused it — correct on the evidence it had, and useless.
+
+        Auto is deliberately unchanged: a cluster node still resolves to tier 1
+        without an ssh round trip. The operator asks for the host when they
+        want the host.
         """
         ladder = self._cockpit_ladder()
         node = self._cockpit_spawner().get_node(host) if host else None
+        wants_host_tier = (requested or "").strip().lower() not in ("", TIER_AUTO, TIER_POD)
         caps = None
-        if host and node is None and host in ladder.config.hosts:
-            caps = ladder.probe(host)
+        if host and host in ladder.config.hosts and (node is None or wants_host_tier):
+            # refresh on an explicit request: --tier is what an operator reaches
+            # for after changing something on the host.
+            caps = ladder.probe(host, refresh=wants_host_tier)
         tier, note = choose_tier(caps, requested=requested,
                                  is_cluster_node=node is not None,
                                  has_host=bool(host), allow_sudo=ladder.config.allow_sudo)

@@ -521,9 +521,16 @@ is available instead — **never a quiet downgrade to something weaker.** If you
 asked for a container because you wanted the container boundary, silently
 handing you a bare process on the host would be the worst possible answer.
 
-`--tier pod` is worth knowing: it forces a cluster pod for a finding about a
-bare host, which is what you want when the host itself is the thing that is
-broken and you would rather look at it from next door.
+Two overrides worth knowing, pointing in opposite directions:
+
+- **`--tier pod` on a bare host** — look at the box from next door, which is
+  what you want when the box itself is what is broken.
+- **`--tier host` (or `ssh`) on a machine that is also a cluster node** — the
+  common one. Most of a homelab fleet is both a Kubernetes node and an
+  `infrastructure.hosts` entry, and `auto` resolves those to a pod. A pod
+  scheduled *onto* a node is not a shell *on* it: it cannot see the host's
+  systemd units, its display or its USB devices. `raspberrypi4` drives a
+  physical kiosk — investigating that needs the host, not a pod on the host.
 
 ### Checking on sessions, and cleaning up by hand
 
@@ -614,9 +621,17 @@ and a wrong guess puts you on the wrong machine mid-incident.
 
 ### How the runtime gets chosen
 
-One ssh round trip asks the host what it has — architecture, `docker`, `podman`,
+For a cluster node under `auto`, nothing here runs: a node is tier 1, and
+probing it would spend a round trip confirming a decision already made. In every
+other case — including whenever a host tier is *explicitly asked for*, node or
+not — one ssh round trip asks the host what it has: architecture, `docker`, `podman`,
 `systemd-run`, whether there is a systemd manager to own a transient unit — and
-the answer is cached for fifteen minutes. **Detection, not configuration:**
+the answer is cached for fifteen minutes — **except when you pass `--tier`,
+which always looks again.** That is the flag you reach for after changing
+something on the box, so trusting a cached "no docker" from before you installed
+it would make the fix invisible. (A *failed* probe is barely cached either, for
+the same reason — see the smoke test in Setting it up.) **Detection, not
+configuration:**
 nothing is declared per host, and a host that loses docker drops a rung by
 itself rather than erroring.
 
