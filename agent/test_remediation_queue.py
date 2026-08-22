@@ -6,6 +6,7 @@ unattended, so it gets the same scrutiny as the worker-side classification.
 """
 
 import os
+import re
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -1718,6 +1719,21 @@ def test_judge_is_pinned_to_the_model_floor_despite_a_downgraded_executor():
     assert op._complete_judge.call_args[0][3] == "claude-opus-4-8"
 
 
+def test_no_fast_tier_model_sits_in_the_judge_seat():
+    # The peers must all be their vendor's frontier tier. A fast/mini/flash
+    # model here would do routine judging the first time the peers above it were
+    # unreachable — most of the way back to the bug CFOP-70 exists to fix, since
+    # the whole premise is that a cheap model's confident wrong answer is what
+    # opened three bad PRs.
+    # Tokens, not substrings: 'mini' is inside 'gemini', so a substring check
+    # fails a perfectly good Pro model.
+    fast_tiers = {"flash", "mini", "haiku", "lite", "turbo", "instant", "small"}
+    for backend, model in agent_mod._JUDGE_MODEL_FLOOR.items():
+        tokens = set(re.split(r"[^a-z0-9]+", model.lower()))
+        clash = tokens & fast_tiers
+        assert not clash, f"{backend} judge model {model} is a fast tier ({clash})"
+
+
 def test_every_judge_backend_has_a_pinned_frontier_model():
     # A backend the operator can select but that has no pinned model would
     # KeyError in the ladder; an empty one would send a model-less request.
@@ -1745,8 +1761,8 @@ def test_judge_fails_over_to_the_next_peer_when_a_vendor_is_unreachable():
     out = CFOperator._judge_mutation_remediation(
         op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
     assert out["verdict"] == "reject"
-    assert out["backend"] == "xai" and out["model"] == "grok-4"
-    assert calls == [("anthropic", "claude-opus-4-8"), ("xai", "grok-4")]
+    assert out["backend"] == "xai" and out["model"] == "grok-4.5"
+    assert calls == [("anthropic", "claude-opus-4-8"), ("xai", "grok-4.5")]
 
 
 def test_judge_does_not_shop_providers_for_a_parseable_answer():
@@ -2097,14 +2113,18 @@ def test_open_pr_count_includes_committed_work_not_just_open_prs():
     # The executor spawn is ASYNC: a row does not reach 'pr-open' until its Job
     # posts back, which can be many ticks later. Counting only opened PRs let a
     # single tick claim against a stale count and blow through the cap.
-    counts = {"claimed": 1, "executing": 1, "pr-open": 2, "verifying": 1}
     op = MagicMock()
-    op.kb.list_remediations_by_status.side_effect = (
-        lambda st: [{"id": i} for i in range(counts.get(st, 0))])
+    op.kb.count_remediations_by_status.return_value = {
+        "claimed": 1, "executing": 1, "pr-open": 2, "verifying": 1,
+        "needs-human": 12, "resolved": 40,  # must NOT count toward the PR cap
+    }
     assert CFOperator._open_remediation_pr_count(op) == 5
+    # one grouped query, not a row pull per status — the old call also capped at
+    # 50 rows, so a cap above 50 would have silently stopped counting
+    op.kb.list_remediations_by_status.assert_not_called()
     # a transient DB error must not stall the whole queue: this is a volume
     # guard, not a safety gate
-    op.kb.list_remediations_by_status.side_effect = RuntimeError("db down")
+    op.kb.count_remediations_by_status.side_effect = RuntimeError("db down")
     assert CFOperator._open_remediation_pr_count(op) == 0
 
 
@@ -2113,10 +2133,10 @@ def test_a_spawn_burst_cannot_exceed_the_cap_within_one_tick():
     # 3. Before the fix this spawned all three against a stale count of 1 and
     # produced 4 open PRs against a cap of 3 — the exact defect the cap exists
     # to prevent, reached by a spawn burst instead of duplicate symptoms.
-    state = {"pr-open": [{"id": 100}], "verifying": [], "claimed": [], "executing": []}
+    state = {"pr-open": 1, "verifying": 0, "claimed": 0, "executing": 0}
     op = _fake_op(drain=True, max_per_tick=3)
     op.config["remediation"]["max_open_prs"] = 3
-    op.kb.list_remediations_by_status = lambda st: state.get(st, [])
+    op.kb.count_remediations_by_status = lambda: dict(state)
     op._open_remediation_pr_count = lambda: CFOperator._open_remediation_pr_count(op)
     rows = [{"id": i, "remediation_class": "gitops-patch"} for i in (1, 2, 3)]
 
@@ -2124,14 +2144,14 @@ def test_a_spawn_burst_cannot_exceed_the_cap_within_one_tick():
         # the spawn is async — the row goes to 'claimed', not to 'pr-open'
         if rows:
             r = rows.pop(0)
-            state["claimed"].append(r)
+            state["claimed"] += 1
             return r
         return None
 
     op.kb.claim_next_remediation = claim
     spawned = CFOperator._drain_remediation_queue(op)
     assert spawned == 2, "the third spawn would have made 4 PRs against a cap of 3"
-    assert len(state["pr-open"]) + len(state["claimed"]) == 3
+    assert state["pr-open"] + state["claimed"] == 3
 
 
 # ---- CFOP-71: recovery closes its own paperwork ------------------------------
@@ -2218,3 +2238,110 @@ def test_only_paperwork_rows_auto_resolve_when_a_node_recovers():
     assert ok("failed") is False
     # whitelist, not blacklist — an unknown status is never auto-resolved
     assert ok("some-future-status") is False
+
+
+
+def test_node_recovery_sweep_is_not_gated_on_the_reaper_flag():
+    # It used to hang off _reap_remediations, which put the CFOP-71 recovery
+    # half behind queue_reap — a flag documented as independently enableable and
+    # defaulting to false. With reap off, a recovered node kept its stale
+    # needs-human row forever, which is most of what the collapse was for.
+    op = _nodes_op([{"name": "raspberrypi4", "ready": "True"}])
+    op.config = {"remediation": {"queue_feed": True, "queue_reap": False}}
+    _wire_flags(op)
+    op.kb.resolve_node_incidents_for_ready_hosts.return_value = [51]
+    assert CFOperator._resolve_recovered_node_incidents(op) == 1
+
+
+def test_node_recovery_sweep_is_gated_on_the_feed_that_creates_the_rows():
+    op = _nodes_op([{"name": "raspberrypi4", "ready": "True"}])
+    op.config = {"remediation": {"queue_feed": False}}
+    _wire_flags(op)
+    assert CFOperator._resolve_recovered_node_incidents(op) == 0
+    op.kb.resolve_node_incidents_for_ready_hosts.assert_not_called()
+
+
+def test_reaper_no_longer_drives_the_recovery_sweep():
+    # The two are independent ticks now; reaping must not be the thing that
+    # closes recovered incidents.
+    op = _fake_op(reap=True)
+    op.kb.requeue_stale_remediations.return_value = 0
+    CFOperator._reap_remediations(op)
+    op._resolve_recovered_node_incidents.assert_not_called()
+
+
+def test_gemini_is_not_in_the_investigation_fallback_chain():
+    # Registering gemini so the judge can reach it must not silently reroute
+    # INVESTIGATION escalation: adding it to fallback_order would put it between
+    # xAI and Anthropic, so a paid escalation that used to reach Opus would
+    # reach whatever the config's gemini entry names instead.
+    import inspect
+    src = inspect.getsource(CFOperator._get_provider_chain)
+    line = next(l for l in src.splitlines() if "fallback_order = [" in l)
+    assert "gemini" not in line, line
+    assert "anthropic" in line and "xai" in line
+    # ...but it IS a registered provider, so the judge and the admin picker
+    # can still select it by name
+    assert "gemini" in agent_mod.OPENAI_COMPAT_PROVIDERS
+
+
+def test_judge_requests_leave_headroom_for_thinking_models():
+    # The verdict is two short fields; the budget is almost all headroom. A
+    # model that reasons before answering spends it before emitting JSON, and a
+    # truncated verdict parks the row — at 1024 that looks like a stuck gate.
+    assert agent_mod._JUDGE_MAX_TOKENS >= 4096
+
+
+def test_judge_is_told_which_nodes_are_down():
+    # The prompt tells it to refuse "the node is down, so its pods being
+    # unschedulable is the node's problem" — it needs the Ready state to apply
+    # that, rather than inferring a dead node from a report that may only say
+    # "immich-kiosk has 0/1 ready".
+    op = _judging_op(MagicMock(return_value='{"verdict": "reject", "reason": "node is down"}'))
+    op._notready_nodes = lambda: {"raspberrypi4"}
+    CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    user_msg = op._complete_judge.call_args[0][1]
+    assert "raspberrypi4" in user_msg
+    assert "NOT Ready" in user_msg
+
+
+def test_judge_is_told_when_the_cluster_is_healthy():
+    op = _judging_op(MagicMock(return_value='{"verdict": "confirm", "reason": "ok"}'))
+    op._notready_nodes = lambda: set()
+    CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert "All nodes are Ready" in op._complete_judge.call_args[0][1]
+
+
+def test_judge_still_rules_when_node_state_is_unreadable():
+    # Losing the snapshot must not park a row the judge could have ruled on —
+    # the gate already fails closed for real failures, and this is context.
+    op = _judging_op(MagicMock(return_value='{"verdict": "confirm", "reason": "ok"}'))
+    op._notready_nodes = MagicMock(side_effect=RuntimeError("no kubectl"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "confirm"
+
+
+def test_sweep_human_only_recs_also_fold_onto_a_node_incident():
+    # The human-only sweep path enqueues directly rather than through
+    # _maybe_queue_remediation, so it would otherwise miss the collapse: a
+    # morning-summary echo of an already-down node would open its own row.
+    op = _feed_op()
+    op.tools.k8s_tools.get_nodes.return_value = {
+        "success": True, "nodes": [{"name": "raspberrypi4", "ready": "False"}]}
+    op._notready_nodes = lambda: CFOperator._notready_nodes(op)
+    op._collapse_key_for_node_incident = (
+        lambda d: CFOperator._collapse_key_for_node_incident(op, d))
+    op._normalize_host = CFOperator._normalize_host
+    op._node_incident_dedupe_key = CFOperator._node_incident_dedupe_key
+    op._record_absorbed_symptom = lambda k, d: 51   # incident row already open
+
+    reports = [{"findings": [{
+        "severity": "critical", "finding": "raspberrypi4 is unreachable",
+        "recommendation": "physically check the power and network cable",
+        "resource_name": "raspberrypi4", "namespace": "kube-system",
+    }]}]
+    op._feed_remediations_from_sweeps(reports)
+    op.kb.queue_remediation.assert_not_called()   # folded, not a 13th row

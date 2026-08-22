@@ -123,26 +123,38 @@ REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediation
 # surely as a shell command, only with ArgoCD holding the knife.
 _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 
-# The mutation judge's frontier tier: one pinned model per backend. Not
-# config-overridable, for the same reason node-action pins its own — the model
-# holding the veto must not inherit a cost downgrade.
+# One pinned model per judge backend. Not config-overridable, for the same
+# reason node-action pins its own — the model holding the veto must not inherit
+# a cost downgrade.
 #
-# These three are PEERS. The judge failing OVER between them when a provider is
-# unavailable is NOT the "escalate to a lesser model" rung CFOP-70 refused:
-# that rung was refused because it would have reached the cheap local primary
-# whose judgement is the thing under review. Reaching a different vendor's
-# frontier model instead keeps the tier and only changes who serves it — and it
+# Failing OVER between vendors when one is unreachable is NOT the "escalate to a
+# lesser model" rung CFOP-70 refused. That rung was refused because it would
+# have reached the cheap LOCAL primary whose judgement is the thing under
+# review; reaching another vendor's hosted model is a different question, and it
 # is what stops one missing API key from parking every remediation.
+#
+# All three are the frontier tier of their vendor, so they are true PEERS and
+# the order is availability preference, not a quality ranking. Keep it that way:
+# the moment a fast tier appears in this map, whichever entry it is starts doing
+# routine judging the first time the peers above it are unreachable, which is
+# most of the way back to the bug CFOP-70 exists to fix.
 #
 # What failover must NEVER do is shop for a permissive answer: see
 # _judge_mutation_remediation for why an unparseable verdict parks on the spot
 # instead of asking the next provider.
 _JUDGE_MODEL_FLOOR = {
     'anthropic': _ANTHROPIC_DEFAULT_EXEC_MODEL,
-    'xai': 'grok-4',
-    'gemini': 'gemini-2.5-pro',
+    'xai': 'grok-4.5',
+    'gemini': 'gemini-3.1-pro',
 }
 _JUDGE_DEFAULT_ORDER = ('anthropic', 'xai', 'gemini')
+
+# The verdict itself is two short fields, so this is almost all headroom — and
+# that is the point. Models that reason before answering spend this budget
+# before emitting any JSON, and a truncated verdict is (correctly) treated as a
+# substantive failure and parks the row. At 1024 a thinking model could look
+# like a permanently stuck gate rather than a judge.
+_JUDGE_MAX_TOKENS = 4096
 
 # The morning summary is authored by the cheap, unverified primary model, so a
 # mutation-class rec from it is a HYPOTHESIS, not a diagnosis. These are routed
@@ -445,6 +457,7 @@ class CFOperator:
         self.last_reap = 0    # remediation reaper tick
         self.last_drain = 0   # remediation drainer tick
         self.last_verify = 0   # remediation PR-reconcile tick
+        self.last_node_recovery = 0  # node-incident auto-resolve tick (CFOP-71)
         self.last_metrics = 0  # remediation gauge refresh tick
         self.last_cockpit_reap = 0  # cockpit janitor tick (CFOP-36)
         self.start_time = time.time()
@@ -1910,6 +1923,15 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 now = time.time()
                 if now - self.last_reap > self._get_reap_interval():
                     self._reap_remediations(); self.last_reap = now
+                # Own tick, own flag. It used to hang off _reap_remediations,
+                # which put the CFOP-71 recovery half behind queue_reap — a flag
+                # documented as independently enableable and defaulting to
+                # false. With reap off, a recovered node kept its stale
+                # needs-human row forever, which is most of what the collapse
+                # was supposed to fix. It belongs with the feed that CREATES
+                # those rows instead.
+                if now - self.last_node_recovery > self._get_reap_interval():
+                    self._resolve_recovered_node_incidents(); self.last_node_recovery = now
                 if now - self.last_drain > self._get_drain_interval():
                     self._drain_remediation_queue(); self.last_drain = now
                 if now - self.last_verify > self._get_verify_interval():
@@ -1972,7 +1994,6 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         except Exception as e:
             logger.error(f"Remediation reaper failed: {e}", exc_info=True)
             return 0
-        self._resolve_recovered_node_incidents()
         return count
 
     def _resolve_recovered_node_incidents(self) -> int:
@@ -1987,6 +2008,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         Only rows carrying this feed's own ``node-down-<host>`` key are
         touched, so nothing a human or another feed created is auto-resolved.
         """
+        if not self._remediation_flag('queue_feed'):
+            return 0  # nothing creates node-incident rows, so nothing to close
         try:
             k8s = getattr(getattr(self, 'tools', None), 'k8s_tools', None)
             if not k8s:
@@ -2106,7 +2129,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         which fails closed precisely because it is one.
         """
         try:
-            return sum(len(self.kb.list_remediations_by_status(st))
+            # count_remediations_by_status is one grouped query. The old
+            # list_remediations_by_status call pulled whole rows AND capped at
+            # 50, so a cap above 50 would have silently stopped counting.
+            counts = self.kb.count_remediations_by_status() or {}
+            return sum(int(counts.get(st, 0))
                        for st in ('claimed', 'executing', 'pr-open', 'verifying'))
         except Exception as e:
             logger.warning(f"Could not count open remediation PRs, not capping this tick: {e}")
@@ -2815,10 +2842,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                                     risk: str, confidence) -> Dict[str, Any]:
         """Frontier-model verdict on a remediation that would auto-execute (CFOP-70).
 
-        Pinned to ``_ANTHROPIC_DEFAULT_EXEC_MODEL`` — the same floor node-action
-        uses — so a cost downgrade of ``remediation.executor.llm.model`` cannot
-        quietly demote the model holding the veto. That is the whole point of
-        the gate: the classifier deciding to open a PR ran on the cheap local
+        Each backend is pinned to its own model in ``_JUDGE_MODEL_FLOOR``, so a
+        cost downgrade of ``remediation.executor.llm.model`` cannot quietly
+        demote the model holding the veto: config picks which vendors are
+        eligible, never which model they run. That is the whole point of the
+        gate — the classifier deciding to open a PR ran on the cheap local
         primary, and its self-reported confidence of 1.0 on three wrong calls
         is exactly why a higher confidence bar would have bought nothing.
 
@@ -2826,16 +2854,36 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         all return ``downgrade``, which parks the row for a human. This
         deliberately inverts the CFOP-48 escalate-before-parking instinct:
         there, the cost of parking was an operator's attention; here, the cost
-        of *not* parking is an unreviewed mutation of a live cluster. There is
-        also no cross-provider escalation rung, because falling back to a
-        lesser model is precisely the failure this gate exists to stop.
+        of *not* parking is an unreviewed mutation of a live cluster.
+
+        The one escalation rung that DOES exist is peer failover, and only on
+        unreachability. CFOP-70 refused a cross-provider rung because the rung
+        it had in mind reached the cheap local primary whose judgement is the
+        thing under review; reaching another vendor's frontier model keeps the
+        tier and only changes who serves it, and it is what stops one missing
+        API key from parking every remediation. A model that WAS reached and
+        answered badly does not advance to the next peer — see the loop.
         """
         labels = ((details.get('alert_labels') or {})
                   if isinstance(details.get('alert_labels'), dict) else {})
+        # The prompt tells the judge to refuse "the node is down, so its pods
+        # being unschedulable is the node's problem" — but it was never given
+        # the Ready state to apply that with, so it had to infer a dead node
+        # from a report that might only say "immich-kiosk has 0/1 ready". The
+        # collapse already pays for this call, and the DELIBERATE-constraint
+        # rule would not have caught a rec that looks like ordinary
+        # rescheduling.
+        try:
+            down = sorted(self._notready_nodes())
+        except Exception:
+            down = []
+        node_line = (f"Nodes NOT Ready right now: {', '.join(down)}\n" if down
+                     else "All nodes are Ready right now.\n")
         user_msg = (
             f"Alert / trigger: {str(details.get('trigger') or '')[:300]}\n"
             f"Labels: {json.dumps(labels, default=str)[:300]}\n"
             f"Affected host: {str(details.get('host') or 'unknown')}\n"
+            f"{node_line}"
             f"Target repo: {str(details.get('repo') or 'unknown')}\n"
             f"Investigation findings:\n{str(details.get('report') or '')[:2000]}\n\n"
             f"Proposed remediation: {str(details.get('recommendation') or '')[:800]}\n"
@@ -2973,7 +3021,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 'https://api.anthropic.com/v1/messages',
                 json={
                     'model': model,
-                    'max_tokens': 1024,
+                    'max_tokens': _JUDGE_MAX_TOKENS,
+                    'temperature': 0,  # a veto should not be sampled differently each run
                     'system': system_prompt,
                     'messages': [{'role': 'user', 'content': user_msg}],
                 },
@@ -2999,7 +3048,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             cfg['base_url'].rstrip('/') + '/chat/completions',
             json={
                 'model': model,
-                'max_tokens': 1024,
+                'max_tokens': _JUDGE_MAX_TOKENS,
                 'temperature': 0,  # a veto should not be sampled differently each run
                 'messages': [
                     {'role': 'system', 'content': system_prompt},
@@ -3599,6 +3648,22 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                     }
                     if provider:
                         payload['provider'] = provider
+                    # This path enqueues directly rather than through
+                    # _maybe_queue_remediation, so it would otherwise miss the
+                    # CFOP-71 collapse: a morning-summary echo of a node that is
+                    # already down ("physically check the power cable") would
+                    # open its own row beside the incident. Same rewrite, same
+                    # fail-open behaviour.
+                    sweep_host = f.get('resource_name') or f.get('namespace')
+                    node_key = self._collapse_key_for_node_incident({'host': sweep_host})
+                    if node_key and node_key != key:
+                        absorbed = self._record_absorbed_symptom(
+                            node_key, {'trigger': title, 'recommendation': rec})
+                        if absorbed:
+                            handled += 1
+                            continue
+                        key = node_key
+                        payload['dedupe_key'] = node_key
                     rid = self.kb.queue_remediation(
                         remediation_class='manual',
                         payload=payload,
@@ -6053,7 +6118,14 @@ Only return the JSON array, no other text."""
             return providers
 
         # Define fallback order: ollama -> groq -> xai -> anthropic
-        fallback_order = ['ollama', 'groq', 'xai', 'gemini', 'anthropic']
+        # Gemini is deliberately ABSENT here even though it is a registered
+        # provider and selectable by name. Adding it would have put it between
+        # xAI and Anthropic for every INVESTIGATION fallback, so a paid
+        # escalation that used to reach Opus would reach whatever the config's
+        # gemini entry names instead. That is a quality change to the
+        # investigation path, not the judge-gate change this was; the judge
+        # reaches Gemini through _JUDGE_MODEL_FLOOR, which pins its own model.
+        fallback_order = ['ollama', 'groq', 'xai', 'anthropic']
 
         # Add other providers as fallbacks (skip the primary)
         primary_type = primary[0] if primary else None
