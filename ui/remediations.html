@@ -251,6 +251,7 @@ async function detail(id){
     <div class="kv"><b>host</b> ${esc(r.host_id)}</div>
     <div class="kv"><b>reporting LLM</b> ${p.provider?`<span class="mono">${esc(p.provider)}</span>`:'—'}</div>
     ${decidedByHtml(p.decided_by)}
+    ${absorbedHtml(p.absorbed)}
     <div class="kv"><b>source investigation</b> ${r.investigation_id?('#'+r.investigation_id):'—'}</div>
     <div class="kv"><b>created</b> ${esc(r.created_at)} · <b>attempts</b> ${r.attempts}</div>
     ${safeUrl(r.pr_url)?`<div class="kv"><b>PR</b> <a href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.pr_url)}</a></div>`:''}
@@ -266,6 +267,15 @@ async function detail(id){
 
 // Deep-investigation inline PR path outcome (opened / declined / refused / …).
 // Distinct from executor-driven pr_url — a decline leaves pr_url null.
+// CFOP-71: a node-incident row shows what it absorbed. A collapse that hides
+// its inputs reads as "one arbitrary symptom won the race" — the operator
+// should be able to see that twelve alerts were one dead node.
+function absorbedHtml(list){
+  if(!Array.isArray(list) || !list.length) return '';
+  return `<div class="kv"><b>absorbed</b> <span class="muted">${list.length} further symptom${list.length===1?'':'s'} of this incident</span>
+    <ul style="margin:4px 0 0 18px;padding:0">${list.map(x=>`<li class="muted">${esc(x)}</li>`).join('')}</ul></div>`;
+}
+
 // CFOP-70: which models actually made the call. The classifier decides a row
 // MAY auto-execute; the judge decides whether it SHOULD. Both are shown because
 // this incident needed a code read to work out which model said what.

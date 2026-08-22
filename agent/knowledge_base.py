@@ -3832,6 +3832,66 @@ class KnowledgeBase:
             ).first()
             return remediation_row_dict(row) if row else None
 
+    def record_remediation_absorbed(self, remediation_id: int, summary: str,
+                                    limit: int = 25) -> bool:
+        """Append a folded symptom to a node-incident row's payload (CFOP-71).
+
+        Bounded and de-duplicated: a flapping alert must not grow the payload
+        without limit, and the same symptom re-firing is not new information.
+        """
+        text = str(summary or '').strip()[:200]
+        if not text:
+            return False
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return False
+            payload = dict(item.payload or {}) if isinstance(item.payload, dict) else {}
+            absorbed = list(payload.get('absorbed') or [])
+            if text in absorbed or len(absorbed) >= limit:
+                return False
+            absorbed.append(text)
+            payload['absorbed'] = absorbed
+            item.payload = payload
+            _log("info", "Remediation absorbed symptom",
+                 queue_id=remediation_id, absorbed_count=len(absorbed))
+            return True
+
+    def resolve_node_incidents_for_ready_hosts(self, ready_hosts) -> List[int]:
+        """Close open node-incident rows whose host is Ready again (CFOP-71).
+
+        A 'manual' row saying "go physically check the power cable" has no path
+        through the executor by definition — it is a notification, not a
+        remediation, and it sits on the worklist until a human clicks it. When
+        the node comes back, the paperwork should close itself; otherwise the
+        collapse only trades twelve stale needs-human rows for one.
+
+        Matched on the ``node-down-<host>`` key this feed owns, so no row a
+        human or another feed created is ever auto-resolved. Returns the ids
+        closed.
+        """
+        keys = {f"node-down-{str(h).strip().lower()}" for h in (ready_hosts or []) if str(h).strip()}
+        if not keys:
+            return []
+        closed: List[int] = []
+        with self.session_scope() as session:
+            rows = session.query(RemediationQueue).filter(
+                RemediationQueue.status.notin_(('resolved', 'rejected')),
+                RemediationQueue.payload['dedupe_key'].astext.in_(tuple(keys)),
+            ).all()
+            for item in rows:
+                # An executor holds a lease on these; let the reaper own them.
+                if item.status in ('claimed', 'executing'):
+                    continue
+                item.status = 'resolved'
+                item.completed_at = datetime.now(timezone.utc)
+                result = dict(item.result or {}) if isinstance(item.result, dict) else {}
+                result['auto_resolved'] = 'node returned to Ready'
+                item.result = result
+                closed.append(item.id)
+                _log("info", "Node incident auto-resolved", queue_id=item.id)
+        return closed
+
     def claim_next_remediation(
         self,
         executor_job_name: str,

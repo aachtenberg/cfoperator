@@ -1937,9 +1937,41 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             if count:
                 REMEDIATION_REAPED.inc(count)
                 logger.info(f"Reaped {count} stale remediation(s) back to the queue")
-            return count
         except Exception as e:
             logger.error(f"Remediation reaper failed: {e}", exc_info=True)
+            return 0
+        self._resolve_recovered_node_incidents()
+        return count
+
+    def _resolve_recovered_node_incidents(self) -> int:
+        """Close node-incident rows whose node came back Ready (CFOP-71).
+
+        A node-incident row is a NOTIFICATION — "go physically check the power
+        and network cable" is human work the executor cannot mechanize, so the
+        row would sit on the worklist until someone clicks it. Recovery closing
+        its own paperwork is what actually drives the needs-human count down;
+        without it the collapse only trades twelve stale rows for one.
+
+        Only rows carrying this feed's own ``node-down-<host>`` key are
+        touched, so nothing a human or another feed created is auto-resolved.
+        """
+        try:
+            k8s = getattr(getattr(self, 'tools', None), 'k8s_tools', None)
+            if not k8s:
+                return 0
+            result = k8s.get_nodes()
+            if not result.get('success'):
+                return 0
+            ready = [str(n.get('name')).lower() for n in result.get('nodes', [])
+                     if str(n.get('ready')) == 'True' and n.get('name')]
+            closed = self.kb.resolve_node_incidents_for_ready_hosts(ready)
+            if closed:
+                REMEDIATION_OUTCOME.labels(outcome='resolved').inc(len(closed))
+                logger.info(f"Auto-resolved {len(closed)} node incident(s) whose node "
+                            f"returned to Ready: {closed}")
+            return len(closed)
+        except Exception as e:
+            logger.warning(f"Node-incident recovery sweep failed: {e}")
             return 0
 
     def _drain_remediation_queue(self) -> int:
@@ -1959,12 +1991,29 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if not self._remediation_flag('queue_drain'):
             return 0
         max_per_tick = max(1, int(rcfg.get('max_drain_per_tick', 3)))
+        # CFOP-71: the open-PR cap applies to the executor path too. It was
+        # enforced only inside the agent-side proposer (remediation.py), and the
+        # executor is a separate portable service that consults nothing of the
+        # kind — which is how four cfop/ PRs came to be open against a
+        # configured max_open_prs of 3. The drainer is the seat: it already
+        # reads config, and refusing here leaves the row queued rather than
+        # burning an executor Job and a frontier-model diff to produce a PR
+        # that should not exist yet.
+        max_open_prs = int(rcfg.get('max_open_prs', 3))
         spawned = 0
         # Rows released mid-tick (awaiting approval / transient recorder errors)
         # go back to queued with the same priority — skip them for the rest of
         # this tick so they cannot starve later items via reclaim churn.
         skip_ids: set = set()
         for _ in range(max_per_tick):
+            if max_open_prs >= 0 and self._open_remediation_pr_count() >= max_open_prs:
+                # Nothing is lost: the rows stay queued and the next tick
+                # re-checks, so a merged PR unblocks the queue with no operator
+                # action. Blocking here is the point — three unreviewed PRs
+                # already await a human, and a fourth helps nobody.
+                logger.info(f"Remediation drain paused: at the open PR cap ({max_open_prs})")
+                REMEDIATION_SPAWNED.labels(result='capped').inc()
+                break
             job_name = f"cfop-executor-{uuid.uuid4().hex[:10]}"
             try:
                 work = self.kb.claim_next_remediation(job_name, exclude_ids=skip_ids)
@@ -1995,6 +2044,32 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 self.kb.fail_remediation(work['id'], f"executor spawn failed: {e}")
                 skip_ids.add(work['id'])
         return spawned
+
+    def _open_remediation_pr_count(self) -> int:
+        """Remediation PRs this pipeline currently has awaiting a human.
+
+        Counted from the queue rather than the GitHub API: the drainer runs
+        every tick, and 'pr-open'/'verifying' rows ARE the outstanding PRs.
+        _reconcile_remediation_prs clears them as they are merged or closed.
+
+        Note this makes the cap depend on ``remediation.queue_verify``: with
+        the reconciler off, nothing clears 'pr-open', so the count only grows
+        and the drainer stops once it reaches the cap. That is not a bug to
+        chase — the count is accurate (those PRs really are open and
+        unreviewed) and a human Resolving the rows in the console releases it.
+        But a "stalled queue" with queue_verify off is this, not a deadlock.
+
+        Fails OPEN: a read failure returns 0 and the tick proceeds. Blocking on
+        a transient DB error would stall the whole queue, and this cap is a
+        volume guard, not a safety gate — the safety gate is CFOP-70's judge,
+        which fails closed precisely because it is one.
+        """
+        try:
+            return sum(len(self.kb.list_remediations_by_status(st))
+                       for st in ('pr-open', 'verifying'))
+        except Exception as e:
+            logger.warning(f"Could not count open remediation PRs, not capping this tick: {e}")
+            return 0
 
     def _executor_config(self) -> Dict[str, Any]:
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
@@ -2501,6 +2576,17 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         row for the same underlying problem is still open. It must land in both
         the ``queue_remediation`` kwarg and the payload — the KB filters on
         ``payload['dedupe_key']`` and does not inject it itself.
+
+        This is the single choke point both feeds converge on, so it is also
+        where the two gates live:
+
+          - CFOP-71 collapse: while a node is NotReady, symptoms attributable
+            to it fold onto one node-incident row.
+          - CFOP-70 judge: a row that would auto-execute is reviewed by a
+            frontier model before it can. Fails closed.
+
+        Both are deliberately here rather than at the call sites — a gate a
+        future third feed can forget to call is not a gate.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_feed'):
@@ -2511,6 +2597,23 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         risk = str(details.get('risk') or 'high')
         confidence = details.get('confidence')
         dedupe_key = str(details.get('dedupe_key') or '') or None
+        # CFOP-71: while a node is NotReady, every symptom attributable to it
+        # folds onto one node-incident row rather than opening its own. The
+        # rewrite happens here, above the key, because the symptoms each carry
+        # a legitimately DIFFERENT key — collapsing inside the key function
+        # cannot see them as one incident.
+        node_key = self._collapse_key_for_node_incident(details)
+        if node_key and node_key != dedupe_key:
+            logger.info(f"Folding {rclass} for {details.get('host')} onto node incident "
+                        f"{node_key} (node is NotReady)")
+            absorbed = self._record_absorbed_symptom(node_key, details)
+            if absorbed:
+                # An incident row already exists; this symptom is now recorded
+                # on it. Return its id so the caller links to the incident
+                # instead of reporting nothing proposed.
+                return absorbed
+            dedupe_key = node_key
+            details = dict(details, dedupe_key=node_key)
         payload = {
             'recommendation': str(details.get('recommendation') or ''),
             'rendered_context': str(details.get('report') or '')[:5000],
@@ -2970,6 +3073,85 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         }
 
     @staticmethod
+    def _normalize_host(host) -> str:
+        """Bare lowercase hostname from a host field or Prometheus label.
+
+        An ``instance`` label is ``raspberrypi4:9100``, so the port has to come
+        off before anything is compared against a node name — otherwise the
+        node-incident collapse never matches the rows it exists to collapse.
+        """
+        h = str(host or '').strip().lower()
+        if not h:
+            return ''
+        h = h.split('://', 1)[-1]      # in case a URL slipped into the label
+        h = h.split('/', 1)[0]
+        if ':' in h:                   # strip :port (never an IPv6 literal here)
+            h = h.rsplit(':', 1)[0]
+        return h.strip('.')
+
+    def _notready_nodes(self) -> set:
+        """Lowercase names of nodes that are not currently Ready.
+
+        Same source _ground_truth_snapshot trusts (tools/k8s.py get_nodes,
+        which reports Ready as 'True'/'False'/'Unknown').
+
+        FAILS OPEN — any error yields the empty set, so every row enqueues
+        exactly as it did before. A dedupe optimisation must never be the
+        reason a real problem goes unrecorded; that is the same posture
+        _open_remediation_for_key takes.
+        """
+        k8s = getattr(getattr(self, 'tools', None), 'k8s_tools', None)
+        if not k8s:
+            return set()
+        try:
+            result = k8s.get_nodes()
+            if not result.get('success'):
+                return set()
+            return {str(n.get('name') or '').lower()
+                    for n in result.get('nodes', [])
+                    if str(n.get('ready')) != 'True' and n.get('name')}
+        except Exception as e:
+            logger.debug(f"Could not read node readiness for incident collapse: {e}")
+            return set()
+
+    @staticmethod
+    def _node_incident_dedupe_key(host: str) -> str:
+        """The one key every symptom of one dead node folds onto (CFOP-71)."""
+        return f"node-down-{CFOperator._normalize_host(host)}"
+
+    def _collapse_key_for_node_incident(self, details: Dict[str, Any]) -> Optional[str]:
+        """The node-incident key for this row, or None to enqueue independently.
+
+        One dead node fires many DIFFERENT alerts — node unreachable, deployment
+        not ready, four pod-not-ready-30m, ArgoCD metrics absent, promtail
+        memory. Each has its own legitimate Alertmanager fingerprint and
+        therefore its own dedupe key, which is why _investigation_dedupe_key
+        cannot collapse them: it is doing exactly the job CFOP-46 part C built
+        it for. The fan-out has to be caught a level up, when the key is chosen.
+
+        Rewriting the key rather than adding a second suppression layer means
+        everything downstream keeps working unchanged — queue_remediation's
+        existing payload['dedupe_key'] check collapses symptoms two through
+        twelve onto row one, and _queue_needs_action_remediation's existing
+        _open_remediation_for_key fallback still links each later investigation
+        to the surviving row instead of reporting "none proposed".
+
+        Conditional on the node actually being NotReady: a disk-full and a
+        crash-looping pod on a HEALTHY host are two problems, not one incident,
+        and merging them would lose the second.
+        """
+        host = self._normalize_host(details.get('host'))
+        if not host:
+            return None
+        down = self._notready_nodes()
+        if not down:
+            return None
+        # An alert's host may be the FQDN of a node registered by short name.
+        if host in down or host.split('.', 1)[0] in down:
+            return self._node_incident_dedupe_key(host.split('.', 1)[0])
+        return None
+
+    @staticmethod
     def _investigation_dedupe_key(alert_info: Dict[str, Any], recommendation: str) -> str:
         """Stable dedupe key for a needs_action enqueue (CFOP-46 part C).
 
@@ -3060,6 +3242,30 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         """
         slug = re.sub(r'[^a-z0-9]+', '-', f"{host} {title}".lower()).strip('-')[:80]
         return f"inv-dispatch-{slug}"
+
+    def _record_absorbed_symptom(self, node_key: str,
+                                 details: Dict[str, Any]) -> Optional[int]:
+        """Note a folded symptom on the open node-incident row; its id, or None.
+
+        None means no incident row exists yet, so the caller enqueues one. The
+        row keeps the list because a collapse that silently discards its inputs
+        reads as "one arbitrary symptom won the race" — the operator should be
+        able to see that twelve alerts were one dead node, which is the whole
+        finding of CFOP-71. Fails open (None) like every other read on this
+        path: worst case a second row is created, which is today's behaviour.
+        """
+        try:
+            existing = self.kb.find_open_remediation_by_dedupe_key(node_key)
+            if not existing:
+                return None
+            rid = existing.get('id')
+            summary = str(details.get('trigger') or details.get('recommendation') or '')[:200]
+            if rid and summary:
+                self.kb.record_remediation_absorbed(rid, summary)
+            return rid
+        except Exception as e:
+            logger.warning(f"Could not fold symptom onto node incident {node_key}: {e}")
+            return None
 
     def _open_remediation_for_key(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
         """Non-terminal remediation row carrying this dedupe key, or None.

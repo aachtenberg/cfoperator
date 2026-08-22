@@ -39,6 +39,9 @@ def _fake_op(*, drain=False, reap=False, max_per_tick=3):
     # Unset change-record URL → prepare is a no-op pass-through (homelab default).
     op._change_record_url = lambda: ""
     op._prepare_node_action_change_record = lambda work: work
+    # CFOP-71: no outstanding PRs by default, so drain tests exercise draining.
+    # A bare MagicMock is not comparable to the int cap and would TypeError.
+    op._open_remediation_pr_count = lambda: 0
     return _wire_flags(op)
 
 
@@ -428,6 +431,22 @@ def test_build_executor_manifest_node_action_disabled_no_mount():
 # ---- feed hook ---------------------------------------------------------------
 
 
+def _no_node_incident(op):
+    """Wire the real node-incident collapse (CFOP-71).
+
+    Deliberately the real method, not a None stub: with a MagicMock `tools`
+    it traverses the genuine fail-open path (unreadable nodes -> no collapse),
+    so these fixtures prove the collapse cannot fire when node readiness is
+    unknown. A bare MagicMock would be truthy and silently rewrite every
+    dedupe key.
+    """
+    op._normalize_host = CFOperator._normalize_host
+    op._notready_nodes = lambda: CFOperator._notready_nodes(op)
+    op._collapse_key_for_node_incident = (
+        lambda details: CFOperator._collapse_key_for_node_incident(op, details))
+    return op
+
+
 def _confirming_judge(op):
     """Wire an explicitly confirming mutation judge (CFOP-70).
 
@@ -442,7 +461,7 @@ def _confirming_judge(op):
 
 
 def test_maybe_queue_remediation_feeds_when_enabled():
-    op = _confirming_judge(_wire_flags(MagicMock()))
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 7
     details = {"remediation_class": "k8s-action", "risk": "low", "confidence": 0.9,
@@ -555,6 +574,7 @@ def _feed_op(feed=True):
     op._maybe_queue_remediation = (
         lambda inv_id, details: CFOperator._maybe_queue_remediation(op, inv_id, details))
     _confirming_judge(op)
+    _no_node_incident(op)
     return _wire_flags(op)
 
 
@@ -707,7 +727,7 @@ def test_feed_from_sweeps_classifier_investigate_dispatches():
 def test_maybe_queue_remediation_truncates_host_id():
     # RemediationQueue.host_id is String(64); an over-long k8s resource name
     # must not reject the INSERT after classification already succeeded.
-    op = _confirming_judge(_wire_flags(MagicMock()))
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 5
     details = {"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
@@ -1050,7 +1070,7 @@ def test_llm_provider_tag():
 
 
 def test_maybe_queue_remediation_stamps_provider():
-    op = _confirming_judge(_wire_flags(MagicMock()))
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 9
     details = {
@@ -1096,6 +1116,7 @@ def test_store_deep_investigation_stamps_provider_and_pr_attempt():
     # Use the real queue helper so provider lands in the payload.
     op._maybe_queue_remediation = lambda inv_id, details: CFOperator._maybe_queue_remediation(
         op, inv_id, details)
+    _no_node_incident(op)
 
     alert = {"summary": "CIFS mount failed"}
     result = {"details": {
@@ -1122,7 +1143,7 @@ def test_store_deep_investigation_stamps_provider_and_pr_attempt():
 
 def _na_op(feed=True):
     """Op wired for _queue_needs_action_remediation with the real queue helpers."""
-    op = _confirming_judge(_wire_flags(MagicMock()))
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": feed}}
     op.kb.queue_remediation.return_value = 9
     op._count_enqueued = MagicMock()
@@ -1575,7 +1596,7 @@ _IMMICH_KIOSK_DETAILS = {
 
 def _judge_op(judge_return=None, judge_raises=None):
     """Op wired for _maybe_queue_remediation with a controllable judge."""
-    op = _wire_flags(MagicMock())
+    op = _no_node_incident(_wire_flags(MagicMock()))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 77
     op._count_enqueued = MagicMock()
@@ -1776,3 +1797,217 @@ def test_classifier_stamps_the_model_that_answered():
     hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
     assert hints["classifier_backend"] == "ollama"
     assert hints["classifier_model"] == "gemma4:26b"
+
+
+# ---- CFOP-71: one dead node is one incident ----------------------------------
+#
+# raspberrypi4 went NotReady at 06:18:23Z and by 11:06 that single fact had
+# become ~15 investigations, 12 needs-human rows and 4 open PRs. The 12 rows are
+# all manual / target.host raspberrypi4, all some rewording of "physically check
+# the power and network cable". They are one fact, twelve times.
+
+# The alerts one dead node actually fired, each with its own legitimate
+# fingerprint and therefore its own dedupe key.
+_RPI4_SYMPTOMS = [
+    ("NodeNotReady", "alert-aaa1"),
+    ("KubeDeploymentReplicasMismatch", "alert-bbb2"),
+    ("KubePodNotReady", "alert-ccc3"),
+    ("KubePodNotReady", "alert-ddd4"),
+    ("ArgoCDMetricsAbsent", "alert-eee5"),
+    ("PromtailMemoryHigh", "alert-fff6"),
+]
+
+
+def _nodes_op(nodes):
+    """Op whose cluster reports these nodes, wired with the real collapse."""
+    op = _wire_flags(MagicMock())
+    op.config = {"remediation": {"queue_feed": True}}
+    op.tools.k8s_tools.get_nodes.return_value = {"success": True, "nodes": nodes}
+    op._normalize_host = CFOperator._normalize_host
+    op._notready_nodes = lambda: CFOperator._notready_nodes(op)
+    op._node_incident_dedupe_key = CFOperator._node_incident_dedupe_key
+    op._collapse_key_for_node_incident = (
+        lambda d: CFOperator._collapse_key_for_node_incident(op, d))
+    op._record_absorbed_symptom = (
+        lambda key, d: CFOperator._record_absorbed_symptom(op, key, d))
+    op._count_enqueued = MagicMock()
+    _confirming_judge(op)
+    return op
+
+
+_RPI4_DOWN = [{"name": "raspberrypi4", "ready": "False"},
+              {"name": "raspberrypi2", "ready": "True"}]
+
+
+def test_symptoms_of_a_notready_node_collapse_onto_one_row():
+    op = _nodes_op(_RPI4_DOWN)
+    op.kb.queue_remediation.return_value = 51
+    # First symptom: no incident row yet, so one is created.
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    first = CFOperator._maybe_queue_remediation(op, 2253, {
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "recommendation": "physically check the power and network cable",
+        "host": "raspberrypi4", "trigger": _RPI4_SYMPTOMS[0][0],
+        "dedupe_key": _RPI4_SYMPTOMS[0][1]})
+    assert first == 51
+    assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "node-down-raspberrypi4"
+    # and the key lands in BOTH places, or the KB filter never matches
+    assert op.kb.queue_remediation.call_args.kwargs["payload"]["dedupe_key"] == "node-down-raspberrypi4"
+
+    # Every later symptom folds onto it — no second row, whatever its own key.
+    op.kb.find_open_remediation_by_dedupe_key.return_value = {"id": 51}
+    op.kb.queue_remediation.reset_mock()
+    for trigger, key in _RPI4_SYMPTOMS[1:]:
+        rid = CFOperator._maybe_queue_remediation(op, 2260, {
+            "remediation_class": "manual", "risk": "high", "confidence": None,
+            "recommendation": "check the pod", "host": "raspberrypi4",
+            "trigger": trigger, "dedupe_key": key})
+        assert rid == 51, f"{trigger} opened its own row"
+    op.kb.queue_remediation.assert_not_called()
+    # the incident row records what it absorbed
+    absorbed = [c.args[1] for c in op.kb.record_remediation_absorbed.call_args_list]
+    assert absorbed == [t for t, _ in _RPI4_SYMPTOMS[1:]]
+
+
+def test_symptoms_on_a_ready_node_still_enqueue_independently():
+    # The collapse must be conditional, not a blanket host merge: a disk-full
+    # and a crash-looping pod on a healthy host are two problems, not one.
+    op = _nodes_op(_RPI4_DOWN)
+    op.kb.queue_remediation.return_value = 90
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    for key in ("alert-disk", "alert-crashloop"):
+        CFOperator._maybe_queue_remediation(op, 1, {
+            "remediation_class": "manual", "risk": "high", "confidence": None,
+            "recommendation": "look at it", "host": "raspberrypi2",  # Ready
+            "trigger": "t", "dedupe_key": key})
+    keys = [c.kwargs["dedupe_key"] for c in op.kb.queue_remediation.call_args_list]
+    assert keys == ["alert-disk", "alert-crashloop"]  # untouched
+    op.kb.record_remediation_absorbed.assert_not_called()
+
+
+def test_collapse_fails_open_when_node_readiness_is_unreadable():
+    # A dedupe optimisation must never be the reason a real problem goes
+    # unrecorded. Every failure to read nodes leaves the key alone.
+    for nodes_result in ({"success": False},
+                         Exception("kubectl timed out")):
+        op = _nodes_op([])
+        if isinstance(nodes_result, Exception):
+            op.tools.k8s_tools.get_nodes.side_effect = nodes_result
+        else:
+            op.tools.k8s_tools.get_nodes.return_value = nodes_result
+        op.kb.queue_remediation.return_value = 5
+        CFOperator._maybe_queue_remediation(op, 1, {
+            "remediation_class": "manual", "risk": "high", "confidence": None,
+            "recommendation": "r", "host": "raspberrypi4", "dedupe_key": "alert-x"})
+        assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "alert-x"
+
+
+def test_collapse_needs_no_k8s_tools_to_be_safe():
+    op = _nodes_op([])
+    op.tools.k8s_tools = None
+    op.kb.queue_remediation.return_value = 5
+    CFOperator._maybe_queue_remediation(op, 1, {
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "recommendation": "r", "host": "raspberrypi4", "dedupe_key": "alert-x"})
+    assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "alert-x"
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("raspberrypi4", "raspberrypi4"),
+    ("raspberrypi4:9100", "raspberrypi4"),        # the Prometheus instance label
+    ("RaspberryPi4", "raspberrypi4"),
+    ("http://raspberrypi4:9100/metrics", "raspberrypi4"),
+    ("raspberrypi4.local.", "raspberrypi4.local"),
+    ("", ""),
+    (None, ""),
+])
+def test_normalize_host_strips_what_labels_carry(raw, expected):
+    assert CFOperator._normalize_host(raw) == expected
+
+
+def test_collapse_matches_an_fqdn_against_a_short_node_name():
+    op = _nodes_op(_RPI4_DOWN)
+    key = CFOperator._collapse_key_for_node_incident(op, {"host": "raspberrypi4.lan:9100"})
+    assert key == "node-down-raspberrypi4"
+
+
+def test_collapse_ignores_a_host_that_is_not_a_node():
+    # A pod or service name must not be mistaken for a node.
+    op = _nodes_op(_RPI4_DOWN)
+    assert CFOperator._collapse_key_for_node_incident(op, {"host": "immich-kiosk"}) is None
+    assert CFOperator._collapse_key_for_node_incident(op, {"host": ""}) is None
+
+
+# ---- CFOP-71: the open-PR cap reaches the executor path ----------------------
+
+
+def test_drainer_refuses_to_spawn_past_the_open_pr_cap():
+    # Four cfop/ PRs were open against a configured max_open_prs of 3, because
+    # the cap lived only in the agent-side proposer.
+    op = _fake_op(drain=True)
+    op.config["remediation"]["max_open_prs"] = 3
+    op._open_remediation_pr_count = lambda: 3
+    assert CFOperator._drain_remediation_queue(op) == 0
+    # the row is LEFT QUEUED, not claimed and not failed — no executor Job and
+    # no frontier-model diff is burned producing a PR that cannot open yet
+    op.kb.claim_next_remediation.assert_not_called()
+    op._spawn_remediation_executor.assert_not_called()
+    op.kb.fail_remediation.assert_not_called()
+
+
+def test_drainer_spawns_while_under_the_cap():
+    # Mutation-check for the cap: under it, draining is unchanged.
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["max_open_prs"] = 3
+    op._open_remediation_pr_count = lambda: 2
+    op.kb.claim_next_remediation.side_effect = [{"id": 1, "remediation_class": "gitops-patch"}]
+    assert CFOperator._drain_remediation_queue(op) == 1
+    op._spawn_remediation_executor.assert_called_once()
+
+
+def test_drainer_cap_stops_mid_tick_when_it_is_reached():
+    op = _fake_op(drain=True, max_per_tick=5)
+    op.config["remediation"]["max_open_prs"] = 2
+    counts = iter([0, 1, 2, 2, 2])
+    op._open_remediation_pr_count = lambda: next(counts)
+    op.kb.claim_next_remediation.side_effect = [
+        {"id": i, "remediation_class": "gitops-patch"} for i in range(1, 6)]
+    assert CFOperator._drain_remediation_queue(op) == 2  # stopped at the cap
+
+
+def test_open_pr_count_reads_the_queue_and_fails_open():
+    op = MagicMock()
+    op.kb.list_remediations_by_status.side_effect = (
+        lambda st: [{"id": 1}, {"id": 2}] if st == "pr-open" else [{"id": 3}])
+    assert CFOperator._open_remediation_pr_count(op) == 3  # pr-open + verifying
+    # a transient DB error must not stall the whole queue: this is a volume
+    # guard, not a safety gate
+    op.kb.list_remediations_by_status.side_effect = RuntimeError("db down")
+    assert CFOperator._open_remediation_pr_count(op) == 0
+
+
+# ---- CFOP-71: recovery closes its own paperwork ------------------------------
+
+
+def test_recovered_node_auto_resolves_its_incident_row():
+    op = _nodes_op([{"name": "raspberrypi4", "ready": "True"},
+                    {"name": "raspberrypi2", "ready": "True"}])
+    op.kb.resolve_node_incidents_for_ready_hosts.return_value = [51]
+    assert CFOperator._resolve_recovered_node_incidents(op) == 1
+    hosts = op.kb.resolve_node_incidents_for_ready_hosts.call_args[0][0]
+    assert sorted(hosts) == ["raspberrypi2", "raspberrypi4"]
+
+
+def test_recovery_sweep_passes_only_ready_hosts():
+    op = _nodes_op(_RPI4_DOWN)
+    op.kb.resolve_node_incidents_for_ready_hosts.return_value = []
+    CFOperator._resolve_recovered_node_incidents(op)
+    hosts = op.kb.resolve_node_incidents_for_ready_hosts.call_args[0][0]
+    assert hosts == ["raspberrypi2"]  # the still-down node keeps its row
+
+
+def test_recovery_sweep_is_silent_when_the_cluster_is_unreadable():
+    op = _nodes_op([])
+    op.tools.k8s_tools.get_nodes.side_effect = RuntimeError("no kubectl")
+    assert CFOperator._resolve_recovered_node_incidents(op) == 0
+    op.kb.resolve_node_incidents_for_ready_hosts.assert_not_called()
