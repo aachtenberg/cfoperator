@@ -579,7 +579,8 @@ def test_the_runner_reads_the_token_from_the_file_and_mints_nothing():
         "the session already holds a credential that dies with it; minting a "
         "second would create one whose revoke-on-exit never runs")
     assert "attach 1889" in runner
-    assert f"timeout 14400" in runner
+    assert "timeout --foreground 14400" in runner, (
+        "the deadline wrapper lost --foreground; see the interactive guard below")
     assert "trap 'rm -rf /tmp/cfop-cockpit-1889' EXIT" in runner
 
 
@@ -1104,7 +1105,11 @@ def test_the_runner_reports_a_timed_out_session_rather_than_swallowing_it(tmp_pa
     import subprocess
 
     directory = _materialise_session(tmp_path, ttl=1)
-    (directory / "cfassist").write_text('#!/bin/sh\nsleep 30\n')
+    # `exec`, so the thing being timed out IS timeout's direct child — which is
+    # the real shape: cfassist is a binary, not a shell wrapping one. It matters
+    # because --foreground (see the guards below) trades whole-group kills for a
+    # usable terminal, so timeout signals the direct child only.
+    (directory / "cfassist").write_text('#!/bin/sh\nexec sleep 30\n')
     (directory / "cfassist").chmod(0o700)
     proc = subprocess.run(["/bin/sh", str(directory / "run")],
                           capture_output=True, text=True, timeout=30)
@@ -1468,3 +1473,45 @@ def test_auto_still_answers_from_the_cache_on_a_second_request():
     client.post("/api/cockpit/spawn", json={"investigation_id": 1889})
     assert len(ssh.matching("uname")) == 1, (
         "auto re-probed a host it had already asked about")
+
+
+# --------------------------------------------------------------------------
+# the deadline wrapper must not steal the terminal
+# --------------------------------------------------------------------------
+
+def test_the_deadline_wrapper_leaves_the_session_in_the_foreground():
+    """REGRESSION GUARD, found by attaching to a real tier-3 session.
+
+    Plain `timeout` calls setpgid, putting the command in its own process
+    group — which is a BACKGROUND group with respect to the terminal. The
+    session then renders its briefing, echoes every keystroke, and responds to
+    none of them: reads from the tty raise SIGTTIN, and ctrl-c's SIGINT goes to
+    the shell instead. The only way out is killing the ssh.
+
+    Verified on the box: without the flag `PGID != TPGID`, with it they match.
+    """
+    s = HostCockpitSpawner(HostLadderConfig())
+    for tier in (TIER_HOST, TIER_SSH):
+        runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 14400, tier=tier)
+        assert "timeout --foreground " in runner, (
+            f"tier {tier}'s session would be uninterruptible and unable to read "
+            f"the terminal:\n{runner}")
+
+
+def test_the_container_deadline_wrapper_is_also_foreground():
+    """`docker attach` hands the session a tty too, so the same rule applies to
+    the entrypoint wrapper."""
+    ssh, _result = container_spawn()
+    run = ssh.matching("docker run")[0]
+    assert "--entrypoint timeout" in run
+    assert "--foreground" in run, f"the container session would be uninterruptible: {run}"
+    # order matters: it is timeout's flag, so it precedes the duration
+    assert run.index("--foreground") < run.index("14400")
+
+
+def test_the_deadline_is_still_enforced():
+    """--foreground must not have quietly dropped the TTL along with the
+    process group."""
+    s = HostCockpitSpawner(HostLadderConfig())
+    runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 900, tier=TIER_HOST)
+    assert "timeout --foreground 900 " in runner

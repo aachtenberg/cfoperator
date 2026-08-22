@@ -719,10 +719,13 @@ class HostCockpitSpawner:
             # tier 1's Secret indirection and is documented as such.
             "--env-file", "/dev/stdin",
             # Docker has no activeDeadlineSeconds, so the deadline is a
-            # wrapper around the image's own entrypoint.
+            # wrapper around the image's own entrypoint. --foreground for the
+            # same reason as the host runner: without it the session lands in a
+            # background process group and can neither read the tty nor be
+            # interrupted.
             "--entrypoint", "timeout",
             self._config.image,
-            str(int(ttl_seconds)), COCKPIT_ENTRYPOINT,
+            "--foreground", str(int(ttl_seconds)), COCKPIT_ENTRYPOINT,
         ]
         # An exited namesake still owns the name, and `docker run` would 502 on
         # it — which is the ordinary path, not an edge case: attach, `exit`, run
@@ -1040,7 +1043,23 @@ class HostCockpitSpawner:
         """What the operator's ssh executes. Reads the credential from a 0600
         file next to it — never from argv, and never from the ssh command line
         the operator's own shell history would keep."""
-        wrapper = "timeout" if tier in (TIER_HOST, TIER_SSH) else ""
+        # --foreground is load-bearing, not a flag someone added for tidiness.
+        # Plain `timeout` calls setpgid, putting the command in its OWN process
+        # group — which is then a BACKGROUND group with respect to the
+        # terminal. A background process reading the tty gets SIGTTIN, and
+        # ctrl-c's SIGINT goes to the foreground group (the shell) instead. The
+        # session therefore renders its briefing, echoes every keystroke, and
+        # responds to none of them, with no way out but killing the ssh.
+        # timeout(1) documents this exactly: "--foreground: allow COMMAND to
+        # read from the TTY and get TTY signals".
+        #
+        # The cost is that timeout can then only signal its direct child rather
+        # than a whole group. That is fine here — cfassist is the direct child,
+        # and it is a binary rather than a shell wrapping one — but it does mean
+        # a child cfassist spawned and abandoned would outlive the deadline. The
+        # janitor is the backstop for that, as it is for everything else this
+        # tier cannot guarantee.
+        wrapper = "timeout --foreground" if tier in (TIER_HOST, TIER_SSH) else ""
         return "\n".join([
             "#!/bin/sh",
             "# cfop cockpit session runner (CFOP-36). Generated at spawn; removed at TTL.",

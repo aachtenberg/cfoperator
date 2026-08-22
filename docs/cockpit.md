@@ -582,6 +582,7 @@ can change it without a redeploy.
 | `cockpit concurrency cap reached` | two cockpits are already running — in the cluster, or on that host | exit one (the message names them), or attach without `--spawn` |
 | `spawning a cockpit is admin-only` | you are a member | ask an admin, or use plain `attach` — the briefing is the same |
 | the session starts but the model never answers | the session cannot reach the LLM | check `llm.primary.url` is an address reachable *from the fleet*, not `127.0.0.1` |
+| the briefing renders, keystrokes echo, nothing responds, ctrl-c does nothing | a session on a binary older than 0.9.1 — its deadline wrapper put it in a background process group, so it cannot read the terminal | escape with ssh's own `Enter ~ .`, then upgrade; fixed by `timeout --foreground` |
 | the session starts but the briefing is empty or errors | the session cannot reach the agent | same shape as the row above, for `cockpit.host_agent_url` |
 | you fixed the cause and the same error came back | not the probe cache — failures are only held for seconds | look again: the message names what it actually tried |
 | it landed on the wrong machine | the host was resolved from something misleading | read the `target:` line, then re-run with `--host <name>` |
