@@ -27,6 +27,19 @@
 # fetch the release, so those two must be kept in step — bump
 # internal/config/config.go and DEFAULT_CFASSIST_VERSION together, then tag.
 
+# These two ARGs belong to the FROM lines below, not to the paragraph above
+# them: a ${VAR} in FROM resolves only from a *global* ARG — one declared before
+# the FIRST FROM. Both stay here for that reason, including WORKER_IMAGE, which
+# feeds the second FROM: an ARG declared after any FROM is scoped to that stage
+# and does nothing for a later base image, which fails identically and looks
+# correct.
+#
+# They were lost once already, in a comment rewrite that replaced the block they
+# happened to sit at the bottom of — GO_IMAGE went blank and the cockpit image
+# stopped building for four merges without anything else noticing.
+ARG GO_IMAGE=golang:1.25-bookworm
+ARG WORKER_IMAGE=ghcr.io/aachtenberg/cfoperator-worker:main
+
 # Cross-compiled on the build platform (Go does this natively), so the arm64
 # image costs no QEMU emulation — the final stage below is COPY-only.
 FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS cfassist-build

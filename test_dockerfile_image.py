@@ -274,3 +274,93 @@ def test_the_paths_ignore_guard_catches_a_reintroduced_entry():
             f"the guard missed {spelling!r}, which Actions honours and which "
             "would silently skip rebuilds for a package that ships in the image"
         )
+
+
+# --- FROM variables must resolve ---------------------------------------------
+#
+# A ``${VAR}`` in a ``FROM`` line resolves only from a *global* ``ARG`` — one
+# declared before the first ``FROM``. An ARG inside a stage is scoped to that
+# stage and does nothing for a later FROM, and an undeclared one is simply
+# blank, which fails the build with "base name should not be blank".
+#
+# This is not hypothetical. A comment rewrite in #156 replaced the paragraph
+# above cockpit/Dockerfile's first FROM and took the two ARG lines sitting at
+# the bottom of it. Nothing on the PR could catch it: images build only on push
+# to main, so four merges landed on a cockpit image that had not been rebuilt
+# since before the change. Moving the image build to PRs would be slow and needs
+# registry credentials; this reads the file instead, in a millisecond.
+
+# Provided by buildkit, never declared in the file.
+BUILDKIT_FROM_ARGS = {
+    "BUILDPLATFORM", "BUILDOS", "BUILDARCH", "BUILDVARIANT",
+    "TARGETPLATFORM", "TARGETOS", "TARGETARCH", "TARGETVARIANT",
+}
+
+FROM_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
+
+
+def dockerfiles() -> list[pathlib.Path]:
+    return sorted(
+        path for path in ROOT.rglob("Dockerfile*")
+        if not any(part in {".git", ".claude", "node_modules"} for part in path.parts)
+    )
+
+
+def undeclared_from_variables(text: str) -> set[str]:
+    """Variables a FROM line uses that no global ARG declares."""
+    declared: set[str] = set()
+    seen_from = False
+    undeclared: set[str] = set()
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith("ARG ") and not seen_from:
+            # `ARG NAME=default` or a bare `ARG NAME`.
+            declared.add(stripped.split()[1].split("=")[0])
+            continue
+        if stripped.startswith("FROM "):
+            seen_from = True
+            for name in FROM_VARIABLE.findall(stripped):
+                if name not in declared and name not in BUILDKIT_FROM_ARGS:
+                    undeclared.add(name)
+    return undeclared
+
+
+def test_every_from_variable_resolves_to_a_global_arg():
+    offenders = {
+        path.relative_to(ROOT).as_posix(): sorted(undeclared_from_variables(path.read_text()))
+        for path in dockerfiles()
+        if undeclared_from_variables(path.read_text())
+    }
+    assert not offenders, (
+        f"FROM uses variables no global ARG declares: {offenders}. "
+        "A global ARG is one declared before the first FROM; without it the "
+        "base image name is blank and the build fails on push to main, where "
+        "nothing is watching. Declare it immediately above the FROM that uses it."
+    )
+
+
+def test_the_from_variable_guard_catches_the_deletion_that_happened():
+    """cockpit/Dockerfile as #156 left it: the comment kept, the ARGs gone."""
+    broken = (
+        "# a comment that replaced the block the ARGs lived in\n"
+        "FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS cfassist-build\n"
+        "RUN go build\n"
+        "FROM ${WORKER_IMAGE}\n"
+    )
+    assert undeclared_from_variables(broken) == {"GO_IMAGE", "WORKER_IMAGE"}
+
+    fixed = "ARG GO_IMAGE=golang:1.25-bookworm\nARG WORKER_IMAGE=x\n" + broken
+    assert undeclared_from_variables(fixed) == set()
+
+
+def test_a_stage_scoped_arg_does_not_count_for_a_later_from():
+    """ARG after the first FROM is stage-scoped — it cannot name a base image."""
+    text = (
+        "FROM alpine AS base\n"
+        "ARG WORKER_IMAGE=ghcr.io/x/y:main\n"
+        "FROM ${WORKER_IMAGE}\n"
+    )
+    assert undeclared_from_variables(text) == {"WORKER_IMAGE"}
