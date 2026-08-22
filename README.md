@@ -286,13 +286,18 @@ A standalone single-binary CLI assistant for SRE and systems administration. Cro
 ### Install
 
 ```bash
-# Download the latest release (pick your platform)
-gh release download cfassist-v0.10.0 -R aachtenberg/cfoperator --pattern 'cfassist-linux-arm64'
-chmod +x cfassist-linux-arm64
-sudo mv cfassist-linux-arm64 /usr/local/bin/cfassist
-
-# Available binaries: linux-amd64, linux-arm64, linux-arm, darwin-amd64, darwin-arm64
+curl -fsSL https://raw.githubusercontent.com/aachtenberg/cfoperator/main/scripts/install-cfassist.sh | sh
 ```
+
+Detects your OS and CPU, downloads from the `cfassist-latest` pointer, verifies
+the SHA-256 against the release's `checksums.txt`, and installs to
+`/usr/local/bin` (asking for sudo only if it has to; `~/.local/bin` if there is
+no sudo). No `gh`, no Python, no runtime deps — it is one static binary.
+
+Knobs, all optional: `CFASSIST_VERSION=0.10.0` pins an exact release,
+`CFASSIST_INSTALL_DIR` changes where it lands, `--dry-run` prints what it would
+do. Built for `linux-amd64`, `linux-arm64`, `linux-arm`, `darwin-amd64`,
+`darwin-arm64`.
 
 ### Configure
 
