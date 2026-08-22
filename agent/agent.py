@@ -103,13 +103,24 @@ REMEDIATION_CLASSIFIER = Counter('cfoperator_remediation_classifier_total', 'nee
 # that asserts this object can never clear the auto gate.
 _CLASSIFIER_SAFE_EXAMPLE = {"remediation_class": "manual", "risk": "high",
                             "confidence": 0.4, "host": "", "repo": ""}
+# verdict: confirm | downgrade | reject | unavailable | unparseable (CFOP-70).
+# The judge only ever runs on rows that would otherwise auto-execute, so this
+# counter is also the denominator for "how often did we nearly open a wrong PR".
+REMEDIATION_JUDGE = Counter('cfoperator_remediation_judge_total', 'Frontier-model verdicts on auto-eligible mutations', ['verdict'])
 REMEDIATION_SPAWNED = Counter('cfoperator_remediation_executor_spawned_total', 'Executor Jobs spawned by the drainer', ['result'])
 REMEDIATION_OUTCOME = Counter('cfoperator_remediation_outcome_total', 'Terminal remediation outcomes', ['outcome'])
 REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediations recovered from dead executor leases')
 
-# Model floor for the node-action executor (the only path that runs shell on a
-# host): used when remediation.executor.node_action.model is unset, so node-action
-# never inherits a cost downgrade applied to the generic executor model.
+# The one definition of "the model we trust with a cluster mutation". Two
+# users, both of which must never inherit a cost downgrade of the generic
+# executor model:
+#   - the node-action executor (the only path that runs shell on a host), when
+#     remediation.executor.node_action.model is unset;
+#   - the mutation judge (CFOP-70), which decides whether an auto-eligible
+#     remediation may open a PR unattended at all.
+# The node-action comment used to say "the only path that mutates the cluster".
+# That premise was too narrow: a merged GitOps PR mutates the cluster just as
+# surely as a shell command, only with ArgoCD holding the knife.
 _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 
 # The morning summary is authored by the cheap, unverified primary model, so a
@@ -329,6 +340,19 @@ class _ToolLoopStats:
             'learning_ids': self.learning_ids,
             'cached_tool_hits': self.cached_hits,
         }
+
+
+def _with_classifier_identity(hints: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    """Stamp the (backend, model) that produced a classification onto its hints.
+
+    So the row records which model decided a change was safe to make unattended
+    rather than leaving it to be reconstructed from the provider chain months
+    later (CFOP-70 needed exactly that reconstruction).
+    """
+    out = dict(hints)
+    out['classifier_backend'] = str((result or {}).get('backend') or '') or None
+    out['classifier_model'] = str((result or {}).get('model') or '') or None
+    return out
 
 
 class CFOperator:
@@ -2505,6 +2529,56 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             payload['source'] = source
         if dedupe_key:
             payload['dedupe_key'] = dedupe_key
+        # Which models actually made the call, recorded on the row. Before
+        # CFOP-70 the only LLM identity on a remediation was the
+        # *investigation's* provider, so reconstructing which model decided to
+        # open a PR took a code read of the provider chain. 'provider' keeps
+        # its existing meaning (the reporting LLM) so the console row does not
+        # silently change referent.
+        decided_by: Dict[str, Any] = {}
+        if details.get('classifier_model'):
+            decided_by['classifier'] = {
+                'backend': str(details.get('classifier_backend') or ''),
+                'model': str(details.get('classifier_model') or ''),
+            }
+
+        # CFOP-70: the frontier-model gate. Fires only on a row that would
+        # otherwise auto-execute — remediation_is_auto_eligible IS the risk
+        # surface, so it is the whole condition. Testing membership of
+        # _SUMMARY_MUTATION_CLASSES as well would add nothing (the auto classes
+        # are a subset) while giving the two tuples a way to drift apart.
+        nclass, nrisk = normalize_remediation_fields(str(rclass), risk)
+        verdict = None
+        if remediation_is_auto_eligible(nclass, nrisk, confidence):
+            try:
+                verdict = self._judge_mutation_remediation(details, nclass, nrisk, confidence)
+            except Exception as e:
+                # _judge_mutation_remediation catches its own transport errors,
+                # so reaching here means a bug in the gate itself. Park the row:
+                # a broken gate must not become an open gate, and the caller in
+                # _queue_needs_action_remediation does not wrap this call, so
+                # letting it escape would abort the enqueue and lose the row.
+                logger.error(f"Mutation judge raised, parking for human review: {e}",
+                             exc_info=True)
+                REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
+                verdict = {'verdict': 'downgrade', 'model': _ANTHROPIC_DEFAULT_EXEC_MODEL,
+                           'reason': f"judge error ({e}); parked rather than executed unattended"}
+            decided_by['judge'] = {'model': verdict.get('model'),
+                                   'verdict': verdict.get('verdict'),
+                                   'reason': verdict.get('reason')}
+            if verdict.get('verdict') != 'confirm':
+                # Null the confidence rather than inflate the risk: it is the
+                # one field that can never clear the gate (the eligibility test
+                # requires confidence is not None), and it leaves the
+                # classifier's honest risk assessment visible on the row
+                # instead of overwriting it with a fiction.
+                logger.warning(
+                    f"Mutation judge {verdict.get('verdict')}: {nclass}/{nrisk} "
+                    f"parked for human review — {verdict.get('reason')}")
+                confidence = None
+                payload['judge_reason'] = str(verdict.get('reason') or '')
+        if decided_by:
+            payload['decided_by'] = decided_by
         try:
             rid = self.kb.queue_remediation(
                 remediation_class=str(rclass),
@@ -2519,11 +2593,186 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             )
             if rid:
                 self._count_enqueued(source, str(rclass), risk, confidence)
+                if verdict is not None and verdict.get('verdict') == 'reject':
+                    # Recorded, then closed. Dropping it silently would hide the
+                    # fact that something proposed a wrong change; 'rejected' is
+                    # terminal, so the dedupe key stops matching and a genuine
+                    # recurrence is judged afresh rather than suppressed forever
+                    # by one rejection.
+                    try:
+                        self.kb.update_remediation_status(
+                            rid, 'rejected',
+                            last_error=f"mutation judge rejected: {verdict.get('reason')}")
+                    except Exception as e:
+                        logger.error(f"Could not close judge-rejected remediation #{rid}: {e}")
             return rid
         except Exception as e:
             logger.error(f"Failed to queue remediation from investigation #{investigation_id}: {e}",
                          exc_info=True)
             return None
+
+    # The judge answers a DIFFERENT question than the classifier. The classifier
+    # asks "what shape is this fix?"; the judge asks "should this change be made,
+    # unattended, right now?" — which is the question nothing in the pipeline was
+    # asking when it opened three PRs to un-pin immich-kiosk from the very node
+    # that drives the TV it displays on (CFOP-70).
+    _JUDGE_SYSTEM_PROMPT = (
+        "You are the last gate before an infrastructure change is made "
+        "WITHOUT human review. A smaller model has already classified a "
+        "recommendation as safe to execute unattended; it will open a pull "
+        "request that a GitOps controller syncs to a live cluster.\n\n"
+        "You are NOT asked to improve the fix, and NOT asked to re-classify "
+        "it. You are asked one question: should this change be made, "
+        "unattended, right now?\n\n"
+        "Reasons to refuse are not limited to danger. Refuse also when:\n"
+        "- the configuration being changed looks DELIBERATE (a pin, a "
+        "nodeSelector, an affinity, a replica count of 0, a resource limit) "
+        "and nothing in the evidence explains why it is there. Removing a "
+        "constraint someone chose is not a fix; it is a guess.\n"
+        "- the recommendation treats a SYMPTOM of a larger failure. If a node "
+        "is down, its pods being unschedulable is the node's problem, not the "
+        "workloads' — moving them is a decision a human makes.\n"
+        "- the evidence does not actually support the recommendation, or the "
+        "recommendation names something the evidence never mentions.\n"
+        "- the change is irreversible, or its blast radius is wider than the "
+        "problem it solves.\n\n"
+        "Respond ONLY with a SINGLE JSON object, no other text:\n"
+        '{"verdict": "confirm|downgrade|reject", "reason": "one sentence"}\n\n'
+        "- confirm: the change is correct, proportionate, and safe to make "
+        "unattended.\n"
+        "- downgrade: it may well be right, but a human should look first. "
+        "The row is parked for review; nothing is lost.\n"
+        "- reject: the recommendation is WRONG, not merely risky — doing it "
+        "would make things worse.\n\n"
+        "When you are unsure, downgrade. A parked row costs a human two "
+        "minutes; a wrong unattended change costs an outage."
+    )
+
+    def _judge_mutation_remediation(self, details: Dict[str, Any], rclass: str,
+                                    risk: str, confidence) -> Dict[str, Any]:
+        """Frontier-model verdict on a remediation that would auto-execute (CFOP-70).
+
+        Pinned to ``_ANTHROPIC_DEFAULT_EXEC_MODEL`` — the same floor node-action
+        uses — so a cost downgrade of ``remediation.executor.llm.model`` cannot
+        quietly demote the model holding the veto. That is the whole point of
+        the gate: the classifier deciding to open a PR ran on the cheap local
+        primary, and its self-reported confidence of 1.0 on three wrong calls
+        is exactly why a higher confidence bar would have bought nothing.
+
+        Fails CLOSED. Unavailable, unparseable after one nudge, or raising —
+        all return ``downgrade``, which parks the row for a human. This
+        deliberately inverts the CFOP-48 escalate-before-parking instinct:
+        there, the cost of parking was an operator's attention; here, the cost
+        of *not* parking is an unreviewed mutation of a live cluster. There is
+        also no cross-provider escalation rung, because falling back to a
+        lesser model is precisely the failure this gate exists to stop.
+        """
+        labels = ((details.get('alert_labels') or {})
+                  if isinstance(details.get('alert_labels'), dict) else {})
+        user_msg = (
+            f"Alert / trigger: {str(details.get('trigger') or '')[:300]}\n"
+            f"Labels: {json.dumps(labels, default=str)[:300]}\n"
+            f"Affected host: {str(details.get('host') or 'unknown')}\n"
+            f"Target repo: {str(details.get('repo') or 'unknown')}\n"
+            f"Investigation findings:\n{str(details.get('report') or '')[:2000]}\n\n"
+            f"Proposed remediation: {str(details.get('recommendation') or '')[:800]}\n"
+            f"Classified by a smaller model as: {rclass} / risk={risk} / "
+            f"confidence={confidence}\n\n"
+            "Should this be done unattended?"
+        )
+        model = _ANTHROPIC_DEFAULT_EXEC_MODEL
+        try:
+            reply = self._complete_judge(self._JUDGE_SYSTEM_PROMPT, user_msg, model)
+        except Exception as e:
+            logger.warning(f"Mutation judge unavailable, parking for human review: {e}")
+            REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
+            return {'verdict': 'downgrade', 'model': model,
+                    'reason': f"judge unavailable ({e}); parked rather than executed unattended"}
+        parsed = self._parse_judge_verdict(reply)
+        if parsed is None:
+            # One nudge, same ladder shape as the classifier (PR #76 pattern).
+            try:
+                reply2 = self._complete_judge(
+                    self._JUDGE_SYSTEM_PROMPT,
+                    user_msg + "\n\nYour previous reply was not the required "
+                    "format:\n" + str(reply)[:1000] + "\n\nReply again with ONLY "
+                    'the single JSON object {"verdict": ..., "reason": ...}.',
+                    model)
+                parsed = self._parse_judge_verdict(reply2)
+            except Exception as e:
+                logger.warning(f"Mutation judge nudge failed: {e}")
+        if parsed is None:
+            logger.warning("Mutation judge output unparseable, parking for human review: "
+                           f"{str(reply)[:200]}")
+            REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
+            return {'verdict': 'downgrade', 'model': model,
+                    'reason': "judge verdict unparseable; parked rather than executed unattended"}
+        parsed['model'] = model
+        REMEDIATION_JUDGE.labels(verdict=parsed['verdict']).inc()
+        return parsed
+
+    def _complete_judge(self, system_prompt: str, user_msg: str, model: str) -> str:
+        """One Anthropic completion for the mutation judge.
+
+        Separate from _complete_node_action_plan because that one resolves its
+        model from config (with the floor as a default) while this one is
+        floor-pinned outright — there is no config key that can lower it.
+        """
+        import requests as req
+        api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
+        if not api_key:
+            raise RuntimeError("ANTHROPIC_API_KEY required to judge a mutation-class remediation")
+        resp = req.post(
+            'https://api.anthropic.com/v1/messages',
+            json={
+                'model': model,
+                'max_tokens': 1024,
+                'system': system_prompt,
+                'messages': [{'role': 'user', 'content': user_msg}],
+            },
+            headers={
+                'Content-Type': 'application/json',
+                'x-api-key': api_key,
+                'anthropic-version': '2023-06-01',
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return '\n'.join(
+            b.get('text', '') for b in resp.json().get('content', [])
+            if b.get('type') == 'text'
+        )
+
+    @staticmethod
+    def _parse_judge_verdict(response_text: str) -> Optional[Dict[str, Any]]:
+        """Extract {verdict, reason} from raw judge output, or None.
+
+        Strict in the one way that matters: an unrecognised verdict is None,
+        not a coerced 'confirm'. Same posture as
+        _parse_remediation_classification — parse or degrade, never salvage —
+        except that here degrading means the row parks, so a malformed judge
+        can only ever be more conservative than a working one.
+        """
+        text = re.sub(r'^\s*```(?:json)?|```\s*$', '', (response_text or '').strip()).strip()
+        # A findings-array is the classifier's known failure shape, and the
+        # brace scan below would happily lift the first object out of one.
+        # Doing that here would manufacture a verdict from a malformed reply —
+        # and 'confirm' is the direction that opens the gate. Refuse the shape.
+        if text.startswith('['):
+            return None
+        start, end = text.find('{'), text.rfind('}')
+        if start == -1 or end <= start:
+            return None
+        try:
+            payload = json.loads(text[start:end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        verdict = str(payload.get('verdict') or '').strip().lower()
+        if verdict not in ('confirm', 'downgrade', 'reject'):
+            return None
+        return {'verdict': verdict, 'reason': str(payload.get('reason') or '').strip()[:500]}
 
     def _classify_needs_action_recommendation(self, trigger: str, recommendation: str,
                                               alert_info: Dict[str, Any],
@@ -2556,8 +2805,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         Malformed output is never salvaged into a classification — parse or
         degrade.
         """
+        # classifier_backend/classifier_model travel with the hints so the model
+        # that made the call is recorded on the row (CFOP-70). The degraded
+        # fallback names no model because none of them produced this result —
+        # the ladder ran out.
         fallback = {'remediation_class': 'manual', 'risk': 'high',
-                    'confidence': None, 'host': None, 'repo': None}
+                    'confidence': None, 'host': None, 'repo': None,
+                    'classifier_backend': None, 'classifier_model': None}
         system_prompt = (
             "You classify one infrastructure fix recommendation for a remediation "
             "queue. Respond ONLY with a SINGLE JSON object — never an array, "
@@ -2595,7 +2849,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         parsed = self._parse_remediation_classification(result.get('response', ''))
         if parsed is not None:
             REMEDIATION_CLASSIFIER.labels(result='ok').inc()
-            return parsed
+            return _with_classifier_identity(parsed, result)
         # Every (backend, model) that already answered this ladder with garbage.
         # The fallback wrapper may itself have rotated (transport errors), so
         # rung 3 must skip ALL of them, not just the first (PR #134 review).
@@ -2620,7 +2874,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             parsed = self._parse_remediation_classification(retry.get('response', ''))
             if parsed is not None:
                 REMEDIATION_CLASSIFIER.labels(result='nudged').inc()
-                return parsed
+                return _with_classifier_identity(parsed, retry)
             answered.add((retry.get('backend'), retry.get('model')))
         except Exception as e:
             logger.warning(f"Remediation classifier nudge retry failed: {e}")
@@ -2645,7 +2899,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 if parsed is not None:
                     logger.info(f"Remediation classifier escalated to {ptype}/{mname}")
                     REMEDIATION_CLASSIFIER.labels(result='escalated').inc()
-                    return parsed
+                    return _with_classifier_identity(
+                        parsed, {'backend': ptype, 'model': mname})
             except Exception as e:
                 logger.warning(f"Remediation classifier escalation to {ptype}/{mname} failed: {e}")
 
@@ -2770,6 +3025,11 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             'provider': provider,
             'source': 'investigation',
             'dedupe_key': self._investigation_dedupe_key(alert_info, rec),
+            # Context the mutation judge reads (CFOP-70). Not persisted as-is:
+            # _maybe_queue_remediation picks what belongs in the payload.
+            'trigger': trigger,
+            'alert_labels': (alert_info or {}).get('labels')
+                            or ((alert_info or {}).get('details') or {}).get('labels') or {},
         })
         rid = self._maybe_queue_remediation(investigation_id, details)
         if rid:
@@ -2932,6 +3192,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                                     if p),
                                 'source': 'morning-summary/sweep',
                                 'dedupe_key': key,
+                                'trigger': title,
+                                'alert_labels': {k: v for k, v in (
+                                    ('namespace', f.get('namespace')),
+                                    ('resource', f.get('resource_name'))) if v},
                             })
                             if provider:
                                 details['provider'] = provider

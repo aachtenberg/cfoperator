@@ -428,8 +428,21 @@ def test_build_executor_manifest_node_action_disabled_no_mount():
 # ---- feed hook ---------------------------------------------------------------
 
 
+def _confirming_judge(op):
+    """Wire an explicitly confirming mutation judge (CFOP-70).
+
+    Auto-eligible fixtures now traverse the gate, so a test that means to
+    exercise the enqueue path has to say what the judge said. Left as a bare
+    MagicMock the gate would fail closed and the fixture would silently stop
+    testing enqueue at all.
+    """
+    op._judge_mutation_remediation = MagicMock(
+        return_value={"verdict": "confirm", "reason": "ok", "model": "claude-opus-4-8"})
+    return op
+
+
 def test_maybe_queue_remediation_feeds_when_enabled():
-    op = _wire_flags(MagicMock())
+    op = _confirming_judge(_wire_flags(MagicMock()))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 7
     details = {"remediation_class": "k8s-action", "risk": "low", "confidence": 0.9,
@@ -541,6 +554,7 @@ def _feed_op(feed=True):
         "host": None, "repo": None})
     op._maybe_queue_remediation = (
         lambda inv_id, details: CFOperator._maybe_queue_remediation(op, inv_id, details))
+    _confirming_judge(op)
     return _wire_flags(op)
 
 
@@ -693,7 +707,7 @@ def test_feed_from_sweeps_classifier_investigate_dispatches():
 def test_maybe_queue_remediation_truncates_host_id():
     # RemediationQueue.host_id is String(64); an over-long k8s resource name
     # must not reject the INSERT after classification already succeeded.
-    op = _wire_flags(MagicMock())
+    op = _confirming_judge(_wire_flags(MagicMock()))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 5
     details = {"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
@@ -1036,7 +1050,7 @@ def test_llm_provider_tag():
 
 
 def test_maybe_queue_remediation_stamps_provider():
-    op = _wire_flags(MagicMock())
+    op = _confirming_judge(_wire_flags(MagicMock()))
     op.config = {"remediation": {"queue_feed": True}}
     op.kb.queue_remediation.return_value = 9
     details = {
@@ -1108,7 +1122,7 @@ def test_store_deep_investigation_stamps_provider_and_pr_attempt():
 
 def _na_op(feed=True):
     """Op wired for _queue_needs_action_remediation with the real queue helpers."""
-    op = _wire_flags(MagicMock())
+    op = _confirming_judge(_wire_flags(MagicMock()))
     op.config = {"remediation": {"queue_feed": feed}}
     op.kb.queue_remediation.return_value = 9
     op._count_enqueued = MagicMock()
@@ -1181,7 +1195,9 @@ def test_classifier_llm_failure_degrades_to_needs_human():
     op._chat_with_tools_with_fallback = MagicMock(side_effect=RuntimeError("no providers"))
     hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
     assert hints == {"remediation_class": "manual", "risk": "high",
-                     "confidence": None, "host": None, "repo": None}
+                     "confidence": None, "host": None, "repo": None,
+                     # the ladder ran out, so no model produced this result
+                     "classifier_backend": None, "classifier_model": None}
     # and that degraded row can never clear the auto-execute gate
     nc, nr = normalize_remediation_fields(hints["remediation_class"], hints["risk"])
     assert remediation_is_auto_eligible(nc, nr, hints["confidence"]) is False
@@ -1536,3 +1552,227 @@ def test_approve_endpoint_404_when_row_missing():
     resp = client.post("/api/remediations/7/approve")
     assert resp.status_code == 404
     op.kb.update_remediation_status.assert_not_called()
+
+
+# ---- CFOP-70: the frontier-model mutation judge -------------------------------
+#
+# The incident these guard: raspberrypi4 went NotReady, and the local classifier
+# returned gitops-patch / low / 1.0 three times for "remove the nodeSelector
+# pinning immich-kiosk to raspberrypi4". The pin is deliberate — that node drives
+# the physical TV — and an opus executor faithfully implemented the wrong
+# instruction into PRs #99, #100 and #101. Nothing had asked whether the change
+# should be made at all.
+
+# The live shape of that classification, kept verbatim as the fixture.
+_IMMICH_KIOSK_DETAILS = {
+    "remediation_class": "gitops-patch", "risk": "low", "confidence": 1.0,
+    "recommendation": ("Remove the nodeSelector kubernetes.io/hostname: raspberrypi4 "
+                       "from the immich-kiosk deployment so it can schedule elsewhere"),
+    "host": "raspberrypi4", "repo": "aachtenberg/homelab-infra",
+    "trigger": "KubeDeploymentReplicasMismatch", "report": "immich-kiosk has 0/1 ready",
+}
+
+
+def _judge_op(judge_return=None, judge_raises=None):
+    """Op wired for _maybe_queue_remediation with a controllable judge."""
+    op = _wire_flags(MagicMock())
+    op.config = {"remediation": {"queue_feed": True}}
+    op.kb.queue_remediation.return_value = 77
+    op._count_enqueued = MagicMock()
+    if judge_raises is not None:
+        op._judge_mutation_remediation = MagicMock(side_effect=judge_raises)
+    else:
+        op._judge_mutation_remediation = MagicMock(return_value=judge_return)
+    return op
+
+
+def test_confident_mutation_does_not_enqueue_auto_eligible_without_the_judge():
+    # The core of CFOP-70: gemma4's self-reported 1.0 is no longer sufficient on
+    # its own. A downgrade verdict must strip the confidence that is the only
+    # field capable of clearing the auto gate, so the row lands needs-human.
+    op = _judge_op({"verdict": "downgrade", "model": "claude-opus-4-8",
+                    "reason": "the nodeSelector looks deliberate"})
+    assert CFOperator._maybe_queue_remediation(op, 2266, dict(_IMMICH_KIOSK_DETAILS)) == 77
+    op._judge_mutation_remediation.assert_called_once()
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["confidence"] is None
+    # class and risk are NOT rewritten — the classifier's honest read survives
+    assert kwargs["remediation_class"] == "gitops-patch" and kwargs["risk"] == "low"
+    nc, nr = normalize_remediation_fields(kwargs["remediation_class"], kwargs["risk"])
+    assert remediation_is_auto_eligible(nc, nr, kwargs["confidence"]) is False
+    assert "deliberate" in kwargs["payload"]["judge_reason"]
+
+
+@pytest.mark.parametrize("judge_result,judge_exc", [
+    # unavailable / unparseable both surface as an explicit downgrade verdict
+    ({"verdict": "downgrade", "model": "claude-opus-4-8",
+      "reason": "judge unavailable (no ANTHROPIC_API_KEY)"}, None),
+    ({"verdict": "downgrade", "model": "claude-opus-4-8",
+      "reason": "judge verdict unparseable"}, None),
+])
+def test_judge_failure_modes_park_and_never_auto_queue(judge_result, judge_exc):
+    op = _judge_op(judge_result, judge_exc)
+    CFOperator._maybe_queue_remediation(op, 1, dict(_IMMICH_KIOSK_DETAILS))
+    assert op.kb.queue_remediation.call_args.kwargs["confidence"] is None
+
+
+def test_judge_raising_parks_the_row_instead_of_escaping():
+    # _judge_mutation_remediation catches its own transport errors, so a raise
+    # here means a bug in the gate. A broken gate must not become an open gate —
+    # and it must not escape either: the needs_action caller does not wrap this
+    # call, so an exception would abort the enqueue and lose the row entirely.
+    op = _judge_op(judge_raises=RuntimeError("boom"))
+    assert CFOperator._maybe_queue_remediation(op, 1, dict(_IMMICH_KIOSK_DETAILS)) == 77
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["confidence"] is None  # parked, not executed
+    assert "boom" in kwargs["payload"]["judge_reason"]
+
+
+def test_judge_confirm_enqueues_at_full_confidence():
+    # The mutation-check the issue asks for: force confirm and the immich-kiosk
+    # case sails through exactly as it did before the gate. Without this the
+    # fail-closed assertions above would pass for a gate that blocks everything.
+    op = _judge_op({"verdict": "confirm", "model": "claude-opus-4-8", "reason": "fine"})
+    assert CFOperator._maybe_queue_remediation(op, 2266, dict(_IMMICH_KIOSK_DETAILS)) == 77
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["confidence"] == 1.0
+    nc, nr = normalize_remediation_fields(kwargs["remediation_class"], kwargs["risk"])
+    assert remediation_is_auto_eligible(nc, nr, kwargs["confidence"]) is True
+    assert "judge_reason" not in kwargs["payload"]
+
+
+def test_judge_reject_records_the_row_then_closes_it():
+    # 'reject' is not a silent drop: the queue is the single ledger, so the row
+    # exists and carries why it was refused. Terminal status also releases the
+    # dedupe key, so a genuine recurrence is judged afresh.
+    op = _judge_op({"verdict": "reject", "model": "claude-opus-4-8",
+                    "reason": "the pin is deliberate; removing it moves the kiosk off the TV"})
+    assert CFOperator._maybe_queue_remediation(op, 2266, dict(_IMMICH_KIOSK_DETAILS)) == 77
+    op.kb.queue_remediation.assert_called_once()
+    args, kwargs = op.kb.update_remediation_status.call_args
+    assert args[0] == 77 and args[1] == "rejected"
+    assert "deliberate" in kwargs["last_error"]
+
+
+@pytest.mark.parametrize("rclass,risk,conf", [
+    ("manual", "high", None),       # human-only work
+    ("investigate", "low", 0.95),   # not a mutation at all
+    ("gitops-patch", "high", 0.95),  # mutation, but not auto-eligible
+    ("gitops-patch", "low", 0.5),   # mutation, but under the confidence bar
+    ("node-action", "low", 1.0),    # never auto-eligible whatever the confidence
+])
+def test_non_auto_eligible_rows_skip_the_judge_entirely(rclass, risk, conf):
+    # No cost regression: the judge is a frontier-model call, and a row that
+    # cannot auto-execute has no unattended-mutation risk to review. It parks
+    # at needs-human on the existing gate, as it always did.
+    op = _judge_op({"verdict": "confirm", "model": "claude-opus-4-8", "reason": ""})
+    details = {"remediation_class": rclass, "risk": risk, "confidence": conf,
+               "recommendation": "do a thing", "host": "rpi4"}
+    CFOperator._maybe_queue_remediation(op, 1, details)
+    op._judge_mutation_remediation.assert_not_called()
+    op.kb.queue_remediation.assert_called_once()
+
+
+def test_judge_is_pinned_to_the_model_floor_despite_a_downgraded_executor():
+    """Mirrors the node-action floor test: no config key can lower the judge."""
+    op = MagicMock()
+    op._executor_config.return_value = {"llm": {"model": "claude-haiku-4-5-20251001"}}
+    op._complete_judge = MagicMock(return_value='{"verdict": "confirm", "reason": "ok"}')
+    op._parse_judge_verdict = CFOperator._parse_judge_verdict
+    op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "confirm"
+    assert out["model"] == agent_mod._ANTHROPIC_DEFAULT_EXEC_MODEL == "claude-opus-4-8"
+    assert op._complete_judge.call_args[0][2] == "claude-opus-4-8"
+
+
+def test_judge_unavailable_downgrades_rather_than_confirming():
+    op = MagicMock()
+    op._complete_judge = MagicMock(side_effect=RuntimeError("ANTHROPIC_API_KEY required"))
+    op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert "unavailable" in out["reason"]
+
+
+def test_judge_unparseable_nudges_once_then_downgrades():
+    op = MagicMock()
+    op._complete_judge = MagicMock(return_value="I think you should probably do it")
+    op._parse_judge_verdict = CFOperator._parse_judge_verdict
+    op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    assert op._complete_judge.call_count == 2  # one-shot + one nudge, no third rung
+    assert "unparseable" in out["reason"]
+
+
+def test_judge_nudge_rescues_a_fenced_verdict():
+    op = MagicMock()
+    op._complete_judge = MagicMock(side_effect=[
+        "sure thing",
+        '```json\n{"verdict": "reject", "reason": "the pin is deliberate"}\n```',
+    ])
+    op._parse_judge_verdict = CFOperator._parse_judge_verdict
+    op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "reject" and "deliberate" in out["reason"]
+    # the malformed reply is quoted back on the retry (the PR #76 pattern)
+    assert "sure thing" in op._complete_judge.call_args[0][1]
+
+
+@pytest.mark.parametrize("raw", [
+    "",
+    "no json here",
+    '{"reason": "missing the verdict"}',
+    '{"verdict": "approve", "reason": "not one of the three"}',  # never coerced to confirm
+    '{"verdict": "yes"}',
+    '[{"verdict": "confirm"}]',  # array, not object
+])
+def test_parse_judge_verdict_rejects_anything_it_does_not_recognise(raw):
+    assert CFOperator._parse_judge_verdict(raw) is None
+
+
+def test_parse_judge_verdict_accepts_the_three_verdicts():
+    for v in ("confirm", "downgrade", "reject"):
+        out = CFOperator._parse_judge_verdict('{"verdict": "%s", "reason": "r"}' % v)
+        assert out == {"verdict": v, "reason": "r"}
+    # case and surrounding prose are tolerated, same as the classifier parser
+    out = CFOperator._parse_judge_verdict('Verdict below.\n{"verdict": "CONFIRM"}')
+    assert out["verdict"] == "confirm"
+
+
+def test_judge_prompt_never_frames_confirm_as_the_default():
+    # A gate whose prompt nudges toward approval is decoration. The prompt must
+    # tell the model that uncertainty means downgrade, and must name the class
+    # of mistake that actually happened (removing a deliberate constraint).
+    prompt = CFOperator._JUDGE_SYSTEM_PROMPT
+    assert "When you are unsure, downgrade" in prompt
+    assert "DELIBERATE" in prompt
+    for verdict in ("confirm", "downgrade", "reject"):
+        assert verdict in prompt
+
+
+def test_classifier_identity_is_recorded_on_the_payload():
+    # This incident needed a code read to work out which model decided to open
+    # the PR. The row now says so.
+    op = _judge_op({"verdict": "confirm", "model": "claude-opus-4-8", "reason": "ok"})
+    details = dict(_IMMICH_KIOSK_DETAILS,
+                   classifier_backend="ollama", classifier_model="gemma4:26b")
+    CFOperator._maybe_queue_remediation(op, 2266, details)
+    decided = op.kb.queue_remediation.call_args.kwargs["payload"]["decided_by"]
+    assert decided["classifier"] == {"backend": "ollama", "model": "gemma4:26b"}
+    assert decided["judge"]["model"] == "claude-opus-4-8"
+    assert decided["judge"]["verdict"] == "confirm"
+
+
+def test_classifier_stamps_the_model_that_answered():
+    op = _classifier_op()
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": _GOOD_CLASSIFICATION, "backend": "ollama", "model": "gemma4:26b"})
+    hints = CFOperator._classify_needs_action_recommendation(op, "trig", "fix it", {})
+    assert hints["classifier_backend"] == "ollama"
+    assert hints["classifier_model"] == "gemma4:26b"
