@@ -438,7 +438,7 @@ cockpit:
   # The cfassist release tiers 3/3b deliver to the host. Pinned so a session is
   # reproducible; it must be a tag that exists, and a spawn says so loudly if
   # it does not. Defaults to cfassist-go's own Version.
-  # cfassist_version: 0.9.0
+  # cfassist_version: 0.10.0
   # release_base: https://github.com/aachtenberg/cfoperator/releases/download
 
 # Skills
