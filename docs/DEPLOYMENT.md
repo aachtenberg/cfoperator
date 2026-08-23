@@ -267,6 +267,25 @@ No auth database → legacy env credentials. Configured but unreachable → 503 
 
 Roles, rollout order and lockout runbooks: [auth.md](auth.md).
 
+### The cockpit bridge port (`:8084`)
+
+Off by default and closed until you open it — `cockpit.bridge_enabled`, plus
+`cockpit.bridge_origins`, without which it refuses to listen at all. See
+[config-reference.md](config-reference.md); what it does is in
+[cockpit.md](cockpit.md).
+
+Before enabling it anywhere real: **`:8084` needs the same host-level guard
+`:8083` has.** The agent pod is `hostNetwork`, so a NetworkPolicy cannot reach
+either port — the restriction lives in the host firewall, not in Kubernetes,
+and a new port is not covered by the existing rule. Extend that rule to 8084
+for the same sources before flipping the flag; nothing in the chart or the
+manifests will do it for you, and nothing will warn you.
+
+Two things bound the blast radius if you get that wrong, and neither is a
+substitute for the rule: a connection needs an `investigate`-scoped token, and
+a browser Origin on the allowlist. The bridge cannot spawn a cockpit — it only
+attaches to one that exists — and it serves the host tiers only.
+
 ## Local / Non-Production
 
 ```bash

@@ -42,6 +42,7 @@ import signal
 import struct
 import termios
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 from urllib.parse import urlsplit
@@ -71,7 +72,11 @@ CLOSE_UNAUTHENTICATED = 4401
 CLOSE_FORBIDDEN = 4403
 CLOSE_NO_SESSION = 4404
 CLOSE_TIER_UNSUPPORTED = 4409
-CLOSE_EXPIRED = 4410
+#: The cap below. 4429 mirrors HTTP 429 so the number itself is a hint.
+CLOSE_BUSY = 4429
+
+#: How long start() waits for the listener thread to bind or fail.
+BIND_TIMEOUT_SECONDS = 5
 
 #: How long a client gets to send its auth frame before the socket is dropped.
 #: An unauthenticated connection holding a slot is the cheapest possible
@@ -90,6 +95,12 @@ class BridgeConfig:
     #: a PTY that any page can open is the sharp object this design exists to
     #: keep blunt, so the safe default is closed rather than open.
     allowed_origins: Tuple[str, ...] = field(default_factory=tuple)
+    #: How many terminals may be open at once. Each is an ssh child on the
+    #: agent, and an `investigate` token would otherwise be a licence to fork
+    #: as many as the box will take. Two, matching the cockpit concurrency cap
+    #: the ladder already enforces per host — a browser should not be able to
+    #: exceed what `--spawn` allows.
+    max_sessions: int = 2
 
 
 def build_bridge_config(agent_config: Any) -> BridgeConfig:
@@ -128,6 +139,8 @@ def build_bridge_config(agent_config: Any) -> BridgeConfig:
         enabled=_bool("CFOP_COCKPIT_BRIDGE_ENABLED", "bridge_enabled", False),
         host=_str("CFOP_COCKPIT_BRIDGE_BIND", "bridge_bind", "0.0.0.0"),
         port=_int("CFOP_COCKPIT_BRIDGE_PORT", "bridge_port", DEFAULT_BRIDGE_PORT),
+        max_sessions=max(1, _int("CFOP_COCKPIT_BRIDGE_MAX_SESSIONS",
+                                 "bridge_max_sessions", 2)),
         allowed_origins=tuple(normalize_origin(o) for o in origins if o.strip()),
     )
 
@@ -258,15 +271,26 @@ def authorize(*, path: str, origin: str, token: str,
         return Verdict(False, code=CLOSE_NO_SESSION,
                        reason="session has no attach coordinates")
 
-    return Verdict(True, session=dict(session),
-                   actor=_actor_name(identity))
+    # The argv is copied too: a shallow dict() leaves the ladder holding the
+    # same list this is about to hand to a subprocess.
+    copied = dict(session)
+    copied["attach_argv"] = list(argv)
+    return Verdict(True, session=copied, actor=_actor_name(identity))
 
 
 def _has_scope(identity: Any, scope: str) -> bool:
-    """Scope check that works with the auth store's identity or a plain dict."""
-    has = getattr(identity, "has", None)
-    if callable(has):
-        return bool(has(scope))
+    """Scope check against the auth store's identity, or a plain dict.
+
+    ``has_scope`` first because that is what ``TokenIdentity`` actually
+    defines; ``has`` is accepted after it only so a caller injecting a
+    different identity type is not forced to match our spelling. Falling
+    through to ``.scopes`` is correct either way — the store expands implied
+    scopes at verify time, so `remediate` already contains `investigate`.
+    """
+    for name in ("has_scope", "has"):
+        method = getattr(identity, name, None)
+        if callable(method):
+            return bool(method(scope))
     scopes = getattr(identity, "scopes", None)
     if scopes is None and isinstance(identity, dict):
         scopes = identity.get("scopes")
@@ -285,6 +309,37 @@ def _actor_name(identity: Any) -> str:
     return "unknown"
 
 
+async def write_all(loop, fd: int, data: bytes) -> None:  # pragma: no cover
+    """Write every byte to a non-blocking fd.
+
+    The pty is non-blocking so a slow reader never stalls the event loop — but
+    that makes ``os.write`` free to write *part* of the buffer, or none of it
+    and raise ``BlockingIOError``. A bare write therefore drops input, and the
+    case that hits it is a large paste, which is precisely what someone does
+    with a command they were given mid-incident.
+    """
+    view = memoryview(data)
+    while view:
+        try:
+            written = os.write(fd, view)
+        except BlockingIOError:
+            waiter = loop.create_future()
+
+            def _writable():
+                if not waiter.done():
+                    waiter.set_result(None)
+
+            loop.add_writer(fd, _writable)
+            try:
+                await waiter
+            finally:
+                loop.remove_writer(fd)
+            continue
+        except (BrokenPipeError, OSError):
+            return  # the far side is gone; the read side will end the session
+        view = view[written:]
+
+
 class PtySession:
     """A child process on the far end of a pseudo-terminal.
 
@@ -298,6 +353,21 @@ class PtySession:
         self.argv = list(argv)
         self.pid = -1
         self.fd = -1
+
+    @staticmethod
+    def _reap(pid: int, deadline_seconds: float) -> bool:
+        """Poll waitpid until the child is gone or the deadline passes."""
+        end = time.monotonic() + deadline_seconds
+        while True:
+            try:
+                done, _status = os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                return True  # already reaped
+            if done:
+                return True
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.05)
 
     def start(self) -> None:
         pid, fd = pty.fork()
@@ -317,25 +387,38 @@ class PtySession:
         """
         if self.fd < 0:
             return
-        cols = max(1, min(int(cols), 1000))
-        rows = max(1, min(int(rows), 1000))
-        fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
-                    struct.pack("HHHH", rows, cols, 0, 0))
+        try:
+            cols = max(1, min(int(cols), 1000))
+            rows = max(1, min(int(rows), 1000))
+        except (TypeError, ValueError):
+            # `{"type":"resize","cols":null}` is a browser bug, not a reason to
+            # drop someone's session mid-incident.
+            return
+        try:
+            fcntl.ioctl(self.fd, termios.TIOCSWINSZ,
+                        struct.pack("HHHH", rows, cols, 0, 0))
+        except OSError:
+            return
 
-    def close(self) -> None:
-        """End the child, then the fd. Best-effort in both directions: the
-        session may already have exited on its own TTL, which is the normal
-        case rather than an error."""
+    def close(self, *, grace_seconds: float = 2.0) -> None:
+        """End the child and reap it, then close the fd.
+
+        A single SIGHUP plus one WNOHANG was not enough: if the child is still
+        alive at that instant it is never reaped, and it becomes a zombie held
+        by the agent for as long as the agent runs. The far side outliving its
+        TTL is described elsewhere as the normal case, which is exactly when
+        that fires. So: hang up, wait briefly, then SIGKILL, then reap for
+        real.
+        """
         if self.pid > 0:
-            try:
-                os.kill(self.pid, signal.SIGHUP)
-            except (ProcessLookupError, PermissionError):
-                pass
-            try:
-                os.waitpid(self.pid, os.WNOHANG)
-            except ChildProcessError:
-                pass
-            self.pid = -1
+            pid, self.pid = self.pid, -1
+            for sig in (signal.SIGHUP, signal.SIGKILL):
+                try:
+                    os.kill(pid, sig)
+                except (ProcessLookupError, PermissionError):
+                    break
+                if self._reap(pid, grace_seconds if sig == signal.SIGHUP else 1.0):
+                    break
         if self.fd >= 0:
             try:
                 os.close(self.fd)
@@ -360,6 +443,14 @@ class CockpitBridge:
         self.audit = audit
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        #: Set by the serving thread once the socket is bound, or once binding
+        #: has failed. start() waits on it so "listening on :8084" is not
+        #: printed by a bridge that lost the port to something else.
+        self._ready = threading.Event()
+        self._bind_error: Optional[BaseException] = None
+        #: Open terminals, for the cap.
+        self._sessions = 0
+        self._sessions_lock = threading.Lock()
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -383,13 +474,34 @@ class CockpitBridge:
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="cockpit-bridge")
         self._thread.start()
+        # Binding happens on that thread, so without this the caller logs
+        # "listening" and an address-already-in-use lands seconds later, in a
+        # different line, below the one an operator actually reads.
+        if not self._ready.wait(BIND_TIMEOUT_SECONDS):
+            logger.error("cockpit bridge: no answer from the listener after %ss",
+                         BIND_TIMEOUT_SECONDS)
+            return False
+        if self._bind_error is not None:
+            logger.error("cockpit bridge: could not listen on %s:%s — %s",
+                         self.config.host, self.config.port, self._bind_error)
+            return False
+        logger.info("cockpit bridge listening on %s:%s (origins: %s, max %s)",
+                    self.config.host, self.config.port,
+                    ", ".join(self.config.allowed_origins),
+                    self.config.max_sessions)
         return True
 
     def _run(self) -> None:  # pragma: no cover - exercised by hand, not in CI
         try:
             asyncio.run(self._serve())
         except Exception as e:
+            # Record it for start(), which may still be waiting, then release
+            # it either way — a bridge that died during bind must not leave the
+            # agent's startup blocked on an Event that never gets set.
+            self._bind_error = e
             logger.error("cockpit bridge stopped: %s", e, exc_info=True)
+        finally:
+            self._ready.set()
 
     async def _serve(self) -> None:  # pragma: no cover - needs a real socket
         import websockets
@@ -403,9 +515,9 @@ class CockpitBridge:
                                     # place decides, and it is testable.
                                     origins=None,
                                     ping_interval=20, ping_timeout=20):
-            logger.info("cockpit bridge listening on %s:%s (origins: %s)",
-                        self.config.host, self.config.port,
-                        ", ".join(self.config.allowed_origins))
+            # Bound. start() may now say so; the log line lives there so it is
+            # printed once rather than by both halves.
+            self._ready.set()
             await asyncio.Future()
 
     # ---- one connection --------------------------------------------------
@@ -442,7 +554,24 @@ class CockpitBridge:
             return
 
         session = verdict.session or {}
-        await self._pump(websocket, session, verdict.actor)
+        with self._sessions_lock:
+            if self._sessions >= self.config.max_sessions:
+                busy = self._sessions
+                admitted = False
+            else:
+                self._sessions += 1
+                admitted = True
+        if not admitted:
+            await self._refuse(
+                websocket, CLOSE_BUSY,
+                f"the bridge is already carrying {busy} terminals "
+                f"(max {self.config.max_sessions})")
+            return
+        try:
+            await self._pump(websocket, session, verdict.actor)
+        finally:
+            with self._sessions_lock:
+                self._sessions -= 1
 
     async def _refuse(self, websocket, code: int, reason: str) -> None:  # pragma: no cover
         """Say why before closing.
@@ -500,12 +629,25 @@ class CockpitBridge:
                     if isinstance(frame, dict) and frame.get("type") == "resize":
                         term.resize(frame.get("cols", 80), frame.get("rows", 24))
                     continue
-                os.write(term.fd, message)
+                await write_all(loop, term.fd, message)
 
+        tasks = [asyncio.create_task(_to_browser()),
+                 asyncio.create_task(_from_browser())]
         try:
-            await asyncio.wait([asyncio.create_task(_to_browser()),
-                                asyncio.create_task(_from_browser())],
-                               return_when=asyncio.FIRST_COMPLETED)
+            done, pending = await asyncio.wait(tasks,
+                                               return_when=asyncio.FIRST_COMPLETED)
+            # Finish the other half rather than abandoning it. A discarded task
+            # is a "Task was destroyed but it is pending" at best, and at worst
+            # a writer still parked on a socket — and every session on this
+            # bridge shares one event loop.
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.wait(pending)
+            for task in done:
+                if task.exception() is not None:
+                    logger.warning("cockpit bridge session ended: %s",
+                                   task.exception())
         finally:
             try:
                 loop.remove_reader(term.fd)

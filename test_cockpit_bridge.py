@@ -13,6 +13,7 @@ to add it where the tests already look.
 
 import os
 import struct
+import time
 import fcntl
 import pty
 import termios
@@ -20,23 +21,28 @@ import termios
 import pytest
 
 from cockpit_bridge import (
-    AUTH_TIMEOUT_SECONDS, CLOSE_EXPIRED, CLOSE_FORBIDDEN, CLOSE_NO_SESSION,
-    CLOSE_TIER_UNSUPPORTED, CLOSE_UNAUTHENTICATED, DEFAULT_BRIDGE_PORT,
-    REQUIRED_SCOPE, BridgeConfig, CockpitBridge, PtySession, authorize,
-    build_bridge_config, normalize_origin, parse_path,
+    AUTH_TIMEOUT_SECONDS, BIND_TIMEOUT_SECONDS, CLOSE_BUSY, CLOSE_FORBIDDEN,
+    CLOSE_NO_SESSION, CLOSE_TIER_UNSUPPORTED, CLOSE_UNAUTHENTICATED,
+    DEFAULT_BRIDGE_PORT, REQUIRED_SCOPE, BridgeConfig, CockpitBridge,
+    PtySession, authorize, build_bridge_config, normalize_origin, parse_path,
 )
 
 CONSOLE = "http://cfop.lan:8083"
 
 
 class Identity:
-    """What the auth store hands back: something with scopes and a name."""
+    """Shaped like ``auth.store.TokenIdentity``, deliberately.
+
+    It spells ``has_scope`` because that is what the real one spells. The
+    double used to define ``has``, which meant these tests exercised a
+    fallback branch and never the production path — caught in review.
+    """
 
     def __init__(self, scopes=(REQUIRED_SCOPE,), username="aachten"):
         self.scopes = frozenset(scopes)
         self.username = username
 
-    def has(self, scope):
+    def has_scope(self, scope):
         return scope in self.scopes
 
 
@@ -191,8 +197,38 @@ def test_a_read_scoped_token_cannot_open_a_terminal():
 
 def test_a_remediate_token_is_accepted():
     """Scopes imply downward in this system; a stronger token is not a
-    stranger."""
+    stranger. The store expands implied scopes at verify time, so an
+    `investigate`-carrying identity is what actually arrives here."""
     assert call(identity=Identity(scopes=("remediate", "investigate", "read"))).ok
+
+
+def test_the_real_identity_shape_is_the_one_that_is_checked():
+    """`TokenIdentity` defines has_scope(). If the check only understood some
+    other spelling, every production connection would fall through to the
+    frozenset — which happens to work, and would hide the mismatch until
+    something changed."""
+    class RealShape:
+        scopes = frozenset({REQUIRED_SCOPE})
+        username = "aachten"
+        asked = []
+
+        def has_scope(self, scope):
+            RealShape.asked.append(scope)
+            return scope in self.scopes
+
+    assert call(identity=RealShape()).ok
+    assert RealShape.asked == [REQUIRED_SCOPE], (
+        "has_scope() was never called; the scope check is using a fallback")
+
+
+def test_the_verdict_does_not_share_the_ladders_argv_list():
+    """dict() is shallow, so the copy still handed out the same list the
+    ladder holds — and the next thing that happens to it is a subprocess."""
+    row = session()
+    v = call(resolver=lambda _id: row)
+    v.session["attach_argv"].append("; rm -rf /")
+    assert row["attach_argv"] == ["ssh", "-t", "sre@10.0.0.15",
+                                  "/tmp/cfop-cockpit-1889/run"]
 
 
 def test_no_live_cockpit_is_refused_rather_than_spawned():
@@ -328,6 +364,97 @@ def test_close_is_safe_twice():
     term.close()
 
 
+def test_resize_survives_junk_from_a_browser():
+    """`{"type":"resize","cols":null}` is a browser bug, not a reason to drop
+    someone's session mid-incident — an unhandled TypeError here takes the
+    reader task down with it."""
+    master, slave = pty.openpty()
+    try:
+        term = PtySession(["true"])
+        term.fd = master
+        for cols, rows in [(None, 24), ("80", "24"), ({}, []), (80, None)]:
+            term.resize(cols, rows)
+        assert _winsize(master)[0] >= 1
+    finally:
+        os.close(master)
+        os.close(slave)
+
+
+def test_close_reaps_the_child_rather_than_leaving_a_zombie():
+    """One SIGHUP plus one WNOHANG missed a child that had not exited yet, and
+    the agent then held the zombie for its whole life. The far side outliving
+    its TTL is the normal case, which is exactly when that fired."""
+    term = PtySession(["sleep", "60"])
+    term.start()
+    pid = term.pid
+    term.close()
+    with pytest.raises(ChildProcessError):
+        os.waitpid(pid, os.WNOHANG)
+
+
+def test_a_session_cap_exists_and_defaults_low():
+    """Each terminal is an ssh child on the agent. Without a cap an
+    `investigate` token is a licence to fork as many as the box will take."""
+    assert build_bridge_config({}).max_sessions == 2
+    assert build_bridge_config(
+        {"cockpit": {"bridge_max_sessions": 5}}).max_sessions == 5
+
+
+def test_the_cap_can_never_land_below_one():
+    """A cap of 0 would be a listening bridge that refuses everyone — the same
+    trap as an empty origin list, reached from the other side.
+
+    Note what 0 actually does: every numeric key in this config family is read
+    with `env or block or default`, so a configured 0 is falsy and reads as
+    "unset", giving the default. That is the repo-wide convention and not worth
+    diverging from for one key. The clamp is what catches a negative, which
+    does get through.
+    """
+    assert build_bridge_config({"cockpit": {"bridge_max_sessions": -4}}).max_sessions == 1
+    assert build_bridge_config({"cockpit": {"bridge_max_sessions": 0}}).max_sessions == 2
+
+
+def test_start_waits_for_the_bind_rather_than_assuming_it():
+    """`start()` returning True is what makes the agent log "listening on
+    :8084". If it returns before the socket is bound, address-already-in-use
+    arrives seconds later, in a different line, below the one an operator
+    actually reads.
+
+    The failure has to arrive *late* for this to test anything: a bind error
+    set up front would be seen even by a start() that never waited.
+    """
+    bridge = CockpitBridge(config(), resolver=lambda _i: None,
+                           token_verifier=lambda _t: None)
+
+    def slow_failure():
+        time.sleep(0.2)
+        bridge._bind_error = OSError("address already in use")
+        bridge._ready.set()
+
+    bridge._run = slow_failure
+    assert bridge.start() is False, (
+        "start() reported success before the listener had bound")
+
+
+def test_start_gives_up_if_the_listener_never_answers():
+    """A thread that neither binds nor dies must not hold the agent's startup
+    open forever."""
+    bridge = CockpitBridge(config(), resolver=lambda _i: None,
+                           token_verifier=lambda _t: None)
+    bridge._run = lambda: time.sleep(BIND_TIMEOUT_SECONDS + 5)
+    import cockpit_bridge as mod
+    original, mod.BIND_TIMEOUT_SECONDS = mod.BIND_TIMEOUT_SECONDS, 0.2
+    try:
+        assert bridge.start() is False
+    finally:
+        mod.BIND_TIMEOUT_SECONDS = original
+
+
+def test_the_bind_wait_is_bounded():
+    """A listener that never answers must not hold up the agent's startup."""
+    assert 0 < BIND_TIMEOUT_SECONDS <= 30
+
+
 def test_the_auth_window_is_short():
     """An unauthenticated connection holding a slot is the cheapest possible
     nuisance."""
@@ -339,7 +466,7 @@ def test_every_refusal_has_its_own_code():
     investigate scope' and 'this one is in the cluster' are three different
     next actions."""
     codes = [CLOSE_UNAUTHENTICATED, CLOSE_FORBIDDEN, CLOSE_NO_SESSION,
-             CLOSE_TIER_UNSUPPORTED, CLOSE_EXPIRED]
+             CLOSE_TIER_UNSUPPORTED, CLOSE_BUSY]
     assert len(set(codes)) == len(codes)
     assert all(4000 <= c <= 4999 for c in codes), (
         "close codes outside 4000-4999 are not application codes and browsers "

@@ -1,7 +1,10 @@
 # Core web framework
 flask>=3.0.0
 flask-sock>=0.7.0
-websockets>=12.0
+# 13+ for the asyncio server API the cockpit bridge uses: websocket.request
+# (path and headers) does not exist on 12, where every connection would be
+# refused as a bad path with the tests still green — they never open a socket.
+websockets>=13.0
 waitress>=3.0.0
 
 # LLM providers — bridge's AnthropicRuntime needs the MCP tool helpers
