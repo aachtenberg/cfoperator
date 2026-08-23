@@ -89,33 +89,60 @@ func Run(
 		result.OutputTokens += resp.OutputTokens
 		result.LastPromptTokens = resp.InputTokens
 
-		// Handle tool calls
+		// Handle tool calls. Claude (and others) emit several tool_use blocks in
+		// one turn; executing only the first left the rest without a tool_result
+		// and Anthropic 400s: "tool_use ids were found without tool_result
+		// blocks immediately after". The Python agent already runs the whole
+		// set; match that, and keep a result for every id even if a later
+		// Execute is cancelled, so the transcript stays well-formed.
 		if len(resp.ToolCalls) > 0 {
-			tc := resp.ToolCalls[0]
-			toolName := tc.Function.Name
-			toolArgs := tc.Function.Arguments
+			calls := make([]client.ToolCall, len(resp.ToolCalls))
+			copy(calls, resp.ToolCalls)
+			for i := range calls {
+				if calls[i].ID == "" {
+					calls[i].ID = fmt.Sprintf("toolu_%d_%d", i, result.ToolCalls)
+				}
+			}
 
-			output.ShowToolCall(toolName, toolArgs)
-			toolResult := toolReg.Execute(ctx, toolName, toolArgs)
-			output.ShowToolResult(toolName, toolResult)
-			result.ToolCalls++
-
-			// Append assistant message with tool call
 			assistantMsg := client.Message{
 				Role:      "assistant",
-				ToolCalls: resp.ToolCalls,
+				ToolCalls: calls,
 			}
 			if resp.Content != "" {
 				assistantMsg.Content = resp.Content
 			}
-			fullMessages = append(fullMessages, assistantMsg)
 
-			// Append tool result
-			fullMessages = append(fullMessages, client.Message{
-				Role:       "tool",
-				Content:    tools.MarshalResult(toolResult),
-				ToolCallID: tc.ID,
-			})
+			type executed struct {
+				id     string
+				result map[string]any
+			}
+			done := make([]executed, 0, len(calls))
+			for _, tc := range calls {
+				name := tc.Function.Name
+				args := tc.Function.Arguments
+				var toolResult map[string]any
+				if ctx.Err() != nil {
+					toolResult = map[string]any{"error": "cancelled"}
+				} else {
+					output.ShowToolCall(name, args)
+					toolResult = toolReg.Execute(ctx, name, args)
+					output.ShowToolResult(name, toolResult)
+					result.ToolCalls++
+				}
+				done = append(done, executed{id: tc.ID, result: toolResult})
+			}
+
+			fullMessages = append(fullMessages, assistantMsg)
+			for _, e := range done {
+				fullMessages = append(fullMessages, client.Message{
+					Role:       "tool",
+					Content:    tools.MarshalResult(e.result),
+					ToolCallID: e.id,
+				})
+			}
+			if ctx.Err() != nil {
+				return cancelled(&result, start), fullMessages
+			}
 			continue
 		}
 
@@ -123,6 +150,7 @@ func Run(
 		text := resp.Content
 		if text != "" {
 			output.ShowResponse(text)
+			fullMessages = append(fullMessages, client.Message{Role: "assistant", Content: text})
 		}
 		result.Response = text
 		result.Latency = time.Since(start)

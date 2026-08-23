@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 )
 
 func TestFormatToolCallLine(t *testing.T) {
@@ -41,6 +43,24 @@ func TestFormatToolResultLine(t *testing.T) {
 		}
 		if !strings.Contains(line, tt.detail) {
 			t.Fatalf("line = %q, want detail %q", line, tt.detail)
+		}
+	}
+}
+
+func TestDropSystemMessages(t *testing.T) {
+	in := []client.Message{
+		{Role: "system", Content: "you are cfassist"},
+		{Role: "user", Content: "hello"},
+		{Role: "assistant", Content: "hi"},
+		{Role: "tool", ToolCallID: "toolu_a", Content: "ok"},
+	}
+	out := dropSystemMessages(in)
+	if len(out) != 3 {
+		t.Fatalf("len = %d, want 3", len(out))
+	}
+	for _, m := range out {
+		if m.Role == "system" {
+			t.Fatal("system message should have been dropped")
 		}
 	}
 }

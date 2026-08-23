@@ -767,17 +767,31 @@ func (m *model) startTurn(prompt string) tea.Cmd {
 	return m.runConversationCmd(ctx, prompt)
 }
 
+// dropSystemMessages strips the system prompt Run prepends, so the TUI's
+// session transcript stays user/assistant/tool turns only.
+func dropSystemMessages(msgs []client.Message) []client.Message {
+	out := make([]client.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role != "system" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func (m *model) runConversationCmd(ctx context.Context, userInput string) tea.Cmd {
 	return func() tea.Msg {
 		defer m.turnWG.Done()
 		m.messages = append(m.messages, client.Message{Role: "user", Content: userInput})
 
 		out := &tuiOutput{program: m.program, renderer: m.renderer}
-		result, _ := conversation.Run(ctx, m.llm, m.toolReg, out, m.messages, m.systemPrompt, m.cfg.MaxToolIterations)
-
-		if result.Response != "" {
-			m.messages = append(m.messages, client.Message{Role: "assistant", Content: result.Response})
-		}
+		result, msgs := conversation.Run(ctx, m.llm, m.toolReg, out, m.messages, m.systemPrompt, m.cfg.MaxToolIterations)
+		// Run returns the full transcript, including tool_use/tool_result
+		// turns. Keep that rather than the user text plus a final assistant
+		// line: dropping the tool round is how a retry after a Claude 400
+		// sent two user messages in a row and then a tool_use with no
+		// matching tool_result (messages.2 in the error).
+		m.messages = dropSystemMessages(msgs)
 
 		if result.Error != "" {
 			return errMsg{err: fmt.Errorf("%s", result.Error)}
