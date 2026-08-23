@@ -204,6 +204,24 @@ func truncateRunes(s string, max int) string {
 	return s[:cut] + fmt.Sprintf("… (%d more chars)", len(s)-cut)
 }
 
+// keepTailRunes keeps the last max bytes of s, backing off to a rune boundary.
+//
+// The mirror of truncateRunes, and needed for the same reason at the other end:
+// RawTail's parts are individually rune-safe, but they are joined with a
+// separator that is not in the collection budget, so the joined string can
+// still be over cap and get sliced. Walking forward from the byte offset only
+// ever shortens the result, which keeps it inside the budget.
+func keepTailRunes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := len(s) - max
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return s[cut:]
+}
+
 // rawTailPart renders one message for the tail, or "" if it is not part of the
 // session. Tool turns are rendered rather than skipped: when the model failed,
 // the commands and their output are most of what a human has left to read.
@@ -249,10 +267,12 @@ func RawTail(messages []client.Message, maxChars int) string {
 	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
 		parts[i], parts[j] = parts[j], parts[i]
 	}
-	tail := strings.Join(parts, "\n\n")
-	if len(tail) > maxChars {
-		tail = tail[len(tail)-maxChars:]
-	}
+	// The budget loop sums part lengths and stops once it is over, and the
+	// separators are not counted, so the join is routinely over maxChars and
+	// this trim is the path that actually fires. It has to be rune-aware for
+	// the same reason the per-part cap is: what is stored here goes onto an
+	// investigation and is read back by a human.
+	tail := keepTailRunes(strings.Join(parts, "\n\n"), maxChars)
 	return "(session summary unavailable — raw transcript tail)\n\n" + tail
 }
 

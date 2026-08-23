@@ -432,7 +432,36 @@ func TestSummarizeSendsNoToolBlocks(t *testing.T) {
 	}
 }
 
-// TestRawTailKeepsTheQuestionWhenOneToolResultIsHuge is the actual failure:
+// TestRawTailJoinTrimStaysOnARuneBoundary covers the *other* byte slice, the
+// one the per-part cap never reaches.
+//
+// The budget loop sums part lengths and stops once it is over cap, and the
+// "\n\n" separators are not counted, so the joined tail is routinely over
+// maxChars and gets trimmed again. That trim is the path that actually fires
+// once several capped parts are collected — and a plain byte slice there undoes
+// every rune-safe truncation upstream of it.
+//
+// The budget has to be small relative to the parts or the join-trim never runs:
+// the sibling test below uses 4000 with four sub-600-byte parts and stops short
+// of this code path entirely.
+func TestRawTailJoinTrimStaysOnARuneBoundary(t *testing.T) {
+	msgs := []client.Message{{Role: "user", Content: "why is etcd flapping"}}
+	for i := 0; i < 6; i++ {
+		// Leading ASCII byte before 2-byte runes, so neither the per-part cap
+		// nor the join-trim lands on a boundary by luck.
+		msgs = append(msgs, client.Message{Role: "tool", Content: "x" + strings.Repeat("é", 2000)})
+	}
+
+	tail := RawTail(msgs, 1000)
+
+	if !utf8.ValidString(tail) {
+		t.Errorf("join-trim cut a rune in half; the stored record is not valid UTF-8 (len %d)", len(tail))
+	}
+	// Budget is TestRawTailRespectsItsBudget's job, not this one — and maxChars
+	// bounds the transcript, not the announcement RawTail prefixes to it.
+}
+
+// TestRawTailKeepsTheQuestionWhenOneToolResultIsHuge is the actual failure:// TestRawTailKeepsTheQuestionWhenOneToolResultIsHuge is the actual failure:
 // tool results are capped at 6k upstream, which is still enough for one kubectl
 // dump to eat a 4000-char budget on its own. The tail is what a human reads
 // when the summarizer failed, and it is worthless if the operator's own
