@@ -127,6 +127,14 @@ const maxLLMAttempts = 3
 // set it to zero; a human is waiting at a prompt, so the real values are short.
 var retryBackoff = 500 * time.Millisecond
 
+// maxRetryAfter caps how long a provider may park an interactive session.
+//
+// Retry-After is a number we did not choose, slept on the thread the operator
+// is watching. A provider — or a proxy in front of one — asking for an hour
+// would freeze the TUI with no way out but kill. We still make the attempt it
+// asked for, just not on its schedule, and the warning says so.
+var maxRetryAfter = 15 * time.Second
+
 // chatWithRetry re-sends a request that failed in a way a second sample could
 // fix — most often a provider refusing to parse the model's own tool call,
 // which is nondeterministic and usually gone on the next try.
@@ -154,14 +162,22 @@ func chatWithRetry(
 
 		// The provider's own guidance wins over our backoff when it sends any —
 		// on a 429 it knows when it will answer and we are guessing.
-		delay := apiErr.RetryAfter
+		delay, asked := apiErr.RetryAfter, apiErr.RetryAfter
 		if delay <= 0 {
 			delay = retryBackoff << (attempt - 1)
 		}
+		if delay > maxRetryAfter {
+			delay = maxRetryAfter
+		}
+
+		waited := ""
+		if asked > delay {
+			waited = fmt.Sprintf(" (asked for %s, waiting %s)", asked, delay)
+		}
 
 		output.ClearThinking()
-		output.ShowWarning(fmt.Sprintf("%s — retrying (%d of %d)",
-			apiErr.Summary(), attempt+1, maxLLMAttempts))
+		output.ShowWarning(fmt.Sprintf("%s%s — retrying (%d of %d)",
+			apiErr.Summary(), waited, attempt+1, maxLLMAttempts))
 		time.Sleep(delay)
 		output.ShowThinking()
 	}

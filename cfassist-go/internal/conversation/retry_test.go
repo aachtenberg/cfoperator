@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
@@ -33,11 +34,12 @@ func (o *recordingOutput) ShowError(message string, hint string) {
 
 // reply is one scripted turn: either an HTTP failure, or a completion.
 type reply struct {
-	status   int    // non-200 to fail this attempt
-	body     string // failure body
-	content  string // assistant text, when status is 0/200
-	toolName string // when set, the completion is a tool call instead
-	toolArgs string
+	status     int    // non-200 to fail this attempt
+	body       string // failure body
+	retryAfter string // Retry-After header to send with a failure
+	content    string // assistant text, when status is 0/200
+	toolName   string // when set, the completion is a tool call instead
+	toolArgs   string
 }
 
 type scriptedServer struct {
@@ -64,6 +66,9 @@ func newScriptedServer(t *testing.T, replies []reply) *scriptedServer {
 		rep := replies[idx]
 
 		if rep.status != 0 && rep.status != http.StatusOK {
+			if rep.retryAfter != "" {
+				w.Header().Set("Retry-After", rep.retryAfter)
+			}
 			w.WriteHeader(rep.status)
 			w.Write([]byte(rep.body))
 			return
@@ -252,5 +257,77 @@ func TestRetryInsideToolLoopKeepsTheConversation(t *testing.T) {
 	}
 	if len(output.warnings) != 1 {
 		t.Errorf("got %d warnings, want 1: %v", len(output.warnings), output.warnings)
+	}
+}
+
+// Retry-After is a number the provider chooses and we sleep on the thread the
+// operator is watching. Unbounded, a provider or a proxy asking for an hour
+// parks an interactive session with no way out but kill.
+func TestOutlandishRetryAfterCannotParkTheSession(t *testing.T) {
+	savedCap := maxRetryAfter
+	maxRetryAfter = 10 * time.Millisecond
+	t.Cleanup(func() { maxRetryAfter = savedCap })
+
+	s := newScriptedServer(t, []reply{
+		{status: http.StatusTooManyRequests, body: `{"error":"slow down"}`, retryAfter: "3600"},
+		{content: "ok"},
+	})
+
+	// Run on its own goroutine: an uncapped delay does not make this assertion
+	// fail, it makes the test sit for an hour, which in CI is indistinguishable
+	// from a hung suite. Fail fast and say why instead.
+	type outcome struct {
+		result Result
+		output *recordingOutput
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		r, o := runAgainst(t, s, "hello")
+		done <- outcome{r, o}
+	}()
+
+	var result Result
+	var output *recordingOutput
+	select {
+	case got := <-done:
+		result, output = got.result, got.output
+	case <-time.After(5 * time.Second):
+		t.Fatal("still waiting after 5s — the provider's hour was not capped")
+	}
+
+	if result.Error != "" {
+		t.Fatalf("turn failed: %s", result.Error)
+	}
+	if len(output.warnings) != 1 {
+		t.Fatalf("got %d warnings, want 1: %v", len(output.warnings), output.warnings)
+	}
+	// Capping is a decision made on the operator's behalf, so it is stated.
+	if !strings.Contains(output.warnings[0], "asked for 1h0m0s") {
+		t.Errorf("warning = %q, want it to report what the provider asked for", output.warnings[0])
+	}
+}
+
+// A Retry-After inside the cap is honoured as sent — the provider knows when it
+// will answer and we are guessing, so it should not be silently rewritten.
+func TestReasonableRetryAfterIsUsedAsSent(t *testing.T) {
+	savedCap, savedBackoff := maxRetryAfter, retryBackoff
+	maxRetryAfter, retryBackoff = time.Second, 0
+	t.Cleanup(func() { maxRetryAfter, retryBackoff = savedCap, savedBackoff })
+
+	s := newScriptedServer(t, []reply{
+		{status: http.StatusTooManyRequests, body: `{"error":"slow down"}`, retryAfter: "0.05"},
+		{content: "ok"},
+	})
+
+	start := time.Now()
+	_, output := runAgainst(t, s, "hello")
+	elapsed := time.Since(start)
+
+	if elapsed < 50*time.Millisecond {
+		t.Errorf("returned in %v — the provider's 50ms was not waited out", elapsed)
+	}
+	// Nothing was overridden, so nothing to explain.
+	if strings.Contains(output.warnings[0], "asked for") {
+		t.Errorf("warning = %q, want no cap notice when none was applied", output.warnings[0])
 	}
 }

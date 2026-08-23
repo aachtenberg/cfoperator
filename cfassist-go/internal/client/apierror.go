@@ -146,7 +146,9 @@ func (e *APIError) probe() string {
 	case "ollama":
 		return "curl " + e.URL + "/api/tags"
 	case "anthropic":
-		return `curl -H "x-api-key: $KEY" ` + e.URL + "/v1/models"
+		// Without anthropic-version the API answers 400, so a probe that omits
+		// it sends the operator chasing a second phantom failure.
+		return `curl -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01" ` + e.URL + "/v1/models"
 	default:
 		return `curl -H "Authorization: Bearer $KEY" ` + e.URL + "/v1/models"
 	}

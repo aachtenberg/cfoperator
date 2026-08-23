@@ -93,6 +93,11 @@ func TestTransportHintNamesAPathTheProviderAnswers(t *testing.T) {
 			if tc.provider != "ollama" && !strings.Contains(hint, "$KEY") {
 				t.Errorf("hint for %s omits the auth header the probe needs: %q", tc.provider, hint)
 			}
+			// Anthropic answers 400 without it, so a probe that omits the
+			// version header sends the operator chasing a second phantom.
+			if tc.provider == "anthropic" && !strings.Contains(hint, "anthropic-version") {
+				t.Errorf("anthropic probe would 400 as written: %q", hint)
+			}
 		})
 	}
 }
