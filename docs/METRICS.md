@@ -221,7 +221,9 @@ See `docs/llm-observability.md` for the per-model rate queries.
 ```promql
 # Embedding generation requests
 cfoperator_embedding_requests_total{result="success"}
-cfoperator_embedding_requests_total{result="error"}
+cfoperator_embedding_requests_total{result="error"}       # retryable: timeout, endpoint down, model missing
+cfoperator_embedding_requests_total{result="truncated"}   # embedded, but from a head-truncated input (CFOP-81)
+cfoperator_embedding_requests_total{result="unembeddable"} # the input can never fit; not retried
 
 # Embedding cache performance
 cfoperator_embedding_cache_hits_total{result="hit"}

@@ -30,6 +30,73 @@ def _get_metrics():
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 EMBEDDING_DIMENSION = 768  # nomic-embed-text dimension
 
+# Upper bound on what we will send to the embedding endpoint (CFOP-81).
+#
+# There was a MINIMUM input guard here and no maximum, so a single oversized
+# record failed on every sweep for ~18 hours across three pod generations,
+# burning a full HTTP round trip each time and leaving the index permanently
+# one row behind. A head-truncated embedding is worth enormously more than no
+# embedding: the row becomes searchable AND it leaves the unindexed set, which
+# is what actually ends the loop.
+#
+# Measured in CHARACTERS, not tokens, deliberately: there is no tokenizer in
+# this process and adding one to approximate a bound is a bad trade.
+#
+# The ratio is 2, not 3. Three chars/token is the dense end of PROSE; the text
+# actually embedded here is JSON, paths, hex digests and stack traces, where
+# punctuation and identifiers split aggressively. Measured against a
+# representative investigation record it comes out at ~2.6 chars/token, so a
+# 3x bound would let ~2390 tokens through a 2048-token model — still failing,
+# and now failing SILENTLY, because the negative memory below would stop the
+# noise while leaving the record unindexed forever. Erring low costs a little
+# tail text; erring high recreates the bug with the alarm disconnected.
+MODEL_INPUT_CHAR_LIMITS = {
+    "nomic-embed-text": 2048 * 2,
+}
+#: For a model we have no entry for. Deliberately BELOW every known model's
+#: bound rather than beside it: an unknown model may have a far smaller
+#: context than nomic's 2048 tokens, and guessing high reintroduces exactly
+#: this bug the day someone swaps models. Truncating more than necessary costs
+#: some tail text; truncating less than necessary costs the record. An
+#: operator who knows better sets CFOP_EMBEDDING_MAX_CHARS.
+DEFAULT_MAX_INPUT_CHARS = 2048
+
+#: Bodies Ollama returns when the input cannot fit, whatever the status code.
+#: This is a property of the INPUT, not of the moment, so a retry is
+#: guaranteed waste — the distinction the old code could not draw, because a
+#: timeout, a down endpoint and "this can never fit" all returned None alike.
+DETERMINISTIC_INPUT_ERRORS = (
+    "exceeds the context length",
+    "input length exceeds",
+)
+
+#: How many known-unembeddable inputs to remember. Bounded because it is keyed
+#: by content: an unbounded set is a slow leak on a long-lived agent.
+UNEMBEDDABLE_MEMORY = 256
+
+
+def max_input_chars(model: str) -> int:
+    """Character bound for ``model``, overridable by CFOP_EMBEDDING_MAX_CHARS.
+
+    The override exists so a model swap does not need a code change to be
+    safe; a non-numeric or non-positive value is ignored rather than trusted.
+    """
+    raw = os.getenv("CFOP_EMBEDDING_MAX_CHARS", "").strip()
+    if raw:
+        try:
+            override = int(raw)
+            if override > 0:
+                return override
+        except ValueError:
+            pass
+    return MODEL_INPUT_CHAR_LIMITS.get(model, DEFAULT_MAX_INPUT_CHARS)
+
+
+def is_deterministic_input_error(body: str) -> bool:
+    """True when the endpoint is telling us this input can never work."""
+    text = str(body or "").lower()
+    return any(marker in text for marker in DETERMINISTIC_INPUT_ERRORS)
+
 # Cache settings
 DEFAULT_CACHE_SIZE = 500  # Max embeddings to keep in memory
 CACHE_TABLE_NAME = "embedding_cache"
@@ -228,6 +295,41 @@ class EmbeddingService:
         self.model = model or os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
         self._available: Optional[bool] = None  # Lazy check
         self._cache = EmbeddingCache(max_size=cache_size, db_session_factory=db_session_factory)
+        # Inputs the endpoint has told us can never be embedded (CFOP-81).
+        # The positive cache only ever recorded SUCCESSES, so nothing
+        # remembered a deterministic failure and every sweep paid for it
+        # again. In-memory and not persisted on purpose: a restart should
+        # retry, because the thing that changed might be the model config.
+        self._unembeddable: "OrderedDict[str, str]" = OrderedDict()
+        self._unembeddable_lock = threading.Lock()
+
+    def _mark_unembeddable(self, text: str, reason: str) -> None:
+        key = EmbeddingCache.compute_hash(text, self.model)
+        with self._unembeddable_lock:
+            if key in self._unembeddable:
+                return
+            self._unembeddable[key] = reason
+            while len(self._unembeddable) > UNEMBEDDABLE_MEMORY:
+                self._unembeddable.popitem(last=False)
+        _log("warn", "Input can never be embedded; not retrying it",
+             model=self.model, text_len=len(text), reason=reason[:200])
+
+    @staticmethod
+    def _record_result(result: str) -> None:
+        """Record exactly one outcome for one embedding attempt.
+
+        Centralised because the labels are a mutually exclusive set and the
+        first version was not: it counted `truncated` on the way out and
+        `success` on the way back, double-counting every oversized record.
+        """
+        _er, _ec = _get_metrics()
+        if _er:
+            _er.labels(result=result).inc()
+
+    def _unembeddable_reason(self, text: str) -> Optional[str]:
+        key = EmbeddingCache.compute_hash(text, self.model)
+        with self._unembeddable_lock:
+            return self._unembeddable.get(key)
 
     def is_available(self) -> bool:
         """Check if embedding service is available."""
@@ -286,16 +388,40 @@ class EmbeddingService:
                 if _ec:
                     _ec.labels(result='miss').inc()
 
+        # Known-bad input: refuse before spending a round trip. Checked after
+        # the positive cache so a value that later becomes embeddable (a
+        # restart with a different model clears this) is not shadowed.
+        known_bad = self._unembeddable_reason(text)
+        if known_bad:
+            _log("debug", "Skipping known-unembeddable input",
+                 model=self.model, text_len=len(text), reason=known_bad[:120])
+            self._record_result('unembeddable')
+            return None
+
         # Need to generate - check availability
         if not self.is_available():
             return None
+
+        # Bound the input (CFOP-81). Head-truncated is worth far more than
+        # skipped: the record becomes searchable and leaves the unindexed set,
+        # which is what ends the retry loop. Cached under the ORIGINAL text so
+        # the next caller passing the same oversized record gets a cache hit
+        # rather than re-truncating and re-sending it.
+        limit = max_input_chars(self.model)
+        prompt = text
+        truncated = len(prompt) > limit
+        if truncated:
+            prompt = prompt[:limit]
+            _log("warn", "Input truncated to fit the embedding model",
+                 model=self.model, original_len=len(text), sent_len=len(prompt),
+                 limit=limit)
 
         try:
             response = requests.post(
                 f"{self.ollama_url}/api/embeddings",
                 json={
                     "model": self.model,
-                    "prompt": text
+                    "prompt": prompt
                 },
                 timeout=30
             )
@@ -311,30 +437,43 @@ class EmbeddingService:
                          model=self.model,
                          text_len=len(text),
                          embedding_dim=len(embedding))
-                    _er, _ec = _get_metrics()
-                    if _er:
-                        _er.labels(result='success').inc()
+                    # ONE result per attempt: a truncated embed that lands is
+                    # `truncated`, not truncated+success. Counting both would
+                    # double the request total for every oversized record and
+                    # make the same attempt read as "indexed faithfully" and
+                    # "not indexed faithfully" at once.
+                    self._record_result('truncated' if truncated else 'success')
                     return embedding
 
-            _log("warn", "Failed to generate embedding",
-                 status=response.status_code,
-                 response=response.text[:200] if response.text else "")
-            _er, _ec = _get_metrics()
-            if _er:
-                _er.labels(result='error').inc()
+            body = response.text or ""
+            # A failure the endpoint attributes to the INPUT is not going to
+            # go away on the next sweep, so remember it rather than paying for
+            # it forever. Everything else — a timeout, a 500 from an
+            # overloaded endpoint, a missing model — stays retryable, because
+            # those genuinely do get better on their own.
+            if is_deterministic_input_error(body):
+                self._mark_unembeddable(
+                    text, f"HTTP {response.status_code}: {body[:160]}")
+                # Labelled on THIS call, not the next one. This is the attempt
+                # that decided the record will never be indexed; labelling it
+                # `error` would call the decision retryable and hide the event
+                # until a second sweep — which a restart in between erases
+                # entirely.
+                self._record_result('unembeddable')
+            else:
+                _log("warn", "Failed to generate embedding",
+                     status=response.status_code,
+                     response=body[:200])
+                self._record_result('error')
             return None
 
         except requests.exceptions.Timeout:
             _log("warn", "Embedding generation timed out", model=self.model)
-            _er, _ec = _get_metrics()
-            if _er:
-                _er.labels(result='error').inc()
+            self._record_result('error')
             return None
         except Exception as e:
             _log("error", "Embedding generation error", error=str(e))
-            _er, _ec = _get_metrics()
-            if _er:
-                _er.labels(result='error').inc()
+            self._record_result('error')
             return None
 
     def get_cache_stats(self) -> Dict[str, Any]:

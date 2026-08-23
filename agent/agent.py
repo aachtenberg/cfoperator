@@ -344,6 +344,12 @@ LLM_FALLBACKS = Counter('cfoperator_llm_fallbacks_total', 'LLM fallback chain ac
 # cfoperator_llm_requests_total (incremented once per _chat_with_tools call,
 # success and error alike) for the per-model rate.
 LLM_EMPTY_FINALS = Counter('cfoperator_llm_empty_final_responses_total', 'Tool-loop turns that ended with an empty final message', ['provider', 'model', 'disposition'])
+# result: success | error (retryable — timeout, down endpoint, missing
+# model) | truncated (input exceeded the model's context and was sent
+# head-first) | unembeddable (a deterministic input failure we now refuse
+# to re-send; CFOP-81). truncated and unembeddable are the two worth
+# alerting on: they mean the knowledge base is holding records it cannot
+# index faithfully.
 EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding generation requests', ['result'])
 EMBEDDING_CACHE_HITS = Counter('cfoperator_embedding_cache_hits_total', 'Embedding cache hits vs misses', ['result'])
 
