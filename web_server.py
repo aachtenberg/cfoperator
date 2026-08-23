@@ -38,6 +38,13 @@ from cockpit_spawn import (
 # the cockpit contract has to hold on a bare Pi exactly as it does in a pod.
 from cockpit_ladder import (
     TIER_AUTO, HostCockpitSpawner, build_ladder_config, choose_tier, resolve_target_host)
+# The handoff line the console drawer offers for copying (CFOP-73). Imported
+# rather than restated: notifications.py is the one definition of that command,
+# and test_cockpit_attach_contract.py already pins it against the verb the Go
+# binary registers. A template literal in investigations.html would be a third
+# copy of it that nothing checks — and the failure mode of drift is an operator
+# pasting a command that no longer exists, mid-incident.
+from event_runtime.notifications import ATTACH_COMMAND
 
 # WebSocket support - disabled because Waitress (WSGI) doesn't support it
 # The UI uses HTTP polling via /api/chat instead
@@ -1072,7 +1079,14 @@ class WebServer:
                 inv = self.operator.kb.get_investigation(investigation_id)
                 if not inv:
                     return jsonify({'error': 'not found'}), 404
-                return jsonify(inv)
+                # Rendered here rather than in the page so the console's copy
+                # of the handoff line is the same string Slack prints (CFOP-73).
+                # Copied rather than mutated: the KB row is not ours to grow a
+                # field on.
+                payload = dict(inv)
+                payload['attach_command'] = ATTACH_COMMAND.format(
+                    investigation_id=investigation_id)
+                return jsonify(payload)
             except Exception as e:
                 logger.error(f"get investigation {investigation_id} failed: {e}")
                 return jsonify({'error': str(e)}), 500

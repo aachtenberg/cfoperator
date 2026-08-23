@@ -35,6 +35,13 @@ It is plain text on purpose. No backticks, no deep link: the same body goes to
 three sinks and only plain text copies identically out of all of them. Deep
 links and protocol handlers are client-side fiddliness for a later issue.
 
+The console says the same thing, for the case where you are reading the
+investigation rather than the alert (CFOP-73). The drawer carries the command
+with a Copy button, and names the open row in the URL — `/investigations#1889`
+is what you paste to someone, and what a reload comes back to. The string is
+rendered server-side from the constant above, so the console cannot drift from
+the binary any more than Slack can.
+
 A notification without an investigation gets no line — there would be nothing to
 attach to. Triage `notify` results, which exist specifically to keep Slack
 volume down, stay one line as before.
@@ -923,4 +930,8 @@ a fact about this CLI, not about this machine.
 - **No reattach after a drop.** Tiers 1 and 2 survive one (the pod and the
   container keep running); tier 3 does not. `tmux` is probed for and recorded
   against the day CFOP-59 needs it.
-- **No deep links.** Copy-paste is the interface.
+- **No deep links from a notification.** Copy-paste is the interface between
+  Slack and your terminal, because only plain text survives three sinks
+  identically. Inside the console the drawer is linkable and offers the line for
+  copying; what does not exist is a click in Slack that opens a session on your
+  machine.
