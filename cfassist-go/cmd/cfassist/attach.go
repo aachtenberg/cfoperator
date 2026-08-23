@@ -385,6 +385,7 @@ func resolveLLM(cfg *config.Config) (*client.LLMClient, string, error) {
 		resolved.Temperature,
 		resolved.APIKey,
 	)
+	llm.Name = activeProvider
 	cfg.LLM.ContextWindow = resolved.ContextWindow
 	return llm, activeProvider, nil
 }

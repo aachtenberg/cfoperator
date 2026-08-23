@@ -54,8 +54,12 @@ type ToolSchemaFunction struct {
 }
 
 // LLMClient talks to Ollama or OpenAI-compatible APIs.
+// Name is the config's key for this provider ("groq"), when the caller knows
+// it. Provider is the wire protocol ("openai"); errors quote Name so the advice
+// names something the operator can act on.
 type LLMClient struct {
 	Provider    string
+	Name        string
 	URL         string
 	Model       string
 	Temperature float64
@@ -117,12 +121,13 @@ func (c *LLMClient) CheckConnection() error {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("connection failed: %w", err)
+		return c.newTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+		body, _ := io.ReadAll(resp.Body)
+		return c.newAPIError(resp.StatusCode, resp.Header, string(body))
 	}
 	return nil
 }
@@ -140,13 +145,13 @@ func (c *LLMClient) checkAnthropicConnection(ctx context.Context) error {
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("connection failed: %w", err)
+		return c.newTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP %d from Anthropic: %s", resp.StatusCode, string(body))
+		return c.newAPIError(resp.StatusCode, resp.Header, string(body))
 	}
 	return nil
 }
@@ -266,13 +271,13 @@ func (c *LLMClient) ollamaChat(messages []Message, tools []ToolSchema) (*Respons
 
 	resp, err := c.HTTPClient.Post(c.URL+"/api/chat", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("ollama request: %w", err)
+		return nil, c.newTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ollama HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.newAPIError(resp.StatusCode, resp.Header, string(respBody))
 	}
 
 	var result ollamaChatResponse
@@ -390,13 +395,13 @@ func (c *LLMClient) openaiChat(messages []Message, tools []ToolSchema) (*Respons
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("openai request: %w", err)
+		return nil, c.newTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("openai HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.newAPIError(resp.StatusCode, resp.Header, string(respBody))
 	}
 
 	var result openaiChatResponse
@@ -560,13 +565,13 @@ func (c *LLMClient) anthropicChat(messages []Message, tools []ToolSchema) (*Resp
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic request: %w", err)
+		return nil, c.newTransportError(err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic HTTP %d: %s", resp.StatusCode, string(respBody))
+		return nil, c.newAPIError(resp.StatusCode, resp.Header, string(respBody))
 	}
 
 	var result anthropicResponse
