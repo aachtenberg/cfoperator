@@ -3852,8 +3852,11 @@ class KnowledgeBase:
 
     def record_remediation_absorbed(self, remediation_id: int, summary: str,
                                     limit: int = 25) -> bool:
-        """Append a folded symptom to a node-incident row's payload (CFOP-71).
+        """Append a folded finding to the surviving row's payload.
 
+        Written for the CFOP-71 node collapse; the CFOP-78 identifier fold
+        records through it too — any tier that absorbs a row instead of
+        enqueuing it leaves its trace here, so a fold is never silent.
         Bounded and de-duplicated: a flapping alert must not grow the payload
         without limit, and the same symptom re-firing is not new information.
         """

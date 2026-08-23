@@ -196,7 +196,11 @@ _FORK_SHAPED = re.compile(
 # <table>_id <n> row references. Bare hostnames and workload names are NOT
 # extracted: "needs-human" and "grok-4.6" are dash-words too, and a false fold
 # hides a real incident, which is strictly worse than a duplicate row.
-_IDENT_IP = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\b')
+# The port stays when present: this cluster runs many services per address,
+# so a bare IP is a weak identity — "restart nginx on 192.168.0.131" and the
+# stale tunnel rule for 192.168.0.131:80 are different problems on one box.
+# Both live tunnel rows spell the port, so they still fold.
+_IDENT_IP = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)\b')
 _IDENT_ENV = re.compile(r'\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b')
 _IDENT_ROW = re.compile(r'\b([A-Za-z][A-Za-z0-9]*_id)\W{0,3}(\d+)')
 
@@ -2709,6 +2713,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
 
           - CFOP-71 collapse: while a node is NotReady, symptoms attributable
             to it fold onto one node-incident row.
+          - CFOP-78 fold: a re-found problem lands on the open row already
+            covering it (hard-identifier containment). Fails open.
+          - CFOP-78 fork cap: a recommendation still offering alternatives
+            cannot carry a confidence, so it can never auto-execute.
           - CFOP-70 judge: a row that would auto-execute is reviewed by a
             frontier model before it can. Fails closed.
 
@@ -2722,6 +2730,22 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if not rclass:
             return None
         risk = str(details.get('risk') or 'high')
+        # The fork CAP lives here, at the choke point, with the other gates —
+        # a gate a future third feed can forget to call is not a gate. The
+        # investigation feed runs the commit-REWRITE upstream (where the
+        # classifier and the dedupe key still benefit from the committed
+        # text); any feed that skipped it, or a rewrite that failed, lands
+        # here still fork-shaped and is barred from the auto gate. No LLM
+        # call at this layer: the choke point stays cheap and deterministic.
+        # ABOVE the confidence local on purpose — the first version of this
+        # cap sat below it, mutated details after the read, and capped
+        # nothing; the choke-point test caught it.
+        if details.get('confidence') is not None and \
+                _FORK_SHAPED.search(str(details.get('recommendation') or '')):
+            logger.info("Fork-shaped recommendation at enqueue; confidence "
+                        "cleared so it cannot auto-execute")
+            REMEDIATION_FOLDED.labels(reason='fork_stuck').inc()
+            details['confidence'] = None
         confidence = details.get('confidence')
         dedupe_key = str(details.get('dedupe_key') or '') or None
         # CFOP-71: while a node is NotReady, every symptom attributable to it
@@ -2748,10 +2772,14 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # builds details fresh, so there is no aliasing to worry about.
             details['dedupe_key'] = node_key
         # CFOP-78: the same problem re-found under different wording folds onto
-        # the open row instead of standing beside it. After the node collapse
-        # on purpose — a NotReady node's symptoms belong to the incident row
-        # first; identifier matching is the tier below that.
-        absorbed_repeat = self._absorb_repeat_remediation(details)
+        # the open row instead of standing beside it. Skipped ENTIRELY while
+        # the node collapse claims the row: with no incident row yet, the
+        # FIRST NotReady symptom would otherwise be matched by identifier
+        # against every other open row — a rec naming 192.168.0.131 while a
+        # tunnel row is open would be absorbed there, and the node-incident
+        # row would never be created. The node tier owns the row outright;
+        # identifier matching is only for rows no tier above wants.
+        absorbed_repeat = None if node_key else self._absorb_repeat_remediation(details)
         if absorbed_repeat:
             return absorbed_repeat
         payload = {

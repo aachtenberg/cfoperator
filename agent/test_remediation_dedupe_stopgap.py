@@ -59,8 +59,18 @@ extract = CFOperator._extract_remediation_identifiers
 
 def test_env_names_ips_and_row_ids_are_extracted():
     assert "CFOP_RUNTIME_TOKEN" in extract(REC_67)
-    assert "192.168.0.131" in extract(REC_68), "the :80 port must come off"
+    # The port STAYS: this cluster runs many services per address, so the
+    # stale tunnel rule for :80 and a broken service on :22 of the same box
+    # are different problems. (PR #169 review — the first version stripped
+    # it, and the test pinned the weaker choice.)
+    assert "192.168.0.131:80" in extract(REC_68)
     assert "learning_id:2368" in extract(REC_72)
+
+
+def test_the_same_address_on_different_ports_is_two_problems():
+    a = extract("Retarget the tunnel rule for 192.168.0.131:80")
+    b = extract("Fix the dead ssh origin 192.168.0.131:22")
+    assert not (a <= b or b <= a)
 
 
 def test_prose_and_dash_words_extract_nothing():
@@ -81,8 +91,9 @@ def test_the_live_token_rows_share_identifiers():
 
 
 def test_the_live_tunnel_rows_share_identifiers():
+    """Both live rows spell the port, so keeping it still folds them."""
     a, b = extract(REC_68), extract(REC_70)
-    assert a & b == {"192.168.0.131"}
+    assert a & b == {"192.168.0.131:80"}
     assert a <= b or b <= a
 
 
@@ -315,3 +326,60 @@ def test_the_committed_text_is_what_everything_downstream_sees():
     assert details['recommendation'] == committed
     assert details['dedupe_key'] == CFOperator._investigation_dedupe_key(
         {}, committed)
+
+
+# ---------------------------------------------------------------------------
+# the choke point (PR #169 review)
+# ---------------------------------------------------------------------------
+
+from test_remediation_queue import (  # noqa: E402
+    _confirming_judge, _no_node_incident, _wire_flags)
+
+
+def _choke_op(**flags):
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
+    op.config = {"remediation": {"queue_feed": True, **flags}}
+    op.kb.queue_remediation.return_value = 99
+    op.kb.list_open_remediations.return_value = []
+    return op
+
+
+def test_the_fold_is_skipped_while_the_node_collapse_owns_the_row():
+    """The first NotReady symptom arrives before any incident row exists. If
+    the identifier fold runs on it, a rec naming 192.168.0.131 while the
+    tunnel row is open is absorbed THERE — and the node-incident row is never
+    created. The node tier owns the row outright."""
+    op = _choke_op()
+    op._collapse_key_for_node_incident = lambda details: "node-down-raspberrypi4"
+    op._record_absorbed_symptom = lambda key, details: None   # no incident row yet
+    op.kb.list_open_remediations.return_value = [
+        _row(68, REC_68)]  # an open row sharing the IP
+    fold_calls = []
+    real = CFOperator._absorb_repeat_remediation
+    op._absorb_repeat_remediation = (
+        lambda details: fold_calls.append(1) or real(op, details))
+    rid = CFOperator._maybe_queue_remediation(op, 5, {
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "recommendation": "Restore connectivity to 192.168.0.131:80",
+        "host": "raspberrypi4", "dedupe_key": "inv-fresh"})
+    assert fold_calls == [], "the identifier fold ran on a node-incident row"
+    assert rid == 99, "the incident row must still be created"
+
+
+def test_a_fork_reaching_the_choke_point_cannot_carry_confidence():
+    """The rewrite lives in the investigation feed; the CAP lives here, so a
+    feed that never called the rewrite — sweep, deep-investigation, whatever
+    comes third — still cannot hand the executor a fork."""
+    op = _choke_op()
+    CFOperator._maybe_queue_remediation(op, 5, {
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
+        "recommendation": REC_72, "host": None, "dedupe_key": "inv-fork"})
+    assert op.kb.queue_remediation.call_args.kwargs["confidence"] is None
+
+
+def test_a_committed_recommendation_keeps_confidence_at_the_choke_point():
+    op = _choke_op()
+    CFOperator._maybe_queue_remediation(op, 5, {
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
+        "recommendation": REC_67, "host": None, "dedupe_key": "inv-ok"})
+    assert op.kb.queue_remediation.call_args.kwargs["confidence"] == 0.9
