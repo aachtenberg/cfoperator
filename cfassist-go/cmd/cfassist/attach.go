@@ -232,7 +232,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	fmt.Println(briefing)
 
 	if question != "" {
-		return runNonInteractive(cfg, llm, toolReg, systemPrompt, question)
+		return runNonInteractive(cmd.Context(), cfg, llm, toolReg, systemPrompt, question)
 	}
 
 	// What the status bar and the scrollback show for the life of the session.
@@ -308,7 +308,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// scrollback and the status bar carries the investigation id, so a second
 	// "cfoperator is at ..." line would be noise on the one screen that has
 	// least room for it.
-	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers,
+	result, err := tui.Run(cmd.Context(), cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers,
 		activeProvider, attachment, "")
 	if err != nil {
 		return err

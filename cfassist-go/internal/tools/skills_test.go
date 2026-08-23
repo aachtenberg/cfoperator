@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -76,7 +77,7 @@ func TestTheNameParameterIsAnEnumOfRealSkills(t *testing.T) {
 func TestTheSkillToolReturnsThePlaybook(t *testing.T) {
 	r, _ := newSkillRegistry(t)
 
-	res := r.Execute("skill", map[string]any{"name": "why-restart", "target": "immich-kiosk-0"})
+	res := r.Execute(context.Background(), "skill", map[string]any{"name": "why-restart", "target": "immich-kiosk-0"})
 
 	if res["skill"] != "why-restart" {
 		t.Fatalf("result = %+v", res)
@@ -92,7 +93,7 @@ func TestTheSkillToolReturnsThePlaybook(t *testing.T) {
 
 func TestTheSkillToolWorksWithoutATarget(t *testing.T) {
 	r, _ := newSkillRegistry(t)
-	res := r.Execute("skill", map[string]any{"name": "k3s-cluster-health"})
+	res := r.Execute(context.Background(), "skill", map[string]any{"name": "k3s-cluster-health"})
 	if _, bad := res["error"]; bad {
 		t.Fatalf("a targetless playbook is legitimate: %+v", res)
 	}
@@ -106,7 +107,7 @@ func TestTheSkillToolWorksWithoutATarget(t *testing.T) {
 func TestAnUnknownPlaybookComesBackWithTheRealNames(t *testing.T) {
 	r, all := newSkillRegistry(t)
 
-	res := r.Execute("skill", map[string]any{"name": "investigate-everything"})
+	res := r.Execute(context.Background(), "skill", map[string]any{"name": "investigate-everything"})
 
 	if _, bad := res["error"]; !bad {
 		t.Fatal("an unknown playbook must be an error")

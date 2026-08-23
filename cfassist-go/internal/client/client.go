@@ -83,14 +83,20 @@ func New(provider, url, model string, temperature float64, apiKey string) *LLMCl
 }
 
 // Chat sends a non-streaming chat request and returns the full response.
-func (c *LLMClient) Chat(messages []Message, tools []ToolSchema) (*Response, error) {
+//
+// The context governs the whole request, so a caller that can be interrupted —
+// every one of them — can actually stop a model mid-answer instead of waiting
+// out the HTTP timeout. It is a required parameter rather than an optional
+// ChatContext sibling: a Chat that cannot be cancelled is the bug (CFOP-76),
+// and leaving one in the API is leaving the bug for the next caller.
+func (c *LLMClient) Chat(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
 	switch c.Provider {
 	case "ollama":
-		return c.ollamaChat(messages, tools)
+		return c.ollamaChat(ctx, messages, tools)
 	case "anthropic":
-		return c.anthropicChat(messages, tools)
+		return c.anthropicChat(ctx, messages, tools)
 	default:
-		return c.openaiChat(messages, tools)
+		return c.openaiChat(ctx, messages, tools)
 	}
 }
 
@@ -253,7 +259,7 @@ type ollamaMessage struct {
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
-func (c *LLMClient) ollamaChat(messages []Message, tools []ToolSchema) (*Response, error) {
+func (c *LLMClient) ollamaChat(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
 	payload := ollamaChatRequest{
 		Model:    c.Model,
 		Messages: messages,
@@ -269,7 +275,13 @@ func (c *LLMClient) ollamaChat(messages []Message, tools []ToolSchema) (*Respons
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	resp, err := c.HTTPClient.Post(c.URL+"/api/chat", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, c.newTransportError(err)
 	}
@@ -345,7 +357,7 @@ type openaiUsage struct {
 	CompletionTokens int `json:"completion_tokens"`
 }
 
-func (c *LLMClient) openaiChat(messages []Message, tools []ToolSchema) (*Response, error) {
+func (c *LLMClient) openaiChat(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
 	// Convert to OpenAI message format (arguments must be JSON strings)
 	oaiMsgs := make([]openaiReqMsg, 0, len(messages))
 	for _, m := range messages {
@@ -384,7 +396,7 @@ func (c *LLMClient) openaiChat(messages []Message, tools []ToolSchema) (*Respons
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", c.URL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -487,7 +499,7 @@ type anthropicResponse struct {
 	StopReason string `json:"stop_reason"`
 }
 
-func (c *LLMClient) anthropicChat(messages []Message, tools []ToolSchema) (*Response, error) {
+func (c *LLMClient) anthropicChat(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
 	// Extract system prompt from messages
 	var systemPrompt string
 	var anthropicMsgs []anthropicMsg
@@ -555,7 +567,7 @@ func (c *LLMClient) anthropicChat(messages []Message, tools []ToolSchema) (*Resp
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", c.URL+"/v1/messages", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

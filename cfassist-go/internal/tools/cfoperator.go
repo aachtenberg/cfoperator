@@ -9,6 +9,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -96,8 +97,11 @@ func (r *Registry) AddCFOperator(api *cfoperator.Client) {
 				},
 			},
 		},
-		execute: func(args map[string]any) map[string]any {
-			return cfoperatorExecute(api, args)
+		execute: func(ctx context.Context, args map[string]any) map[string]any {
+			// Bound to the turn: these are network calls against an agent that
+			// may be behind a wedged port-forward, and a turn the operator has
+			// stopped must not sit through every one of their timeouts.
+			return cfoperatorExecute(api.WithContext(ctx), args)
 		},
 	}
 }

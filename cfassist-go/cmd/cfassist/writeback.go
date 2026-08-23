@@ -16,6 +16,7 @@ package main
 // did not is worse than none at all.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -30,6 +31,10 @@ import (
 var (
 	summarizeSession = cfoperator.Summarize
 )
+
+// summarizeTimeout bounds the one model call made on the way out, so an
+// unreachable provider delays the exit rather than hanging it.
+const summarizeTimeout = 60 * time.Second
 
 // writeBackSession distils a finished session and records it.
 //
@@ -70,7 +75,20 @@ func writeBackSession(cmd *cobra.Command, investigationID int, url, token string
 	}
 
 	var learning *cfoperator.Learning
-	summary, err := summarizeSession(llm, messages)
+	// Deliberately not cmd.Context(): on Ctrl+C that context is already
+	// cancelled, so summarising on it fails instantly and records the session
+	// as degraded with a raw transcript — for a reason that has nothing to do
+	// with the model. Write-back is the last thing the session does and needs
+	// its own budget.
+	base := cmd.Context()
+	if base == nil {
+		base = context.Background()
+	}
+	sumCtx, cancelSummary := context.WithTimeout(
+		context.WithoutCancel(base), summarizeTimeout)
+	defer cancelSummary()
+
+	summary, err := summarizeSession(sumCtx, llm, messages)
 	if err != nil {
 		// The issue's own instruction: store the raw tail rather than nothing.
 		// A session's only trace should not depend on a local model having a

@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
 )
@@ -46,7 +48,7 @@ func TestRegistryBashDisabled(t *testing.T) {
 	cfg.Memory.Directory = os.TempDir()
 	r := New(cfg)
 
-	result := r.Execute("bash", map[string]any{"command": "echo hi"})
+	result := r.Execute(context.Background(), "bash", map[string]any{"command": "echo hi"})
 	if _, ok := result["error"]; !ok {
 		t.Error("disabled bash tool should return error")
 	}
@@ -58,7 +60,7 @@ func TestRegistryReadFileDisabled(t *testing.T) {
 	cfg.Memory.Directory = os.TempDir()
 	r := New(cfg)
 
-	result := r.Execute("read_file", map[string]any{"path": "/etc/hostname"})
+	result := r.Execute(context.Background(), "read_file", map[string]any{"path": "/etc/hostname"})
 	if _, ok := result["error"]; !ok {
 		t.Error("disabled read_file tool should return error")
 	}
@@ -66,7 +68,7 @@ func TestRegistryReadFileDisabled(t *testing.T) {
 
 func TestExecuteUnknownTool(t *testing.T) {
 	r := newTestRegistry()
-	result := r.Execute("nonexistent", map[string]any{})
+	result := r.Execute(context.Background(), "nonexistent", map[string]any{})
 	errMsg, ok := result["error"].(string)
 	if !ok {
 		t.Fatal("expected error string")
@@ -77,7 +79,7 @@ func TestExecuteUnknownTool(t *testing.T) {
 }
 
 func TestBashExecuteSimple(t *testing.T) {
-	result := bashExecute(map[string]any{"command": "echo hello"}, 30)
+	result := bashExecute(context.Background(), map[string]any{"command": "echo hello"}, 30)
 
 	stdout, ok := result["stdout"].(string)
 	if !ok {
@@ -97,21 +99,21 @@ func TestBashExecuteSimple(t *testing.T) {
 }
 
 func TestBashExecuteEmptyCommand(t *testing.T) {
-	result := bashExecute(map[string]any{"command": ""}, 30)
+	result := bashExecute(context.Background(), map[string]any{"command": ""}, 30)
 	if _, ok := result["error"]; !ok {
 		t.Error("empty command should return error")
 	}
 }
 
 func TestBashExecuteNoCommand(t *testing.T) {
-	result := bashExecute(map[string]any{}, 30)
+	result := bashExecute(context.Background(), map[string]any{}, 30)
 	if _, ok := result["error"]; !ok {
 		t.Error("missing command should return error")
 	}
 }
 
 func TestBashExecuteNonZeroExit(t *testing.T) {
-	result := bashExecute(map[string]any{"command": "exit 42"}, 30)
+	result := bashExecute(context.Background(), map[string]any{"command": "exit 42"}, 30)
 
 	exitCode, ok := result["exit_code"].(int)
 	if !ok {
@@ -123,7 +125,7 @@ func TestBashExecuteNonZeroExit(t *testing.T) {
 }
 
 func TestBashExecuteStderr(t *testing.T) {
-	result := bashExecute(map[string]any{"command": "echo error >&2"}, 30)
+	result := bashExecute(context.Background(), map[string]any{"command": "echo error >&2"}, 30)
 
 	stderr, ok := result["stderr"].(string)
 	if !ok {
@@ -143,7 +145,7 @@ func TestBashExecuteWrapsSSHInBatchMode(t *testing.T) {
 
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	result := bashExecute(map[string]any{"command": "ssh example.com"}, 30)
+	result := bashExecute(context.Background(), map[string]any{"command": "ssh example.com"}, 30)
 
 	stdout, ok := result["stdout"].(string)
 	if !ok {
@@ -155,7 +157,7 @@ func TestBashExecuteWrapsSSHInBatchMode(t *testing.T) {
 }
 
 func TestBashExecuteTimeout(t *testing.T) {
-	result := bashExecute(map[string]any{
+	result := bashExecute(context.Background(), map[string]any{
 		"command": "sleep 10",
 		"timeout": float64(1),
 	}, 30)
@@ -293,5 +295,56 @@ func TestMarshalResult(t *testing.T) {
 	}
 	if s[0] != '{' {
 		t.Errorf("MarshalResult should return JSON, got %q", s)
+	}
+}
+
+// A cancelled context must stop the command, not just stop waiting for it.
+//
+// The shell runs with Setsid, so it leads its own process group. os/exec's
+// default cancel kills only that shell, and anything it spawned keeps the
+// output pipe open — Wait then blocks on the pipe and the "cancel" returns no
+// sooner than the command would have finished on its own. That is a hang
+// wearing a timeout's clothes, and it applied to the timeout path too.
+func TestBashCancelKillsTheWholeProcessGroup(t *testing.T) {
+	r := New(config.Defaults())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan map[string]any, 1)
+	go func() {
+		done <- r.Execute(ctx, "bash", map[string]any{"command": "sleep 60"})
+	}()
+
+	time.Sleep(200 * time.Millisecond) // let sh actually start sleep
+	cancel()
+
+	select {
+	case res := <-done:
+		if res["error"] != "cancelled" {
+			t.Errorf("error = %v, want %q", res["error"], "cancelled")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still running 5s after cancel — the process group outlived it")
+	}
+}
+
+// WaitDelay stops us waiting on an output pipe a backgrounded grandchild is
+// still holding. It must not turn a command that succeeded into a failure with
+// its output thrown away — the model would be told a working command broke.
+func TestBackgroundedChildDoesNotLoseTheOutput(t *testing.T) {
+	r := New(config.Defaults())
+
+	// sh exits immediately; the child keeps the inherited stdout open past it.
+	res := r.Execute(context.Background(), "bash", map[string]any{
+		"command": "sleep 5 & echo started",
+	})
+
+	if errMsg, ok := res["error"]; ok {
+		t.Fatalf("error = %v, want the command's own result", errMsg)
+	}
+	if got, _ := res["stdout"].(string); !strings.Contains(got, "started") {
+		t.Errorf("stdout = %q, want the output it already produced", got)
+	}
+	if got, _ := res["exit_code"].(int); got != 0 {
+		t.Errorf("exit_code = %v, want 0 — the command succeeded", res["exit_code"])
 	}
 }

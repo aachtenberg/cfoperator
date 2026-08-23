@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -71,7 +72,7 @@ func TestCFOperatorToolNotRegisteredByDefault(t *testing.T) {
 			t.Fatal("cfoperator tool registered without a detected instance")
 		}
 	}
-	if _, ok := r.Execute("cfoperator", map[string]any{"action": "health"})["error"]; !ok {
+	if _, ok := r.Execute(context.Background(), "cfoperator", map[string]any{"action": "health"})["error"]; !ok {
 		t.Error("calling it anyway should be an unknown-tool error")
 	}
 }
@@ -99,7 +100,7 @@ func TestCFOperatorActions(t *testing.T) {
 	r, _ := newCFOperatorRegistry(t)
 
 	t.Run("health", func(t *testing.T) {
-		res := r.Execute("cfoperator", map[string]any{"action": "health"})
+		res := r.Execute(context.Background(), "cfoperator", map[string]any{"action": "health"})
 		health, ok := res["health"].(map[string]any)
 		if !ok || health["version"] != "1.0.8" {
 			t.Fatalf("health = %+v", res)
@@ -107,7 +108,7 @@ func TestCFOperatorActions(t *testing.T) {
 	})
 
 	t.Run("list_investigations clips long fields", func(t *testing.T) {
-		res := r.Execute("cfoperator", map[string]any{"action": "list_investigations"})
+		res := r.Execute(context.Background(), "cfoperator", map[string]any{"action": "list_investigations"})
 		rows, ok := res["investigations"].([]map[string]any)
 		if !ok || len(rows) != 1 {
 			t.Fatalf("investigations = %+v", res)
@@ -122,7 +123,7 @@ func TestCFOperatorActions(t *testing.T) {
 	})
 
 	t.Run("get_investigation returns the briefing", func(t *testing.T) {
-		res := r.Execute("cfoperator", map[string]any{"action": "get_investigation", "id": float64(1889)})
+		res := r.Execute(context.Background(), "cfoperator", map[string]any{"action": "get_investigation", "id": float64(1889)})
 		briefing, _ := res["briefing"].(string)
 		if !strings.Contains(briefing, "Pod not ready") {
 			t.Fatalf("briefing = %q", briefing)
@@ -130,14 +131,14 @@ func TestCFOperatorActions(t *testing.T) {
 	})
 
 	t.Run("list_remediations", func(t *testing.T) {
-		res := r.Execute("cfoperator", map[string]any{"action": "list_remediations", "status": "queued"})
+		res := r.Execute(context.Background(), "cfoperator", map[string]any{"action": "list_remediations", "status": "queued"})
 		if res["count"] != 1 {
 			t.Fatalf("remediations = %+v", res)
 		}
 	})
 
 	t.Run("get_remediation", func(t *testing.T) {
-		res := r.Execute("cfoperator", map[string]any{"action": "get_remediation", "id": float64(7)})
+		res := r.Execute(context.Background(), "cfoperator", map[string]any{"action": "get_remediation", "id": float64(7)})
 		row, ok := res["remediation"].(map[string]any)
 		if !ok || row["status"] != "queued" {
 			t.Fatalf("remediation = %+v", res)
@@ -145,7 +146,7 @@ func TestCFOperatorActions(t *testing.T) {
 	})
 
 	t.Run("search_knowledge", func(t *testing.T) {
-		res := r.Execute("cfoperator", map[string]any{"action": "search_knowledge", "query": "nic"})
+		res := r.Execute(context.Background(), "cfoperator", map[string]any{"action": "search_knowledge", "query": "nic"})
 		if res["mode"] != "fts" || res["count"] != 1 {
 			t.Fatalf("search = %+v", res)
 		}
@@ -169,7 +170,7 @@ func TestCFOperatorClampsHopefulLimits(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r, stub := newCFOperatorRegistry(t)
-			r.Execute("cfoperator", tc.args)
+			r.Execute(context.Background(), "cfoperator", tc.args)
 
 			stub.mu.Lock()
 			defer stub.mu.Unlock()
@@ -186,7 +187,7 @@ func TestCFOperatorClampsHopefulLimits(t *testing.T) {
 // A sane number survives untouched — the clamp is a ceiling, not a rewrite.
 func TestCFOperatorHonoursAReasonableLimit(t *testing.T) {
 	r, stub := newCFOperatorRegistry(t)
-	r.Execute("cfoperator", map[string]any{"action": "list_investigations", "limit": float64(3)})
+	r.Execute(context.Background(), "cfoperator", map[string]any{"action": "list_investigations", "limit": float64(3)})
 
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
@@ -210,7 +211,7 @@ func TestCFOperatorBadArguments(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, ok := r.Execute("cfoperator", tc.args)["error"]; !ok {
+			if _, ok := r.Execute(context.Background(), "cfoperator", tc.args)["error"]; !ok {
 				t.Errorf("expected an error for %v", tc.args)
 			}
 		})
@@ -231,7 +232,7 @@ func TestCFOperatorToolOnlyEverGETs(t *testing.T) {
 		{"action": "get_remediation", "id": float64(7)},
 		{"action": "search_knowledge", "query": "nic"},
 	} {
-		r.Execute("cfoperator", args)
+		r.Execute(context.Background(), "cfoperator", args)
 	}
 
 	stub.mu.Lock()

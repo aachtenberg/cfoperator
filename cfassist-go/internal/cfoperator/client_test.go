@@ -1,6 +1,7 @@
 package cfoperator
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -447,5 +448,48 @@ func TestRemediationsTruncationIsReported(t *testing.T) {
 	if !truncated {
 		t.Fatal("a full page with no match must report truncated — otherwise an " +
 			"empty section claims nothing was ever queued")
+	}
+}
+
+// The client's requests are bound to whatever context the caller scoped them
+// to, so a stopped turn does not sit through an unreachable agent's timeouts.
+func TestWithContextBindsRequests(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done() // never answers
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "tok", 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.WithContext(ctx).Health()
+		done <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected the cancelled request to fail")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a cancelled request kept waiting on the agent")
+	}
+}
+
+// Binding must not leak back into the client the caller already had.
+func TestWithContextDoesNotMutateTheOriginal(t *testing.T) {
+	c := New("http://example.invalid", "tok", time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_ = c.WithContext(ctx)
+
+	if c.ctx != nil {
+		t.Error("WithContext bound the receiver instead of a copy")
 	}
 }

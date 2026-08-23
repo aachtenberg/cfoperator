@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -70,7 +72,7 @@ func wbAgent(t *testing.T, calls *[]wbCall) *httptest.Server {
 func stubSummarizer(t *testing.T, s *cfoperator.SessionSummary, err error) {
 	t.Helper()
 	orig := summarizeSession
-	summarizeSession = func(_ *client.LLMClient, _ []client.Message) (*cfoperator.SessionSummary, error) {
+	summarizeSession = func(_ context.Context, _ *client.LLMClient, _ []client.Message) (*cfoperator.SessionSummary, error) {
 		return s, err
 	}
 	t.Cleanup(func() { summarizeSession = orig })
@@ -305,5 +307,39 @@ func TestTheDroppedLearningWarningReachesTheOperator(t *testing.T) {
 	}
 	if len(calls) != 1 || calls[0].Path == cfoperator.LearningsPath {
 		t.Errorf("a dropped learning must not be sent anyway: %+v", calls)
+	}
+}
+
+// Write-back is the last thing a session does, and on Ctrl+C the command's
+// context is already cancelled. Summarising on it would fail instantly and
+// record the session as degraded with a raw transcript — for a reason that has
+// nothing to do with the model.
+func TestWriteBackSummarisesEvenAfterAnInterrupt(t *testing.T) {
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var gotLive bool
+	saved := summarizeSession
+	summarizeSession = func(ctx context.Context, _ *client.LLMClient, _ []client.Message) (*cfoperator.SessionSummary, error) {
+		gotLive = ctx.Err() == nil
+		return nil, fmt.Errorf("stub")
+	}
+	t.Cleanup(func() { summarizeSession = saved })
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(cancelledCtx)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	// The agent calls fail against an unroutable host; only the context the
+	// summariser was handed matters here.
+	writeBackSession(cmd, 1, "http://127.0.0.1:1", "tok", nil,
+		[]client.Message{
+			{Role: "user", Content: "hi"},
+			{Role: "assistant", Content: "hello"},
+		}, time.Now(), "host", "raspberrypi5")
+
+	if !gotLive {
+		t.Error("summarised on the cancelled command context — the record would degrade")
 	}
 }
