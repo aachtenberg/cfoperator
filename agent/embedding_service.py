@@ -30,6 +30,63 @@ def _get_metrics():
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 EMBEDDING_DIMENSION = 768  # nomic-embed-text dimension
 
+# Upper bound on what we will send to the embedding endpoint (CFOP-81).
+#
+# There was a MINIMUM input guard here and no maximum, so a single oversized
+# record failed on every sweep for ~18 hours across three pod generations,
+# burning a full HTTP round trip each time and leaving the index permanently
+# one row behind. A head-truncated embedding is worth enormously more than no
+# embedding: the row becomes searchable AND it leaves the unindexed set, which
+# is what actually ends the loop.
+#
+# Measured in CHARACTERS, not tokens, deliberately: there is no tokenizer in
+# this process and adding one to approximate a bound is a bad trade. The
+# conversion is conservative on purpose — nomic-embed-text holds 2048 tokens,
+# and the text being embedded here is log lines, JSON and stack traces, which
+# tokenize denser than prose (nearer 3 chars/token than 4).
+MODEL_INPUT_CHAR_LIMITS = {
+    "nomic-embed-text": 2048 * 3,
+}
+#: For a model we have no entry for. Low enough to be safe against a small
+#: context, since guessing high reintroduces exactly this bug for a new model.
+DEFAULT_MAX_INPUT_CHARS = 4096
+
+#: Bodies Ollama returns when the input cannot fit, whatever the status code.
+#: This is a property of the INPUT, not of the moment, so a retry is
+#: guaranteed waste — the distinction the old code could not draw, because a
+#: timeout, a down endpoint and "this can never fit" all returned None alike.
+DETERMINISTIC_INPUT_ERRORS = (
+    "exceeds the context length",
+    "input length exceeds",
+)
+
+#: How many known-unembeddable inputs to remember. Bounded because it is keyed
+#: by content: an unbounded set is a slow leak on a long-lived agent.
+UNEMBEDDABLE_MEMORY = 256
+
+
+def max_input_chars(model: str) -> int:
+    """Character bound for ``model``, overridable by CFOP_EMBEDDING_MAX_CHARS.
+
+    The override exists so a model swap does not need a code change to be
+    safe; a non-numeric or non-positive value is ignored rather than trusted.
+    """
+    raw = os.getenv("CFOP_EMBEDDING_MAX_CHARS", "").strip()
+    if raw:
+        try:
+            override = int(raw)
+            if override > 0:
+                return override
+        except ValueError:
+            pass
+    return MODEL_INPUT_CHAR_LIMITS.get(model, DEFAULT_MAX_INPUT_CHARS)
+
+
+def is_deterministic_input_error(body: str) -> bool:
+    """True when the endpoint is telling us this input can never work."""
+    text = str(body or "").lower()
+    return any(marker in text for marker in DETERMINISTIC_INPUT_ERRORS)
+
 # Cache settings
 DEFAULT_CACHE_SIZE = 500  # Max embeddings to keep in memory
 CACHE_TABLE_NAME = "embedding_cache"
@@ -228,6 +285,29 @@ class EmbeddingService:
         self.model = model or os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
         self._available: Optional[bool] = None  # Lazy check
         self._cache = EmbeddingCache(max_size=cache_size, db_session_factory=db_session_factory)
+        # Inputs the endpoint has told us can never be embedded (CFOP-81).
+        # The positive cache only ever recorded SUCCESSES, so nothing
+        # remembered a deterministic failure and every sweep paid for it
+        # again. In-memory and not persisted on purpose: a restart should
+        # retry, because the thing that changed might be the model config.
+        self._unembeddable: "OrderedDict[str, str]" = OrderedDict()
+        self._unembeddable_lock = threading.Lock()
+
+    def _mark_unembeddable(self, text: str, reason: str) -> None:
+        key = EmbeddingCache.compute_hash(text, self.model)
+        with self._unembeddable_lock:
+            if key in self._unembeddable:
+                return
+            self._unembeddable[key] = reason
+            while len(self._unembeddable) > UNEMBEDDABLE_MEMORY:
+                self._unembeddable.popitem(last=False)
+        _log("warn", "Input can never be embedded; not retrying it",
+             model=self.model, text_len=len(text), reason=reason[:200])
+
+    def _unembeddable_reason(self, text: str) -> Optional[str]:
+        key = EmbeddingCache.compute_hash(text, self.model)
+        with self._unembeddable_lock:
+            return self._unembeddable.get(key)
 
     def is_available(self) -> bool:
         """Check if embedding service is available."""
@@ -286,16 +366,44 @@ class EmbeddingService:
                 if _ec:
                     _ec.labels(result='miss').inc()
 
+        # Known-bad input: refuse before spending a round trip. Checked after
+        # the positive cache so a value that later becomes embeddable (a
+        # restart with a different model clears this) is not shadowed.
+        known_bad = self._unembeddable_reason(text)
+        if known_bad:
+            _log("debug", "Skipping known-unembeddable input",
+                 model=self.model, text_len=len(text), reason=known_bad[:120])
+            _er, _ec = _get_metrics()
+            if _er:
+                _er.labels(result='unembeddable').inc()
+            return None
+
         # Need to generate - check availability
         if not self.is_available():
             return None
+
+        # Bound the input (CFOP-81). Head-truncated is worth far more than
+        # skipped: the record becomes searchable and leaves the unindexed set,
+        # which is what ends the retry loop. Cached under the ORIGINAL text so
+        # the next caller passing the same oversized record gets a cache hit
+        # rather than re-truncating and re-sending it.
+        limit = max_input_chars(self.model)
+        prompt = text
+        if len(prompt) > limit:
+            prompt = prompt[:limit]
+            _log("warn", "Input truncated to fit the embedding model",
+                 model=self.model, original_len=len(text), sent_len=len(prompt),
+                 limit=limit)
+            _er, _ec = _get_metrics()
+            if _er:
+                _er.labels(result='truncated').inc()
 
         try:
             response = requests.post(
                 f"{self.ollama_url}/api/embeddings",
                 json={
                     "model": self.model,
-                    "prompt": text
+                    "prompt": prompt
                 },
                 timeout=30
             )
@@ -316,9 +424,19 @@ class EmbeddingService:
                         _er.labels(result='success').inc()
                     return embedding
 
-            _log("warn", "Failed to generate embedding",
-                 status=response.status_code,
-                 response=response.text[:200] if response.text else "")
+            body = response.text or ""
+            # A failure the endpoint attributes to the INPUT is not going to
+            # go away on the next sweep, so remember it rather than paying for
+            # it forever. Everything else — a timeout, a 500 from an
+            # overloaded endpoint, a missing model — stays retryable, because
+            # those genuinely do get better on their own.
+            if is_deterministic_input_error(body):
+                self._mark_unembeddable(
+                    text, f"HTTP {response.status_code}: {body[:160]}")
+            else:
+                _log("warn", "Failed to generate embedding",
+                     status=response.status_code,
+                     response=body[:200])
             _er, _ec = _get_metrics()
             if _er:
                 _er.labels(result='error').inc()
