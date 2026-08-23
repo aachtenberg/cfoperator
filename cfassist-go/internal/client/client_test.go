@@ -684,3 +684,23 @@ func TestToAnthropicMessagesToolUseAlwaysHasInput(t *testing.T) {
 		t.Fatalf("tool_use missing input object: %s", raw)
 	}
 }
+
+func TestToAnthropicMessagesMarksFailedToolResults(t *testing.T) {
+	_, msgs := toAnthropicMessages([]Message{
+		{Role: "user", Content: "go"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "toolu_x", Function: ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "false"}}},
+		}},
+		{Role: "tool", ToolCallID: "toolu_x", Content: `{"error":"cancelled"}`, IsError: true},
+	})
+	if len(msgs) != 3 {
+		t.Fatalf("len(msgs) = %d, want 3", len(msgs))
+	}
+	raw, err := json.Marshal(msgs[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"is_error":true`)) {
+		t.Fatalf("failed tool_result missing is_error: %s", raw)
+	}
+}

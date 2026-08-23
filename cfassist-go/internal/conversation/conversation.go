@@ -5,11 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 )
+
+// toolIDSeq is monotonic across the process, not per Run. Ollama often omits
+// tool-call ids, and a per-turn counter reused toolu_0_0 on the next Run while
+// the TUI transcript still held the previous round under that id.
+var toolIDSeq atomic.Uint64
+
+// afterTool runs after each successful Execute. Tests use it to cancel
+// mid-round; production leaves it nil.
+var afterTool func()
 
 // Result holds the outcome of a conversation turn.
 type Result struct {
@@ -67,7 +77,7 @@ func Run(
 		// block: a turn that has been told to stop should not start a new round
 		// of work no matter how quickly the last one returned.
 		if ctx.Err() != nil {
-			return cancelled(&result, start), fullMessages
+			return cancelled(&result, start), transcript(fullMessages)
 		}
 
 		output.ShowThinking()
@@ -77,12 +87,12 @@ func Run(
 
 		if err != nil {
 			if ctx.Err() != nil {
-				return cancelled(&result, start), fullMessages
+				return cancelled(&result, start), transcript(fullMessages)
 			}
 			output.ShowError(fmt.Sprintf("LLM request failed: %v", err), hintFor(err))
 			result.Error = err.Error()
 			result.Latency = time.Since(start)
-			return result, fullMessages
+			return result, transcript(fullMessages)
 		}
 
 		result.InputTokens += resp.InputTokens
@@ -98,9 +108,9 @@ func Run(
 		if len(resp.ToolCalls) > 0 {
 			calls := make([]client.ToolCall, len(resp.ToolCalls))
 			copy(calls, resp.ToolCalls)
-			for i := range calls {
-				if calls[i].ID == "" {
-					calls[i].ID = fmt.Sprintf("toolu_%d_%d", i, result.ToolCalls)
+			for n := range calls {
+				if calls[n].ID == "" {
+					calls[n].ID = fmt.Sprintf("toolu_cfassist_%d", toolIDSeq.Add(1))
 				}
 			}
 
@@ -110,13 +120,10 @@ func Run(
 			}
 			if resp.Content != "" {
 				assistantMsg.Content = resp.Content
+				output.ShowResponse(resp.Content)
 			}
+			fullMessages = append(fullMessages, assistantMsg)
 
-			type executed struct {
-				id     string
-				result map[string]any
-			}
-			done := make([]executed, 0, len(calls))
 			for _, tc := range calls {
 				name := tc.Function.Name
 				args := tc.Function.Arguments
@@ -128,20 +135,20 @@ func Run(
 					toolResult = toolReg.Execute(ctx, name, args)
 					output.ShowToolResult(name, toolResult)
 					result.ToolCalls++
+					if afterTool != nil {
+						afterTool()
+					}
 				}
-				done = append(done, executed{id: tc.ID, result: toolResult})
-			}
-
-			fullMessages = append(fullMessages, assistantMsg)
-			for _, e := range done {
+				_, isErr := toolResult["error"]
 				fullMessages = append(fullMessages, client.Message{
 					Role:       "tool",
-					Content:    tools.MarshalResult(e.result),
-					ToolCallID: e.id,
+					Content:    tools.MarshalResult(toolResult),
+					ToolCallID: tc.ID,
+					IsError:    isErr,
 				})
 			}
 			if ctx.Err() != nil {
-				return cancelled(&result, start), fullMessages
+				return cancelled(&result, start), transcript(fullMessages)
 			}
 			continue
 		}
@@ -154,20 +161,33 @@ func Run(
 		}
 		result.Response = text
 		result.Latency = time.Since(start)
-		return result, fullMessages
+		return result, transcript(fullMessages)
 	}
 
 	// A cancel landing during the final iteration's tool call would otherwise
 	// fall out here and be reported as the model exhausting its budget, with
 	// Cancelled false — telling the operator their key did not work.
 	if ctx.Err() != nil {
-		return cancelled(&result, start), fullMessages
+		return cancelled(&result, start), transcript(fullMessages)
 	}
 
 	// Max iterations reached
 	output.ShowWarning(fmt.Sprintf("Reached maximum tool iterations (%d).", maxIterations))
 	result.Latency = time.Since(start)
-	return result, fullMessages
+	return result, transcript(fullMessages)
+}
+
+// transcript is the session history callers persist: everything Run appended,
+// minus the system message it synthesized. Returning that system message forced
+// every caller to strip it, and the non-interactive path did not.
+func transcript(full []client.Message) []client.Message {
+	start := 0
+	if len(full) > 0 && full[0].Role == "system" {
+		start = 1
+	}
+	out := make([]client.Message, len(full)-start)
+	copy(out, full[start:])
+	return out
 }
 
 // maxLLMAttempts bounds a single Chat call, not the whole turn: each iteration

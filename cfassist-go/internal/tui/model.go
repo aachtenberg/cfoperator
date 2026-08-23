@@ -356,8 +356,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ctxLimit := m.cfg.LLM.ContextWindow
 		if ctxLimit > 0 && m.contextUsed > ctxLimit*80/100 && len(m.messages) > 4 {
 			memory.SaveConversation(m.cfg.Memory.Directory, m.messages)
-			// Keep system prompt context + last 4 messages
-			m.messages = m.messages[len(m.messages)-4:]
+			// Last-4 used to be safe when this slice was user/assistant text.
+			// Tool rounds live here now; cutting mid-round 400s every later
+			// turn. Snap back to a user text turn so the kept suffix is a
+			// complete assistant/tool pairing.
+			m.messages = trimToUserBoundary(m.messages, 4)
 			m.outputLines = append(m.outputLines,
 				"",
 				warningStyle.Render(fmt.Sprintf("  Context %d/%d tokens (>80%%) — conversation saved and trimmed.",
@@ -767,16 +770,18 @@ func (m *model) startTurn(prompt string) tea.Cmd {
 	return m.runConversationCmd(ctx, prompt)
 }
 
-// dropSystemMessages strips the system prompt Run prepends, so the TUI's
-// session transcript stays user/assistant/tool turns only.
-func dropSystemMessages(msgs []client.Message) []client.Message {
-	out := make([]client.Message, 0, len(msgs))
-	for _, m := range msgs {
-		if m.Role != "system" {
-			out = append(out, m)
-		}
+// trimToUserBoundary keeps a suffix of at least keep messages, then walks
+// back to the nearest user text turn so the cut never lands inside an
+// assistant tool_use / role=tool group.
+func trimToUserBoundary(msgs []client.Message, keep int) []client.Message {
+	if keep < 1 || len(msgs) <= keep {
+		return msgs
 	}
-	return out
+	cut := len(msgs) - keep
+	for cut > 0 && msgs[cut].Role != "user" {
+		cut--
+	}
+	return msgs[cut:]
 }
 
 func (m *model) runConversationCmd(ctx context.Context, userInput string) tea.Cmd {
@@ -786,12 +791,12 @@ func (m *model) runConversationCmd(ctx context.Context, userInput string) tea.Cm
 
 		out := &tuiOutput{program: m.program, renderer: m.renderer}
 		result, msgs := conversation.Run(ctx, m.llm, m.toolReg, out, m.messages, m.systemPrompt, m.cfg.MaxToolIterations)
-		// Run returns the full transcript, including tool_use/tool_result
-		// turns. Keep that rather than the user text plus a final assistant
-		// line: dropping the tool round is how a retry after a Claude 400
-		// sent two user messages in a row and then a tool_use with no
-		// matching tool_result (messages.2 in the error).
-		m.messages = dropSystemMessages(msgs)
+		// Run returns the session transcript (no synthesized system message),
+		// including tool_use/tool_result turns. Keep that rather than the user
+		// text plus a final assistant line: dropping the tool round is how a
+		// retry after a Claude 400 sent two user messages in a row and then a
+		// tool_use with no matching tool_result (messages.2 in the error).
+		m.messages = msgs
 
 		if result.Error != "" {
 			return errMsg{err: fmt.Errorf("%s", result.Error)}

@@ -17,6 +17,7 @@ type Message struct {
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"` // for tool result → tool_use_id reference
+	IsError    bool       `json:"-"`                      // Anthropic tool_result.is_error; not an OpenAI field
 }
 
 // ToolCall represents a tool call from the LLM.
@@ -475,6 +476,7 @@ type anthropicContentBlock struct {
 	Input     map[string]any `json:"input,omitempty"`
 	ToolUseID string         `json:"tool_use_id,omitempty"`
 	Content   string         `json:"content,omitempty"`
+	IsError   bool           `json:"is_error,omitempty"`
 }
 
 // MarshalJSON keeps tool_use.input present even when empty. encoding/json's
@@ -498,7 +500,8 @@ func (b anthropicContentBlock) MarshalJSON() ([]byte, error) {
 			Type      string `json:"type"`
 			ToolUseID string `json:"tool_use_id"`
 			Content   string `json:"content"`
-		}{Type: b.Type, ToolUseID: b.ToolUseID, Content: b.Content})
+			IsError   bool   `json:"is_error,omitempty"`
+		}{Type: b.Type, ToolUseID: b.ToolUseID, Content: b.Content, IsError: b.IsError})
 	default:
 		return json.Marshal(struct {
 			Type string `json:"type"`
@@ -563,6 +566,7 @@ func toAnthropicMessages(messages []Message) (system string, out []anthropicMsg)
 					Type:      "tool_result",
 					ToolUseID: msg.ToolCallID,
 					Content:   msg.Content,
+					IsError:   msg.IsError,
 				}},
 			})
 		}

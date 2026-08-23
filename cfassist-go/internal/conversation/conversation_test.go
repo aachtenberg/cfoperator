@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -481,5 +482,107 @@ func TestRunAnthropicSendsOneUserMessageForParallelToolResults(t *testing.T) {
 	}
 	if assistantIdx+2 < len(payload.Messages) && payload.Messages[assistantIdx+2].Role == "user" {
 		t.Fatal("tool results were split across consecutive user messages")
+	}
+}
+
+func TestRunOmitsSynthesizedSystemMessage(t *testing.T) {
+	server := newMockOllamaServer(t, []mockOllamaResponse{
+		{content: "ok", done: true, promptTokens: 4, evalTokens: 2},
+	})
+	defer server.Close()
+
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	_, msgs := Run(context.Background(), llm, tools.New(cfg), &mockOutput{},
+		[]client.Message{{Role: "user", Content: "hi"}}, "you are a secret system prompt", 10)
+	for _, m := range msgs {
+		if m.Role == "system" {
+			t.Fatalf("Run leaked the synthesized system message: %+v", m)
+		}
+		if strings.Contains(m.Content, "secret system prompt") {
+			t.Fatalf("system prompt leaked into transcript: %q", m.Content)
+		}
+	}
+}
+
+func TestRunFallbackToolIDsDifferAcrossTurns(t *testing.T) {
+	server := newMockOllamaServer(t, []mockOllamaResponse{
+		{toolCall: &client.ToolCall{Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "echo a"}}}, done: true, promptTokens: 4, evalTokens: 2},
+		{content: "a", done: true, promptTokens: 6, evalTokens: 1},
+		{toolCall: &client.ToolCall{Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "echo b"}}}, done: true, promptTokens: 4, evalTokens: 2},
+		{content: "b", done: true, promptTokens: 6, evalTokens: 1},
+	})
+	defer server.Close()
+
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	toolReg := tools.New(cfg)
+
+	_, first := Run(context.Background(), llm, toolReg, &mockOutput{},
+		[]client.Message{{Role: "user", Content: "a"}}, "sys", 10)
+	_, second := Run(context.Background(), llm, toolReg, &mockOutput{},
+		[]client.Message{{Role: "user", Content: "b"}}, "sys", 10)
+
+	idOf := func(msgs []client.Message) string {
+		t.Helper()
+		for _, m := range msgs {
+			if m.Role == "tool" {
+				return m.ToolCallID
+			}
+		}
+		t.Fatal("no tool message")
+		return ""
+	}
+	id1, id2 := idOf(first), idOf(second)
+	if id1 == "" || id2 == "" {
+		t.Fatal("expected synthesized tool ids")
+	}
+	if id1 == id2 {
+		t.Fatalf("fallback ids collided across Run calls: %q", id1)
+	}
+}
+
+func TestRunKeepsToolResultsWhenCancelledMidRound(t *testing.T) {
+	server := newMockOllamaServer(t, []mockOllamaResponse{
+		{
+			toolCalls: []client.ToolCall{
+				{ID: "toolu_a", Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "echo first"}}},
+				{ID: "toolu_b", Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "echo second"}}},
+			},
+			done: true, promptTokens: 10, evalTokens: 5,
+		},
+	})
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	afterTool = func() { cancel() }
+	t.Cleanup(func() { afterTool = nil })
+
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	result, msgs := Run(ctx, llm, tools.New(cfg), &mockOutput{},
+		[]client.Message{{Role: "user", Content: "check both"}}, "sys", 10)
+
+	if !result.Cancelled {
+		t.Fatal("expected the turn to be marked cancelled")
+	}
+	var toolMsgs []client.Message
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			toolMsgs = append(toolMsgs, m)
+		}
+	}
+	if len(toolMsgs) != 2 {
+		t.Fatalf("tool messages = %d, want 2 (one per tool_use even after cancel)", len(toolMsgs))
+	}
+	if toolMsgs[0].ToolCallID != "toolu_a" || toolMsgs[1].ToolCallID != "toolu_b" {
+		t.Fatalf("tool ids = %q, %q", toolMsgs[0].ToolCallID, toolMsgs[1].ToolCallID)
+	}
+	if !toolMsgs[1].IsError || !strings.Contains(toolMsgs[1].Content, "cancelled") {
+		t.Fatalf("second result should be the cancelled filler, got %+v", toolMsgs[1])
 	}
 }
