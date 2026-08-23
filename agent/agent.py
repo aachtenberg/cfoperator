@@ -71,6 +71,7 @@ from node_action_plan import (
 
 # Config semantics shared with event_runtime — one loader, one default schema.
 from cfshared import config as shared_config
+from cfshared import repos as shared_repos
 
 # Configure logging
 logging.basicConfig(
@@ -445,6 +446,11 @@ class CFOperator:
         # Initialize pluggable observability backends
         self._init_observability_backends()
 
+        # Resolve the linked-repo registry before the tools are built: the
+        # GitHub/git tools are constructed from it, and their schema
+        # descriptions name the repos, so a stale list is a stale prompt.
+        self._load_git_registry()
+
         # Initialize tool registry
         self.tools = ToolRegistry(self)
 
@@ -525,8 +531,87 @@ class CFOperator:
         MONITORED_HOSTS.set(len(new_hosts))
         added = new_hosts - old_hosts
         removed = old_hosts - new_hosts
+        # Re-apply the console-managed registry over the file we just re-read,
+        # or "Reload config.yaml" would silently revert the running process to
+        # the file's repo list while the DB still says otherwise (CFOP-77).
+        self._load_git_registry()
+        self._refresh_git_tools()
         logger.info(f"Config reloaded: {len(new_hosts)} hosts (added={added or 'none'}, removed={removed or 'none'})")
-        return {'hosts': len(new_hosts), 'added': list(added), 'removed': list(removed)}
+        return {
+            'hosts': len(new_hosts),
+            'added': list(added),
+            'removed': list(removed),
+            'repos': len(self.git_repos()),
+            'repos_source': self._git_repos_source,
+        }
+
+    # ------------------------------------------------------------------
+    # Linked repo registry (CFOP-77)
+    #
+    # config['git']['repos'] stays the one place every consumer reads the
+    # registry from — the tool registry, the remediation proposer, the git
+    # context enricher. What changes is that its contents are now *resolved*
+    # (DB setting over config file) rather than copied straight out of the
+    # YAML, so the file's own list is kept alongside it for the console's
+    # "what is config.yaml still saying" view.
+    # ------------------------------------------------------------------
+
+    def _load_git_registry(self) -> List[Dict[str, Any]]:
+        """Snapshot config.yaml's repo list, then apply the DB override.
+
+        Must be called after every config load and never twice against the
+        same load: the second call would read back the effective list as if
+        it were the file's.
+        """
+        self._file_git_repos = shared_repos.sanitize((self.config.get('git') or {}).get('repos'))
+        raw = None
+        try:
+            raw = self.kb.get_setting(shared_repos.SETTING_KEY, '')
+        except Exception as e:
+            # A DB that is down must not unlink every repo — config.yaml is
+            # the fallback, exactly as it is for the triage model.
+            logger.warning(f"Could not read the {shared_repos.SETTING_KEY} setting, using config.yaml: {e}")
+        repos, source = shared_repos.resolve(self._file_git_repos, raw)
+        self.config.setdefault('git', {})['repos'] = repos
+        self._git_repos_source = source
+        logger.info(f"Linked repos: {len(repos)} (source={source})")
+        return repos
+
+    def apply_git_repos(self, repos: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """Point the running process at a repo list. ``None`` = config.yaml.
+
+        The console calls this after persisting a write so the change is live
+        for chat, investigations and remediation proposals without a restart —
+        the whole point of storing the registry in the DB.
+        """
+        if repos is None:
+            effective = list(self._file_git_repos)
+            self._git_repos_source = 'config'
+        else:
+            effective = shared_repos.sanitize(repos)
+            self._git_repos_source = 'db'
+        self.config.setdefault('git', {})['repos'] = effective
+        self._refresh_git_tools()
+        logger.info(f"Linked repos updated: {len(effective)} (source={self._git_repos_source})")
+        return effective
+
+    def _refresh_git_tools(self) -> None:
+        """Rebuild the git/github tools against the current registry."""
+        tools = getattr(self, 'tools', None)
+        if tools is None:
+            return
+        try:
+            tools.refresh_git_tools()
+        except Exception as e:
+            logger.warning(f"Could not refresh git tools after a registry change: {e}")
+
+    def git_repos(self) -> List[Dict[str, Any]]:
+        """The effective registry."""
+        return (self.config.get('git') or {}).get('repos') or []
+
+    def file_git_repos(self) -> List[Dict[str, Any]]:
+        """What config.yaml itself declares, shadowed or not."""
+        return list(getattr(self, '_file_git_repos', []))
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
         """Load configuration, merged over the shared default schema.

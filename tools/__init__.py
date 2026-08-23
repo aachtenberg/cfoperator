@@ -63,30 +63,11 @@ class ToolRegistry:
         )
         logger.info("K8s tools initialized")
 
-        # Initialize GitHub API tools (primary — repos typically aren't cloned
-        # on deployed machines, so the GitHub API is the default path).
-        git_config = operator.config.get('git', {})
-        repos_config = git_config.get('repos', [])
-        github_config = git_config.get('github', {})
-        github_token = github_config.get('token', '').strip()
-        if github_token and repos_config:
-            self.github_tools = GitHubTools(
-                token=github_token,
-                api_url=github_config.get('api_url', 'https://api.github.com'),
-                repos_config=repos_config,
-            )
-            logger.info("GitHub tools initialized (primary code investigation path)")
-        else:
-            self.github_tools = None
-
-        # Initialize local Git tools (optional supplement — only useful when
-        # a repo clone exists on the host or is SSH-accessible).
-        has_local_paths = any(r.get("path") for r in repos_config)
-        if repos_config and has_local_paths:
-            self.git_tools = GitTools(repos_config)
-            logger.info(f"Local git tools initialized for {len(repos_config)} repos")
-        else:
-            self.git_tools = None
+        # Initialize the repo-backed tools (GitHub API primary — repos
+        # typically aren't cloned on deployed machines).
+        self.github_tools = None
+        self.git_tools = None
+        self._init_git_tools()
 
         # Initialize TimescaleDB tools (read-only telemetry queries).
         # Env-driven like the knowledge-base connection; disabled without a
@@ -109,6 +90,89 @@ class ToolRegistry:
         self._register_tools()
 
         logger.info(f"Tool registry initialized with {len(self.tools)} tools")
+
+    # ------------------------------------------------------------------
+    # Linked repos (CFOP-77)
+    #
+    # The repo registry is resolved DB-over-config by the operator and can
+    # change while the process runs, so building and registering these two
+    # tool families lives in helpers the console can call again rather than
+    # inline in __init__.
+    # ------------------------------------------------------------------
+
+    def _init_git_tools(self) -> None:
+        """(Re)build the GitHub API and local git tools from the registry."""
+        git_config = self.operator.config.get('git', {}) or {}
+        repos_config = git_config.get('repos', []) or []
+        github_config = git_config.get('github', {}) or {}
+        # Env fallback because the Helm ConfigMap templates no git block at
+        # all: a repo linked from the console there would otherwise register
+        # fine and still have no tools behind it. GITHUB_TOKEN is already how
+        # the remediation PR client and the git context provider find the
+        # credential — this reads the same one.
+        github_token = str(github_config.get('token') or '').strip() or os.getenv('GITHUB_TOKEN', '').strip()
+        if github_token and repos_config:
+            self.github_tools = GitHubTools(
+                token=github_token,
+                api_url=github_config.get('api_url', 'https://api.github.com'),
+                repos_config=repos_config,
+            )
+            logger.info(f"GitHub tools initialized for {len(repos_config)} repos")
+        else:
+            self.github_tools = None
+            if repos_config and not github_token:
+                logger.warning("Repos are linked but no GitHub token is set - github_* tools disabled")
+
+        # Local git tools are an optional supplement — only useful when a repo
+        # clone exists on this host or is SSH-accessible.
+        if repos_config and any(r.get("path") for r in repos_config):
+            self.git_tools = GitTools(repos_config)
+            logger.info(f"Local git tools initialized for {len(repos_config)} repos")
+        else:
+            self.git_tools = None
+
+    def _git_tool_names(self) -> list:
+        """Tool names the current git/github instances contribute.
+
+        Read off the live instances rather than matched by name prefix: these
+        are the names that were actually registered, so unregistering cannot
+        miss one or take out an unrelated tool that happens to start with
+        ``git``.
+        """
+        names = []
+        for tools in (self.git_tools, self.github_tools):
+            if tools:
+                names.extend(schema['name'] for schema in tools.get_schemas())
+        return names
+
+    def _register_git_tools(self) -> None:
+        for tools, wrapper in ((self.git_tools, self._make_git_tool_wrapper),
+                               (self.github_tools, self._make_github_tool_wrapper)):
+            if not tools:
+                continue
+            for schema in tools.get_schemas():
+                tool_name = schema['name']
+                self.tools[tool_name] = {
+                    'function': wrapper(tool_name),
+                    'schema': schema,
+                }
+
+    def refresh_git_tools(self) -> Dict[str, Any]:
+        """Rebuild the git/github tools after the registry changed.
+
+        Unregistering first is the load-bearing half: the repo names are
+        baked into the tool *schema descriptions*, so an unlinked repo that
+        keeps its tools registered stays advertised to the model — the exact
+        staleness the console exists to remove.
+        """
+        for name in self._git_tool_names():
+            self.tools.pop(name, None)
+        self._init_git_tools()
+        self._register_git_tools()
+        names = self._git_tool_names()
+        logger.info(f"Git tools refreshed: {len(names)} tools for "
+                    f"{len((self.operator.config.get('git') or {}).get('repos') or [])} repos")
+        return {'tools': names}
 
     def _register_tools(self):
         """Register all available tools."""
@@ -248,23 +312,11 @@ class ToolRegistry:
                     'schema': schema
                 }
 
-        # Git tools for code-change investigation
-        if self.git_tools:
-            for schema in self.git_tools.get_schemas():
-                tool_name = schema['name']
-                self.tools[tool_name] = {
-                    'function': self._make_git_tool_wrapper(tool_name),
-                    'schema': schema
-                }
-
-        # GitHub API tools for PR/issue operations
-        if self.github_tools:
-            for schema in self.github_tools.get_schemas():
-                tool_name = schema['name']
-                self.tools[tool_name] = {
-                    'function': self._make_github_tool_wrapper(tool_name),
-                    'schema': schema
-                }
+        # Git + GitHub tools for code-change investigation and PR/issue
+        # operations. Registered through the same helper the console's
+        # relink path uses, so there is one definition of what a repo
+        # change adds to the tool set.
+        self._register_git_tools()
 
         # TimescaleDB read-only telemetry queries
         if self.timescale_tools:

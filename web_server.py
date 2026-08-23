@@ -22,6 +22,7 @@ from flask import Flask, request, jsonify, redirect, send_from_directory
 import time
 import requests
 
+from cfshared import repos as shared_repos
 from web_auth import ROLE_ADMIN, install_auth, require_role, require_token_scope
 from auth.bootstrap import init_auth_store
 from auth.models import (
@@ -142,8 +143,9 @@ class WebServer:
         anything that changes how the system behaves or what it will act on:
         the remediation lifecycle (approve/reject/resolve/reclassify, manual
         enqueue, the flags, run-feed), the settings and model/provider
-        selection, config reload, the on-demand deep sweep, and pool instance
-        toggles. Members keep everything a person needs to understand the
+        selection, the linked repo registry (which repos the tools may read
+        and the executor may target), config reload, the on-demand deep
+        sweep, and pool instance toggles. Members keep everything a person needs to understand the
         system — every GET, chat, Q&A, feedback and KB search — because the
         point of the member role is to let people read the console without
         being able to point the executor at production.
@@ -618,6 +620,113 @@ class WebServer:
             except Exception as e:
                 logger.warning(f"Could not persist fallback setting: {e}")
             return jsonify({'success': True, 'allow_paid_escalation': enabled})
+
+        # ── Linked repo registry (CFOP-77) ──
+        # One list feeds the github_*/git_* tools (repo names ride in their
+        # schema descriptions, so it is prompt-visible), the remediation
+        # proposer's PR target, and the event runtime's commit enrichment. It
+        # lives in the DB and resolves over config.yaml's git.repos, because
+        # in k8s that file is a read-only ConfigMap — linking a repo used to
+        # cost a deploy commit plus a rollout restart, and on the Helm path
+        # was not expressible at all.
+
+        def _repo_registry():
+            """(payload, effective list). Reads the DB, not the process copy,
+            so the console reports what is actually persisted."""
+            file_repos = self.operator.file_git_repos()
+            raw, db_error = '', None
+            try:
+                raw = self.operator.kb.get_setting(shared_repos.SETTING_KEY, '') or ''
+            except Exception as e:
+                db_error = str(e)
+                logger.warning(f"Could not read the repo registry setting: {e}")
+            repos, source = shared_repos.resolve(file_repos, raw)
+            linked = {str(r.get('name') or '') for r in repos}
+            git_cfg = (self.operator.config.get('git') or {}) if isinstance(self.operator.config, dict) else {}
+            token = str((git_cfg.get('github') or {}).get('token') or '').strip() \
+                or os.getenv('GITHUB_TOKEN', '').strip()
+            payload = {
+                'repos': shared_repos.public_list(repos),
+                'source': source,
+                'config_repos': shared_repos.public_list(file_repos),
+                # Named, not just counted: an operator who edits config.yaml
+                # while the console list is active deserves to be told which
+                # of their entries the running system is ignoring.
+                'shadowed': sorted(
+                    name for name in (str(r.get('name') or '') for r in file_repos)
+                    if name and name not in linked),
+                'github_token_configured': bool(token),
+                'db_error': db_error,
+            }
+            return payload, repos
+
+        def _persist_repos(updated, message):
+            """Save, then make it live in this process. A save that cannot be
+            applied is still reported as saved — it survives a restart."""
+            try:
+                self.operator.kb.set_setting(shared_repos.SETTING_KEY, shared_repos.dumps(updated))
+            except Exception as e:
+                logger.warning(f"Could not persist the repo registry (DB down?): {e}")
+                return jsonify({'error': f'Database unavailable, could not save: {e}'}), 503
+            try:
+                self.operator.apply_git_repos(updated)
+            except Exception as e:
+                logger.warning(f"Repo registry saved but not applied live: {e}")
+            logger.info(message)
+            payload, _ = _repo_registry()
+            return jsonify({'success': True, **payload})
+
+        @self.app.route('/api/git/repos')
+        def get_git_repos():
+            payload, _ = _repo_registry()
+            return jsonify(payload)
+
+        @self.app.route('/api/git/repos', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def upsert_git_repo():
+            """Add or edit one repo. Fields the body omits keep their stored
+            value, so a form that cannot render an entry's ssh block cannot
+            drop it either."""
+            try:
+                name, fields = shared_repos.parse_repo_input(json_object())
+            except shared_repos.RepoError as e:
+                return jsonify({'error': str(e)}), 400
+            _, current = _repo_registry()
+            try:
+                updated = shared_repos.upsert(current, name, fields)
+            except shared_repos.RepoError as e:
+                return jsonify({'error': str(e)}), 400
+            return _persist_repos(updated, f"Linked repo saved: {name}")
+
+        @self.app.route('/api/git/repos/<name>', methods=['DELETE'])
+        @require_role(ROLE_ADMIN)
+        def delete_git_repo(name):
+            _, current = _repo_registry()
+            updated, found = shared_repos.remove(current, name)
+            if not found:
+                return jsonify({'error': f'No linked repo named {name}'}), 404
+            return _persist_repos(updated, f"Linked repo removed: {name}")
+
+        @self.app.route('/api/git/repos/revert', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def revert_git_repos():
+            """Drop the console list and go back to config.yaml's git.repos.
+
+            An empty setting reads as unset (the flags convention) — the
+            settings store has no delete, and 'saved as empty' would mean
+            'no repos at all', which is a different and much worse thing."""
+            try:
+                self.operator.kb.set_setting(shared_repos.SETTING_KEY, '')
+            except Exception as e:
+                logger.warning(f"Could not clear the repo registry (DB down?): {e}")
+                return jsonify({'error': f'Database unavailable, could not save: {e}'}), 503
+            try:
+                self.operator.apply_git_repos(None)
+            except Exception as e:
+                logger.warning(f"Repo registry cleared but not applied live: {e}")
+            logger.info("Linked repos reverted to config.yaml")
+            payload, _ = _repo_registry()
+            return jsonify({'success': True, **payload})
 
         # Chat API — starts chat in background, returns chat_id for polling
         @self.app.route('/api/chat', methods=['POST'])

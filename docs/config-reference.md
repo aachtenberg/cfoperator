@@ -326,6 +326,16 @@ event_runtime:
 # Git & GitHub Integration
 # Maps repositories to infrastructure targets so the agent can correlate
 # code changes with alerts and investigate recent deployments.
+#
+# The console manages this list too: Admin -> Repos adds, edits and removes
+# linked repos live (no restart, and in k8s no ConfigMap edit). A list saved
+# there is stored in the database and REPLACES this block for the running
+# system — the tab says which source is live, names any entry here that it is
+# shadowing, and offers a revert. Precedence:
+#   CFOP_GIT_REPOS_JSON (event runtime only) > the console list > this file.
+# The agent applies a console change immediately; the event runtime resolves
+# the list at startup, so its commit enrichment picks one up on its next
+# restart.
 git:
   github:
     token: ${GITHUB_TOKEN}
