@@ -106,3 +106,19 @@ def test_a_tool_refresh_failure_does_not_lose_the_new_list(CFOperator):
     op.tools = SimpleNamespace(refresh_git_tools=boom)
     op.apply_git_repos(DB_REPOS)
     assert [r["name"] for r in op.git_repos()] == ["esp-sensor-hub"]
+
+
+def test_the_event_runtimes_settings_read_matches_the_model_that_owns_it():
+    """The other process reads the registry with hand-written SQL, and a wrong
+    table or column there raises nothing a caller sees — it falls open to the
+    YAML file forever, which is indistinguishable from the documented
+    "picks it up on the next restart" behaviour. This is the only place both
+    the query and the ORM model are importable at once."""
+    from event_runtime.bootstrap import _SETTINGS_QUERY
+    from knowledge_base import AgentSettings
+
+    columns = {c.name for c in AgentSettings.__table__.columns}
+    assert {"key", "value"} <= columns
+    assert AgentSettings.__tablename__ in _SETTINGS_QUERY
+    for column in ("key", "value"):
+        assert column in _SETTINGS_QUERY

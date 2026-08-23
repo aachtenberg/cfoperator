@@ -100,8 +100,12 @@ class ToolRegistry:
     # inline in __init__.
     # ------------------------------------------------------------------
 
-    def _init_git_tools(self) -> None:
-        """(Re)build the GitHub API and local git tools from the registry."""
+    def _build_git_tools(self) -> tuple:
+        """Construct the tool objects for the current registry.
+
+        Assigns nothing: a constructor that raises must leave the live tools
+        alone rather than half-replace them (see refresh_git_tools).
+        """
         git_config = self.operator.config.get('git', {}) or {}
         repos_config = git_config.get('repos', []) or []
         github_config = git_config.get('github', {}) or {}
@@ -111,25 +115,28 @@ class ToolRegistry:
         # the remediation PR client and the git context provider find the
         # credential — this reads the same one.
         github_token = str(github_config.get('token') or '').strip() or os.getenv('GITHUB_TOKEN', '').strip()
+        github_tools = None
         if github_token and repos_config:
-            self.github_tools = GitHubTools(
+            github_tools = GitHubTools(
                 token=github_token,
                 api_url=github_config.get('api_url', 'https://api.github.com'),
                 repos_config=repos_config,
             )
             logger.info(f"GitHub tools initialized for {len(repos_config)} repos")
-        else:
-            self.github_tools = None
-            if repos_config and not github_token:
-                logger.warning("Repos are linked but no GitHub token is set - github_* tools disabled")
+        elif repos_config and not github_token:
+            logger.warning("Repos are linked but no GitHub token is set - github_* tools disabled")
 
         # Local git tools are an optional supplement — only useful when a repo
         # clone exists on this host or is SSH-accessible.
+        git_tools = None
         if repos_config and any(r.get("path") for r in repos_config):
-            self.git_tools = GitTools(repos_config)
+            git_tools = GitTools(repos_config)
             logger.info(f"Local git tools initialized for {len(repos_config)} repos")
-        else:
-            self.git_tools = None
+        return git_tools, github_tools
+
+    def _init_git_tools(self) -> None:
+        """(Re)build the GitHub API and local git tools from the registry."""
+        self.git_tools, self.github_tools = self._build_git_tools()
 
     def _git_tool_names(self) -> list:
         """Tool names the current git/github instances contribute.
@@ -160,14 +167,21 @@ class ToolRegistry:
     def refresh_git_tools(self) -> Dict[str, Any]:
         """Rebuild the git/github tools after the registry changed.
 
-        Unregistering first is the load-bearing half: the repo names are
-        baked into the tool *schema descriptions*, so an unlinked repo that
-        keeps its tools registered stays advertised to the model — the exact
-        staleness the console exists to remove.
+        Unregistering is the load-bearing half: the repo names are baked into
+        the tool *schema descriptions*, so an unlinked repo that keeps its
+        tools registered stays advertised to the model — the exact staleness
+        the console exists to remove.
+
+        It happens *after* the replacements exist, though. Popping first and
+        constructing second means a constructor that raises leaves the process
+        linked to repos with no tools at all until something triggers another
+        refresh — and the caller swallows the exception, so nothing would say
+        so. Build, then swap.
         """
+        git_tools, github_tools = self._build_git_tools()
         for name in self._git_tool_names():
             self.tools.pop(name, None)
-        self._init_git_tools()
+        self.git_tools, self.github_tools = git_tools, github_tools
         self._register_git_tools()
         names = self._git_tool_names()
         logger.info(f"Git tools refreshed: {len(names)} tools for "

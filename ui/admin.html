@@ -1121,25 +1121,19 @@ document.getElementById('repo-rows').addEventListener('click', (e)=>{
   else if(act === 'cancel'){ const tr = repoFormRow(name); if(tr){ tr.hidden = true; tr.querySelector('.formbody').innerHTML=''; } }
 });
 async function importRepos(){
+  // Names only. Posting back the entries this page was shown would import
+  // them through the public view, which has already dropped anything the
+  // form cannot render (an ssh block becomes has_ssh) — the server copies
+  // from config.yaml itself.
   const shadowed = REPOS.shadowed || [];
-  const byName = {};
-  (REPOS.config_repos || []).forEach(r => { byName[r.name] = r; });
   const btn = document.getElementById('repo-import-btn');
-  btn.disabled = true;
-  let last = null, failed = 0;
-  for(const name of shadowed){
-    const r = byName[name];
-    if(!r) continue;
-    const res = await api('/api/git/repos', {method:'POST', body: JSON.stringify({
-      name: r.name, github: r.github, branch: r.branch, path: r.path,
-      hosts: r.hosts || [], services: r.services || [],
-    })});
-    if(res.ok) last = res.data; else failed++;
-  }
-  btn.disabled = false;
-  if(failed) toast(`${failed} of ${shadowed.length} could not be imported`, 'err');
-  else toast(`imported ${shadowed.length} from config.yaml`, 'ok');
-  if(last) applyRepoPayload(last); else loadRepos();
+  if(btn) btn.disabled = true;
+  const r = await api('/api/git/repos/import', {method:'POST', body: JSON.stringify({names: shadowed})});
+  if(btn) btn.disabled = false;
+  if(!r.ok){ toast(r.error, 'err'); loadRepos(); return; }
+  const n = ((r.data && r.data.imported) || []).length;
+  toast(n ? `imported ${n} from config.yaml` : 'nothing left to import', 'ok');
+  applyRepoPayload(r.data);
 }
 function confirmRevertRepos(){
   const box = document.getElementById('repo-config-acts');

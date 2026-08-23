@@ -105,6 +105,28 @@ def test_a_token_only_in_the_environment_still_arms_the_github_tools(monkeypatch
     assert reg.github_tools is not None
 
 
+def test_a_failed_rebuild_leaves_the_working_tools_in_place(monkeypatch):
+    """Popping the old registrations before the replacements exist would leave
+    the process linked to repos with *no* tools — and the agent swallows the
+    exception, so nothing would say so."""
+    import tools as tools_pkg
+
+    reg = _registry(REPOS)
+    before = _names(reg)
+    github_before = reg.github_tools
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("bad token")
+
+    monkeypatch.setattr(tools_pkg, "GitHubTools", boom)
+    reg.operator.config["git"]["repos"] = [REPOS[0]]
+    with pytest.raises(RuntimeError):
+        reg.refresh_git_tools()
+
+    assert _names(reg) == before
+    assert reg.github_tools is github_before
+
+
 def test_no_token_anywhere_leaves_the_github_tools_off(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     reg = _registry(REPOS, token="")

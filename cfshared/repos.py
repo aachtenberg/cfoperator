@@ -66,19 +66,27 @@ EDITABLE_FIELDS = ("github", "branch", "path", "hosts", "services")
 LIST_FIELDS = ("hosts", "services")
 
 
+#: What GitHub itself accepts for an ``owner/repo`` segment. This lives here
+#: rather than in ``event_runtime.github_client`` — which re-exports it — so
+#: that the dependency runs host-package -> shared, not the other way round.
+#: One definition either way; only the direction changed.
+REPO_SEGMENT_RE = r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,98}[a-zA-Z0-9])?"
+REPO_SLUG_RE = re.compile(rf"^{REPO_SEGMENT_RE}/{REPO_SEGMENT_RE}$")
+
+
 class RepoError(ValueError):
     """A repo entry a caller sent cannot be honoured. Message is user-facing."""
 
 
+def validate_repo_slug(slug: str) -> str:
+    """Validate and return an ``owner/repo`` slug."""
+    if not REPO_SLUG_RE.fullmatch(slug):
+        raise ValueError(f"Invalid repo slug: {slug}")
+    return slug
+
+
 def _validate_slug(slug: str) -> str:
-    """Validate an ``owner/repo`` slug.
-
-    Imported lazily from the GitHub client rather than restated here: that
-    regex is what the API layer will actually accept, and a second copy would
-    start disagreeing about the edge cases (leading dots, 100-char segments).
-    """
-    from event_runtime.github_client import validate_repo_slug
-
+    """The same rule, with the message the console shows an operator."""
     try:
         return validate_repo_slug(slug)
     except ValueError as exc:

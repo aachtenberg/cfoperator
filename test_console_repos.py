@@ -273,6 +273,65 @@ def test_unlinking_a_repo_removes_it_and_leaves_the_rest():
     assert [r["name"] for r in operator.apply_git_repos.call_args[0][0]] == ["homelab-infra"]
 
 
+def test_importing_a_shadowed_entry_brings_its_ssh_block_with_it():
+    """The console can only see `has_ssh`, so an import that posted back what
+    GET showed it would create a new entry with the key path gone — the repo
+    would come back GitHub-API-only and nothing would say so."""
+    stored = json.dumps([{"name": "esp-sensor-hub", "github": "aachtenberg/esp-sensor-hub"}])
+    client, _, settings = _client(stored=stored)
+    assert client.get("/api/git/repos").get_json()["shadowed"] == ["homelab-infra"]
+
+    resp = client.post("/api/git/repos/import", json={"names": ["homelab-infra"]})
+    assert resp.status_code == 200
+    assert resp.get_json()["imported"] == ["homelab-infra"]
+    assert resp.get_json()["shadowed"] == []
+
+    entry = shared_repos.find(json.loads(settings[shared_repos.SETTING_KEY]), "homelab-infra")
+    assert entry["ssh"]["key_path"] == "/root/.ssh/id_ed25519"
+    assert entry["hosts"] == ["raspberrypi3"]
+
+
+def test_importing_with_no_names_takes_everything_the_console_is_missing():
+    stored = json.dumps([{"name": "esp-sensor-hub", "github": "aachtenberg/esp-sensor-hub"}])
+    client, _, settings = _client(stored=stored)
+    body = client.post("/api/git/repos/import", json={}).get_json()
+    assert body["imported"] == ["homelab-infra"]
+    assert {r["name"] for r in body["repos"]} == {"homelab-infra", "esp-sensor-hub"}
+
+
+def test_importing_something_config_never_declared_is_refused():
+    client, _, settings = _client()
+    resp = client.post("/api/git/repos/import", json={"names": ["not-in-the-file"]})
+    assert resp.status_code == 400
+    assert settings[shared_repos.SETTING_KEY] == ""
+
+
+def test_importing_what_is_already_linked_is_a_no_op():
+    client, _, _ = _client()
+    body = client.post("/api/git/repos/import", json={"names": ["homelab-infra"]}).get_json()
+    assert body["imported"] == []
+
+
+def test_a_member_may_not_import():
+    s = AuthStore(engine=create_engine("sqlite://"))
+    s.ensure_schema()
+    s.create_user("m", PASSWORD, role=ROLE_MEMBER)
+    client, _, _ = _client(store=s, auth_disabled=False)
+    _login(client, "m")
+    assert client.post("/api/git/repos/import", json={}).status_code == 403
+
+
+def test_a_repo_whose_name_is_a_slug_can_still_be_unlinked():
+    """config.yaml may declare an entry with no name of its own; sanitize()
+    falls back to the owner/repo slug, and the default URL converter would
+    stop at the slash — leaving that row unremovable from the console."""
+    stored = json.dumps([{"github": "aachtenberg/legacy"}])
+    client, _, settings = _client(stored=stored)
+    assert [r["name"] for r in client.get("/api/git/repos").get_json()["repos"]] == ["aachtenberg/legacy"]
+    assert client.delete("/api/git/repos/aachtenberg/legacy").status_code == 200
+    assert json.loads(settings[shared_repos.SETTING_KEY]) == []
+
+
 def test_unlinking_something_that_is_not_linked_is_a_404():
     client, _, settings = _client()
     assert client.delete("/api/git/repos/nope").status_code == 404
@@ -353,7 +412,7 @@ def test_the_admin_page_owns_the_repos_tab():
     assert 'data-tab="repos"' in html
     assert 'id="panel-repos"' in html
     assert "'repos'" in html and "loadRepos()" in html
-    for endpoint in ("/api/git/repos", "/api/git/repos/revert"):
+    for endpoint in ("/api/git/repos", "/api/git/repos/revert", "/api/git/repos/import"):
         assert endpoint in html
     assert "method:'DELETE'" in html
 

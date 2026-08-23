@@ -686,7 +686,13 @@ class WebServer:
         def upsert_git_repo():
             """Add or edit one repo. Fields the body omits keep their stored
             value, so a form that cannot render an entry's ssh block cannot
-            drop it either."""
+            drop it either.
+
+            Note ``path``: it becomes a working tree GitTools runs git in on
+            the agent host. That is the same power config.yaml always had, but
+            it is easier to reach from here — which is why the write is admin
+            only, like every other behaviour-changing console route.
+            """
             try:
                 name, fields = shared_repos.parse_repo_input(json_object())
             except shared_repos.RepoError as e:
@@ -698,7 +704,54 @@ class WebServer:
                 return jsonify({'error': str(e)}), 400
             return _persist_repos(updated, f"Linked repo saved: {name}")
 
-        @self.app.route('/api/git/repos/<name>', methods=['DELETE'])
+        @self.app.route('/api/git/repos/import', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def import_git_repos():
+            """Copy config.yaml's entries into the console list, whole.
+
+            The console cannot do this by posting back what GET showed it:
+            that view reduces an ``ssh`` block to a boolean, and an import
+            creates *new* entries, so there is no stored row for the upsert
+            to merge the missing keys from. A file-declared repo would come
+            back GitHub-API-only, having quietly lost its SSH access. The
+            copy is made here, from the file's own entries.
+
+            Body: ``{"names": [...]}`` to pick, or nothing for every config
+            entry the console list does not already have.
+            """
+            body = json_object()
+            names = body.get('names')
+            file_repos = shared_repos.sanitize(self.operator.file_git_repos())
+            available = {str(r.get('name') or ''): r for r in file_repos}
+            _, current = _repo_registry()
+            linked = {str(r.get('name') or '') for r in current}
+
+            if names is None:
+                wanted = [n for n in available if n not in linked]
+            else:
+                if not isinstance(names, list):
+                    return jsonify({'error': 'names must be a list'}), 400
+                wanted = [str(n) for n in names]
+                unknown = [n for n in wanted if n not in available]
+                if unknown:
+                    return jsonify({'error': f"config.yaml declares no repo named {', '.join(unknown)}"}), 400
+                wanted = [n for n in wanted if n not in linked]
+
+            if not wanted:
+                payload, _ = _repo_registry()
+                return jsonify({'success': True, 'imported': [], **payload})
+            updated = list(current) + [available[n] for n in wanted]
+            resp = _persist_repos(updated, f"Linked repos imported from config.yaml: {', '.join(wanted)}")
+            if isinstance(resp, tuple):
+                return resp
+            merged = resp.get_json()
+            merged['imported'] = wanted
+            return jsonify(merged)
+
+        # <path:...> because a config entry with no name of its own falls back
+        # to its owner/repo slug, and the default converter stops at the slash
+        # — leaving such a row impossible to unlink from the console.
+        @self.app.route('/api/git/repos/<path:name>', methods=['DELETE'])
         @require_role(ROLE_ADMIN)
         def delete_git_repo(name):
             _, current = _repo_registry()

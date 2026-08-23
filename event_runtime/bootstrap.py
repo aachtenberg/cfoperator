@@ -303,12 +303,9 @@ def _json_dict_or_none(raw: str | None) -> dict | None:
 
 
 def _load_git_repos(config_path: str | None = None) -> list[dict]:
-    """Load git repo config from env var or YAML config file.
-
-    Precedence:
-      1. ``CFOP_GIT_REPOS_JSON`` env var (inline JSON array)
-      2. ``git.repos`` in the YAML config file
-    """
+    """Load git repo config. See :func:`_load_git_config` for precedence:
+    ``CFOP_GIT_REPOS_JSON`` > the console registry in the database >
+    ``git.repos`` in the YAML config file."""
     return _load_git_config(config_path).get("repos") or []
 
 
@@ -351,6 +348,14 @@ def _load_git_config(config_path: str | None = None) -> dict:
     }
 
 
+#: The settings read, kept as a constant so agent/test_git_registry.py can
+#: check the table and column against the ORM model that owns them. A wrong
+#: name here does not raise anything a caller sees — it falls open to the YAML
+#: file forever, which looks exactly like the documented "the event runtime
+#: picks a console change up on its next restart" behaviour.
+_SETTINGS_QUERY = "SELECT value FROM agent_settings WHERE key = %s"
+
+
 def _load_git_repos_from_db(cfg: dict) -> list | None:
     """Read the console-managed repo registry, or None if it cannot be read.
 
@@ -375,7 +380,7 @@ def _load_git_repos_from_db(cfg: dict) -> list | None:
         conn = psycopg2.connect(dsn, connect_timeout=5)
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT value FROM agent_settings WHERE key = %s", (shared_repos.SETTING_KEY,))
+                cur.execute(_SETTINGS_QUERY, (shared_repos.SETTING_KEY,))
                 row = cur.fetchone()
         finally:
             conn.close()
