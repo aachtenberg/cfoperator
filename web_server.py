@@ -25,7 +25,7 @@ import requests
 from web_auth import ROLE_ADMIN, install_auth, require_role, require_token_scope
 from auth.bootstrap import init_auth_store
 from auth.models import (
-    EVENT_COCKPIT_SESSION, EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
+    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
 # The cockpit spawn mints a session token server-side, and it must resolve the
 # caller exactly as POST /api/auth/tokens does — same role ceiling, same audit
 # actor. Importing those helpers is deliberate: a second copy of "who is
@@ -1643,6 +1643,62 @@ class WebServer:
                                  is_cluster_node=node is not None,
                                  has_host=bool(host), allow_sudo=ladder.config.allow_sudo)
         return tier, note, node
+
+    # ---- the browser bridge's server-side half (CFOP-75) -----------------
+
+    def resolve_cockpit_session(self, investigation_id: int) -> Optional[Dict[str, Any]]:
+        """Coordinates of the live cockpit for an investigation, or None.
+
+        Host and tier are re-derived here exactly the way ``/api/cockpit/spawn``
+        derives them, rather than being taken from the caller. A client-supplied
+        host would let anyone holding a token aim a terminal at any machine in
+        the inventory — the bridge authenticates *a person*, not *a target*.
+
+        A tier-1 investigation comes back as a stub carrying only the tier. The
+        bridge refuses `pod` by name (Phase B, and the pods/attach grant it
+        needs), and that refusal is more useful than "no session".
+        """
+        inv = self.operator.kb.get_investigation(investigation_id)
+        if not inv:
+            return None
+        host, _provenance = self._resolve_cockpit_host(investigation_id, inv, '')
+        tier, _note, _node = self._choose_cockpit_tier(host, TIER_AUTO)
+        if tier == TIER_POD:
+            return {'tier': TIER_POD, 'host': host,
+                    'investigation_id': investigation_id}
+        return self._cockpit_ladder().live_session(investigation_id, host=host)
+
+    def verify_bridge_token(self, presented: str):
+        """The same token check every other caller gets, or None with no store.
+
+        No store means auth is disabled, which is a local-development posture —
+        and a development posture must not silently become "anyone may open a
+        terminal on a production host". Refusing here is the safe direction.
+        """
+        store = getattr(self, 'auth_store', None)
+        return store.verify_token(presented) if store is not None else None
+
+    def record_bridge_event(self, *, event: str, actor: str, investigation_id=None,
+                            tier=None, host=None, session_name=None) -> None:
+        """Audit a terminal opening and closing.
+
+        Opening a shell on a production host is exactly what someone asks about
+        afterwards, and 'who' plus 'which machine' is the answer. Source IP is
+        absent on purpose rather than by omission: this runs off the Flask
+        request context, so there is no `request.remote_addr` to read, and a
+        wrong one would be worse than none.
+        """
+        store = getattr(self, 'auth_store', None)
+        if store is None:
+            return
+        try:
+            store.record(EVENT_COCKPIT_BRIDGE, actor=actor,
+                         target=f"investigation:{investigation_id}",
+                         source_ip=None, investigation_id=investigation_id,
+                         phase=event, tier=tier, host=host,
+                         session_name=session_name)
+        except Exception as e:
+            logger.warning(f"cockpit bridge audit failed: {e}")
 
     def reap_cockpits(self) -> int:
         """Janitor entry point for the agent's worker loop (CFOP-36).

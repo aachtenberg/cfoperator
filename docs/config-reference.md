@@ -457,6 +457,33 @@ cockpit:
   # it does not. Defaults to cfassist-go's own Version.
   # cfassist_version: 0.10.0
   # release_base: https://github.com/aachtenberg/cfoperator/releases/download
+  #
+  # ---- the browser bridge (CFOP-75) ----------------------------------------
+  #
+  # Lets the console open a terminal on a host-tier cockpit. Its own listener
+  # rather than a path on :8083, because the console runs under Waitress, which
+  # cannot upgrade a connection. Off by default: this is the sharpest port the
+  # agent can open, and it should exist only where someone asked for it.
+  # bridge_enabled: false
+  # bridge_port: 8084
+  # bridge_bind: 0.0.0.0
+  #
+  # Which pages may open a terminal. There is NO default and no wildcard: with
+  # this unset the bridge refuses to listen at all rather than starting up and
+  # rejecting every connection. Set it to the console's own origin, exactly as
+  # it appears in the address bar — scheme, host and port; a trailing slash and
+  # letter case are both forgiven.
+  # bridge_origins: http://10.0.0.14:8083
+  #
+  # A connection needs an `investigate`-scoped token, the same one
+  # `cfassist attach` mints for an interactive session, and the cockpit it asks
+  # for has to already exist — the bridge attaches, it never spawns. Tier 1
+  # (`pod`) is refused by name: that needs pods/attach, which nothing here
+  # holds, and granting it is CFOP-59 Phase B.
+  #
+  # :8083 is guarded at the host level rather than by a NetworkPolicy (the pod
+  # is hostNetwork, so netpol is unenforceable). This port needs the same
+  # treatment — see DEPLOYMENT.md.
 
 # Skills
 skills:

@@ -916,6 +916,34 @@ class HostCockpitSpawner:
             "placement": {"node": host, "note": "existing cockpit for this investigation"},
         }
 
+    def live_session(self, investigation_id: int, *, host: str
+                     ) -> Optional[Dict[str, Any]]:
+        """The cockpit already running on ``host`` for this investigation.
+
+        The lookup half of :meth:`spawn`, without the create half. The browser
+        bridge (CFOP-75) attaches to what is already there and never starts
+        one: spawning is a workload plus a minted credential, and that stays
+        the admin-gated console route.
+
+        An unreachable host raises rather than reading as None. ``probe()``
+        does not fail loudly — it returns capabilities carrying an ``error`` —
+        and ``_live_sessions`` then finds nothing on a host it could not talk
+        to. Left alone, that turns "raspberrypi5 is down" into "there is no
+        cockpit for #1889", which is the wrong sentence to read during an
+        incident whose subject is frequently that the host is down.
+        """
+        if not host or host not in self._config.hosts:
+            return None
+        caps = self.probe(host)
+        if caps.error:
+            raise CockpitSpawnError(
+                f"{host} could not be probed ({caps.error})", 502)
+        name = session_name(investigation_id)
+        live = self._live_sessions(host, caps)
+        if name not in live:
+            return None
+        return self._existing_session(host, investigation_id, live[name])
+
     # ---- janitor ------------------------------------------------------------
 
     def reap(self, hosts: Optional[Iterable[str]] = None, *, now: Optional[float] = None

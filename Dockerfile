@@ -37,6 +37,11 @@ COPY auth/ ./auth/
 # is tiers 2/3 of the same endpoint (CFOP-36) and is imported beside it.
 COPY cockpit_spawn.py ./
 COPY cockpit_ladder.py ./
+# The browser PTY bridge (CFOP-75). Imported lazily, inside
+# agent.py:_start_cockpit_bridge rather than at module load, so leaving it out
+# would not crash-loop the pod — it would silently log a failure to start and
+# leave the port closed, which is the harder version of this bug to notice.
+COPY cockpit_bridge.py ./
 # docs/auth.md's lockout runbook is `kubectl exec ... python
 # scripts/create_admin.py`, which is the recovery path for having no usable
 # admin — it has to exist in the image to be worth documenting.

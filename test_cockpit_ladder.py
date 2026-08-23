@@ -489,6 +489,50 @@ def test_a_container_that_will_not_start_revokes_the_token_it_minted():
     assert revoked == [42]
 
 
+def test_live_session_finds_the_cockpit_that_is_already_there():
+    """The lookup half of spawn, for the browser bridge (CFOP-75)."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")),
+                  ("docker ps", (0, "cfop-cockpit-1889\n", "")))
+    s = spawner(ssh)
+    row = s.live_session(1889, host="raspberrypi5")
+    assert row["status"] == "existing"
+    assert row["tier"] == TIER_CONTAINER
+    assert row["attach_argv"][0] == "ssh"
+
+
+def test_live_session_never_starts_one():
+    """The bridge attaches; it does not spawn. Spawning is a workload plus a
+    minted credential and stays the admin-gated console route."""
+    minted = []
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes"), "")))
+    s = spawner(ssh, minted=minted)
+    assert s.live_session(1889, host="raspberrypi5") is None
+    assert minted == []
+    assert not ssh.matching("docker run")
+
+
+def test_live_session_is_none_for_a_host_not_in_the_inventory():
+    ssh = FakeSSH()
+    assert spawner(ssh).live_session(1889, host="somebody-elses-box") is None
+    assert ssh.calls == [], "an unknown host must not be reached out to"
+
+
+def test_an_unreachable_host_is_not_reported_as_no_session():
+    """probe() does not raise — it returns caps carrying an error — so without
+    a check this reads as "there is no cockpit for #1889" when the truth is
+    that the machine is down. During an incident whose subject is frequently
+    that the machine is down, that is the wrong sentence.
+
+    Mutation check: drop the `caps.error` guard in live_session and this goes
+    red with None instead of raising.
+    """
+    ssh = FakeSSH(("uname", (255, "", "ssh: connect to host 10.0.0.15: No route to host")))
+    with pytest.raises(CockpitSpawnError) as exc:
+        spawner(ssh).live_session(1889, host="raspberrypi5")
+    assert "could not be probed" in str(exc.value)
+    assert "No route to host" in str(exc.value)
+
+
 def test_an_existing_container_is_reported_not_duplicated():
     """Re-running the command the alert told you to run must land you back in
     your own cockpit, not beside it and not against a busy-fleet error."""

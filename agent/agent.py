@@ -740,6 +740,7 @@ class CFOperator:
         if self.web_server:
             self.web_server.run_threaded()
             logger.info(f"Web UI available at http://0.0.0.0:{self.config.get('chat', {}).get('port', 8083)}")
+            self._start_cockpit_bridge()
 
         while True:
             try:
@@ -1952,6 +1953,35 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             logger.debug(f"Invalid cockpit_reap_interval setting, using default: {e}")
         cockpit = self.config.get('cockpit', {}) if isinstance(self.config, dict) else {}
         return int(cockpit.get('janitor_interval_seconds', 900) or 900)
+
+    def _start_cockpit_bridge(self):
+        """Open the cockpit PTY bridge, if it is turned on (CFOP-75).
+
+        Its own listener rather than a route on the console: Waitress cannot
+        upgrade a connection, and the console is a thread inside *this*
+        process, so pointing a different server at the Flask app would mean
+        restructuring how the agent runs.
+
+        Failure to start is logged and swallowed. The bridge is an
+        affordance — an operator who cannot open a browser terminal still has
+        `cfassist attach`, and an agent that refuses to boot because a
+        convenience port is taken would be a worse trade.
+        """
+        try:
+            from cockpit_bridge import CockpitBridge, build_bridge_config
+
+            config = build_bridge_config(self.config)
+            bridge = CockpitBridge(
+                config,
+                resolver=self.web_server.resolve_cockpit_session,
+                token_verifier=self.web_server.verify_bridge_token,
+                audit=self.web_server.record_bridge_event,
+            )
+            self.cockpit_bridge = bridge
+            if bridge.start():
+                logger.info("Cockpit PTY bridge listening on :%s", config.port)
+        except Exception as e:
+            logger.error(f"cockpit bridge failed to start: {e}", exc_info=True)
 
     def _reap_cockpits(self) -> int:
         """Sweep hosts for cockpit sessions that outlived their TTL (CFOP-36).

@@ -237,5 +237,9 @@ EVENT_TOKEN_REVOKED = "token.revoked"
 #: change awaiting approval — it already happened, and the actor, scope
 #: and investigation it belongs to are already this table's vocabulary.
 EVENT_COCKPIT_SESSION = "cockpit.session"
+#: A browser opened or closed a terminal on a host (CFOP-75). Separate from
+#: cockpit.session, which is what a finished session concluded: this is the
+#: access itself, and it is the row someone asks for afterwards.
+EVENT_COCKPIT_BRIDGE = "cockpit.bridge"
 EVENT_TOKEN_AUTH_FAIL = "token.auth_failure"
 EVENT_LEGACY_TOKEN_USED = "token.legacy_used"
