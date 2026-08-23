@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
 )
@@ -135,6 +136,91 @@ func normalizeOutcome(raw string) string {
 	return "inconclusive"
 }
 
+// maxRawTailPart caps one message's contribution to the tail.
+//
+// Tool results are already capped at 6k by tools.MarshalResult, which is still
+// enough for a single kubectl dump to consume a 4000-char budget on its own and
+// scroll the operator's question off the only record the session left behind.
+// The tail exists to preserve the conversation; a per-message cap is what makes
+// that true no matter how loud one command was.
+const maxRawTailPart = 600
+
+// FlattenToolTurns rewrites tool_use/tool_result turns as ordinary text.
+//
+// Since CFOP's parallel-tool fix the session transcript carries real tool
+// blocks, which is right for continuing a turn and wrong for everything that
+// reads a session afterwards: those readers cannot act on a tool call, and
+// shipping the blocks back to a provider that was handed no tool schemas is a
+// bet on a validation rule that is not worth taking. Flattening keeps the
+// evidence and drops the protocol — what ran and what came back both survive,
+// which SummaryPrompt needs for its "commands" field.
+func FlattenToolTurns(messages []client.Message) []client.Message {
+	out := make([]client.Message, 0, len(messages))
+	for _, m := range messages {
+		switch {
+		case m.Role == "tool":
+			label := "[tool result] "
+			if m.IsError {
+				label = "[tool error] "
+			}
+			out = append(out, client.Message{Role: "user", Content: label + m.Content})
+		case m.Role == "assistant" && len(m.ToolCalls) > 0:
+			out = append(out, client.Message{Role: "assistant", Content: toolCallText(m)})
+		default:
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// toolCallText renders an assistant tool-call turn as the calls it made, so a
+// transcript stripped of tool blocks still says what was run. Narration comes
+// first when there was any — it is the model explaining itself to the operator.
+func toolCallText(m client.Message) string {
+	var lines []string
+	if s := strings.TrimSpace(m.Content); s != "" {
+		lines = append(lines, s)
+	}
+	for _, tc := range m.ToolCalls {
+		if args, err := json.Marshal(tc.Function.Arguments); err == nil {
+			lines = append(lines, fmt.Sprintf("[called %s %s]", tc.Function.Name, args))
+		} else {
+			lines = append(lines, fmt.Sprintf("[called %s]", tc.Function.Name))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// truncateRunes cuts to a rune boundary, so a truncated tool result stored on
+// an investigation is never invalid UTF-8.
+func truncateRunes(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + fmt.Sprintf("… (%d more chars)", len(s)-cut)
+}
+
+// rawTailPart renders one message for the tail, or "" if it is not part of the
+// session. Tool turns are rendered rather than skipped: when the model failed,
+// the commands and their output are most of what a human has left to read.
+func rawTailPart(m client.Message) string {
+	if m.Role == "system" {
+		return ""
+	}
+	body := m.Content
+	if m.Role == "assistant" && len(m.ToolCalls) > 0 {
+		body = toolCallText(m)
+	}
+	if body = strings.TrimSpace(body); body == "" {
+		return ""
+	}
+	return m.Role + ": " + truncateRunes(body, maxRawTailPart)
+}
+
 // RawTail is the fallback record: the last few exchanges, marked as such.
 //
 // "Store the raw tail rather than nothing" is the issue's own instruction, and
@@ -146,11 +232,11 @@ func RawTail(messages []client.Message, maxChars int) string {
 	}
 	var parts []string
 	for i := len(messages) - 1; i >= 0; i-- {
-		m := messages[i]
-		if m.Role == "system" || strings.TrimSpace(m.Content) == "" {
+		part := rawTailPart(messages[i])
+		if part == "" {
 			continue
 		}
-		parts = append(parts, m.Role+": "+m.Content)
+		parts = append(parts, part)
 		total := 0
 		for _, p := range parts {
 			total += len(p)
@@ -179,12 +265,17 @@ func Summarize(ctx context.Context, llm *client.LLMClient, messages []client.Mes
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("nothing to summarize")
 	}
-	turn := append(append([]client.Message{}, messages...),
+	// Flattened, not raw: the transcript carries tool_use/tool_result blocks
+	// now, and this turn is sent with no tool schemas. FlattenToolTurns keeps
+	// the commands and their output as text — which the prompt asks for — while
+	// removing blocks the provider was given no tools to match them against.
+	turn := append(FlattenToolTurns(messages),
 		client.Message{Role: "user", Content: SummaryPrompt})
 
 	// No tools: this turn is a distillation of what already happened, and a
 	// model that reached for a tool here would be starting new work in a
-	// session the operator has just ended.
+	// session the operator has just ended. Flattening above is what makes that
+	// true rather than merely intended — there is nothing left to call.
 	resp, err := llm.Chat(ctx, turn, nil)
 	if err != nil {
 		return nil, err
@@ -198,10 +289,15 @@ func Summarize(ctx context.Context, llm *client.LLMClient, messages []client.Mes
 
 // SessionExchanges counts the human/assistant turns, ignoring system and tool
 // plumbing — the number an operator recognises as "how long was I in there".
+//
+// An assistant turn carrying ToolCalls is a step toward one answer, not an
+// answer, so it is plumbing too. Counting those made one question resolved over
+// three tool rounds read as five exchanges, and left the exchanges == 0 gate in
+// writeBackSession meaning something other than "the operator never asked".
 func SessionExchanges(messages []client.Message) int {
 	n := 0
 	for _, m := range messages {
-		if m.Role == "user" || m.Role == "assistant" {
+		if m.Role == "user" || (m.Role == "assistant" && len(m.ToolCalls) == 0) {
 			n++
 		}
 	}
