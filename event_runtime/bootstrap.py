@@ -10,6 +10,7 @@ from urllib.parse import quote
 # the two consumers of config.yaml cannot drift. `cfshared` is stdlib-only (it
 # imports PyYAML lazily) precisely so this runtime keeps its portable posture.
 from cfshared import config as shared_config
+from cfshared import repos as shared_repos
 
 from .defaults import (
     HostContextProvider,
@@ -302,17 +303,23 @@ def _json_dict_or_none(raw: str | None) -> dict | None:
 
 
 def _load_git_repos(config_path: str | None = None) -> list[dict]:
-    """Load git repo config from env var or YAML config file.
-
-    Precedence:
-      1. ``CFOP_GIT_REPOS_JSON`` env var (inline JSON array)
-      2. ``git.repos`` in the YAML config file
-    """
+    """Load git repo config. See :func:`_load_git_config` for precedence:
+    ``CFOP_GIT_REPOS_JSON`` > the console registry in the database >
+    ``git.repos`` in the YAML config file."""
     return _load_git_config(config_path).get("repos") or []
 
 
 def _load_git_config(config_path: str | None = None) -> dict:
-    """Load and expand the git config block from env var or YAML config file."""
+    """Load and expand the git config block.
+
+    Precedence: ``CFOP_GIT_REPOS_JSON`` > the console-managed registry in the
+    database (CFOP-77) > ``git.repos`` in the YAML config. The database read
+    is best effort — a runtime that cannot reach the DB still enriches alerts
+    from the file rather than losing every repo.
+
+    Note that this resolves at *startup*: a repo linked in the console reaches
+    the agent immediately, but this process picks it up on its next restart.
+    """
     import json as _json
 
     _load_env_file(config_path)
@@ -331,10 +338,59 @@ def _load_git_config(config_path: str | None = None) -> dict:
 
     cfg = _load_root_config(config_path)
     git_cfg = cfg.get("git") or {}
+    repos = git_cfg.get("repos") or []
+    stored = _load_git_repos_from_db(cfg)
+    if stored is not None:
+        repos = stored
     return {
-        "repos": git_cfg.get("repos") or [],
+        "repos": repos,
         "github": git_cfg.get("github") or {},
     }
+
+
+#: The settings read, kept as a constant so agent/test_git_registry.py can
+#: check the table and column against the ORM model that owns them. A wrong
+#: name here does not raise anything a caller sees — it falls open to the YAML
+#: file forever, which looks exactly like the documented "the event runtime
+#: picks a console change up on its next restart" behaviour.
+_SETTINGS_QUERY = "SELECT value FROM agent_settings WHERE key = %s"
+
+
+def _load_git_repos_from_db(cfg: dict) -> list | None:
+    """Read the console-managed repo registry, or None if it cannot be read.
+
+    None means "the console has not taken over the list, or we could not ask" —
+    both resolve to the YAML file, which is the safe answer. An empty list is
+    a different thing (the operator unlinked everything) and is returned as
+    such.
+    """
+    import logging as _logging
+
+    log = _logging.getLogger(__name__)
+    dsn = os.getenv("CFOP_EVENT_RUNTIME_PG_DSN", "").strip() or _build_postgres_dsn(cfg.get("database") or {})
+    if not dsn:
+        return None
+    try:
+        import psycopg2  # noqa: PLC0415 — optional dependency, same as the state sink
+    except ImportError:
+        return None
+    try:
+        # Bounded: this runs before the runtime serves anything, and a DB that
+        # is slow to answer must not hold up alert handling.
+        conn = psycopg2.connect(dsn, connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(_SETTINGS_QUERY, (shared_repos.SETTING_KEY,))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+    except Exception as exc:
+        log.warning("Could not read the repo registry from the database, using config: %s", exc)
+        return None
+    stored = shared_repos.parse_stored(row[0] if row else None)
+    if stored is not None:
+        log.info("Linked repos: %d from the console registry", len(stored))
+    return stored
 
 
 def _load_postgres_sink_config(config_path: str | None = None) -> dict:

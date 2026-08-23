@@ -149,6 +149,7 @@
   <button type="button" class="tab" role="tab" data-tab="users" aria-selected="false">Users</button>
   <button type="button" class="tab" role="tab" data-tab="tokens" aria-selected="false">Tokens</button>
   <button type="button" class="tab" role="tab" data-tab="llm" aria-selected="false">LLM</button>
+  <button type="button" class="tab" role="tab" data-tab="repos" aria-selected="false">Repos</button>
 </nav>
 
 <!-- ── Users ── -->
@@ -301,6 +302,67 @@
   </div>
 </section>
 
+<!-- ── Repos ── -->
+<section class="panel" id="panel-repos" role="tabpanel">
+  <div class="divider">Linked repositories <span class="muted" id="repo-count"></span></div>
+  <div class="section">
+    <p class="muted" style="margin:8px 0 12px">
+      The repos the agent may read while investigating (recent commits, PRs, file
+      contents) and that remediation PRs can target. Saved to the database and applied
+      live — no <code>config.yaml</code> edit and no restart.
+    </p>
+    <div class="card" id="repo-source-card"><div class="muted">Loading…</div></div>
+  </div>
+
+  <div class="divider" id="repo-form-title">Link a repo</div>
+  <div class="section" id="repo-form">
+    <div class="actform" style="flex-direction:column; align-items:stretch; gap:10px">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        <label for="nr-name">name</label>
+        <input id="nr-name" type="text" placeholder="esp-sensor-hub" autocomplete="off" style="min-width:170px">
+        <label for="nr-github">owner/repo</label>
+        <input id="nr-github" type="text" placeholder="aachtenberg/esp-sensor-hub" autocomplete="off" style="min-width:220px">
+        <label for="nr-branch">branch</label>
+        <input id="nr-branch" type="text" placeholder="main" autocomplete="off" style="width:120px">
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        <label for="nr-hosts">hosts</label>
+        <input id="nr-hosts" type="text" placeholder="raspberrypi3, headless-gpu" autocomplete="off" style="min-width:220px">
+        <label for="nr-services">services</label>
+        <input id="nr-services" type="text" placeholder="esp-sensor-hub, mosquitto" autocomplete="off" style="min-width:220px">
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        <label for="nr-path">local path</label>
+        <input id="nr-path" type="text" placeholder="optional — only if a clone lives on this host" autocomplete="off" style="min-width:320px">
+      </div>
+      <div class="muted">
+        hosts and services are how an alert is matched to this repo — an alert about a
+        listed host or service gets that repo's recent commits as context. Leave both
+        empty for a repo you only want the agent to be able to read on request.
+      </div>
+      <div>
+        <button class="chip" id="nr-btn" onclick="saveRepo()">+ Save repo</button>
+        <button class="chip" id="nr-cancel" onclick="resetRepoForm()" hidden>Cancel edit</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="divider">Registry</div>
+  <table>
+    <thead><tr>
+      <th>Name</th><th>GitHub</th><th>Branch</th><th>Hosts</th><th>Services</th><th>Local path</th><th>Actions</th>
+    </tr></thead>
+    <tbody id="repo-rows"></tbody>
+  </table>
+  <div id="repo-empty" class="empty" hidden>No repos linked.</div>
+
+  <div class="divider">config.yaml</div>
+  <div class="section">
+    <p class="muted" id="repo-config-note" style="margin:8px 0 12px">—</p>
+    <div id="repo-config-acts"></div>
+  </div>
+</section>
+
 <div id="toasts"></div>
 
 <script>
@@ -353,7 +415,7 @@ async function api(path, opts){
 let ME = null;
 function isAdmin(){ return !!(ME && (ME.role === 'admin' || ME.auth_disabled)); }
 
-const TABS = ['users','tokens','llm'];
+const TABS = ['users','tokens','llm','repos'];
 function currentTab(){
   const q = new URLSearchParams(location.search).get('tab');
   return TABS.includes(q) ? q : 'users';
@@ -372,6 +434,7 @@ function showTab(tab){
   if(tab === 'llm') loadLlm();
   if(tab === 'users') loadUsers();
   if(tab === 'tokens') loadTokens();
+  if(tab === 'repos') loadRepos();
 }
 document.querySelector('.tabs').addEventListener('click', (e)=>{
   const btn = e.target.closest('.tab');
@@ -898,6 +961,192 @@ async function reloadConfig(){
   toast('config reloaded','ok');
   loadEffective();
   loadProvidersAndSettings();
+}
+
+/* ── Repos ──
+ * The registry the agent's github and git tools are built from. The server
+ * resolves it DB-over-config.yaml and reports which source is live, so this
+ * page never has to guess whether the file still matters.
+ */
+let REPOS = { repos: [], config_repos: [], shadowed: [], source: 'config' };
+let EDITING = null;
+
+function repoField(id){ return document.getElementById(id); }
+function repoFormValues(){
+  return {
+    name: repoField('nr-name').value.trim(),
+    github: repoField('nr-github').value.trim(),
+    branch: repoField('nr-branch').value.trim(),
+    hosts: repoField('nr-hosts').value,
+    services: repoField('nr-services').value,
+    path: repoField('nr-path').value.trim(),
+  };
+}
+function resetRepoForm(){
+  EDITING = null;
+  ['nr-name','nr-github','nr-branch','nr-hosts','nr-services','nr-path'].forEach(id=>{ repoField(id).value=''; });
+  repoField('nr-name').disabled = false;
+  document.getElementById('repo-form-title').textContent = 'Link a repo';
+  document.getElementById('nr-btn').textContent = '+ Save repo';
+  document.getElementById('nr-cancel').hidden = true;
+}
+function editRepo(name){
+  const r = (REPOS.repos || []).find(x => x.name === name);
+  if(!r) return;
+  EDITING = name;
+  repoField('nr-name').value = r.name;
+  // The name is the key the tools address this repo by; changing it here
+  // would add a second entry rather than rename one.
+  repoField('nr-name').disabled = true;
+  repoField('nr-github').value = r.github || '';
+  repoField('nr-branch').value = r.branch || '';
+  repoField('nr-hosts').value = (r.hosts || []).join(', ');
+  repoField('nr-services').value = (r.services || []).join(', ');
+  repoField('nr-path').value = r.path || '';
+  document.getElementById('repo-form-title').textContent = 'Edit ' + r.name;
+  document.getElementById('nr-btn').textContent = 'Save changes';
+  document.getElementById('nr-cancel').hidden = false;
+  document.getElementById('repo-form').scrollIntoView({block:'nearest'});
+}
+function repoRowHtml(r){
+  const cell = (list) => (list && list.length) ? esc(list.join(', ')) : '<span class="muted">—</span>';
+  const acts = isAdmin() ? `<div class="acts">
+      <button class="chip" data-act="edit" data-name="${esc(r.name)}">Edit</button>
+      <button class="chip danger" data-act="rm" data-name="${esc(r.name)}">Remove</button>
+    </div>` : '<span class="muted">—</span>';
+  return `<tr>
+    <td class="mono">${esc(r.name)}${r.has_ssh ? ' ' + badge('ssh','--purple') : ''}</td>
+    <td class="mono">${esc(r.github) || '<span class="muted">—</span>'}</td>
+    <td class="mono">${esc(r.branch) || '<span class="muted">default</span>'}</td>
+    <td>${cell(r.hosts)}</td>
+    <td>${cell(r.services)}</td>
+    <td class="mono muted">${esc(r.path) || '—'}</td>
+    <td>${acts}</td>
+  </tr>
+  <tr class="formrow" id="rf-${esc(r.name)}" hidden><td colspan="7"><div class="formbody"></div></td></tr>`;
+}
+function renderRepos(){
+  const rows = REPOS.repos || [];
+  document.getElementById('repo-rows').innerHTML = rows.map(repoRowHtml).join('');
+  document.getElementById('repo-empty').hidden = rows.length > 0;
+  document.getElementById('repo-count').textContent = rows.length ? `(${rows.length})` : '';
+
+  const fromDb = REPOS.source === 'db';
+  const tokenOk = !!REPOS.github_token_configured;
+  document.getElementById('repo-source-card').innerHTML =
+    `<div class="eff-row"><span>Active list</span>${badge(fromDb ? 'console registry (database)' : 'config.yaml', fromDb ? '--accent' : '--cyan')}</div>` +
+    `<div class="eff-row"><span>GitHub token</span>${badge(tokenOk ? 'configured' : 'missing', tokenOk ? '--accent' : '--red')}</div>` +
+    (tokenOk ? '' : `<div class="muted" style="margin-top:8px">Without a token the repos stay registered but the
+       <code>github_*</code> tools are disabled — set <code>GITHUB_TOKEN</code> in the deployment.</div>`) +
+    (REPOS.db_error ? `<div class="muted" style="margin-top:8px">Could not read the saved registry: ${esc(REPOS.db_error)}</div>` : '');
+
+  const shadowed = REPOS.shadowed || [];
+  const cfgCount = (REPOS.config_repos || []).length;
+  const note = document.getElementById('repo-config-note');
+  if(!fromDb){
+    note.textContent = cfgCount
+      ? `Running on config.yaml's git.repos (${cfgCount} ${cfgCount===1?'entry':'entries'}). The first change here copies that list into the database, and the file stops being consulted.`
+      : 'config.yaml declares no repos. Anything you add here is stored in the database.';
+  } else if(shadowed.length){
+    note.textContent = `config.yaml is not consulted while the console registry is active. It declares ${cfgCount} `
+      + `${cfgCount===1?'entry':'entries'}, and ${shadowed.length} of them ${shadowed.length===1?'is':'are'} `
+      + `not in the list above: ${shadowed.join(', ')}.`;
+  } else {
+    note.textContent = `config.yaml is not consulted while the console registry is active. Everything it declares (${cfgCount}) is also linked here.`;
+  }
+  // Rewritten rather than toggled: the revert confirmation replaces this
+  // box's contents, so a re-render has to be able to put it back.
+  document.getElementById('repo-config-acts').innerHTML =
+    (isAdmin() && fromDb && shadowed.length
+      ? '<button class="chip" id="repo-import-btn" onclick="importRepos()">Import the shadowed entries</button> ' : '')
+    + (isAdmin() && fromDb
+      ? '<button class="chip danger" id="repo-revert-btn" onclick="confirmRevertRepos()">Revert to config.yaml</button>' : '');
+  document.getElementById('repo-form').hidden = !isAdmin();
+  document.getElementById('repo-form-title').hidden = !isAdmin();
+}
+async function loadRepos(){
+  const r = await api('/api/git/repos');
+  if(!r.ok){
+    document.getElementById('repo-rows').innerHTML = '';
+    document.getElementById('repo-empty').hidden = false;
+    document.getElementById('repo-empty').textContent = r.error;
+    if(r.status !== 403) banner(r.error, 'err');
+    return;
+  }
+  REPOS = r.data || REPOS;
+  document.getElementById('repo-empty').textContent = 'No repos linked.';
+  renderRepos();
+}
+function applyRepoPayload(data){
+  if(data && data.repos) REPOS = data;
+  renderRepos();
+}
+async function saveRepo(){
+  const v = repoFormValues();
+  if(!v.name || !v.github){ toast('name and owner/repo are required','err'); return; }
+  const btn = document.getElementById('nr-btn');
+  btn.disabled = true;
+  const r = await api('/api/git/repos', {method:'POST', body: JSON.stringify(v)});
+  btn.disabled = false;
+  if(!r.ok){ toast(r.error, 'err'); return; }
+  toast(EDITING ? `${v.name} updated` : `${v.name} linked`, 'ok');
+  resetRepoForm();
+  applyRepoPayload(r.data);
+}
+function repoFormRow(name){ return document.getElementById('rf-' + name); }
+function confirmRemoveRepo(name){
+  document.querySelectorAll('#repo-rows tr.formrow').forEach(tr=>{ tr.hidden=true; tr.querySelector('.formbody').innerHTML=''; });
+  const tr = repoFormRow(name); if(!tr) return;
+  tr.querySelector('.formbody').innerHTML =
+    `<span class="warn">Unlink ${esc(name)}? The agent loses its commits, PRs and file contents as investigation context.</span>
+     <button class="chip danger" data-act="rm-save" data-name="${esc(name)}">Yes, unlink</button>
+     <button class="chip" data-act="cancel" data-name="${esc(name)}">Cancel</button>`;
+  tr.hidden = false;
+}
+async function removeRepo(name){
+  const r = await api('/api/git/repos/' + encodeURIComponent(name), {method:'DELETE'});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast(name + ' unlinked', 'ok');
+  if(EDITING === name) resetRepoForm();
+  applyRepoPayload(r.data);
+}
+document.getElementById('repo-rows').addEventListener('click', (e)=>{
+  const el = e.target.closest('[data-act]');
+  if(!el) return;
+  const name = el.dataset.name;
+  const act = el.dataset.act;
+  if(act === 'edit') editRepo(name);
+  else if(act === 'rm') confirmRemoveRepo(name);
+  else if(act === 'rm-save') removeRepo(name);
+  else if(act === 'cancel'){ const tr = repoFormRow(name); if(tr){ tr.hidden = true; tr.querySelector('.formbody').innerHTML=''; } }
+});
+async function importRepos(){
+  // Names only. Posting back the entries this page was shown would import
+  // them through the public view, which has already dropped anything the
+  // form cannot render (an ssh block becomes has_ssh) — the server copies
+  // from config.yaml itself.
+  const shadowed = REPOS.shadowed || [];
+  const btn = document.getElementById('repo-import-btn');
+  if(btn) btn.disabled = true;
+  const r = await api('/api/git/repos/import', {method:'POST', body: JSON.stringify({names: shadowed})});
+  if(btn) btn.disabled = false;
+  if(!r.ok){ toast(r.error, 'err'); loadRepos(); return; }
+  const n = ((r.data && r.data.imported) || []).length;
+  toast(n ? `imported ${n} from config.yaml` : 'nothing left to import', 'ok');
+  applyRepoPayload(r.data);
+}
+function confirmRevertRepos(){
+  const box = document.getElementById('repo-config-acts');
+  box.innerHTML = `<span class="warn">Drop the console registry and go back to config.yaml's git.repos?</span>
+    <button class="chip danger" onclick="revertRepos()">Yes, revert</button>
+    <button class="chip" onclick="loadRepos()">Cancel</button>`;
+}
+async function revertRepos(){
+  const r = await api('/api/git/repos/revert', {method:'POST', body:'{}'});
+  if(!r.ok){ toast(r.error,'err'); loadRepos(); return; }
+  toast('reverted to config.yaml','ok');
+  resetRepoForm();
+  applyRepoPayload(r.data);
 }
 
 document.getElementById('llm-backend').addEventListener('change', onBackendChange);

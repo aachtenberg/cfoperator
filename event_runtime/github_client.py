@@ -9,27 +9,25 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Dict, Optional
 
+# Slug validation is re-exported here, not defined here: the console's repo
+# registry validates the same slugs at its API boundary, and cfshared is the
+# layer both this package and the agent already depend on — so the rule lives
+# there and the dependency points host-package -> shared. One definition
+# either way; importers of this module are unaffected.
+from cfshared.repos import (  # noqa: F401
+    REPO_SEGMENT_RE, REPO_SLUG_RE, validate_repo_slug)
+
 logger = logging.getLogger("cfoperator.github_client")
 
 DEFAULT_GITHUB_API_URL = "https://api.github.com"
 DEFAULT_GITHUB_API_VERSION = "2022-11-28"
 RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-REPO_SEGMENT_RE = r"[a-zA-Z0-9](?:[a-zA-Z0-9._-]{0,98}[a-zA-Z0-9])?"
-REPO_SLUG_RE = re.compile(rf"^{REPO_SEGMENT_RE}/{REPO_SEGMENT_RE}$")
-
-
-def validate_repo_slug(slug: str) -> str:
-    """Validate and return an ``owner/repo`` slug."""
-    if not REPO_SLUG_RE.fullmatch(slug):
-        raise ValueError(f"Invalid repo slug: {slug}")
-    return slug
 
 
 class GitHubApiClient:
