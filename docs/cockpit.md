@@ -923,8 +923,15 @@ a fact about this CLI, not about this machine.
 
 ## What the cockpit deliberately is not, yet
 
-- **No agent-side terminal.** The attach needs kubectl or ssh on your machine.
-  A browser cockpit needs a PTY bridge in the agent — CFOP-59.
+- **No browser terminal yet, though the agent can now carry one.** The attach
+  still needs kubectl or ssh on your machine, because nothing in the console
+  speaks to the bridge yet. The server half exists as of CFOP-75: an opt-in
+  listener on its own port (`cockpit.bridge_enabled`, see
+  [config-reference.md](config-reference.md)) that runs the ladder's own
+  `attach_argv` under a PTY and pumps bytes over a websocket. It serves the
+  host tiers only — tier `pod` needs `pods/attach`, which nothing here holds,
+  and that grant is CFOP-59 Phase B. Turning it on today gets you a port and no
+  way to use it; the console drawer is the next piece.
 - **No remediate profile.** There is one cockpit identity and it is read-only.
   A write-capable cockpit waits until something actually needs one.
 - **No reattach after a drop.** Tiers 1 and 2 survive one (the pod and the
