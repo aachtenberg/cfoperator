@@ -95,6 +95,11 @@ REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remedia
 # provider) | degraded (ladder exhausted -> manual/high). CFOP-48: how often
 # each rung rescues a classification, so the ladder is tuned on data.
 REMEDIATION_CLASSIFIER = Counter('cfoperator_remediation_classifier_total', 'needs_action classifier outcomes', ['result'])
+# reason: repeat (identifier fold onto an open row, CFOP-78) |
+# fork_committed (a forked recommendation was rewritten to one action) |
+# fork_stuck (the rewrite refused; the row is capped out of the auto gate).
+REMEDIATION_FOLDED = Counter('cfoperator_remediation_folded_total',
+                             'Rows folded or reshaped before enqueue', ['reason'])
 
 # The classifier prompt's worked example. Deliberately a SAFE object — manual/
 # high, sub-gate confidence, no real repo — because the few-shot failure mode
@@ -171,6 +176,30 @@ _SUMMARY_CONFIDENCE_CAP = 0.5
 _INVESTIGATE_SHAPED = re.compile(
     r'\b(check|verify|confirm|investigate|monitor|look\s+into|examine|'
     r'inspect|capture)\b', re.I)
+# A recommendation offering ALTERNATIVE fixes ("truncate the row, or update the
+# config") — the fork shape nothing downstream can execute (CFOP-78). Matched
+# narrowly: a comma/semicolon before "or" plus an imperative verb after it, or a
+# sentence opening with Alternatively/Either. Deliberately NOT bare " or ":
+# "delete or retarget the rule" is two verbs on ONE target — a wording choice,
+# not a fork — and flagging it would send half the queue through the rewrite.
+_FORK_SHAPED = re.compile(
+    r'(?:,|;)\s+or\s+(?:update|add|remove|delete|set|change|switch|use|'
+    r'configure|increase|decrease|truncate|chunk|restart|scale|migrate|rotate|'
+    r'adjust|modify|patch|upgrade|downgrade|enable|disable|replace|move|'
+    r'retarget|recreate)\b'
+    r'|(?:^|\.\s+)(?:Alternatively|Either)\b')
+
+# Hard identifiers a recommendation names — the things two differently-worded
+# recommendations for the same fix reliably share (CFOP-78). Deliberately only
+# shapes with near-zero prose collision: dotted-quad IPs, UPPER_SNAKE env/config
+# keys (the underscore requirement keeps out STATUS/ERROR/HTTP), and
+# <table>_id <n> row references. Bare hostnames and workload names are NOT
+# extracted: "needs-human" and "grok-4.6" are dash-words too, and a false fold
+# hides a real incident, which is strictly worse than a duplicate row.
+_IDENT_IP = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?\b')
+_IDENT_ENV = re.compile(r'\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b')
+_IDENT_ROW = re.compile(r'\b([A-Za-z][A-Za-z0-9]*_id)\W{0,3}(\d+)')
+
 _HUMAN_ONLY_SHAPED = re.compile(
     r'\b(physically|hardware|power\s+supply|power\s+strip|sd\s+card|'
     r'replace|swap\s+it|wiring|console|hard-?cycle)\b', re.I)
@@ -2718,6 +2747,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # the incident row sits there under the node key. Every caller
             # builds details fresh, so there is no aliasing to worry about.
             details['dedupe_key'] = node_key
+        # CFOP-78: the same problem re-found under different wording folds onto
+        # the open row instead of standing beside it. After the node collapse
+        # on purpose — a NotReady node's symptoms belong to the incident row
+        # first; identifier matching is the tier below that.
+        absorbed_repeat = self._absorb_repeat_remediation(details)
+        if absorbed_repeat:
+            return absorbed_repeat
         payload = {
             'recommendation': str(details.get('recommendation') or ''),
             'rendered_context': str(details.get('report') or '')[:5000],
@@ -3445,9 +3481,23 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             logger.info(f"Investigation #{investigation_id}: inline proposer already opened a PR; "
                         "not enqueuing a second driver for the same fix")
             return None
+        # CFOP-78: a fork-shaped recommendation commits to one action BEFORE
+        # anything downstream reads it — the classifier then classifies the
+        # committed action, and the dedupe key hashes it, instead of both
+        # reverse-engineering a fork.
+        rec, still_forked = self._commit_forked_recommendation(trigger, rec,
+                                                               report=response_text)
         hints = self._classify_needs_action_recommendation(trigger, rec, alert_info,
                                                            report=response_text)
         details = dict(hints)
+        if still_forked:
+            # The retry would not commit, so nothing downstream may treat this
+            # row as executable: confidence None can never clear the auto gate
+            # (live row #72 was classified gitops-patch at 0.80 — one 'low'
+            # risk away from the executor opening a PR against a repo that had
+            # nothing to do with the fix). The class is left honest; only the
+            # gate is barred.
+            details['confidence'] = None
         if not details.get('host'):
             ai = alert_info or {}
             labels = ai.get('labels') or (ai.get('details') or {}).get('labels') or {}
@@ -3493,6 +3543,116 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         """
         slug = re.sub(r'[^a-z0-9]+', '-', f"{host} {title}".lower()).strip('-')[:80]
         return f"inv-dispatch-{slug}"
+
+    @staticmethod
+    def _extract_remediation_identifiers(text) -> frozenset:
+        """The hard identifiers a recommendation names, as a set.
+
+        Empty means "this text names nothing matchable" — and the caller must
+        treat that as "do not fold", never as "matches everything".
+        """
+        raw = str(text or '')
+        ids = set()
+        for match in _IDENT_IP.finditer(raw):
+            ids.add(match.group(1))
+        for match in _IDENT_ENV.finditer(raw):
+            ids.add(match.group(0))
+        for match in _IDENT_ROW.finditer(raw):
+            ids.add(f"{match.group(1).lower()}:{match.group(2)}")
+        return frozenset(ids)
+
+    def _absorb_repeat_remediation(self, details: Dict[str, Any]) -> Optional[int]:
+        """Fold a re-found problem onto the open row already covering it.
+
+        The dedupe key's prose-hash tier misses any rewording — six live rows
+        for three problems on 2026-08-23, across two models — so this matches
+        on what rewordings reliably share: the hard identifiers the
+        recommendation names. Containment either way counts as the same
+        problem; disjoint or empty sets never fold. Same posture as the
+        CFOP-71 node collapse this sits beside: the fold happens ABOVE the
+        key, is recorded visibly on the surviving row, and FAILS OPEN — worst
+        case a duplicate row, which is today's behaviour.
+        """
+        try:
+            new_ids = self._extract_remediation_identifiers(details.get('recommendation'))
+            if not new_ids:
+                return None
+            for row in self.kb.list_open_remediations(limit=100):
+                payload = row.get('payload') if isinstance(row.get('payload'), dict) else {}
+                # Exact-key repeats already have a working path (the KB's
+                # enqueue-side suppression + _open_remediation_for_key); this
+                # fold exists for the rows that path cannot see.
+                if payload.get('dedupe_key') and \
+                        payload.get('dedupe_key') == details.get('dedupe_key'):
+                    continue
+                row_ids = self._extract_remediation_identifiers(payload.get('recommendation'))
+                if row_ids and (new_ids <= row_ids or row_ids <= new_ids):
+                    rid = row.get('id')
+                    summary = str(details.get('trigger')
+                                  or details.get('recommendation') or '')[:200]
+                    logger.info(f"Folding repeat remediation onto open #{rid} "
+                                f"(shared identifiers: {sorted(new_ids & row_ids)})")
+                    self.kb.record_remediation_absorbed(rid, summary)
+                    REMEDIATION_FOLDED.labels(reason='repeat').inc()
+                    return rid
+        except Exception as e:
+            logger.warning(f"Repeat-remediation fold failed (enqueuing as-is): {e}")
+        return None
+
+    def _commit_forked_recommendation(self, trigger: str, recommendation: str,
+                                      report: str = '') -> tuple:
+        """Make a fork-shaped recommendation commit to one action.
+
+        "Truncate the row, or update the config to a larger model" is not
+        executable by anything — the dedupe key hashes it, the classifier
+        keyword-matches it, and a human is handed the fork (live row #72,
+        whose casual second option would have invalidated every stored
+        embedding). One retry while the model is still in the loop beats
+        parking it: quote the fork back and require a single action.
+
+        Returns ``(text, still_forked)``. On any failure the original text
+        comes back with ``still_forked=True`` — the caller caps that row out
+        of the auto gate rather than trusting a fork to the executor.
+        """
+        rec = str(recommendation or '').strip()
+        if not _FORK_SHAPED.search(rec):
+            return rec, False
+        findings_part = (f"Investigation findings excerpt:\n{str(report)[:600]}\n"
+                         if str(report or '').strip() else "")
+        messages = [{'role': 'user', 'content': (
+            f"Alert: {str(trigger)[:300]}\n"
+            f"{findings_part}"
+            f"Recommendation offering alternatives: {rec[:800]}\n\n"
+            "Commit to one action.")}]
+        system_prompt = (
+            "An infrastructure investigation produced a recommendation that "
+            "offers MORE THAN ONE alternative fix. A remediation queue can "
+            "execute exactly one action, so a fork is not actionable by "
+            "anything downstream. Choose the single safest, most easily "
+            "reversed of the alternatives ALREADY OFFERED — never invent a "
+            "new one — and restate it as ONE imperative recommendation of at "
+            "most three sentences, naming the concrete target (the file, key, "
+            "resource or row to change). Reply with ONLY the rewritten "
+            "recommendation text: no preamble, no alternatives, no 'or'."
+        )
+        try:
+            result = self._chat_with_tools_with_fallback(
+                messages=messages, system_context=system_prompt,
+                max_iterations=1,
+            )
+            committed = str(result.get('response') or '').strip()
+            if committed and len(committed) <= 1200 \
+                    and not _FORK_SHAPED.search(committed):
+                logger.info(f"Forked recommendation committed to one action: "
+                            f"{committed[:160]}")
+                REMEDIATION_FOLDED.labels(reason='fork_committed').inc()
+                return committed, False
+            logger.info(f"Fork commit retry still not a single action: "
+                        f"{committed[:160]}")
+        except Exception as e:
+            logger.warning(f"Fork commit retry failed: {e}")
+        REMEDIATION_FOLDED.labels(reason='fork_stuck').inc()
+        return rec, True
 
     def _record_absorbed_symptom(self, node_key: str,
                                  details: Dict[str, Any]) -> Optional[int]:
