@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -70,7 +71,7 @@ func wbAgent(t *testing.T, calls *[]wbCall) *httptest.Server {
 func stubSummarizer(t *testing.T, s *cfoperator.SessionSummary, err error) {
 	t.Helper()
 	orig := summarizeSession
-	summarizeSession = func(_ *client.LLMClient, _ []client.Message) (*cfoperator.SessionSummary, error) {
+	summarizeSession = func(_ context.Context, _ *client.LLMClient, _ []client.Message) (*cfoperator.SessionSummary, error) {
 		return s, err
 	}
 	t.Cleanup(func() { summarizeSession = orig })

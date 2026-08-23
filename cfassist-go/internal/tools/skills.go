@@ -13,6 +13,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -62,7 +63,7 @@ func (r *Registry) AddSkills(all []skills.Skill) {
 				},
 			},
 		},
-		execute: func(args map[string]any) map[string]any {
+		execute: func(ctx context.Context, args map[string]any) map[string]any {
 			return skillExecute(all, args)
 		},
 	}

@@ -70,7 +70,7 @@ func writeBackSession(cmd *cobra.Command, investigationID int, url, token string
 	}
 
 	var learning *cfoperator.Learning
-	summary, err := summarizeSession(llm, messages)
+	summary, err := summarizeSession(cmd.Context(), llm, messages)
 	if err != nil {
 		// The issue's own instruction: store the raw tail rather than nothing.
 		// A session's only trace should not depend on a local model having a

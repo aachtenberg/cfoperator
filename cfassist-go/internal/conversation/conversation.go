@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,13 +13,18 @@ import (
 
 // Result holds the outcome of a conversation turn.
 type Result struct {
-	Response        string
-	ToolCalls       int
-	InputTokens     int
-	OutputTokens    int
+	Response         string
+	ToolCalls        int
+	InputTokens      int
+	OutputTokens     int
 	LastPromptTokens int // tokens in the last prompt (= current context usage)
-	Latency         time.Duration
-	Error           string
+	Latency          time.Duration
+	Error            string
+
+	// Cancelled marks a turn the operator stopped. It is not an Error: the
+	// tool calls already made and shown are real work, and reporting a
+	// deliberate interrupt in red teaches operators not to use it.
+	Cancelled bool
 }
 
 // Output is called during a conversation to report what's happening.
@@ -35,6 +41,7 @@ type Output interface {
 // Run executes a conversation turn with tool-calling loop.
 // Uses non-streaming for reliable tool call parsing with Ollama.
 func Run(
+	ctx context.Context,
 	llm *client.LLMClient,
 	toolReg *tools.Registry,
 	output Output,
@@ -56,12 +63,22 @@ func Run(
 	start := time.Now()
 
 	for i := 0; i < maxIterations; i++ {
+		// Checked at the top of every iteration, not only around the calls that
+		// block: a turn that has been told to stop should not start a new round
+		// of work no matter how quickly the last one returned.
+		if ctx.Err() != nil {
+			return cancelled(&result, start), fullMessages
+		}
+
 		output.ShowThinking()
 
-		resp, err := chatWithRetry(llm, output, fullMessages, toolSchemas)
+		resp, err := chatWithRetry(ctx, llm, output, fullMessages, toolSchemas)
 		output.ClearThinking()
 
 		if err != nil {
+			if ctx.Err() != nil {
+				return cancelled(&result, start), fullMessages
+			}
 			output.ShowError(fmt.Sprintf("LLM request failed: %v", err), hintFor(err))
 			result.Error = err.Error()
 			result.Latency = time.Since(start)
@@ -79,7 +96,7 @@ func Run(
 			toolArgs := tc.Function.Arguments
 
 			output.ShowToolCall(toolName, toolArgs)
-			toolResult := toolReg.Execute(toolName, toolArgs)
+			toolResult := toolReg.Execute(ctx, toolName, toolArgs)
 			output.ShowToolResult(toolName, toolResult)
 			result.ToolCalls++
 
@@ -144,15 +161,24 @@ var maxRetryAfter = 15 * time.Second
 // and a silent retry loop is how a degraded provider stays invisible until it
 // fails outright.
 func chatWithRetry(
+	ctx context.Context,
 	llm *client.LLMClient,
 	output Output,
 	messages []client.Message,
 	toolSchemas []client.ToolSchema,
 ) (*client.Response, error) {
 	for attempt := 1; ; attempt++ {
-		resp, err := llm.Chat(messages, toolSchemas)
+		resp, err := llm.Chat(ctx, messages, toolSchemas)
 		if err == nil {
 			return resp, nil
+		}
+
+		// A cancelled request surfaces as a transport failure, which Retryable
+		// calls retryable — correctly, for a dropped connection. Here it would
+		// mean answering the operator's stop with two more requests, so the
+		// context is asked first and wins.
+		if ctx.Err() != nil {
+			return nil, err
 		}
 
 		var apiErr *client.APIError
@@ -178,9 +204,24 @@ func chatWithRetry(
 		output.ClearThinking()
 		output.ShowWarning(fmt.Sprintf("%s%s — retrying (%d of %d)",
 			apiErr.Summary(), waited, attempt+1, maxLLMAttempts))
-		time.Sleep(delay)
+
+		// Waiting out a backoff is still waiting. Sleeping through a cancel
+		// would make Ctrl+C feel broken for up to the cap.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
 		output.ShowThinking()
 	}
+}
+
+// cancelled finalises a turn the operator stopped, keeping whatever the turn
+// already produced.
+func cancelled(result *Result, start time.Time) Result {
+	result.Cancelled = true
+	result.Latency = time.Since(start)
+	return *result
 }
 
 // hintFor asks the provider error what an operator should do about it, falling

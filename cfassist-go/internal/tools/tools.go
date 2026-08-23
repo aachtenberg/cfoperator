@@ -30,7 +30,7 @@ type Registry struct {
 
 type tool struct {
 	schema  client.ToolSchema
-	execute func(args map[string]any) map[string]any
+	execute func(ctx context.Context, args map[string]any) map[string]any
 	timeout int
 }
 
@@ -66,8 +66,8 @@ func New(cfg *config.Config) *Registry {
 					},
 				},
 			},
-			execute: func(args map[string]any) map[string]any {
-				return bashExecute(args, bashTimeout)
+			execute: func(ctx context.Context, args map[string]any) map[string]any {
+				return bashExecute(ctx, args, bashTimeout)
 			},
 			timeout: bashTimeout,
 		}
@@ -98,7 +98,7 @@ func New(cfg *config.Config) *Registry {
 					},
 				},
 			},
-			execute: func(args map[string]any) map[string]any {
+			execute: func(ctx context.Context, args map[string]any) map[string]any {
 				return readFileExecute(args, maxLines)
 			},
 		}
@@ -129,7 +129,7 @@ func New(cfg *config.Config) *Registry {
 				},
 			},
 		},
-		execute: func(args map[string]any) map[string]any {
+		execute: func(ctx context.Context, args map[string]any) map[string]any {
 			return searchMemoryExecute(args, memDir)
 		},
 	}
@@ -148,7 +148,7 @@ func New(cfg *config.Config) *Registry {
 				},
 			},
 		},
-		execute: func(args map[string]any) map[string]any {
+		execute: func(ctx context.Context, args map[string]any) map[string]any {
 			return r.listToolsExecute()
 		},
 	}
@@ -166,15 +166,20 @@ func (r *Registry) GetSchemas() []client.ToolSchema {
 }
 
 // Execute runs a tool by name with the given arguments.
-func (r *Registry) Execute(name string, args map[string]any) map[string]any {
+//
+// The context is the caller's, not a fresh Background: a tool call is the part
+// of a turn most likely to be running when an operator gives up on it, and a
+// full-filesystem grep that ignores the cancel keeps the session hostage for
+// its whole timeout (CFOP-76).
+func (r *Registry) Execute(ctx context.Context, name string, args map[string]any) map[string]any {
 	t, ok := r.tools[name]
 	if !ok {
 		return map[string]any{"error": fmt.Sprintf("unknown tool: %s", name)}
 	}
-	return t.execute(args)
+	return t.execute(ctx, args)
 }
 
-func bashExecute(args map[string]any, defaultTimeout int) map[string]any {
+func bashExecute(ctx context.Context, args map[string]any, defaultTimeout int) map[string]any {
 	command, _ := args["command"].(string)
 	if command == "" {
 		return map[string]any{"error": "no command provided"}
@@ -185,7 +190,7 @@ func bashExecute(args map[string]any, defaultTimeout int) map[string]any {
 		timeout = int(t)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "sh", "-c", wrapNonInteractiveCommand(command))
@@ -199,6 +204,11 @@ func bashExecute(args map[string]any, defaultTimeout int) map[string]any {
 	// Prevent commands from hanging on stdin or the controlling TTY.
 	cmd.Stdin = nil
 	cmd.SysProcAttr = detachedProcessAttrs()
+	// CommandContext's default cancel kills only the shell. Reach the whole
+	// group instead, and cap how long Wait will sit on an output pipe a
+	// survivor is still holding, so cancelling always returns.
+	cmd.Cancel = func() error { return killProcessGroup(cmd.Process) }
+	cmd.WaitDelay = 2 * time.Second
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -208,6 +218,9 @@ func bashExecute(args map[string]any, defaultTimeout int) map[string]any {
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return map[string]any{"error": fmt.Sprintf("command timed out after %ds", timeout)}
+		}
+		if ctx.Err() == context.Canceled {
+			return map[string]any{"error": "cancelled"}
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()

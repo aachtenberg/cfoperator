@@ -9,6 +9,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -96,7 +97,7 @@ func (r *Registry) AddCFOperator(api *cfoperator.Client) {
 				},
 			},
 		},
-		execute: func(args map[string]any) map[string]any {
+		execute: func(ctx context.Context, args map[string]any) map[string]any {
 			return cfoperatorExecute(api, args)
 		},
 	}

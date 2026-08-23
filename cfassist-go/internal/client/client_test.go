@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -206,7 +207,7 @@ func TestOllamaChat(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 
-	resp, err := c.Chat(messages, nil)
+	resp, err := c.Chat(context.Background(), messages, nil)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestOllamaChatWithToolCall(t *testing.T) {
 	defer server.Close()
 
 	c := New("ollama", server.URL, "model", 0.7, "")
-	resp, err := c.Chat([]Message{{Role: "user", Content: "hostname?"}}, nil)
+	resp, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hostname?"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestOpenAIChat(t *testing.T) {
 	defer server.Close()
 
 	c := New("openai", server.URL, "gpt-4o", 0.5, "test-key")
-	resp, err := c.Chat([]Message{{Role: "user", Content: "hi"}}, nil)
+	resp, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -326,7 +327,7 @@ func TestOpenAIChatWithToolCall(t *testing.T) {
 	defer server.Close()
 
 	c := New("openai", server.URL, "gpt-4o", 0.7, "key")
-	resp, err := c.Chat([]Message{{Role: "user", Content: "list files"}}, nil)
+	resp, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "list files"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -353,7 +354,7 @@ func TestOpenAIChatEmptyChoices(t *testing.T) {
 	defer server.Close()
 
 	c := New("openai", server.URL, "model", 0.7, "key")
-	resp, err := c.Chat([]Message{{Role: "user", Content: "hi"}}, nil)
+	resp, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -372,7 +373,7 @@ func TestChatHTTPError(t *testing.T) {
 	// Test all providers
 	for _, provider := range []string{"ollama", "openai", "anthropic"} {
 		c := New(provider, server.URL, "model", 0.7, "key")
-		_, err := c.Chat([]Message{{Role: "user", Content: "hi"}}, nil)
+		_, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil)
 		if err == nil {
 			t.Errorf("%s: expected error for HTTP 400", provider)
 		}
@@ -433,7 +434,7 @@ func TestAnthropicChat(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 
-	resp, err := c.Chat(messages, nil)
+	resp, err := c.Chat(context.Background(), messages, nil)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -476,7 +477,7 @@ func TestAnthropicChatWithToolCall(t *testing.T) {
 	defer server.Close()
 
 	c := New("anthropic", server.URL, "claude-sonnet-4-20250514", 0.7, "key")
-	resp, err := c.Chat([]Message{{Role: "user", Content: "hostname?"}}, nil)
+	resp, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hostname?"}}, nil)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -584,7 +585,7 @@ func TestAnthropicChatToolSchemaConversion(t *testing.T) {
 		},
 	}
 
-	_, err := c.Chat([]Message{{Role: "user", Content: "test"}}, tools)
+	_, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "test"}}, tools)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}

@@ -232,7 +232,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	fmt.Println(briefing)
 
 	if question != "" {
-		return runNonInteractive(cfg, llm, toolReg, systemPrompt, question)
+		return runNonInteractive(cmd.Context(), cfg, llm, toolReg, systemPrompt, question)
 	}
 
 	// What the status bar and the scrollback show for the life of the session.

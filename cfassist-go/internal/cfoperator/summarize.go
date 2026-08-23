@@ -14,6 +14,7 @@
 package cfoperator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -174,7 +175,7 @@ func RawTail(messages []client.Message, maxChars int) string {
 // The transcript is passed as the conversation it already is, with the prompt
 // appended as a final user turn: the model has the context loaded, and
 // re-stating it as one giant user message would both cost more and read worse.
-func Summarize(llm *client.LLMClient, messages []client.Message) (*SessionSummary, error) {
+func Summarize(ctx context.Context, llm *client.LLMClient, messages []client.Message) (*SessionSummary, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("nothing to summarize")
 	}
@@ -184,7 +185,7 @@ func Summarize(llm *client.LLMClient, messages []client.Message) (*SessionSummar
 	// No tools: this turn is a distillation of what already happened, and a
 	// model that reached for a tool here would be starting new work in a
 	// session the operator has just ended.
-	resp, err := llm.Chat(turn, nil)
+	resp, err := llm.Chat(ctx, turn, nil)
 	if err != nil {
 		return nil, err
 	}

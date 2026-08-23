@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -34,11 +35,12 @@ func (o *recordingOutput) ShowError(message string, hint string) {
 
 // reply is one scripted turn: either an HTTP failure, or a completion.
 type reply struct {
-	status     int    // non-200 to fail this attempt
-	body       string // failure body
-	retryAfter string // Retry-After header to send with a failure
-	content    string // assistant text, when status is 0/200
-	toolName   string // when set, the completion is a tool call instead
+	status     int           // non-200 to fail this attempt
+	body       string        // failure body
+	retryAfter string        // Retry-After header to send with a failure
+	delay      time.Duration // how long the handler stalls before answering
+	content    string        // assistant text, when status is 0/200
+	toolName   string        // when set, the completion is a tool call instead
 	toolArgs   string
 }
 
@@ -46,6 +48,10 @@ type scriptedServer struct {
 	*httptest.Server
 	mu       sync.Mutex
 	requests int
+	// closed releases any stalled handler at teardown. httptest's Close waits
+	// for outstanding handlers, so without it a test that cancels mid-stall
+	// still pays the full stall before it can finish.
+	closed chan struct{}
 }
 
 // newScriptedServer replays replies in order. Once the script runs out the last
@@ -53,7 +59,7 @@ type scriptedServer struct {
 // attempts the code under test will make.
 func newScriptedServer(t *testing.T, replies []reply) *scriptedServer {
 	t.Helper()
-	s := &scriptedServer{}
+	s := &scriptedServer{closed: make(chan struct{})}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		idx := s.requests
@@ -64,6 +70,19 @@ func newScriptedServer(t *testing.T, replies []reply) *scriptedServer {
 			idx = len(replies) - 1
 		}
 		rep := replies[idx]
+
+		if rep.delay > 0 {
+			// Stall like a slow model, but give up if the client goes away or
+			// the test ends — otherwise a cancellation test waits for the
+			// handler rather than for the code under test.
+			select {
+			case <-time.After(rep.delay):
+			case <-r.Context().Done():
+				return
+			case <-s.closed:
+				return
+			}
+		}
 
 		if rep.status != 0 && rep.status != http.StatusOK {
 			if rep.retryAfter != "" {
@@ -94,7 +113,10 @@ func newScriptedServer(t *testing.T, replies []reply) *scriptedServer {
 			"usage":   map[string]any{"prompt_tokens": 10, "completion_tokens": 5},
 		})
 	}))
-	t.Cleanup(s.Close)
+	t.Cleanup(func() {
+		close(s.closed)
+		s.Close()
+	})
 	return s
 }
 
@@ -118,7 +140,7 @@ func runAgainst(t *testing.T, s *scriptedServer, prompt string) (Result, *record
 	cfg.Memory.Directory = t.TempDir()
 	output := &recordingOutput{}
 
-	result, _ := Run(llm, tools.New(cfg), output, []client.Message{
+	result, _ := Run(context.Background(), llm, tools.New(cfg), output, []client.Message{
 		{Role: "user", Content: prompt},
 	}, "You are a test assistant.", 10)
 

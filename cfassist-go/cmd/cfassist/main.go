@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/cfoperator"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
@@ -56,7 +59,12 @@ Pipe data in for analysis mode.`,
 
 	rootCmd.AddCommand(newAttachCmd())
 
-	if err := rootCmd.Execute(); err != nil {
+	// Ctrl+C cancels the work rather than only killing the process, so a
+	// one-shot or piped run stops on the same key the TUI uses (CFOP-76).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -168,12 +176,12 @@ func run(cmd *cobra.Command, args []string) error {
 			strings.TrimSpace(string(pipedData)), question,
 		)
 
-		return runNonInteractive(cfg, llm, toolReg, systemPrompt, userInput)
+		return runNonInteractive(cmd.Context(), cfg, llm, toolReg, systemPrompt, userInput)
 	}
 
 	// --- One-shot mode ---
 	if question != "" {
-		return runNonInteractive(cfg, llm, toolReg, systemPrompt, question)
+		return runNonInteractive(cmd.Context(), cfg, llm, toolReg, systemPrompt, question)
 	}
 
 	// --- TUI mode ---
@@ -189,13 +197,13 @@ func run(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runNonInteractive(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt, question string) error {
+func runNonInteractive(ctx context.Context, cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt, question string) error {
 	messages := []client.Message{
 		{Role: "user", Content: question},
 	}
 
 	out := &consoleOutput{}
-	result, msgs := conversation.Run(llm, toolReg, out, messages, systemPrompt, cfg.MaxToolIterations)
+	result, msgs := conversation.Run(ctx, llm, toolReg, out, messages, systemPrompt, cfg.MaxToolIterations)
 
 	// Save conversation to memory
 	if len(msgs) > 0 {
@@ -203,6 +211,10 @@ func runNonInteractive(cfg *config.Config, llm *client.LLMClient, toolReg *tools
 		memory.Cleanup(cfg.Memory.Directory, cfg.Memory.MaxConversations)
 	}
 
+	if result.Cancelled {
+		fmt.Fprintln(os.Stderr, "stopped.")
+		return nil
+	}
 	if result.Error != "" {
 		return fmt.Errorf("conversation failed: %s", result.Error)
 	}

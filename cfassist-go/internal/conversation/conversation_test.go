@@ -1,6 +1,7 @@
 package conversation
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -22,13 +23,15 @@ type mockOutput struct {
 	warnings      []string
 }
 
-func (o *mockOutput) ShowThinking()                                    { o.thinkingCount++ }
-func (o *mockOutput) ClearThinking()                                   {}
-func (o *mockOutput) ShowToolCall(name string, args map[string]any)    { o.toolCalls = append(o.toolCalls, name) }
+func (o *mockOutput) ShowThinking()  { o.thinkingCount++ }
+func (o *mockOutput) ClearThinking() {}
+func (o *mockOutput) ShowToolCall(name string, args map[string]any) {
+	o.toolCalls = append(o.toolCalls, name)
+}
 func (o *mockOutput) ShowToolResult(name string, result map[string]any) {}
-func (o *mockOutput) ShowResponse(text string)                         { o.responses = append(o.responses, text) }
-func (o *mockOutput) ShowError(message string, hint string)            { o.errors = append(o.errors, message) }
-func (o *mockOutput) ShowWarning(message string)                       { o.warnings = append(o.warnings, message) }
+func (o *mockOutput) ShowResponse(text string)                          { o.responses = append(o.responses, text) }
+func (o *mockOutput) ShowError(message string, hint string)             { o.errors = append(o.errors, message) }
+func (o *mockOutput) ShowWarning(message string)                        { o.warnings = append(o.warnings, message) }
 
 // --- ParseToolArgs tests ---
 
@@ -166,7 +169,7 @@ func TestRunSimpleResponse(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 
-	result, _ := Run(llm, toolReg, output, messages, "You are a test assistant.", 10)
+	result, _ := Run(context.Background(), llm, toolReg, output, messages, "You are a test assistant.", 10)
 
 	if result.Error != "" {
 		t.Fatalf("unexpected error: %s", result.Error)
@@ -219,7 +222,7 @@ func TestRunWithToolCall(t *testing.T) {
 		{Role: "user", Content: "run echo test"},
 	}
 
-	result, _ := Run(llm, toolReg, output, messages, "You are a test assistant.", 10)
+	result, _ := Run(context.Background(), llm, toolReg, output, messages, "You are a test assistant.", 10)
 
 	if result.Error != "" {
 		t.Fatalf("unexpected error: %s", result.Error)
@@ -259,7 +262,7 @@ func TestRunMaxIterations(t *testing.T) {
 		{Role: "user", Content: "loop forever"},
 	}
 
-	result, _ := Run(llm, toolReg, output, messages, "test", 3)
+	result, _ := Run(context.Background(), llm, toolReg, output, messages, "test", 3)
 
 	if result.ToolCalls != 3 {
 		t.Errorf("ToolCalls = %d, want 3 (max)", result.ToolCalls)
@@ -283,7 +286,7 @@ func TestRunLLMError(t *testing.T) {
 		{Role: "user", Content: "hello"},
 	}
 
-	result, _ := Run(llm, toolReg, output, messages, "test", 10)
+	result, _ := Run(context.Background(), llm, toolReg, output, messages, "test", 10)
 
 	if result.Error == "" {
 		t.Error("expected error from failed LLM")
@@ -305,7 +308,7 @@ func TestRunDefaultMaxIterations(t *testing.T) {
 	toolReg := tools.New(cfg)
 	output := &mockOutput{}
 
-	result, _ := Run(llm, toolReg, output, []client.Message{{Role: "user", Content: "hi"}}, "test", 0)
+	result, _ := Run(context.Background(), llm, toolReg, output, []client.Message{{Role: "user", Content: "hi"}}, "test", 0)
 	if result.Error != "" {
 		t.Errorf("unexpected error: %s", result.Error)
 	}
