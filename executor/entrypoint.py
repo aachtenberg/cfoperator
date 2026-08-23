@@ -47,7 +47,7 @@ logger = logging.getLogger("cfop-executor")
 # diff, so falling through would burn two LLM passes to say "model produced no
 # applicable diff". Remove a class from here in the change that gives it a
 # runner, never before (CFOP-61).
-_NO_EXECUTOR_PATH = ("k8s-imperative",)
+_NO_EXECUTOR_PATH = ("k8s-imperative", "data-fix", "external-system")
 
 
 def load_work_order(env: Dict[str, str]) -> Dict[str, Any]:
@@ -231,9 +231,9 @@ def run(env: Dict[str, str]) -> Dict[str, Any]:
         return build_completion_payload(
             work_order, "needs-human", None,
             f"no executor path for remediation_class '{rclass}': nothing here "
-            "can run a one-off cluster verb. Apply it by hand and resolve the "
-            "row, or reclassify it gitops-patch/k8s-action if the fix can be "
-            "written as a manifest change.", None)
+            "can apply this class. Apply it by hand and resolve the row, or "
+            "reclassify it gitops-patch/k8s-action if the fix can be written "
+            "as a manifest change.", None)
     return run_gitops(env, work_order)
 
 

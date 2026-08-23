@@ -233,9 +233,208 @@ _REMEDIATION_CLASS_RUBRIC = (
     "for a human. Choose it anyway when it is the honest answer; a wrong "
     "k8s-action wastes an executor run and still parks.\n"
     "- node-action: a host change over ssh/ansible (DNS, files, systemd).\n"
+    "- data-fix: a change to a database row (UPDATE/DELETE/truncate). Real "
+    "and often the honest answer, but nothing executes it today: it parks "
+    "for a human. Do not relabel it gitops-patch to make it look runnable.\n"
+    "- external-system: a change in a system we do not operate (Cloudflare "
+    "dashboard, a vendor console, DNS at the registrar). Parks for a human. "
+    "Choose it when the work is there, not in our GitOps repo or cluster.\n"
     "- manual: genuinely needs a human's hands or judgement (hardware, wiring, "
     "a risky decision) — NOT something you could investigate first.\n"
 )
+
+# CFOP-80: investigation kinds are not queue classes. Mapped at enqueue.
+# Unknown kind → manual (never salvage a class from a typo).
+_FIX_KIND_TO_CLASS = {
+    'gitops-manifest': 'gitops-patch',
+    'k8s-object': 'k8s-action',
+    'k8s-imperative': 'k8s-imperative',
+    'host': 'node-action',
+    'database-row': 'data-fix',
+    'external-system': 'external-system',
+}
+
+_FIX_JSON_SCHEMA = (
+    '{"targets": [{"kind": "gitops-manifest|k8s-object|k8s-imperative|'
+    'host|database-row|external-system", "id": "path, name, or host", '
+    '"repo": "owner/name or omit"}], "steps": ["ordered action"], '
+    '"verify": {"command": "check", "expect": "success signal"}, '
+    '"rejected": [{"alternative": "what you considered", '
+    '"why_not": "why not"}], "risk": "low|med|high"}'
+)
+
+
+def _class_from_fix_kind(kind) -> str:
+    return _FIX_KIND_TO_CLASS.get(str(kind or '').strip().lower(), 'manual')
+
+
+def _json_object_at(text: str, start: int = 0):
+    """Parse one JSON object at/after start, or None. Never salvage."""
+    brace = text.find('{', start)
+    if brace == -1:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text[brace:])
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _validate_structured_fix(obj: dict) -> Optional[Dict[str, Any]]:
+    """Schema check: parse-or-None, never fill in missing required fields."""
+    if not isinstance(obj, dict):
+        return None
+    targets = obj.get('targets')
+    if not isinstance(targets, list) or not targets:
+        return None
+    clean_targets = []
+    for t in targets:
+        if not isinstance(t, dict):
+            return None
+        kind = str(t.get('kind') or '').strip().lower()
+        tid = str(t.get('id') or '').strip()
+        if not kind or not tid:
+            return None
+        item = {'kind': kind, 'id': tid}
+        repo = t.get('repo')
+        if repo is not None and str(repo).strip():
+            item['repo'] = str(repo).strip()
+        clean_targets.append(item)
+    steps = obj.get('steps')
+    if not isinstance(steps, list) or not steps:
+        return None
+    if not all(isinstance(s, str) and s.strip() for s in steps):
+        return None
+    verify = obj.get('verify')
+    if not isinstance(verify, dict):
+        return None
+    command = str(verify.get('command') or '').strip()
+    expect = str(verify.get('expect') or '').strip()
+    if not command or not expect:
+        return None
+    rejected = obj.get('rejected')
+    if rejected is None:
+        rejected = []
+    if not isinstance(rejected, list):
+        return None
+    clean_rej = []
+    for r in rejected:
+        if not isinstance(r, dict):
+            return None
+        alt = str(r.get('alternative') or '').strip()
+        why = str(r.get('why_not') or '').strip()
+        if not alt or not why:
+            return None
+        clean_rej.append({'alternative': alt, 'why_not': why})
+    out = {
+        'targets': clean_targets,
+        'steps': [s.strip() for s in steps],
+        'verify': {'command': command, 'expect': expect},
+        'rejected': clean_rej,
+    }
+    risk = obj.get('risk')
+    if risk is not None:
+        risk = str(risk).strip().lower()
+        if risk not in ('low', 'med', 'high'):
+            return None
+        out['risk'] = risk
+    return out
+
+
+def _parse_structured_fix(response_text: str) -> Optional[Dict[str, Any]]:
+    """Pull a FIX object from an investigation (or nudge) reply.
+
+    Looks for ``FIX:`` JSON or a fenced json block after STATUS. A nudge
+    reply may be the object alone. Malformed → None; never salvage.
+    """
+    if not response_text or not str(response_text).strip():
+        return None
+    text = str(response_text)
+    lower = text.lower()
+    region_from = 0
+    status_at = lower.rfind('status:')
+    if status_at != -1:
+        region_from = status_at
+    region = text[region_from:]
+
+    obj = None
+    # Line-anchored FIX: — substring 'fix:' matches hotfix:/bugfix: and then
+    # the next `{` (often findings JSON) fails validation and drops a real
+    # FIX: later in the same STATUS region.
+    marked = re.search(r'(?im)(?:^|\n)\s*FIX\s*:', region)
+    if marked:
+        after = region[marked.end():].lstrip()
+        if after.startswith('```'):
+            nl = after.find('\n')
+            after = after[nl + 1:] if nl != -1 else after[3:]
+        obj = _json_object_at(after, 0)
+        if not (isinstance(obj, dict) and _validate_structured_fix(obj)):
+            obj = None
+    if obj is None:
+        fence = re.search(r'```(?:json)?\s*\n(\s*\{)', region, re.I)
+        if fence:
+            obj = _json_object_at(region, fence.start(1))
+            if not (isinstance(obj, dict) and _validate_structured_fix(obj)):
+                obj = None
+    if obj is None:
+        stripped = text.strip()
+        if stripped.startswith('```'):
+            stripped = re.sub(r'^```(?:json)?\s*', '', stripped, count=1, flags=re.I)
+            stripped = re.sub(r'\s*```$', '', stripped)
+        if stripped.startswith('{'):
+            obj = _json_object_at(stripped, 0)
+    return _validate_structured_fix(obj) if isinstance(obj, dict) else None
+
+
+def _fix_targets_dedupe_key(fix: Dict[str, Any]) -> str:
+    """tgt- + sha1 of sorted (kind, id, repo). Two wordings of the same
+    targets collapse; missing repo is the empty string, not a wildcard."""
+    tuples = sorted(
+        (str(t.get('kind') or ''), str(t.get('id') or ''), str(t.get('repo') or ''))
+        for t in (fix.get('targets') or [])
+    )
+    blob = json.dumps(tuples, separators=(',', ':'))
+    return 'tgt-' + hashlib.sha1(blob.encode('utf-8')).hexdigest()[:16]
+
+
+def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
+    """Queue hints from a valid FIX. Class from the first target's kind.
+
+    Multi-target never auto-executes (confidence None). Single gitops-manifest
+    + risk low may still reach the CFOP-70 judge at 0.8. Everything else
+    parks — do not invent high auto-confidence from gemma4.
+    """
+    targets = fix['targets']
+    first = targets[0]
+    rclass = _class_from_fix_kind(first['kind'])
+    risk = fix.get('risk') or 'high'
+    if risk not in ('low', 'med', 'high'):
+        risk = 'high'
+    if (len(targets) == 1 and first['kind'] == 'gitops-manifest'
+            and risk == 'low'):
+        confidence = 0.8
+    else:
+        confidence = None
+    host = None
+    repo = None
+    for t in targets:
+        if t['kind'] == 'host' and not host:
+            host = t['id']
+        if t.get('repo') and not repo:
+            repo = t['repo']
+    return {
+        'remediation_class': rclass,
+        'risk': risk,
+        'confidence': confidence,
+        'host': host,
+        'repo': repo,
+        'classifier_backend': None,
+        'classifier_model': None,
+        'targets': targets,
+        'steps': list(fix.get('steps') or []),
+        'verify': dict(fix.get('verify') or {}),
+        'rejected': list(fix.get('rejected') or []),
+    }
 
 # Triggers that describe a *recoverable* runtime condition — if the pod is
 # healthy now, the thing the alert worried about has cleared. Used by the
@@ -1449,14 +1648,16 @@ Alert details: {json.dumps(alert_info, default=str)[:1000]}
 {learnings_text}{similar_text}
 
 Investigate this alert using the available tools. Check metrics, logs, and container/service status.
-First give a short summary of what you found. Then end your response with exactly these two lines:
+First give a short summary of what you found. Then end your response with:
 
 STATUS: <one of: resolved | needs_action | monitoring | escalate>
   - resolved: the resource is healthy RIGHT NOW — the problem is gone, or you fixed it during this investigation. Do NOT use resolved just because you identified a fix that someone still has to apply.
   - needs_action: you found the problem but it needs a change you could not make yourself; your RECOMMENDATION says what to do.
   - monitoring: transient or inconclusive; worth watching, no action yet.
   - escalate: urgent; a human should look now.
-RECOMMENDATION: <the single most useful operator-facing next step — a concrete command or config change, or "No action needed" when the resource is genuinely healthy>"""
+RECOMMENDATION: <the single most useful operator-facing next step — a concrete command or config change, or "No action needed" when the resource is genuinely healthy>
+When STATUS is needs_action, also emit a FIX object after RECOMMENDATION (JSON, not inside the RECOMMENDATION line). targets is a list so a two-repo ordered fix can be stated. Omit FIX only when no change is required.
+FIX: {_FIX_JSON_SCHEMA}"""
 
             # Run LLM investigation with tools, with provider fallback so a
             # transient Ollama timeout (e.g. GPU cold-start) doesn't abort
@@ -1522,6 +1723,12 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # step so a direct /investigate carries actionable guidance (not
             # just a bare "Resolved"), matching what the sweep path already does.
             recommendation = self._extract_recommendation(response_text)
+            # CFOP-80: one JSON nudge if needs_action and FIX is missing, then
+            # today's classifier. Never fail the investigation on a bad FIX.
+            structured_fix = None
+            if outcome == 'needs_action':
+                structured_fix, response_text = self._ensure_structured_fix(
+                    outcome, recommendation, response_text, trigger)
 
             # Phase-B remediation: for a confirmed needs_action, see if this is a
             # case we can propose a concrete fix for. Default off; dry-run
@@ -1536,11 +1743,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             # actionable, not dead-end in a read-only list. Classify it (cheap
             # one-shot call) and enqueue through the existing queue gates; the
             # row links back here via investigation_id and lands needs-human.
+            # CFOP-80: a valid FIX skips that classifier (class from target.kind).
             remediation_id = None
             if outcome == 'needs_action':
                 remediation_id = self._queue_needs_action_remediation(
                     inv_id, trigger, alert_info, recommendation, response_text,
-                    provider=f"{provider_type}/{model}", proposal=proposal)
+                    provider=f"{provider_type}/{model}", proposal=proposal,
+                    structured_fix=structured_fix)
 
             findings = {
                 'response': response_text[:5000],
@@ -1548,6 +1757,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
                 'provider': f"{provider_type}/{model}",
                 'recommendation': recommendation,
             }
+            if structured_fix:
+                findings['fix'] = structured_fix
             similar_past = self._similar_past_citations(context)
             if similar_past:
                 findings['similar_past'] = similar_past
@@ -1643,9 +1854,61 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         if idx == -1:
             return ""
         tail = response_text[idx + len(marker):].strip()
+        # CFOP-80: stop at FIX: so the JSON cannot swallow the prose.
+        tail = re.split(r'\n\s*FIX\s*:', tail, maxsplit=1, flags=re.I)[0]
         # Stop at the first blank line so we capture just the recommendation
         # paragraph, then cap length for a one-line notification.
         return tail.split('\n\n')[0].strip()[:400]
+
+    def _ensure_structured_fix(self, outcome: str, recommendation: str,
+                               response_text: str, trigger: str = ''):
+        """Parse FIX; one JSON nudge if needs_action and missing/malformed.
+
+        Returns (fix_or_None, response_text). Never raises — a nudge failure
+        degrades to today's classifier. Module-level parse so MagicMock tests
+        cannot intercept it.
+        """
+        fix = _parse_structured_fix(response_text)
+        if outcome != 'needs_action' or fix:
+            return fix, response_text
+        rec = str(recommendation or '').strip()
+        if (not rec or rec.lower().startswith('no action')
+                or rec.lower() in ('none', 'n/a', 'nothing')):
+            return None, response_text
+        nudged = self._nudge_structured_fix(response_text, rec, trigger)
+        if not nudged:
+            return None, response_text
+        fix = _parse_structured_fix(nudged)
+        if not fix:
+            return None, response_text
+        appended = response_text.rstrip() + '\nFIX: ' + json.dumps(fix)
+        return fix, appended
+
+    def _nudge_structured_fix(self, response_text: str, recommendation: str,
+                              trigger: str = '') -> Optional[str]:
+        """One-shot ask for a FIX JSON object. Parse-or-None; never salvage."""
+        try:
+            result = self._chat_with_tools_with_fallback(
+                messages=[{
+                    'role': 'user',
+                    'content': (
+                        f"Alert: {str(trigger)[:300]}\n"
+                        f"Recommendation: {str(recommendation)[:800]}\n\n"
+                        f"Your previous ending:\n{str(response_text)[-1500:]}\n\n"
+                        "That reply is missing a valid FIX JSON object. "
+                        f"Reply with ONLY a FIX object matching: {_FIX_JSON_SCHEMA}"
+                    ),
+                }],
+                system_context=(
+                    "You emit a single FIX JSON object for an infrastructure "
+                    "investigation. No other text, no array."
+                ),
+                max_iterations=1,
+            )
+            return result.get('response', '')
+        except Exception as e:
+            logger.warning(f"FIX nudge failed, falling back to classifier: {e}")
+            return None
 
     @staticmethod
     def _extract_status(response_text: str) -> str:
@@ -2891,6 +3154,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             payload['source'] = source
         if dedupe_key:
             payload['dedupe_key'] = dedupe_key
+        # CFOP-80: structured FIX rides beside target.host, never replaces it.
+        for key in ('targets', 'steps', 'verify', 'rejected'):
+            if details.get(key) is not None:
+                payload[key] = details[key]
         # Which models actually made the call, recorded on the row. Before
         # CFOP-70 the only LLM identity on a remediation was the
         # *investigation's* provider, so reconstructing which model decided to
@@ -3326,7 +3593,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             "queue. Respond ONLY with a SINGLE JSON object — never an array, "
             "never a findings list — no other text:\n"
             '{"remediation_class": "gitops-patch|k8s-action|k8s-imperative|'
-            'node-action|investigate|manual", '
+            'node-action|data-fix|external-system|investigate|manual", '
             '"risk": "low|med|high", "confidence": 0.0, '
             '"host": "affected host or empty", '
             '"repo": "owning GitOps repo slug or empty"}\n'
@@ -3558,12 +3825,13 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         return None
 
     @staticmethod
-    def _investigation_dedupe_key(alert_info: Dict[str, Any], recommendation: str) -> str:
-        """Stable dedupe key for a needs_action enqueue (CFOP-46 part C).
+    def _investigation_dedupe_key(alert_info: Dict[str, Any], recommendation: str,
+                                  structured_fix=None) -> str:
+        """Stable dedupe key for a needs_action enqueue (CFOP-46 part C, CFOP-80).
 
         Precedence: a dispatch-stamped key (summary/sweep re-dispatch loop
-        breaking) > the Alertmanager fingerprint (stable per firing labelset —
-        collapses the six differently-worded Celery investigations) > a hash
+        breaking) > FIX targets (tgt-sha1 of sorted kind/id/repo) when present
+        > the Alertmanager fingerprint (fallback when FIX is missing) > a hash
         over normalized (host, recommendation) for manually-triggered
         investigations that have no alert behind them.
         """
@@ -3571,6 +3839,8 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         stamped = str(ai.get('dedupe_key') or '').strip()
         if stamped:
             return stamped
+        if structured_fix and structured_fix.get('targets'):
+            return _fix_targets_dedupe_key(structured_fix)
         fingerprint = str(ai.get('fingerprint') or '').strip()
         if fingerprint:
             return f"alert-{fingerprint}"
@@ -3582,7 +3852,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
     def _queue_needs_action_remediation(self, investigation_id: int, trigger: str,
                                         alert_info: Dict[str, Any], recommendation: str,
                                         response_text: str, provider: str,
-                                        proposal=None) -> Optional[int]:
+                                        proposal=None, structured_fix=None) -> Optional[int]:
         """Route a needs_action investigation's recommendation into the queue.
 
         The missing feed from CFOP-46: classify the recommendation (cheap
@@ -3590,6 +3860,10 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         the inline unschedulable-pod proposer already opened a PR for this
         investigation — one fix must not get two drivers; a decline still
         enqueues. Empty / "no action" recommendations enqueue nothing.
+
+        CFOP-80: a valid FIX skips the classifier (class from target.kind).
+        Missing/invalid FIX still classifies. Parse is module-level so a
+        MagicMock self cannot intercept it.
         """
         if not self._remediation_flag('queue_feed'):
             return None
@@ -3604,18 +3878,32 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
         # anything downstream reads it — the classifier then classifies the
         # committed action, and the dedupe key hashes it, instead of both
         # reverse-engineering a fork.
+        # Capture the fork shape on the *incoming* rec. A successful commit
+        # returns still_forked=False and a rewritten sentence; the FIX object
+        # was parsed from the original report and still describes the unchosen
+        # alternative. Trusting that FIX's gitops+low 0.8 is live row #72
+        # again (PR #173).
+        was_forked = bool(_FORK_SHAPED.search(rec))
         rec, still_forked = self._commit_forked_recommendation(trigger, rec,
                                                                report=response_text)
-        hints = self._classify_needs_action_recommendation(trigger, rec, alert_info,
-                                                           report=response_text)
+        # Re-validate even when the caller passed structured_fix: a truthy
+        # invalid dict must not IndexError in _hints_from_structured_fix and
+        # fail the investigation (CFOP-80: invalid FIX degrades to classifier).
+        candidate = structured_fix if structured_fix is not None else _parse_structured_fix(response_text)
+        fix = _validate_structured_fix(candidate) if isinstance(candidate, dict) else None
+        if fix:
+            # Mutation check: drop this branch and test_valid_fix_skips_classifier fails.
+            hints = _hints_from_structured_fix(fix)
+        else:
+            hints = self._classify_needs_action_recommendation(trigger, rec, alert_info,
+                                                               report=response_text)
         details = dict(hints)
-        if still_forked:
-            # The retry would not commit, so nothing downstream may treat this
-            # row as executable: confidence None can never clear the auto gate
-            # (live row #72 was classified gitops-patch at 0.80 — one 'low'
-            # risk away from the executor opening a PR against a repo that had
-            # nothing to do with the fix). The class is left honest; only the
-            # gate is barred.
+        if still_forked or was_forked:
+            # Stuck fork (retry would not commit) OR a FIX that was parsed
+            # before the rewrite: neither may clear the auto gate. Class stays
+            # honest (target.kind / classifier); only the gate is barred.
+            # Mutation check: drop `or was_forked` and
+            # test_fork_commit_does_not_keep_fix_auto_confidence fails.
             details['confidence'] = None
         if not details.get('host'):
             ai = alert_info or {}
@@ -3626,7 +3914,7 @@ RECOMMENDATION: <the single most useful operator-facing next step — a concrete
             'report': response_text,
             'provider': provider,
             'source': 'investigation',
-            'dedupe_key': self._investigation_dedupe_key(alert_info, rec),
+            'dedupe_key': self._investigation_dedupe_key(alert_info, rec, fix),
             # Context the mutation judge reads (CFOP-70). Not persisted as-is:
             # _maybe_queue_remediation picks what belongs in the payload.
             'trigger': trigger,
@@ -7652,7 +7940,7 @@ IMPORTANT:
             f'{{"recommendations": [{{"title": "short label", '
             f'"recommendation": "the concrete next step", "host": "affected host or empty", '
             f'"remediation_class": "gitops-patch|k8s-action|k8s-imperative|'
-            f'node-action|investigate|manual", '
+            f'node-action|data-fix|external-system|investigate|manual", '
             f'"risk": "low|med|high", "confidence": 0.0, '
             f'"repo": "owning GitOps repo slug or empty"}}]}}\n'
             f"```\n"

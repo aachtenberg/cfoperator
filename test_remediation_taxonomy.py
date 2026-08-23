@@ -121,6 +121,14 @@ def test_k8s_imperative_is_not_auto_eligible():
     assert "k8s-imperative" not in _AUTO_REMEDIATION_CLASSES
 
 
+def test_data_fix_and_external_system_are_not_auto_eligible():
+    """CFOP-80: new classes exist to park honestly. Auto-draining one would
+    spend an executor Job to say 'nothing can apply this class'."""
+    for rclass in ("data-fix", "external-system"):
+        assert rclass in _REMEDIATION_CLASSES
+        assert rclass not in _AUTO_REMEDIATION_CLASSES
+
+
 def test_the_table_check_admits_every_class():
     """The CHECK is rendered from _REMEDIATION_CLASSES, not written out again.
 

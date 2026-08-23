@@ -212,6 +212,7 @@ async function detail(id){
     ${sessionsBlock(r)}
     ${similarBlock(f)}
     ${f.recommendation?`<h3>Recommendation</h3><pre>${esc(f.recommendation)}</pre>`:''}
+    ${f.fix?`<h3>FIX</h3><pre>${esc(JSON.stringify(f.fix,null,2))}</pre>`:''}
     ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
     <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;
 }
