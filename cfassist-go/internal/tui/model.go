@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -55,7 +57,20 @@ type model struct {
 	busy        bool
 	// cancelTurn stops the turn currently in flight. Set when one starts,
 	// cleared when it ends; nil means there is nothing to stop.
-	cancelTurn     context.CancelFunc
+	cancelTurn context.CancelFunc
+	// stopping records that a cancel has already gone out for this turn, so a
+	// second press is answered instead of swallowed.
+	stopping bool
+	// turnWG tracks the in-flight turn so the session can wait for it to
+	// unwind before its transcript is read.
+	turnWG sync.WaitGroup
+	// lastTurnCtx is the context handed to the most recent turn, kept so tests
+	// can assert what it is scoped to.
+	lastTurnCtx context.Context
+	// sessionCtx bounds every turn in this session. Cancelled when the TUI
+	// quits, so Ctrl+D does not leave a turn running against a session whose
+	// token is about to be revoked.
+	sessionCtx     context.Context
 	ready          bool
 	cfg            *config.Config
 	llm            *client.LLMClient
@@ -243,8 +258,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			// Busy or not, Ctrl+C means "stop what I started". While a turn is
 			// running that is the turn; idle, it is the half-typed line.
-			if m.busy && m.cancelTurn != nil {
-				m.cancelTurn()
+			if m.busy {
+				if m.stopping {
+					// Nothing left to cancel and the turn is still winding
+					// down — a tool call finishing, a request unwinding. Say so
+					// rather than absorbing the press, which is the "I pressed
+					// stop and nothing happened" this key exists to end.
+					m.outputLines = append(m.outputLines,
+						dimStyle.Render("  still stopping — ctrl+d quits"))
+					m.refreshViewport()
+					return m, nil
+				}
+				if m.cancelTurn != nil {
+					m.cancelTurn()
+					m.stopping = true
+					m.outputLines = append(m.outputLines, dimStyle.Render("  stopping..."))
+					m.refreshViewport()
+				}
 				return m, nil
 			}
 			m.textarea.Reset()
@@ -305,9 +335,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.releaseTurn()
 		r := msg.result
+
 		if r.Cancelled {
+			// Stats are left alone on purpose: a cancelled turn measured
+			// nothing, and zeroing contextUsed would blank the status bar's
+			// context gauge and the last real reading with it.
 			m.outputLines = append(m.outputLines, warningStyle.Render("  stopped."))
+			m.refreshViewport()
+			return m, nil
 		}
+
 		latency := r.Latency.Seconds()
 		m.lastStats = fmt.Sprintf("%d↑ %d↓ %.1fs", r.InputTokens, r.OutputTokens, latency)
 		if r.ToolCalls > 0 {
@@ -722,13 +759,17 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 // would eventually be left uncancellable.
 func (m *model) startTurn(prompt string) tea.Cmd {
 	m.busy = true
-	ctx, cancel := context.WithCancel(context.Background())
+	m.stopping = false
+	ctx, cancel := context.WithCancel(m.sessionContext())
 	m.cancelTurn = cancel
+	m.lastTurnCtx = ctx
+	m.turnWG.Add(1)
 	return m.runConversationCmd(ctx, prompt)
 }
 
 func (m *model) runConversationCmd(ctx context.Context, userInput string) tea.Cmd {
 	return func() tea.Msg {
+		defer m.turnWG.Done()
 		m.messages = append(m.messages, client.Message{Role: "user", Content: userInput})
 
 		out := &tuiOutput{program: m.program, renderer: m.renderer}
@@ -926,12 +967,28 @@ type RunResult struct {
 
 // Run starts the TUI application and returns the final provider/model on exit.
 // attachment is nil for a plain session and set by `cfassist attach`.
-func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment, cfoperatorLine string) (RunResult, error) {
+func Run(ctx context.Context, cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment, cfoperatorLine string) (RunResult, error) {
 	m := New(cfg, llm, toolReg, systemPrompt, contextCount, providers, activeProvider, attachment, cfoperatorLine)
+
+	// Every turn hangs off this, so leaving by any door — Ctrl+D, /exit, a
+	// signal — stops work that is still running. Without it a quit during a
+	// turn leaves an LLM call and a shell command alive while `attach` goes on
+	// to write back the session and revoke the token they are using.
+	sessionCtx, endSession := context.WithCancel(ctx)
+	defer endSession()
+	m.sessionCtx = sessionCtx
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	m.program = p
 
 	finalModel, err := p.Run()
+
+	// Stop the turn and let it unwind before anyone reads its transcript.
+	// p.Run returning does not mean the conversation goroutine has: it appends
+	// to m.messages, which is exactly what the caller is about to read.
+	endSession()
+	m.awaitTurn(turnDrainTimeout)
+
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -940,6 +997,23 @@ func Run(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 			Messages: fm.messages}, nil
 	}
 	return RunResult{Provider: activeProvider, Model: llm.Model}, nil
+}
+
+// turnDrainTimeout bounds the wait for a cancelled turn on the way out. A
+// wedged tool should delay an exit, not prevent one.
+const turnDrainTimeout = 3 * time.Second
+
+// awaitTurn waits for an in-flight turn to finish, up to d.
+func (m *model) awaitTurn(d time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		m.turnWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+	}
 }
 
 // tuiOutput implements conversation.Output by sending messages to the TUI.
@@ -1053,8 +1127,29 @@ func (o *tuiOutput) ShowWarning(message string) {
 // releaseTurn drops the cancel for a turn that has finished, so a later Ctrl+C
 // clears the input line rather than cancelling a context nobody is waiting on.
 func (m *model) releaseTurn() {
+	m.stopping = false
 	if m.cancelTurn != nil {
 		m.cancelTurn()
 		m.cancelTurn = nil
+	}
+}
+
+// sessionContext is the parent every turn hangs off. Tests build models
+// directly, so a zero value has to mean "not scoped" rather than panic.
+func (m *model) sessionContext() context.Context {
+	if m.sessionCtx == nil {
+		return context.Background()
+	}
+	return m.sessionCtx
+}
+
+// refreshViewport pushes outputLines into the viewport.
+//
+// Every branch that appends output has to do this or the line is stored and
+// never drawn — which is how the "stopped." acknowledgement shipped invisible.
+func (m *model) refreshViewport() {
+	if m.ready {
+		m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
+		m.viewport.GotoBottom()
 	}
 }

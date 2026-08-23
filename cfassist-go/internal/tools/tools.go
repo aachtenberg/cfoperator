@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -222,10 +223,22 @@ func bashExecute(ctx context.Context, args map[string]any, defaultTimeout int) m
 		if ctx.Err() == context.Canceled {
 			return map[string]any{"error": "cancelled"}
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		switch {
+		case errors.Is(err, exec.ErrWaitDelay):
+			// The shell finished; something it backgrounded still holds the
+			// output pipe (`cmd & echo started`, `ssh -f`). WaitDelay stopped
+			// us waiting on that pipe, which is what it is for — but the
+			// command itself succeeded, and reporting a failure here would
+			// discard output we already have and lie about the exit status.
+			if cmd.ProcessState != nil {
+				exitCode = cmd.ProcessState.ExitCode()
+			}
+		default:
+			exitErr, ok := err.(*exec.ExitError)
+			if !ok {
+				return map[string]any{"error": err.Error()}
+			}
 			exitCode = exitErr.ExitCode()
-		} else {
-			return map[string]any{"error": err.Error()}
 		}
 	}
 

@@ -25,7 +25,6 @@ func runCancellable(t *testing.T, s *scriptedServer, prompt string) (context.Can
 
 	saved := retryBackoff
 	retryBackoff = 0
-	t.Cleanup(func() { retryBackoff = saved })
 
 	llm := client.New("openai", s.URL, "test-model", 0.7, "test-key")
 	cfg := config.Defaults()
@@ -42,6 +41,19 @@ func runCancellable(t *testing.T, s *scriptedServer, prompt string) (context.Can
 		}, "You are a test assistant.", 10)
 		done <- result
 	}()
+
+	// Restore the shared globals only once the turn goroutine is finished with
+	// them. Restoring in a plain Cleanup races it whenever an assertion fails
+	// and leaves the goroutine running — a data race reported on top of the
+	// real failure, which buries it.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+		}
+		retryBackoff = saved
+	})
 
 	// output is written on that goroutine; read it only after done fires.
 	return cancel, done, output
@@ -139,7 +151,8 @@ func TestCancelDuringToolCallStopsTheTurn(t *testing.T) {
 	})
 
 	cancel, done, _ := runCancellable(t, s, "check the backup")
-	time.Sleep(300 * time.Millisecond) // let the command actually start
+	s.awaitServing(t, 0)
+	time.Sleep(200 * time.Millisecond) // let sh actually exec the sleep
 	cancel()
 
 	awaitStop(t, done, "cancel during tool call")
@@ -178,11 +191,61 @@ func TestCancelKeepsTheWorkAlreadyDone(t *testing.T) {
 	})
 
 	cancel, done, _ := runCancellable(t, s, "check the backup")
-	time.Sleep(300 * time.Millisecond) // first tool call completes, second stalls
+	// The first tool call has to complete and the second LLM call has to be in
+	// flight. Waiting for the server to reach reply 1 says exactly that; a
+	// sleep only guesses at it, and guesses wrong on a loaded runner.
+	s.awaitServing(t, 1)
 	cancel()
 
 	r := awaitStop(t, done, "cancel after a tool call")
 	if r.ToolCalls != 1 {
 		t.Errorf("ToolCalls = %d, want the completed call to survive the cancel", r.ToolCalls)
+	}
+}
+
+// A cancel landing on the last allowed iteration must not be reported as the
+// model exhausting its budget. Checking ctx only at the top of the loop lets it
+// fall out of the bottom with Cancelled false and a warning that blames the
+// wrong thing — telling the operator their key did not work.
+func TestCancelOnTheFinalIterationIsNotBudgetExhaustion(t *testing.T) {
+	s := newScriptedServer(t, []reply{
+		{toolName: "bash", toolArgs: `{"command":"sleep 30"}`},
+	})
+
+	saved := retryBackoff
+	retryBackoff = 0
+	t.Cleanup(func() { retryBackoff = saved })
+
+	llm := client.New("openai", s.URL, "test-model", 0.7, "test-key")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	output := &recordingOutput{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan Result, 1)
+	go func() {
+		// One iteration only: the cancel has to land inside it.
+		r, _ := Run(ctx, llm, tools.New(cfg), output, []client.Message{
+			{Role: "user", Content: "check"},
+		}, "You are a test assistant.", 1)
+		done <- r
+	}()
+
+	s.awaitServing(t, 0)
+	time.Sleep(200 * time.Millisecond) // let the tool call start
+	cancel()
+
+	select {
+	case r := <-done:
+		if !r.Cancelled {
+			t.Error("a cancel on the last iteration reported as something else")
+		}
+		for _, w := range output.warnings {
+			if strings.Contains(w, "maximum tool iterations") {
+				t.Errorf("blamed the iteration budget for a cancel: %q", w)
+			}
+		}
+	case <-time.After(promptly):
+		t.Fatal("still running after cancel on the final iteration")
 	}
 }

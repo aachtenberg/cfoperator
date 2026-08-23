@@ -21,6 +21,7 @@
 package cfoperator
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -72,6 +73,9 @@ type Client struct {
 	Token string
 
 	http *http.Client
+	// ctx bounds every request this client makes. Nil means unbounded, which
+	// is what the long-lived clients built at startup want.
+	ctx context.Context
 }
 
 // New builds a client. An empty url falls back to DefaultAgentURL, an empty
@@ -88,6 +92,19 @@ func New(rawURL, token string, timeout time.Duration) *Client {
 		Token: strings.TrimSpace(token),
 		http:  &http.Client{Timeout: timeout},
 	}
+}
+
+// WithContext returns a copy of the client whose requests are bound to ctx.
+//
+// A ctx parameter on every method would be the idiomatic shape, but this client
+// has a dozen of them plus multi-request helpers like CollectAttachContext, and
+// binding once at the single place that builds a request gets the cancellation
+// without a signature cascade through every caller and test. The copy is by
+// value and the client holds no locks, so callers keep their own scope.
+func (c *Client) WithContext(ctx context.Context) *Client {
+	bound := *c
+	bound.ctx = ctx
+	return &bound
 }
 
 // SetHTTPClient swaps the underlying transport. Tests point this at an
@@ -125,7 +142,11 @@ func (c *Client) do(method, path string, params url.Values) ([]byte, error) {
 		full += "?" + params.Encode()
 	}
 
-	req, err := http.NewRequest(method, full, nil)
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, method, full, nil)
 	if err != nil {
 		return nil, newError("", "bad request URL %s: %v", full, err)
 	}

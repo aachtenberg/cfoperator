@@ -52,6 +52,9 @@ type scriptedServer struct {
 	// for outstanding handlers, so without it a test that cancels mid-stall
 	// still pays the full stall before it can finish.
 	closed chan struct{}
+	// serving reports the index of each reply as the handler reaches it, so a
+	// test can wait for the state it needs instead of sleeping and hoping.
+	serving chan int
 }
 
 // newScriptedServer replays replies in order. Once the script runs out the last
@@ -59,7 +62,7 @@ type scriptedServer struct {
 // attempts the code under test will make.
 func newScriptedServer(t *testing.T, replies []reply) *scriptedServer {
 	t.Helper()
-	s := &scriptedServer{closed: make(chan struct{})}
+	s := &scriptedServer{closed: make(chan struct{}), serving: make(chan int, 16)}
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		idx := s.requests
@@ -70,6 +73,11 @@ func newScriptedServer(t *testing.T, replies []reply) *scriptedServer {
 			idx = len(replies) - 1
 		}
 		rep := replies[idx]
+
+		select {
+		case s.serving <- idx:
+		default: // nobody is watching; never block the handler
+		}
 
 		if rep.delay > 0 {
 			// Stall like a slow model, but give up if the client goes away or
@@ -118,6 +126,22 @@ func newScriptedServer(t *testing.T, replies []reply) *scriptedServer {
 		s.Close()
 	})
 	return s
+}
+
+// awaitServing blocks until the handler reaches reply index i.
+func (s *scriptedServer) awaitServing(t *testing.T, i int) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case got := <-s.serving:
+			if got >= i {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("server never reached reply %d", i)
+		}
+	}
 }
 
 func (s *scriptedServer) count() int {

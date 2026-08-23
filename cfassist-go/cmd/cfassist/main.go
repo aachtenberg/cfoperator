@@ -64,7 +64,22 @@ Pipe data in for analysis mode.`,
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// NotifyContext disables the default disposition for the whole process, so
+	// without this a phase that never consumes ctx — the blocking stdin read in
+	// pipe mode, the startup probe — would swallow Ctrl+C entirely and leave
+	// SIGKILL as the only way out. Restoring the default after the first signal
+	// keeps the guarantee that pressing it twice always works.
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
+		// Already announced as "stopped." — printing it again as an error
+		// would misrepresent a deliberate interrupt.
+		if errors.Is(err, errInterrupted) {
+			os.Exit(130)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -187,7 +202,7 @@ func run(cmd *cobra.Command, args []string) error {
 	// --- TUI mode ---
 	// nil attachment: a plain session has no investigation, and renders exactly
 	// as it did before `attach` existed.
-	result, err := tui.Run(cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers,
+	result, err := tui.Run(cmd.Context(), cfg, llm, toolReg, systemPrompt, contextCount, cfg.Providers,
 		activeProvider, nil, presence.BannerLine())
 	if err != nil {
 		return err
@@ -196,6 +211,11 @@ func run(cmd *cobra.Command, args []string) error {
 	config.SaveState(result.Provider, result.Model)
 	return nil
 }
+
+// errInterrupted marks a run the operator stopped. main turns it into the
+// conventional signal exit rather than printing it: `cfassist check && deploy`
+// must not treat an abandoned check as a passing one.
+var errInterrupted = errors.New("interrupted")
 
 func runNonInteractive(ctx context.Context, cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt, question string) error {
 	messages := []client.Message{
@@ -213,7 +233,7 @@ func runNonInteractive(ctx context.Context, cfg *config.Config, llm *client.LLMC
 
 	if result.Cancelled {
 		fmt.Fprintln(os.Stderr, "stopped.")
-		return nil
+		return errInterrupted
 	}
 	if result.Error != "" {
 		return fmt.Errorf("conversation failed: %s", result.Error)

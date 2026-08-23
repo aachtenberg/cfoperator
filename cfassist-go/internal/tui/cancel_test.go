@@ -1,9 +1,15 @@
 package tui
 
 import (
+	"context"
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/client"
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
+	"github.com/aachtenberg/cfoperator/cfassist-go/internal/conversation"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
@@ -66,32 +72,134 @@ func TestReleaseTurnClearsTheCancel(t *testing.T) {
 // added the same way and be uninterruptible, which is exactly how this bug
 // existed. startTurn is the only place allowed to raise the flag.
 func TestEveryTurnIsStartedThroughStartTurn(t *testing.T) {
-	src, err := os.ReadFile("model.go")
+	entries, err := os.ReadDir(".")
 	if err != nil {
-		t.Fatalf("reading model.go: %v", err)
+		t.Fatalf("reading package dir: %v", err)
 	}
 
-	lines := strings.Split(string(src), "\n")
-	inStartTurn := false
 	found := 0
-
-	for i, line := range lines {
-		if strings.HasPrefix(line, "func (m *model) startTurn(") {
-			inStartTurn = true
-		} else if inStartTurn && line == "}" {
-			inStartTurn = false
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Clean(name))
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
 		}
 
-		if strings.TrimSpace(line) == "m.busy = true" {
+		inStartTurn := false
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.HasPrefix(line, "func (m *model) startTurn(") {
+				inStartTurn = true
+			} else if inStartTurn && line == "}" {
+				inStartTurn = false
+			}
+
+			// Matched loosely on purpose. Pinning the exact statement let a
+			// trailing comment or a rename walk straight past the guard, and
+			// scanning only model.go let a new file do the same.
+			if !strings.Contains(line, "busy = true") || strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
 			found++
 			if !inStartTurn {
-				t.Errorf("model.go:%d starts a turn outside startTurn — "+
-					"it would run with no cancel for Ctrl+C to pull", i+1)
+				t.Errorf("%s:%d starts a turn outside startTurn — "+
+					"it would run with no cancel for Ctrl+C to pull", name, i+1)
 			}
 		}
 	}
 
 	if found == 0 {
 		t.Fatal("found nothing that starts a turn — has the flag been renamed?")
+	}
+}
+
+// newTestModel builds a model far enough along to render: the viewport only
+// exists after a size message, and without it output is stored but never drawn.
+func newRenderableModel(t *testing.T) *model {
+	t.Helper()
+	m := &model{
+		cfg:      config.Defaults(),
+		llm:      client.New("ollama", "http://localhost:11434", "test-model", 0.7, ""),
+		textarea: textarea.New(),
+	}
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return m
+}
+
+// The acknowledgement has to reach the screen. It shipped appended to
+// outputLines but never pushed into the viewport, so Ctrl+C looked exactly like
+// the frozen terminal it was supposed to fix.
+func TestStoppingIsVisible(t *testing.T) {
+	m := newRenderableModel(t)
+	m.busy = true
+	m.cancelTurn = func() {}
+
+	m.Update(llmDoneMsg{result: conversation.Result{Cancelled: true}})
+
+	if !strings.Contains(m.View(), "stopped") {
+		t.Error("a cancelled turn drew nothing — the operator sees no response to the key")
+	}
+}
+
+// A cancelled turn measured nothing. Overwriting the readout with its zeros
+// blanks the context gauge and loses the last real numbers with it.
+func TestCancelDoesNotWipeTheStatusBar(t *testing.T) {
+	m := newRenderableModel(t)
+	m.busy = true
+	m.cancelTurn = func() {}
+	m.lastStats = "3100↑ 890↓ 8.2s"
+	m.contextUsed = 12400
+
+	m.Update(llmDoneMsg{result: conversation.Result{Cancelled: true}})
+
+	if m.lastStats != "3100↑ 890↓ 8.2s" {
+		t.Errorf("lastStats = %q, want the last completed turn's numbers", m.lastStats)
+	}
+	if m.contextUsed != 12400 {
+		t.Errorf("contextUsed = %d, want 12400 — the gauge would vanish", m.contextUsed)
+	}
+}
+
+// Pressing stop twice must not feel like pressing it into a void. The turn can
+// take a moment to unwind, and silence during that moment is the whole
+// complaint this work started from.
+func TestSecondCtrlCSaysSomething(t *testing.T) {
+	m := newRenderableModel(t)
+	m.busy = true
+	m.cancelTurn = func() {}
+
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	before := len(m.outputLines)
+	m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+
+	if len(m.outputLines) == before {
+		t.Fatal("the second press was swallowed")
+	}
+	if !strings.Contains(m.View(), "still stopping") {
+		t.Error("the second press drew nothing")
+	}
+}
+
+// Leaving by any door stops the work. Ctrl+D and /exit quit without touching
+// cancelTurn, so turns hang off the session context to be cancelled on the way
+// out — before `attach` writes back the transcript and revokes the token a
+// tool call may still be using.
+func TestTurnsHangOffTheSessionContext(t *testing.T) {
+	sessionCtx, endSession := context.WithCancel(context.Background())
+	m := newRenderableModel(t)
+	m.sessionCtx = sessionCtx
+
+	var turnCtx context.Context
+	m.startTurn("hello")
+	turnCtx = m.lastTurnCtx
+
+	endSession()
+
+	select {
+	case <-turnCtx.Done():
+	case <-time.After(time.Second):
+		t.Error("ending the session left the turn's context live")
 	}
 }

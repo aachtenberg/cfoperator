@@ -129,6 +129,13 @@ func Run(
 		return result, fullMessages
 	}
 
+	// A cancel landing during the final iteration's tool call would otherwise
+	// fall out here and be reported as the model exhausting its budget, with
+	// Cancelled false — telling the operator their key did not work.
+	if ctx.Err() != nil {
+		return cancelled(&result, start), fullMessages
+	}
+
 	// Max iterations reached
 	output.ShowWarning(fmt.Sprintf("Reached maximum tool iterations (%d).", maxIterations))
 	result.Latency = time.Since(start)

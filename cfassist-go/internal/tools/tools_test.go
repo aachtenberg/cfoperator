@@ -326,3 +326,25 @@ func TestBashCancelKillsTheWholeProcessGroup(t *testing.T) {
 		t.Fatal("still running 5s after cancel — the process group outlived it")
 	}
 }
+
+// WaitDelay stops us waiting on an output pipe a backgrounded grandchild is
+// still holding. It must not turn a command that succeeded into a failure with
+// its output thrown away — the model would be told a working command broke.
+func TestBackgroundedChildDoesNotLoseTheOutput(t *testing.T) {
+	r := New(config.Defaults())
+
+	// sh exits immediately; the child keeps the inherited stdout open past it.
+	res := r.Execute(context.Background(), "bash", map[string]any{
+		"command": "sleep 5 & echo started",
+	})
+
+	if errMsg, ok := res["error"]; ok {
+		t.Fatalf("error = %v, want the command's own result", errMsg)
+	}
+	if got, _ := res["stdout"].(string); !strings.Contains(got, "started") {
+		t.Errorf("stdout = %q, want the output it already produced", got)
+	}
+	if got, _ := res["exit_code"].(int); got != 0 {
+		t.Errorf("exit_code = %v, want 0 — the command succeeded", res["exit_code"])
+	}
+}
