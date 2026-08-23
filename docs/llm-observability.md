@@ -119,7 +119,9 @@ as rates over a window — a raw total says nothing about a model's behaviour.
 ```promql
 # Embedding generation requests (success/error)
 cfoperator_embedding_requests_total{result="success"}
-cfoperator_embedding_requests_total{result="error"}
+cfoperator_embedding_requests_total{result="error"}       # retryable: timeout, endpoint down, model missing
+cfoperator_embedding_requests_total{result="truncated"}   # embedded, but from a head-truncated input (CFOP-81)
+cfoperator_embedding_requests_total{result="unembeddable"} # the input can never fit; not retried
 
 # Embedding cache performance (hit/miss)
 cfoperator_embedding_cache_hits_total{result="hit"}

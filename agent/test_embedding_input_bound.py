@@ -61,10 +61,30 @@ def _err_response(body, status=500):
 # ---------------------------------------------------------------------------
 
 def test_the_default_model_has_an_explicit_limit():
-    """The absence of one is the bug. nomic-embed-text holds 2048 tokens, and
-    this text is logs and JSON, which tokenize denser than prose."""
+    """The absence of one is the bug.
+
+    The ratio is 2, not 3. Three chars/token is the dense end of PROSE; this
+    text is JSON, paths, hex and stack traces, measured at ~2.6 chars/token on
+    a representative record. A 3x bound lets ~2390 tokens through a
+    2048-token model — still failing, and now failing silently, because the
+    negative memory would stop the noise while leaving the row unindexed.
+    """
     assert DEFAULT_EMBEDDING_MODEL in MODEL_INPUT_CHAR_LIMITS
-    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) == 2048 * 3
+    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) == 2048 * 2
+
+
+def test_the_bound_is_under_the_context_at_realistic_density():
+    """The guard that would have caught the 3x mistake: whatever the ratio, a
+    full-length input must not exceed the model's context at the density this
+    corpus actually has."""
+    DENSEST_OBSERVED_CHARS_PER_TOKEN = 2.5
+    NOMIC_CONTEXT_TOKENS = 2048
+    limit = max_input_chars(DEFAULT_EMBEDDING_MODEL)
+    worst_case_tokens = limit / DENSEST_OBSERVED_CHARS_PER_TOKEN
+    assert worst_case_tokens <= NOMIC_CONTEXT_TOKENS, (
+        f"{limit} chars is {worst_case_tokens:.0f} tokens at "
+        f"{DENSEST_OBSERVED_CHARS_PER_TOKEN} chars/token, over the "
+        f"{NOMIC_CONTEXT_TOKENS}-token context")
 
 
 def test_an_unknown_model_gets_a_conservative_default():
@@ -83,7 +103,7 @@ def test_a_junk_override_is_ignored_rather_than_trusted(monkeypatch, bad):
     """A zero or negative bound would truncate every input to nothing and
     quietly destroy the index."""
     monkeypatch.setenv("CFOP_EMBEDDING_MAX_CHARS", bad)
-    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) == 2048 * 3
+    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) == 2048 * 2
 
 
 # ---------------------------------------------------------------------------
@@ -214,3 +234,70 @@ def test_the_short_input_guard_still_holds():
     with patch("embedding_service.requests.post") as post:
         assert svc.generate_embedding("hi") is None
     post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# the intersection that decides whether 2368 is indexed or merely quiet
+# ---------------------------------------------------------------------------
+
+def test_a_truncated_request_that_still_fails_is_not_retried_forever():
+    """The production bug's exact shape, which neither prior test covered:
+    oversized input, truncated, and the endpoint STILL says it does not fit.
+
+    If the bound is too generous this is what happens after deploy — the loop
+    goes quiet via the negative memory while the record stays unindexed. The
+    loop must end, but so must the pretence that the row is fine.
+    """
+    svc = _service()
+    text = "q" * (max_input_chars(svc.model) + 10_000)
+    with patch("embedding_service.requests.post",
+               return_value=_err_response(LIVE_ERROR)) as post:
+        assert svc.generate_embedding(text) is None
+        assert svc.generate_embedding(text) is None
+    assert post.call_count == 1, "a truncated-and-still-too-long input was re-sent"
+    assert svc._unembeddable_reason(text) is not None
+
+
+# ---------------------------------------------------------------------------
+# the metric is a mutually exclusive set (PR #171 review)
+# ---------------------------------------------------------------------------
+
+def _results(svc, text, response=None, side_effect=None):
+    """Every result label recorded for one attempt."""
+    seen = []
+    with patch.object(EmbeddingService, "_record_result",
+                      staticmethod(lambda r: seen.append(r))):
+        kwargs = {"side_effect": side_effect} if side_effect else {"return_value": response}
+        with patch("embedding_service.requests.post", **kwargs):
+            svc.generate_embedding(text)
+    return seen
+
+
+def test_one_attempt_records_exactly_one_result():
+    """`cfoperator_embedding_requests_total` is a REQUEST counter. The first
+    version counted `truncated` on the way out and `success` on the way back,
+    so every oversized record double-counted and read as both 'indexed
+    faithfully' and 'not indexed faithfully'."""
+    svc = _service()
+    over = "r" * (max_input_chars(svc.model) + 500)
+    assert _results(svc, over, _ok_response()) == ["truncated"]
+    assert _results(_service(), "s" * 100, _ok_response()) == ["success"]
+
+
+def test_the_decision_to_give_up_is_labelled_when_it_is_made():
+    """`unembeddable` must fire on the call that decides the record will never
+    be indexed — not on the next sweep. A restart in between would erase the
+    event entirely, and a dashboard during the first pass would never see it.
+    """
+    assert _results(_service(), "t" * 100, _err_response(LIVE_ERROR)) == ["unembeddable"]
+
+
+def test_a_retryable_failure_is_still_error():
+    svc = _service()
+    assert _results(svc, "u" * 100, _err_response('{"error":"model not found"}')) == ["error"]
+
+
+def test_a_skipped_known_bad_input_records_unembeddable_once():
+    svc = _service()
+    _results(svc, "v" * 100, _err_response(LIVE_ERROR))          # first: decides
+    assert _results(svc, "v" * 100, _ok_response()) == ["unembeddable"]  # second: skips

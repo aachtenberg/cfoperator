@@ -40,16 +40,26 @@ EMBEDDING_DIMENSION = 768  # nomic-embed-text dimension
 # is what actually ends the loop.
 #
 # Measured in CHARACTERS, not tokens, deliberately: there is no tokenizer in
-# this process and adding one to approximate a bound is a bad trade. The
-# conversion is conservative on purpose — nomic-embed-text holds 2048 tokens,
-# and the text being embedded here is log lines, JSON and stack traces, which
-# tokenize denser than prose (nearer 3 chars/token than 4).
+# this process and adding one to approximate a bound is a bad trade.
+#
+# The ratio is 2, not 3. Three chars/token is the dense end of PROSE; the text
+# actually embedded here is JSON, paths, hex digests and stack traces, where
+# punctuation and identifiers split aggressively. Measured against a
+# representative investigation record it comes out at ~2.6 chars/token, so a
+# 3x bound would let ~2390 tokens through a 2048-token model — still failing,
+# and now failing SILENTLY, because the negative memory below would stop the
+# noise while leaving the record unindexed forever. Erring low costs a little
+# tail text; erring high recreates the bug with the alarm disconnected.
 MODEL_INPUT_CHAR_LIMITS = {
-    "nomic-embed-text": 2048 * 3,
+    "nomic-embed-text": 2048 * 2,
 }
-#: For a model we have no entry for. Low enough to be safe against a small
-#: context, since guessing high reintroduces exactly this bug for a new model.
-DEFAULT_MAX_INPUT_CHARS = 4096
+#: For a model we have no entry for. Deliberately BELOW every known model's
+#: bound rather than beside it: an unknown model may have a far smaller
+#: context than nomic's 2048 tokens, and guessing high reintroduces exactly
+#: this bug the day someone swaps models. Truncating more than necessary costs
+#: some tail text; truncating less than necessary costs the record. An
+#: operator who knows better sets CFOP_EMBEDDING_MAX_CHARS.
+DEFAULT_MAX_INPUT_CHARS = 2048
 
 #: Bodies Ollama returns when the input cannot fit, whatever the status code.
 #: This is a property of the INPUT, not of the moment, so a retry is
@@ -304,6 +314,18 @@ class EmbeddingService:
         _log("warn", "Input can never be embedded; not retrying it",
              model=self.model, text_len=len(text), reason=reason[:200])
 
+    @staticmethod
+    def _record_result(result: str) -> None:
+        """Record exactly one outcome for one embedding attempt.
+
+        Centralised because the labels are a mutually exclusive set and the
+        first version was not: it counted `truncated` on the way out and
+        `success` on the way back, double-counting every oversized record.
+        """
+        _er, _ec = _get_metrics()
+        if _er:
+            _er.labels(result=result).inc()
+
     def _unembeddable_reason(self, text: str) -> Optional[str]:
         key = EmbeddingCache.compute_hash(text, self.model)
         with self._unembeddable_lock:
@@ -373,9 +395,7 @@ class EmbeddingService:
         if known_bad:
             _log("debug", "Skipping known-unembeddable input",
                  model=self.model, text_len=len(text), reason=known_bad[:120])
-            _er, _ec = _get_metrics()
-            if _er:
-                _er.labels(result='unembeddable').inc()
+            self._record_result('unembeddable')
             return None
 
         # Need to generate - check availability
@@ -389,14 +409,12 @@ class EmbeddingService:
         # rather than re-truncating and re-sending it.
         limit = max_input_chars(self.model)
         prompt = text
-        if len(prompt) > limit:
+        truncated = len(prompt) > limit
+        if truncated:
             prompt = prompt[:limit]
             _log("warn", "Input truncated to fit the embedding model",
                  model=self.model, original_len=len(text), sent_len=len(prompt),
                  limit=limit)
-            _er, _ec = _get_metrics()
-            if _er:
-                _er.labels(result='truncated').inc()
 
         try:
             response = requests.post(
@@ -419,9 +437,12 @@ class EmbeddingService:
                          model=self.model,
                          text_len=len(text),
                          embedding_dim=len(embedding))
-                    _er, _ec = _get_metrics()
-                    if _er:
-                        _er.labels(result='success').inc()
+                    # ONE result per attempt: a truncated embed that lands is
+                    # `truncated`, not truncated+success. Counting both would
+                    # double the request total for every oversized record and
+                    # make the same attempt read as "indexed faithfully" and
+                    # "not indexed faithfully" at once.
+                    self._record_result('truncated' if truncated else 'success')
                     return embedding
 
             body = response.text or ""
@@ -433,26 +454,26 @@ class EmbeddingService:
             if is_deterministic_input_error(body):
                 self._mark_unembeddable(
                     text, f"HTTP {response.status_code}: {body[:160]}")
+                # Labelled on THIS call, not the next one. This is the attempt
+                # that decided the record will never be indexed; labelling it
+                # `error` would call the decision retryable and hide the event
+                # until a second sweep — which a restart in between erases
+                # entirely.
+                self._record_result('unembeddable')
             else:
                 _log("warn", "Failed to generate embedding",
                      status=response.status_code,
                      response=body[:200])
-            _er, _ec = _get_metrics()
-            if _er:
-                _er.labels(result='error').inc()
+                self._record_result('error')
             return None
 
         except requests.exceptions.Timeout:
             _log("warn", "Embedding generation timed out", model=self.model)
-            _er, _ec = _get_metrics()
-            if _er:
-                _er.labels(result='error').inc()
+            self._record_result('error')
             return None
         except Exception as e:
             _log("error", "Embedding generation error", error=str(e))
-            _er, _ec = _get_metrics()
-            if _er:
-                _er.labels(result='error').inc()
+            self._record_result('error')
             return None
 
     def get_cache_stats(self) -> Dict[str, Any]:
