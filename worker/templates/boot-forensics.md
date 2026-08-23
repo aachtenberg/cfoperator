@@ -66,7 +66,7 @@ When STATUS is needs_action or escalate, also classify how the RECOMMENDATION
 could be applied so it can be routed for remediation (these are read-only
 classifications — do NOT apply anything yourself):
 
-REMEDIATION_CLASS: <one of: gitops-patch | k8s-action | k8s-imperative | node-action | manual>
+REMEDIATION_CLASS: <one of: gitops-patch | k8s-action | k8s-imperative | node-action | data-fix | external-system | manual>
   - gitops-patch: a manifest change in the homelab-infra GitOps repo. Use this
     only when you included exactly one ```diff block above.
   - k8s-action: an in-cluster change expressible as a manifest edit (scale
@@ -75,6 +75,9 @@ REMEDIATION_CLASS: <one of: gitops-patch | k8s-action | k8s-imperative | node-ac
     (create Job from CronJob, delete pod, cordon) — parks for a human
   - node-action: a node-state change (DNS/resolv.conf, files, systemd) applied
     over ssh/ansible.
+  - data-fix: a database-row change. Parks for a human; nothing executes this.
+  - external-system: a change in a system we do not operate (vendor console).
+    Parks for a human.
   - manual: needs human judgement or is not safely mechanizable.
 RISK: <one of: low | med | high — blast radius / reversibility of applying the fix>
 CONFIDENCE: <0.0-1.0 — your confidence the RECOMMENDATION is correct and complete>

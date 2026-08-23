@@ -245,7 +245,8 @@ def test_class_with_no_runner_fails_fast_naming_the_gap(monkeypatch):
 def test_every_no_runner_class_is_a_real_class():
     """A typo in _NO_EXECUTOR_PATH would silently route a live class to the
     GitOps path instead of failing fast."""
-    valid = {"gitops-patch", "k8s-action", "k8s-imperative", "node-action", "manual"}
+    valid = {"gitops-patch", "k8s-action", "k8s-imperative", "node-action",
+             "data-fix", "external-system", "manual"}
     assert set(entrypoint._NO_EXECUTOR_PATH) <= valid
 
 

@@ -454,7 +454,7 @@ _REMEDIATION_LEASE_TIMEOUT_S = 1800
 _REMEDIATION_MAX_ATTEMPTS = 3
 _REMEDIATION_INFLIGHT = ('claimed', 'executing')
 _REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action', 'k8s-imperative',
-                        'node-action', 'manual')
+                        'node-action', 'data-fix', 'external-system', 'manual')
 _REMEDIATION_RISKS = ('low', 'med', 'high')
 
 # Rendered from _REMEDIATION_CLASSES rather than written out again, so the

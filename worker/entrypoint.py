@@ -56,9 +56,12 @@ _STATUS_TO_OUTCOME = {
 #   k8s-imperative: a one-off kubectl verb with no manifest equivalent
 #                 (create Job from CronJob, delete pod, cordon) — parks for a human
 #   node-action:  a node-state change (DNS, files, systemd) via ssh/ansible
+#   data-fix:     a database-row change; parks for a human (nothing executes it)
+#   external-system: a change in a system we do not operate; parks for a human
 #   manual:       needs human judgement; not safely mechanizable
 _VALID_REMEDIATION_CLASSES = ("gitops-patch", "k8s-action", "k8s-imperative",
-                              "node-action", "manual")
+                              "node-action", "data-fix", "external-system",
+                              "manual")
 _VALID_RISKS = ("low", "med", "high")
 
 # Read-only tool allowlist. --permission-mode dontAsk auto-denies anything

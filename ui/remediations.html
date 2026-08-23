@@ -259,6 +259,10 @@ async function detail(id){
     ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
     ${resolutionHtml(r)}
     <h3>Recommendation</h3><pre>${esc(p.recommendation||p.title||'—')}</pre>
+    ${p.targets?`<h3>Targets</h3><pre>${esc(JSON.stringify(p.targets,null,2))}</pre>`:''}
+    ${p.steps&&p.steps.length?`<h3>Steps</h3><pre>${esc(p.steps.map((s,i)=>(i+1)+'. '+s).join('\n'))}</pre>`:''}
+    ${p.verify?`<h3>Verify</h3><pre>${esc((p.verify.command||'')+(p.verify.expect?'\nexpect: '+p.verify.expect:''))}</pre>`:''}
+    ${p.rejected&&p.rejected.length?`<h3>Rejected alternatives</h3><pre>${esc(p.rejected.map(x=>(x.alternative||'')+' — '+(x.why_not||'')).join('\n'))}</pre>`:''}
     ${p.finding?`<h3>Finding</h3><pre>${esc(p.finding)}</pre>`:''}
     ${p.evidence?`<h3>Evidence</h3><pre>${esc(p.evidence)}</pre>`:''}
     ${p.proposed_diff?`<h3>Proposed diff</h3><pre>${esc(p.proposed_diff)}</pre>`:''}
@@ -398,7 +402,7 @@ function showReclassify(id){
     `<button type="button" class="chip pick ${v===cur?'active':''}" data-g="${group}" data-v="${v}" onclick="pick(this)">${v}</button>`).join(' ');
   document.getElementById('actionform').innerHTML =
     `<div class="actform" style="flex-direction:column;align-items:stretch;gap:10px">
-       <div><span class="muted">class</span><br>${pickRow('class',['gitops-patch','k8s-action','k8s-imperative','node-action','manual'],cls)}</div>
+       <div><span class="muted">class</span><br>${pickRow('class',['gitops-patch','k8s-action','k8s-imperative','node-action','data-fix','external-system','manual'],cls)}</div>
        <div><span class="muted">risk</span><br>${pickRow('risk',['low','med','high'],risk)}</div>
        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
          <span class="muted">repo</span>
