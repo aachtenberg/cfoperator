@@ -191,7 +191,12 @@ async function detail(id){
   const d=document.getElementById('detail'); d.innerHTML='<span class="muted">loading…</span>';
   d.classList.add('open'); document.getElementById('backdrop').classList.add('open');
   OPEN=id; history.replaceState(null,'','#'+id);
-  let r; try{ r=await (await fetch('/api/investigations/'+id)).json(); }catch(e){ d.innerHTML='error'; return; }
+  let r; try{ r=await (await fetch('/api/investigations/'+id)).json(); }catch(e){
+    if(OPEN===id) d.innerHTML='error'; return; }
+  // Two clicks in quick succession race: a slow response for the row you left
+  // would otherwise paint over the row you are on, while the URL still names
+  // the newer one. Last click wins, and a stale response is dropped.
+  if(OPEN!==id) return;
   const f=r.findings||{};
   d.innerHTML=`
     <span class="x" onclick="closeDetail()">×</span>
@@ -232,13 +237,17 @@ function copyAttach(){
   const el=document.getElementById('attach-cmd');
   const text=el?(el.textContent||''):'';
   if(!text) return;
+  // Copy the element the operator can actually see (it is user-select:all, so
+  // the selection reads as one deliberate act) rather than an off-screen
+  // textarea — a detached node is the flakier thing to ask execCommand to copy,
+  // and this leaves the command visibly selected if the copy fails anyway.
   const fallback=()=>{
-    const ta=document.createElement('textarea');
-    ta.value=text; ta.setAttribute('readonly','');
-    ta.style.position='fixed'; ta.style.top='-1000px';
-    document.body.appendChild(ta); ta.select();
-    let ok=false; try{ ok=document.execCommand('copy'); }catch(e){ ok=false; }
-    ta.remove();
+    let ok=false;
+    try{
+      const sel=window.getSelection(), range=document.createRange();
+      range.selectNodeContents(el); sel.removeAllRanges(); sel.addRange(range);
+      ok=document.execCommand('copy');
+    }catch(e){ ok=false; }
     toast(ok?'attach command copied':'copy failed — select the command and copy manually', ok?'ok':'err');
   };
   if(navigator.clipboard && navigator.clipboard.writeText){

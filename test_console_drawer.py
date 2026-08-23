@@ -38,8 +38,12 @@ REPO_ROOT = Path(__file__).resolve().parent
 UI = REPO_ROOT / "ui"
 
 #: Console pages whose main content is a row list plus a slide-in detail
-#: drawer. Both should be linkable; a third one added later should have to
-#: think about it rather than quietly not be.
+#: drawer. What is asserted below is the *inbound* half only — a pasted URL
+#: opens the row it names. investigations.html also writes the hash as you
+#: click, so its URL always names what you are looking at; remediations.html
+#: does not yet, and this does not claim otherwise. A third drawer page added
+#: later should have to think about linkability rather than quietly not have
+#: it.
 DRAWER_PAGES = ["investigations.html", "remediations.html"]
 
 #: Pages offering a one-click copy of something. The console is normally
@@ -185,8 +189,9 @@ def test_copy_does_not_assume_a_secure_context(page):
 
 @pytest.mark.parametrize("page", DRAWER_PAGES)
 def test_a_drawer_page_opens_from_the_url(page):
-    """Guards the next page that grows a drawer: if you can open a row, you
-    should be able to hand someone the URL of the row you opened."""
+    """Guards the next page that grows a drawer: a URL naming a row should
+    open that row. Writing the hash back as you click is the other half, and
+    only investigations.html does it — see the behavioural tests below."""
     js = inline_script(page)
     assert "location.hash" in js, f"{page} never reads location.hash"
     assert "'hashchange'" in js, f"{page} does not react to the hash changing"
@@ -200,7 +205,7 @@ const fs=require('fs'), vm=require('vm');
 const html=fs.readFileSync(process.argv[2],'utf8');
 const src=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
-const detailFetches=[];
+const detailFetches=[], slow=new Set();
 function el(){return{className:'',innerHTML:'',textContent:'',value:'',hidden:false,
   style:{},classList:{add(){},remove(){}},setAttribute(){},select(){},remove(){},
   focus(){},scrollIntoView(){},appendChild(){},addEventListener(){}};}
@@ -222,9 +227,11 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
   fetch:(url)=>{
     if(url.indexOf('/api/investigations/')===0){
       detailFetches.push(url);
-      return Promise.resolve({json:()=>Promise.resolve(
-        {id:2272,trigger:'backup failed',outcome:'monitoring',
-         attach_command:'cfassist attach 2272',findings:{}})});
+      const id=Number(url.split('/').pop());
+      const res={json:()=>Promise.resolve({id:id,trigger:'backup failed',
+        outcome:'monitoring',attach_command:'cfassist attach '+id,findings:{}})};
+      return slow.has(id) ? new Promise(r=>setTimeout(()=>r(res),40))
+                          : Promise.resolve(res);
     }
     if(url.indexOf('/api/investigations')===0){
       return Promise.resolve({json:()=>Promise.resolve({investigations:[]})});
@@ -257,6 +264,16 @@ const tick=()=>new Promise(r=>setImmediate(r));
   box.openFromHash();
   await tick();
   out.openedFromHash=detailFetches[detailFetches.length-1];
+
+  // Two clicks, the first one slow: the row you left must not paint over the
+  // row you moved to.
+  slow.add(2272);
+  const a=box.detail(2272), b=box.detail(1889);
+  await a; await b;
+  await new Promise(r=>setTimeout(r,80));
+  const html=box.document.getElementById('detail').innerHTML;
+  out.finalDrawerId=(html.match(/Investigation #(\d+)/)||[])[1];
+  out.finalHash=loc.hash;
 
   console.log(JSON.stringify(out));
 })().catch(e => { console.error(e); process.exit(1); });
@@ -302,3 +319,12 @@ def test_a_pasted_url_opens_that_row(drawer_behaviour):
     """The point of the whole exercise: someone hands you
     /investigations#1889 and you land on 1889."""
     assert drawer_behaviour["openedFromHash"] == "/api/investigations/1889"
+
+
+def test_a_slow_response_cannot_paint_over_the_row_you_moved_to(drawer_behaviour):
+    """Click one row, change your mind, click another: a late response for the
+    first must not replace the second. The URL already names the newer row, so
+    without the guard the drawer and the address bar disagree — and the one
+    you would paste is the one you are not looking at."""
+    assert drawer_behaviour["finalDrawerId"] == "1889"
+    assert drawer_behaviour["finalHash"] == "#1889"
