@@ -75,6 +75,7 @@ jobs:
           run "root-level" "${root}" \
             test_web_auth.py test_web_auth_db.py test_auth_integration.py \
             test_console_nav.py test_console_brand.py test_console_llm_switcher.py \
+            test_console_drawer.py \
             test_dockerfile_image.py test_config_merge.py \
             test_http_investigate.py test_k8s_probe_filter.py \
             test_triage_engine.py test_github_integration.py test_event_runtime.py \

@@ -34,6 +34,10 @@ ATTACH_HINT_PREFIX = "Take over: "
 # test_cockpit_attach_contract.py asserts they still agree. Telling someone to
 # paste a command that no longer exists is a silent failure that only shows up
 # mid-incident.
+#
+# A third consumer since CFOP-73: the console drawer offers the same line for
+# copying, rendered server-side in web_server.py from this constant rather than
+# spelled again in investigations.html. test_console_drawer.py holds that end.
 
 
 def _coerce_investigation_id(raw):

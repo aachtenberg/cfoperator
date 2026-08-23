@@ -54,6 +54,16 @@
   .kv { margin:4px 0; } .kv b { color:var(--text-secondary); font-weight:600; }
   .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px; }
   .empty { padding:40px; text-align:center; color:var(--text-muted); }
+  /* The handoff command. user-select:all so a double-click takes the whole
+     line — the Copy button is the convenience, not the only way out. */
+  .cmd { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
+    padding:3px 7px; user-select:all; font-size:12px; }
+  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
+  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
+    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
+    font-size:13px; min-width:200px; transition:opacity .2s; }
+  .toast.ok { border-left-color:var(--accent); }
+  .toast.err { border-left-color:var(--red); }
 </style>
 </head>
 <body>
@@ -77,6 +87,7 @@
 <div id="empty" class="empty" hidden>No investigations match this filter.</div>
 <div id="backdrop" onclick="closeDetail()"></div>
 <div id="detail"></div>
+<div id="toasts"></div>
 
 <script>
 const OUTCOMES = ['resolved','needs_action','monitoring','escalated','escalate','failed','in_progress','retry'];
@@ -166,12 +177,20 @@ function paint(){
       <td class="muted">${age(r.started_at)}</td></tr>`).join('');
 }
 function setF(o){ filter=o; paint(); }
-function closeDetail(){ document.getElementById('detail').classList.remove('open'); document.getElementById('backdrop').classList.remove('open'); }
+// The open drawer names itself in the URL (CFOP-73): /investigations#2272 is
+// what you paste to someone and what a reload comes back to. replaceState
+// rather than assigning location.hash — assigning fires hashchange, which
+// would re-enter detail() and refetch, and would fill the back button with
+// every row you merely glanced at.
+let OPEN=null;
+function closeDetail(){ document.getElementById('detail').classList.remove('open'); document.getElementById('backdrop').classList.remove('open');
+  OPEN=null; history.replaceState(null,'',location.pathname+location.search); }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
 
 async function detail(id){
   const d=document.getElementById('detail'); d.innerHTML='<span class="muted">loading…</span>';
   d.classList.add('open'); document.getElementById('backdrop').classList.add('open');
+  OPEN=id; history.replaceState(null,'','#'+id);
   let r; try{ r=await (await fetch('/api/investigations/'+id)).json(); }catch(e){ d.innerHTML='error'; return; }
   const f=r.findings||{};
   d.innerHTML=`
@@ -182,6 +201,7 @@ async function detail(id){
     <div class="kv"><b>trigger</b> ${esc(r.trigger)}</div>
     <div class="kv"><b>started</b> ${esc(r.started_at)}${r.completed_at?' · <b>completed</b> '+esc(r.completed_at):''}</div>
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
+    ${attachBlock(r)}
     ${remDrawerLine(r)}
     ${triageBlock(r)}
     ${sessionsBlock(r)}
@@ -189,6 +209,41 @@ async function detail(id){
     ${f.recommendation?`<h3>Recommendation</h3><pre>${esc(f.recommendation)}</pre>`:''}
     ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
     <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;
+}
+// The handoff (CFOP-73). Slack, Discord and ntfy all end a notification with
+// this line; the console is where you are actually looking at the
+// investigation, so it offers it too rather than making you carry the id to a
+// terminal in your head. The string is the server's — see web_server.py — so
+// it cannot drift from the command the shipped binary implements.
+function attachBlock(r){
+  const cmd=r.attach_command;
+  if(!cmd) return '';
+  return `<div class="kv"><b>take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>
+    <span class="chip" onclick="copyAttach()">Copy</span></div>`;
+}
+function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
+  const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
+  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, 3800); }
+// navigator.clipboard is a secure-context API, and this console is normally
+// reached over plain HTTP on the LAN — so the execCommand path is the one that
+// actually runs for most operators here, not a legacy branch. Either way the
+// result is stated: a copy that silently did nothing is worse than no button.
+function copyAttach(){
+  const el=document.getElementById('attach-cmd');
+  const text=el?(el.textContent||''):'';
+  if(!text) return;
+  const fallback=()=>{
+    const ta=document.createElement('textarea');
+    ta.value=text; ta.setAttribute('readonly','');
+    ta.style.position='fixed'; ta.style.top='-1000px';
+    document.body.appendChild(ta); ta.select();
+    let ok=false; try{ ok=document.execCommand('copy'); }catch(e){ ok=false; }
+    ta.remove();
+    toast(ok?'attach command copied':'copy failed — select the command and copy manually', ok?'ok':'err');
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>toast('attach command copied','ok')).catch(fallback);
+  } else { fallback(); }
 }
 // Cockpit sessions (CFOP-37) — what humans worked out against this
 // investigation, appended beside it rather than merged into `findings`. Placed
@@ -240,7 +295,12 @@ async function triage(id, action){
   }catch(e){ alert('triage failed'); return; }
   await detail(id); load();
 }
-load(); setInterval(load, 20000);
+// Inbound only: a pasted or edited URL, and the reload case. detail() keeps
+// the hash in step from the other direction without coming through here.
+function openFromHash(){ const m=location.hash.match(/^#(\d+)$/); if(m && +m[1]!==OPEN) detail(+m[1]); }
+window.addEventListener('hashchange', openFromHash);
+
+load().then(openFromHash); setInterval(load, 20000);
 </script>
 </body>
 </html>
