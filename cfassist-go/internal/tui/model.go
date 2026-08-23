@@ -624,6 +624,7 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 				resolved.Temperature,
 				resolved.APIKey,
 			)
+			m.llm.Name = name
 			oldProvider := m.activeProvider
 			m.activeProvider = name
 			m.cfg.LLM.ContextWindow = resolved.ContextWindow

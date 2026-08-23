@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -57,14 +58,11 @@ func Run(
 	for i := 0; i < maxIterations; i++ {
 		output.ShowThinking()
 
-		resp, err := llm.Chat(fullMessages, toolSchemas)
+		resp, err := chatWithRetry(llm, output, fullMessages, toolSchemas)
 		output.ClearThinking()
 
 		if err != nil {
-			output.ShowError(
-				fmt.Sprintf("LLM request failed: %v", err),
-				fmt.Sprintf("Check connection: curl %s/api/tags", llm.URL),
-			)
+			output.ShowError(fmt.Sprintf("LLM request failed: %v", err), hintFor(err))
 			result.Error = err.Error()
 			result.Latency = time.Since(start)
 			return result, fullMessages
@@ -118,6 +116,81 @@ func Run(
 	output.ShowWarning(fmt.Sprintf("Reached maximum tool iterations (%d).", maxIterations))
 	result.Latency = time.Since(start)
 	return result, fullMessages
+}
+
+// maxLLMAttempts bounds a single Chat call, not the whole turn: each iteration
+// of the tool loop gets its own budget, so a long investigation is not rationed
+// by an earlier hiccup.
+const maxLLMAttempts = 3
+
+// retryBackoff is the base delay between attempts, doubling each time. Tests
+// set it to zero; a human is waiting at a prompt, so the real values are short.
+var retryBackoff = 500 * time.Millisecond
+
+// maxRetryAfter caps how long a provider may park an interactive session.
+//
+// Retry-After is a number we did not choose, slept on the thread the operator
+// is watching. A provider — or a proxy in front of one — asking for an hour
+// would freeze the TUI with no way out but kill. We still make the attempt it
+// asked for, just not on its schedule, and the warning says so.
+var maxRetryAfter = 15 * time.Second
+
+// chatWithRetry re-sends a request that failed in a way a second sample could
+// fix — most often a provider refusing to parse the model's own tool call,
+// which is nondeterministic and usually gone on the next try.
+//
+// Retries are announced rather than swallowed. An operator watching a turn take
+// nine seconds is owed the difference between one slow model and three attempts,
+// and a silent retry loop is how a degraded provider stays invisible until it
+// fails outright.
+func chatWithRetry(
+	llm *client.LLMClient,
+	output Output,
+	messages []client.Message,
+	toolSchemas []client.ToolSchema,
+) (*client.Response, error) {
+	for attempt := 1; ; attempt++ {
+		resp, err := llm.Chat(messages, toolSchemas)
+		if err == nil {
+			return resp, nil
+		}
+
+		var apiErr *client.APIError
+		if !errors.As(err, &apiErr) || !apiErr.Retryable() || attempt >= maxLLMAttempts {
+			return nil, err
+		}
+
+		// The provider's own guidance wins over our backoff when it sends any —
+		// on a 429 it knows when it will answer and we are guessing.
+		delay, asked := apiErr.RetryAfter, apiErr.RetryAfter
+		if delay <= 0 {
+			delay = retryBackoff << (attempt - 1)
+		}
+		if delay > maxRetryAfter {
+			delay = maxRetryAfter
+		}
+
+		waited := ""
+		if asked > delay {
+			waited = fmt.Sprintf(" (asked for %s, waiting %s)", asked, delay)
+		}
+
+		output.ClearThinking()
+		output.ShowWarning(fmt.Sprintf("%s%s — retrying (%d of %d)",
+			apiErr.Summary(), waited, attempt+1, maxLLMAttempts))
+		time.Sleep(delay)
+		output.ShowThinking()
+	}
+}
+
+// hintFor asks the provider error what an operator should do about it, falling
+// back to a generic line for errors raised before a request was ever built.
+func hintFor(err error) string {
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Hint()
+	}
+	return "Check the provider settings in ~/.cfassist/config.yaml."
 }
 
 // ParseToolArgs handles the case where arguments might be a JSON string.

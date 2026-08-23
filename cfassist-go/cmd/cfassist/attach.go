@@ -186,6 +186,10 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if err := llm.CheckConnection(); err != nil {
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) {
+			return fmt.Errorf("%v\n  hint: %s", err, apiErr.Hint())
+		}
 		return fmt.Errorf("%v\n  hint: Is the LLM server running?", err)
 	}
 
@@ -385,6 +389,7 @@ func resolveLLM(cfg *config.Config) (*client.LLMClient, string, error) {
 		resolved.Temperature,
 		resolved.APIKey,
 	)
+	llm.Name = activeProvider
 	cfg.LLM.ContextWindow = resolved.ContextWindow
 	return llm, activeProvider, nil
 }

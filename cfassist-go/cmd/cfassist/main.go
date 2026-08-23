@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -97,8 +98,14 @@ func run(cmd *cobra.Command, args []string) error {
 		presenceCh <- cfoperator.DetectFromConfig(cfg.CFOperator.URL, cfg.CFOperator.Token, os.Getenv)
 	}()
 
-	// Check connection
+	// Check connection. The startup probe fails for the same reasons a chat
+	// request does — a rejected key, a model that does not exist — so it asks
+	// the error what to suggest rather than assuming a dead server.
 	if err := llm.CheckConnection(); err != nil {
+		var apiErr *client.APIError
+		if errors.As(err, &apiErr) {
+			return fmt.Errorf("%v\n  hint: %s", err, apiErr.Hint())
+		}
 		return fmt.Errorf("%v\n  hint: Is the LLM server running?", err)
 	}
 
