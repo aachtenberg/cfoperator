@@ -1,10 +1,13 @@
 package conversation
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -101,6 +104,7 @@ func TestResultFields(t *testing.T) {
 type mockOllamaResponse struct {
 	content      string
 	toolCall     *client.ToolCall
+	toolCalls    []client.ToolCall
 	done         bool
 	promptTokens int
 	evalTokens   int
@@ -135,7 +139,9 @@ func newMockOllamaServer(t *testing.T, responses []mockOllamaResponse) *httptest
 			"content": resp.content,
 		}
 
-		if resp.toolCall != nil {
+		if len(resp.toolCalls) > 0 {
+			msg["tool_calls"] = resp.toolCalls
+		} else if resp.toolCall != nil {
 			msg["tool_calls"] = []client.ToolCall{*resp.toolCall}
 		}
 
@@ -311,5 +317,272 @@ func TestRunDefaultMaxIterations(t *testing.T) {
 	result, _ := Run(context.Background(), llm, toolReg, output, []client.Message{{Role: "user", Content: "hi"}}, "test", 0)
 	if result.Error != "" {
 		t.Errorf("unexpected error: %s", result.Error)
+	}
+}
+
+func TestRunExecutesAllParallelToolCalls(t *testing.T) {
+	server := newMockOllamaServer(t, []mockOllamaResponse{
+		{
+			toolCalls: []client.ToolCall{
+				{
+					ID: "toolu_a",
+					Function: client.ToolCallFunction{
+						Name:      "bash",
+						Arguments: map[string]any{"command": "echo first"},
+					},
+				},
+				{
+					ID: "toolu_b",
+					Function: client.ToolCallFunction{
+						Name:      "bash",
+						Arguments: map[string]any{"command": "echo second"},
+					},
+				},
+			},
+			done: true, promptTokens: 40, evalTokens: 12,
+		},
+		{content: "both commands ran", done: true, promptTokens: 80, evalTokens: 8},
+	})
+	defer server.Close()
+
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	toolReg := tools.New(cfg)
+	output := &mockOutput{}
+
+	result, msgs := Run(context.Background(), llm, toolReg, output,
+		[]client.Message{{Role: "user", Content: "check both"}}, "test", 10)
+
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.ToolCalls != 2 {
+		t.Errorf("ToolCalls = %d, want 2 (both parallel calls)", result.ToolCalls)
+	}
+	if len(output.toolCalls) != 2 {
+		t.Errorf("shown tool calls = %d, want 2", len(output.toolCalls))
+	}
+	if result.Response != "both commands ran" {
+		t.Errorf("Response = %q", result.Response)
+	}
+
+	var toolMsgs int
+	var ids []string
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			toolMsgs++
+			ids = append(ids, m.ToolCallID)
+		}
+	}
+	if toolMsgs != 2 {
+		t.Errorf("tool messages = %d, want 2", toolMsgs)
+	}
+	wantIDs := map[string]bool{"toolu_a": true, "toolu_b": true}
+	for _, id := range ids {
+		if !wantIDs[id] {
+			t.Errorf("unexpected tool id %q", id)
+		}
+		delete(wantIDs, id)
+	}
+	if len(wantIDs) != 0 {
+		t.Errorf("missing tool result ids: %v", wantIDs)
+	}
+}
+
+func TestRunAnthropicSendsOneUserMessageForParallelToolResults(t *testing.T) {
+	// The 400 in the session log was Anthropic looking at messages[2] (the
+	// assistant tool_use turn after two unmerged user messages, or after a
+	// tool_use whose sibling ids had no result) and refusing it. This hits
+	// the Anthropic converter through Run, not just toAnthropicMessages.
+	var second []byte
+	call := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		call++
+		if call == 2 {
+			second = append([]byte(nil), body...)
+		}
+		if call == 1 {
+			json.NewEncoder(w).Encode(map[string]any{
+				"role": "assistant",
+				"content": []map[string]any{
+					{"type": "tool_use", "id": "toolu_a", "name": "bash", "input": map[string]any{"command": "echo a"}},
+					{"type": "tool_use", "id": "toolu_b", "name": "bash", "input": map[string]any{"command": "echo b"}},
+				},
+				"usage":        map[string]int{"input_tokens": 10, "output_tokens": 20},
+				"stop_reason":  "tool_use",
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"role":         "assistant",
+			"content":      []map[string]any{{"type": "text", "text": "done"}},
+			"usage":        map[string]int{"input_tokens": 30, "output_tokens": 4},
+			"stop_reason":  "end_turn",
+		})
+	}))
+	defer server.Close()
+
+	llm := client.New("anthropic", server.URL, "claude-sonnet-4-20250514", 0.7, "key")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	toolReg := tools.New(cfg)
+	output := &mockOutput{}
+
+	result, _ := Run(context.Background(), llm, toolReg, output,
+		[]client.Message{{Role: "user", Content: "check"}}, "sys", 10)
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if call < 2 {
+		t.Fatalf("expected a follow-up request after tool results, got %d calls", call)
+	}
+
+	var payload struct {
+		Messages []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(second, &payload); err != nil {
+		t.Fatalf("second request: %v\n%s", err, second)
+	}
+
+	var assistantIdx = -1
+	for i, m := range payload.Messages {
+		if m.Role == "assistant" && bytes.Contains(m.Content, []byte("tool_use")) {
+			assistantIdx = i
+			break
+		}
+	}
+	if assistantIdx < 0 {
+		t.Fatalf("no assistant tool_use in follow-up:\n%s", second)
+	}
+	if assistantIdx+1 >= len(payload.Messages) {
+		t.Fatal("assistant tool_use is the last message; Anthropic needs tool_result next")
+	}
+	next := payload.Messages[assistantIdx+1]
+	if next.Role != "user" {
+		t.Fatalf("message after tool_use has role %q, want user", next.Role)
+	}
+	var blocks []map[string]any
+	if err := json.Unmarshal(next.Content, &blocks); err != nil {
+		t.Fatalf("tool_result content should be a block array, got %s: %v", next.Content, err)
+	}
+	ids := map[string]bool{}
+	for _, b := range blocks {
+		if b["type"] == "tool_result" {
+			id, _ := b["tool_use_id"].(string)
+			ids[id] = true
+		}
+	}
+	if !ids["toolu_a"] || !ids["toolu_b"] {
+		t.Fatalf("follow-up user message missing tool_results, ids=%v content=%s", ids, next.Content)
+	}
+	if assistantIdx+2 < len(payload.Messages) && payload.Messages[assistantIdx+2].Role == "user" {
+		t.Fatal("tool results were split across consecutive user messages")
+	}
+}
+
+func TestRunOmitsSynthesizedSystemMessage(t *testing.T) {
+	server := newMockOllamaServer(t, []mockOllamaResponse{
+		{content: "ok", done: true, promptTokens: 4, evalTokens: 2},
+	})
+	defer server.Close()
+
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	_, msgs := Run(context.Background(), llm, tools.New(cfg), &mockOutput{},
+		[]client.Message{{Role: "user", Content: "hi"}}, "you are a secret system prompt", 10)
+	for _, m := range msgs {
+		if m.Role == "system" {
+			t.Fatalf("Run leaked the synthesized system message: %+v", m)
+		}
+		if strings.Contains(m.Content, "secret system prompt") {
+			t.Fatalf("system prompt leaked into transcript: %q", m.Content)
+		}
+	}
+}
+
+func TestRunFallbackToolIDsDifferAcrossTurns(t *testing.T) {
+	server := newMockOllamaServer(t, []mockOllamaResponse{
+		{toolCall: &client.ToolCall{Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "echo a"}}}, done: true, promptTokens: 4, evalTokens: 2},
+		{content: "a", done: true, promptTokens: 6, evalTokens: 1},
+		{toolCall: &client.ToolCall{Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "echo b"}}}, done: true, promptTokens: 4, evalTokens: 2},
+		{content: "b", done: true, promptTokens: 6, evalTokens: 1},
+	})
+	defer server.Close()
+
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	toolReg := tools.New(cfg)
+
+	_, first := Run(context.Background(), llm, toolReg, &mockOutput{},
+		[]client.Message{{Role: "user", Content: "a"}}, "sys", 10)
+	_, second := Run(context.Background(), llm, toolReg, &mockOutput{},
+		[]client.Message{{Role: "user", Content: "b"}}, "sys", 10)
+
+	idOf := func(msgs []client.Message) string {
+		t.Helper()
+		for _, m := range msgs {
+			if m.Role == "tool" {
+				return m.ToolCallID
+			}
+		}
+		t.Fatal("no tool message")
+		return ""
+	}
+	id1, id2 := idOf(first), idOf(second)
+	if id1 == "" || id2 == "" {
+		t.Fatal("expected synthesized tool ids")
+	}
+	if id1 == id2 {
+		t.Fatalf("fallback ids collided across Run calls: %q", id1)
+	}
+}
+
+func TestRunKeepsToolResultsWhenCancelledMidRound(t *testing.T) {
+	server := newMockOllamaServer(t, []mockOllamaResponse{
+		{
+			toolCalls: []client.ToolCall{
+				{ID: "toolu_a", Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "echo first"}}},
+				{ID: "toolu_b", Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "echo second"}}},
+			},
+			done: true, promptTokens: 10, evalTokens: 5,
+		},
+	})
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	afterTool = func() { cancel() }
+	t.Cleanup(func() { afterTool = nil })
+
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	result, msgs := Run(ctx, llm, tools.New(cfg), &mockOutput{},
+		[]client.Message{{Role: "user", Content: "check both"}}, "sys", 10)
+
+	if !result.Cancelled {
+		t.Fatal("expected the turn to be marked cancelled")
+	}
+	var toolMsgs []client.Message
+	for _, m := range msgs {
+		if m.Role == "tool" {
+			toolMsgs = append(toolMsgs, m)
+		}
+	}
+	if len(toolMsgs) != 2 {
+		t.Fatalf("tool messages = %d, want 2 (one per tool_use even after cancel)", len(toolMsgs))
+	}
+	if toolMsgs[0].ToolCallID != "toolu_a" || toolMsgs[1].ToolCallID != "toolu_b" {
+		t.Fatalf("tool ids = %q, %q", toolMsgs[0].ToolCallID, toolMsgs[1].ToolCallID)
+	}
+	if !toolMsgs[1].IsError || !strings.Contains(toolMsgs[1].Content, "cancelled") {
+		t.Fatalf("second result should be the cancelled filler, got %+v", toolMsgs[1])
 	}
 }

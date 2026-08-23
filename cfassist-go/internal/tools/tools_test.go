@@ -298,6 +298,19 @@ func TestMarshalResult(t *testing.T) {
 	}
 }
 
+func TestMarshalResultTruncatesFatOutput(t *testing.T) {
+	s := MarshalResult(map[string]any{"stdout": strings.Repeat("x", maxToolResultChars+1000)})
+	if len(s) <= maxToolResultChars {
+		t.Fatalf("truncated result should include the marker, len=%d", len(s))
+	}
+	if !strings.Contains(s, "truncated") {
+		t.Fatalf("expected truncation marker, got %q", s[:120])
+	}
+	if strings.Count(s, "x") > maxToolResultChars {
+		t.Fatalf("stdout was not clipped")
+	}
+}
+
 // A cancelled context must stop the command, not just stop waiting for it.
 //
 // The shell runs with Setsid, so it leads its own process group. os/exec's

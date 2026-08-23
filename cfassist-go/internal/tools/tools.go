@@ -344,11 +344,21 @@ func (r *Registry) listToolsExecute() map[string]any {
 	}
 }
 
+// maxToolResultChars matches agent._max_tool_result_chars's default. Untrimmed
+// kubectl/journalctl dumps are re-sent on every later turn, so one fat result
+// inflates the whole session — and now every parallel call adds one.
+const maxToolResultChars = 6000
+
 // MarshalResult serializes a tool result to JSON string for the LLM.
 func MarshalResult(result map[string]any) string {
 	b, err := json.Marshal(result)
 	if err != nil {
 		return fmt.Sprintf(`{"error": "marshal failed: %s"}`, err)
 	}
-	return string(b)
+	s := string(b)
+	if len(s) <= maxToolResultChars {
+		return s
+	}
+	omitted := len(s) - maxToolResultChars
+	return s[:maxToolResultChars] + fmt.Sprintf("\n...[truncated %d chars of tool output]", omitted)
 }

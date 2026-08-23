@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -603,5 +604,103 @@ func TestAnthropicChatToolSchemaConversion(t *testing.T) {
 	}
 	if tool.InputSchema == nil {
 		t.Error("tool input_schema should not be nil")
+	}
+}
+
+func TestToAnthropicMessagesMergesParallelToolResults(t *testing.T) {
+	system, msgs := toAnthropicMessages([]Message{
+		{Role: "system", Content: "sys"},
+		{Role: "user", Content: "check the node"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "toolu_a", Function: ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "hostname"}}},
+			{ID: "toolu_b", Function: ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "uptime"}}},
+		}},
+		{Role: "tool", ToolCallID: "toolu_a", Content: `{"stdout":"box"}`},
+		{Role: "tool", ToolCallID: "toolu_b", Content: `{"stdout":"up"}`},
+	})
+	if system != "sys" {
+		t.Errorf("system = %q", system)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("len(msgs) = %d, want 3 (user, assistant, merged tool results)", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[1].Role != "assistant" || msgs[2].Role != "user" {
+		t.Fatalf("roles = %q, %q, %q", msgs[0].Role, msgs[1].Role, msgs[2].Role)
+	}
+	blocks, ok := msgs[2].Content.([]anthropicContentBlock)
+	if !ok {
+		t.Fatalf("merged content type %T, want []anthropicContentBlock", msgs[2].Content)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("tool_result blocks = %d, want 2", len(blocks))
+	}
+	got := map[string]bool{}
+	for _, b := range blocks {
+		if b.Type != "tool_result" {
+			t.Errorf("block type = %q, want tool_result", b.Type)
+		}
+		got[b.ToolUseID] = true
+	}
+	if !got["toolu_a"] || !got["toolu_b"] {
+		t.Errorf("tool_use_ids = %v, want toolu_a and toolu_b", got)
+	}
+}
+
+func TestToAnthropicMessagesMergesConsecutiveUsers(t *testing.T) {
+	// A retry after a failed tool round left two user questions in a row.
+	// Unmerged, the assistant tool_use lands at messages[2] — the index in
+	// the Anthropic 400 from the attached session.
+	_, msgs := toAnthropicMessages([]Message{
+		{Role: "user", Content: "is this still valid?"},
+		{Role: "user", Content: "is this still valid?"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "toolu_a", Function: ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "true"}}},
+		}},
+		{Role: "tool", ToolCallID: "toolu_a", Content: "ok"},
+	})
+	if len(msgs) != 3 {
+		t.Fatalf("len(msgs) = %d, want 3; assistant at [2] is the Anthropic 400", len(msgs))
+	}
+	if msgs[1].Role != "assistant" {
+		t.Fatalf("messages[1] role = %q, want assistant", msgs[1].Role)
+	}
+}
+
+func TestToAnthropicMessagesToolUseAlwaysHasInput(t *testing.T) {
+	_, msgs := toAnthropicMessages([]Message{
+		{Role: "user", Content: "go"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "toolu_x", Function: ToolCallFunction{Name: "noop"}},
+		}},
+	})
+	if len(msgs) != 2 {
+		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
+	}
+	raw, err := json.Marshal(msgs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"input":{}`)) {
+		t.Fatalf("tool_use missing input object: %s", raw)
+	}
+}
+
+func TestToAnthropicMessagesMarksFailedToolResults(t *testing.T) {
+	_, msgs := toAnthropicMessages([]Message{
+		{Role: "user", Content: "go"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "toolu_x", Function: ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": "false"}}},
+		}},
+		{Role: "tool", ToolCallID: "toolu_x", Content: `{"error":"cancelled"}`, IsError: true},
+	})
+	if len(msgs) != 3 {
+		t.Fatalf("len(msgs) = %d, want 3", len(msgs))
+	}
+	raw, err := json.Marshal(msgs[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"is_error":true`)) {
+		t.Fatalf("failed tool_result missing is_error: %s", raw)
 	}
 }

@@ -17,6 +17,7 @@ type Message struct {
 	Content    string     `json:"content,omitempty"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"` // for tool result → tool_use_id reference
+	IsError    bool       `json:"-"`                      // Anthropic tool_result.is_error; not an OpenAI field
 }
 
 // ToolCall represents a tool call from the LLM.
@@ -475,6 +476,38 @@ type anthropicContentBlock struct {
 	Input     map[string]any `json:"input,omitempty"`
 	ToolUseID string         `json:"tool_use_id,omitempty"`
 	Content   string         `json:"content,omitempty"`
+	IsError   bool           `json:"is_error,omitempty"`
+}
+
+// MarshalJSON keeps tool_use.input present even when empty. encoding/json's
+// omitempty drops nil and empty maps, and Anthropic rejects a tool_use without
+// an input object.
+func (b anthropicContentBlock) MarshalJSON() ([]byte, error) {
+	switch b.Type {
+	case "tool_use":
+		input := b.Input
+		if input == nil {
+			input = map[string]any{}
+		}
+		return json.Marshal(struct {
+			Type  string         `json:"type"`
+			ID    string         `json:"id"`
+			Name  string         `json:"name"`
+			Input map[string]any `json:"input"`
+		}{Type: b.Type, ID: b.ID, Name: b.Name, Input: input})
+	case "tool_result":
+		return json.Marshal(struct {
+			Type      string `json:"type"`
+			ToolUseID string `json:"tool_use_id"`
+			Content   string `json:"content"`
+			IsError   bool   `json:"is_error,omitempty"`
+		}{Type: b.Type, ToolUseID: b.ToolUseID, Content: b.Content, IsError: b.IsError})
+	default:
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Text string `json:"text,omitempty"`
+		}{Type: b.Type, Text: b.Text})
+	}
 }
 
 type anthropicTool struct {
@@ -499,48 +532,110 @@ type anthropicResponse struct {
 	StopReason string `json:"stop_reason"`
 }
 
-func (c *LLMClient) anthropicChat(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
-	// Extract system prompt from messages
-	var systemPrompt string
-	var anthropicMsgs []anthropicMsg
-
+// toAnthropicMessages rewrites the internal transcript for Anthropic's
+// Messages API.
+//
+// Anthropic requires (a) alternating user/assistant roles and (b) every
+// tool_use in an assistant message to have a matching tool_result in the
+// immediately following user message. The internal transcript stores each
+// tool result as its own role=tool message, which would become N consecutive
+// user messages and leave all but the first tool_use unpaired — the 400
+// "tool_use ids were found without tool_result blocks immediately after".
+// Consecutive user turns (a retry after a failed tool round, two questions
+// in a row) have the same shape. Fold both into one user message of content
+// blocks so the pairing holds.
+func toAnthropicMessages(messages []Message) (system string, out []anthropicMsg) {
+	var raw []anthropicMsg
 	for _, msg := range messages {
 		switch msg.Role {
 		case "system":
-			systemPrompt = msg.Content
+			system = msg.Content
 		case "user":
-			anthropicMsgs = append(anthropicMsgs, anthropicMsg{Role: "user", Content: msg.Content})
+			if msg.Content == "" {
+				continue
+			}
+			raw = append(raw, anthropicMsg{Role: "user", Content: msg.Content})
 		case "assistant":
-			if len(msg.ToolCalls) > 0 {
-				// Build content blocks for assistant tool_use
-				var blocks []anthropicContentBlock
-				if msg.Content != "" {
-					blocks = append(blocks, anthropicContentBlock{Type: "text", Text: msg.Content})
-				}
-				for _, tc := range msg.ToolCalls {
-					blocks = append(blocks, anthropicContentBlock{
-						Type:  "tool_use",
-						ID:    tc.ID,
-						Name:  tc.Function.Name,
-						Input: tc.Function.Arguments,
-					})
-				}
-				anthropicMsgs = append(anthropicMsgs, anthropicMsg{Role: "assistant", Content: blocks})
-			} else {
-				anthropicMsgs = append(anthropicMsgs, anthropicMsg{Role: "assistant", Content: msg.Content})
+			if converted := convertAssistant(msg); converted != nil {
+				raw = append(raw, *converted)
 			}
 		case "tool":
-			// Tool results go as user messages with tool_result content blocks
-			anthropicMsgs = append(anthropicMsgs, anthropicMsg{
+			raw = append(raw, anthropicMsg{
 				Role: "user",
 				Content: []anthropicContentBlock{{
 					Type:      "tool_result",
 					ToolUseID: msg.ToolCallID,
 					Content:   msg.Content,
+					IsError:   msg.IsError,
 				}},
 			})
 		}
 	}
+	return system, coalesceAnthropicMessages(raw)
+}
+
+func convertAssistant(msg Message) *anthropicMsg {
+	if len(msg.ToolCalls) == 0 {
+		if msg.Content == "" {
+			return nil
+		}
+		return &anthropicMsg{Role: "assistant", Content: msg.Content}
+	}
+	var blocks []anthropicContentBlock
+	if msg.Content != "" {
+		blocks = append(blocks, anthropicContentBlock{Type: "text", Text: msg.Content})
+	}
+	for _, tc := range msg.ToolCalls {
+		input := tc.Function.Arguments
+		if input == nil {
+			input = map[string]any{}
+		}
+		blocks = append(blocks, anthropicContentBlock{
+			Type:  "tool_use",
+			ID:    tc.ID,
+			Name:  tc.Function.Name,
+			Input: input,
+		})
+	}
+	return &anthropicMsg{Role: "assistant", Content: blocks}
+}
+
+func coalesceAnthropicMessages(msgs []anthropicMsg) []anthropicMsg {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	out := []anthropicMsg{msgs[0]}
+	for _, m := range msgs[1:] {
+		last := &out[len(out)-1]
+		if last.Role == m.Role {
+			last.Content = mergeAnthropicContent(last.Content, m.Content)
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+func mergeAnthropicContent(a, b any) []anthropicContentBlock {
+	return append(anthropicContentAsBlocks(a), anthropicContentAsBlocks(b)...)
+}
+
+func anthropicContentAsBlocks(c any) []anthropicContentBlock {
+	switch v := c.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		return []anthropicContentBlock{{Type: "text", Text: v}}
+	case []anthropicContentBlock:
+		return v
+	default:
+		return nil
+	}
+}
+
+func (c *LLMClient) anthropicChat(ctx context.Context, messages []Message, tools []ToolSchema) (*Response, error) {
+	systemPrompt, anthropicMsgs := toAnthropicMessages(messages)
 
 	// Convert tool schemas from OpenAI format to Anthropic format
 	var anthropicTools []anthropicTool
