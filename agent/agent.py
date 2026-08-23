@@ -3878,6 +3878,12 @@ FIX: {_FIX_JSON_SCHEMA}"""
         # anything downstream reads it — the classifier then classifies the
         # committed action, and the dedupe key hashes it, instead of both
         # reverse-engineering a fork.
+        # Capture the fork shape on the *incoming* rec. A successful commit
+        # returns still_forked=False and a rewritten sentence; the FIX object
+        # was parsed from the original report and still describes the unchosen
+        # alternative. Trusting that FIX's gitops+low 0.8 is live row #72
+        # again (PR #173).
+        was_forked = bool(_FORK_SHAPED.search(rec))
         rec, still_forked = self._commit_forked_recommendation(trigger, rec,
                                                                report=response_text)
         # Re-validate even when the caller passed structured_fix: a truthy
@@ -3892,13 +3898,12 @@ FIX: {_FIX_JSON_SCHEMA}"""
             hints = self._classify_needs_action_recommendation(trigger, rec, alert_info,
                                                                report=response_text)
         details = dict(hints)
-        if still_forked:
-            # The retry would not commit, so nothing downstream may treat this
-            # row as executable: confidence None can never clear the auto gate
-            # (live row #72 was classified gitops-patch at 0.80 — one 'low'
-            # risk away from the executor opening a PR against a repo that had
-            # nothing to do with the fix). The class is left honest; only the
-            # gate is barred.
+        if still_forked or was_forked:
+            # Stuck fork (retry would not commit) OR a FIX that was parsed
+            # before the rewrite: neither may clear the auto gate. Class stays
+            # honest (target.kind / classifier); only the gate is barred.
+            # Mutation check: drop `or was_forked` and
+            # test_fork_commit_does_not_keep_fix_auto_confidence fails.
             details['confidence'] = None
         if not details.get('host'):
             ai = alert_info or {}

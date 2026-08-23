@@ -20,6 +20,7 @@ from knowledge_base import (  # noqa: E402
 from agent import CFOperator  # noqa: E402
 from agent.agent import (  # noqa: E402
     _FIX_KIND_TO_CLASS,
+    _FORK_SHAPED,
     _class_from_fix_kind,
     _fix_targets_dedupe_key,
     _hints_from_structured_fix,
@@ -182,6 +183,38 @@ def test_malformed_fix_still_calls_classifier():
     op._queue_needs_action_remediation(
         80, "t", {}, "raise memory limit to 512Mi", broken, provider="p")
     op._classify_needs_action_recommendation.assert_called_once()
+
+
+def test_fork_commit_does_not_keep_fix_auto_confidence():
+    """Successful CFOP-78 commit rewrites rec to action B; FIX still
+    describes the fork (action A). gitops-manifest + risk low must not keep
+    confidence 0.8 — that is live row #72 (PR #173).
+
+    Mutation check: if `if still_forked or was_forked` becomes `if still_forked`,
+    this fails. Classifier-skip tests that use a non-fork rec stay green.
+    """
+    rec = ("Truncate the users row, or update the embedding_service "
+           "configuration to a larger model.")
+    assert _FORK_SHAPED.search(rec)
+    op = _na_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": None, "repo": None})
+    op._commit_forked_recommendation = (
+        lambda t, r, report='': ("truncate the users row", False))
+    rid = op._queue_needs_action_remediation(
+        80, "embedding overflow", {}, rec,
+        _report(_valid_fix(), rec=rec),
+        provider="p", structured_fix=_valid_fix())
+    assert rid == 9
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["confidence"] is None
+    assert kw["payload"]["recommendation"] == "truncate the users row"
+    # class may stay from target.kind; the auto gate must not
+    assert kw["remediation_class"] == "gitops-patch"
+    assert not remediation_is_auto_eligible(
+        kw["remediation_class"], kw["risk"], kw["confidence"])
+    # a non-fork rec still takes FIX auto-confidence (the skip-classifier test)
 
 
 def test_invalid_structured_fix_kwarg_still_classifies():
