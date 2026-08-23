@@ -26,8 +26,19 @@ import agent.agent as agent_mod  # noqa: E402
 
 def _wire_flags(op):
     """Make op._remediation_flag read op.config (config-only), like the real method
-    (a bare MagicMock would return a truthy mock and defeat the gating)."""
+    (a bare MagicMock would return a truthy mock and defeat the gating).
+
+    The CFOP-78 pre-enqueue steps are wired real for the same reason: a bare
+    MagicMock returns a truthy mock from _absorb_repeat_remediation (every
+    enqueue would "fold" onto a mock id) and an ununpackable one from
+    _commit_forked_recommendation. The real methods fail open against the
+    MagicMock kb — which is itself the behaviour under test elsewhere."""
     op._remediation_flag = lambda name: bool((op.config.get('remediation') or {}).get(name))
+    op._extract_remediation_identifiers = CFOperator._extract_remediation_identifiers
+    op._absorb_repeat_remediation = (
+        lambda details: CFOperator._absorb_repeat_remediation(op, details))
+    op._commit_forked_recommendation = (
+        lambda t, r, report='': CFOperator._commit_forked_recommendation(op, t, r, report=report))
     return op
 
 

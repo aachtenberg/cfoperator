@@ -3852,8 +3852,11 @@ class KnowledgeBase:
 
     def record_remediation_absorbed(self, remediation_id: int, summary: str,
                                     limit: int = 25) -> bool:
-        """Append a folded symptom to a node-incident row's payload (CFOP-71).
+        """Append a folded finding to the surviving row's payload.
 
+        Written for the CFOP-71 node collapse; the CFOP-78 identifier fold
+        records through it too — any tier that absorbs a row instead of
+        enqueuing it leaves its trace here, so a fold is never silent.
         Bounded and de-duplicated: a flapping alert must not grow the payload
         without limit, and the same symptom re-firing is not new information.
         """
@@ -4102,6 +4105,20 @@ class KnowledgeBase:
                 RemediationQueue.status, func.count(RemediationQueue.id)
             ).group_by(RemediationQueue.status).all()
             return {status: int(n) for status, n in rows}
+
+    def list_open_remediations(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Non-terminal rows, newest first — id and payload only.
+
+        The read side of the CFOP-78 repeat fold. Same terminal-state
+        semantics as find_open_remediation_by_dedupe_key: resolved/rejected
+        rows never match, so a genuine recurrence of a fixed problem enqueues
+        fresh rather than folding onto its own history.
+        """
+        with self.session_scope() as session:
+            rows = session.query(RemediationQueue).filter(
+                RemediationQueue.status.notin_(('resolved', 'rejected'))
+            ).order_by(RemediationQueue.created_at.desc()).limit(limit).all()
+            return [{"id": r.id, "payload": r.payload} for r in rows]
 
     def list_remediations_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Return remediation rows in a given status (oldest first).
