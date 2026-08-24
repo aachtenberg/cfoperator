@@ -467,3 +467,54 @@ def test_an_empty_or_missing_repo_is_still_fatal_only_for_a_manifest():
     assert _parse_structured_fix(_report(no_repo), _REGISTRY) is None
     host = _valid_fix(targets=[{"kind": "host", "id": "ubuntu-llm-01"}])
     assert _parse_structured_fix(_report(host), _REGISTRY) is not None
+
+
+def test_an_unresolvable_repo_is_refused_on_the_path_that_actually_enqueues():
+    """The bug the first CFOP-85 attempt shipped, caught by review.
+
+    Resolution was threaded into _ensure_structured_fix and stopped there.
+    But ensure rejecting a FIX does not remove it from response_text, and
+    _queue_needs_action_remediation re-parses that same text -- so the enqueue
+    path re-accepted exactly what ensure had just refused, put repo
+    "gitops-patch" on the payload, and produced the identical four-second
+    executor bounce. The check was inert for the only production path that
+    enqueues a row.
+
+    The earlier tests could not see it: they all called _parse_structured_fix
+    with a registry directly, which is the one arrangement in which the bug
+    does not exist. This drives the queue helper instead.
+    """
+    op = _na_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": None, "repo": None})
+    bad = _valid_fix(targets=[{
+        "kind": "gitops-manifest",
+        "id": "homelab-root",
+        "repo": "gitops-patch",
+    }])
+    rid = op._queue_needs_action_remediation(
+        80, "cert-manager CRD ownership",
+        {"fingerprint": "fp-77", "labels": {"instance": "homelab-root"}},
+        "remove the cert-manager CRDs from homelab-root", _report(bad),
+        provider="ollama/gemma4:26b")
+    assert rid == 9
+    # Degraded to the classifier rather than trusting the FIX...
+    op._classify_needs_action_recommendation.assert_called_once()
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["remediation_class"] == "manual"
+    # ...and nothing put the unresolvable value on the payload.
+    assert kw["payload"].get("repo") != "gitops-patch"
+    assert all(t.get("repo") != "gitops-patch"
+               for t in (kw["payload"].get("targets") or []))
+
+
+def test_a_registry_entry_with_no_slug_resolves_to_nothing():
+    """Raised in review as a latent hole, and it is one.
+
+    The executor reaches a repo only through a GitHubClient, so an entry with
+    no `github` cannot be patched. Returning its short name would hand over a
+    second unusable value and move the same failure one step downstream.
+    """
+    local_only = [{"name": "homelab-infra", "github": ""}]
+    assert _resolve_fix_repo("homelab-infra", local_only) is None

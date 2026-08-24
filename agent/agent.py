@@ -306,8 +306,16 @@ def _resolve_fix_repo(value, known_repos) -> Optional[str]:
             continue
         slug = str(repo.get('github') or '').strip()
         name = str(repo.get('name') or '').strip()
-        if lowered in (slug.lower(), name.lower()) and (slug or name):
-            return slug or name
+        if not (slug or name):
+            continue
+        if lowered not in (slug.lower(), name.lower()):
+            continue
+        # Only the slug. A registry entry with no `github` cannot be reached
+        # by the executor at all -- run_gitops drives a GitHubClient -- so
+        # handing back its short name would swap one unusable value for
+        # another and move the failure downstream, which is the bug this
+        # function exists to end.
+        return slug or None
     return None
 
 
@@ -3951,8 +3959,17 @@ FIX: {_FIX_JSON_SCHEMA}"""
         # Re-validate even when the caller passed structured_fix: a truthy
         # invalid dict must not IndexError in _hints_from_structured_fix and
         # fail the investigation (CFOP-80: invalid FIX degrades to classifier).
-        candidate = structured_fix if structured_fix is not None else _parse_structured_fix(response_text)
-        fix = _validate_structured_fix(candidate) if isinstance(candidate, dict) else None
+        # The registry goes to BOTH calls. _ensure_structured_fix rejecting a
+        # FIX does not remove it from response_text, so this re-parse sees the
+        # same object again; without the registry it re-accepts exactly what
+        # ensure just refused, and the unresolvable repo lands on the payload.
+        # That made the CFOP-85 check inert for the only production path that
+        # enqueues a row.
+        repos = self.git_repos()
+        candidate = (structured_fix if structured_fix is not None
+                     else _parse_structured_fix(response_text, repos))
+        fix = (_validate_structured_fix(candidate, repos)
+               if isinstance(candidate, dict) else None)
         if fix:
             # Mutation check: drop this branch and test_valid_fix_skips_classifier fails.
             hints = _hints_from_structured_fix(fix)

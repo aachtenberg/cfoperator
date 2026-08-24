@@ -1166,6 +1166,13 @@ def _na_op(feed=True):
         op, *a, **k)
     op._open_remediation_for_key = lambda key: CFOperator._open_remediation_for_key(op, key)
     op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    # A bare MagicMock's git_repos() iterates empty, which now means "nothing
+    # resolves" and would sink every gitops-manifest FIX for a reason unrelated
+    # to what these tests check (CFOP-85).
+    op.git_repos.return_value = [
+        {"name": "homelab-infra", "github": "aachtenberg/homelab-infra"},
+        {"name": "cfoperator", "github": "aachtenberg/cfoperator"},
+    ]
     return op
 
 
