@@ -260,6 +260,7 @@ async function detail(id){
     ${resolutionHtml(r)}
     <h3>Recommendation</h3><pre>${esc(p.recommendation||p.title||'—')}</pre>
     ${p.targets?`<h3>Targets</h3><pre>${esc(JSON.stringify(p.targets,null,2))}</pre>`:''}
+    ${p.observed&&p.observed.length?`<h3>Observed</h3><pre>${esc(p.observed.map(o=>(o.source||'')+'\n  → '+(o.value||'')).join('\n'))}</pre>`:''}
     ${p.steps&&p.steps.length?`<h3>Steps</h3><pre>${esc(p.steps.map((s,i)=>(i+1)+'. '+s).join('\n'))}</pre>`:''}
     ${p.verify?`<h3>Verify</h3><pre>${esc((p.verify.command||'')+(p.verify.expect?'\nexpect: '+p.verify.expect:''))}</pre>`:''}
     ${p.rejected&&p.rejected.length?`<h3>Rejected alternatives</h3><pre>${esc(p.rejected.map(x=>(x.alternative||'')+' — '+(x.why_not||'')).join('\n'))}</pre>`:''}

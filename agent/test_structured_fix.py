@@ -6,9 +6,12 @@ or malformed FIX still classifies. Class of regression, not output pins.
 """
 
 import json
+import logging
 import os
 import sys
 from unittest.mock import MagicMock
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,6 +39,10 @@ def _valid_fix(**overrides):
             "kind": "gitops-manifest",
             "id": "apps/promtail.yaml",
             "repo": "aachtenberg/homelab-infra",
+        }],
+        "observed": [{
+            "source": "kubectl -n monitoring get deploy promtail -o yaml",
+            "value": "resources.limits.memory: 256Mi",
         }],
         "steps": ["raise memory limit to 512Mi"],
         "verify": {
@@ -518,3 +525,122 @@ def test_a_registry_entry_with_no_slug_resolves_to_nothing():
     """
     local_only = [{"name": "homelab-infra", "github": ""}]
     assert _resolve_fix_repo("homelab-infra", local_only) is None
+
+
+# ---- observed: read before you propose (CFOP-88) ------------------------------
+#
+# Remediation #78 proposed MemoryHigh=24G / MemoryMax=28G for ollama on a box
+# with 30 GiB total. It named the file and both target values and never stated
+# the current ones -- because it never opened the file, where a comment three
+# lines above the setting explains that the 16G/20G cap exists after
+# ollama+runners OOM-killed cluster pods. The agent had ssh_execute the whole
+# time.
+#
+# The mechanism is the READ. Requiring the current value forces the call that
+# puts that comment in context; the validator only checks a specific claim was
+# made. A fabricated value still passes -- verifying against the live target is
+# separate plumbing and deliberately not here.
+
+
+def test_a_fix_that_read_nothing_is_refused():
+    """The #78 shape: a confident change with no current value behind it."""
+    fix = _valid_fix()
+    del fix["observed"]
+    assert _parse_structured_fix(_report(fix), _REGISTRY) is None
+
+
+@pytest.mark.parametrize("bad", [
+    [],                                             # read nothing
+    "cat override.conf",                            # prose, not entries
+    [{"source": "cat override.conf"}],              # looked, no value
+    [{"value": "MemoryHigh=16G"}],                  # value, no provenance
+    [{"source": "", "value": "MemoryHigh=16G"}],
+    [{"source": "cat override.conf", "value": ""}],
+    [{"source": "cat override.conf", "value": "16G"}, "extra"],
+])
+def test_observed_must_say_where_it_looked_and_what_it_saw(bad):
+    """Both halves carry weight. A value with no source cannot be re-checked
+    by a human; a source with no value records that something was run and not
+    what it returned, which is the gap #78 fell through."""
+    assert _parse_structured_fix(_report(_valid_fix(observed=bad)), _REGISTRY) is None
+
+
+def test_the_requirement_is_unconditional_across_target_kinds():
+    """Deliberately NOT scoped to steps that change a value.
+
+    Deciding which steps those are means classifying free-form step text, and
+    a regex over step wording is the same species as _INVESTIGATE_SHAPED and
+    the fork regex. Unconditional removes the boundary rather than policing
+    it -- a restart-the-pod FIX records the pod's status, which is evidence
+    worth having.
+    """
+    for kind, tid in (("host", "ubuntu-llm-01"),
+                      ("k8s-object", "monitoring/promtail"),
+                      ("database-row", "learnings:2368")):
+        fix = _valid_fix(targets=[{"kind": kind, "id": tid}])
+        del fix["observed"]
+        assert _parse_structured_fix(_report(fix), _REGISTRY) is None, kind
+
+
+def test_what_was_read_reaches_the_payload_an_operator_sees():
+    """The row has to show the claimed current state next to the proposed one.
+
+    For #78 that reads `MemoryHigh: 16G -> 24G` on a box whose total the
+    reviewer knows, which is the point at which it stops looking reasonable.
+    """
+    op = _na_op()
+    fix = _valid_fix(
+        targets=[{"kind": "host", "id": "ubuntu-llm-01"}],
+        observed=[{
+            "source": "cat /etc/systemd/system/ollama.service.d/override.conf",
+            "value": "MemoryHigh=16G\nMemoryMax=20G",
+        }],
+        steps=["set MemoryHigh=24G and MemoryMax=28G"],
+        risk="high",
+    )
+    op._queue_needs_action_remediation(
+        90, "ollama timeouts",
+        {"fingerprint": "obs-1", "labels": {"instance": "ubuntu-llm-01"}},
+        "raise the ollama memory limits", _report(fix, rec="raise the ollama memory limits"),
+        provider="p")
+    payload = op.kb.queue_remediation.call_args.kwargs["payload"]
+    assert payload["observed"] == [{
+        "source": "cat /etc/systemd/system/ollama.service.d/override.conf",
+        "value": "MemoryHigh=16G\nMemoryMax=20G",
+    }]
+
+
+@pytest.mark.parametrize("bad,reason", [
+    (None, "missing or empty"),
+    ([], "missing or empty"),
+    (["cat override.conf"], "not an object"),
+    ([{"value": "MemoryHigh=16G"}], "no source"),
+    ([{"source": "cat override.conf"}], "no value"),
+    ([{"source": "cat override.conf", "value": "  "}], "no value"),
+])
+def test_every_observed_refusal_is_logged_not_silent(caplog, bad, reason):
+    """Raised in review, and it undermines the whole risk mitigation.
+
+    Requiring `observed` means a non-complying model degrades every FIX to the
+    classifier — a real quality drop that otherwise looks like the FIX path
+    going idle. The warning is what tells those apart, so it has to cover the
+    shapes that actually occur. Once `observed` is named in the prompt, a
+    half-filled entry (a source with no value) is likelier than an omitted
+    key; logging only the omission would leave the COMMON failure invisible.
+
+    The first version logged the empty case and returned silently for the
+    rest.
+    """
+    fix = _valid_fix()
+    if bad is None:
+        del fix["observed"]
+    else:
+        fix["observed"] = bad
+    with caplog.at_level(logging.WARNING, logger="cfoperator"):
+        assert _parse_structured_fix(_report(fix), _REGISTRY) is None
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.WARNING]
+    assert any("observed" in m for m in warnings), warnings
+    assert any(reason in m for m in warnings), warnings
+    # The target ids ride along, so the log names which recommendation was lost.
+    assert any("apps/promtail.yaml" in m for m in warnings), warnings
