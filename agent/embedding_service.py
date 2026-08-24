@@ -30,7 +30,7 @@ def _get_metrics():
 DEFAULT_EMBEDDING_MODEL = "nomic-embed-text"
 EMBEDDING_DIMENSION = 768  # nomic-embed-text dimension
 
-# Upper bound on what we will send to the embedding endpoint (CFOP-81).
+# Upper bound on what we will send to the embedding endpoint (CFOP-81, CFOP-84).
 #
 # There was a MINIMUM input guard here and no maximum, so a single oversized
 # record failed on every sweep for ~18 hours across three pod generations,
@@ -42,24 +42,69 @@ EMBEDDING_DIMENSION = 768  # nomic-embed-text dimension
 # Measured in CHARACTERS, not tokens, deliberately: there is no tokenizer in
 # this process and adding one to approximate a bound is a bad trade.
 #
-# The ratio is 2, not 3. Three chars/token is the dense end of PROSE; the text
-# actually embedded here is JSON, paths, hex digests and stack traces, where
-# punctuation and identifiers split aggressively. Measured against a
-# representative investigation record it comes out at ~2.6 chars/token, so a
-# 3x bound would let ~2390 tokens through a 2048-token model — still failing,
-# and now failing SILENTLY, because the negative memory below would stop the
-# noise while leaving the record unindexed forever. Erring low costs a little
-# tail text; erring high recreates the bug with the alarm disconnected.
-MODEL_INPUT_CHAR_LIMITS = {
-    "nomic-embed-text": 2048 * 2,
+# CFOP-81 then picked the character bound by GUESSING A DENSITY -- 2
+# chars/token, argued down from 3 because this corpus is JSON, paths, hex
+# digests and stack traces and measured ~2.6 on a representative record. The
+# guess was still too generous, and the guard test shipped alongside it
+# encoded the same guess, so the test passed at 4096 while production kept
+# returning HTTP 500 on the very record the fix existed to rescue. Only the
+# NOISE stopped. That is the silent failure CFOP-81's own commit message
+# predicted for a 3x ratio, and then walked into at 2x.
+#
+# So the bound is no longer a density guess. A token consumes AT MINIMUM one
+# character, so N characters can never produce more than N tokens -- true for
+# any text in any script, with no tokenizer and no corpus assumption. Subtract
+# the special tokens the model wraps every input in ([CLS]/[SEP]) and the
+# bound is exact rather than estimated.
+#
+# Measured against the live endpoint at the boundary, per character class:
+#
+#     input               2046      2047
+#     ASCII punctuation   OK        EXCEEDS
+#     CJK U+4E2D          OK        EXCEEDS
+#     Hebrew U+05D0       OK        EXCEEDS
+#     Samaritan U+0800    OK        OK
+#     Linear-B U+10000    OK        OK
+#     emoji U+1F600       OK        OK
+#     space               OK        OK
+#
+# 2046 is exactly 2048 - 2, which is what the structural rule predicts, and
+# the classes that tip over at 2047 are the ones that tokenize 1:1.
+#
+# A BYTE bound would not have worked either, and the same measurement says so:
+# 2048 chars of ASCII punctuation is 2048 bytes and FAILS, while 2048 chars of
+# emoji is 8192 bytes and PASSES. Bytes are no more predictive of tokens than
+# characters are. Only the one-character-per-token floor is.
+SPECIAL_TOKEN_ALLOWANCE = 2
+
+#: Token context per model. This is the number to look up on a model swap: it
+#: is a documented property of the model, unlike a density, which has to be
+#: measured against a corpus and was measured wrong twice.
+MODEL_CONTEXT_TOKENS = {
+    "nomic-embed-text": 2048,
 }
-#: For a model we have no entry for. Deliberately BELOW every known model's
-#: bound rather than beside it: an unknown model may have a far smaller
-#: context than nomic's 2048 tokens, and guessing high reintroduces exactly
-#: this bug the day someone swaps models. Truncating more than necessary costs
-#: some tail text; truncating less than necessary costs the record. An
-#: operator who knows better sets CFOP_EMBEDDING_MAX_CHARS.
-DEFAULT_MAX_INPUT_CHARS = 2048
+
+#: For a model we have no entry for. 512 tokens is the floor for the
+#: BERT-family encoders these endpoints usually serve, so it is the honest
+#: "we do not know" answer. CFOP-81 used 2048 here and called it conservative;
+#: it was not, because it sits ABOVE the 2046 the one model we have actually
+#: measured will accept. Truncating more than necessary costs some tail text;
+#: truncating less than necessary costs the record. An operator who knows
+#: better sets CFOP_EMBEDDING_MAX_CHARS.
+DEFAULT_CONTEXT_TOKENS = 512
+
+
+def _char_bound(context_tokens: int) -> int:
+    """Characters that provably fit a ``context_tokens`` window."""
+    return context_tokens - SPECIAL_TOKEN_ALLOWANCE
+
+
+#: Derived views, kept because they read better at the call site than the
+#: arithmetic does. The context table above is the single source of truth.
+MODEL_INPUT_CHAR_LIMITS = {
+    model: _char_bound(tokens) for model, tokens in MODEL_CONTEXT_TOKENS.items()
+}
+DEFAULT_MAX_INPUT_CHARS = _char_bound(DEFAULT_CONTEXT_TOKENS)
 
 #: Bodies Ollama returns when the input cannot fit, whatever the status code.
 #: This is a property of the INPUT, not of the moment, so a retry is
@@ -73,6 +118,18 @@ DETERMINISTIC_INPUT_ERRORS = (
 #: How many known-unembeddable inputs to remember. Bounded because it is keyed
 #: by content: an unbounded set is a slow leak on a long-lived agent.
 UNEMBEDDABLE_MEMORY = 256
+
+
+def _model_key(model: str) -> str:
+    """The lookup key for ``model``, with any ``:tag`` suffix stripped.
+
+    ``nomic-embed-text:latest`` is the same model as ``nomic-embed-text`` and
+    is an ordinary thing to put in EMBEDDING_MODEL. Matching the exact string
+    missed it and fell through to the unknown-model default -- which is the
+    likeliest way this bug comes back, since the fallback is deliberately far
+    below what nomic can actually take.
+    """
+    return str(model or "").split(":", 1)[0]
 
 
 def max_input_chars(model: str) -> int:
@@ -89,7 +146,7 @@ def max_input_chars(model: str) -> int:
                 return override
         except ValueError:
             pass
-    return MODEL_INPUT_CHAR_LIMITS.get(model, DEFAULT_MAX_INPUT_CHARS)
+    return MODEL_INPUT_CHAR_LIMITS.get(_model_key(model), DEFAULT_MAX_INPUT_CHARS)
 
 
 def is_deterministic_input_error(body: str) -> bool:

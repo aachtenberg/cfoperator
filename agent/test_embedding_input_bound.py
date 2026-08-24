@@ -26,9 +26,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from embedding_service import (  # noqa: E402
     DEFAULT_EMBEDDING_MODEL, DEFAULT_MAX_INPUT_CHARS, EMBEDDING_DIMENSION,
-    MODEL_INPUT_CHAR_LIMITS, UNEMBEDDABLE_MEMORY, EmbeddingService,
-    is_deterministic_input_error, max_input_chars,
+    MODEL_CONTEXT_TOKENS, MODEL_INPUT_CHAR_LIMITS, SPECIAL_TOKEN_ALLOWANCE,
+    UNEMBEDDABLE_MEMORY, EmbeddingService, is_deterministic_input_error,
+    max_input_chars,
 )
+
+#: The largest input the live nomic-embed-text endpoint accepted, measured per
+#: character class at the boundary (CFOP-84). 2047 chars of ASCII punctuation,
+#: CJK or Hebrew is rejected; 2046 chars of every class tried is accepted.
+MEASURED_NOMIC_CEILING_CHARS = 2046
 
 #: The body Ollama actually returned on learning 2368, verbatim.
 LIVE_ERROR = '{"error":"the input length exceeds the context length"}'
@@ -61,34 +67,66 @@ def _err_response(body, status=500):
 # ---------------------------------------------------------------------------
 
 def test_the_default_model_has_an_explicit_limit():
-    """The absence of one is the bug.
+    """The absence of one was the first bug; a guessed one was the second.
 
-    The ratio is 2, not 3. Three chars/token is the dense end of PROSE; this
-    text is JSON, paths, hex and stack traces, measured at ~2.6 chars/token on
-    a representative record. A 3x bound lets ~2390 tokens through a
-    2048-token model — still failing, and now failing silently, because the
-    negative memory would stop the noise while leaving the row unindexed.
+    2046 is the model's 2048-token context less the two special tokens it
+    wraps every input in. It is not a density estimate. The 4096 it replaces
+    was one, and the endpoint rejected it on the very record the bound exists
+    to rescue.
     """
-    assert DEFAULT_EMBEDDING_MODEL in MODEL_INPUT_CHAR_LIMITS
-    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) == 2048 * 2
+    assert DEFAULT_EMBEDDING_MODEL in MODEL_CONTEXT_TOKENS
+    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) == 2046
 
 
-def test_the_bound_is_under_the_context_at_realistic_density():
-    """The guard that would have caught the 3x mistake: whatever the ratio, a
-    full-length input must not exceed the model's context at the density this
-    corpus actually has."""
-    DENSEST_OBSERVED_CHARS_PER_TOKEN = 2.5
-    NOMIC_CONTEXT_TOKENS = 2048
-    limit = max_input_chars(DEFAULT_EMBEDDING_MODEL)
-    worst_case_tokens = limit / DENSEST_OBSERVED_CHARS_PER_TOKEN
-    assert worst_case_tokens <= NOMIC_CONTEXT_TOKENS, (
-        f"{limit} chars is {worst_case_tokens:.0f} tokens at "
-        f"{DENSEST_OBSERVED_CHARS_PER_TOKEN} chars/token, over the "
-        f"{NOMIC_CONTEXT_TOKENS}-token context")
+def test_the_bound_never_exceeds_the_context_it_is_derived_from():
+    """The guard that catches BOTH mistakes, for every model in the table.
+
+    CFOP-81's version asserted the bound against a GUESSED density (2.5
+    chars/token), so it passed at 4096 while the endpoint returned HTTP 500.
+    There is no density here to get wrong: a token consumes at minimum one
+    character, so N characters can never be more than N tokens, and the bound
+    may not exceed the context less the special tokens.
+    """
+    assert MODEL_CONTEXT_TOKENS, "an empty table would make this vacuous"
+    for model, context_tokens in MODEL_CONTEXT_TOKENS.items():
+        limit = max_input_chars(model)
+        assert limit + SPECIAL_TOKEN_ALLOWANCE <= context_tokens, (
+            f"{model}: {limit} chars can be {limit} tokens, which with "
+            f"{SPECIAL_TOKEN_ALLOWANCE} special tokens overflows a "
+            f"{context_tokens}-token context")
+
+
+def test_the_bound_agrees_with_what_the_endpoint_actually_accepted():
+    """Arithmetic agreeing with itself is exactly what shipped the last bug.
+
+    2046 is not reverse-engineered from the measurement; it falls out of
+    2048 - 2. That the measured ceiling lands on the same number is the
+    evidence the structural rule is the right rule, so raising the bound past
+    it has to answer for itself.
+    """
+    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) <= MEASURED_NOMIC_CEILING_CHARS
+
+
+def test_a_tagged_model_name_resolves_to_the_same_bound():
+    """``nomic-embed-text:latest`` is the same model.
+
+    An exact-string lookup missed every tagged form and fell through to the
+    unknown-model default, which sits far below what nomic can take. Since
+    the default is now deliberately conservative, that miss is a silent 4x
+    quality cut rather than a crash.
+    """
+    for tag in ("latest", "v1.5", "v1.5-q4"):
+        assert (max_input_chars(f"{DEFAULT_EMBEDDING_MODEL}:{tag}")
+                == max_input_chars(DEFAULT_EMBEDDING_MODEL))
 
 
 def test_an_unknown_model_gets_a_conservative_default():
-    """Guessing high for a new model reintroduces exactly this bug."""
+    """Guessing high for a new model reintroduces exactly this bug.
+
+    CFOP-81's default was 2048 chars and called itself conservative. It was
+    not: it sits ABOVE the 2046 the one model we have measured will accept,
+    so an unnamed model with a smaller context inherited the same failure.
+    """
     assert max_input_chars("some-future-model") == DEFAULT_MAX_INPUT_CHARS
     assert DEFAULT_MAX_INPUT_CHARS < max_input_chars(DEFAULT_EMBEDDING_MODEL)
 
@@ -103,7 +141,7 @@ def test_a_junk_override_is_ignored_rather_than_trusted(monkeypatch, bad):
     """A zero or negative bound would truncate every input to nothing and
     quietly destroy the index."""
     monkeypatch.setenv("CFOP_EMBEDDING_MAX_CHARS", bad)
-    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) == 2048 * 2
+    assert max_input_chars(DEFAULT_EMBEDDING_MODEL) == 2046
 
 
 # ---------------------------------------------------------------------------
