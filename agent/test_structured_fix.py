@@ -25,6 +25,7 @@ from agent.agent import (  # noqa: E402
     _fix_targets_dedupe_key,
     _hints_from_structured_fix,
     _parse_structured_fix,
+    _resolve_fix_repo,
 )
 from test_remediation_queue import _na_op  # noqa: E402
 
@@ -345,6 +346,10 @@ def test_extract_recommendation_stops_at_fix():
 
 def test_ensure_structured_fix_nudges_once_then_degrades():
     op = MagicMock()
+    # A bare MagicMock's git_repos() iterates empty, which now correctly means
+    # "nothing resolves" and would sink every gitops-manifest FIX here for a
+    # reason that has nothing to do with nudging (CFOP-85).
+    op.git_repos.return_value = _REGISTRY
     rec = "raise memory limit to 512Mi"
     bare = "STATUS: needs_action\nRECOMMENDATION: " + rec
     # already valid — no nudge
@@ -372,3 +377,144 @@ def test_ensure_structured_fix_nudges_once_then_degrades():
     # non-needs_action — no nudge even if FIX missing
     CFOperator._ensure_structured_fix(op, "resolved", rec, bare)
     op._nudge_structured_fix.assert_not_called()
+
+
+# ---- repo resolution (CFOP-85) -----------------------------------------------
+#
+# `repo` was the one field the schema waved through: any non-empty string was
+# accepted. Remediation #77 carried repo="gitops-patch" -- the remediation
+# CLASS, which is also what _class_from_fix_kind('gitops-manifest') returns, so
+# a plausible thing for a model to grab with the word in front of it. The
+# executor hands that string to GitHub, gets nothing back, and parks the row
+# four seconds after an operator approved it.
+
+_REGISTRY = [
+    {"name": "homelab-infra", "github": "aachtenberg/homelab-infra"},
+    {"name": "cfoperator", "github": "aachtenberg/cfoperator"},
+]
+
+
+def test_a_repo_that_is_not_a_repo_sinks_a_manifest_fix():
+    """The #77 case, verbatim.
+
+    A manifest patch whose repo does not resolve is not a near-miss: the
+    executor's first act is to list that repo's files, so the row can only
+    bounce. Refusing here costs one recommendation and saves an approval that
+    was never going to land.
+    """
+    fix = _valid_fix(targets=[{
+        "kind": "gitops-manifest",
+        "id": "homelab-root",
+        "repo": "gitops-patch",
+    }])
+    assert _parse_structured_fix(_report(fix), _REGISTRY) is None
+
+
+def test_a_short_name_resolves_to_the_slug_the_executor_needs():
+    """The quieter half of the same bug.
+
+    executor/entrypoint.py asks GitHub for `owner/name`. A bare short name is
+    a reasonable thing to emit and would have failed exactly as hard as a
+    wrong one, so resolution normalises rather than merely accepting.
+    """
+    fix = _valid_fix(targets=[{
+        "kind": "gitops-manifest",
+        "id": "apps/promtail.yaml",
+        "repo": "homelab-infra",
+    }])
+    parsed = _parse_structured_fix(_report(fix), _REGISTRY)
+    assert parsed is not None
+    assert parsed["targets"][0]["repo"] == "aachtenberg/homelab-infra"
+
+
+def test_a_slug_survives_resolution_unchanged():
+    parsed = _parse_structured_fix(_report(_valid_fix()), _REGISTRY)
+    assert parsed is not None
+    assert parsed["targets"][0]["repo"] == "aachtenberg/homelab-infra"
+
+
+def test_resolution_ignores_case():
+    assert _resolve_fix_repo("HomeLab-Infra", _REGISTRY) == "aachtenberg/homelab-infra"
+    assert _resolve_fix_repo("AAchtenberg/Homelab-Infra", _REGISTRY) == (
+        "aachtenberg/homelab-infra")
+
+
+def test_an_unresolvable_repo_is_dropped_rather_than_fatal_off_a_manifest():
+    """A host target carries repo incidentally and is actionable without one,
+    so a bad value costs the field and not the finding."""
+    fix = _valid_fix(targets=[{
+        "kind": "host",
+        "id": "ubuntu-llm-01",
+        "repo": "not-a-repo",
+    }])
+    parsed = _parse_structured_fix(_report(fix), _REGISTRY)
+    assert parsed is not None
+    assert "repo" not in parsed["targets"][0]
+
+
+def test_no_registry_is_not_the_same_as_an_empty_one():
+    """A caller that cannot supply the registry must not be treated as one
+    reporting that nothing resolves -- the first cannot judge, the second
+    judges everything invalid. Every pre-existing caller passes nothing, so
+    conflating them would silently void every FIX in the system.
+    """
+    assert _resolve_fix_repo("gitops-patch", None) == "gitops-patch"
+    assert _resolve_fix_repo("gitops-patch", []) is None
+
+
+def test_an_empty_or_missing_repo_is_still_fatal_only_for_a_manifest():
+    no_repo = _valid_fix(targets=[{"kind": "gitops-manifest", "id": "x"}])
+    assert _parse_structured_fix(_report(no_repo), _REGISTRY) is None
+    host = _valid_fix(targets=[{"kind": "host", "id": "ubuntu-llm-01"}])
+    assert _parse_structured_fix(_report(host), _REGISTRY) is not None
+
+
+def test_an_unresolvable_repo_is_refused_on_the_path_that_actually_enqueues():
+    """The bug the first CFOP-85 attempt shipped, caught by review.
+
+    Resolution was threaded into _ensure_structured_fix and stopped there.
+    But ensure rejecting a FIX does not remove it from response_text, and
+    _queue_needs_action_remediation re-parses that same text -- so the enqueue
+    path re-accepted exactly what ensure had just refused, put repo
+    "gitops-patch" on the payload, and produced the identical four-second
+    executor bounce. The check was inert for the only production path that
+    enqueues a row.
+
+    The earlier tests could not see it: they all called _parse_structured_fix
+    with a registry directly, which is the one arrangement in which the bug
+    does not exist. This drives the queue helper instead.
+    """
+    op = _na_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": None, "repo": None})
+    bad = _valid_fix(targets=[{
+        "kind": "gitops-manifest",
+        "id": "homelab-root",
+        "repo": "gitops-patch",
+    }])
+    rid = op._queue_needs_action_remediation(
+        80, "cert-manager CRD ownership",
+        {"fingerprint": "fp-77", "labels": {"instance": "homelab-root"}},
+        "remove the cert-manager CRDs from homelab-root", _report(bad),
+        provider="ollama/gemma4:26b")
+    assert rid == 9
+    # Degraded to the classifier rather than trusting the FIX...
+    op._classify_needs_action_recommendation.assert_called_once()
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["remediation_class"] == "manual"
+    # ...and nothing put the unresolvable value on the payload.
+    assert kw["payload"].get("repo") != "gitops-patch"
+    assert all(t.get("repo") != "gitops-patch"
+               for t in (kw["payload"].get("targets") or []))
+
+
+def test_a_registry_entry_with_no_slug_resolves_to_nothing():
+    """Raised in review as a latent hole, and it is one.
+
+    The executor reaches a repo only through a GitHubClient, so an entry with
+    no `github` cannot be patched. Returning its short name would hand over a
+    second unusable value and move the same failure one step downstream.
+    """
+    local_only = [{"name": "homelab-infra", "github": ""}]
+    assert _resolve_fix_repo("homelab-infra", local_only) is None

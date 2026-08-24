@@ -280,8 +280,55 @@ def _json_object_at(text: str, start: int = 0):
     return obj if isinstance(obj, dict) else None
 
 
-def _validate_structured_fix(obj: dict) -> Optional[Dict[str, Any]]:
-    """Schema check: parse-or-None, never fill in missing required fields."""
+def _resolve_fix_repo(value, known_repos) -> Optional[str]:
+    """A FIX target's ``repo`` resolved against the registry, or None.
+
+    Accepts either form an operator would recognise -- the registry's short
+    name (``homelab-infra``) or the GitHub slug (``aachtenberg/homelab-infra``)
+    -- and always returns the SLUG, because that is what the executor hands to
+    GitHub (executor/entrypoint.py: ``list_repo_files(client, repo, base)``).
+    A short name is a perfectly reasonable thing for the model to emit and
+    would have failed there just as surely as a wrong one, so normalising here
+    fixes a second, quieter bug than the one that prompted this.
+
+    ``known_repos`` of None means "the caller does not know the registry",
+    which is not the same as an empty registry: the first cannot judge, the
+    second resolves nothing. None therefore passes the value through.
+    """
+    text = str(value or '').strip()
+    if not text:
+        return None
+    if known_repos is None:
+        return text
+    lowered = text.lower()
+    for repo in known_repos:
+        if not isinstance(repo, dict):
+            continue
+        slug = str(repo.get('github') or '').strip()
+        name = str(repo.get('name') or '').strip()
+        if not (slug or name):
+            continue
+        if lowered not in (slug.lower(), name.lower()):
+            continue
+        # Only the slug. A registry entry with no `github` cannot be reached
+        # by the executor at all -- run_gitops drives a GitHubClient -- so
+        # handing back its short name would swap one unusable value for
+        # another and move the failure downstream, which is the bug this
+        # function exists to end.
+        return slug or None
+    return None
+
+
+def _validate_structured_fix(obj: dict,
+                             known_repos=None) -> Optional[Dict[str, Any]]:
+    """Schema check: parse-or-None, never fill in missing required fields.
+
+    ``known_repos`` is the git registry. Supplying it makes ``repo`` a checked
+    field rather than free text -- it was the one hole left in an otherwise
+    strict type, and an unresolvable value produced a payload the executor
+    could only bounce (CFOP-85). Kept a parameter rather than read from global
+    state so this stays a pure function.
+    """
     if not isinstance(obj, dict):
         return None
     targets = obj.get('targets')
@@ -296,9 +343,28 @@ def _validate_structured_fix(obj: dict) -> Optional[Dict[str, Any]]:
         if not kind or not tid:
             return None
         item = {'kind': kind, 'id': tid}
-        repo = t.get('repo')
-        if repo is not None and str(repo).strip():
-            item['repo'] = str(repo).strip()
+        resolved = _resolve_fix_repo(t.get('repo'), known_repos)
+        if resolved:
+            item['repo'] = resolved
+        elif kind == 'gitops-manifest':
+            # A manifest patch without a repo that resolves is not a
+            # near-miss, it is unexecutable: the executor's first act is to
+            # list that repo's files. Refusing the FIX costs one recommendation
+            # and saves an approval that could only ever bounce.
+            #
+            # Logged rather than dropped quietly. The row used to fail loudly
+            # in the executor, where an operator could at least read
+            # last_error; refusing it here removes that trail, and an
+            # unexplained disappearance is the failure mode this codebase
+            # keeps relearning. If this fires often the lever is the prompt,
+            # and the log is what says so.
+            logger.warning(
+                "FIX rejected: gitops-manifest target %r names repo %r, "
+                "which is not in the git registry", tid, t.get('repo'))
+            return None
+        # Any other kind carries repo incidentally -- a host or k8s-object
+        # target is actionable without one -- so an unresolvable value is
+        # dropped rather than sinking a real finding.
         clean_targets.append(item)
     steps = obj.get('steps')
     if not isinstance(steps, list) or not steps:
@@ -341,7 +407,8 @@ def _validate_structured_fix(obj: dict) -> Optional[Dict[str, Any]]:
     return out
 
 
-def _parse_structured_fix(response_text: str) -> Optional[Dict[str, Any]]:
+def _parse_structured_fix(response_text: str,
+                          known_repos=None) -> Optional[Dict[str, Any]]:
     """Pull a FIX object from an investigation (or nudge) reply.
 
     Looks for ``FIX:`` JSON or a fenced json block after STATUS. A nudge
@@ -368,13 +435,15 @@ def _parse_structured_fix(response_text: str) -> Optional[Dict[str, Any]]:
             nl = after.find('\n')
             after = after[nl + 1:] if nl != -1 else after[3:]
         obj = _json_object_at(after, 0)
-        if not (isinstance(obj, dict) and _validate_structured_fix(obj)):
+        if not (isinstance(obj, dict)
+                and _validate_structured_fix(obj, known_repos)):
             obj = None
     if obj is None:
         fence = re.search(r'```(?:json)?\s*\n(\s*\{)', region, re.I)
         if fence:
             obj = _json_object_at(region, fence.start(1))
-            if not (isinstance(obj, dict) and _validate_structured_fix(obj)):
+            if not (isinstance(obj, dict)
+                    and _validate_structured_fix(obj, known_repos)):
                 obj = None
     if obj is None:
         stripped = text.strip()
@@ -383,7 +452,8 @@ def _parse_structured_fix(response_text: str) -> Optional[Dict[str, Any]]:
             stripped = re.sub(r'\s*```$', '', stripped)
         if stripped.startswith('{'):
             obj = _json_object_at(stripped, 0)
-    return _validate_structured_fix(obj) if isinstance(obj, dict) else None
+    return (_validate_structured_fix(obj, known_repos)
+            if isinstance(obj, dict) else None)
 
 
 def _fix_targets_dedupe_key(fix: Dict[str, Any]) -> str:
@@ -1868,7 +1938,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
         degrades to today's classifier. Module-level parse so MagicMock tests
         cannot intercept it.
         """
-        fix = _parse_structured_fix(response_text)
+        fix = _parse_structured_fix(response_text, self.git_repos())
         if outcome != 'needs_action' or fix:
             return fix, response_text
         rec = str(recommendation or '').strip()
@@ -1878,7 +1948,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
         nudged = self._nudge_structured_fix(response_text, rec, trigger)
         if not nudged:
             return None, response_text
-        fix = _parse_structured_fix(nudged)
+        fix = _parse_structured_fix(nudged, self.git_repos())
         if not fix:
             return None, response_text
         appended = response_text.rstrip() + '\nFIX: ' + json.dumps(fix)
@@ -3889,8 +3959,17 @@ FIX: {_FIX_JSON_SCHEMA}"""
         # Re-validate even when the caller passed structured_fix: a truthy
         # invalid dict must not IndexError in _hints_from_structured_fix and
         # fail the investigation (CFOP-80: invalid FIX degrades to classifier).
-        candidate = structured_fix if structured_fix is not None else _parse_structured_fix(response_text)
-        fix = _validate_structured_fix(candidate) if isinstance(candidate, dict) else None
+        # The registry goes to BOTH calls. _ensure_structured_fix rejecting a
+        # FIX does not remove it from response_text, so this re-parse sees the
+        # same object again; without the registry it re-accepts exactly what
+        # ensure just refused, and the unresolvable repo lands on the payload.
+        # That made the CFOP-85 check inert for the only production path that
+        # enqueues a row.
+        repos = self.git_repos()
+        candidate = (structured_fix if structured_fix is not None
+                     else _parse_structured_fix(response_text, repos))
+        fix = (_validate_structured_fix(candidate, repos)
+               if isinstance(candidate, dict) else None)
         if fix:
             # Mutation check: drop this branch and test_valid_fix_skips_classifier fails.
             hints = _hints_from_structured_fix(fix)
