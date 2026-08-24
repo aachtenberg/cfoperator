@@ -257,7 +257,10 @@ _FIX_KIND_TO_CLASS = {
 _FIX_JSON_SCHEMA = (
     '{"targets": [{"kind": "gitops-manifest|k8s-object|k8s-imperative|'
     'host|database-row|external-system", "id": "path, name, or host", '
-    '"repo": "owner/name or omit"}], "steps": ["ordered action"], '
+    '"repo": "a linked repo as owner/name, or omit"}], '
+    '"observed": [{"source": "the command or file you READ", '
+    '"value": "what it actually said, verbatim"}], '
+    '"steps": ["ordered action"], '
     '"verify": {"command": "check", "expect": "success signal"}, '
     '"rejected": [{"alternative": "what you considered", '
     '"why_not": "why not"}], "risk": "low|med|high"}'
@@ -378,6 +381,42 @@ def _validate_structured_fix(obj: dict,
     expect = str(verify.get('expect') or '').strip()
     if not command or not expect:
         return None
+    # CFOP-88: what was READ before proposing a change. Required and
+    # unconditional -- deliberately NOT "required only for steps that change a
+    # value", because deciding which steps those are means classifying
+    # free-form step text, and a regex over step wording is the same species
+    # as the parsers this file is trying to stop accumulating. A restart-the-
+    # pod FIX records the pod's status and restart count, which is evidence
+    # worth having rather than a tax.
+    #
+    # The mechanism is the READ, not this check. Remediation #78 proposed
+    # MemoryHigh=24G/MemoryMax=28G on a 30 GiB box; the file it wanted to edit
+    # explains three lines above the setting that the 16G/20G cap exists
+    # because ollama+runners once OOM-killed cluster pods. Requiring the
+    # current value forces the call that puts that comment in context.
+    # Validation only checks that a specific claim was made -- a fabricated
+    # value still passes, and verifying it against the live target is a
+    # separate piece of plumbing.
+    observed = obj.get('observed')
+    if not isinstance(observed, list) or not observed:
+        # Logged, not silent. Requiring this field means a non-complying model
+        # degrades every FIX to the classifier, which is a real quality drop
+        # and would otherwise look like the FIX path simply going quiet. If
+        # this fires steadily the lever is the prompt or the nudge, and this
+        # line is what says so.
+        logger.warning("FIX rejected: no `observed` — nothing was read before "
+                       "proposing a change (targets=%r)",
+                       [t.get('id') for t in clean_targets])
+        return None
+    clean_obs = []
+    for o in observed:
+        if not isinstance(o, dict):
+            return None
+        source = str(o.get('source') or '').strip()
+        value = str(o.get('value') or '').strip()
+        if not source or not value:
+            return None
+        clean_obs.append({'source': source, 'value': value})
     rejected = obj.get('rejected')
     if rejected is None:
         rejected = []
@@ -394,6 +433,7 @@ def _validate_structured_fix(obj: dict,
         clean_rej.append({'alternative': alt, 'why_not': why})
     out = {
         'targets': clean_targets,
+        'observed': clean_obs,
         'steps': [s.strip() for s in steps],
         'verify': {'command': command, 'expect': expect},
         'rejected': clean_rej,
@@ -501,6 +541,7 @@ def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
         'classifier_backend': None,
         'classifier_model': None,
         'targets': targets,
+        'observed': list(fix.get('observed') or []),
         'steps': list(fix.get('steps') or []),
         'verify': dict(fix.get('verify') or {}),
         'rejected': list(fix.get('rejected') or []),
@@ -3225,7 +3266,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
         if dedupe_key:
             payload['dedupe_key'] = dedupe_key
         # CFOP-80: structured FIX rides beside target.host, never replaces it.
-        for key in ('targets', 'steps', 'verify', 'rejected'):
+        for key in ('targets', 'observed', 'steps', 'verify', 'rejected'):
             if details.get(key) is not None:
                 payload[key] = details[key]
         # Which models actually made the call, recorded on the row. Before
