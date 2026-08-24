@@ -397,25 +397,37 @@ def _validate_structured_fix(obj: dict,
     # Validation only checks that a specific claim was made -- a fabricated
     # value still passes, and verifying it against the live target is a
     # separate piece of plumbing.
+    # Every refusal here is logged, none silently. Requiring this field means
+    # a non-complying model degrades every FIX to the classifier, which is a
+    # real quality drop that would otherwise look like the FIX path simply
+    # going quiet. The log is what tells the difference, so it has to cover
+    # the shapes that actually occur -- and once `observed` is named in the
+    # prompt, a HALF-FILLED entry (a source with no value) is likelier than an
+    # omitted key. Logging only the omission would leave the common failure
+    # invisible, which is the mitigation failing at exactly the moment it is
+    # needed. Behaviour is unchanged: parse-or-None, refuse.
+    tids = [t.get('id') for t in clean_targets]
+
+    def _no_observed(reason: str):
+        logger.warning("FIX rejected: %s — cannot show what was read before "
+                       "proposing a change (targets=%r)", reason, tids)
+        return None
+
     observed = obj.get('observed')
     if not isinstance(observed, list) or not observed:
-        # Logged, not silent. Requiring this field means a non-complying model
-        # degrades every FIX to the classifier, which is a real quality drop
-        # and would otherwise look like the FIX path simply going quiet. If
-        # this fires steadily the lever is the prompt or the nudge, and this
-        # line is what says so.
-        logger.warning("FIX rejected: no `observed` — nothing was read before "
-                       "proposing a change (targets=%r)",
-                       [t.get('id') for t in clean_targets])
-        return None
+        return _no_observed("`observed` missing or empty")
     clean_obs = []
     for o in observed:
         if not isinstance(o, dict):
-            return None
+            return _no_observed("`observed` entry is not an object")
         source = str(o.get('source') or '').strip()
         value = str(o.get('value') or '').strip()
-        if not source or not value:
-            return None
+        if not source:
+            return _no_observed("`observed` entry has no source")
+        if not value:
+            # The likeliest half-compliance: it ran something and did not say
+            # what came back, which is precisely the gap #78 fell through.
+            return _no_observed("`observed` entry has no value")
         clean_obs.append({'source': source, 'value': value})
     rejected = obj.get('rejected')
     if rejected is None:

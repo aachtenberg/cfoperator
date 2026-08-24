@@ -6,6 +6,7 @@ or malformed FIX still classifies. Class of regression, not output pins.
 """
 
 import json
+import logging
 import os
 import sys
 from unittest.mock import MagicMock
@@ -607,3 +608,39 @@ def test_what_was_read_reaches_the_payload_an_operator_sees():
         "source": "cat /etc/systemd/system/ollama.service.d/override.conf",
         "value": "MemoryHigh=16G\nMemoryMax=20G",
     }]
+
+
+@pytest.mark.parametrize("bad,reason", [
+    (None, "missing or empty"),
+    ([], "missing or empty"),
+    (["cat override.conf"], "not an object"),
+    ([{"value": "MemoryHigh=16G"}], "no source"),
+    ([{"source": "cat override.conf"}], "no value"),
+    ([{"source": "cat override.conf", "value": "  "}], "no value"),
+])
+def test_every_observed_refusal_is_logged_not_silent(caplog, bad, reason):
+    """Raised in review, and it undermines the whole risk mitigation.
+
+    Requiring `observed` means a non-complying model degrades every FIX to the
+    classifier — a real quality drop that otherwise looks like the FIX path
+    going idle. The warning is what tells those apart, so it has to cover the
+    shapes that actually occur. Once `observed` is named in the prompt, a
+    half-filled entry (a source with no value) is likelier than an omitted
+    key; logging only the omission would leave the COMMON failure invisible.
+
+    The first version logged the empty case and returned silently for the
+    rest.
+    """
+    fix = _valid_fix()
+    if bad is None:
+        del fix["observed"]
+    else:
+        fix["observed"] = bad
+    with caplog.at_level(logging.WARNING, logger="cfoperator"):
+        assert _parse_structured_fix(_report(fix), _REGISTRY) is None
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.WARNING]
+    assert any("observed" in m for m in warnings), warnings
+    assert any(reason in m for m in warnings), warnings
+    # The target ids ride along, so the log names which recommendation was lost.
+    assert any("apps/promtail.yaml" in m for m in warnings), warnings
