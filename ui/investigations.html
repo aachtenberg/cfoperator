@@ -114,21 +114,29 @@
 <div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
+<!-- esc/badge/color/age/toast/trapFocus — one copy, see ui/common.js. Not deferred:
+     the script below calls them at top level. -->
+<script src="/common.js"></script>
 <script>
 const OUTCOMES = ['resolved','needs_action','monitoring','escalated','escalate','failed','in_progress','retry'];
 const OC = {resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',escalated:'--red',
   escalate:'--red',failed:'--red',in_progress:'--text-muted',retry:'--purple'};
 let filter='', ALL=[], REMS={}, REMID={};
-function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
-function badge(t,v){ const c=color(v); return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(t)||'—'}</span>`; }
-// Quotes are escaped too: these values also land inside HTML attributes,
-// where a bare " or ' breaks out of the attribute.
-function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
-  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
-function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.endsWith('Z')?'':'Z')).getTime())/1000;
-  if(s<90)return Math.round(s)+'s'; if(s<5400)return Math.round(s/60)+'m'; if(s<129600)return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
 
+// A poll that brought nothing new does not rebuild the table (CFOP-95). The
+// rows were replaced by innerHTML every 20 s regardless, which shifted them
+// under the pointer and dropped focus mid-Tab for no reason. The signature is
+// every field a row paints from — including the linked remediation, which can
+// change while the investigation does not; the age column is refreshed in
+// place instead of by repaint.
+let LAST_SIG=null;
+function signature(){
+  return ALL.map(r=>{ const m=REMS[r.id]||(r.remediation_id?REMID[r.remediation_id]:null)||{};
+    return [r.id,r.outcome,r.triage_action,r.trigger,r.duration_seconds,r.completed_at,m.id,m.status,r.remediation_id,r.remediation_pr_url].join('\u0001'); }).join('\n');
+}
 async function load(){
+  // A hidden tab has nobody looking; the visibilitychange hook below catches up.
+  if(document.hidden) return;
   try{ ALL=(await (await fetch('/api/investigations?limit=80')).json()).investigations||[]; }catch(e){ return; }
   // Linked remediation rows (CFOP-46): map investigation_id -> newest row so a
   // needs_action investigation shows where its recommendation went — or,
@@ -139,7 +147,9 @@ async function load(){
     REMS={}; REMID={};
     rows.forEach(r=>{ if(r.investigation_id!=null && !(r.investigation_id in REMS)) REMS[r.investigation_id]=r; REMID[r.id]=r; });
   }catch(e){ /* linkage is enhancement — the table still renders without it */ }
-  paint(); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
+  const sig=signature();
+  if(sig!==LAST_SIG){ LAST_SIG=sig; paint(); } else refreshAges();
+  document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
 }
 // LLM-adjacent URLs: only http(s) reaches href (same posture as
 // remediations.html). Empty/null must return '' — new URL('', base) resolves
@@ -200,7 +210,7 @@ function paint(){
       <td class="trig">${esc(r.trigger||'').slice(0,140)}</td>
       <td>${remLink(r)}</td>
       <td class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':'—'}</td>
-      <td class="muted">${age(r.started_at)}</td></tr>`).join('');
+      <td class="muted" data-age="${esc(r.started_at||'')}">${age(r.started_at)}</td></tr>`).join('');
   refocusRow(focused);
 }
 function setF(o){ filter=o; paint(); }
@@ -244,6 +254,8 @@ function restoreFocus(){
 // Escape closes the drawer — unless a terminal is open, in which case the key
 // belongs to whatever is running in it (a TUI, a pager). Disconnect first.
 document.addEventListener('keydown',e=>{ if(e.key==='Escape' && !COCKPIT.ws) closeDetail(); });
+// Tab stays inside the open drawer (CFOP-95); a Tab the terminal consumed is left to it.
+trapFocus(document.getElementById('detail'));
 
 async function detail(id){
   // Tear any open terminal down FIRST, unconditionally. detail() replaces the
@@ -302,9 +314,6 @@ function attachBlock(r){
   return `<div class="kv"><b>take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>
     <button type="button" class="chip" onclick="copyAttach()">Copy</button>${open}</div>`;
 }
-function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
-  const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
-  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, 3800); }
 // navigator.clipboard is a secure-context API, and this console is normally
 // reached over plain HTTP on the LAN — so the execCommand path is the one that
 // actually runs for most operators here, not a legacy branch. Either way the
@@ -376,8 +385,8 @@ async function triage(id, action){
     const res=await fetch(`/api/investigations/${id}/triage`,{
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({action, note})});
-    if(!res.ok){ alert('triage failed: '+res.status+(res.status===403?' (admin only)':'')); return; }
-  }catch(e){ alert('triage failed'); return; }
+    if(!res.ok){ toast('triage failed: '+res.status+(res.status===403?' (admin only)':''),'err'); return; }
+  }catch(e){ toast('triage failed','err'); return; }
   await detail(id); load();
 }
 // ---- the browser cockpit (CFOP-59) ------------------------------------
@@ -535,6 +544,9 @@ function openFromHash(){ const m=location.hash.match(/^#(\d+)$/); if(m && +m[1]!
 window.addEventListener('hashchange', openFromHash);
 
 load().then(openFromHash); setInterval(load, 20000);
+// load() skips a hidden tab; catch up the moment it is looked at again rather
+// than up to 20 s later.
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) load(); });
 </script>
 </body>
 </html>

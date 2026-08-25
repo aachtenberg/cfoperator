@@ -171,7 +171,10 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
   }};
 box.window={location:loc,history:hist,addEventListener(){},removeEventListener(){},
   CFOP:{me:()=>Promise.resolve({role:'admin'})}};
-box.globalThis=box; vm.createContext(box); vm.runInContext(src,box);
+// The helpers the page calls (esc, badge, toast, trapFocus) live in ui/common.js
+// since CFOP-95; the browser loads it before the page script, so the harness does.
+const common=fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]),'common.js'),'utf8');
+box.globalThis=box; vm.createContext(box); vm.runInContext(common,box); vm.runInContext(src,box);
 
 const tick=()=>new Promise(r=>setImmediate(r));
 (async () => {
@@ -249,3 +252,98 @@ def test_escape_with_nothing_open_does_not_move_focus(focus_behaviour):
     """closeDetail runs on every Escape keypress, drawer or no drawer."""
     page, b = focus_behaviour
     assert b["focusedOnIdleClose"] == [], f"{page}: an idle close moved focus"
+
+
+# --------------------------------------------------------------------------
+# Tab stays inside the open dialog (CFOP-95, deferred from CFOP-94)
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("page", LIST_PAGES)
+def test_the_drawer_installs_the_focus_trap(page):
+    """aria-modal is a promise to assistive tech, not a mechanism: without the
+    trap, Tab from the last control walks out into the page behind the
+    backdrop. One helper in common.js, installed on the drawer by each page."""
+    assert re.search(r"trapFocus\(document\.getElementById\('detail'\)\)", inline_script(page)), (
+        f"{page} does not install trapFocus on #detail")
+
+
+# A dialog with three controls and a document whose activeElement the harness
+# sets by hand. Each case fires one keydown and reports where focus went and
+# whether the default (the browser's own Tab) was cancelled.
+_TRAP_STUB = r"""
+const fs=require('fs'), vm=require('vm');
+const src=fs.readFileSync(process.argv[2],'utf8');
+const focusLog=[];
+function el(id){ return {id, hidden:false, focus(){ focusLog.push(id); doc.activeElement=this; }}; }
+const close=el('close'), input=el('input'), resolve=el('resolve'), outside=el('outside');
+const doc={documentElement:{}, activeElement:null};
+let handler=null;
+const dialog={addEventListener(type,fn){ if(type==='keydown') handler=fn; },
+  querySelectorAll(){ return [close,input,resolve]; }};
+const box={console,JSON,Array,Object,document:doc,
+  getComputedStyle:()=>({getPropertyValue:()=>''})};
+box.globalThis=box; vm.createContext(box); vm.runInContext(src,box);
+box.trapFocus(dialog);
+function press(from, shift, consumed){
+  doc.activeElement=from; focusLog.length=0;
+  const e={key:'Tab', shiftKey:!!shift, defaultPrevented:!!consumed, preventDefault(){ this.defaultPrevented=true; }};
+  handler(e);
+  return {focused:focusLog.slice(), prevented:e.defaultPrevented};
+}
+const out={
+  installed: typeof handler==='function',
+  tabFromLast: press(resolve,false),
+  tabFromMiddle: press(input,false),
+  shiftTabFromFirst: press(close,true),
+  shiftTabFromMiddle: press(input,true),
+  tabFromOutside: press(outside,false),
+  consumedTab: press(resolve,false,true),
+};
+doc.activeElement=resolve; focusLog.length=0;
+const other={key:'Escape', shiftKey:false, defaultPrevented:false, preventDefault(){ this.defaultPrevented=true; }};
+handler(other);
+out.otherKey={focused:focusLog.slice(), prevented:other.defaultPrevented};
+console.log(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def trap(tmp_path_factory):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    stub = tmp_path_factory.mktemp("trap") / "stub.js"
+    stub.write_text(_TRAP_STUB, encoding="utf-8")
+    out = subprocess.run([node, str(stub), str(UI / "common.js")],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_the_trap_wraps_at_both_ends(trap):
+    assert trap["installed"]
+    assert trap["tabFromLast"] == {"focused": ["close"], "prevented": True}
+    assert trap["shiftTabFromFirst"] == {"focused": ["resolve"], "prevented": True}
+
+
+def test_the_trap_leaves_the_middle_alone(trap):
+    """Between the ends the browser's own Tab order is right; intercepting it
+    would be a second, worse implementation of the same thing."""
+    assert trap["tabFromMiddle"] == {"focused": [], "prevented": False}
+    assert trap["shiftTabFromMiddle"] == {"focused": [], "prevented": False}
+
+
+def test_the_trap_pulls_focus_in_from_outside(trap):
+    """Focus that ended up behind the backdrop (a repaint, a script) is
+    brought back to the dialog on the next Tab rather than wandering."""
+    assert trap["tabFromOutside"] == {"focused": ["close"], "prevented": True}
+
+
+def test_a_tab_something_inside_already_consumed_is_left_alone(trap):
+    """The investigations drawer holds an xterm terminal; a Tab it handed to
+    the shell has preventDefault called on it and must not be re-routed."""
+    assert trap["consumedTab"] == {"focused": [], "prevented": True}
+
+
+def test_the_trap_ignores_other_keys(trap):
+    assert trap["otherKey"] == {"focused": [], "prevented": False}
