@@ -1433,18 +1433,22 @@ class WebServer:
             try:
                 host, provenance = self._resolve_cockpit_host(
                     investigation_id, inv, str(body.get('host') or ''))
+                # The bridge's own reading of "can a pod be served" decides the
+                # tier here, in the resolver, and in close — one rule, three
+                # callers, so the session the drawer opened is the one the
+                # bridge finds and the one kill removes (CFOP-98).
                 tier, tier_note, node = self._choose_cockpit_tier(
-                    host, str(body.get('tier') or TIER_AUTO))
-                _node = node
+                    host, str(body.get('tier') or TIER_AUTO), pod_serves=bridge.pod_tier)
+                logger.info("cockpit open for #%s: host=%r (%s) -> %s",
+                            investigation_id, host, provenance, tier_note)
                 if tier == TIER_POD:
                     if not bridge.pod_tier:
-                        return refuse('tier',
-                                      'this investigation is in the cluster; the browser '
-                                      'terminal serves the host tiers only unless '
-                                      'cockpit.bridge_pod_tier is on (and the chart grants '
-                                      'pods/attach) — use cfassist attach --spawn')
+                        reason = self._browser_pod_refusal(
+                            host, node, tier_note, requested=str(body.get('tier') or ''))
+                        logger.warning(f"cockpit open refused for #{investigation_id}: {reason}")
+                        return refuse('tier', reason)
                     result = self._cockpit_spawner().spawn(
-                        investigation_id, host=host, ttl_seconds=ttl, node=_node)
+                        investigation_id, host=host, ttl_seconds=ttl, node=node)
                 else:
                     result = self._cockpit_ladder().spawn(
                         investigation_id, host=host, tier=tier, ttl_seconds=ttl)
@@ -1487,16 +1491,8 @@ class WebServer:
             try:
                 host, _provenance = self._resolve_cockpit_host(
                     investigation_id, inv, str(body.get('host') or ''))
-                tier, _note, _node = self._choose_cockpit_tier(host, TIER_AUTO)
-                # A pod cockpit is a Job, not a host artifact: deleting it (the
-                # grant the ladder's own spawn already holds) tears down the pod
-                # and GCs its token Secret, where ladder.destroy() would SSH the
-                # node, find nothing, and revoke the Secret out from under a Job
-                # left running. Kill is one thing across tiers or it is not kill.
-                if tier == TIER_POD:
-                    removed = self._cockpit_spawner().destroy(investigation_id)
-                else:
-                    removed = self._cockpit_ladder().destroy(investigation_id, host=host)
+                tier, _note, _node = self._choose_cockpit_tier(
+                    host, TIER_AUTO, pod_serves=self._pod_serves_browser())
             except CockpitSpawnError as e:
                 logger.warning(f"cockpit close refused for #{investigation_id}: {e}")
                 return jsonify({'error': str(e)}), e.status
@@ -1504,12 +1500,54 @@ class WebServer:
                 logger.error(f"cockpit close failed for #{investigation_id}: {e}",
                              exc_info=True)
                 return jsonify({'error': str(e)}), 500
+
+            # A pod cockpit is a Job, not a host artifact: deleting it (the
+            # grant the ladder's own spawn already holds) tears down the pod
+            # and GCs its token Secret, where ladder.destroy() would SSH the
+            # node, find nothing, and revoke the Secret out from under a Job
+            # left running. Kill is one thing across tiers or it is not kill
+            # — which is also why the Job goes *whatever* tier was derived: a
+            # terminal-side `attach --spawn` may have put a pod on the same
+            # node under the CLI's rule while the drawer's session sits on the
+            # host.
+            #
+            # Two control planes, each tried whatever happened to the other.
+            # The cockpit is used *during* incidents — a k3s API that is down
+            # must not leave a host session alive until its TTL, and an
+            # unreachable host must not leave a Job running; and the tokens
+            # are revoked either way, so at worst compute outlives nothing
+            # that can still authenticate. The response carries what was
+            # removed and what could not be, and the status of the failure.
+            removals = [('pod', lambda: self._cockpit_spawner().destroy(investigation_id))]
+            if tier != TIER_POD:
+                removals.append(('host', lambda: self._cockpit_ladder().destroy(
+                    investigation_id, host=host)))
+            removed, errors = [], []
+            for side, remove in removals:
+                try:
+                    removed = removed + remove()
+                except CockpitSpawnError as e:
+                    logger.warning(f"cockpit close: {side} removal for #{investigation_id} "
+                                   f"failed: {e}")
+                    errors.append({'side': side, 'error': str(e), 'status': e.status})
+                except Exception as e:
+                    logger.error(f"cockpit close: {side} removal for #{investigation_id} "
+                                 f"failed: {e}", exc_info=True)
+                    errors.append({'side': side, 'error': str(e), 'status': 500})
             revoked = self._revoke_cockpit_tokens(investigation_id)
             self.record_bridge_event(event='killed', actor=_actor(),
                                      investigation_id=investigation_id, host=host,
                                      session_name=(removed[0]['name'] if removed else None))
-            return jsonify({'status': 'closed', 'host': host, 'removed': removed,
-                            'tokens_revoked': revoked}), 200
+            result = {'status': 'closed' if not errors else 'partial', 'host': host,
+                      'removed': removed, 'tokens_revoked': revoked}
+            if errors:
+                result['errors'] = errors
+                result['error'] = ('; '.join(f"{e['side']}: {e['error']}" for e in errors)
+                                   + f" — tokens revoked ({revoked}); "
+                                   + (f"removed {', '.join(r['name'] for r in removed)}"
+                                      if removed else "nothing else removed"))
+                return jsonify(result), max(e['status'] for e in errors)
+            return jsonify(result), 200
 
         # ---- cockpit write-back (CFOP-37) --------------------------------
         # What a human and an agent worked out in a cockpit, coming back from
@@ -1885,10 +1923,23 @@ class WebServer:
             known_hosts=self._cockpit_ladder().known_host_names(),
         )
 
-    def _choose_cockpit_tier(self, host: str, requested: str) -> tuple:
+    def _choose_cockpit_tier(self, host: str, requested: str, *,
+                             pod_serves: bool = True) -> tuple:
         """Ladder decision. Returns ``(tier, note, node)`` — the node lookup
         comes back with it so the tier-1 spawn can reuse it instead of asking
         the cluster the same question a second time.
+
+        ``pod_serves=False`` is the browser cockpit's reading (CFOP-98): with
+        Phase B off the bridge cannot open a terminal into a pod, so for it a
+        pod is a refusal, not a rung. Under ``auto`` a host that is *both* a
+        cluster node and an ``infrastructure.hosts`` entry — most of a homelab
+        fleet, and every Pi in this one — is then probed and takes a host tier,
+        exactly what ``--tier host`` would have asked for from a terminal. The
+        alternative was a drawer that refused nearly every investigation and
+        blamed the cluster (#2302, raspberrypi2). A node with no inventory
+        entry still resolves to pod, because there is nowhere else to go, and
+        the route says that instead. An explicit ``requested`` tier is
+        honoured as before.
 
         The ssh probe runs when it can change the answer, which is two cases:
 
@@ -1910,16 +1961,66 @@ class WebServer:
         """
         ladder = self._cockpit_ladder()
         node = self._cockpit_spawner().get_node(host) if host else None
-        wants_host_tier = (requested or "").strip().lower() not in ("", TIER_AUTO, TIER_POD)
+        wants = (requested or "").strip().lower()
+        wants_host_tier = wants not in ("", TIER_AUTO, TIER_POD)
+        in_inventory = bool(host) and host in ladder.config.hosts
+        # The browser's auto: a node that is also an ssh host is a host,
+        # because the pod the cluster rule would pick cannot be served.
+        node_as_host = (not pod_serves and not wants_host_tier and wants != TIER_POD
+                        and node is not None and in_inventory)
         caps = None
-        if host and host in ladder.config.hosts and (node is None or wants_host_tier):
+        if in_inventory and (node is None or wants_host_tier or node_as_host):
             # refresh on an explicit request: --tier is what an operator reaches
             # for after changing something on the host.
             caps = ladder.probe(host, refresh=wants_host_tier)
         tier, note = choose_tier(caps, requested=requested,
-                                 is_cluster_node=node is not None,
+                                 is_cluster_node=node is not None and not node_as_host,
                                  has_host=bool(host), allow_sudo=ladder.config.allow_sudo)
+        if node_as_host and tier != TIER_POD:
+            note += (" — a cluster node too, taken as a host because the browser "
+                     "cockpit cannot serve a pod (cockpit.bridge_pod_tier is off)")
         return tier, note, node
+
+    def _pod_serves_browser(self) -> bool:
+        """Whether a pod cockpit is something the browser could be handed.
+
+        True when the bridge is off, or not in the image at all: with no
+        browser cockpit there is no browser reading, and the CLI's rule (a
+        node is a pod) is the only one that exists — so a close on that
+        install stays the Job delete it always was, with no ssh round trip in
+        front of it. Otherwise Phase B's flag.
+        """
+        try:
+            bridge = self._bridge_config()
+        except Exception:
+            return True
+        return (not bridge.enabled) or bool(bridge.pod_tier)
+
+    def _browser_pod_refusal(self, host: str, node, tier_note: str, *,
+                             requested: str = "") -> str:
+        """Why the drawer cannot open this one, and what to do — the reason
+        names the actual gap (no host, no inventory entry, a failed probe, or
+        a pod asked for by name) rather than "in the cluster", which for a Pi
+        that is both a node and a host was true and useless (CFOP-98)."""
+        tail = ("; the browser terminal serves the host tiers only unless "
+                "cockpit.bridge_pod_tier is on (and the chart grants pods/attach)")
+        if (requested or "").strip().lower() == TIER_POD:
+            # Not a failure to get a host tier: the caller asked for the pod.
+            where = f" for {host}" if host else ""
+            return (f"tier pod was requested{where}, and cockpit.bridge_pod_tier is off"
+                    + tail + " — drop the tier to get a host cockpit, or use "
+                    "cfassist attach --spawn --tier pod from a terminal")
+        if not host:
+            return ("no affected host could be resolved from this investigation, so "
+                    "its cockpit would be a pod somewhere in the cluster" + tail +
+                    " — use cfassist attach --spawn --host <name> from a terminal")
+        if host not in self._cockpit_ladder().config.hosts:
+            what = "a cluster node" if node is not None else "a name"
+            return (f"{host} is {what} with no infrastructure.hosts entry, so the only "
+                    f"cockpit for it is a pod" + tail +
+                    f" — add {host} to infrastructure.hosts, or use cfassist attach --spawn")
+        return (f"{host} could not be given a host-tier cockpit ({tier_note})" + tail +
+                " — use cfassist attach --spawn --tier pod from a terminal")
 
     # ---- the browser bridge's server-side half (CFOP-75) -----------------
 
@@ -1941,9 +2042,10 @@ class WebServer:
         if not inv:
             return None
         host, _provenance = self._resolve_cockpit_host(investigation_id, inv, '')
-        tier, _note, _node = self._choose_cockpit_tier(host, TIER_AUTO)
+        pod_serves = self._bridge_config().pod_tier
+        tier, _note, _node = self._choose_cockpit_tier(host, TIER_AUTO, pod_serves=pod_serves)
         if tier == TIER_POD:
-            if not self._bridge_config().pod_tier:
+            if not pod_serves:
                 return {'tier': TIER_POD, 'host': host,
                         'investigation_id': investigation_id}
             return self._cockpit_spawner().live_session(investigation_id)
