@@ -870,6 +870,13 @@
         }
         .status-dot.disconnected { background: var(--red); }
 
+        /* Toasts — the one place a failed background request gets to say so */
+        #toasts { position: fixed; bottom: 40px; right: 16px; display: flex; flex-direction: column; gap: 6px; z-index: 60; }
+        .toast { background: var(--bg-tertiary); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+                 padding: 8px 12px; border-radius: 4px; font-size: 12px; max-width: 360px; }
+        .toast.err { border-left-color: var(--red); }
+        .answer-error { color: var(--red); font-size: 12px; margin-top: 4px; }
+
         .status-item { display: flex; align-items: center; gap: 4px; }
 
         /* ── Scrollbar ── */
@@ -972,17 +979,15 @@
     </div>
 
     <div class="status-bar">
-        <span class="status-item"><span class="status-dot" id="connection-status"></span>Connected</span>
+        <span class="status-item"><span class="status-dot" id="connection-status"></span><span id="connection-label">Connected</span></span>
         <span class="status-item" id="status-uptime"></span>
         <span class="status-item" id="status-sweep"></span>
         <span style="margin-left:auto;" class="status-item" id="status-version">v1.0.8</span>
     </div>
+    <div id="toasts"></div>
 
     <script>
-        let ws = null;
         let chatHistory = [];
-        let reconnectAttempts = 0;
-        const maxReconnectAttempts = 5;
         let chatSessionId = null;  // Current DB session ID
         let inFlightChatId = null;  // chat_id of the in-flight /api/chat request, if any
 
@@ -1080,48 +1085,6 @@
             const input = document.getElementById('message-input');
             input.value = cmd;
             input.focus();
-        }
-
-        // Initialize WebSocket connection
-        function connectWebSocket() {
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.hostname}:8083/ws`;
-
-            ws = new WebSocket(wsUrl);
-
-            ws.onopen = () => {
-                document.getElementById('connection-status').classList.remove('disconnected');
-                reconnectAttempts = 0;
-            };
-
-            ws.onclose = () => {
-                document.getElementById('connection-status').classList.add('disconnected');
-                if (reconnectAttempts < maxReconnectAttempts) {
-                    reconnectAttempts++;
-                    setTimeout(connectWebSocket, 2000 * reconnectAttempts);
-                }
-            };
-
-            ws.onerror = () => {};
-
-            ws.onmessage = (event) => {
-                handleMessage(JSON.parse(event.data));
-            };
-        }
-
-        function handleMessage(data) {
-            if (data.type === 'chat') {
-                document.getElementById('thinking').classList.remove('active');
-                document.getElementById('send-button').disabled = false;
-                addMessage('agent', data.text, data.backend, data.model);
-            } else if (data.type === 'question') {
-                showQuestion(data);
-            } else if (data.type === 'tool_call') {
-                document.getElementById('thinking').classList.remove('active');
-                addToolCall(data.tool_name, data.input);
-            } else if (data.type === 'tool_result') {
-                addToolResult(data.tool_name, data.result);
-            }
         }
 
         // Configure marked for safe rendering. Guarded: marked is vendored, so
@@ -1309,15 +1272,48 @@
             panel.appendChild(questionCard);
         }
 
+        function toast(msg, type) {
+            const c = document.getElementById('toasts');
+            if (!c) return;
+            const t = document.createElement('div');
+            t.className = 'toast ' + (type || '');
+            t.textContent = msg;
+            c.appendChild(t);
+            setTimeout(() => t.remove(), 6000);
+        }
+
+        // The answer goes over HTTP, and the card only leaves once the server
+        // has said it took it. A card that vanishes on a failed submit is an
+        // answer eaten silently — the investigation waits forever and the
+        // operator believes they answered.
         function submitAnswer(questionId) {
             const input = document.getElementById(`answer-${questionId}`);
             const answer = input.value.trim();
             if (!answer) return;
-            ws.send(JSON.stringify({ type: 'answer', question_id: questionId, answer }));
-            input.closest('.question-card').remove();
-            if (document.getElementById('questions-panel').children.length === 0) {
-                document.getElementById('questions-panel').classList.remove('active');
-            }
+            const card = input.closest('.question-card');
+            const button = card.querySelector('button');
+            let err = card.querySelector('.answer-error');
+            if (err) err.remove();
+            button.disabled = true;
+            fetch('/api/qa', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ question_id: questionId, answer })
+            }).then(async r => {
+                const body = await r.json().catch(() => ({}));
+                if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+                card.remove();
+                if (document.getElementById('questions-panel').children.length === 0) {
+                    document.getElementById('questions-panel').classList.remove('active');
+                }
+            }).catch(e => {
+                button.disabled = false;
+                err = document.createElement('div');
+                err.className = 'answer-error';
+                err.textContent = `Answer not delivered: ${e.message}`;
+                card.appendChild(err);
+                toast(`Answer to question #${questionId} was not delivered: ${e.message}`, 'err');
+            });
         }
 
         function sendFeedback(btn, learningIds, type) {
@@ -1461,13 +1457,24 @@
         }, 10000);
 
         // Status bar updates
+        // The dot and its label are one signal: whether the last /api/health
+        // poll answered. Nothing else moves them.
+        function setConnected(up) {
+            document.getElementById('connection-status').classList.toggle('disconnected', !up);
+            document.getElementById('connection-label').textContent = up ? 'Connected' : 'Disconnected';
+        }
+
         function updateStatus() {
-            fetch('/api/health').then(r => r.json()).then(data => {
+            fetch('/api/health').then(r => {
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                return r.json();
+            }).then(data => {
+                setConnected(true);
                 const uptime = data.uptime_seconds || 0;
                 const h = Math.floor(uptime / 3600);
                 const m = Math.floor((uptime % 3600) / 60);
                 document.getElementById('status-uptime').textContent = `Uptime: ${h}h ${m}m`;
-            }).catch(() => {});
+            }).catch(() => setConnected(false));
         }
         updateStatus();
         setInterval(updateStatus, 60000);

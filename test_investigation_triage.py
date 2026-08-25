@@ -40,8 +40,6 @@ def _server():
     # Mirrors __init__'s WEBSOCKET_AVAILABLE=False branch; _setup_routes reads
     # both. Constructed field-by-field rather than through __init__ so the test
     # needs no database, no auth store and no live operator.
-    ws.sock = None
-    ws.ws_clients = []
     ws._setup_routes()
 
     # Run the REAL require_role decorator, in its auth-disabled mode (a

@@ -403,8 +403,6 @@ def _flask_client():
     server.port = 0
     from flask import Flask
     server.app = Flask(__name__)
-    server.sock = None
-    server.ws_clients = []
     server._chat_sessions = {}
     import threading as _t
     server._sessions_lock = _t.Lock()

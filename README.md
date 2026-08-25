@@ -124,7 +124,7 @@ CFOperator agent (Docker container)
 │                            (one timescale_query call)
 │
 └── Web UI (Dark theme, Inter + JetBrains Mono)
-    ├── Chat interface (HTTP polling; WebSocket code present but disabled — Waitress WSGI limitation)
+    ├── Chat interface (HTTP polling — Waitress is WSGI, so there is no WebSocket)
     ├── Collapsible sidebar (skills, chat history)
     ├── Admin panel for LLM / OODA / pool configuration
     ├── Sweep findings panel with severity badges
@@ -268,16 +268,15 @@ of them are needed to investigate your first alert.
 |----------|-------------|
 | `/` | Chat UI |
 | `/api/health` | Health check + uptime |
-| `/api/chat` | HTTP chat API (polling; WebSocket disabled) |
+| `/api/chat` | HTTP chat API (polling) |
 | `/api/sweep` | Trigger deep system sweep (POST) |
 | `/api/config/reload` | Hot-reload config (POST) |
 | `/api/ollama/models` | List available Ollama models |
 | `/api/ollama/models/select` | Persist model selection (POST) |
-| `/api/qa` | **Removed** — replaced by chat sessions (`/api/chat-sessions`) |
+| `/api/qa` | GET pending investigation questions; POST `{question_id, answer}` to answer one |
 | `/v1/investigate` | POST — async investigation entry point called by event_runtime |
 | `/v1/triage` | POST — synchronous triage decision (log_only/notify/investigate/escalate) |
 | `/metrics` | Prometheus metrics |
-| `/ws` | WebSocket chat (code present, disabled at runtime) |
 
 ## cfassist (Go CLI)
 
@@ -458,7 +457,7 @@ make all            # all platforms
 | File | Purpose |
 |------|---------|
 | `agent/agent.py` | OODA loop (proactive sweep + HTTP-driven `run_investigation`), chat handler, tool registry |
-| `web_server.py` | Flask + Waitress; REST + WebSocket APIs + `POST /v1/investigate` for event_runtime delegation |
+| `web_server.py` | Flask + Waitress; REST APIs + `POST /v1/investigate` for event_runtime delegation |
 | `event_runtime/` | Standalone process: alert ingest, dedupe, decisions, action dispatch, Slack/Discord |
 | `mcp_server/` | MCP facade over the agent API: tools/resources/prompts, bearer auth + scopes, audit log ([docs](docs/mcp-server.md)) |
 | `bridge/` | Slack Socket Mode bot with pluggable runtimes (local agent / Claude-over-MCP) ([docs](docs/slack-bridge.md)) |
@@ -556,8 +555,7 @@ fails at fixture setup without one.
 
 - **Skills**: 9 loaded at runtime — the 8 investigation playbooks plus `mqtt-top-talkers`. The MCP server registers one prompt per skill, so its prompt count tracks this number automatically.
 - **`timescale_query`**: Registered only when `TIMESCALE_PASSWORD` is set. Without it the agent logs `TIMESCALE_PASSWORD not set - timescale_query tool disabled` and `mqtt-top-talkers` has nothing to call.
-- **WebSocket**: Code exists (`/ws`) but `WEBSOCKET_AVAILABLE=False` at runtime because Waitress (WSGI) does not support it; UI uses HTTP polling via `/api/chat`.
-- **`/api/qa`**: Endpoint removed; replaced by chat session management (`/api/chat-sessions`).
+- **WebSocket**: None. Waitress (WSGI) cannot upgrade a connection; the `/ws` route and its client were removed (CFOP-91). The UI polls `/api/chat`, `/api/qa` and `/api/health`.
 - **Morning summary**: Runs 7-9 AM local time (configurable), authored by the cheap primary model; LLM Judge verification applies to sweep findings only.
 
 ## License
