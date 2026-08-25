@@ -110,8 +110,10 @@ Mirror it rather than inventing an invocation.
 ## Console UI conventions
 
 Five static pages in `ui/`, no build step, no framework, no outbound network
-(a CDN reference hangs rather than fails — the one exception is the pinned,
-SRI-checked `marked` in `index.html`).
+(a CDN reference hangs rather than fails, and the console is what gets opened
+when the WAN is down). No exceptions: third-party code is vendored under
+`ui/vendor/` through `scripts/vendor_ui.py` and its hashed manifest, and
+`test_console_vendor.py` fails on any `http(s)://` in any page.
 
 The header — section nav, active-page state, identity, logout — is shared via
 `ui/nav.js`, served from `/nav.js`. **Do not hand-roll a header on a new page.**

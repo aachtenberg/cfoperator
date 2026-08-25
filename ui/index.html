@@ -5,14 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>CFOperator</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
-    <!-- Pinned + SRI: a floating major tag lets the CDN serve new code into the
-         console on any release, and this script runs with full page privileges. -->
-    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"
-            integrity="sha384-948ahk4ZmxYVYOc+rxN1H2gM1EJ2Duhp7uHtZ4WSLkV4Vtx5MUqnV+l7u9B+jFv+"
-            crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <!-- Vendored (ui/vendor/manifest.json pins the version and hash): the
+         console is what gets opened when the WAN is down, so nothing here
+         may reach a CDN. Not deferred - the main script configures it at
+         top level. -->
+    <script src="/vendor/marked.min.js"></script>
     <script src="/nav.js" defer></script>
     <style>
         :root {
@@ -1127,11 +1124,17 @@
             }
         }
 
-        // Configure marked for safe rendering
-        marked.setOptions({
-            breaks: true,
-            gfm: true,
-        });
+        // Configure marked for safe rendering. Guarded: marked is vendored, so
+        // the only way it is missing is a 404 on /vendor/marked.min.js - and a
+        // ReferenceError here would take the whole page script (send handler,
+        // slash menu, polling) with it. renderMarkdown already falls back to
+        // escaped text when marked is absent.
+        if (window.marked) {
+            marked.setOptions({
+                breaks: true,
+                gfm: true,
+            });
+        }
 
         // Agent replies are LLM output and quote log/alert text verbatim, so the
         // markdown they contain is untrusted: marked emits raw HTML by design.

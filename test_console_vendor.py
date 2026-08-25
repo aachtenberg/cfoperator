@@ -1,18 +1,21 @@
-"""Vendored console assets: pinned, hashed, and the only third-party code (CFOP-59).
+"""Vendored console assets: pinned, hashed, and the only third-party code (CFOP-59, CFOP-90).
 
 The console rules are no build step and no outbound network — a CDN reference
 hangs rather than fails on a LAN with no route out, which is the LAN an
-incident happens on. xterm.js is the first third-party script the console
-ships, so it is committed under ``ui/vendor/`` with a manifest of sha256s.
+incident happens on. Third-party code the console ships (xterm.js, marked) is
+committed under ``ui/vendor/`` with a manifest of sha256s.
 
 Two classes of regression, guarded separately:
 
 * a vendored file edited in place, or swapped, without the manifest changing —
   the ``DEFAULT_CFASSIST_VERSION`` shape: silent drift is the failure mode, so
   the hash is what is checked, not the version string;
-* a page growing a CDN ``<script src="http…">``. The one that exists is
-  ``marked`` in ``index.html``, pinned and SRI-checked, and it is named here
-  as the sole exception rather than tolerated by pattern.
+* a page growing a reference to another origin. Until CFOP-90 this checked
+  ``<script src>`` only and named ``marked`` as the sole exception — which is
+  how three pages carried a render-blocking ``fonts.googleapis.com``
+  stylesheet for a year without a test noticing. It now scans the whole page
+  for ``http(s)://`` and allowlists nothing, the same rule
+  ``test_console_nav.py`` already applies to ``nav.js``.
 """
 
 import hashlib
@@ -24,10 +27,6 @@ REPO_ROOT = Path(__file__).resolve().parent
 UI = REPO_ROOT / "ui"
 VENDOR = UI / "vendor"
 MANIFEST = VENDOR / "manifest.json"
-
-#: The single permitted remote script, by page. Anything else is a hang
-#: waiting to happen on a disconnected LAN.
-CDN_EXCEPTIONS = {"index.html": "marked"}
 
 
 def manifest():
@@ -71,20 +70,36 @@ def test_the_manifest_pins_a_version_and_a_source():
             f"{name}: the source URL does not name the pinned version")
 
 
-def test_no_page_reaches_a_cdn_for_a_script():
+#: Anything that would make the browser open a connection to another origin:
+#: an absolute URL anywhere in the page (script, stylesheet, preconnect,
+#: preload, image, @import, fetch — the tag does not matter, the origin does),
+#: or a protocol-relative one. No allowlist: the fix is scripts/vendor_ui.py.
+EXTERNAL_REFERENCE = re.compile(r'https?://|(?:src|href)=["\']//', re.IGNORECASE)
+HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def test_no_page_references_an_external_origin():
+    """Every page in ui/, login included: it is the operator's browser that
+    fetches these, and a WAN outage is exactly when the console gets opened.
+    A render-blocking stylesheet stalls first paint on a TCP timeout; a
+    missing script can kill a page outright."""
     for page in sorted(UI.glob("*.html")):
-        html = page.read_text(encoding="utf-8")
-        remote = re.findall(r'<script[^>]*\ssrc="(https?://[^"]+)"[^>]*>', html)
-        allowed = CDN_EXCEPTIONS.get(page.name)
-        for url in remote:
-            assert allowed and allowed in url, (
-                f"{page.name} loads {url} from a CDN. The console ships no build step and "
-                "reaches no network at runtime: vendor it under ui/vendor/ (see "
-                "scripts/vendor_ui.py) instead.")
-        if allowed:
-            tags = re.findall(r'<script[^>]*src="https?://[^"]*' + re.escape(allowed) + r'[^"]*"[^>]*>', html)
-            for tag in tags:
-                assert 'integrity="' in tag, f"{page.name}: the {allowed} CDN script has lost its SRI hash"
+        # HTML comments never open a connection, so a documentation URL in
+        # one is not a network reference; strip them before scanning.
+        html = HTML_COMMENT.sub("", page.read_text(encoding="utf-8"))
+        hits = [html[m.start():m.start() + 80].splitlines()[0] for m in EXTERNAL_REFERENCE.finditer(html)]
+        assert not hits, (
+            f"{page.name} reaches off-box: {hits}. The console ships no build step and "
+            "reaches no network at runtime: vendor it under ui/vendor/ (see "
+            "scripts/vendor_ui.py) or drop it.")
+
+
+def test_the_chat_page_loads_marked_from_the_vendor_path():
+    """marked used to come from jsdelivr, pinned and SRI-checked, and a failed
+    load killed the whole chat script (CFOP-90)."""
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    assert 'src="/vendor/marked.min.js"' in html, "index.html does not load /vendor/marked.min.js"
+    assert "marked.min.js" in manifest()["files"], "marked.min.js is not in the vendor manifest"
 
 
 def test_vendored_scripts_are_served_from_vendor_paths():
