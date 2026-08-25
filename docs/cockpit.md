@@ -968,7 +968,12 @@ how long you have:
   every token minted for it. It also deletes any cockpit Job for the
   investigation, whichever tier it decided the session was on: a terminal-side
   `--spawn` may have put a pod on the same node, and kill is total or it is
-  not kill. The janitor stays the backstop.
+  not kill. The two removals are independent — a k3s API that is down mid-
+  incident does not leave the host session alive until its TTL, and an
+  unreachable host does not leave the Job running — and the tokens are
+  revoked either way. If one side failed, the response is `partial` with the
+  failure's status, what was removed, and what was not. The janitor stays the
+  backstop.
 - **disconnect** closes the terminal and leaves the session to its TTL.
 - Escape goes to the terminal while one is open (a TUI, a pager); disconnect
   first to close the drawer with it.

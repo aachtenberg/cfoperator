@@ -526,7 +526,10 @@ def test_an_explicit_pod_request_from_the_drawer_is_still_refused_by_name(store)
     client, server = _client(host_ssh(), store=store, cockpit=bridge_on(), node_names=("raspberrypi5",))
     resp = client.post(f"/api/cockpit/{INV}/open", json={"tier": "pod"})
     assert resp.status_code == 409
-    assert "raspberrypi5 could not be given a host-tier cockpit (tier pod (requested))" in resp.get_json()["error"]
+    error = resp.get_json()["error"]
+    assert error.startswith("tier pod was requested for raspberrypi5, and cockpit.bridge_pod_tier is off")
+    assert "could not be given a host-tier" not in error, "the caller asked for a pod; nothing failed"
+    assert "drop the tier" in error and "attach --spawn --tier pod" in error
     assert not any(c[0] == "create" for c in server._kubectl_calls)
 
 
@@ -543,6 +546,57 @@ def test_close_on_a_node_that_is_also_a_host_sweeps_the_host_and_the_job(store):
     assert {r["kind"] for r in removed} == {"pod", "session"}
     assert ["delete", "job", job[0], "-n", "apps"] in server._kubectl_calls
     assert ssh.matching(f"rm -rf /tmp/{NAME}")
+
+
+def test_close_still_cleans_the_host_when_the_cluster_api_is_down(store):
+    """The reviewer's reproduction: the cockpit is used *during* incidents, and
+    a k3s API that cannot list Jobs must not leave the host session alive until
+    its TTL. Both removals are attempted; the failure is reported, not
+    substituted for the cleanup; the tokens die regardless."""
+    ssh = host_ssh(("for d in /tmp/", live_listing()))
+    client, server = _client(ssh, store=store, cockpit=bridge_on(), node_names=("raspberrypi5",))
+    store.create_token(COCKPIT_SESSION_TOKEN_LABEL.format(investigation_id=INV),
+                       ["investigate"], creator_role=ROLE_ADMIN, ttl_seconds=600)
+    real = server._cockpit._kubectl
+
+    def flaky(args, stdin):
+        if args[:2] == ["get", "jobs"]:
+            return 1, "", "The connection to the server 10.0.0.1:6443 was refused"
+        return real(args, stdin)
+    server._cockpit._kubectl = flaky
+
+    resp = client.post(f"/api/cockpit/{INV}/close", json={})
+    body = resp.get_json()
+    assert resp.status_code == 502, body
+    assert body["status"] == "partial"
+    assert ssh.matching(f"rm -rf /tmp/{NAME}"), "the host session outlived a k8s outage"
+    assert body["removed"] == [{"host": "raspberrypi5", "name": NAME, "kind": "session"}]
+    assert [e["side"] for e in body["errors"]] == ["pod"]
+    assert "was refused" in body["error"] and "tokens revoked (1)" in body["error"]
+    assert body["tokens_revoked"] == 1
+    for row in tokens(store, COCKPIT_SESSION_TOKEN_LABEL.format(investigation_id=INV)):
+        assert row["status"] == "revoked"
+
+
+def test_close_still_deletes_the_job_when_the_host_side_fails(store):
+    """The symmetric case: a host removal that errors (ssh gone mid-incident)
+    must not keep the Job running, and must not hide that it failed."""
+    from cockpit_spawn import CockpitSpawnError
+    job = (f"cfop-cockpit-{INV}-abc", INV)
+    client, server = _client(host_ssh(), store=store, cockpit=bridge_on(),
+                             node_names=("raspberrypi5",), pod_jobs=(job,))
+
+    def unreachable(_id, *, host):
+        raise CockpitSpawnError(f"{host} could not be probed (ssh: connect timed out)", 502)
+    server._ladder.destroy = unreachable
+
+    resp = client.post(f"/api/cockpit/{INV}/close", json={})
+    body = resp.get_json()
+    assert resp.status_code == 502, body
+    assert ["delete", "job", job[0], "-n", "apps"] in server._kubectl_calls
+    assert body["removed"] == [{"host": "", "name": job[0], "kind": "pod"}]
+    assert [e["side"] for e in body["errors"]] == ["host"]
+    assert "connect timed out" in body["error"]
 
 
 def test_open_spawns_a_pod_cockpit_and_a_ticket_when_the_flag_is_on(store):
