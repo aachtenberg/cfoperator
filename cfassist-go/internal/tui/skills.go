@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/skills"
 )
 
@@ -163,9 +165,12 @@ func clip(s string, width int) string {
 	return strings.TrimSpace(s[:width-1]) + "…"
 }
 
+// padRight pads to width in visible columns, so a styled or ellipsised
+// string pads the same as a plain one.
 func padRight(s string, width int) string {
-	if len(s) >= width {
+	w := lipgloss.Width(s)
+	if w >= width {
 		return s
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", width-w)
 }

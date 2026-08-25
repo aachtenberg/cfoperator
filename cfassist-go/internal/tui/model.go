@@ -24,13 +24,6 @@ import (
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 )
 
-const (
-	statusBarHeight = 1
-	separatorHeight = 1
-	inputAreaHeight = 3
-	fixedHeight     = statusBarHeight + separatorHeight + inputAreaHeight
-)
-
 // Attachment is the CFOperator investigation a session is attached to.
 //
 // Nil for a plain `cfassist` session, and every use of it is nil-guarded: the
@@ -41,7 +34,8 @@ const (
 // prints the briefing before starting the program, and the alt screen makes
 // that print invisible for the whole session — so an operator who pasted a
 // Slack line had no indication of what they were attached to (CFOP-63). The
-// briefing goes into the scrollback and the id into the status bar instead.
+// briefing goes into the scrollback and the id into the chrome — the input
+// box's top border since the Palette layout (CFOP-69) — instead.
 type Attachment struct {
 	ID       int    // investigation id, e.g. 2242
 	Title    string // short human label; the investigation's trigger
@@ -91,10 +85,11 @@ type model struct {
 	// skills are the playbooks this session can load: the nine embedded in the
 	// binary, plus anything in the operator's own skills directory.
 	skills []skills.Skill
-	// Tab completion state
-	completions   []string
-	completionIdx int
-	lastInput     string
+	// menu is what is open under the cursor, if anything (menu.go).
+	menu menuState
+	// menuDismissedFor is the exact line esc was pressed on, so the menu
+	// stays shut until the line changes.
+	menuDismissedFor string
 	// modelCache holds the list of available models per provider name,
 	// populated lazily on first /model tab completion.
 	modelCache map[string][]string
@@ -110,7 +105,7 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 	ta.Focus()
 	ta.CharLimit = 4096
 	ta.ShowLineNumbers = false
-	ta.SetHeight(inputAreaHeight)
+	ta.SetHeight(1) // grows to inputMaxLines with a multi-line paste
 	ta.FocusedStyle.Base = lipgloss.NewStyle()
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
@@ -184,7 +179,7 @@ func (m *model) appendBriefing() {
 	m.outputLines = append(m.outputLines,
 		"",
 		dimStyle.Render("  Attached — this briefing is also in the model's context. "+
-			"The status bar keeps the investigation id in view."),
+			"The box around your input keeps the investigation id in view."),
 		"",
 	)
 }
@@ -236,6 +231,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// An open menu gets first refusal on the keys that drive it; what it
+		// does not take falls through and keeps narrowing the rows.
+		if m.menu.open {
+			if handled, cmd := m.menuKey(msg); handled {
+				m.layout()
+				return m, cmd
+			}
+		}
 		switch msg.Type {
 		case tea.KeyCtrlD:
 			return m, tea.Quit
@@ -262,21 +265,27 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.textarea.Reset()
-			m.completions = nil
+			m.closeMenu()
+			m.growInput()
+			m.layout()
 			return m, nil
 		case tea.KeyTab:
 			if m.busy {
 				return m, nil
 			}
-			return m.handleTabCompletion()
+			// With no menu open, tab asks for one: after an esc, or on a
+			// line that was typed before there was anything to show.
+			m.menuDismissedFor = ""
+			m.syncMenu()
+			m.layout()
+			return m, nil
 		case tea.KeyEnter:
 			if m.busy {
 				return m, nil
 			}
-			m.completions = nil
+			m.closeMenu()
 			return m.handleSubmit()
 		case tea.KeyEsc:
-			m.completions = nil
 			return m, nil
 		}
 
@@ -296,16 +305,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.renderer = r
 		}
 
-		vpHeight := m.height - fixedHeight
+		// The box frames the input: two columns of border.
+		m.textarea.SetWidth(m.width - 2)
 		if !m.ready {
-			m.viewport = viewport.New(m.width, vpHeight)
+			m.viewport = viewport.New(m.width, 1)
 			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
 			m.ready = true
-		} else {
-			m.viewport.Width = m.width
-			m.viewport.Height = vpHeight
 		}
-		m.textarea.SetWidth(m.width)
+		m.layout()
 
 	case appendOutputMsg:
 		m.outputLines = append(m.outputLines, msg.text)
@@ -322,7 +329,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if r.Cancelled {
 			// Stats are left alone on purpose: a cancelled turn measured
-			// nothing, and zeroing contextUsed would blank the status bar's
+			// nothing, and zeroing contextUsed would blank the footer's
 			// context gauge and the last real reading with it.
 			m.outputLines = append(m.outputLines, warningStyle.Render("  stopped."))
 			m.refreshViewport()
@@ -335,6 +342,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastStats += fmt.Sprintf(" %dt", r.ToolCalls)
 		}
 		m.contextUsed = r.LastPromptTokens
+		// The numbers belong to the turn they measured, so they go under it;
+		// the footer shows them only while there is room to spare.
+		m.outputLines = append(m.outputLines, dimStyle.Render("  "+m.lastStats))
+		m.refreshViewport()
 
 		// Auto-save and truncate when context exceeds 80%
 		ctxLimit := m.cfg.LLM.ContextWindow
@@ -380,49 +391,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
+	// The line may have changed: follow it with the box, the menu and the
+	// space they leave the transcript.
+	m.growInput()
+	m.syncMenu()
+	m.layout()
+
 	return m, tea.Batch(cmds...)
-}
-
-func (m *model) handleTabCompletion() (tea.Model, tea.Cmd) {
-	text := m.textarea.Value()
-
-	// Only complete if input starts with /
-	if !strings.HasPrefix(text, "/") {
-		m.completions = nil
-		return m, nil
-	}
-
-	// Check if current text is already one of our completions (user is cycling)
-	isCycling := false
-	for _, c := range m.completions {
-		if text == c {
-			isCycling = true
-			break
-		}
-	}
-
-	// If input changed and we're not cycling through completions, rebuild
-	// from the command table — names, then the argument once the name is in.
-	if !isCycling && text != m.lastInput {
-		m.lastInput = text
-		m.completions = m.completionsFor(text)
-		m.completionIdx = 0
-	}
-
-	if len(m.completions) == 0 {
-		return m, nil
-	}
-
-	// Cycle through completions
-	completion := m.completions[m.completionIdx]
-	m.completionIdx = (m.completionIdx + 1) % len(m.completions)
-
-	// Set the completion in textarea
-	m.textarea.SetValue(completion)
-	// Move cursor to end
-	m.textarea.CursorEnd()
-
-	return m, nil
 }
 
 func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
@@ -432,6 +407,9 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 	}
 
 	m.textarea.Reset()
+	m.closeMenu()
+	m.growInput()
+	m.layout()
 
 	// A command is handled here; everything else is a question for the model.
 	// The table in commands.go owns what each one does.
@@ -502,10 +480,10 @@ func (m *model) runConversationCmd(ctx context.Context, userInput string) tea.Cm
 	}
 }
 
-// attachSeparator joins the id and the title in the status bar.
+// attachSeparator joins the id and the title in the box title.
 const attachSeparator = " · "
 
-// attachSegment renders the status bar's "#<id> · <title>" segment within
+// attachSegment renders the "#<id> · <title>" title within
 // budget columns. Returns "" when nothing meaningful fits, and never returns
 // something wider than budget.
 //
@@ -517,7 +495,7 @@ const attachSeparator = " · "
 //
 // The title is flattened to a single printable line here rather than at the
 // call site: an investigation's trigger is frequently a multi-line alert body,
-// and a newline reaching the status bar would tear the layout apart. Doing it
+// and a newline reaching the box title would tear the layout apart. Doing it
 // here means no constructor of an Attachment can get it wrong.
 func attachSegment(a *Attachment, budget int) string {
 	if a == nil || budget < 1 {
@@ -557,7 +535,7 @@ func attachSegment(a *Attachment, budget int) string {
 
 // flattenToLine collapses any run of whitespace to a single space and drops
 // non-printable runes, so an alert body cannot inject a newline or an escape
-// sequence into the status bar.
+// sequence into the box title.
 func flattenToLine(text string) string {
 	var b strings.Builder
 	for _, r := range strings.Join(strings.Fields(text), " ") {
@@ -590,84 +568,6 @@ func truncateToWidth(text string, budget int) string {
 		return ""
 	}
 	return out + "…"
-}
-
-func (m *model) View() string {
-	if !m.ready {
-		return "Initializing..."
-	}
-
-	// Build status bar — left: provider:model + status, right: stats
-	status := "ready"
-	if m.busy {
-		status = "working..."
-	}
-	modelDisplay := m.llm.Model
-	if m.activeProvider != "" {
-		modelDisplay = m.activeProvider + ":" + m.llm.Model
-	}
-	left := fmt.Sprintf(" %s | %s", modelDisplay, status)
-
-	var rightParts []string
-	if m.contextUsed > 0 && m.cfg.LLM.ContextWindow > 0 {
-		ctxK := float64(m.contextUsed) / 1000
-		maxK := float64(m.cfg.LLM.ContextWindow) / 1000
-		rightParts = append(rightParts, fmt.Sprintf("%.1fk/%.0fk ctx", ctxK, maxK))
-	}
-	if m.lastStats != "" {
-		rightParts = append(rightParts, m.lastStats)
-	}
-	right := strings.Join(rightParts, " | ")
-	if right != "" {
-		right += " "
-	}
-
-	// Pad middle with spaces to push right side to the edge
-	// statusStyle has Padding(0,1) which adds 2 chars, so content width is width-2
-	contentWidth := m.width - 2
-
-	// The attachment sits between the two existing segments and only ever
-	// spends what they leave over, minus the gutters that keep it from butting
-	// up against them (one column left, two right). So it cannot push
-	// provider:model or the stats off the bar, and the bar cannot outgrow
-	// contentWidth and wrap onto a second line — it shortens itself instead,
-	// and disappears entirely on a terminal too narrow to hold even the id.
-	mid := ""
-	if m.attachment != nil {
-		mid = attachSegment(m.attachment,
-			contentWidth-lipgloss.Width(left)-lipgloss.Width(right)-3)
-	}
-
-	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
-	statusText := ""
-	if mid == "" {
-		if gap < 1 {
-			gap = 1
-		}
-		statusText = left + strings.Repeat(" ", gap) + right
-	} else {
-		gap -= lipgloss.Width(mid) + 1 // the gutter between left and mid
-		if gap < 1 {
-			gap = 1
-		}
-		statusText = left + " " + mid + strings.Repeat(" ", gap) + right
-	}
-	statusBar := statusStyle.Width(m.width).Render(statusText)
-
-	// Separator
-	sep := separatorStyle.Width(m.width).Render(strings.Repeat("─", m.width))
-
-	// Input area with background
-	inputContent := m.textarea.View()
-	input := inputStyle.Width(m.width).Render(inputContent)
-
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		m.viewport.View(),
-		sep,
-		statusBar,
-		input,
-	)
 }
 
 // RunResult holds the final TUI state on exit.

@@ -60,3 +60,35 @@ var (
 	warningStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#f59e0b"))
 )
+
+// The Palette (CFOP-69): the input's box, the menu under it, the footer.
+var (
+	// Box border: green at rest, amber while a turn runs. Colour reads from
+	// across the room; a word in a status bar does not.
+	boxIdleStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#166534"))
+
+	boxBusyStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#b45309"))
+
+	// The attachment title, written into the top border.
+	boxTitleStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#8888a0"))
+
+	// Menu rows
+	menuLabelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#e0e0e8"))
+
+	menuSelectedStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#1e2b3c")).
+				Foreground(lipgloss.Color("#e0e0e8"))
+
+	// Footer: hints left, status right, both quiet.
+	footerHintStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#555566"))
+
+	footerStatusStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#8888a0"))
+)
