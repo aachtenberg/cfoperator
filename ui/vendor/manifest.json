@@ -21,6 +21,13 @@
       "path": "lib/addon-fit.js",
       "sha256": "bdaefa370b1bfc42ee88d46fe6072400902a4d4b2d45cd93438dda9b23c97089",
       "source": "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.js"
+    },
+    "marked.min.js": {
+      "package": "marked",
+      "version": "15.0.12",
+      "path": "marked.min.js",
+      "sha256": "3e7e7d7feb3e5d58cb6c804f68ab5c24cc7e5eb6270fd6e5cbb9124739217d0c",
+      "source": "https://cdn.jsdelivr.net/npm/marked@15.0.12/marked.min.js"
     }
   }
 }
