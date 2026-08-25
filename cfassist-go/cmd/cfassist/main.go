@@ -58,6 +58,7 @@ Pipe data in for analysis mode.`,
 	rootCmd.Flags().BoolVar(&flagVersion, "version", false, "Show version")
 
 	rootCmd.AddCommand(newAttachCmd())
+	rootCmd.AddCommand(newInitCmd())
 
 	// Ctrl+C cancels the work rather than only killing the process, so a
 	// one-shot or piped run stops on the same key the TUI uses (CFOP-76).
