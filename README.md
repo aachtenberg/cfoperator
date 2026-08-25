@@ -301,23 +301,28 @@ do. Built for `linux-amd64`, `linux-arm64`, `linux-arm`, `darwin-amd64`,
 
 ### Configure
 
-cfassist reads `~/.cfassist/config.yaml` on startup:
+On first run, cfassist writes `~/.cfassist/config.yaml` with every setting
+stubbed — live values where a default is safe, commented where a human has
+to fill something in (API keys, the CFOperator agent URL). Edit that file
+rather than starting from a blank one.
 
 ```yaml
 llm:
-  provider: ollama
-  url: http://localhost:11434
-  model: llama3:8b
+  default: ollama
   temperature: 0.7
-  context_window: 8192
 
-tools:
-  bash:
-    enabled: true
-    timeout: 30
-  read_file:
-    enabled: true
-    max_lines: 500
+providers:
+  ollama:
+    provider: ollama
+    url: http://localhost:11434
+    model: llama3.2
+
+# url and token stay commented until you point attach at an agent.
+cfoperator:
+  # url: http://192.168.1.50:8083
+  # token: ${CFOP_API_TOKEN}
+  timeout: 30
+  discover: true
 ```
 
 ### Usage

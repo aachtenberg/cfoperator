@@ -3,6 +3,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -42,6 +45,12 @@ func TestDefaults(t *testing.T) {
 	}
 	if cfg.MaxToolIterations != 50 {
 		t.Errorf("default max_tool_iterations = %d, want %d", cfg.MaxToolIterations, 50)
+	}
+	if !cfg.CFOperator.Discover {
+		t.Error("default cfoperator.discover should be true")
+	}
+	if cfg.CFOperator.Timeout != 30 {
+		t.Errorf("default cfoperator.timeout = %v, want 30", cfg.CFOperator.Timeout)
 	}
 }
 
@@ -251,6 +260,118 @@ func TestDefaultConfigOffersAReachableAgentExample(t *testing.T) {
 	}
 	if !strings.Contains(section, "CFOP_AGENT_URL") {
 		t.Error("the block should name CFOP_AGENT_URL — it is the other way to set the address")
+	}
+}
+
+// TestDefaultConfigStubsEveryField: first run has to leave a file an operator
+// can fill in, not a subset that hides keys until they read the source.
+//
+// A new yaml tag on Config (or anything nested under it) failing this is the
+// signal to add a stub — live if it has a safe default, commented if it needs
+// a human value (url, token, api_key).
+func TestDefaultConfigStubsEveryField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(body)
+
+	var missing []string
+	for _, key := range yamlFieldNames(reflect.TypeOf(Config{})) {
+		if !templateDeclaresYAMLKey(content, key) {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("first-run config.yaml does not stub keys %v", missing)
+	}
+}
+
+func yamlFieldNames(t reflect.Type) []string {
+	seen := map[string]struct{}{}
+	var walk func(reflect.Type)
+	walk = func(t reflect.Type) {
+		for t.Kind() == reflect.Ptr {
+			t = t.Elem()
+		}
+		switch t.Kind() {
+		case reflect.Struct:
+			for i := 0; i < t.NumField(); i++ {
+				f := t.Field(i)
+				if f.PkgPath != "" && !f.Anonymous {
+					continue
+				}
+				tag := f.Tag.Get("yaml")
+				if tag == "" || tag == "-" {
+					walk(f.Type)
+					continue
+				}
+				name := strings.Split(tag, ",")[0]
+				if name != "" && name != "-" {
+					seen[name] = struct{}{}
+				}
+				walk(f.Type)
+			}
+		case reflect.Map, reflect.Slice, reflect.Array:
+			walk(t.Elem())
+		}
+	}
+	walk(t)
+	keys := make([]string, 0, len(seen))
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func templateDeclaresYAMLKey(content, key string) bool {
+	re := regexp.MustCompile(`(?m)^[ \t]*#?[ \t]*` + regexp.QuoteMeta(key) + `:`)
+	return re.MatchString(content)
+}
+
+func TestTemplateDeclaresYAMLKeyCountsStubsNotProse(t *testing.T) {
+	if templateDeclaresYAMLKey("# url is the machine RUNNING CFOPERATOR\n", "url") {
+		t.Fatal("prose mentioning a key is not a stub")
+	}
+	if !templateDeclaresYAMLKey("  # url: http://192.168.1.50:8083\n", "url") {
+		t.Fatal("a commented `url:` line is the stub an operator uncomments")
+	}
+	if templateDeclaresYAMLKey("cfoperator:\n  timeout: 30\n", "token") {
+		t.Fatal("an omitted key must not pass")
+	}
+}
+
+// TestDefaultConfigLoadsWithoutPointingAtTheExampleAgent: the stubs are for
+// the operator to uncomment. Loading the first-run file must not aim attach
+// at 192.168.1.50, or a first run on a laptop probes someone else's agent.
+func TestDefaultConfigLoadsWithoutPointingAtTheExampleAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("the first-run file must be valid YAML: %v", err)
+	}
+	if cfg.CFOperator.URL != "" {
+		t.Errorf("example url leaked into the live config: %q", cfg.CFOperator.URL)
+	}
+	if cfg.CFOperator.Token != "" {
+		t.Errorf("example token leaked: %q", cfg.CFOperator.Token)
+	}
+	if !cfg.CFOperator.Discover {
+		t.Error("discover should stay on")
+	}
+	if cfg.CFOperator.Timeout != 30 {
+		t.Errorf("timeout = %v, want 30", cfg.CFOperator.Timeout)
+	}
+	if cfg.SystemPrompt != defaultSystemPrompt {
+		t.Error("a commented system_prompt stub must not override the built-in prompt")
 	}
 }
 
