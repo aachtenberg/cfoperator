@@ -16,8 +16,9 @@ import (
 // The session has to say what it is attached to (CFOP-63). The TUI runs on the
 // alternate screen buffer, so everything `attach` printed before starting the
 // program is invisible until the operator quits — these tests hold the two
-// replacements in place: the id in the status bar, the briefing in the
-// scrollback, and no trace of either in a plain session.
+// replacements in place: the id in the chrome (the input box's top border
+// since the Palette layout, CFOP-69; the status bar before it), the briefing
+// in the scrollback, and no trace of either in a plain session.
 
 const (
 	testWidth  = 100
@@ -44,37 +45,44 @@ var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func plainText(s string) string { return ansiPattern.ReplaceAllString(s, "") }
 
-// statusBarLine returns the rendered status bar, styling stripped. It finds the
-// bar by the segment that is always on it rather than by line index, so the
-// test does not break when the layout above it changes.
-func statusBarLine(t *testing.T, view string) string {
+// footerLine returns the rendered footer, styling stripped: the last line
+// of the view, which is the one place the layout keeps it.
+func footerLine(t *testing.T, view string) string {
+	t.Helper()
+	lines := strings.Split(plainText(view), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("empty view")
+	}
+	return lines[len(lines)-1]
+}
+
+// boxTopLine returns the input box's top border, where the attachment lives.
+func boxTopLine(t *testing.T, view string) string {
 	t.Helper()
 	for _, line := range strings.Split(plainText(view), "\n") {
-		if strings.Contains(line, "ollama:llama3.2") {
+		if strings.HasPrefix(line, "╭") {
 			return line
 		}
 	}
-	t.Fatalf("no status bar in view:\n%s", view)
+	t.Fatalf("no input box in view:\n%s", view)
 	return ""
 }
 
-// TestPlainSessionStatusBarCarriesNothingExtra is the "renders exactly as
-// today" guard that the optional attachment needs. Everything else in this file
-// adds things to the bar; this asserts a session with no attachment gets none
-// of them.
-//
-// It pins the *content* of the bar (nothing beyond the existing segments)
-// rather than its markup, so restyling does not make it fail while a leaked
-// attachment segment does.
-func TestPlainSessionStatusBarCarriesNothingExtra(t *testing.T) {
+// TestPlainSessionCarriesNoAttachment is the guard the optional attachment
+// needs. Everything else in this file adds things to the chrome; this asserts
+// a session with no attachment gets none of them: a bare top border, a footer
+// with no "#", no briefing.
+func TestPlainSessionCarriesNoAttachment(t *testing.T) {
 	m := newTestModel(t, nil, testWidth)
+	view := m.View()
 
-	got := strings.TrimSpace(statusBarLine(t, m.View()))
-	if got != "ollama:llama3.2 | ready" {
-		t.Errorf("plain status bar = %q, want only the provider|status segment", got)
+	if got, want := boxTopLine(t, view), "╭"+strings.Repeat("─", testWidth-2)+"╮"; got != want {
+		t.Errorf("plain top border = %q, want an untitled one", got)
 	}
-
-	if strings.Contains(plainText(m.View()), "CFOperator briefing") {
+	if strings.Contains(footerLine(t, view), "#") {
+		t.Errorf("plain footer carries an id: %q", footerLine(t, view))
+	}
+	if strings.Contains(plainText(view), "CFOperator briefing") {
 		t.Error("a plain session must not seed a briefing into the scrollback")
 	}
 }
@@ -82,9 +90,9 @@ func TestPlainSessionStatusBarCarriesNothingExtra(t *testing.T) {
 // TestAttachedSessionShowsTheInvestigationForItsWholeLife covers the reported
 // complaint directly: "there is no summary that pops up in the UI to tell me i
 // attached - even a number and brief title". The id and title live in the
-// status bar, which is redrawn every frame so scrolling cannot lose them, and
-// the briefing goes into the scrollback because the alt screen hides the copy
-// attach printed before the program started.
+// input box's top border, which is redrawn every frame so scrolling cannot
+// lose them, and the briefing goes into the scrollback because the alt screen
+// hides the copy attach printed before the program started.
 func TestAttachedSessionShowsTheInvestigationForItsWholeLife(t *testing.T) {
 	m := newTestModel(t, &Attachment{
 		ID:       2242,
@@ -92,11 +100,14 @@ func TestAttachedSessionShowsTheInvestigationForItsWholeLife(t *testing.T) {
 		Briefing: "====\nCFOperator briefing — investigation #2242\n====\nthe node is out of memory",
 	}, testWidth)
 
-	bar := statusBarLine(t, m.View())
-	for _, want := range []string{"#2242", "PodUnschedulable", "ollama:llama3.2 | ready"} {
-		if !strings.Contains(bar, want) {
-			t.Errorf("status bar %q is missing %q", bar, want)
+	top := boxTopLine(t, m.View())
+	for _, want := range []string{"#2242", "PodUnschedulable"} {
+		if !strings.Contains(top, want) {
+			t.Errorf("box title %q is missing %q", top, want)
 		}
+	}
+	if !strings.Contains(footerLine(t, m.View()), "ollama:llama3.2") {
+		t.Error("the footer lost the model")
 	}
 
 	view := plainText(m.View())
@@ -105,12 +116,11 @@ func TestAttachedSessionShowsTheInvestigationForItsWholeLife(t *testing.T) {
 	}
 }
 
-// TestAttachmentNeverCostsTheLayoutALine is the gap-math guard. The status bar
-// is rendered into a fixed-height layout; a segment wider than the space the
-// other segments leave would wrap it onto a second line and push the input area
-// off the bottom of the terminal. Comparing against the same model without an
-// attachment keeps this honest at widths where the existing segments alone
-// already overflow.
+// TestAttachmentNeverCostsTheLayoutALine is the width guard. The chrome is
+// rendered into a fixed-height layout; a title wider than the border has room
+// for would wrap it onto a second line and push the input off the bottom of
+// the terminal. Comparing against the same model without an attachment keeps
+// this honest at widths where the chrome alone is already tight.
 func TestAttachmentNeverCostsTheLayoutALine(t *testing.T) {
 	att := &Attachment{
 		ID:       2242,
@@ -127,12 +137,14 @@ func TestAttachmentNeverCostsTheLayoutALine(t *testing.T) {
 				width, got, want)
 		}
 
-		bar := statusBarLine(t, attached.View())
-		if !strings.Contains(bar, "ollama:llama3.2") {
-			t.Errorf("width %d: the attachment pushed provider:model off the bar: %q", width, bar)
+		// The provider half is droppable by design; the model name is not.
+		if !strings.Contains(footerLine(t, attached.View()), "llama3.2") {
+			t.Errorf("width %d: the footer lost the model", width)
 		}
-		if lipgloss.Width(bar) > width {
-			t.Errorf("width %d: status bar is %d columns wide", width, lipgloss.Width(bar))
+		for _, line := range strings.Split(attached.View(), "\n") {
+			if lipgloss.Width(line) > width {
+				t.Errorf("width %d: a line is %d columns wide: %q", width, lipgloss.Width(line), plainText(line))
+			}
 		}
 	}
 }
@@ -217,7 +229,7 @@ func TestClearKeepsTheSessionAttached(t *testing.T) {
 	if !strings.Contains(view, "Still attached to investigation #2242") {
 		t.Errorf("a cleared screen must still say it is attached:\n%s", view)
 	}
-	if !strings.Contains(statusBarLine(t, cleared.View()), "#2242") {
-		t.Error("the status bar is the durable record; /clear must not drop it")
+	if !strings.Contains(boxTopLine(t, cleared.View()), "#2242") {
+		t.Error("the box title is the durable record; /clear must not drop it")
 	}
 }

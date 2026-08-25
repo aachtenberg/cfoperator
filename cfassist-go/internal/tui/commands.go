@@ -37,6 +37,9 @@ type command struct {
 	// Complete returns argument completions for what has been typed after the
 	// name so far. Nil when the command takes no argument.
 	Complete func(m *model, prefix string) []string
+	// Describe says what one completed argument is, for the menu's right
+	// column. Optional — model names have nothing to say about themselves.
+	Describe func(m *model, arg string) string
 	// Run handles the command. args is whatever followed the name, trimmed.
 	Run func(m *model, args string) tea.Cmd
 }
@@ -63,6 +66,7 @@ func init() {
 			Args:     "<name> [target]",
 			Summary:  "Load a playbook into this session, aimed at a pod, host or container",
 			Complete: completeSkill,
+			Describe: describeSkill,
 			Run:      runSkill,
 		},
 		{
@@ -92,6 +96,7 @@ func init() {
 			Args:     "<provider>",
 			Summary:  "Switch provider — clears the conversation",
 			Complete: completeProvider,
+			Describe: describeProvider,
 			Run:      runUse,
 		},
 		{
@@ -160,32 +165,16 @@ func findCommand(name string) (command, bool) {
 	return command{}, false
 }
 
-// completionsFor is every completion the table offers for what is typed:
-// command names for a bare prefix, and once the name is complete — with or
-// without a space after it — that command's arguments. "/use<tab>" has always
-// cycled the providers, and still does.
+// completionsFor is what the table offers for what is typed, as the text
+// accepting each would leave on the line: command names for a bare prefix,
+// and once the name and a space are in, that command's arguments. It is the
+// menu's rows without their descriptions (menu.go), kept as a plain list so
+// the table can be tested without a terminal.
 func (m *model) completionsFor(text string) []string {
-	word, rest, hasSpace := strings.Cut(text, " ")
-	lower := strings.ToLower(word)
-
 	var out []string
-	if !hasSpace {
-		for _, c := range commands {
-			if strings.HasPrefix(c.Name, lower) {
-				out = append(out, c.Name)
-			}
-			for _, a := range c.Aliases {
-				if strings.HasPrefix(a, "/") && strings.HasPrefix(a, lower) {
-					out = append(out, a)
-				}
-			}
-		}
-		sort.Strings(out)
-	}
-
-	if c, ok := findCommand(lower); ok && c.Complete != nil {
-		for _, arg := range c.Complete(m, strings.TrimSpace(rest)) {
-			out = append(out, c.Name+" "+arg)
+	for _, row := range m.menuRows(text) {
+		if row.Insert != "" {
+			out = append(out, strings.TrimSpace(row.Insert))
 		}
 	}
 	return out
@@ -204,6 +193,26 @@ func completeSkill(m *model, prefix string) []string {
 		}
 	}
 	return out
+}
+
+func describeSkill(m *model, name string) string {
+	s, ok := skills.Find(m.skills, name)
+	if !ok {
+		return ""
+	}
+	detail := firstSentence(s.Description)
+	if s.Source == skills.SourceLocal {
+		detail += "  (yours)"
+	}
+	return detail
+}
+
+func describeProvider(m *model, name string) string {
+	p, ok := m.providers[name]
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%s, %s", p.Provider, p.Model)
 }
 
 func completeProvider(m *model, prefix string) []string {
@@ -400,7 +409,7 @@ func runProviders(m *model, _ string) tea.Cmd {
 // runClear wipes the screen and the conversation. The briefing does not come
 // back — it is still in the system prompt, and re-printing a few hundred
 // lines is not what anyone asked for. One line says the session is still
-// attached; the status bar is the durable record.
+// attached; the box title is the durable record.
 func runClear(m *model, _ string) tea.Cmd {
 	m.messages = nil
 	m.outputLines = nil
@@ -432,7 +441,7 @@ const helpNameColumn = 24
 // keys is what the keyboard does, for /help. Only what actually works today
 // is listed — a hint for a key that does nothing is worse than no hint.
 var keys = [][2]string{
-	{"tab", "complete the command, or its argument; press again to cycle"},
+	{"tab", "accept what the menu offers; ↑↓ choose, esc closes it"},
 	{"enter", "send"},
 	{"ctrl+c", "stop the running turn; when idle, clear the line"},
 	{"ctrl+d", "quit"},

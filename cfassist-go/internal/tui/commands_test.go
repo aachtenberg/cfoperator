@@ -158,15 +158,19 @@ func TestCompletionReadsTheTable(t *testing.T) {
 		}
 	}
 
-	// The name alone, no space, still offers the argument — "/use<tab>" has
-	// always cycled the providers.
-	got = m.completionsFor("/use")
-	if strings.Join(got, " ") != "/use /use claude /use ollama /use openai" {
+	// The name alone is a command; the name and a space is its argument.
+	// Accepting "/use" from the menu inserts the space, so the providers
+	// follow one tab later rather than being mixed into the command list.
+	if got := m.completionsFor("/use"); strings.Join(got, " ") != "/use" {
 		t.Errorf("/use completes to %v", got)
 	}
+	got = m.completionsFor("/use ")
+	if strings.Join(got, " ") != "/use claude /use ollama /use openai" {
+		t.Errorf("/use <space> completes to %v", got)
+	}
 
-	if got := m.completionsFor("/quit"); len(got) != 1 || got[0] != "/quit" {
-		t.Errorf("a slash alias should complete to itself, got %v", got)
+	if got := m.completionsFor("/quit"); len(got) != 0 {
+		t.Errorf("aliases are for typing, not for the menu; got %v", got)
 	}
 	if got := m.completionsFor("hello"); len(got) != 0 {
 		t.Errorf("a question offered completions: %v", got)
