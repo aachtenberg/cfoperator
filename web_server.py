@@ -1425,15 +1425,21 @@ class WebServer:
             try:
                 host, provenance = self._resolve_cockpit_host(
                     investigation_id, inv, str(body.get('host') or ''))
-                tier, tier_note, _node = self._choose_cockpit_tier(
+                tier, tier_note, node = self._choose_cockpit_tier(
                     host, str(body.get('tier') or TIER_AUTO))
+                _node = node
                 if tier == TIER_POD:
-                    return refuse('tier',
-                                  'this investigation is in the cluster; the browser '
-                                  'terminal serves the host tiers only (Phase B needs '
-                                  'pods/attach) — use cfassist attach --spawn')
-                result = self._cockpit_ladder().spawn(
-                    investigation_id, host=host, tier=tier, ttl_seconds=ttl)
+                    if not bridge.pod_tier:
+                        return refuse('tier',
+                                      'this investigation is in the cluster; the browser '
+                                      'terminal serves the host tiers only unless '
+                                      'cockpit.bridge_pod_tier is on (and the chart grants '
+                                      'pods/attach) — use cfassist attach --spawn')
+                    result = self._cockpit_spawner().spawn(
+                        investigation_id, host=host, ttl_seconds=ttl, node=_node)
+                else:
+                    result = self._cockpit_ladder().spawn(
+                        investigation_id, host=host, tier=tier, ttl_seconds=ttl)
                 ticket = self._mint_bridge_ticket(investigation_id, tier=tier, host=host)
             except CockpitSpawnError as e:
                 logger.warning(f"cockpit open refused for #{investigation_id}: {e}")
@@ -1473,7 +1479,16 @@ class WebServer:
             try:
                 host, _provenance = self._resolve_cockpit_host(
                     investigation_id, inv, str(body.get('host') or ''))
-                removed = self._cockpit_ladder().destroy(investigation_id, host=host)
+                tier, _note, _node = self._choose_cockpit_tier(host, TIER_AUTO)
+                # A pod cockpit is a Job, not a host artifact: deleting it (the
+                # grant the ladder's own spawn already holds) tears down the pod
+                # and GCs its token Secret, where ladder.destroy() would SSH the
+                # node, find nothing, and revoke the Secret out from under a Job
+                # left running. Kill is one thing across tiers or it is not kill.
+                if tier == TIER_POD:
+                    removed = self._cockpit_spawner().destroy(investigation_id)
+                else:
+                    removed = self._cockpit_ladder().destroy(investigation_id, host=host)
             except CockpitSpawnError as e:
                 logger.warning(f"cockpit close refused for #{investigation_id}: {e}")
                 return jsonify({'error': str(e)}), e.status
@@ -1946,9 +1961,11 @@ class WebServer:
         host would let anyone holding a token aim a terminal at any machine in
         the inventory — the bridge authenticates *a person*, not *a target*.
 
-        A tier-1 investigation comes back as a stub carrying only the tier. The
-        bridge refuses `pod` by name (Phase B, and the pods/attach grant it
-        needs), and that refusal is more useful than "no session".
+        A tier-1 investigation is looked up through the pod spawner when the
+        bridge serves that tier (Phase B); otherwise it comes back as a stub
+        carrying only the tier, which the bridge refuses by name — and "this one
+        is a pod, turn on the flag" is a more useful thing to read than "no
+        session".
         """
         inv = self.operator.kb.get_investigation(investigation_id)
         if not inv:
@@ -1956,8 +1973,10 @@ class WebServer:
         host, _provenance = self._resolve_cockpit_host(investigation_id, inv, '')
         tier, _note, _node = self._choose_cockpit_tier(host, TIER_AUTO)
         if tier == TIER_POD:
-            return {'tier': TIER_POD, 'host': host,
-                    'investigation_id': investigation_id}
+            if not self._bridge_config().pod_tier:
+                return {'tier': TIER_POD, 'host': host,
+                        'investigation_id': investigation_id}
+            return self._cockpit_spawner().live_session(investigation_id)
         return self._cockpit_ladder().live_session(investigation_id, host=host)
 
     def verify_bridge_token(self, presented: str):

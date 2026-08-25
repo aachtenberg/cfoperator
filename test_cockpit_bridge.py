@@ -561,3 +561,60 @@ def test_the_pod_stub_is_refused_by_the_bridge_end_to_end():
                   config=config(), token_verifier=lambda _t: Identity(),
                   resolver=server.resolve_cockpit_session)
     assert not v.ok and v.code == CLOSE_TIER_UNSUPPORTED
+
+
+# --------------------------------------------------------------------------
+# tier pod: refused by default, served only when the flag is on (CFOP-59 Phase B)
+# --------------------------------------------------------------------------
+
+def pod_session(**over):
+    row = {"tier": "pod", "host": "", "investigation_id": 2242,
+           "job_name": "cfop-cockpit-2242-abc",
+           "attach_argv": ["kubectl", "attach", "-it", "-n", "apps",
+                           "job/cfop-cockpit-2242-abc"]}
+    row.update(over)
+    return row
+
+
+def test_a_pod_cockpit_is_refused_by_name_when_the_pod_tier_is_off():
+    v = authorize(path="/cockpit/2242", origin=CONSOLE, token="t",
+                  config=config(),  # pod_tier defaults False
+                  token_verifier=lambda _t: Identity(),
+                  resolver=lambda _i: pod_session())
+    assert not v.ok
+    assert v.code == CLOSE_TIER_UNSUPPORTED
+    assert "bridge_pod_tier" in v.reason and "attach --spawn" in v.reason
+
+
+def test_a_pod_cockpit_is_served_when_the_pod_tier_is_on():
+    v = authorize(path="/cockpit/2242", origin=CONSOLE, token="t",
+                  config=config(pod_tier=True),
+                  token_verifier=lambda _t: Identity(),
+                  resolver=lambda _i: pod_session())
+    assert v.ok, v.reason
+    assert v.session["attach_argv"][:2] == ["kubectl", "attach"]
+
+
+def test_the_pod_tier_flag_does_not_loosen_any_other_gate():
+    """Turning on the pod tier must not become a way past origin or scope."""
+    foreign = authorize(path="/cockpit/2242", origin="http://evil.example", token="t",
+                        config=config(pod_tier=True),
+                        token_verifier=lambda _t: Identity(),
+                        resolver=lambda _i: pod_session())
+    assert not foreign.ok and foreign.code == CLOSE_FORBIDDEN
+
+    readonly = authorize(path="/cockpit/2242", origin=CONSOLE, token="t",
+                        config=config(pod_tier=True),
+                        token_verifier=lambda _t: Identity(scopes=("read",)),
+                        resolver=lambda _i: pod_session())
+    assert not readonly.ok and readonly.code == CLOSE_FORBIDDEN
+
+
+def test_build_bridge_config_reads_the_pod_tier_flag():
+    assert build_bridge_config({"cockpit": {}}).pod_tier is False
+    assert build_bridge_config({"cockpit": {"bridge_pod_tier": True}}).pod_tier is True
+
+
+def test_env_overrides_the_pod_tier_flag(monkeypatch):
+    monkeypatch.setenv("CFOP_COCKPIT_BRIDGE_POD_TIER", "1")
+    assert build_bridge_config({"cockpit": {"bridge_pod_tier": False}}).pod_tier is True
