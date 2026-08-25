@@ -194,3 +194,18 @@ func TestShortDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestVersionSuffixShapes(t *testing.T) {
+	// The health body carries the image tag minus its leading v (CFOP-92).
+	// Releases get the v back; a main build or a source checkout does not.
+	for in, want := range map[string]string{
+		"":             "",
+		"1.0.8":        " v1.0.8",
+		"main-1a551b7": " main-1a551b7",
+		"dev":          " dev",
+	} {
+		if got := versionSuffix(in); got != want {
+			t.Errorf("versionSuffix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

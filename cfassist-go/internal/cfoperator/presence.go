@@ -192,11 +192,17 @@ func (p Presence) BannerLine() string {
 	return ""
 }
 
+// versionSuffix renders what /api/health calls the build: a release is bare
+// ("1.1.0", shown as v1.1.0); a main build is its image tag ("main-1a551b7")
+// and a source checkout is "dev", neither of which wants a v in front.
 func versionSuffix(version string) string {
 	if version == "" {
 		return ""
 	}
-	return " v" + version
+	if version[0] >= '0' && version[0] <= '9' {
+		return " v" + version
+	}
+	return " " + version
 }
 
 // stateSuffix says what the agent is doing, which is the one live fact the
