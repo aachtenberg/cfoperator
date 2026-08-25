@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -99,21 +98,6 @@ type model struct {
 	// modelCache holds the list of available models per provider name,
 	// populated lazily on first /model tab completion.
 	modelCache map[string][]string
-}
-
-// slashCommands is the list of available commands for tab completion.
-var slashCommands = []string{
-	"/clear",
-	"/exit",
-	"/help",
-	"/model",
-	"/models",
-	"/providers",
-	"/quit",
-	"/skill",
-	"/skills",
-	"/tools",
-	"/use",
 }
 
 // New creates a new TUI model. attachment is nil for a plain session, and
@@ -418,73 +402,11 @@ func (m *model) handleTabCompletion() (tea.Model, tea.Cmd) {
 	}
 
 	// If input changed and we're not cycling through completions, rebuild
+	// from the command table — names, then the argument once the name is in.
 	if !isCycling && text != m.lastInput {
 		m.lastInput = text
-		m.completions = nil
+		m.completions = m.completionsFor(text)
 		m.completionIdx = 0
-
-		prefix := strings.ToLower(text)
-		for _, cmd := range slashCommands {
-			if strings.HasPrefix(cmd, prefix) {
-				m.completions = append(m.completions, cmd)
-			}
-		}
-		sort.Strings(m.completions)
-
-		// Also add provider names for /use
-		if strings.HasPrefix(prefix, "/use ") || prefix == "/use" {
-			providerPrefix := ""
-			if len(text) > 5 {
-				providerPrefix = strings.ToLower(text[5:])
-			}
-			for name := range m.providers {
-				if strings.HasPrefix(strings.ToLower(name), providerPrefix) {
-					m.completions = append(m.completions, "/use "+name)
-				}
-			}
-		}
-
-		// Skill names for /skill. Local, embedded and instant — unlike /model,
-		// which has to ask the provider — so there is nothing to cache.
-		if strings.HasPrefix(prefix, "/skill ") || prefix == "/skill" {
-			skillPrefix := ""
-			if len(text) > len("/skill ") {
-				skillPrefix = strings.ToLower(text[len("/skill "):])
-			}
-			for _, name := range skills.Names(m.skills) {
-				if strings.HasPrefix(strings.ToLower(name), skillPrefix) {
-					m.completions = append(m.completions, "/skill "+name)
-				}
-			}
-		}
-
-		// Add model names for /model — fetch from provider on first use, cached per provider
-		if strings.HasPrefix(prefix, "/model ") || prefix == "/model" {
-			modelPrefix := ""
-			if len(text) > 7 {
-				modelPrefix = strings.ToLower(text[7:])
-			}
-
-			models, ok := m.modelCache[m.activeProvider]
-			if !ok {
-				if fetched, err := m.llm.ListModels(); err == nil {
-					sort.Strings(fetched)
-					models = fetched
-					m.modelCache[m.activeProvider] = fetched
-				}
-			}
-
-			if len(models) > 0 {
-				for _, name := range models {
-					if modelPrefix == "" || strings.HasPrefix(strings.ToLower(name), modelPrefix) {
-						m.completions = append(m.completions, "/model "+name)
-					}
-				}
-			} else if m.llm.Model != "" {
-				// Fallback: suggest the current model when the provider can't be queried
-				m.completions = append(m.completions, "/model "+m.llm.Model)
-			}
-		}
 	}
 
 	if len(m.completions) == 0 {
@@ -511,232 +433,10 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 
 	m.textarea.Reset()
 
-	// Special commands
-	lower := strings.ToLower(text)
-	switch lower {
-	case "/exit", "/quit", "exit", "quit":
-		return m, tea.Quit
-	case "/clear", "clear":
-		m.messages = nil
-		m.outputLines = nil
-		m.appendWelcome(0)
-		// /clear means "clear the screen", so the briefing does not come back —
-		// it is still in the system prompt, and re-printing a few hundred lines
-		// is not what anyone asked for. One line says the session is still
-		// attached; the status bar is the durable record.
-		if m.attachment != nil {
-			m.outputLines = append(m.outputLines,
-				dimStyle.Render(fmt.Sprintf("  Still attached to investigation #%d.",
-					m.attachment.ID)),
-				"",
-			)
-		}
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
-	case "/tools":
-		m.outputLines = append(m.outputLines, "")
-		m.outputLines = append(m.outputLines, bannerStyle.Render("Available Tools:"))
-		for _, schema := range m.toolReg.GetSchemas() {
-			name := schema.Function.Name
-			desc := schema.Function.Description
-			maxDesc := m.width - 20
-			if maxDesc < 80 {
-				maxDesc = 80
-			}
-			if len(desc) > maxDesc {
-				desc = desc[:maxDesc] + "..."
-			}
-			m.outputLines = append(m.outputLines,
-				fmt.Sprintf("  %s  %s",
-					toolNameStyle.Render(name),
-					dimStyle.Render(desc),
-				),
-			)
-		}
-		m.outputLines = append(m.outputLines, "")
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
-	case "/models":
-		models, err := m.llm.ListModels()
-		if err != nil {
-			m.outputLines = append(m.outputLines,
-				errorStyle.Render(fmt.Sprintf("Failed to fetch models: %v", err)),
-			)
-		} else {
-			m.outputLines = append(m.outputLines, "")
-			m.outputLines = append(m.outputLines, bannerStyle.Render("Available Models:"))
-			for _, name := range models {
-				marker := "  "
-				if name == m.llm.Model {
-					marker = dimStyle.Render("* ")
-				}
-				m.outputLines = append(m.outputLines, marker+toolNameStyle.Render(name))
-			}
-			m.outputLines = append(m.outputLines,
-				"",
-				dimStyle.Render("  Switch with: /model <name>"),
-			)
-		}
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
-	case "/providers":
-		if len(m.providers) == 0 {
-			m.outputLines = append(m.outputLines, "",
-				dimStyle.Render("  No providers configured. Using single llm: block."),
-				dimStyle.Render(fmt.Sprintf("  Provider: %s  Model: %s", m.llm.Provider, m.llm.Model)),
-			)
-		} else {
-			m.outputLines = append(m.outputLines, "", bannerStyle.Render("Configured Providers:"))
-			for name, p := range m.providers {
-				marker := "  "
-				if name == m.activeProvider {
-					marker = dimStyle.Render("* ")
-				}
-				m.outputLines = append(m.outputLines,
-					fmt.Sprintf("  %s%s  %s",
-						marker,
-						toolNameStyle.Render(name),
-						dimStyle.Render(fmt.Sprintf("(%s, %s)", p.Provider, p.Model)),
-					),
-				)
-			}
-			m.outputLines = append(m.outputLines,
-				"",
-				dimStyle.Render("  Switch with: /use <name>"),
-			)
-		}
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
-	case "/skills":
-		m.outputLines = append(m.outputLines, m.skillsList()...)
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
-	case "/skill":
-		display, _ := m.skillCommand("")
-		m.outputLines = append(m.outputLines, display...)
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
-	case "/help", "help":
-		m.outputLines = append(m.outputLines,
-			dimStyle.Render("Commands: /clear, /exit, /help, /tools, /models, /model <name>"),
-			dimStyle.Render("          /providers, /use <name>"),
-			dimStyle.Render(fmt.Sprintf("          /skills, /skill <name> [target]  (%d available)",
-				len(m.skills))),
-			dimStyle.Render("Tab to autocomplete commands, Ctrl-D to exit, Ctrl-C to cancel."),
-		)
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
-	}
-
-	// /use <name> — switch provider
-	if strings.HasPrefix(lower, "/use ") {
-		name := strings.TrimSpace(text[5:])
-		if name == "" {
-			m.outputLines = append(m.outputLines,
-				dimStyle.Render("  Usage: /use <provider-name>"),
-			)
-		} else if len(m.providers) == 0 {
-			m.outputLines = append(m.outputLines,
-				errorStyle.Render("  No providers configured. Add a providers: block to config.yaml."),
-			)
-		} else if _, ok := m.providers[name]; !ok {
-			m.outputLines = append(m.outputLines,
-				errorStyle.Render(fmt.Sprintf("  Unknown provider: %s", name)),
-			)
-			var names []string
-			for n := range m.providers {
-				names = append(names, n)
-			}
-			m.outputLines = append(m.outputLines,
-				dimStyle.Render(fmt.Sprintf("  Available: %s", strings.Join(names, ", "))),
-			)
-		} else {
-			resolved := m.cfg.ResolveProvider(name)
-			m.llm = client.New(
-				resolved.Provider,
-				resolved.URL,
-				resolved.Model,
-				resolved.Temperature,
-				resolved.APIKey,
-			)
-			m.llm.Name = name
-			oldProvider := m.activeProvider
-			m.activeProvider = name
-			m.cfg.LLM.ContextWindow = resolved.ContextWindow
-			m.messages = nil
-			m.contextUsed = 0
-			m.outputLines = append(m.outputLines, "",
-				dimStyle.Render(fmt.Sprintf("  Provider switched: %s → %s (%s)", oldProvider, name, resolved.Model)),
-				dimStyle.Render("  Conversation cleared."),
-			)
-		}
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
-	}
-
-	// /skill <name> [target] — load a playbook into this session.
-	//
-	// The prompt goes to the model, not to the scrollback: the operator sees a
-	// line saying which playbook is running against what, and the session then
-	// behaves as if they had typed the whole thing.
-	if strings.HasPrefix(lower, "/skill ") {
-		display, prompt := m.skillCommand(text[len("/skill "):])
-		m.outputLines = append(m.outputLines, display...)
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		if prompt == "" {
-			return m, nil
-		}
-		return m, m.startTurn(prompt)
-	}
-
-	// /model <name> — switch model
-	if strings.HasPrefix(lower, "/model ") {
-		newModel := strings.TrimSpace(text[7:])
-		if newModel == "" {
-			m.outputLines = append(m.outputLines,
-				dimStyle.Render("  Current model: "+m.llm.Model),
-				dimStyle.Render("  Usage: /model <name>"),
-			)
-		} else {
-			oldModel := m.llm.Model
-			m.llm.Model = newModel
-			m.outputLines = append(m.outputLines,
-				"",
-				dimStyle.Render(fmt.Sprintf("  Model switched: %s → %s", oldModel, newModel)),
-			)
-		}
-		if m.ready {
-			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-			m.viewport.GotoBottom()
-		}
-		return m, nil
+	// A command is handled here; everything else is a question for the model.
+	// The table in commands.go owns what each one does.
+	if cmd, args, ok := lookupCommand(text); ok {
+		return m, cmd.Run(m, args)
 	}
 
 	// Show user message
@@ -745,10 +445,7 @@ func (m *model) handleSubmit() (tea.Model, tea.Cmd) {
 		userPromptStyle.Render("> ")+text,
 		"",
 	)
-	if m.ready {
-		m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
-		m.viewport.GotoBottom()
-	}
+	m.refreshViewport()
 
 	// Run conversation in background via tea.Cmd
 	return m, m.startTurn(text)
