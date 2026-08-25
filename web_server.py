@@ -792,6 +792,14 @@ class WebServer:
             payload, _ = _repo_registry()
             return jsonify({'success': True, **payload})
 
+        # The commands the chat path recognises — loaded skills plus shortcut
+        # expansions — for the console to draw its sidebar and slash menu
+        # from. The page keeps no list of its own (CFOP-93): it used to keep
+        # two, and neither matched what the agent would actually run.
+        @self.app.route('/api/skills')
+        def list_skills():
+            return jsonify({'skills': self.operator.list_slash_commands()})
+
         # Chat API — starts chat in background, returns chat_id for polling
         @self.app.route('/api/chat', methods=['POST'])
         def api_chat():

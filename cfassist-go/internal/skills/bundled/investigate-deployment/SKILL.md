@@ -1,6 +1,7 @@
 ---
 name: investigate-deployment
 description: "Run a systematic investigation of a Kubernetes deployment's health, rollout status, replica health, and related resources. Use this when a deployment won't scale, is stuck rolling out, has unhealthy pods, or isn't serving traffic. Keywords: deployment, rollout, replica, scale, k8s, kubernetes, k3s, service, ingress, availability."
+argument-hint: "<namespace> <deployment>"
 ---
 
 # Investigate Deployment

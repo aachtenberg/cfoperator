@@ -1,6 +1,7 @@
 ---
 name: investigate-pod
 description: "Run a systematic investigation of a Kubernetes pod's health, logs, events, and resource usage. Use this when a pod is crashing, stuck in pending, not starting, OOMKilled, or behaving unexpectedly. Keywords: pod, container, k8s, kubernetes, k3s, crash, restart, pending, error, logs, OOM, crashloop."
+argument-hint: "<namespace> <pod>"
 ---
 
 # Investigate Pod

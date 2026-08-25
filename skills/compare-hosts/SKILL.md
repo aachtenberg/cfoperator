@@ -1,6 +1,7 @@
 ---
 name: compare-hosts
 description: "Compare metrics, configurations, and health across multiple hosts in the homelab. Use this to identify outliers, configuration drift, or fleet-wide patterns. Keywords: compare, hosts, fleet, drift, configuration, metrics, baseline."
+argument-hint: "[host1,host2,...]"
 ---
 
 # Compare Hosts

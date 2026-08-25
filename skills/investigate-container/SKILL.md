@@ -1,6 +1,7 @@
 ---
 name: investigate-container
 description: "Run a systematic investigation of a Docker container's health, logs, and metrics. Use this when a container is misbehaving, restarting, or showing errors. Keywords: container, docker, investigate, troubleshoot, debug, logs, health."
+argument-hint: "<container>"
 ---
 
 # Investigate Container

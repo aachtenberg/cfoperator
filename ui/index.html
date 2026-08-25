@@ -930,18 +930,9 @@
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-section">
                 <h3>Skills</h3>
-                <ul class="skill-list" id="skill-list">
-                    <li onclick="insertSkill('/investigate-host ')">/investigate-host<span class="skill-desc">Systematic host investigation</span></li>
-                    <li onclick="insertSkill('/investigate-container ')">/investigate-container<span class="skill-desc">Container diagnostics</span></li>
-                    <li onclick="insertSkill('/investigate-pod ')">/investigate-pod<span class="skill-desc">Kubernetes pod health</span></li>
-                    <li onclick="insertSkill('/why-restart ')">/why-restart<span class="skill-desc">Root cause for restarts</span></li>
-                    <li onclick="insertSkill('/compare-hosts')">/compare-hosts<span class="skill-desc">Fleet-wide comparison</span></li>
-                    <li onclick="insertSkill('/k3s-cluster-health')">/k3s-cluster-health<span class="skill-desc">Cluster assessment</span></li>
-                    <li onclick="insertSkill('/sweeps')">/sweeps<span class="skill-desc">Recent sweep reports</span></li>
-                    <li onclick="insertSkill('/investigations')">/investigations<span class="skill-desc">Recent investigations</span></li>
-                    <li onclick="insertSkill('/correlations')">/correlations<span class="skill-desc">Service failure patterns</span></li>
-                    <li onclick="insertSkill('/stats ')">/stats<span class="skill-desc">Operational summary</span></li>
-                </ul>
+                <!-- Filled by renderSkillList() from GET /api/skills — the same
+                     list the slash menu filters. No entries belong here. -->
+                <ul class="skill-list" id="skill-list"></ul>
             </div>
             <div class="sidebar-section">
                 <h3 style="display:flex;justify-content:space-between;align-items:center;">
@@ -1476,25 +1467,49 @@
                 document.getElementById('status-uptime').textContent = `Uptime: ${h}h ${m}m`;
                 // The build version comes from the image (CFOP-92): "1.1.0" for a release, "main-<sha>" or "dev" otherwise.
                 if (data.version) document.getElementById('status-version').textContent = /^\d/.test(data.version) ? 'v' + data.version : data.version;
+                // A console opened while the agent was restarting got an empty
+                // skill list; the health poll is the first thing to see it back.
+                if (!SLASH_COMMANDS.length) loadSlashCommands();
             }).catch(() => setConnected(false));
         }
         updateStatus();
         setInterval(updateStatus, 60000);
 
-        // Slash-command autocomplete
-        const SLASH_COMMANDS = [
-            {cmd: '/investigate-host', args: '[hostname]', desc: 'Systematic host investigation'},
-            {cmd: '/investigate-container', args: '[name]', desc: 'Container diagnostics'},
-            {cmd: '/investigate-pod', args: '[name]', desc: 'Kubernetes pod health'},
-            {cmd: '/investigate-deployment', args: '[name]', desc: 'Deployment status'},
-            {cmd: '/k3s-cluster-health', args: '', desc: 'Cluster assessment'},
-            {cmd: '/why-restart', args: '[container]', desc: 'Root cause for restarts'},
-            {cmd: '/compare-hosts', args: '', desc: 'Compare metrics across fleet'},
-            {cmd: '/sweeps', args: '', desc: 'Recent sweep reports'},
-            {cmd: '/stats', args: '[hours]', desc: 'Operational summary'},
-            {cmd: '/investigations', args: '', desc: 'Recent investigations'},
-            {cmd: '/correlations', args: '', desc: 'Service failure patterns'},
-        ];
+        // Slash commands. The sidebar and the autocomplete menu both render
+        // from this one array, and the array comes from the agent
+        // (GET /api/skills): the skills it loaded plus its shortcut
+        // expansions. The page carries no list of its own — it used to carry
+        // two, and they drifted from each other and from the agent (CFOP-93).
+        let SLASH_COMMANDS = [];
+
+        function renderSkillList() {
+            const list = document.getElementById('skill-list');
+            if (!SLASH_COMMANDS.length) {
+                list.innerHTML = '<li class="skill-desc">Skills unavailable — is the agent up?</li>';
+                return;
+            }
+            list.innerHTML = SLASH_COMMANDS.map(c =>
+                `<li data-cmd="${escapeHtml(c.cmd)}">${escapeHtml(c.cmd)}` +
+                `<span class="skill-desc">${escapeHtml(c.desc)}</span></li>`
+            ).join('');
+            list.querySelectorAll('li[data-cmd]').forEach(li => {
+                li.addEventListener('click', () => insertSkill(li.dataset.cmd + ' '));
+            });
+        }
+
+        async function loadSlashCommands() {
+            try {
+                const r = await fetch('/api/skills');
+                const data = await r.json();
+                SLASH_COMMANDS = (data.skills || []).map(s => ({
+                    cmd: s.command, args: s.args || '', desc: s.description || ''
+                }));
+            } catch (e) {
+                SLASH_COMMANDS = [];
+            }
+            renderSkillList();
+        }
+        loadSlashCommands();
 
         let slashMenuIndex = -1;
 
