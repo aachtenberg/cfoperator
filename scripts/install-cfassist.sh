@@ -158,10 +158,13 @@ echo "Installed $("$INSTALL_DIR/cfassist" --version) to ${INSTALL_DIR}/cfassist"
 # before the binary writes that file, which is why deleting it and rerunning
 # this script used to leave a binary and nothing to edit.
 #
-# Probe with `help init` first. `init` is a subcommand of this release; on a
-# pinned older binary `cfassist init` is a one-shot prompt to the LLM, not a
-# scaffold. A failed write must not undo a successful binary install.
-if "$INSTALL_DIR/cfassist" help init >/dev/null 2>&1; then
+# Probe via `--help`, not `help init`. cobra only registers a `help` command
+# when the root already has subcommands; attach arrived in 0.8.x, so on a pin
+# of ≤ 0.7.2 `cfassist help init` falls through to RunE as a one-shot prompt.
+# `--help` never reaches RunE on any version. grep the Available Commands
+# line so 0.8–0.11 (help exists, init does not) also stay offline.
+# A failed write must not undo a successful binary install.
+if "$INSTALL_DIR/cfassist" --help 2>/dev/null | grep -q '^  init '; then
 	"$INSTALL_DIR/cfassist" init || echo "install-cfassist: could not write ~/.cfassist/config.yaml; run cfassist once to create it" >&2
 fi
 

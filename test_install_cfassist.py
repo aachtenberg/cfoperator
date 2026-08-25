@@ -41,12 +41,16 @@ ARCH_CASES = [
 
 
 STUB_BINARY = b"""#!/bin/sh
-# The installer probes `help init` before calling `init`. A stub that exits 0
-# for every invocation would make that probe a lie, and `init` would not write.
+# The installer greps `cfassist --help` for `  init ` before calling init.
+# A stub that exits 0 for every invocation would make that probe a lie.
 case "$1" in
-help)
-	if [ "$2" = "init" ]; then exit 0; fi
-	exit 1
+--help)
+	cat <<'EOF'
+Available Commands:
+  attach      Brief this session on a CFOperator investigation
+  init        Write ~/.cfassist/config.yaml if it is missing
+EOF
+	exit 0
 	;;
 init)
 	mkdir -p "$HOME/.cfassist"
@@ -56,6 +60,31 @@ init)
 		echo "# cfassist configuration" > "$HOME/.cfassist/config.yaml"
 		echo "Wrote $HOME/.cfassist/config.yaml"
 	fi
+	exit 0
+	;;
+*)
+	echo 'cfassist 9.9.9'
+	exit 0
+	;;
+esac
+"""
+
+# Pre-init binary: --help has no init line, but `init` as a one-shot would
+# write a marker. The probe exists so that path is never taken.
+NO_INIT_STUB = b"""#!/bin/sh
+case "$1" in
+--help)
+	cat <<'EOF'
+Available Commands:
+  attach      Brief this session on a CFOperator investigation
+EOF
+	exit 0
+	;;
+init)
+	echo called > "$HOME/init-was-called"
+	mkdir -p "$HOME/.cfassist"
+	echo wrote > "$HOME/.cfassist/config.yaml"
+	echo "Wrote $HOME/.cfassist/config.yaml"
 	exit 0
 	;;
 *)
@@ -353,12 +382,38 @@ def test_a_deleted_config_is_rewritten_on_install(stub_release, tmp_path):
     assert "Wrote" in proc.stdout, proc.stdout
 
 
-def test_the_installer_probes_help_before_calling_init():
+def test_the_installer_probes_help_listing_before_calling_init():
     """`cfassist init` on a binary from before this verb is a one-shot LLM
-    prompt, not a scaffold. The probe is load-bearing."""
+    prompt. `help init` is not a safe probe either: cobra only registers
+    `help` when the root has subcommands, so ≤ 0.7.2 treats that as a prompt
+    too. `--help` never reaches RunE."""
     live = "\n".join(live_lines(SCRIPT.read_text()))
-    assert "help init" in live, (
-        "probe `help init` before calling init, or a CFASSIST_VERSION pin of "
-        "an older binary will start a session named 'init'"
+    assert "help init" not in live, (
+        "`help init` is an LLM prompt on pins ≤ 0.7.2; grep --help instead"
     )
-    assert "cfassist\" init" in live or 'cfassist init' in live
+    assert "--help" in live and "grep -q" in live and "^  init " in live, live
+    assert "cfassist\" init" in live or "cfassist init" in live
+
+
+def test_an_older_binary_without_init_is_not_invoked_as_a_prompt(stub_release, tmp_path):
+    """The negative path: --help does not list init, so init must not run —
+    even though invoking it would write a marker. Source-string checks do
+    not cover this: moving the probe off the `if` keeps the strings and
+    hangs pinned old binaries."""
+    release_dir, base_url = stub_release
+    digest = _stub_binary(release_dir, "cfassist-linux-amd64", body=NO_INIT_STUB)
+    (release_dir / "checksums.txt").write_text(f"{digest}  cfassist-linux-amd64\n")
+
+    bindir = tmp_path / "bin"
+    home = tmp_path / "home"
+    home.mkdir()
+    proc = run_script(env_extra={
+        "CFASSIST_OS": "linux", "CFASSIST_ARCH": "amd64",
+        "CFASSIST_BASE_URL": base_url, "CFASSIST_INSTALL_DIR": str(bindir),
+        "HOME": str(home),
+    })
+    assert proc.returncode == 0, proc.stderr
+    assert (bindir / "cfassist").is_file()
+    assert not (home / "init-was-called").exists(), proc.stdout + proc.stderr
+    assert "Wrote" not in proc.stdout
+    assert not (home / ".cfassist" / "config.yaml").exists()

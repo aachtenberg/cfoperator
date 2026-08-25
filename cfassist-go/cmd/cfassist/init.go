@@ -31,8 +31,17 @@ enough after deleting the file.`,
 
 func runInit(cmd *cobra.Command, _ []string) error {
 	path := config.DefaultConfigPath()
-	_, statErr := os.Stat(path)
-	missing := os.IsNotExist(statErr)
+	_, err := os.Stat(path)
+	if err == nil {
+		// Exists, including invalid YAML: init is not a reset and not a
+		// parser. Load would fail here and the installer would print
+		// "could not write", which misdescribes a file that is already there.
+		fmt.Fprintf(cmd.OutOrStdout(), "Already exists: %s\n", path)
+		return nil
+	}
+	if !os.IsNotExist(err) {
+		return err
+	}
 
 	cfg, err := config.Load("")
 	if err != nil {
@@ -41,11 +50,6 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	if err := config.EnsureDirectories(cfg); err != nil {
 		return fmt.Errorf("directories: %w", err)
 	}
-
-	if missing {
-		fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", path)
-	} else {
-		fmt.Fprintf(cmd.OutOrStdout(), "Already exists: %s\n", path)
-	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", path)
 	return nil
 }

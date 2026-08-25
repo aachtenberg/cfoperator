@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -61,5 +62,51 @@ func TestInitIsARegisteredVerb(t *testing.T) {
 			return
 		}
 	}
-	t.Fatal("cfassist init must be a registered command — the installer probes `help init` before calling it")
+	t.Fatal("cfassist init must be a registered command — the installer greps `cfassist --help` for `  init ` before calling it")
+}
+
+func TestInitLeavesAnInvalidExistingConfigAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	path := filepath.Join(home, ".cfassist", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	bogus := []byte("{{not yaml")
+	if err := os.WriteFile(path, bogus, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newTestRoot()
+	out := &bytes.Buffer{}
+	root.SetOut(out)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"init"})
+	if err := root.Execute(); err != nil {
+		t.Fatalf("init must not fail on an existing corrupt file: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, bogus) {
+		t.Errorf("init rewrote a corrupt config:\n%s", got)
+	}
+	if !strings.Contains(out.String(), "Already exists") {
+		t.Errorf("got %q", out.String())
+	}
+}
+
+func TestHelpListsInitInTheShapeTheInstallerGreps(t *testing.T) {
+	root := newTestRoot()
+	out := &bytes.Buffer{}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.SetArgs([]string{"--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`(?m)^  init `).Match(out.Bytes()) {
+		t.Errorf("--help does not list init the way the installer greps:\n%s", out)
+	}
 }
