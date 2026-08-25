@@ -3,7 +3,7 @@
 Web Server for CFOperator
 ==========================
 
-Serves the chat UI and provides WebSocket + HTTP APIs for:
+Serves the chat UI and provides HTTP APIs for:
 - Chat with agent (infrastructure Q&A)
 - Pending questions (bidirectional Q&A during investigations)
 - System status
@@ -47,10 +47,6 @@ from cockpit_ladder import (
 # copy of it that nothing checks — and the failure mode of drift is an operator
 # pasting a command that no longer exists, mid-incident.
 from event_runtime.notifications import ATTACH_COMMAND
-
-# WebSocket support - disabled because Waitress (WSGI) doesn't support it
-# The UI uses HTTP polling via /api/chat instead
-WEBSOCKET_AVAILABLE = False
 
 logger = logging.getLogger("cfoperator.web")
 
@@ -102,8 +98,8 @@ class WebServer:
 
     Provides:
     - Static file serving (UI)
-    - WebSocket endpoint for real-time chat
-    - HTTP APIs for chat and Q&A
+    - HTTP APIs for chat and Q&A (the page polls; Waitress is WSGI and
+      cannot upgrade a connection, so there is no socket)
     """
 
     def __init__(self, operator, host: str = "0.0.0.0", port: int = 8083):
@@ -113,15 +109,6 @@ class WebServer:
 
         # Flask app
         self.app = Flask(__name__, static_folder='ui', static_url_path='')
-
-        # WebSocket support (only if flask-sock available and not using Waitress)
-        if WEBSOCKET_AVAILABLE:
-            self.sock = Sock(self.app)
-            self.ws_clients = []
-        else:
-            self.sock = None
-            self.ws_clients = []
-            logger.warning("WebSocket disabled - use HTTP /api/chat endpoint instead")
 
         # Chat sessions for polling-based streaming
         # {chat_id: {'events': [...], 'done': bool, 'created': time}}
@@ -153,7 +140,7 @@ class WebServer:
         logger.info(f"Web server initialized on {host}:{port}")
 
     def _setup_routes(self):
-        """Setup Flask routes and WebSocket handlers.
+        """Setup Flask routes.
 
         Role policy
         -----------
@@ -1819,44 +1806,6 @@ class WebServer:
                 return jsonify({'error': f'Instance {name} not found'}), 404
             return jsonify(self.operator.ollama_pool.status())
 
-        # WebSocket endpoint (only if available)
-        if self.sock:
-            @self.sock.route('/ws')
-            def websocket(ws):
-                """
-                WebSocket handler for real-time chat.
-
-                Messages from client:
-                    {"type": "chat", "message": "...", "history": [...], "backend": "auto"}
-                    {"type": "answer", "question_id": 123, "answer": "..."}
-
-                Messages to client:
-                    {"type": "chat", "text": "...", "backend": "ollama", "model": "qwen3:14b"}
-                    {"type": "question", "id": 123, "question": "...", "context": "..."}
-                    {"type": "tool_call", "tool_name": "prometheus_query", "input": {...}}
-                    {"type": "tool_result", "tool_name": "prometheus_query", "result": {...}}
-                """
-                logger.info("WebSocket client connected")
-                self.ws_clients.append(ws)
-
-                try:
-                    while True:
-                        message = ws.receive()
-                        if message is None:
-                            break
-
-                        try:
-                            data = json.loads(message)
-                            self._handle_ws_message(ws, data)
-                        except json.JSONDecodeError:
-                            ws.send(json.dumps({'error': 'Invalid JSON'}))
-                        except Exception as e:
-                            logger.error(f"Error handling WS message: {e}", exc_info=True)
-                            ws.send(json.dumps({'error': str(e)}))
-                finally:
-                    logger.info("WebSocket client disconnected")
-                    self.ws_clients.remove(ws)
-
     # ---- cockpit (CFOP-35) ----------------------------------------------
 
     def _cockpit_spawner(self) -> CockpitSpawner:
@@ -2180,80 +2129,6 @@ class WebServer:
         store.record(EVENT_TOKEN_REVOKED, actor=_actor(), target=row['token_prefix'],
                      source_ip=request.remote_addr, token_id=row['id'],
                      label=row['label'], cockpit=True)
-
-    def _handle_ws_message(self, ws, data: Dict[str, Any]):
-        """Handle incoming WebSocket message."""
-        msg_type = data.get('type')
-
-        if msg_type == 'chat':
-            # User sent chat message
-            message = data.get('message', '')
-            history = data.get('history', [])
-            backend = data.get('backend', 'auto')
-            model = data.get('model')
-
-            # Handle in background to not block WebSocket
-            def handle_chat():
-                try:
-                    result = self.operator.handle_chat_message(message, history, backend, model=model)
-                    ws.send(json.dumps({
-                        'type': 'chat',
-                        'text': result.get('response', ''),
-                        'backend': result.get('backend', ''),
-                        'model': result.get('model', '')
-                    }))
-                except Exception as e:
-                    logger.error(f"Error in chat handler: {e}", exc_info=True)
-                    ws.send(json.dumps({'type': 'error', 'error': str(e)}))
-
-            thread = threading.Thread(target=handle_chat, daemon=True)
-            thread.start()
-
-        elif msg_type == 'answer':
-            # User answered a question
-            question_id = data.get('question_id')
-            answer = data.get('answer')
-
-            try:
-                self.operator.answer_question(question_id, answer)
-                ws.send(json.dumps({'type': 'ack', 'question_id': question_id}))
-            except Exception as e:
-                ws.send(json.dumps({'type': 'error', 'error': str(e)}))
-
-    def broadcast(self, message: Dict[str, Any]):
-        """Broadcast message to all connected WebSocket clients."""
-        msg_json = json.dumps(message)
-        for ws in self.ws_clients:
-            try:
-                ws.send(msg_json)
-            except Exception as e:
-                logger.error(f"Error broadcasting to client: {e}")
-
-    def broadcast_question(self, question_id: int, question: str, context: str = '', investigation_id: Optional[int] = None):
-        """Broadcast a pending question to all clients."""
-        self.broadcast({
-            'type': 'question',
-            'id': question_id,
-            'question': question,
-            'context': context,
-            'investigation_id': investigation_id
-        })
-
-    def broadcast_tool_call(self, tool_name: str, tool_input: Dict[str, Any]):
-        """Broadcast tool execution to all clients."""
-        self.broadcast({
-            'type': 'tool_call',
-            'tool_name': tool_name,
-            'input': tool_input
-        })
-
-    def broadcast_tool_result(self, tool_name: str, result: Any):
-        """Broadcast tool result to all clients."""
-        self.broadcast({
-            'type': 'tool_result',
-            'tool_name': tool_name,
-            'result': result
-        })
 
     def run(self):
         """Start the web server using Waitress (blocking, production-ready)."""

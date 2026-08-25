@@ -7900,7 +7900,6 @@ IMPORTANT:
         - Recommendations for the day
 
         Sent to:
-        - Chat UI (broadcast to any connected clients)
         - Slack (if configured)
         - Stored in DB as sweep_report type
         """
@@ -7933,14 +7932,6 @@ IMPORTANT:
 
         # Mark as sent
         self.last_summary_date = now.date()
-
-        # Broadcast to UI
-        if self.web_server:
-            self.web_server.broadcast({
-                'type': 'morning_summary',
-                'summary': summary['text'],
-                'timestamp': now.isoformat()
-            })
 
         # Send to Slack
         for notif in self.notifications:

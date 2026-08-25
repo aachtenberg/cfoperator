@@ -975,8 +975,6 @@ def _console_client():
     server.operator = operator
     server.host, server.port = "localhost", 0
     server.app = Flask(__name__)
-    server.sock = None
-    server.ws_clients = []
     server._chat_sessions = {}
     server._sessions_lock = _t.Lock()
     server._setup_routes()

@@ -98,8 +98,6 @@ def _client(kb):
     server.operator = operator
     server.host, server.port = "localhost", 0
     server.app = Flask(__name__)
-    server.sock = None
-    server.ws_clients = []
     server._chat_sessions = {}
     server._sessions_lock = threading.Lock()
     server.auth_store = None
