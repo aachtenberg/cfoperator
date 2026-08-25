@@ -67,11 +67,31 @@ jobs:
         working-directory: artifacts
         run: sha256sum cfassist-* > checksums.txt
 
+      # The numbered tag is what GitHub badges Latest. generate_release_notes
+      # alone is a changelog with no install — the page people actually land
+      # on. The one-liner on cfassist-latest does not help: --latest=false
+      # keeps that release off the badge. body is prepended to the generated
+      # notes, so both survive. The pin is the version number, not the tag:
+      # CFASSIST_VERSION=cfassist-v0.11.0 404s.
+      - name: Version number for the pin
+        id: version
+        run: echo "number=${GITHUB_REF_NAME#cfassist-v}" >> "$GITHUB_OUTPUT"
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           name: "cfassist ${{ github.ref_name }}"
           generate_release_notes: true
+          body: |
+            ## Install
+
+            ```
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-cfassist.sh | sh
+            ```
+
+            Detects OS and CPU, verifies the SHA-256, installs to `/usr/local/bin` (or `~/.local/bin` if there is no sudo). No `gh` required. First run writes `~/.cfassist/config.yaml` with every setting stubbed.
+
+            Pin this exact release with `CFASSIST_VERSION=${{ steps.version.outputs.number }}`. Or download an asset below, `chmod +x`, and put it on your PATH.
           files: |
             artifacts/cfassist-*
             artifacts/checksums.txt

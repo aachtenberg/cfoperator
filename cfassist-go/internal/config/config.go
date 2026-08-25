@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -9,6 +10,15 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// defaultSystemPrompt is the built-in SRE prompt. Unset system_prompt in
+// config.yaml keeps this; the first-run file stubs it commented so an
+// override is a copy rather than a guess.
+const defaultSystemPrompt = "You are cfassist, a helpful SRE and systems administration assistant " +
+	"running in the user's terminal. You have access to tools for running " +
+	"shell commands and reading files. Be concise and practical. Focus on " +
+	"diagnosing issues, explaining errors, and suggesting fixes. When you " +
+	"need to check something, use your tools rather than guessing."
 
 // State holds persisted runtime state (e.g. last-used provider/model).
 type State struct {
@@ -207,14 +217,11 @@ func Defaults() *Config {
 			ReadFile: ReadFileToolConfig{Enabled: true, MaxLines: 500},
 		},
 		CFOperator: CFOperatorConfig{
+			Timeout:  30,
 			Discover: true,
 		},
 		MaxToolIterations: 50,
-		SystemPrompt: "You are cfassist, a helpful SRE and systems administration assistant " +
-			"running in the user's terminal. You have access to tools for running " +
-			"shell commands and reading files. Be concise and practical. Focus on " +
-			"diagnosing issues, explaining errors, and suggesting fixes. When you " +
-			"need to check something, use your tools rather than guessing.",
+		SystemPrompt:      defaultSystemPrompt,
 	}
 }
 
@@ -292,42 +299,51 @@ func expandPath(p string) string {
 }
 
 func writeDefaultConfig(path string) error {
-	content := `# cfassist configuration
+	const placeholder = "{{SYSTEM_PROMPT}}"
+	content := strings.Replace(`# cfassist configuration
+# Written on first run. Uncomment a stub to set it; ${ENV} is expanded at load.
 # See: https://github.com/aachtenberg/cfoperator
 
 llm:
-  default: ollama      # which provider name to start with
-  temperature: 0.7     # shared default
+  default: ollama           # which named provider to start with (/use to switch)
+  temperature: 0.7          # shared default; a provider can override
+  # api_key: ${OPENAI_API_KEY}  # unused by ollama; set per-provider for remote APIs
 
-  # Legacy single-provider mode (used if no providers block):
+  # Legacy single-provider mode (used if the providers block is absent):
   # provider: ollama
   # url: http://localhost:11434
   # model: llama3.2
+  # temperature: 0.7
   # context_window: 8192
+  # api_key: ${OPENAI_API_KEY}
 
-# Named providers — switch with /use <name> in TUI
+# Named providers — switch with /use <name> in the TUI
 providers:
   ollama:
     provider: ollama
     url: http://localhost:11434
     model: llama3.2
+    temperature: 0.7
     context_window: 8192
+    # api_key:                  # ollama does not need one
   # groq:
   #   provider: openai
   #   url: https://api.groq.com/openai/v1
   #   model: llama-3.3-70b-versatile
+  #   temperature: 0.7
   #   api_key: ${GROQ_API_KEY}
   #   context_window: 131072
   # claude:
   #   provider: anthropic
   #   url: https://api.anthropic.com
   #   model: claude-sonnet-4-20250514
+  #   temperature: 0.7
   #   api_key: ${ANTHROPIC_API_KEY}
   #   context_window: 200000
 
 context:
   directory: ~/.cfassist/context
-  max_tokens: 8000
+  max_tokens: 8000              # cap on files pulled into the session
 
 # Your own playbooks, overlaid by name on the nine built into the binary.
 # /skills lists them; /skill <name> [target] loads one into the session.
@@ -336,18 +352,18 @@ skills:
 
 memory:
   directory: ~/.cfassist/memory
-  max_conversations: 50
+  max_conversations: 50         # oldest sessions are dropped past this
 
 tools:
   bash:
     enabled: true
-    timeout: 30
+    timeout: 30                 # seconds
   read_file:
     enabled: true
     max_lines: 500
 
 # CFOperator agent API — used by 'cfassist attach <investigation-id>'.
-# Both fields are optional: unset, they fall back to CFOP_AGENT_URL and
+# url and token are optional: unset, they fall back to CFOP_AGENT_URL and
 # CFOP_API_TOKEN, the same variables the MCP server reads. attach is read-only,
 # so a token with 'read' scope is enough.
 #
@@ -356,18 +372,22 @@ tools:
 # somewhere else. Use a loopback address only when cfassist runs on the agent
 # host itself, or through 'kubectl -n apps port-forward svc/cfoperator
 # 8083:8083' on this machine.
-# cfoperator:
-#   url: http://192.168.1.50:8083   # <- the agent host, not this machine
-#   token: ${CFOP_API_TOKEN}
-#   timeout: 30
-#   discover: true   # probe that address at startup so a plain session knows
-#                    # a CFOperator is there and can read it. Set false to skip.
+cfoperator:
+  # url: http://192.168.1.50:8083   # the agent host, not this machine
+  # token: ${CFOP_API_TOKEN}
+  timeout: 30                       # seconds
+  discover: true                    # probe that address at startup so a
+                                    # plain session knows a CFOperator is
+                                    # there. Set false to skip.
 
-max_tool_iterations: 50  # max tool calls per conversation turn
+max_tool_iterations: 50             # max tool calls per conversation turn
 
-# Override the default system prompt:
+# Override the default system prompt (unset keeps the built-in SRE prompt):
 # system_prompt: |
-#   You are a custom assistant...
-`
+#   {{SYSTEM_PROMPT}}
+`, placeholder, defaultSystemPrompt, 1)
+	if strings.Contains(content, "{{") {
+		return fmt.Errorf("unsubstituted placeholder in default config template")
+	}
 	return os.WriteFile(path, []byte(content), 0644)
 }

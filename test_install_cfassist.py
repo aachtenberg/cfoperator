@@ -114,6 +114,62 @@ def live_lines(text: str) -> list[str]:
     return [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
 
 
+def _versioned_release_half() -> str:
+    """Everything in the workflow before the pointer refresh.
+
+    The numbered tag is what GitHub badges Latest (`--latest=false` on the
+    pointer is load-bearing). Install instructions that only exist on
+    cfassist-latest never appear on the page people land on.
+    """
+    text = RELEASE_WORKFLOW.read_text()
+    versioned, sep, _ = text.partition("Refresh the cfassist-latest pointer")
+    assert sep, "could not split the versioned release from the pointer refresh"
+    return "\n".join(live_lines(versioned))
+
+
+def test_the_versioned_release_notes_include_the_install_one_liner():
+    """generate_release_notes alone is a changelog with no install — that is
+    the current Latest page. The body is prepended to the generated notes, so
+    both have to be present; dropping the body is how this regresses."""
+    live = _versioned_release_half()
+
+    assert "generate_release_notes: true" in live, (
+        "keep the changelog; the install block is prepended, not a replacement"
+    )
+    # The Create release step itself, not a write-a-file-and-forget-to-attach-it
+    # step: a prefix file that is never passed as body/body_path is a no-op.
+    create = live.split("- name: Create release", 1)
+    assert len(create) == 2, "the versioned release step is missing"
+    create_step = create[1].split("- name:", 1)[0]
+    assert "body:" in create_step, (
+        "the numbered release must set `body:` (prepended to generated notes); "
+        "a comment or the pointer-only NOTES does not reach the Latest page"
+    )
+    assert "install-cfassist.sh" in create_step, (
+        "the Latest-badged page has to carry the install one-liner, not just "
+        "a changelog of PRs"
+    )
+    assert "CFASSIST_VERSION=" in create_step, (
+        "someone who opened this tag rather than latest needs a pin, not only "
+        "the moving one-liner"
+    )
+    # The build job also strips GITHUB_REF_NAME#cfassist-v for ldflags, so
+    # asserting that string against the whole file (or everything before the
+    # pointer refresh) stays green if this pin step is deleted and the
+    # rendered notes say `CFASSIST_VERSION=` with nothing after it.
+    assert "steps.version.outputs.number" in create_step, (
+        "the pin must come from the Version number step; the build job's "
+        "ldflags strip is a different one"
+    )
+    version = live.split("- name: Version number for the pin", 1)
+    assert len(version) == 2, "the pin step is missing"
+    version_step = version[1].split("- name:", 1)[0]
+    assert "GITHUB_REF_NAME#cfassist-v" in version_step, (
+        "CFASSIST_VERSION=cfassist-v0.11.0 404s; strip the tag prefix so the "
+        "pin is 0.11.0"
+    )
+
+
 def test_the_release_workflow_maintains_the_latest_pointer():
     """Freezing the pointer is worse than breaking it: the install would keep
     working and keep delivering something old.
