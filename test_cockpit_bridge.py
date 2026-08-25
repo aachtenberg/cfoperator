@@ -511,7 +511,7 @@ def _server(*, investigation=None, tier="host", live=None, store=None):
         {"id": 1889, "trigger": "mount hung"} if investigation is None else investigation)
     server.auth_store = store
     server._resolve_cockpit_host = lambda _id, _inv, _req: ("raspberrypi5", "trigger text")
-    server._choose_cockpit_tier = lambda host, requested: (tier, "note", None)
+    server._choose_cockpit_tier = lambda host, requested, **_kw: (tier, "note", None)
     ladder = MagicMock()
     ladder.live_session.return_value = live
     server._cockpit_ladder = lambda: ladder

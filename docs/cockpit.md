@@ -630,8 +630,11 @@ and a wrong guess puts you on the wrong machine mid-incident.
 ### How the runtime gets chosen
 
 For a cluster node under `auto`, nothing here runs: a node is tier 1, and
-probing it would spend a round trip confirming a decision already made. In every
-other case — including whenever a host tier is *explicitly asked for*, node or
+probing it would spend a round trip confirming a decision already made. (The
+console drawer is the one exception — with Phase B off it cannot use a pod, so
+its `auto` probes a node that is also an inventory host and takes the host
+tier; see [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console).)
+In every other case — including whenever a host tier is *explicitly asked for*, node or
 not — one ssh round trip asks the host what it has: architecture, `docker`, `podman`,
 `systemd-run`, whether there is a systemd manager to own a transient unit — and
 the answer is cached for fifteen minutes — **except when you pass `--tier`,
@@ -936,8 +939,9 @@ Clicking it calls `POST /api/cockpit/<id>/open`, which
 
 1. refuses before doing anything if the terminal could not be opened
    afterwards — the bridge is off, this console's origin is not in
-   `cockpit.bridge_origins` (the message names the origin to add), or the
-   investigation is in the cluster (tier `pod`, Phase B). Each refusal lands
+   `cockpit.bridge_origins` (the message names the origin to add), or the only
+   cockpit for this investigation would be a pod (Phase B off — see below for
+   what the drawer does about a node that is also a host). Each refusal lands
    beside the button with the reason, and the attach line is still there;
 2. spawns the session through the ladder, or joins the one already on the
    host — the same dedupe `cfassist attach` gets;
@@ -961,7 +965,10 @@ how long you have:
   way.
 - **kill** (`POST /api/cockpit/<id>/close`) removes the session from the
   host now — the container, the directory, both reap units — and revokes
-  every token minted for it. The janitor stays the backstop.
+  every token minted for it. It also deletes any cockpit Job for the
+  investigation, whichever tier it decided the session was on: a terminal-side
+  `--spawn` may have put a pod on the same node, and kill is total or it is
+  not kill. The janitor stays the backstop.
 - **disconnect** closes the terminal and leaves the session to its TTL.
 - Escape goes to the terminal while one is open (a TUI, a pager); disconnect
   first to close the drawer with it.
@@ -989,10 +996,23 @@ so a NetworkPolicy cannot do it ([DEPLOYMENT.md](DEPLOYMENT.md)). Without
 `bridge_origins` the bridge refuses to listen at all, and the console tells
 you which origin to add rather than letting the socket fail with a 4403.
 
-**Pod cockpits (Phase B).** By default the drawer serves the host tiers only;
-an in-cluster investigation gets the attach line instead. To open a terminal
-*into a cockpit pod* from the browser, turn on two switches, deliberately and
-together:
+**A node that is also a host is a host, here.** The drawer serves the host
+tiers only by default, and most of a homelab fleet is both a Kubernetes node
+and an `infrastructure.hosts` entry. The terminal's `auto` sends those to a
+pod (a node is tier 1; `--tier host` asks for the box). The drawer has no
+`--tier`, and a pod is something it cannot serve at all with Phase B off — so
+for it, `auto` probes such a host and opens a `container`/`host`/`ssh` cockpit
+*on* it, exactly what `--tier host` would have asked for. The tier note says
+so. Before this (CFOP-98) the button refused nearly every investigation on
+this fleet with "this investigation is in the cluster", which for a Pi was
+true and useless: the incident that prompted it was a kernel sysinfo warning
+on raspberrypi2, which a pod scheduled onto raspberrypi2 cannot look at.
+What still gets the attach line instead: an investigation that resolves to no
+host, a node with no inventory entry (the message says to add it), or a host
+whose probe failed.
+
+**Pod cockpits (Phase B).** To open a terminal *into a cockpit pod* from the
+browser, turn on two switches, deliberately and together:
 
 ```yaml
 cockpit:
@@ -1007,8 +1027,10 @@ They are independent because the reach is sharp: the grant without the flag is
 unused, and the flag without the grant fails the attach with a readable
 `forbidden` rather than a silent hang. The grant is `create` on `pods/attach`
 and nothing else — never `exec`, and namespaced to the release namespace, so
-it cannot open a terminal into a pod elsewhere. Everything else is unchanged:
-the ticket, the TTL, kill, and the audit line are the same as the host tiers.
+it cannot open a terminal into a pod elsewhere. With the flag on, a node that
+is also a host goes back to being a node: `auto` picks the pod again, as the
+terminal does, and the drawer serves it. Everything else is unchanged: the
+ticket, the TTL, kill, and the audit line are the same as the host tiers.
 
 ### When it says no
 
@@ -1016,7 +1038,9 @@ the ticket, the TTL, kill, and the audit line are the same as the host tiers.
 |---|---|---|
 | `the cockpit bridge is not enabled on this agent` | `bridge_enabled` is off | enable it, or use the attach line |
 | `this console's origin (…) is not in cockpit.bridge_origins` | the allow-list does not name this console | add that exact origin |
-| `this investigation is in the cluster` | tier `pod`, and Phase B is off | turn on both `cockpit.bridge_pod_tier` and `cockpit.bridgePodAttach`, or `cfassist attach --spawn` from a terminal |
+| `<host> is a cluster node with no infrastructure.hosts entry, so the only cockpit for it is a pod` | the drawer can only reach a host by ssh, and this one has no address or key configured; Phase B is off | add the host to `infrastructure.hosts` (using the name your alerts use); or turn on both `cockpit.bridge_pod_tier` and `cockpit.bridgePodAttach`; or `cfassist attach --spawn` from a terminal |
+| `no affected host could be resolved from this investigation, so its cockpit would be a pod somewhere in the cluster` | nothing in the trigger, findings or a linked remediation names a configured host | `cfassist attach <id> --spawn --host <name>` from a terminal, or turn on Phase B |
+| `<host> could not be given a host-tier cockpit (…)` | the host is configured but the probe failed — it is down, or the key does not work | fix the reachability (the smoke test in Setting it up), or `cfassist attach --spawn --tier pod` to look at it from next door |
 | `disconnected: the bridge is carrying its maximum terminals` | `bridge_max_sessions` (default 2) | close one, or raise it |
 | `disconnected: the ticket was not accepted` | the 120 s ticket expired before the socket opened, or was already spent | reattach — that mints a new one |
 | `disconnected: no live session on the host` | the session ended or was reaped between open and connect | reattach |
@@ -1030,8 +1054,9 @@ the ticket, the TTL, kill, and the audit line are the same as the host tiers.
   `cockpit.bridgePodAttach` (which grants the agent `create` on pods/attach in
   the release namespace) — see
   [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console).
-  With neither, an in-cluster investigation says so and points at
-  `cfassist attach --spawn`.
+  With neither, a node that is also an `infrastructure.hosts` entry gets a
+  host-tier cockpit (CFOP-98); an investigation with no reachable host says
+  so and points at `cfassist attach --spawn`.
 - **No remediate profile.** There is one cockpit identity and it is read-only.
   A write-capable cockpit waits until something actually needs one.
 - **Reattach after a drop is tmux's job, where the host has it.** Tiers 1
