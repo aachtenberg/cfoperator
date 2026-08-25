@@ -159,6 +159,20 @@ rules:
   - apiGroups: [""]
     resources: [secrets]
     verbs: [create]
+{{- if .Values.cockpit.bridgePodAttach }}
+  {{/* CFOP-59 Phase B: the ONE grant that lets the agent open a terminal into
+       a cockpit pod, for the browser bridge. `create` on the attach subresource and
+       nothing else — never the exec subresource (an arbitrary command, not the session the
+       Job already runs), and namespaced to the release/cockpit namespace, not
+       cluster-wide. Off by default and separate from `cockpit.enabled`: this
+       is the deliberate act test_cockpit_attach_contract.py exists to make
+       conscious. It pairs with the runtime `cockpit.bridge_pod_tier` — the
+       chart grant without the flag is unused; the flag without the grant is a
+       readable "forbidden" at attach time, never a silent one. */}}
+  - apiGroups: [""]
+    resources: [pods/attach]
+    verbs: [create]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

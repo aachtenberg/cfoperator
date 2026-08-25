@@ -487,9 +487,16 @@ cockpit:
   #
   # A connection needs an `investigate`-scoped token, the same one
   # `cfassist attach` mints for an interactive session, and the cockpit it asks
-  # for has to already exist — the bridge attaches, it never spawns. Tier 1
-  # (`pod`) is refused by name: that needs pods/attach, which nothing here
-  # holds, and granting it is CFOP-59 Phase B.
+  # for has to already exist — the bridge attaches, it never spawns.
+  #
+  # Tier 1 (`pod`) is refused by name unless BOTH of these are set (CFOP-59
+  # Phase B): this runtime flag, and the chart's `cockpit.bridgePodAttach`,
+  # which grants the agent `create` on pods/attach. They are separate on
+  # purpose — the flag without the grant fails the attach with a readable
+  # "forbidden", the grant without the flag keeps the bridge refusing — so
+  # opening a browser terminal into a cluster pod is never a side effect of one
+  # edit. The host tiers (ssh/systemd/container) need neither.
+  # bridge_pod_tier: false
   #
   # The console gets its token from `POST /api/cockpit/<id>/open` (admin):
   # that spawns the session if there is none, and mints a *ticket* — an

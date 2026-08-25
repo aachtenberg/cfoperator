@@ -197,12 +197,12 @@ def test_the_spawn_path_matches_the_route_the_agent_registers():
 
 
 def test_the_cockpit_terminal_is_the_operators_own_binary():
-    """No service identity in this system holds pods/exec or pods/attach, and
-    the cockpit deliberately does not add one at any tier: the operator's
-    laptop already has cluster and ssh credentials. If the attach ever moves
-    server-side (the CFOP-59 console drawer), that RBAC decision has to be made
-    deliberately — and this test is what makes moving it a conscious act rather
-    than a refactor.
+    """pods/exec is granted to no identity at any tier, and pods/attach only as
+    CFOP-59 Phase B's deliberate, bounded grant — gated behind its own value,
+    create-only, in a namespaced Role. The attach moving server-side (the
+    console drawer) was exactly the RBAC decision this test existed to force
+    into the open; Phase B made it, and this now holds its shape so it cannot
+    quietly widen to exec or to cluster scope.
 
     The tier-1 argv moved to the server when the ladder made every tier answer
     in one shape (CFOP-36), so the guard follows it. What did not move is the
@@ -222,11 +222,56 @@ def test_the_cockpit_terminal_is_the_operators_own_binary():
         "tier 1's attach argv is gone from the server that now answers with it")
 
     rbac = (REPO_ROOT / "charts" / "cfoperator" / "templates" / "rbac.yaml").read_text()
-    for subresource in ("pods/exec", "pods/attach"):
-        assert subresource not in rbac, (
-            f"{subresource} appeared in the chart: some service identity can now "
-            "open a shell. That is CFOP-59's decision to make explicitly, not a "
-            "side effect of an RBAC edit")
+    # pods/exec is never granted to anything, at any tier: it is arbitrary
+    # command execution, not the interactive session the Job already runs.
+    assert "pods/exec" not in rbac, (
+        "pods/exec appeared in the chart. The cockpit attaches to the session a "
+        "Job already runs; it never needs to exec an arbitrary command, and that "
+        "grant is not CFOP-59's to make")
+    # pods/attach is CFOP-59 Phase B — the one grant that lets the agent open a
+    # browser terminal into a cockpit pod. It is allowed, but only as a
+    # deliberate, bounded act: gated behind its own value, `create`-only, and
+    # namespaced (a Role, never a ClusterRole). Assert it is PRESENT (Phase B
+    # ships the gated rule) and then assert its shape, so neither deleting the
+    # rule nor widening it slips through.
+    assert "pods/attach" in rbac, (
+        "the Phase B pods/attach rule is gone from the chart — the browser "
+        "cockpit's pod tier has no grant to run on")
+    block = _gated_block(rbac, "pods/attach")
+    if True:
+        assert block is not None, (
+            "pods/attach is not inside an `{{- if .Values.cockpit.bridgePodAttach }}` "
+            "guard — it must be off by default and its own switch, not a side effect "
+            "of cockpit.enabled")
+        assert "verbs: [create]" in block, (
+            "pods/attach is granted a verb other than create; attaching to a running "
+            "session needs create alone")
+        # The grant lives in the namespaced cockpit-spawn Role, so it cannot open a
+        # terminal into a pod outside the cockpit's own namespace.
+        role = _enclosing_kind(rbac, "pods/attach")
+        assert role == "Role", (
+            f"pods/attach is in a {role}, not a namespaced Role — a ClusterRole would "
+            "reach pods in every namespace")
+
+
+def _gated_block(text, needle):
+    """The ``{{- if ... }} … {{- end }}`` block that encloses ``needle``, or None
+    if it is not inside a bridgePodAttach guard."""
+    idx = text.find(needle)
+    guard = text.rfind("{{- if .Values.cockpit.bridgePodAttach }}", 0, idx)
+    if guard == -1:
+        return None
+    end = text.find("{{- end }}", idx)
+    return text[guard:end] if end != -1 else text[guard:]
+
+
+def _enclosing_kind(text, needle):
+    """The `kind:` of the RBAC object ``needle`` sits in (Role / ClusterRole)."""
+    idx = text.find(needle)
+    kind = None
+    for m in re.finditer(r"^kind:\s*(\w+)", text[:idx], re.M):
+        kind = m.group(1)
+    return kind
 
 
 def test_the_spawn_client_cannot_be_bent_into_another_call():

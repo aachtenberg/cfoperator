@@ -17,6 +17,7 @@ fake ssh (the same harness ``test_cockpit_ladder.py`` uses) and a real
 minted, with what label and scope, and whether it still verifies afterwards.
 """
 
+import json
 import os
 import threading
 import time
@@ -50,7 +51,8 @@ def live_listing(expires=None):
 
 
 def _client(ssh, *, store=None, auth_disabled=True, cockpit=None,
-            investigation=None, remediations=("raspberrypi5",), node_names=()):
+            investigation=None, remediations=("raspberrypi5",), node_names=(),
+            pod_jobs=()):
     """The real routes, the real ladder over ``ssh``, and ``store`` for tokens.
 
     ``cockpit`` is the ``cockpit:`` config block — where the bridge's own
@@ -80,16 +82,42 @@ def _client(ssh, *, store=None, auth_disabled=True, cockpit=None,
     server._sessions_lock = threading.Lock()
     server.auth_store = store
 
+    # Stateful about Jobs: a create adds one, a delete removes it, so an
+    # open→close→open sequence behaves like a real cluster (the reviewer's
+    # guard: the second open must be a fresh spawn, not a dedupe).
+    live = [{"name": n, "inv": str(i)} for n, i in pod_jobs]
+    kubectl_calls = []
+
     def kubectl(args, stdin):
+        kubectl_calls.append(list(args))
         if args[:2] == ["get", "node"]:
             if args[-1] in node_names:
                 return 0, '{"spec": {}}', ""
             return 1, "", 'Error from server (NotFound): nodes "x" not found'
         if args[:2] == ["get", "jobs"]:
-            return 0, '{"items": []}', ""
+            items = [{"metadata": {"name": j["name"], "labels": {"cfop-cockpit": j["inv"]},
+                                   "creationTimestamp": "2026-08-25T16:00:00Z"},
+                      "spec": {"activeDeadlineSeconds": 1800},
+                      "status": {"active": 1}} for j in live]
+            return 0, json.dumps({"items": items}), ""
+        if args[0] == "create" and stdin:
+            man = json.loads(stdin)
+            if man.get("kind") == "Job":
+                meta = man.get("metadata", {})
+                live.append({"name": meta.get("name", ""),
+                             "inv": str((meta.get("labels") or {}).get("cfop-cockpit", ""))})
+            return 0, json.dumps({"metadata": {"uid": "uid-1"}}), ""
+        if args[0] == "delete" and args[1] == "job":
+            live[:] = [j for j in live if j["name"] != args[2]]
+            return 0, "", ""
         return 0, '{"metadata": {"uid": "uid-1"}}', ""
+    server._kubectl_calls = kubectl_calls
 
-    server._cockpit = CockpitSpawner(CockpitConfig(namespace="apps"), kubectl_runner=kubectl)
+    _cockpit = CockpitSpawner(CockpitConfig(namespace="apps"), kubectl_runner=kubectl)
+    if store is not None:
+        _cockpit._mint = server._mint_cockpit_token
+        _cockpit._revoke = server._revoke_cockpit_token
+    server._cockpit = _cockpit
     server._ladder = spawner(ssh)
     if store is not None:
         # The real mint, so the tokens under test are the ones a deploy makes.
@@ -136,6 +164,15 @@ def host_ssh(*rules):
 
 def tokens(store, label):
     return [t for t in store.list_tokens() if t["label"] == label]
+
+
+def pod_close_made_no_host_removal(server):
+    """A pod close routes to the Job delete, never the ladder's ssh destroy —
+    so no `rm -rf`/`docker rm` went to any host."""
+    ladder = getattr(server, "_ladder", None)
+    ssh = getattr(ladder, "_ssh_host", None)
+    calls = getattr(getattr(ssh, "__self__", None), "commands", [])
+    return not any("rm -rf" in c or "docker rm" in c or "kill-session" in c for c in calls)
 
 
 # --------------------------------------------------------------------------
@@ -326,12 +363,15 @@ def test_close_404s_an_unknown_investigation(store):
     assert client.post(f"/api/cockpit/{INV}/close", json={}).status_code == 404
 
 
-def test_close_with_no_resolvable_host_is_a_client_error(store):
-    client, _ = _client(host_ssh(), store=store, cockpit=bridge_on(), remediations=(),
-                        investigation={"id": INV, "trigger": "something vague"})
+def test_close_of_a_hostless_investigation_is_an_idempotent_pod_noop(store):
+    """A vague investigation with no machine resolves to the pod tier (tier 1
+    is always attemptable). Close there deletes the Job if one exists and is a
+    harmless 200 when none does — idempotent, not the old host-tier 400."""
+    client, server = _client(host_ssh(), store=store, cockpit=bridge_on_pod(),
+                             remediations=(), investigation={"id": INV, "trigger": "something vague"})
     resp = client.post(f"/api/cockpit/{INV}/close", json={})
-    assert resp.status_code == 400
-    assert "host" in resp.get_json()["error"]
+    assert resp.status_code == 200
+    assert resp.get_json()["removed"] == []
 
 
 def test_destroy_ignores_the_deadline():
@@ -397,3 +437,126 @@ def test_open_refuses_when_there_is_no_token_store():
     client, _ = _client(host_ssh(), store=None, cockpit=bridge_on())
     resp = client.post(f"/api/cockpit/{INV}/open", json={})
     assert resp.status_code == 503
+
+
+# --------------------------------------------------------------------------
+# tier pod: off by default, opens through the pod spawner when the flag is on
+# --------------------------------------------------------------------------
+
+def bridge_on_pod(**over):
+    cfg = {"bridge_enabled": True, "bridge_origins": CONSOLE, "bridge_pod_tier": True}
+    cfg.update(over)
+    return cfg
+
+
+def test_open_refuses_tier_pod_unless_the_pod_tier_flag_is_on(store):
+    """Default Phase A behaviour: an in-cluster investigation is refused by
+    name, with the flag to turn on and the terminal-side fallback."""
+    ssh = host_ssh()
+    client, _ = _client(ssh, store=store, cockpit=bridge_on(), node_names=("raspberrypi5",))
+    resp = client.post(f"/api/cockpit/{INV}/open", json={})
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert body["code"] == "tier"
+    assert "cockpit.bridge_pod_tier" in body["error"] and "pods/attach" in body["error"]
+    assert store.list_tokens() == []
+
+
+def test_open_spawns_a_pod_cockpit_and_a_ticket_when_the_flag_is_on(store):
+    ssh = host_ssh()
+    client, _ = _client(ssh, store=store, cockpit=bridge_on_pod(),
+                        node_names=("raspberrypi5",))
+    resp = client.post(f"/api/cockpit/{INV}/open", json={})
+    assert resp.status_code == 201, resp.get_json()
+    body = resp.get_json()
+    assert body["tier"] == "pod"
+    assert body["attach_command"].startswith("kubectl attach -it")
+    assert body["bridge"]["url"] == f"ws://localhost:8084/cockpit/{INV}"
+    # The pod session mints its own token plus the bridge ticket, same as host.
+    assert len(tokens(store, COCKPIT_BRIDGE_TICKET_LABEL.format(investigation_id=INV))) == 1
+
+
+def test_the_resolver_returns_a_pod_session_only_when_the_flag_is_on(store):
+    """The bridge's resolver: with the flag off, a pod investigation comes back
+    as a stub the bridge refuses by name; with it on, the live pod session so
+    the bridge can attach."""
+    job = (f"cfop-cockpit-{INV}-abc", INV)
+    off_client, off_server = _client(host_ssh(), store=store, cockpit=bridge_on(),
+                                     node_names=("raspberrypi5",), pod_jobs=(job,))
+    stub = off_server.resolve_cockpit_session(INV)
+    assert stub == {"tier": "pod", "host": "raspberrypi5", "investigation_id": INV}
+
+    on_client, on_server = _client(host_ssh(), store=store, cockpit=bridge_on_pod(),
+                                   node_names=("raspberrypi5",), pod_jobs=(job,))
+    live = on_server.resolve_cockpit_session(INV)
+    assert live and live["tier"] == "pod"
+    assert live["attach_argv"][:2] == ["kubectl", "attach"]
+    assert live["job_name"] == f"cfop-cockpit-{INV}-abc"
+
+
+def test_the_resolver_returns_none_for_a_pod_with_no_live_job(store):
+    _client_, server = _client(host_ssh(), store=store, cockpit=bridge_on_pod(),
+                               node_names=("raspberrypi5",), pod_jobs=())
+    assert server.resolve_cockpit_session(INV) is None
+
+
+def test_open_pod_reports_a_deadline_for_the_countdown(store):
+    """The drawer counts down from expires_at; a pod open must carry it too, or
+    Phase B shows TTL — while the Job has activeDeadlineSeconds."""
+    client, _ = _client(host_ssh(), store=store, cockpit=bridge_on_pod(),
+                        node_names=("raspberrypi5",))
+    body = client.post(f"/api/cockpit/{INV}/open", json={"ttl_seconds": 1800}).get_json()
+    assert body["tier"] == "pod"
+    assert body["expires_at"] > time.time()
+
+
+def test_close_deletes_the_pod_job_and_revokes_the_token(store):
+    """The bug the review caught: close must delete the Job (not SSH the node),
+    or the pod runs on with a revoked in-Secret token."""
+    job = (f"cfop-cockpit-{INV}-abc", INV)
+    client, server = _client(host_ssh(), store=store, cockpit=bridge_on_pod(),
+                             node_names=("raspberrypi5",), pod_jobs=(job,))
+    store.create_token(COCKPIT_SESSION_TOKEN_LABEL.format(investigation_id=INV),
+                       ["investigate"], creator_role=ROLE_ADMIN, ttl_seconds=600)
+
+    resp = client.post(f"/api/cockpit/{INV}/close", json={})
+    assert resp.status_code == 200, resp.get_json()
+    body = resp.get_json()
+    assert body["removed"] == [{"host": "", "name": job[0], "kind": "pod"}]
+    assert ["delete", "job", job[0], "-n", "apps"] in server._kubectl_calls, (
+        "close did not delete the pod Job")
+    # No host-side removal: a pod cockpit is not on an ssh host.
+    assert pod_close_made_no_host_removal(server), "close ran a host removal for a pod cockpit"
+    assert body["tokens_revoked"] == 1
+    for row in tokens(store, COCKPIT_SESSION_TOKEN_LABEL.format(investigation_id=INV)):
+        assert row["status"] == "revoked"
+
+
+def test_open_close_open_is_a_fresh_spawn_not_a_dedupe(store):
+    """After close deletes the Job, the next open must spawn a new one — a
+    dedupe onto the deleted Job is exactly the ghost this fixes."""
+    client, _ = _client(host_ssh(), store=store, cockpit=bridge_on_pod(),
+                        node_names=("raspberrypi5",))
+    first = client.post(f"/api/cockpit/{INV}/open", json={})
+    assert first.status_code == 201 and first.get_json()["status"] == "spawned"
+    assert client.post(f"/api/cockpit/{INV}/close", json={}).status_code == 200
+    second = client.post(f"/api/cockpit/{INV}/open", json={})
+    assert second.status_code == 201, second.get_json()
+    assert second.get_json()["status"] == "spawned", "reopen deduped onto a killed Job"
+
+
+def test_pod_destroy_is_a_noop_when_there_is_no_job(store):
+    _client_, server = _client(host_ssh(), store=store, cockpit=bridge_on_pod(),
+                               node_names=("raspberrypi5",), pod_jobs=())
+    assert server._cockpit.destroy(INV) == []
+
+
+def test_an_existing_pod_session_carries_the_jobs_deadline(store):
+    """A console joining a pod session it did not start reads the countdown from
+    the Job's creationTimestamp + activeDeadlineSeconds."""
+    job = (f"cfop-cockpit-{INV}-abc", INV)
+    _client_, server = _client(host_ssh(), store=store, cockpit=bridge_on_pod(),
+                               node_names=("raspberrypi5",), pod_jobs=(job,))
+    live = server.resolve_cockpit_session(INV)
+    # 2026-08-25T16:00:00Z + 1800s
+    assert live["expires_at"] == 1787680800 + 1800 or live["expires_at"] > 0

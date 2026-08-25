@@ -989,24 +989,49 @@ so a NetworkPolicy cannot do it ([DEPLOYMENT.md](DEPLOYMENT.md)). Without
 `bridge_origins` the bridge refuses to listen at all, and the console tells
 you which origin to add rather than letting the socket fail with a 4403.
 
+**Pod cockpits (Phase B).** By default the drawer serves the host tiers only;
+an in-cluster investigation gets the attach line instead. To open a terminal
+*into a cockpit pod* from the browser, turn on two switches, deliberately and
+together:
+
+```yaml
+cockpit:
+  bridgePodAttach: true       # chart: grants the agent `create` on pods/attach
+```
+```yaml
+cockpit:
+  bridge_pod_tier: true       # runtime (config file / env): the bridge serves tier pod
+```
+
+They are independent because the reach is sharp: the grant without the flag is
+unused, and the flag without the grant fails the attach with a readable
+`forbidden` rather than a silent hang. The grant is `create` on `pods/attach`
+and nothing else — never `exec`, and namespaced to the release namespace, so
+it cannot open a terminal into a pod elsewhere. Everything else is unchanged:
+the ticket, the TTL, kill, and the audit line are the same as the host tiers.
+
 ### When it says no
 
 | the drawer says | why | do |
 |---|---|---|
 | `the cockpit bridge is not enabled on this agent` | `bridge_enabled` is off | enable it, or use the attach line |
 | `this console's origin (…) is not in cockpit.bridge_origins` | the allow-list does not name this console | add that exact origin |
-| `this investigation is in the cluster` | tier `pod` | `cfassist attach --spawn` from a terminal (Phase B lifts this) |
+| `this investigation is in the cluster` | tier `pod`, and Phase B is off | turn on both `cockpit.bridge_pod_tier` and `cockpit.bridgePodAttach`, or `cfassist attach --spawn` from a terminal |
 | `disconnected: the bridge is carrying its maximum terminals` | `bridge_max_sessions` (default 2) | close one, or raise it |
 | `disconnected: the ticket was not accepted` | the 120 s ticket expired before the socket opened, or was already spent | reattach — that mints a new one |
 | `disconnected: no live session on the host` | the session ended or was reaped between open and connect | reattach |
 
 ## What the cockpit deliberately is not, yet
 
-- **Browser terminal: host tiers only.** The console drawer opens a terminal
-  on a `container`, `host` or `ssh` cockpit (CFOP-59 Phase A — see
-  [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console)).
-  Tier `pod` still needs kubectl on your machine: the bridge would need
-  `pods/attach`, which nothing here holds, and that grant is Phase B.
+- **Browser terminal: host tiers by default, pods behind two switches.** The
+  console drawer opens a terminal on a `container`, `host` or `ssh` cockpit
+  out of the box (CFOP-59 Phase A). Tier `pod` (CFOP-59 Phase B) is served only
+  when you turn on both `cockpit.bridge_pod_tier` (runtime) and the chart's
+  `cockpit.bridgePodAttach` (which grants the agent `create` on pods/attach in
+  the release namespace) — see
+  [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console).
+  With neither, an in-cluster investigation says so and points at
+  `cfassist attach --spawn`.
 - **No remediate profile.** There is one cockpit identity and it is read-only.
   A write-capable cockpit waits until something actually needs one.
 - **Reattach after a drop is tmux's job, where the host has it.** Tiers 1

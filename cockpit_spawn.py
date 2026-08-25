@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import subprocess
+import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -267,20 +268,7 @@ class CockpitSpawner:
         # cluster is busy with a Job that is theirs.
         for job in active:
             if job.get("investigation") == str(investigation_id):
-                return {
-                    "status": "existing",
-                    "tier": TIER_POD,
-                    "job_name": job.get("name", ""),
-                    "namespace": cfg.namespace,
-                    "investigation_id": investigation_id,
-                    "pod_selector": f"{COCKPIT_LABEL}={investigation_id}",
-                    "attach_argv": self.attach_argv(job.get("name", "")),
-                    "attach_command": self.attach_command(job.get("name", "")),
-                    # No new token and no new placement decision: this is the
-                    # cockpit that already exists, reported as such rather than
-                    # dressed up as a fresh one.
-                    "placement": {"node": "", "note": "existing cockpit for this investigation"},
-                }
+                return self._existing_pod_session(job)
         if len(active) >= cfg.max_concurrent:
             raise CockpitSpawnError(
                 f"cockpit concurrency cap reached ({cfg.max_concurrent} active)", 429)
@@ -350,16 +338,88 @@ class CockpitSpawner:
             "attach_argv": self.attach_argv(job_name),
             "attach_command": self.attach_command(job_name),
             "ttl_seconds": ttl,
+            # The deadline the Job carries as activeDeadlineSeconds, so the
+            # drawer counts down on tier pod exactly as it does on the host
+            # tiers (CFOP-59). On a fresh spawn it is now+ttl; for a session
+            # joined later it comes from the Job's own timestamps (see
+            # _active_jobs).
+            "expires_at": int(time.time()) + ttl,
             "placement": {"node": node or "", "note": placement_note},
             "token_prefix": str(token.get("prefix") or ""),
         }
 
+    def live_session(self, investigation_id: int) -> Optional[Dict[str, Any]]:
+        """The pod cockpit already running for an investigation, or None.
+
+        The lookup half of :meth:`spawn`, without the create half — the browser
+        bridge (CFOP-59 Phase B) attaches to what is already there and never
+        starts one, exactly as the host ladder's ``live_session`` does. Spawning
+        stays the admin-gated console route: it is a workload plus a minted
+        credential.
+
+        A listing failure raises (via ``_active_jobs``) rather than reading as
+        None: "I could not ask the cluster" is a different sentence from "there
+        is no cockpit", and during an incident it is frequently the one that
+        matters.
+        """
+        for job in self._active_jobs():
+            if job.get("investigation") == str(investigation_id):
+                return self._existing_pod_session(job)
+        return None
+
+    def _existing_pod_session(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        """Report a cockpit Job that already exists, in the same shape a fresh
+        spawn returns — no new token, no new placement decision. Carries
+        ``expires_at`` when the Job's timestamps gave one, so a console joining
+        a session it did not start still counts down (CFOP-59)."""
+        name = job.get("name", "")
+        report = {
+            "status": "existing",
+            "tier": TIER_POD,
+            "job_name": name,
+            "namespace": self._config.namespace,
+            "investigation_id": int(job.get("investigation") or 0),
+            "pod_selector": f"{COCKPIT_LABEL}={job.get('investigation', '')}",
+            "attach_argv": self.attach_argv(name),
+            "attach_command": self.attach_command(name),
+            "placement": {"node": "", "note": "existing cockpit for this investigation"},
+        }
+        if job.get("expires_at"):
+            report["expires_at"] = int(job["expires_at"])
+        return report
+
+    def destroy(self, investigation_id: int) -> List[Dict[str, str]]:
+        """Remove an investigation's cockpit Job now — the pod half of the
+        console drawer's kill (CFOP-59). Deleting the Job GCs its token Secret
+        with it (the ownerReference), so the credential dies with the compute,
+        and the caller revokes the token row besides. Returns what was removed,
+        in the janitor's shape, or empty when there was nothing to remove.
+
+        The `delete` verb is already on the cockpit-spawn Role (it is how a
+        failed Secret create tears its own Job down), so this needs no new
+        grant — unlike the attach, which does.
+        """
+        name = None
+        for job in self._active_jobs():
+            if job.get("investigation") == str(investigation_id):
+                name = job.get("name", "")
+                break
+        if not name:
+            return []
+        code, _out, stderr = self._kubectl(
+            ["delete", "job", name, "-n", self._config.namespace], None)
+        if code != 0:
+            raise CockpitSpawnError(
+                f"kubectl delete job failed: {stderr.strip()[:400] or code}", 502)
+        logger.info("Destroyed cockpit Job %s for investigation %s", name, investigation_id)
+        return [{"host": "", "name": name, "kind": "pod"}]
+
     def attach_argv(self, job_name: str) -> List[str]:
-        """The operator-side attach, as argv. Deliberately *their* kubectl: no
-        service identity in this system holds pods/attach or pods/exec, and an
-        operator spawning a cockpit from a laptop has cluster credentials by
-        definition. The agent-side PTY bridge the console drawer needs is
-        CFOP-59's problem, and that is where the RBAC question gets decided.
+        """The operator-side attach, as argv — *their* kubectl when they run it
+        from a laptop, which needs no grant of ours. The agent-side PTY bridge
+        can run this same argv when the operator turns on both the bridge's pod
+        tier and the chart's `pods/attach` grant (CFOP-59 Phase B); the two
+        switches are independent so that reach is never a side effect.
 
         argv rather than only a string because the client *executes* this: a
         command string would have to go through a shell on the operator's
@@ -405,6 +465,8 @@ class CockpitSpawner:
             active.append({
                 "name": meta.get("name", ""),
                 "investigation": str(labels.get(COCKPIT_LABEL, "")),
+                "expires_at": _job_deadline(meta.get("creationTimestamp"),
+                                            (item.get("spec") or {}).get("activeDeadlineSeconds")),
             })
         return active
 
@@ -597,6 +659,21 @@ class CockpitSpawner:
         except Exception as exc:  # noqa: BLE001
             logger.warning("could not revoke cockpit token %s after a failed spawn: %s",
                            token.get("prefix"), exc)
+
+
+def _job_deadline(creation_timestamp: Any, active_deadline_seconds: Any) -> Optional[int]:
+    """``creationTimestamp + activeDeadlineSeconds`` as an epoch int, or None.
+
+    Best-effort: a Job that a listing returned without both fields simply has no
+    countdown, and the drawer shows a dash rather than a wrong number.
+    """
+    if not creation_timestamp or not active_deadline_seconds:
+        return None
+    try:
+        created = datetime.fromisoformat(str(creation_timestamp).replace("Z", "+00:00"))
+        return int(created.timestamp()) + int(active_deadline_seconds)
+    except (ValueError, TypeError):
+        return None
 
 
 def _run_kubectl(args: Sequence[str], stdin: Optional[str]) -> Tuple[int, str, str]:

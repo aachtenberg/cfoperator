@@ -101,6 +101,12 @@ class BridgeConfig:
     #: the ladder already enforces per host — a browser should not be able to
     #: exceed what `--spawn` allows.
     max_sessions: int = 2
+    #: Serve tier `pod` too (CFOP-59 Phase B). Off by default and independent of
+    #: the chart's `pods/attach` grant: turning this on without the grant lets
+    #: the attach reach a kubectl that the cluster then refuses, which is a
+    #: readable failure; turning on the grant without this keeps the bridge
+    #: refusing by name. Both together is the deliberate act, made once.
+    pod_tier: bool = False
 
 
 def build_bridge_config(agent_config: Any) -> BridgeConfig:
@@ -141,6 +147,7 @@ def build_bridge_config(agent_config: Any) -> BridgeConfig:
         port=_int("CFOP_COCKPIT_BRIDGE_PORT", "bridge_port", DEFAULT_BRIDGE_PORT),
         max_sessions=max(1, _int("CFOP_COCKPIT_BRIDGE_MAX_SESSIONS",
                                  "bridge_max_sessions", 2)),
+        pod_tier=_bool("CFOP_COCKPIT_BRIDGE_POD_TIER", "bridge_pod_tier", False),
         allowed_origins=tuple(normalize_origin(o) for o in origins if o.strip()),
     )
 
@@ -261,10 +268,11 @@ def authorize(*, path: str, origin: str, token: str,
                        reason=f"no live cockpit for investigation {investigation_id}")
 
     tier = str(session.get("tier") or "")
-    if tier == TIER_POD:
+    if tier == TIER_POD and not config.pod_tier:
         return Verdict(False, code=CLOSE_TIER_UNSUPPORTED,
                        reason="this cockpit is a pod; the browser bridge serves "
-                              "the host tiers only — use cfassist attach --spawn")
+                              "the host tiers only unless cockpit.bridge_pod_tier "
+                              "is on — use cfassist attach --spawn")
 
     argv = session.get("attach_argv")
     if not isinstance(argv, (list, tuple)) or not argv:

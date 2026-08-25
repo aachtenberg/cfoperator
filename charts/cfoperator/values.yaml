@@ -99,6 +99,16 @@ remediate:
 # (cfoperator-cockpit) is read-only whether or not this is on.
 cockpit:
   enabled: false
+  # CFOP-59 Phase B: let the agent open a browser terminal INTO a cockpit pod.
+  # This grants the agent's service account `create` on pods/attach (only) in
+  # the release namespace — the sharpest grant in the chart, so it is its own
+  # switch, off by default, and never a side effect of `enabled`. It pairs with
+  # the runtime flag `cockpit.bridge_pod_tier` (config file / env): the grant
+  # without the flag is unused, and the flag without the grant fails the attach
+  # with a readable "forbidden" rather than a silent hang. Leave off unless you
+  # have decided, deliberately, that the console may open pod terminals — the
+  # host tiers (ssh/systemd/container) need none of this.
+  bridgePodAttach: false
   # Tiers 2/3 of the ladder (CFOP-36): a cockpit on a host that is not in the
   # cluster — a docker container, or the released cfassist under a transient
   # systemd unit. Both are reached by ssh from the agent, so unlike tier 1 they

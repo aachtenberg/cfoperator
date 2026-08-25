@@ -294,6 +294,16 @@ browser must be able to reach `:8084` on that same host. A console reached
 through a tunnel or a proxy that does not also forward `:8084` will get the
 button and then a refused socket; the drawer says which wall it hit.
 
+**Pod-tier terminals (Phase B) are a second, separate grant.** The host tiers
+need no cluster permission — the agent already holds the ssh key. Opening a
+browser terminal into a *cockpit pod* requires `create` on `pods/attach`, which
+the chart grants only when `cockpit.bridgePodAttach=true` (off by default, its
+own switch, never a side effect of `cockpit.enabled`). It pairs with the
+runtime `cockpit.bridge_pod_tier`. `test_cockpit_attach_contract.py` holds the
+grant's shape — attach-only, create-only, a namespaced Role — so it cannot
+quietly widen to `pods/exec` or cluster scope. Leave both off unless you have
+decided the console may open pod terminals.
+
 ## Local / Non-Production
 
 ```bash
