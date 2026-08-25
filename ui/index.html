@@ -10,6 +10,8 @@
          may reach a CDN. Not deferred - the main script configures it at
          top level. -->
     <script src="/vendor/marked.min.js"></script>
+    <!-- toast (and the other shared helpers) — one copy, see ui/common.js. Not deferred. -->
+    <script src="/common.js"></script>
     <script src="/nav.js" defer></script>
     <style>
         :root {
@@ -873,7 +875,8 @@
         /* Toasts — the one place a failed background request gets to say so */
         #toasts { position: fixed; bottom: 40px; right: 16px; display: flex; flex-direction: column; gap: 6px; z-index: 60; }
         .toast { background: var(--bg-tertiary); border: 1px solid var(--border); border-left: 3px solid var(--accent);
-                 padding: 8px 12px; border-radius: 4px; font-size: 12px; max-width: 360px; }
+                 padding: 8px 12px; border-radius: 4px; font-size: 12px; max-width: 360px; transition: opacity .2s; }
+        .toast.ok { border-left-color: var(--accent); }
         .toast.err { border-left-color: var(--red); }
         .answer-error { color: var(--red); font-size: 12px; margin-top: 4px; }
 
@@ -1261,16 +1264,6 @@
                 </div>
             `;
             panel.appendChild(questionCard);
-        }
-
-        function toast(msg, type) {
-            const c = document.getElementById('toasts');
-            if (!c) return;
-            const t = document.createElement('div');
-            t.className = 'toast ' + (type || '');
-            t.textContent = msg;
-            c.appendChild(t);
-            setTimeout(() => t.remove(), 6000);
         }
 
         // The answer goes over HTTP, and the card only leaves once the server

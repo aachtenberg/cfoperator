@@ -179,6 +179,14 @@ class WebServer:
         def nav_js():
             return send_from_directory('ui', 'nav.js', mimetype='application/javascript')
 
+        # The shared page helpers — esc/badge/toast/trapFocus (CFOP-95). The
+        # static folder would serve it anyway; the explicit route is so it
+        # is served, authenticated and typed, exactly like nav.js, and so
+        # test_console_common.py can pin that.
+        @self.app.route('/common.js')
+        def common_js():
+            return send_from_directory('ui', 'common.js', mimetype='application/javascript')
+
         # Health check. `version` is the baked build version (CFOP-92) — the
         # image tag for a CI build, "dev" from source — and it is what the
         # console status bar and cfassist's banner show, so it is the answer

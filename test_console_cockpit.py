@@ -127,7 +127,10 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,Uint8Ar
 box.window={location:loc,history:hist,addEventListener(){},removeEventListener(){},
   Terminal:FakeTerminal, FitAddon:{FitAddon:FakeFit},
   CFOP:{me:()=>Promise.resolve(mode==='member'?{role:'member'}:{role:'admin'})}};
-box.globalThis=box; vm.createContext(box); vm.runInContext(src,box);
+// The helpers the page calls (esc, badge, toast, trapFocus) live in ui/common.js
+// since CFOP-95; the browser loads it before the page script, so the harness does.
+const common=fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]),'common.js'),'utf8');
+box.globalThis=box; vm.createContext(box); vm.runInContext(common,box); vm.runInContext(src,box);
 
 const tick=()=>new Promise(r=>setImmediate(r));
 (async () => {

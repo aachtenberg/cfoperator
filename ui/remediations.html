@@ -147,6 +147,9 @@
 <div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
+<!-- esc/badge/color/age/toast/trapFocus — one copy, see ui/common.js. Not deferred:
+     the script below calls them at top level. -->
+<script src="/common.js"></script>
 <script>
 const STATUS = ['queued','claimed','executing','pr-open','verifying','resolved','failed','needs-human','rejected'];
 const SC = {queued:'--cyan',claimed:'--orange',executing:'--orange','pr-open':'--purple',
@@ -154,16 +157,6 @@ const SC = {queued:'--cyan',claimed:'--orange',executing:'--orange','pr-open':'-
 const RC = {low:'--accent',med:'--orange',high:'--red'};
 let filter = '';
 
-function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
-function badge(text, varname){ const c=color(varname);
-  return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(text)||'—'}</span>`; }
-function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.endsWith('Z')?'':'Z')).getTime())/1000;
-  if(s<90) return Math.round(s)+'s'; if(s<5400) return Math.round(s/60)+'m';
-  if(s<129600) return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
-// Quotes matter as much as angle brackets: these values land inside HTML
-// attributes (href, value), where a bare " or ' breaks out of the attribute.
-function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
-  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 // Remediation payloads carry LLM-authored URLs; only http(s) reaches href so a
 // javascript: link cannot execute in the console. Empty/null must return '' —
 // new URL('', base) resolves to the page itself, which rendered a phantom
@@ -171,15 +164,25 @@ function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
 function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
   try{ const p=new URL(s, window.location.href);
   return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
-function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
-  const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
-  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, 3200); }
 function clearForm(){ const f=document.getElementById('actionform'); if(f) f.innerHTML=''; }
 
 let ALL = [];
+// A poll that brought nothing new does not rebuild the tables (CFOP-95). Both
+// were replaced by innerHTML every 15 s regardless, which shifted rows under
+// the pointer and dropped focus mid-Tab for no reason. The signature is every
+// field a row paints from; the age column is refreshed in place instead.
+let LAST_SIG = null;
+function signature(){
+  return ALL.map(r=>{ const p=r.payload||{};
+    return [r.id,r.status,r.remediation_class,r.risk,r.confidence,r.host_id,p.provider,
+      String(p.recommendation||p.title||'').slice(0,160),r.pr_url].join('\u0001'); }).join('\n');
+}
 async function load(){
+  // A hidden tab has nobody looking; the visibilitychange hook below catches up.
+  if(document.hidden) return;
   try { ALL = (await (await fetch('/api/remediations')).json()).remediations || []; } catch(e){ return; }
-  paint();
+  const sig = signature();
+  if(sig !== LAST_SIG){ LAST_SIG = sig; paint(); } else refreshAges();
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
 function paint(){ tiles(ALL); render(filter ? ALL.filter(r=>r.status===filter) : ALL); }
@@ -230,7 +233,7 @@ function rowHtml(r){
     <td>${esc(r.host_id)}</td>
     <td>${llm}</td>
     <td class="rec">${esc(String(rec).slice(0,160))}</td>
-    <td class="muted">${age(r.created_at)}</td>
+    <td class="muted" data-age="${esc(r.created_at||'')}">${age(r.created_at)}</td>
     <td>${pr}</td></tr>`;
 }
 function render(rows){
@@ -245,6 +248,9 @@ function render(rows){
   refocusRow(focused);
 }
 
+// The row the drawer is showing, or null. Ported from investigations.html
+// (CFOP-95), where the comment on detail() records the race being hit live.
+let OPEN = null;
 // The element that opened the drawer, so closing can hand focus back (CFOP-94).
 // Held only while open: Escape with nothing open must not move focus.
 let OPENER = null;
@@ -252,6 +258,7 @@ function closeDetail(){
   const d = document.getElementById('detail');
   d.classList.remove('open'); d.inert = true;
   document.getElementById('backdrop').classList.remove('open');
+  OPEN = null;
   restoreFocus();
 }
 function restoreFocus(){
@@ -261,6 +268,8 @@ function restoreFocus(){
   if(t && t.focus) t.focus();
 }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDetail(); });
+// Tab stays inside the open drawer (CFOP-95).
+trapFocus(document.getElementById('detail'));
 
 async function detail(id){
   const d = document.getElementById('detail');
@@ -268,9 +277,15 @@ async function detail(id){
   // First open records where focus came from; a re-entry from inside the
   // drawer (an action ending in detail(id)) would record an element about to
   // be painted over.
-  if(OPENER===null) OPENER = document.activeElement || null;
+  if(OPEN===null) OPENER = document.activeElement || null;
   d.classList.add('open'); d.inert = false; document.getElementById('backdrop').classList.add('open');
-  let r; try { r = await (await fetch('/api/remediations/'+id)).json(); } catch(e){ d.innerHTML='<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button><span class="muted">error loading #'+id+'</span>'; focusDetailClose(); return; }
+  OPEN = id;
+  let r; try { r = await (await fetch('/api/remediations/'+id)).json(); } catch(e){
+    if(OPEN===id){ d.innerHTML='<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button><span class="muted">error loading #'+id+'</span>'; focusDetailClose(); } return; }
+  // Two clicks in quick succession race: a slow response for the row you left
+  // would otherwise paint over the row you are on. Last click wins, and a
+  // stale response is dropped.
+  if(OPEN!==id) return;
   const p = r.payload||{};
   d.innerHTML = `
     <button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>
@@ -477,11 +492,15 @@ async function viewInvestigation(id){
 }
 
 // Deep link from /investigations: /remediations#42 opens that row's drawer.
-function openFromHash(){ const m=location.hash.match(/^#(\d+)$/); if(m) detail(+m[1]); }
+function openFromHash(){ const m=location.hash.match(/^#(\d+)$/); if(m && +m[1]!==OPEN) detail(+m[1]); }
 window.addEventListener('hashchange', openFromHash);
 
 loadFlags();
-load().then(openFromHash); setInterval(()=>{ load(); loadFlags(); }, 15000);
+// The flags row is rebuilt too, so it gets the same hidden-tab skip as load().
+function poll(){ if(document.hidden) return; load(); loadFlags(); }
+load().then(openFromHash); setInterval(poll, 15000);
+// Catch up the moment the tab is looked at again rather than up to 15 s later.
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) poll(); });
 </script>
 </body>
 </html>

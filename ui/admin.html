@@ -365,9 +365,10 @@
 
 <div id="toasts"></div>
 
+<!-- esc/badge/color/toast — one copy, see ui/common.js. Not deferred: the
+     script below is not either. -->
+<script src="/common.js"></script>
 <script>
-function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g,
-  c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function parseTs(iso){
   if(!iso) return null;
   const raw = String(iso).trim();
@@ -382,12 +383,6 @@ function fmt(iso){
   const d = parseTs(iso);
   return d ? d.toLocaleString() : esc(iso);
 }
-function color(v){ return (getComputedStyle(document.documentElement).getPropertyValue(v)||'#888').trim(); }
-function badge(text, varname){ const c=color(varname);
-  return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(text)||'—'}</span>`; }
-function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
-  const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
-  setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, 3800); }
 function banner(msg, kind){
   const b=document.getElementById('banner');
   if(!msg){ b.hidden=true; b.textContent=''; return; }

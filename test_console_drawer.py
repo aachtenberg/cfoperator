@@ -236,7 +236,10 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
     }
     return Promise.resolve({json:()=>Promise.resolve({remediations:[]})});
   }};
-box.globalThis=box; vm.createContext(box); vm.runInContext(src,box);
+// The helpers the page calls (esc, badge, toast, trapFocus) live in ui/common.js
+// since CFOP-95; the browser loads it before the page script, so the harness does.
+const common=fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]),'common.js'),'utf8');
+box.globalThis=box; vm.createContext(box); vm.runInContext(common,box); vm.runInContext(src,box);
 
 const tick=()=>new Promise(r=>setImmediate(r));
 (async () => {
@@ -326,3 +329,77 @@ def test_a_slow_response_cannot_paint_over_the_row_you_moved_to(drawer_behaviour
     you would paste is the one you are not looking at."""
     assert drawer_behaviour["finalDrawerId"] == "1889"
     assert drawer_behaviour["finalHash"] == "#1889"
+
+
+# --------------------------------------------------------------------------
+# the stale-response guard, on every drawer page (CFOP-95)
+# --------------------------------------------------------------------------
+#
+# investigations.html carried the guard from CFOP-73; remediations.html did
+# not, and the same two quick clicks painted the row you left over the row
+# you moved to. Run both pages, and any drawer page added later, through the
+# same race.
+
+_RACE_STUB = r"""
+const fs=require('fs'), vm=require('vm'), path=require('path');
+const html=fs.readFileSync(process.argv[2],'utf8');
+const src=html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const common=fs.readFileSync(path.join(path.dirname(process.argv[2]),'common.js'),'utf8');
+const api=process.argv[3];
+
+const slow=new Set();
+function el(){return{className:'',innerHTML:'',textContent:'',value:'',hidden:false,
+  style:{},classList:{add(){},remove(){}},setAttribute(){},select(){},remove(){},
+  focus(){},scrollIntoView(){},appendChild(){},addEventListener(){}};}
+const els={};
+const loc={pathname:'/x',search:'',hash:'',href:'http://cfop/x'};
+const hist={replaceState(){}};
+const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
+  setTimeout,clearTimeout, setInterval:()=>0, clearInterval:()=>{},
+  location:loc, history:hist,
+  getComputedStyle:()=>({getPropertyValue:()=>'#888888'}),
+  document:{documentElement:{},body:{appendChild(){}},addEventListener(){},activeElement:null,
+    createElement:()=>el(), getElementById:id=>(els[id]=els[id]||el())},
+  navigator:{},
+  fetch:(url)=>{
+    if(url.indexOf(api+'/')===0){
+      const id=Number(url.split('/').pop());
+      const res={ok:true,json:()=>Promise.resolve({id:id,trigger:'t',outcome:'monitoring',
+        status:'queued',risk:'low',remediation_class:'gitops-patch',host_id:'h',payload:{},
+        attach_command:'cfassist attach '+id,findings:{}})};
+      return slow.has(id) ? new Promise(r=>setTimeout(()=>r(res),40)) : Promise.resolve(res);
+    }
+    return Promise.resolve({ok:true,json:()=>Promise.resolve({investigations:[],remediations:[]})});
+  }};
+box.window={location:loc,history:hist,addEventListener(){},removeEventListener(){},
+  CFOP:{me:()=>Promise.resolve({role:'admin'})}};
+box.globalThis=box; vm.createContext(box); vm.runInContext(common,box); vm.runInContext(src,box);
+
+const tick=()=>new Promise(r=>setImmediate(r));
+(async () => {
+  await tick(); await tick();
+  slow.add(2272);
+  const a=box.detail(2272), b=box.detail(1889);
+  await a; await b;
+  await new Promise(r=>setTimeout(r,80));
+  const drawn=els['detail'].innerHTML;
+  console.log(JSON.stringify({finalDrawerId:(drawn.match(/#(\d+)<\/h2>/)||[])[1]}));
+})().catch(e => { console.error(e); process.exit(1); });
+"""
+
+_RACE_API = {"investigations.html": "/api/investigations",
+             "remediations.html": "/api/remediations"}
+
+
+@pytest.mark.parametrize("page", DRAWER_PAGES)
+def test_a_slow_response_cannot_paint_over_the_newer_row_on_any_drawer_page(tmp_path, page):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    stub = tmp_path / "race.js"
+    stub.write_text(_RACE_STUB, encoding="utf-8")
+    out = subprocess.run([node, str(stub), str(UI / page), _RACE_API[page]],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, f"{page}: {out.stderr}"
+    assert json.loads(out.stdout)["finalDrawerId"] == "1889", (
+        f"{page}: the slow response for the row you left painted over the row you moved to")
