@@ -954,10 +954,11 @@ how long you have:
 - **TTL** counts down from the deadline the spawn wrote on the host. Amber
   under five minutes, red at zero: the session ends at the deadline whether
   or not you were typing.
-- **reattach** is another open — a fresh ticket, the same session. Until the
-  tmux piece lands, a dropped connection on tier `host`/`ssh` ends the
-  session process on the host, and reattach starts it again with the same
-  briefing; `container` sessions survive a drop.
+- **reattach** is another open — a fresh ticket, the same session. Where the
+  host has `tmux`, the session kept running through the drop and you rejoin
+  exactly where you left it; without `tmux`, tier `host`/`ssh` starts a fresh
+  session with the same briefing. `container` sessions survive a drop either
+  way.
 - **kill** (`POST /api/cockpit/<id>/close`) removes the session from the
   host now — the container, the directory, both reap units — and revokes
   every token minted for it. The janitor stays the backstop.
@@ -1009,9 +1010,12 @@ you which origin to add rather than letting the socket fail with a 4403.
 - **No remediate profile.** There is one cockpit identity and it is read-only.
   A write-capable cockpit waits until something actually needs one.
 - **Reattach after a drop is tmux's job, where the host has it.** Tiers 1
-  and 2 survive a drop (the pod and the container keep running); tier 3 does
-  not on its own. `tmux` is probed for and recorded; wrapping the runner in it
-  is the next CFOP-59 piece.
+  and 2 survive a drop (the pod and the container keep running). At tiers
+  `host`/`ssh`, the runner wraps the session in a tmux session named for the
+  investigation when the host has `tmux`, so a dropped connection leaves it
+  running and the next open — from the drawer or a laptop's `cfassist attach` —
+  rejoins the *same* TUI. A host without `tmux` ends the session on a drop, and
+  the drawer's reattach starts a fresh one with the same briefing.
 - **No deep links from a notification.** Copy-paste is the interface between
   Slack and your terminal, because only plain text survives three sinks
   identically. Inside the console the drawer is linkable and offers the line for

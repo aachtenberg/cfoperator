@@ -762,7 +762,9 @@ def test_the_janitor_reaps_session_directories_too():
                                 f"/tmp/cfop-cockpit-22 {now + 999}\n"))
     reaped = spawner(ssh).reap(["raspberrypi5"], now=now)
     assert [r["name"] for r in reaped] == ["cfop-cockpit-11"]
-    assert "rm -rf /tmp/cfop-cockpit-11" in ssh.commands
+    # The directory removal now rides with a tmux kill (CFOP-59), so match the
+    # substring rather than a whole command.
+    assert any("rm -rf /tmp/cfop-cockpit-11" in c for c in ssh.commands)
     assert not [c for c in ssh.commands if "rm -rf /tmp/cfop-cockpit-22" in c]
 
 
@@ -1559,3 +1561,57 @@ def test_the_deadline_is_still_enforced():
     s = HostCockpitSpawner(HostLadderConfig())
     runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 900, tier=TIER_HOST)
     assert "timeout --foreground 900 " in runner
+
+
+# --------------------------------------------------------------------------
+# reattach: tmux where the host has it (CFOP-59)
+# --------------------------------------------------------------------------
+
+def test_the_runner_wraps_the_session_in_tmux_when_the_host_has_it():
+    """A dropped connection must not end the session: the runner's first act is
+    to create-or-attach a tmux session named for the investigation, so a second
+    ssh rejoins the same TUI."""
+    ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes",
+                                            tmux="yes"), "")))
+    _ssh, _result = host_spawn(ssh=ssh)
+    runner = [s for s in ssh.stdins if s and b"#!/bin/sh" in s][0].decode().split("----")[0]
+
+    assert "tmux new-session -A -s cfop-cockpit-1889" in runner, (
+        "the runner does not create-or-attach a named tmux session")
+    assert "CFOP_COCKPIT_TMUX=1" in runner, "nothing stops the created session recursing into tmux"
+    assert "command -v tmux" in runner, "a host that lost tmux since the probe should fall through"
+    # The session still runs under the deadline, inside tmux.
+    assert "timeout --foreground 14400" in runner
+    assert "attach 1889" in runner
+
+
+def test_the_runner_has_no_tmux_when_the_host_lacks_it():
+    """Today's behaviour, unchanged, for a host without tmux: a drop ends the
+    session and the drawer says so."""
+    ssh, _result = host_spawn()  # probe has tmux="no"
+    runner = [s for s in ssh.stdins if s and b"#!/bin/sh" in s][0].decode().split("----")[0]
+    assert "tmux" not in runner
+
+
+def test_tier_ssh_with_tmux_still_wraps():
+    """Tier 3b has no self-destruct timer, so tmux reattach is exactly where a
+    long session most wants to survive a blip."""
+    ssh = FakeSSH(("uname", (0, probe_reply(tmux="yes"), "")))
+    _ssh, _result = host_spawn(ssh=ssh, tier=TIER_SSH)
+    runner = [s for s in ssh.stdins if s and b"#!/bin/sh" in s][0].decode().split("----")[0]
+    assert "tmux new-session -A -s cfop-cockpit-1889" in runner
+
+
+def test_destroy_kills_the_tmux_session_before_removing_the_directory():
+    """With reattach the session process lives inside tmux; removing only the
+    directory would leave a live tmux session holding a cockpit whose files are
+    gone."""
+    ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes",
+                                            tmux="yes"), "")),
+                  ("for d in /tmp/", (0, f"/tmp/cfop-cockpit-1889 {int(time.time()) + 1800}\n", "")))
+    spawner(ssh).destroy(1889, host="raspberrypi5")
+    combined = [c for c in ssh.commands if "kill-session" in c]
+    assert combined, "destroy did not kill the tmux session"
+    assert "tmux kill-session -t cfop-cockpit-1889" in combined[0]
+    assert "rm -rf /tmp/cfop-cockpit-1889" in combined[0], (
+        "the kill and the removal must be one round trip, in that order")
