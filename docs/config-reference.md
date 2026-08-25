@@ -491,6 +491,16 @@ cockpit:
   # (`pod`) is refused by name: that needs pods/attach, which nothing here
   # holds, and granting it is CFOP-59 Phase B.
   #
+  # The console gets its token from `POST /api/cockpit/<id>/open` (admin):
+  # that spawns the session if there is none, and mints a *ticket* — an
+  # `investigate` token labelled `cockpit-bridge-<id>` that lives 120 seconds
+  # and is revoked the moment the bridge verifies it. One handshake per
+  # ticket; a reconnect is another open. The session's own token
+  # (`cockpit-inv-<id>`) never leaves the host. `POST /api/cockpit/<id>/close`
+  # removes the session now and revokes both. Neither endpoint is reachable
+  # unless `bridge_enabled` is on and this console's origin is listed above —
+  # they refuse first, with the attach line to fall back to.
+  #
   # :8083 is guarded at the host level rather than by a NetworkPolicy (the pod
   # is hostNetwork, so netpol is unenforceable). This port needs the same
   # treatment — see DEPLOYMENT.md.

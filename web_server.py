@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import uuid
 from typing import Dict, Any, Optional
@@ -62,6 +63,24 @@ def _positive_int(value: Any) -> int:
         return max(0, int(value))
     except (TypeError, ValueError):
         return 0
+
+
+#: How long a browser has to present its bridge ticket (CFOP-59). The ticket is
+#: minted by ``/api/cockpit/<id>/open``, sent once in the bridge's auth frame,
+#: and revoked the moment it verifies — so this is the lifetime of a handshake,
+#: not of a session. Generous enough for a slow LAN, short enough that a
+#: credential which leaked from a page is dead before anyone could use it.
+BRIDGE_TICKET_TTL_SECONDS = 120
+
+#: Token labels the cockpit mints. The session token lives on the host and dies
+#: with the session; the ticket exists to get a browser through one handshake.
+COCKPIT_SESSION_TOKEN_LABEL = "cockpit-inv-{investigation_id}"
+COCKPIT_BRIDGE_TICKET_LABEL = "cockpit-bridge-{investigation_id}"
+#: A ticket label is exactly this and nothing else. Matched strictly so a
+#: token an admin happened to label "cockpit-bridge-note" is not silently
+#: spent on its first bridge use, and so the prefix cannot be widened by a
+#: later label sharing it.
+_BRIDGE_TICKET_LABEL_RE = re.compile(r"cockpit-bridge-\d+\Z")
 
 
 def json_object() -> Dict[str, Any]:
@@ -1358,6 +1377,117 @@ class WebServer:
             result['tier_note'] = tier_note
             return jsonify(result), 200 if result.get('status') == 'existing' else 201
 
+        # ---- the browser cockpit (CFOP-59) --------------------------------
+        # "Open cockpit" from the investigation drawer. The bridge (CFOP-75)
+        # carries the bytes; this hands the browser what it needs to reach it:
+        # a live session and a credential. The console holds a cookie, the
+        # bridge takes an `investigate` bearer in its auth frame, and nothing
+        # else turns one into the other.
+        #
+        # It *is* spawn, plus a ticket, so it is admin-gated for spawn's
+        # reasons. And it refuses before spawning anything when the terminal
+        # could not be opened afterwards — a session created for a bridge that
+        # is off, or for an origin the bridge would reject, is a workload and a
+        # credential for nothing. Each refusal carries the attach line, so the
+        # drawer can fall back to the copy button rather than to an error.
+        @self.app.route('/api/cockpit/<int:investigation_id>/open', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def open_cockpit(investigation_id):
+            body = json_object()
+            fallback = ATTACH_COMMAND.format(investigation_id=investigation_id)
+
+            def refuse(code: str, reason: str, status: int = 409):
+                return jsonify({'error': reason, 'code': code,
+                                'attach_command': fallback}), status
+
+            bridge = self._bridge_config()
+            if not bridge.enabled:
+                return refuse('bridge_disabled',
+                              'the cockpit bridge is not enabled on this agent '
+                              '(cockpit.bridge_enabled) — attach from a terminal instead')
+            origin = self._console_origin()
+            if origin not in bridge.allowed_origins:
+                return refuse('origin',
+                              f"this console's origin ({origin}) is not in "
+                              "cockpit.bridge_origins, so the bridge would refuse the "
+                              "terminal; add it there")
+
+            try:
+                inv = self.operator.kb.get_investigation(investigation_id)
+            except Exception as e:
+                logger.error(f"cockpit open: investigation lookup failed: {e}")
+                return jsonify({'error': str(e)}), 500
+            if not inv:
+                return jsonify({'error': 'not found'}), 404
+
+            ttl = clamp_ttl(body.get('ttl_seconds'),
+                            self._cockpit_spawner().config.ttl_seconds)
+            try:
+                host, provenance = self._resolve_cockpit_host(
+                    investigation_id, inv, str(body.get('host') or ''))
+                tier, tier_note, _node = self._choose_cockpit_tier(
+                    host, str(body.get('tier') or TIER_AUTO))
+                if tier == TIER_POD:
+                    return refuse('tier',
+                                  'this investigation is in the cluster; the browser '
+                                  'terminal serves the host tiers only (Phase B needs '
+                                  'pods/attach) — use cfassist attach --spawn')
+                result = self._cockpit_ladder().spawn(
+                    investigation_id, host=host, tier=tier, ttl_seconds=ttl)
+                ticket = self._mint_bridge_ticket(investigation_id, tier=tier, host=host)
+            except CockpitSpawnError as e:
+                logger.warning(f"cockpit open refused for #{investigation_id}: {e}")
+                return jsonify({'error': str(e), 'attach_command': fallback}), e.status
+            except Exception as e:
+                logger.error(f"cockpit open failed for #{investigation_id}: {e}",
+                             exc_info=True)
+                return jsonify({'error': str(e)}), 500
+
+            result['host_provenance'] = provenance
+            result['tier_note'] = tier_note
+            result['bridge'] = {
+                'url': self._bridge_url(bridge, investigation_id),
+                'origin': origin,
+                'ticket': ticket['secret'],
+                'ticket_ttl_seconds': BRIDGE_TICKET_TTL_SECONDS,
+                'scope': 'investigate',
+            }
+            return jsonify(result), 200 if result.get('status') == 'existing' else 201
+
+        # Kill. The janitor removes what has expired; an operator closing a
+        # session wants the host clean now and the credential dead now, not
+        # at the next sweep. Same removals the sweep makes, applied to one
+        # investigation regardless of its deadline, then every token minted
+        # for it is revoked.
+        @self.app.route('/api/cockpit/<int:investigation_id>/close', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def close_cockpit(investigation_id):
+            body = json_object()
+            try:
+                inv = self.operator.kb.get_investigation(investigation_id)
+            except Exception as e:
+                logger.error(f"cockpit close: investigation lookup failed: {e}")
+                return jsonify({'error': str(e)}), 500
+            if not inv:
+                return jsonify({'error': 'not found'}), 404
+            try:
+                host, _provenance = self._resolve_cockpit_host(
+                    investigation_id, inv, str(body.get('host') or ''))
+                removed = self._cockpit_ladder().destroy(investigation_id, host=host)
+            except CockpitSpawnError as e:
+                logger.warning(f"cockpit close refused for #{investigation_id}: {e}")
+                return jsonify({'error': str(e)}), e.status
+            except Exception as e:
+                logger.error(f"cockpit close failed for #{investigation_id}: {e}",
+                             exc_info=True)
+                return jsonify({'error': str(e)}), 500
+            revoked = self._revoke_cockpit_tokens(investigation_id)
+            self.record_bridge_event(event='killed', actor=_actor(),
+                                     investigation_id=investigation_id, host=host,
+                                     session_name=(removed[0]['name'] if removed else None))
+            return jsonify({'status': 'closed', 'host': host, 'removed': removed,
+                            'tokens_revoked': revoked}), 200
+
         # ---- cockpit write-back (CFOP-37) --------------------------------
         # What a human and an agent worked out in a cockpit, coming back from
         # the session that is about to be destroyed. "Compute disposable, state
@@ -1838,7 +1968,115 @@ class WebServer:
         terminal on a production host". Refusing here is the safe direction.
         """
         store = getattr(self, 'auth_store', None)
-        return store.verify_token(presented) if store is not None else None
+        if store is None:
+            return None
+        identity = store.verify_token(presented)
+        # A bridge ticket is spent by being verified. It was minted for this
+        # one handshake (see /api/cockpit/<id>/open), so once the bridge has
+        # its answer the credential has no further purpose — and a page that
+        # somehow kept it holds nothing. The session token is not a ticket
+        # and is left alone: it is what the session on the host authenticates
+        # with, for as long as the session lives.
+        if (identity is not None and identity.token_id
+                and _BRIDGE_TICKET_LABEL_RE.match(str(identity.label or ''))):
+            try:
+                row = store.revoke_token(identity.token_id, actor=identity.label)
+                store.record(EVENT_TOKEN_REVOKED, actor=identity.label,
+                             target=row['token_prefix'], source_ip=None,
+                             token_id=row['id'], label=row['label'],
+                             cockpit=True, bridge=True, spent=True)
+            except Exception as e:
+                logger.warning(f"cockpit bridge ticket could not be spent: {e}")
+        return identity
+
+    # ---- the browser cockpit's console half (CFOP-59) --------------------
+
+    def _bridge_config(self):
+        """The bridge's own reading of the ``cockpit:`` block, so the console
+        refuses on exactly the facts the listener would. Imported here rather
+        than at module load: cockpit_bridge is optional in the image."""
+        from cockpit_bridge import build_bridge_config
+        return build_bridge_config(getattr(self.operator, 'config', None))
+
+    @staticmethod
+    def _console_origin() -> str:
+        """Where this request's page lives, in the bridge's normalised form.
+
+        The Origin header when the browser sent one; otherwise the scheme and
+        host the page was served from, which is the same value for a
+        same-origin fetch. Checked against ``bridge_origins`` *here* so the
+        operator reads "add http://x:8083 to bridge_origins" from the console,
+        instead of a 4403 from a websocket that never says which origin it saw.
+        """
+        from cockpit_bridge import normalize_origin
+        return normalize_origin(request.headers.get('Origin')
+                                or f"{request.scheme}://{request.host}")
+
+    @staticmethod
+    def _bridge_url(bridge, investigation_id: int) -> str:
+        """The websocket the page should open.
+
+        Computed here rather than in the page: the agent is hostNetwork, so
+        the bridge answers on the console's own host at its own port, and the
+        console knows both. ``ws`` because the console is served over plain
+        HTTP on the LAN; ``wss`` follows an https console.
+        """
+        host = request.host
+        if host.startswith('['):
+            host = host.split(']', 1)[0] + ']'
+        else:
+            host = host.rsplit(':', 1)[0]
+        scheme = 'wss' if request.scheme == 'https' else 'ws'
+        return f"{scheme}://{host}:{bridge.port}/cockpit/{int(investigation_id)}"
+
+    def _mint_bridge_ticket(self, investigation_id: int, *, tier: str = "",
+                            host: str = "") -> Dict[str, Any]:
+        """A credential for one handshake, through the same mint as every
+        other token — one more caller of it, not a second way to create
+        credentials. ``investigate`` scope: what the bridge requires, and
+        what `cfassist attach` mints, so a browser terminal is no more reach
+        than a terminal one."""
+        store = getattr(self, 'auth_store', None)
+        if store is None:
+            raise CockpitSpawnError(
+                'the token store is unavailable, so no bridge ticket can be minted', 503)
+        label = COCKPIT_BRIDGE_TICKET_LABEL.format(investigation_id=investigation_id)
+        try:
+            row, secret = store.create_token(
+                label, ['investigate'],
+                created_by=_caller_user_id(),
+                creator_role=_effective_role() or ROLE_MEMBER,
+                ttl_seconds=BRIDGE_TICKET_TTL_SECONDS,
+            )
+        except AuthError as e:
+            raise CockpitSpawnError(str(e), 400)
+        except Exception as e:
+            logger.error(f"bridge ticket mint failed: {e}", exc_info=True)
+            raise CockpitSpawnError('authentication backend unavailable', 503)
+        store.record(EVENT_TOKEN_CREATED, actor=_actor(), target=row['token_prefix'],
+                     source_ip=request.remote_addr, token_id=row['id'],
+                     label=row['label'], scopes=row['scopes'],
+                     investigation_id=investigation_id,
+                     ttl_seconds=BRIDGE_TICKET_TTL_SECONDS,
+                     cockpit=True, bridge=True, tier=tier, host=host)
+        return {'id': row['id'], 'prefix': row['token_prefix'], 'secret': secret}
+
+    def _revoke_cockpit_tokens(self, investigation_id: int) -> int:
+        """Every active token minted for this investigation's cockpit — the
+        session token on the host and any ticket not yet spent. Returns how
+        many were revoked. "The token dead" is the half of a kill the host
+        cannot do for itself."""
+        store = getattr(self, 'auth_store', None)
+        if store is None:
+            return 0
+        labels = {COCKPIT_SESSION_TOKEN_LABEL.format(investigation_id=investigation_id),
+                  COCKPIT_BRIDGE_TICKET_LABEL.format(investigation_id=investigation_id)}
+        revoked = 0
+        for token in store.list_tokens():
+            if token.get('label') in labels and token.get('status') == 'active':
+                self._revoke_cockpit_token(int(token['id']))
+                revoked += 1
+        return revoked
 
     def record_bridge_event(self, *, event: str, actor: str, investigation_id=None,
                             tier=None, host=None, session_name=None) -> None:
@@ -1893,7 +2131,7 @@ class WebServer:
                 'token can be minted', 503)
         try:
             row, secret = store.create_token(
-                f"cockpit-inv-{investigation_id}",
+                COCKPIT_SESSION_TOKEN_LABEL.format(investigation_id=investigation_id),
                 ['investigate'],
                 created_by=_caller_user_id(),
                 creator_role=_effective_role() or ROLE_MEMBER,

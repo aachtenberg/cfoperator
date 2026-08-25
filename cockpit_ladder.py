@@ -555,6 +555,7 @@ class HostCockpitSpawner:
         self._mint = token_minter
         self._revoke = token_revoker
         self._probes: Dict[str, HostCapabilities] = {}
+        #: Per-host session deadlines, from the last listing (see _live_sessions).
         self._binaries: Dict[str, bytes] = {}
         self._identity_staged = False
 
@@ -649,12 +650,13 @@ class HostCockpitSpawner:
         cockpit_llm_url(_as_cockpit_config(self._config), tier)
 
         caps = self.probe(host)
-        live = self._live_sessions(host, caps)
+        live, expiries = self._live_sessions(host, caps)
         # Dedupe first, cap second — an operator re-running their own command
         # must land back in their cockpit rather than be told the host is busy
         # with a session that is theirs.
         if name in live:
-            return self._existing_session(host, investigation_id, live[name])
+            return self._existing_session(host, investigation_id, live[name],
+                                          expires_at=expiries.get(name))
         if len(live) >= self._config.max_concurrent:
             raise CockpitSpawnError(
                 f"cockpit concurrency cap reached on {host} "
@@ -854,8 +856,10 @@ class HostCockpitSpawner:
 
     # ---- dedupe ------------------------------------------------------------
 
-    def _live_sessions(self, host: str, caps: HostCapabilities) -> Dict[str, str]:
-        """Cockpit sessions currently alive on ``host``: ``{name: kind}``.
+    def _live_sessions(self, host: str, caps: HostCapabilities
+                       ) -> Tuple[Dict[str, str], Dict[str, int]]:
+        """Cockpit sessions currently alive on ``host``, and their deadlines:
+        ``({name: kind}, {name: expires_at})``.
 
         One listing answers both questions a spawn has to ask — "is mine
         already here" (dedupe) and "how many are here" (the cap). Asking them
@@ -868,16 +872,19 @@ class HostCockpitSpawner:
         cockpits are on this host" has one answer.
         """
         live: Dict[str, str] = {}
+        expiries: Dict[str, int] = {}
 
         runtime = caps.container_runtime
         if runtime:
             argv = [runtime, "ps", "--filter", f"label={JOB_ROLE_LABEL}={JOB_ROLE_VALUE}",
-                    "--format", "{{.Names}}"]
+                    "--format", "{{.Names}} {{.Label \"" + EXPIRES_LABEL + "\"}}"]
             code, out, _err = self._ssh_host(host, " ".join(shlex.quote(a) for a in argv))
             if code == 0:
-                for name in out.split():
+                for name, expires in _parse_expiry_listing(out):
                     if name.startswith(SESSION_PREFIX):
                         live[name] = TIER_CONTAINER
+                        if expires:
+                            expiries[name] = int(expires)
 
         code, out, _err = self._ssh_host(host, _SESSION_LISTING)
         if code == 0:
@@ -889,10 +896,18 @@ class HostCockpitSpawner:
                 # out of a host until the next sweep.
                 if name.startswith(SESSION_PREFIX) and (not expires or expires > now):
                     live.setdefault(name, TIER_HOST)
-        return live
+                    if expires:
+                        expiries.setdefault(name, int(expires))
+        # Kept beside the listing rather than in its return value: three
+        # callers want "what is here" and only the existing-session report
+        # wants "until when". The drawer's countdown (CFOP-59) is that report.
+        # Returned beside the listing rather than stashed on the spawner:
+        # the countdown the drawer reads (CFOP-59) is derived from the same
+        # call that found the session, so the two cannot drift.
+        return live, expiries
 
-    def _existing_session(self, host: str, investigation_id: int, kind: str
-                          ) -> Dict[str, Any]:
+    def _existing_session(self, host: str, investigation_id: int, kind: str,
+                          *, expires_at: Optional[int] = None) -> Dict[str, Any]:
         """Report the cockpit already there, rather than starting a second one.
 
         Same rule as tier 1's dedupe, and the same reason: re-running the
@@ -905,7 +920,7 @@ class HostCockpitSpawner:
             attach_argv = self._attach_argv(host, [runtime, "attach", name])
         else:
             attach_argv = self._attach_argv(host, [f"/tmp/{name}/run"], tty=True)
-        return {
+        report = {
             "status": "existing",
             "tier": kind,
             "host": host,
@@ -915,6 +930,12 @@ class HostCockpitSpawner:
             "attach_command": " ".join(shlex.quote(a) for a in attach_argv),
             "placement": {"node": host, "note": "existing cockpit for this investigation"},
         }
+        # The deadline the spawn wrote, passed in by the caller that listed
+        # the session — so a console reattaching to a session it did not start
+        # still knows how long it has (CFOP-59).
+        if expires_at:
+            report["expires_at"] = int(expires_at)
+        return report
 
     def live_session(self, investigation_id: int, *, host: str
                      ) -> Optional[Dict[str, Any]]:
@@ -939,10 +960,11 @@ class HostCockpitSpawner:
             raise CockpitSpawnError(
                 f"{host} could not be probed ({caps.error})", 502)
         name = session_name(investigation_id)
-        live = self._live_sessions(host, caps)
+        live, expiries = self._live_sessions(host, caps)
         if name not in live:
             return None
-        return self._existing_session(host, investigation_id, live[name])
+        return self._existing_session(host, investigation_id, live[name],
+                                      expires_at=expiries.get(name))
 
     # ---- janitor ------------------------------------------------------------
 
@@ -992,8 +1014,7 @@ class HostCockpitSpawner:
                 for name, expires in _parse_expiry_listing(out):
                     if expires and expires > now:
                         continue
-                    rm = [runtime, "rm", "--force", name]
-                    self._ssh_host(host, " ".join(shlex.quote(a) for a in rm))
+                    self._remove_container(host, runtime, name)
                     reaped.append({"host": host, "name": name, "kind": "container"})
 
         code, out, _err = self._ssh_host(host, _SESSION_LISTING)
@@ -1004,16 +1025,58 @@ class HostCockpitSpawner:
                 name = os.path.basename(directory.rstrip("/"))
                 if not name.startswith(SESSION_PREFIX):
                     continue
-                self._ssh_host(host, f"rm -rf {shlex.quote(directory)}")
-                # A unit whose timer already fired is gone (--collect); one that
-                # failed is not, and would block the next spawn of the same
-                # name. Both flavours are tried — a session armed through sudo
-                # leaves a *system* unit that `systemctl --user` cannot see, so
-                # cancelling only the user one leaves exactly the orphan this
-                # sweep exists to remove. A missing unit is not an error.
-                self._ssh_host(host, cancel_reap_unit_command(name, user=True, sudo=True))
+                self._remove_session_dir(host, name, directory)
                 reaped.append({"host": host, "name": name, "kind": "session"})
         return reaped
+
+    def _remove_container(self, host: str, runtime: str, name: str) -> None:
+        rm = [runtime, "rm", "--force", name]
+        self._ssh_host(host, " ".join(shlex.quote(a) for a in rm))
+
+    def _remove_session_dir(self, host: str, name: str, directory: str) -> None:
+        self._ssh_host(host, f"rm -rf {shlex.quote(directory)}")
+        # A unit whose timer already fired is gone (--collect); one that
+        # failed is not, and would block the next spawn of the same name. Both
+        # flavours are tried — a session armed through sudo leaves a *system*
+        # unit that `systemctl --user` cannot see, so cancelling only the user
+        # one leaves exactly the orphan this sweep exists to remove. A missing
+        # unit is not an error.
+        self._ssh_host(host, cancel_reap_unit_command(name, user=True, sudo=True))
+
+    def destroy(self, investigation_id: int, *, host: str) -> List[Dict[str, str]]:
+        """Remove an investigation's cockpit from ``host`` now, expired or not.
+
+        The kill half of the console drawer (CFOP-59). The janitor removes what
+        has *expired*; an operator closing a session wants the host clean at
+        that moment, not at the next sweep. Same removals as the sweep — the
+        container, the session directory, both flavours of reap unit — applied
+        to one name regardless of its deadline, so "kill" and "reap" cannot
+        disagree about what clean means.
+
+        Returns what was live before the removal, in the janitor's shape. Both
+        removals run even when nothing was listed as live: an expired
+        directory is exactly what a kill should not leave for the sweep.
+        """
+        if not host or host not in self._config.hosts:
+            raise CockpitSpawnError(
+                f"{host!r} is not in infrastructure.hosts" if host
+                else "a cockpit lives on a host, and none was given", 400)
+        caps = self.probe(host)
+        if caps.error:
+            raise CockpitSpawnError(f"{host} could not be probed ({caps.error})", 502)
+        name = session_name(investigation_id)
+        live, _expiries = self._live_sessions(host, caps)
+        removed: List[Dict[str, str]] = []
+        if name in live:
+            removed.append({"host": host, "name": name,
+                            "kind": "container" if live[name] == TIER_CONTAINER else "session"})
+        if caps.container_runtime:
+            self._remove_container(host, caps.container_runtime, name)
+        self._remove_session_dir(host, name, f"/tmp/{name}")
+        self.invalidate(host)
+        if removed:
+            logger.info("Destroyed cockpit %s on %s", name, host)
+        return removed
 
     # ---- plumbing -----------------------------------------------------------
 
