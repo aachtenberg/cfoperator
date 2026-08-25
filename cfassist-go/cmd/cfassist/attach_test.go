@@ -31,6 +31,7 @@ func newTestRoot() *cobra.Command {
 	root.PersistentFlags().StringVar(&flagURL, "url", "", "")
 	root.PersistentFlags().StringVar(&flagProvider, "provider", "", "")
 	root.AddCommand(newAttachCmd())
+	root.AddCommand(newInitCmd())
 	return root
 }
 

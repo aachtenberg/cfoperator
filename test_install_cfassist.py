@@ -40,6 +40,32 @@ ARCH_CASES = [
 ]
 
 
+STUB_BINARY = b"""#!/bin/sh
+# The installer probes `help init` before calling `init`. A stub that exits 0
+# for every invocation would make that probe a lie, and `init` would not write.
+case "$1" in
+help)
+	if [ "$2" = "init" ]; then exit 0; fi
+	exit 1
+	;;
+init)
+	mkdir -p "$HOME/.cfassist"
+	if [ -f "$HOME/.cfassist/config.yaml" ]; then
+		echo "Already exists: $HOME/.cfassist/config.yaml"
+	else
+		echo "# cfassist configuration" > "$HOME/.cfassist/config.yaml"
+		echo "Wrote $HOME/.cfassist/config.yaml"
+	fi
+	exit 0
+	;;
+*)
+	echo 'cfassist 9.9.9'
+	exit 0
+	;;
+esac
+"""
+
+
 def run_script(*args, env_extra=None, expect_ok=True):
     env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": "/tmp"}
     env.update(env_extra or {})
@@ -230,7 +256,7 @@ def stub_release(tmp_path):
     server.shutdown()
 
 
-def _stub_binary(release_dir, asset, body=b"#!/bin/sh\necho 'cfassist 9.9.9'\n"):
+def _stub_binary(release_dir, asset, body=STUB_BINARY):
     (release_dir / asset).write_bytes(body)
     digest = subprocess.run(
         ["sha256sum", str(release_dir / asset)], capture_output=True, text=True, check=True
@@ -279,12 +305,60 @@ def test_a_good_download_installs_and_reports_its_version(stub_release, tmp_path
     (release_dir / "checksums.txt").write_text(f"{digest}  {asset}\n")
 
     bindir = tmp_path / "bin"
+    home = tmp_path / "home"
+    home.mkdir()
     proc = run_script(env_extra={
         "CFASSIST_OS": "linux", "CFASSIST_ARCH": "amd64",
         "CFASSIST_BASE_URL": base_url, "CFASSIST_INSTALL_DIR": str(bindir),
+        "HOME": str(home),
     })
 
     installed = bindir / "cfassist"
     assert installed.is_file() and installed.stat().st_mode & 0o111
     assert "9.9.9" in proc.stdout, proc.stdout
     assert "cfassist attach" in proc.stdout, "the next steps are part of the install"
+    assert (home / ".cfassist" / "config.yaml").is_file(), (
+        "install must write ~/.cfassist/config.yaml; --version does not"
+    )
+
+
+def test_a_deleted_config_is_rewritten_on_install(stub_release, tmp_path):
+    """The reported path: rm the config, rerun the one-liner, find no file.
+
+    `--version` (the installer's only previous invocation) returns before the
+    binary writes config.yaml. `init` is that write; without it, reinstall
+    is a binary and nothing to edit."""
+    release_dir, base_url = stub_release
+    digest = _stub_binary(release_dir, "cfassist-linux-amd64")
+    (release_dir / "checksums.txt").write_text(f"{digest}  cfassist-linux-amd64\n")
+
+    bindir = tmp_path / "bin"
+    home = tmp_path / "home"
+    cfg = home / ".cfassist" / "config.yaml"
+    cfg.parent.mkdir(parents=True)
+    cfg.write_text("llm:\n  model: old\n")
+
+    env = {
+        "CFASSIST_OS": "linux", "CFASSIST_ARCH": "amd64",
+        "CFASSIST_BASE_URL": base_url, "CFASSIST_INSTALL_DIR": str(bindir),
+        "HOME": str(home),
+    }
+    run_script(env_extra=env)
+    assert "old" in cfg.read_text(), "install must not overwrite a present config"
+
+    cfg.unlink()
+    proc = run_script(env_extra=env)
+    assert cfg.is_file(), proc.stdout + proc.stderr
+    assert "old" not in cfg.read_text()
+    assert "Wrote" in proc.stdout, proc.stdout
+
+
+def test_the_installer_probes_help_before_calling_init():
+    """`cfassist init` on a binary from before this verb is a one-shot LLM
+    prompt, not a scaffold. The probe is load-bearing."""
+    live = "\n".join(live_lines(SCRIPT.read_text()))
+    assert "help init" in live, (
+        "probe `help init` before calling init, or a CFASSIST_VERSION pin of "
+        "an older binary will start a session named 'init'"
+    )
+    assert "cfassist\" init" in live or 'cfassist init' in live

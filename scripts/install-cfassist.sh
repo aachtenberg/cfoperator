@@ -153,9 +153,21 @@ if [ "$installed" = 0 ]; then
 fi
 
 echo "Installed $("$INSTALL_DIR/cfassist" --version) to ${INSTALL_DIR}/cfassist"
+
+# Recreate a missing ~/.cfassist/config.yaml. `--version` (above) returns
+# before the binary writes that file, which is why deleting it and rerunning
+# this script used to leave a binary and nothing to edit.
+#
+# Probe with `help init` first. `init` is a subcommand of this release; on a
+# pinned older binary `cfassist init` is a one-shot prompt to the LLM, not a
+# scaffold. A failed write must not undo a successful binary install.
+if "$INSTALL_DIR/cfassist" help init >/dev/null 2>&1; then
+	"$INSTALL_DIR/cfassist" init || echo "install-cfassist: could not write ~/.cfassist/config.yaml; run cfassist once to create it" >&2
+fi
+
 echo
 echo "Next:"
-echo "  cfassist                    # interactive session (writes ~/.cfassist/config.yaml on first run)"
+echo "  cfassist                    # interactive session"
 echo "  cfassist attach <id>        # brief a session on a CFOperator investigation"
 echo
 echo "Set your LLM in ~/.cfassist/config.yaml. If CFOperator runs here, the session"

@@ -301,10 +301,11 @@ do. Built for `linux-amd64`, `linux-arm64`, `linux-arm`, `darwin-amd64`,
 
 ### Configure
 
-On first run, cfassist writes `~/.cfassist/config.yaml` with every setting
-stubbed — live values where a default is safe, commented where a human has
-to fill something in (API keys, the CFOperator agent URL). Edit that file
-rather than starting from a blank one.
+On first run — and again if you delete the file and rerun the installer —
+cfassist writes `~/.cfassist/config.yaml` with every setting stubbed — live
+values where a default is safe, commented where a human has to fill something
+in (API keys, the CFOperator agent URL). Edit that file rather than starting
+from a blank one. An existing file is never overwritten.
 
 ```yaml
 llm:
