@@ -1,6 +1,7 @@
 ---
 name: investigate-host
 description: "Run a systematic investigation of a host's health, resource usage, services, and connectivity. Use this when a host is slow, unreachable, low on resources, or behaving unexpectedly. Works for bare metal servers, VMs, and Raspberry Pis — not just Docker hosts. Keywords: host, server, node, investigate, troubleshoot, disk, memory, cpu, load, ssh, systemd, reboot."
+argument-hint: "<hostname>"
 ---
 
 # Investigate Host

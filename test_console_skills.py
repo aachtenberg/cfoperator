@@ -1,0 +1,223 @@
+"""Guards for the console chat's command lists (CFOP-93).
+
+The chat page has a sidebar of skills and a slash-autocomplete menu. Each
+used to carry its own hand-written list; they disagreed with each other and
+neither knew about two of the agent's nine skills. Now both render from one
+array, and that array comes from the agent (``GET /api/skills``) — the page
+holds no list of its own.
+
+These are about wiring, like ``test_console_nav.py``: that the sidebar markup
+is empty, that no command literal has crept back into the page, that both
+renderers read the same array and that the array is fetched rather than
+declared. The node run proves the end-to-end claim — a skill the endpoint
+reports and nobody hand-listed appears in both places — and the last test
+runs the route on the real ``WebServer``.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import threading
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).parent
+INDEX = ROOT / "ui" / "index.html"
+
+
+def html():
+    return INDEX.read_text(encoding="utf-8")
+
+
+def function_source(js, name):
+    """The full text of ``function name(...) {...}`` by brace matching."""
+    m = re.search(r"(?:async\s+)?function\s+" + re.escape(name) + r"\s*\(", js)
+    assert m, f"index.html has no function {name}"
+    start = js.index("{", m.end())
+    depth = 0
+    for i in range(start, len(js)):
+        if js[i] == "{":
+            depth += 1
+        elif js[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return js[m.start():i + 1]
+    raise AssertionError(f"unbalanced braces in {name}")
+
+
+# --------------------------------------------------------------------------
+# source-level: one array, from the agent, feeding both renderers
+# --------------------------------------------------------------------------
+
+def test_the_sidebar_markup_carries_no_entries():
+    """A hand-written ``<li>`` here is the drift coming back."""
+    m = re.search(r'<ul class="skill-list" id="skill-list">(.*?)</ul>', html(), re.S)
+    assert m, "the sidebar skill list is gone"
+    assert "<li" not in m.group(1), "the sidebar has hand-written entries again"
+
+
+def test_the_page_declares_no_command_list_of_its_own():
+    page = html()
+    assert not re.search(r"SLASH_COMMANDS\s*=\s*\[\s*\{", page), \
+        "SLASH_COMMANDS is initialised with literal entries"
+    assert 'onclick="insertSkill(' not in page, "markup wires its own skill entries"
+    assert not re.search(r"\{\s*cmd:\s*'/", page), "a literal command row is back in the page"
+
+
+def test_both_renderers_read_the_same_array():
+    page = html()
+    assert "SLASH_COMMANDS" in function_source(page, "renderSkillList")
+    assert "SLASH_COMMANDS" in function_source(page, "updateSlashMenu")
+    assert "SLASH_COMMANDS" in function_source(page, "handleSlashKeydown")
+
+
+def test_the_array_is_fetched_from_the_agent():
+    page = html()
+    loader = function_source(page, "loadSlashCommands")
+    assert "fetch('/api/skills')" in loader
+    assert re.search(r"SLASH_COMMANDS\s*=", loader), "the loader never fills the array"
+    assert "renderSkillList()" in loader, "a fetched list that is never drawn"
+    assert re.search(r"^\s*loadSlashCommands\(\);", page, re.M), "nothing calls the loader"
+
+
+# --------------------------------------------------------------------------
+# behaviour, under node: what the endpoint says is what both places show
+# --------------------------------------------------------------------------
+
+_STUB = r"""
+const mode = process.env.CFOP_TEST_AGENT;
+const els = {};
+function el(){ return {innerHTML:'', value:'', dataset:{}, listeners:[],
+  classList:{_on:false, add(){this._on=true;}, remove(){this._on=false;}, contains(){return this._on;}},
+  querySelectorAll(){ return []; }, focus(){} }; }
+const document = { getElementById: id => (els[id] = els[id] || el()) };
+const inserted = [];
+function insertSkill(cmd){ inserted.push(cmd); }
+let slashMenuIndex = -1;
+const fetch = (url) => {
+  if (mode === 'down') return Promise.reject(new Error('agent down'));
+  if (url !== '/api/skills') return Promise.reject(new Error('unexpected ' + url));
+  return Promise.resolve({json: () => Promise.resolve({skills: [
+    {command:'/brand-new-skill', name:'brand-new-skill', args:'<thing>', description:'Only the agent knows this one', kind:'skill'},
+    {command:'/sweeps', name:'sweeps', args:'', description:'Recent sweep reports', kind:'shortcut'},
+  ]})});
+};
+%(functions)s
+(async () => {
+  await loadSlashCommands();
+  const sidebar = els['skill-list'].innerHTML;
+  document.getElementById('message-input').value = '/brand';
+  updateSlashMenu();
+  const menu = els['slash-menu'].innerHTML;
+  const menuOpen = els['slash-menu'].classList._on;
+  document.getElementById('message-input').value = '/sw';
+  updateSlashMenu();
+  const menuForShortcut = els['slash-menu'].innerHTML;
+  console.log(JSON.stringify({sidebar, menu, menuOpen, menuForShortcut, count: SLASH_COMMANDS.length}));
+})();
+"""
+
+
+def _run(mode):
+    page = html()
+    functions = "\n".join(function_source(page, n) for n in
+                          ("escapeHtml", "renderSkillList", "loadSlashCommands", "updateSlashMenu"))
+    script = _STUB % {"functions": functions}
+    proc = subprocess.run(["node", "-e", script], capture_output=True, text=True, timeout=30,
+                          env={**os.environ, "CFOP_TEST_AGENT": mode})
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+
+
+@needs_node
+def test_a_skill_only_the_agent_knows_reaches_both_places():
+    out = _run("up")
+    assert out["count"] == 2
+    assert "/brand-new-skill" in out["sidebar"]
+    assert "Only the agent knows this one" in out["sidebar"]
+    assert 'data-cmd="/brand-new-skill"' in out["sidebar"]
+    assert out["menuOpen"]
+    assert "/brand-new-skill" in out["menu"]
+    assert "&lt;thing&gt;" in out["menu"], "args hint is shown, escaped"
+    assert "Only the agent knows this one" in out["menu"]
+    assert "/sweeps" not in out["menu"], "the filter still narrows to the typed prefix"
+    assert "/sweeps" in out["menuForShortcut"]
+
+
+@needs_node
+def test_an_unreachable_agent_shows_no_invented_list():
+    out = _run("down")
+    assert out["count"] == 0
+    assert "unavailable" in out["sidebar"]
+    assert "/investigate" not in out["sidebar"]
+    assert not out["menuOpen"]
+
+
+# --------------------------------------------------------------------------
+# the route, on the real WebServer
+# --------------------------------------------------------------------------
+
+def _client(commands):
+    from unittest.mock import MagicMock
+
+    from flask import Flask
+
+    from web_auth import install_auth
+    from web_server import WebServer
+
+    operator = MagicMock()
+    operator.list_slash_commands.return_value = commands
+
+    server = WebServer.__new__(WebServer)
+    server.operator = operator
+    server.host, server.port = "localhost", 0
+    server.app = Flask(__name__)
+    server._chat_sessions = {}
+    server._sessions_lock = threading.Lock()
+    server.auth_store = None
+    server._setup_routes()
+
+    prior = {k: os.environ.get(k) for k in
+             ("CFOP_AUTH_DISABLED", "CFOP_SESSION_SECRET", "CFOP_UI_USERNAME",
+              "CFOP_UI_PASSWORD_HASH", "CFOP_API_TOKEN")}
+    os.environ["CFOP_AUTH_DISABLED"] = "1"
+    os.environ["CFOP_SESSION_SECRET"] = "test-session-secret"
+    for name in ("CFOP_UI_USERNAME", "CFOP_UI_PASSWORD_HASH", "CFOP_API_TOKEN"):
+        os.environ[name] = ""
+    try:
+        install_auth(server.app, ui_dir="ui", store=None)
+    finally:
+        for key, value in prior.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+    return server.app.test_client()
+
+
+def test_api_skills_returns_what_the_agent_lists():
+    rows = [
+        {"command": "/brand-new-skill", "name": "brand-new-skill", "args": "<thing>",
+         "description": "Only the agent knows this one", "kind": "skill"},
+        {"command": "/stats", "name": "stats", "args": "[hours]",
+         "description": "Operational summary", "kind": "shortcut"},
+    ]
+    resp = _client(rows).get("/api/skills")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"skills": rows}
+
+
+def test_the_health_poll_refetches_an_empty_skill_list():
+    """A console opened while the agent is restarting gets no skills; the
+    /api/health poll that already runs is what notices the agent is back, so
+    it must refetch rather than leave "Skills unavailable" up until a reload."""
+    html = INDEX.read_text(encoding="utf-8")
+    start = html.index("function updateStatus()")
+    end = html.index("setInterval(updateStatus", start)
+    assert "loadSlashCommands()" in html[start:end], "updateStatus never refetches the skill list"

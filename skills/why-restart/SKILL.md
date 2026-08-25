@@ -1,6 +1,7 @@
 ---
 name: why-restart
 description: "Investigate why a container restarted by analyzing exit codes, logs before crash, OOM events, and restart patterns. Use when containers are restarting unexpectedly. Keywords: restart, crash, OOM, exit code, container died, crashed."
+argument-hint: "<container> [--count=N]"
 ---
 
 # Why Restart?

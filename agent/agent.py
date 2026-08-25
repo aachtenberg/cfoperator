@@ -1041,9 +1041,16 @@ class CFOperator:
 
                         skill_name = frontmatter.get('name')
                         if skill_name:
+                            # `argument-hint` is the SKILL.md convention for
+                            # what follows the command. Every skill accepts a
+                            # free-text target (the MCP prompt argument, the
+                            # cfassist `/skill name target` shape), so an
+                            # absent hint means "[target]", not "nothing".
+                            arg_hint = frontmatter.get('argument-hint')
                             skills[skill_name] = {
                                 'name': skill_name,
                                 'description': frontmatter.get('description', ''),
+                                'args': '[target]' if arg_hint is None else str(arg_hint).strip(),
                                 'instructions': instructions
                             }
                             logger.info(f"Loaded skill: {skill_name}")
@@ -6563,12 +6570,32 @@ Only return the JSON array, no other text."""
             logger.debug(f"Invalid heartbeat_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('heartbeat_interval_seconds', 300)
 
-    # Slash shortcut expansions — map short commands to natural language prompts
+    # Slash shortcut expansions — short commands that become natural-language
+    # prompts rather than skills. One row per command carries the expansion
+    # *and* what the console shows for it (args hint, one-line description):
+    # the console used to keep its own copy of this metadata, and the two
+    # drifted (CFOP-93). list_slash_commands() reads these rows.
     _SLASH_SHORTCUTS = {
-        '/sweeps': 'Show me the recent sweep reports with findings summaries.',
-        '/stats': 'Give me the operational summary for the last {0} hours.',
-        '/investigations': 'List recent investigations with their triggers and outcomes.',
-        '/correlations': 'Show me correlated events and service failure patterns.',
+        '/sweeps': {
+            'prompt': 'Show me the recent sweep reports with findings summaries.',
+            'args': '',
+            'description': 'Recent sweep reports',
+        },
+        '/stats': {
+            'prompt': 'Give me the operational summary for the last {0} hours.',
+            'args': '[hours]',
+            'description': 'Operational summary',
+        },
+        '/investigations': {
+            'prompt': 'List recent investigations with their triggers and outcomes.',
+            'args': '',
+            'description': 'Recent investigations',
+        },
+        '/correlations': {
+            'prompt': 'Show me correlated events and service failure patterns.',
+            'args': '',
+            'description': 'Service failure patterns',
+        },
     }
 
     def _expand_slash_shortcut(self, message: str) -> str:
@@ -6579,14 +6606,58 @@ Only return the JSON array, no other text."""
         parts = message.split(maxsplit=1)
         cmd = parts[0].lower()
         args = parts[1] if len(parts) > 1 else ''
-        template = self._SLASH_SHORTCUTS.get(cmd)
-        if template:
+        shortcut = self._SLASH_SHORTCUTS.get(cmd)
+        if shortcut:
+            template = shortcut['prompt']
             if '{0}' in template and args:
                 return template.format(args)
             elif '{0}' in template:
                 return template.format('24')
             return template
         return message
+
+    @staticmethod
+    def _one_line_description(description: str) -> str:
+        """The first sentence of a skill description.
+
+        Frontmatter descriptions are written for a model choosing a skill: a
+        paragraph of when-to-use plus a keyword list. A sidebar entry and an
+        autocomplete row want one line, and the first sentence is the one
+        that says what the skill does.
+        """
+        text = ' '.join((description or '').split())
+        first = re.split(r'(?<=[.!?])\s', text, maxsplit=1)[0]
+        return first.strip()
+
+    def list_slash_commands(self) -> List[Dict[str, str]]:
+        """Every ``/command`` the chat path recognises, for the console.
+
+        Two sources, the same two the chat path dispatches on: the skills
+        loaded from ``skills/*/SKILL.md`` (``_execute_skill``) and the
+        shortcut expansions above. The console renders both its sidebar and
+        its slash-autocomplete from this list, so a skill added server-side
+        appears in both without the page changing. Nothing is hand-listed
+        here — that was the drift CFOP-93 removed.
+        """
+        commands = []
+        for name in sorted(self.skills or {}):
+            skill = self.skills[name]
+            commands.append({
+                'command': f'/{name}',
+                'name': name,
+                'args': skill.get('args', ''),
+                'description': self._one_line_description(skill.get('description', '')),
+                'kind': 'skill',
+            })
+        for cmd, shortcut in self._SLASH_SHORTCUTS.items():
+            commands.append({
+                'command': cmd,
+                'name': cmd[1:],
+                'args': shortcut['args'],
+                'description': shortcut['description'],
+                'kind': 'shortcut',
+            })
+        return commands
 
     def _get_max_tool_iterations(self) -> int:
         """Get max tool iterations: DB setting → config.yaml → default 10."""

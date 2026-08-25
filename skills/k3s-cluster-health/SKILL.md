@@ -1,6 +1,7 @@
 ---
 name: k3s-cluster-health
 description: "Run a comprehensive health check of the entire K3s cluster including nodes, system pods, resource usage, and overall availability. Use this for daily health audits, before maintenance, after incidents, or when investigating cluster-wide issues. Keywords: cluster, health, nodes, k3s, kubernetes, k8s, audit, overview, status, capacity, resources."
+argument-hint: ""
 ---
 
 # K3s Cluster Health
