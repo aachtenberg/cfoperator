@@ -790,7 +790,8 @@ class HostCockpitSpawner:
                 f"could not deliver cfassist to {host}: {err.strip()[:400]}", 502)
 
         payload = (
-            self._runner_script(investigation_id, directory, ttl_seconds, tier=tier)
+            self._runner_script(investigation_id, directory, ttl_seconds,
+                                tier=tier, tmux=caps.tmux)
             + "\n----\n"
             + self._env_file(investigation_id, token, tier=tier, host=host).decode()
         )
@@ -1034,7 +1035,12 @@ class HostCockpitSpawner:
         self._ssh_host(host, " ".join(shlex.quote(a) for a in rm))
 
     def _remove_session_dir(self, host: str, name: str, directory: str) -> None:
-        self._ssh_host(host, f"rm -rf {shlex.quote(directory)}")
+        # Kill the tmux session first (CFOP-59): with reattach, the session
+        # process lives inside tmux, and removing only the directory would
+        # leave a live tmux session holding a cockpit whose files are gone.
+        # Harmless when the host has no tmux or no such session.
+        self._ssh_host(host, f"tmux kill-session -t {shlex.quote(name)} >/dev/null 2>&1; "
+                             f"rm -rf {shlex.quote(directory)}")
         # A unit whose timer already fired is gone (--collect); one that
         # failed is not, and would block the next spawn of the same name. Both
         # flavours are tried — a session armed through sudo leaves a *system*
@@ -1130,10 +1136,19 @@ class HostCockpitSpawner:
         return ("\n".join(lines) + "\n").encode()
 
     def _runner_script(self, investigation_id: int, directory: str, ttl_seconds: int,
-                       *, tier: str) -> str:
+                       *, tier: str, tmux: bool = False) -> str:
         """What the operator's ssh executes. Reads the credential from a 0600
         file next to it — never from argv, and never from the ssh command line
-        the operator's own shell history would keep."""
+        the operator's own shell history would keep.
+
+        When the host has ``tmux`` (CFOP-59), the runner's first act is to
+        create-or-attach a tmux session named for the investigation, so a
+        dropped connection does not end the session: a second ``ssh … run`` —
+        from the console drawer or a laptop's ``cfassist attach`` — rejoins the
+        *same* TUI. The bridge's attach argv does not change; the decision
+        lives in the script it runs. Everything below the front-door is the
+        session, and it runs inside tmux, so the deadline still bounds it.
+        """
         # --foreground is load-bearing, not a flag someone added for tidiness.
         # Plain `timeout` calls setpgid, putting the command in its OWN process
         # group — which is then a BACKGROUND group with respect to the
@@ -1151,9 +1166,25 @@ class HostCockpitSpawner:
         # janitor is the backstop for that, as it is for everything else this
         # tier cannot guarantee.
         wrapper = "timeout --foreground" if tier in (TIER_HOST, TIER_SSH) else ""
-        return "\n".join([
+        name = session_name(investigation_id)
+        head = [
             "#!/bin/sh",
             "# cfop cockpit session runner (CFOP-36). Generated at spawn; removed at TTL.",
+        ]
+        if tmux and tier in (TIER_HOST, TIER_SSH):
+            head += [
+                "# Reattach across a dropped connection (CFOP-59). new-session -A",
+                "# attaches to the session if it exists and creates it running this",
+                "# same script otherwise; the marker stops the created session from",
+                "# recursing back into tmux. A host whose tmux went away since the",
+                "# probe falls through to the plain session rather than failing to",
+                "# exec — the janitor and the timer still bound it either way.",
+                'if [ -z "${CFOP_COCKPIT_TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then',
+                f'  exec tmux new-session -A -s {shlex.quote(name)} '
+                f'env CFOP_COCKPIT_TMUX=1 {shlex.quote(directory + "/run")}',
+                "fi",
+            ]
+        return "\n".join(head + [
             "set -eu",
             f"cd {shlex.quote(directory)}",
             "set -a; . ./env; set +a",
