@@ -26,38 +26,48 @@ func (m *model) skillsList() []string {
 		}
 	}
 
-	// The descriptions are written for MCP hosts and run long. This list is read
-	// on whatever terminal the incident found the operator on — often 80
-	// columns, sometimes a phone-tethered laptop — and a line that wraps turns a
-	// scannable menu into a paragraph.
-	width := m.width
-	if width <= 0 {
-		width = 100
-	}
-	room := width - skillNameColumn - 6
-
 	lines := []string{"", bannerStyle.Render("Skills:")}
-	local := 0
+	lines = append(lines, m.skillRows(m.listWidth())...)
+	return append(lines,
+		"",
+		dimStyle.Render("  "+m.skillsSummary()),
+		dimStyle.Render("  Load one with: /skill <name> [target]"),
+	)
+}
+
+// skillRows is one line per playbook, fitted to width. Shared by /skills and
+// the Skills section of /help.
+//
+// The descriptions are written for MCP hosts and run long. This list is read
+// on whatever terminal the incident found the operator on — often 80 columns,
+// sometimes a phone-tethered laptop — and a line that wraps turns a scannable
+// menu into a paragraph.
+func (m *model) skillRows(width int) []string {
+	room := width - skillNameColumn - 6
+	var rows []string
 	for _, s := range m.skills {
-		if s.Source == skills.SourceLocal {
-			local++
-		}
-		lines = append(lines, fmt.Sprintf("  %s  %s%s",
+		rows = append(rows, fmt.Sprintf("  %s  %s%s",
 			toolNameStyle.Render(padRight(s.Name, skillNameColumn)),
 			dimStyle.Render(clip(firstSentence(s.Description), room)),
 			sourceMarker(s.Source),
 		))
 	}
+	return rows
+}
 
-	summary := fmt.Sprintf("  %d built in", len(m.skills)-local)
+// skillsSummary counts what is loaded and where the operator's own go.
+func (m *model) skillsSummary() string {
+	local := 0
+	for _, s := range m.skills {
+		if s.Source == skills.SourceLocal {
+			local++
+		}
+	}
+	summary := fmt.Sprintf("%d built in", len(m.skills)-local)
 	if local > 0 {
 		summary += fmt.Sprintf(", %d yours from %s", local, m.cfg.Skills.Directory)
 	}
-	return append(lines,
-		"",
-		dimStyle.Render(summary),
-		dimStyle.Render("  Load one with: /skill <name> [target]"),
-	)
+	return summary
 }
 
 // skillCommand handles "/skill <name> [target]".
