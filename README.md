@@ -379,6 +379,24 @@ quits. The footer keeps the model name on any width and sheds the rest — last
 turn's numbers first, then hints, then the provider prefix, then the context
 gauge — rather than wrapping.
 
+### Open cockpit from the console
+
+On an investigation in the console, an admin gets **Open cockpit** beside the
+attach line. One click spawns (or joins) the session on the affected host and
+opens it in the drawer — the finding stays in view beside the terminal:
+
+```
+#2213 · host@raspberrypi5 · scope: investigate · TTL 3:47     [reattach] [kill] [disconnect]
+```
+
+The agent's bridge carries the bytes (`cockpit.bridge_enabled`, off by
+default); the console mints a one-shot ticket per click that dies the moment
+the bridge verifies it, so the page never holds a credential. **kill** removes
+the session from the host now and revokes its tokens. Host tiers only for now
+— an in-cluster investigation still says so and points at the attach line.
+Setup, the port guard and the origin allow-list are in
+[docs/cockpit.md](docs/cockpit.md).
+
 ### Skills
 
 cfassist ships CFOperator's nine investigation playbooks — the same

@@ -286,6 +286,14 @@ substitute for the rule: a connection needs an `investigate`-scoped token, and
 a browser Origin on the allowlist. The bridge cannot spawn a cockpit — it only
 attaches to one that exists — and it serves the host tiers only.
 
+The console is the intended client (CFOP-59): an admin's **Open cockpit**
+mints a 120-second one-shot ticket and opens `ws://<console host>:8084` from
+the page, so `bridge_origins` must name the console **exactly as operators
+reach it** — `http://10.0.0.14:8083`, not the service DNS name — and the
+browser must be able to reach `:8084` on that same host. A console reached
+through a tunnel or a proxy that does not also forward `:8084` will get the
+button and then a refused socket; the drawer says which wall it hit.
+
 ## Local / Non-Production
 
 ```bash

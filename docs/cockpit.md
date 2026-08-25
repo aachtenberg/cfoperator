@@ -921,22 +921,97 @@ cfoperator:
 That skips the probe. The paragraph explaining what the word means stays: it is
 a fact about this CLI, not about this machine.
 
+## 8. Opening a cockpit from the console (CFOP-59)
+
+The flow this whole document has been walking towards: see the investigation
+in the console, click, and be in a briefed session on the affected host — no
+terminal, nothing installed, nothing left behind.
+
+```
+take over  cfassist attach 2213  [Copy] [Open cockpit]
+```
+
+**Open cockpit** is admin-only, like spawn: it *is* spawn, plus a terminal.
+Clicking it calls `POST /api/cockpit/<id>/open`, which
+
+1. refuses before doing anything if the terminal could not be opened
+   afterwards — the bridge is off, this console's origin is not in
+   `cockpit.bridge_origins` (the message names the origin to add), or the
+   investigation is in the cluster (tier `pod`, Phase B). Each refusal lands
+   beside the button with the reason, and the attach line is still there;
+2. spawns the session through the ladder, or joins the one already on the
+   host — the same dedupe `cfassist attach` gets;
+3. mints a **ticket**: an `investigate` token labelled `cockpit-bridge-<id>`
+   that lives 120 seconds and is revoked the moment the bridge verifies it.
+
+The drawer widens and grows the terminal. The header says where you are and
+how long you have:
+
+```
+#2213 · host@raspberrypi5 · scope: investigate · TTL 3:47     [reattach] [kill] [disconnect]
+```
+
+- **TTL** counts down from the deadline the spawn wrote on the host. Amber
+  under five minutes, red at zero: the session ends at the deadline whether
+  or not you were typing.
+- **reattach** is another open — a fresh ticket, the same session. Until the
+  tmux piece lands, a dropped connection on tier `host`/`ssh` ends the
+  session process on the host, and reattach starts it again with the same
+  briefing; `container` sessions survive a drop.
+- **kill** (`POST /api/cockpit/<id>/close`) removes the session from the
+  host now — the container, the directory, both reap units — and revokes
+  every token minted for it. The janitor stays the backstop.
+- **disconnect** closes the terminal and leaves the session to its TTL.
+- Escape goes to the terminal while one is open (a TUI, a pager); disconnect
+  first to close the drawer with it.
+
+### Two credentials
+
+The **session token** (`cockpit-inv-<id>`) is minted at spawn, lives in the
+0600 env file on the host, and dies with the session. It never leaves the
+host. The **ticket** exists to get a browser through one handshake: the bridge
+authenticates a person once per socket, so the only credential the page ever
+holds lives as long as the handshake, and the audit log shows one
+`token.created` + `token.revoked` pair per terminal. A reconnect is another
+open.
+
+### Enabling it
+
+```yaml
+cockpit:
+  bridge_enabled: true
+  bridge_origins: http://10.0.0.14:8083     # the console, exactly as in the address bar
+```
+
+`:8084` needs the same host-level guard `:8083` has — the pod is hostNetwork,
+so a NetworkPolicy cannot do it ([DEPLOYMENT.md](DEPLOYMENT.md)). Without
+`bridge_origins` the bridge refuses to listen at all, and the console tells
+you which origin to add rather than letting the socket fail with a 4403.
+
+### When it says no
+
+| the drawer says | why | do |
+|---|---|---|
+| `the cockpit bridge is not enabled on this agent` | `bridge_enabled` is off | enable it, or use the attach line |
+| `this console's origin (…) is not in cockpit.bridge_origins` | the allow-list does not name this console | add that exact origin |
+| `this investigation is in the cluster` | tier `pod` | `cfassist attach --spawn` from a terminal (Phase B lifts this) |
+| `disconnected: the bridge is carrying its maximum terminals` | `bridge_max_sessions` (default 2) | close one, or raise it |
+| `disconnected: the ticket was not accepted` | the 120 s ticket expired before the socket opened, or was already spent | reattach — that mints a new one |
+| `disconnected: no live session on the host` | the session ended or was reaped between open and connect | reattach |
+
 ## What the cockpit deliberately is not, yet
 
-- **No browser terminal yet, though the agent can now carry one.** The attach
-  still needs kubectl or ssh on your machine, because nothing in the console
-  speaks to the bridge yet. The server half exists as of CFOP-75: an opt-in
-  listener on its own port (`cockpit.bridge_enabled`, see
-  [config-reference.md](config-reference.md)) that runs the ladder's own
-  `attach_argv` under a PTY and pumps bytes over a websocket. It serves the
-  host tiers only — tier `pod` needs `pods/attach`, which nothing here holds,
-  and that grant is CFOP-59 Phase B. Turning it on today gets you a port and no
-  way to use it; the console drawer is the next piece.
+- **Browser terminal: host tiers only.** The console drawer opens a terminal
+  on a `container`, `host` or `ssh` cockpit (CFOP-59 Phase A — see
+  [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console)).
+  Tier `pod` still needs kubectl on your machine: the bridge would need
+  `pods/attach`, which nothing here holds, and that grant is Phase B.
 - **No remediate profile.** There is one cockpit identity and it is read-only.
   A write-capable cockpit waits until something actually needs one.
-- **No reattach after a drop.** Tiers 1 and 2 survive one (the pod and the
-  container keep running); tier 3 does not. `tmux` is probed for and recorded
-  against the day CFOP-59 needs it.
+- **Reattach after a drop is tmux's job, where the host has it.** Tiers 1
+  and 2 survive a drop (the pod and the container keep running); tier 3 does
+  not on its own. `tmux` is probed for and recorded; wrapping the runner in it
+  is the next CFOP-59 piece.
 - **No deep links from a notification.** Copy-paste is the interface between
   Slack and your terminal, because only plain text survives three sinks
   identically. Inside the console the drawer is linkable and offers the line for
