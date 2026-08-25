@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -85,6 +86,9 @@ type model struct {
 	// skills are the playbooks this session can load: the nine embedded in the
 	// binary, plus anything in the operator's own skills directory.
 	skills []skills.Skill
+	// contextCount is how many context files the system prompt carries, kept
+	// so /clear can redraw the welcome block with the same numbers.
+	contextCount int
 	// menu is what is open under the cursor, if anything (menu.go).
 	menu menuState
 	// menuDismissedFor is the exact line esc was pressed on, so the menu
@@ -101,7 +105,7 @@ type model struct {
 func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, systemPrompt string, contextCount int, providers map[string]config.ProviderConfig, activeProvider string, attachment *Attachment, cfoperatorLine string) *model {
 	// Text area for input
 	ta := textarea.New()
-	ta.Placeholder = "Ask a question..."
+	ta.Placeholder = "Ask, or / for commands"
 	ta.Focus()
 	ta.CharLimit = 4096
 	ta.ShowLineNumbers = false
@@ -152,10 +156,11 @@ func New(cfg *config.Config, llm *client.LLMClient, toolReg *tools.Registry, sys
 		modelCache:     make(map[string][]string),
 		cfoperatorLine: cfoperatorLine,
 		skills:         skills.Load(cfg.Skills.Directory),
+		contextCount:   contextCount,
 	}
 
 	// Build welcome banner
-	m.appendWelcome(contextCount)
+	m.appendWelcome()
 	// …then the briefing, if this session is attached to one.
 	m.appendBriefing()
 
@@ -184,7 +189,11 @@ func (m *model) appendBriefing() {
 	)
 }
 
-func (m *model) appendWelcome(contextCount int) {
+// appendWelcome is the block under the logo, and the first thing the issue
+// named: the banner used to say what version you had and never what the
+// session could do. Now it counts what is loaded and names the key that lists
+// each — the pointers; the menu and /help are the surface.
+func (m *model) appendWelcome() {
 	width := 120
 	if m.width > 0 {
 		width = m.width
@@ -198,18 +207,31 @@ func (m *model) appendWelcome(contextCount int) {
 		`   \______  /\___  / \____|__  //_______  //_______  /|___|/_______  /  |____|    `,
 		`          \/     \/          \/         \/         \/              \/              `,
 	}
-
 	for _, line := range logo {
 		m.outputLines = append(m.outputLines, bannerStyle.Render(line))
 	}
 
-	sep := strings.Repeat("─", width)
-	info := fmt.Sprintf("  %s", bannerDimStyle.Render("v"+config.Version))
-	if contextCount > 0 {
-		info += dimStyle.Render(fmt.Sprintf("  (%d context files loaded)", contextCount))
+	// What this session is: version, brain, context.
+	who := []string{"v" + config.Version}
+	if m.llm != nil {
+		name := m.llm.Model
+		if m.activeProvider != "" {
+			name = m.activeProvider + ":" + name
+		}
+		who = append(who, name)
 	}
-	info += dimStyle.Render("  Type /help for commands")
-	m.outputLines = append(m.outputLines, info)
+	if m.contextCount > 0 {
+		who = append(who, fmt.Sprintf("%d context files", m.contextCount))
+	}
+	line := "  " + bannerDimStyle.Render(who[0])
+	if len(who) > 1 {
+		line += dimStyle.Render(" · " + strings.Join(who[1:], " · "))
+	}
+	m.outputLines = append(m.outputLines, line)
+
+	// What it can do, and the key that lists each.
+	m.outputLines = append(m.outputLines, m.capabilityLine())
+
 	// What the presence probe found, in the operator's own view. The model was
 	// told this; showing it here is what keeps the session's answers about
 	// CFOperator auditable instead of magic.
@@ -217,9 +239,23 @@ func (m *model) appendWelcome(contextCount int) {
 		m.outputLines = append(m.outputLines, dimStyle.Render("  "+m.cfoperatorLine))
 	}
 	m.outputLines = append(m.outputLines,
-		separatorStyle.Render(sep),
+		separatorStyle.Render(strings.Repeat("─", width)),
 		"",
 	)
+}
+
+// capabilityLine counts tools, skills and commands and names the key that
+// lists each. A count alone would move the guessing, not remove it.
+func (m *model) capabilityLine() string {
+	tools := 0
+	if m.toolReg != nil {
+		tools = len(m.toolReg.GetSchemas())
+	}
+	counts := fmt.Sprintf("%d tools · %d skills · %d commands", tools, len(m.skills), len(commands))
+	return "  " + dimStyle.Render(counts) + "   " +
+		menuLabelStyle.Render("/") + dimStyle.Render(" lists commands   ") +
+		menuLabelStyle.Render("?") + dimStyle.Render(" lists keys   ") +
+		menuLabelStyle.Render("/skills") + dimStyle.Render(" lists the playbooks")
 }
 
 func (m *model) Init() tea.Cmd {
@@ -309,6 +345,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.SetWidth(m.width - 2)
 		if !m.ready {
 			m.viewport = viewport.New(m.width, 1)
+			m.viewport.KeyMap = transcriptKeys()
 			m.viewport.SetContent(strings.Join(m.outputLines, "\n"))
 			m.ready = true
 		}
@@ -757,6 +794,20 @@ func (m *model) sessionContext() context.Context {
 		return context.Background()
 	}
 	return m.sessionCtx
+}
+
+// transcriptKeys is the viewport's keymap: page up and page down, nothing
+// else. The default binds space, f, b, u, d, j, k as well — and every key
+// the textarea sees, the viewport sees too, so typing "b" mid-question paged
+// the transcript up. The keys an operator is typing are not navigation.
+// Arrows are deliberately not here either: they move the cursor in the
+// input and choose in the menu, and a key that did both would fight itself.
+// The mouse wheel still scrolls the transcript.
+func transcriptKeys() viewport.KeyMap {
+	return viewport.KeyMap{
+		PageDown: key.NewBinding(key.WithKeys("pgdown")),
+		PageUp:   key.NewBinding(key.WithKeys("pgup")),
+	}
 }
 
 // refreshViewport pushes outputLines into the viewport.

@@ -355,6 +355,30 @@ cfassist attach 1889 "did the pod recover?"   # one-shot, briefing seeded
 same variables the MCP server uses — or a `cfoperator:` block in the config file.
 It is read-only: a `read`-scope token is enough.
 
+### Finding your way
+
+Nothing in the session has to be guessed. Type `/` and every command is listed
+with what it does, narrowing as you type; past the command, the same menu
+switches to its argument — the playbooks after `/skill `, the providers after
+`/use `, the models after `/model `. `↑↓` choose, `tab` accepts, `enter` runs,
+`esc` closes. `?` on an empty line lists the keys, and `/help` is the one page
+with all of it: commands, the tools the model can call, the playbooks, the keys.
+
+```
+╭─ #2242 · PodUnschedulable on headless-gpu ─────────────────────────────────╮
+│ > /sk                                                                      │
+╰────────────────────────────────────────────────────────────────────────────╯
+  /skill <name> [target]    Load a playbook into this session, aimed at a pod…
+  /skills                   The playbooks this session knows, and what each o…
+  ↑↓ choose · tab accept · enter run · esc close       ollama:gemma4:26b · 12.3k/32k
+```
+
+The box around the input carries the investigation an `attach` session is on,
+and turns amber while a turn is running; `ctrl+c` stops the turn, `ctrl+d`
+quits. The footer keeps the model name on any width and sheds the rest — last
+turn's numbers first, then hints, then the provider prefix, then the context
+gauge — rather than wrapping.
+
 ### Skills
 
 cfassist ships CFOperator's nine investigation playbooks — the same

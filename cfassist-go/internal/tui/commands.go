@@ -413,7 +413,7 @@ func runProviders(m *model, _ string) tea.Cmd {
 func runClear(m *model, _ string) tea.Cmd {
 	m.messages = nil
 	m.outputLines = nil
-	m.appendWelcome(0)
+	m.appendWelcome()
 	if m.attachment != nil {
 		m.outputLines = append(m.outputLines,
 			dimStyle.Render(fmt.Sprintf("  Still attached to investigation #%d.",
