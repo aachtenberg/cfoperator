@@ -30,8 +30,11 @@
   .muted { color:var(--text-secondary); font-size:12px; }
   a { color:var(--cyan); text-decoration:none; } a:hover { text-decoration:underline; }
   .filters { padding:14px 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
+  /* Chips are <button>s (CFOP-94): font-family:inherit is the reset that keeps
+     them looking like the spans they replaced. */
   .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
-    border-radius:999px; padding:5px 12px; cursor:pointer; font-size:13px; }
+    border-radius:999px; padding:5px 12px; cursor:pointer; font-size:13px; font-family:inherit; }
+  .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .chip.active { background:var(--accent); border-color:var(--accent); color:#0a0a0f; font-weight:600; }
   table { width:100%; border-collapse:collapse; }
   th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
@@ -39,6 +42,7 @@
     letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
   td { font-size:13px; } .mono { font-family:'JetBrains Mono',monospace; }
   tbody tr { cursor:pointer; } tbody tr:hover { background:var(--bg-hover); }
+  tbody tr:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; background:var(--bg-hover); }
   .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
     font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
   .trig { max-width:560px; }
@@ -53,7 +57,9 @@
   #detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
     padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
   .kv { margin:4px 0; } .kv b { color:var(--text-secondary); font-weight:600; }
-  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px; }
+  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px;
+    background:none; border:0; padding:0 2px; font-family:inherit; line-height:1; }
+  .x:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .empty { padding:40px; text-align:center; color:var(--text-muted); }
   /* The handoff command. user-select:all so a double-click takes the whole
      line — the Copy button is the convenience, not the only way out. */
@@ -102,8 +108,10 @@
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" class="empty" hidden>No investigations match this filter.</div>
-<div id="backdrop" onclick="closeDetail()"></div>
-<div id="detail"></div>
+<div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
+<!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
+     order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
+<div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
 <script>
@@ -177,31 +185,62 @@ function paint(){
   const tri=ALL.filter(r=>r.triage_action).length;
   const seen=OUTCOMES.filter(o=>c[o]);
   document.getElementById('filters').innerHTML =
-    `<span class="chip ${filter===''?'active':''}" onclick="setF('')">all (${ALL.length})</span>`+
-    seen.map(o=>`<span class="chip ${filter===o?'active':''}" onclick="setF('${o}')">${o} (${c[o]})</span>`).join('')+
-    (tri?`<span class="chip ${filter==='__triaged'?'active':''}" onclick="setF('__triaged')">triaged (${tri})</span>`:'');
+    chip('', `all (${ALL.length})`)+
+    seen.map(o=>chip(o, `${o} (${c[o]})`)).join('')+
+    (tri?chip('__triaged', `triaged (${tri})`):'');
   const rows=filter==='__triaged'?ALL.filter(r=>r.triage_action)
            :filter==='__untriaged'?ALL.filter(r=>!r.triage_action)
            :filter?ALL.filter(r=>r.outcome===filter):ALL;
   document.getElementById('empty').hidden=rows.length>0;
+  const focused=focusedRow();
   document.getElementById('rows').innerHTML=rows.map(r=>`
-    <tr onclick="detail(${r.id})">
+    <tr id="row-${r.id}" tabindex="0" onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
       <td class="mono">#${r.id}</td>
       <td>${badge(r.outcome, OC[r.outcome]||'--text-muted')}${r.triage_action?' '+badge(r.triage_action,'--accent'):''}</td>
       <td class="trig">${esc(r.trigger||'').slice(0,140)}</td>
       <td>${remLink(r)}</td>
       <td class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':'—'}</td>
       <td class="muted">${age(r.started_at)}</td></tr>`).join('');
+  refocusRow(focused);
 }
 function setF(o){ filter=o; paint(); }
+// Filter chips are buttons with aria-pressed (CFOP-94): the active filter is
+// not signalled by colour alone, and a button is reachable by Tab where the
+// span it replaced was not.
+function chip(value, label){
+  const on=filter===value;
+  return `<button type="button" class="chip ${on?'active':''}" aria-pressed="${on}" onclick="setF('${value}')">${label}</button>`;
+}
+// Rows are focusable rather than links (CFOP-94): a fragment link would push a
+// history entry per row, which the replaceState decision below exists to
+// avoid. Enter and Space open, as on a button; a key pressed on a link inside
+// the row is the link's own.
+function rowKey(e,id){
+  if(e.target!==e.currentTarget) return;
+  if(e.key==='Enter'||e.key===' '){ e.preventDefault(); detail(id); }
+}
+// The poll repaints the table by replacing innerHTML, which drops focus from
+// the row you were on — every 20 s, mid-Tab. Remember it by id and put it back.
+function focusedRow(){ const a=document.activeElement; return (a&&a.id&&a.id.indexOf('row-')===0)?a.id:null; }
+function focusDetailClose(){ const x=document.getElementById('detail-close'); if(x&&x.focus) x.focus(); }
+function refocusRow(id){ if(!id) return; const el=document.getElementById(id); if(el&&el.focus) el.focus(); }
 // The open drawer names itself in the URL (CFOP-73): /investigations#2272 is
 // what you paste to someone and what a reload comes back to. replaceState
 // rather than assigning location.hash — assigning fires hashchange, which
 // would re-enter detail() and refetch, and would fill the back button with
 // every row you merely glanced at.
 let OPEN=null;
-function closeDetail(){ disconnectCockpit(); document.getElementById('detail').classList.remove('open'); document.getElementById('backdrop').classList.remove('open');
-  OPEN=null; history.replaceState(null,'',location.pathname+location.search); }
+// The element that opened the drawer, so closing can hand focus back (CFOP-94).
+// Held only while open: Escape with nothing open must not move focus.
+let OPENER=null;
+function closeDetail(){ const d=document.getElementById('detail'); disconnectCockpit(); d.classList.remove('open'); d.inert=true; document.getElementById('backdrop').classList.remove('open');
+  OPEN=null; history.replaceState(null,'',location.pathname+location.search); restoreFocus(); }
+function restoreFocus(){
+  const o=OPENER; OPENER=null; if(!o) return;
+  // The poll may have replaced the row since; the same id is the same row.
+  const t=(o.isConnected===false && o.id)?document.getElementById(o.id):o;
+  if(t&&t.focus) t.focus();
+}
 // Escape closes the drawer — unless a terminal is open, in which case the key
 // belongs to whatever is running in it (a TUI, a pager). Disconnect first.
 document.addEventListener('keydown',e=>{ if(e.key==='Escape' && !COCKPIT.ws) closeDetail(); });
@@ -214,10 +253,14 @@ async function detail(id){
   // holds it, one leaked bridge slot (of two) at a time. Reattach is another
   // /open, so there is nothing to preserve by keeping it alive.
   const d=document.getElementById('detail'); disconnectCockpit(); d.innerHTML='<span class="muted">loading…</span>';
-  d.classList.add('open'); document.getElementById('backdrop').classList.add('open');
+  // First open records where focus came from; a re-entry from inside the
+  // drawer (a similar-past link, triage) would record an element about to be
+  // painted over.
+  if(OPEN===null) OPENER=document.activeElement||null;
+  d.classList.add('open'); d.inert=false; document.getElementById('backdrop').classList.add('open');
   OPEN=id; history.replaceState(null,'','#'+id);
   let r; try{ r=await (await fetch('/api/investigations/'+id)).json(); }catch(e){
-    if(OPEN===id) d.innerHTML='error'; return; }
+    if(OPEN===id){ d.innerHTML='<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button><span class="muted">error loading #'+id+'</span>'; focusDetailClose(); } return; }
   await learnRole();
   // Two clicks in quick succession race: a slow response for the row you left
   // would otherwise paint over the row you are on, while the URL still names
@@ -225,8 +268,8 @@ async function detail(id){
   if(OPEN!==id) return;
   const f=r.findings||{};
   d.innerHTML=`
-    <span class="x" onclick="closeDetail()">×</span>
-    <h2 style="margin:0 0 8px">Investigation #${r.id}</h2>
+    <button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>
+    <h2 id="detail-title" style="margin:0 0 8px">Investigation #${r.id}</h2>
     <div class="kv">${badge(r.outcome,OC[r.outcome]||'--text-muted')}
       <span class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':''} · ${r.tool_calls_count||0} tool calls</span></div>
     <div class="kv"><b>trigger</b> ${esc(r.trigger)}</div>
@@ -242,6 +285,7 @@ async function detail(id){
     ${f.fix?`<h3>FIX</h3><pre>${esc(JSON.stringify(f.fix,null,2))}</pre>`:''}
     ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
     <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;
+  focusDetailClose();
 }
 // The handoff (CFOP-73). Slack, Discord and ntfy all end a notification with
 // this line; the console is where you are actually looking at the
@@ -254,9 +298,9 @@ function attachBlock(r){
   // "Open cockpit" is spawn plus a terminal, and spawn is the admin's: the
   // button is drawn for admins only, and the endpoint refuses everyone else
   // anyway. Members keep the attach line.
-  const open=ADMIN?` <span class="chip" id="open-cockpit" onclick="openCockpit(${Number(r.id)})">Open cockpit</span><span class="cp-note" id="cockpit-note"></span>`:'';
+  const open=ADMIN?` <button type="button" class="chip" id="open-cockpit" onclick="openCockpit(${Number(r.id)})">Open cockpit</button><span class="cp-note" id="cockpit-note"></span>`:'';
   return `<div class="kv"><b>take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>
-    <span class="chip" onclick="copyAttach()">Copy</span>${open}</div>`;
+    <button type="button" class="chip" onclick="copyAttach()">Copy</button>${open}</div>`;
 }
 function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) return;
   const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
@@ -321,8 +365,8 @@ function triageBlock(r){
   return `<div class="kv"><b>operator</b> ${state}</div>
     <div class="kv" style="gap:6px;flex-wrap:wrap">
       <input id="tn-${r.id}" placeholder="note (optional)" style="flex:1;min-width:180px">
-      <span class="chip" onclick="triage(${r.id},'resolved')">resolve</span>
-      <span class="chip" onclick="triage(${r.id},'ack')">ack</span>
+      <button type="button" class="chip" onclick="triage(${r.id},'resolved')">resolve</button>
+      <button type="button" class="chip" onclick="triage(${r.id},'ack')">ack</button>
     </div>`;
 }
 async function triage(id, action){
@@ -411,9 +455,9 @@ function mountCockpit(id, s){
     <div class="cp-head">
       <div class="chips"><span>#${Number(id)}</span><span>${esc(where)}</span><span>scope: ${esc(b.scope||'investigate')}</span><span class="ttl" id="cp-ttl">TTL —</span></div>
       <div class="actions">
-        <span class="chip" onclick="openCockpit(${Number(id)})" title="reconnect to the session on the host">reattach</span>
-        <span class="chip danger" onclick="killCockpit(${Number(id)})" title="remove the session from the host and revoke its tokens">kill</span>
-        <span class="chip" onclick="disconnectCockpit()" title="close this terminal; the session stays until its TTL">disconnect</span>
+        <button type="button" class="chip" onclick="openCockpit(${Number(id)})" title="reconnect to the session on the host">reattach</button>
+        <button type="button" class="chip danger" onclick="killCockpit(${Number(id)})" title="remove the session from the host and revoke its tokens">kill</button>
+        <button type="button" class="chip" onclick="disconnectCockpit()" title="close this terminal; the session stays until its TTL">disconnect</button>
       </div>
     </div>
     <div id="term"></div>

@@ -45,6 +45,7 @@
     border-radius:var(--radius-sm); padding:5px 11px; cursor:pointer; font-size:13px;
     font-family:inherit; transition:border-color .15s,background .15s; }
   .chip:hover { border-color:var(--text-secondary); }
+  .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .chip.active { background:var(--accent-dim); border-color:var(--accent); color:#fff; }
   .tog.on { background:var(--accent-dim); border-color:var(--accent); color:var(--text-primary); font-weight:600; }
   .tog.drain.on { background:var(--orange); border-color:var(--orange); color:#0a0a0f; }
@@ -56,6 +57,7 @@
   td { font-size:13px; }
   tbody tr { cursor:pointer; }
   tbody tr:hover { background:var(--bg-hover); }
+  tbody tr:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; background:var(--bg-hover); }
   .mono { font-family:'JetBrains Mono',monospace; }
   .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
     font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
@@ -76,7 +78,9 @@
     border-radius:var(--radius-sm); padding:10px; overflow:auto; white-space:pre-wrap;
     word-break:break-word; font-size:12px; }
   .kv { margin:4px 0; } .kv b { color:var(--text-secondary); font-weight:600; }
-  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px; }
+  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px;
+    background:none; border:0; padding:0 2px; font-family:inherit; line-height:1; }
+  .x:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .empty { padding:40px; text-align:center; color:var(--text-muted); }
   select, input[type="number"], input[type="text"], input:not([type]) {
     background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border);
@@ -137,8 +141,10 @@
     <tbody id="rows-done"></tbody>
   </table>
 </div>
-<div id="backdrop" onclick="closeDetail()"></div>
-<div id="detail"></div>
+<div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
+<!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
+     order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
+<div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
 <script>
@@ -184,9 +190,29 @@ function tiles(rows){
   document.getElementById('tiles').innerHTML = show.map(s=>
     `<div class="tile"><div class="n" style="color:${color(SC[s])}">${c[s]||0}</div><div class="l">${s}</div></div>`).join('');
   document.getElementById('filters').innerHTML =
-    `<span class="chip ${filter===''?'active':''}" onclick="setFilter('')">all (${rows.length})</span>` +
-    STATUS.map(s=>`<span class="chip ${filter===s?'active':''}" onclick="setFilter('${s}')">${s} (${c[s]||0})</span>`).join('');
+    chip('', `all (${rows.length})`) +
+    STATUS.map(s=>chip(s, `${s} (${c[s]||0})`)).join('');
 }
+// Filter chips are buttons with aria-pressed (CFOP-94): the active filter is
+// not signalled by colour alone, and a button is reachable by Tab where the
+// span it replaced was not.
+function chip(value, label){
+  const on=filter===value;
+  return `<button type="button" class="chip ${on?'active':''}" aria-pressed="${on}" onclick="setFilter('${value}')">${label}</button>`;
+}
+// Rows are focusable rather than links (CFOP-94): a fragment link would push a
+// history entry per row, and openFromHash below has no re-entry guard, so a
+// link would open the row twice. Enter and Space open, as on a button; a key
+// pressed on the PR link inside the row is the link's own.
+function rowKey(e,id){
+  if(e.target!==e.currentTarget) return;
+  if(e.key==='Enter'||e.key===' '){ e.preventDefault(); detail(id); }
+}
+// The poll repaints both tables by replacing innerHTML, which drops focus from
+// the row you were on — every 15 s, mid-Tab. Remember it by id and put it back.
+function focusedRow(){ const a=document.activeElement; return (a&&a.id&&a.id.indexOf('row-')===0)?a.id:null; }
+function focusDetailClose(){ const x=document.getElementById('detail-close'); if(x&&x.focus) x.focus(); }
+function refocusRow(id){ if(!id) return; const el=document.getElementById(id); if(el&&el.focus) el.focus(); }
 
 const TERMINAL = new Set(['resolved', 'rejected']);
 function rowHtml(r){
@@ -195,7 +221,7 @@ function rowHtml(r){
   const llm = p.provider ? `<span class="mono muted">${esc(p.provider)}</span>` : '—';
   const prHref = safeUrl(r.pr_url);
   const pr = prHref ? `<a href="${esc(prHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">PR ↗</a>` : '—';
-  return `<tr onclick="detail(${r.id})">
+  return `<tr id="row-${r.id}" tabindex="0" onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
     <td class="mono">#${r.id}</td>
     <td>${badge(r.status, SC[r.status]||'--text-muted')}</td>
     <td>${esc(r.remediation_class)}</td>
@@ -210,28 +236,45 @@ function rowHtml(r){
 function render(rows){
   const active = rows.filter(r=>!TERMINAL.has(r.status));
   const done = rows.filter(r=>TERMINAL.has(r.status));
+  const focused = focusedRow();
   document.getElementById('rows').innerHTML = active.map(rowHtml).join('');
   document.getElementById('empty').hidden = active.length>0;
   document.getElementById('rows-done').innerHTML = done.map(rowHtml).join('');
   document.getElementById('done-section').hidden = done.length===0;
   document.getElementById('done-count').textContent = done.length ? `(${done.length})` : '';
+  refocusRow(focused);
 }
 
+// The element that opened the drawer, so closing can hand focus back (CFOP-94).
+// Held only while open: Escape with nothing open must not move focus.
+let OPENER = null;
 function closeDetail(){
-  document.getElementById('detail').classList.remove('open');
+  const d = document.getElementById('detail');
+  d.classList.remove('open'); d.inert = true;
   document.getElementById('backdrop').classList.remove('open');
+  restoreFocus();
+}
+function restoreFocus(){
+  const o = OPENER; OPENER = null; if(!o) return;
+  // The poll may have replaced the row since; the same id is the same row.
+  const t = (o.isConnected===false && o.id) ? document.getElementById(o.id) : o;
+  if(t && t.focus) t.focus();
 }
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeDetail(); });
 
 async function detail(id){
   const d = document.getElementById('detail');
   d.innerHTML = '<span class="muted">loading…</span>';
-  d.classList.add('open'); document.getElementById('backdrop').classList.add('open');
-  let r; try { r = await (await fetch('/api/remediations/'+id)).json(); } catch(e){ d.innerHTML='error'; return; }
+  // First open records where focus came from; a re-entry from inside the
+  // drawer (an action ending in detail(id)) would record an element about to
+  // be painted over.
+  if(OPENER===null) OPENER = document.activeElement || null;
+  d.classList.add('open'); d.inert = false; document.getElementById('backdrop').classList.add('open');
+  let r; try { r = await (await fetch('/api/remediations/'+id)).json(); } catch(e){ d.innerHTML='<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button><span class="muted">error loading #'+id+'</span>'; focusDetailClose(); return; }
   const p = r.payload||{};
   d.innerHTML = `
-    <span class="x" onclick="closeDetail()">×</span>
-    <h2 style="margin:0 0 8px">Remediation #${r.id}</h2>
+    <button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>
+    <h2 id="detail-title" style="margin:0 0 8px">Remediation #${r.id}</h2>
     <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
       ${r.remediation_class==='manual'
         ? `<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify first</button>`
@@ -265,6 +308,7 @@ async function detail(id){
     ${p.evidence?`<h3>Evidence</h3><pre>${esc(p.evidence)}</pre>`:''}
     ${p.proposed_diff?`<h3>Proposed diff</h3><pre>${esc(p.proposed_diff)}</pre>`:''}
     <h3>Payload</h3><pre>${esc(JSON.stringify(p,null,2))}</pre>`;
+  focusDetailClose();
 }
 
 // Deep-investigation inline PR path outcome (opened / declined / refused / …).
