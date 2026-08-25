@@ -72,12 +72,19 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
-            echo "tags=$IMAGE:$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            tag="$GITHUB_REF_NAME"
+            echo "tags=$IMAGE:$tag" >> "$GITHUB_OUTPUT"
           else
-            echo "tag=main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
-            echo "tags=$IMAGE:main,$IMAGE:main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            tag="main-${GITHUB_SHA::7}"
+            echo "tags=$IMAGE:main,$IMAGE:$tag" >> "$GITHUB_OUTPUT"
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          # What the image reports as its version (CFOP-92): the same tag,
+          # minus the leading v that the health body, the agent_info metric
+          # label and Chart.yaml appVersion have never carried. Derived from
+          # the tag rather than typed anywhere, so a release cannot show a
+          # stale one. test_console_version.py pins this build-arg.
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -85,6 +92,8 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64
+          build-args: |
+            CFOP_VERSION=${{ steps.tag.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.tag.outputs.tags }}

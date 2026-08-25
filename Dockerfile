@@ -64,5 +64,14 @@ ENV PYTHONPATH="/app/agent:/app:${PYTHONPATH}"
 # Expose port for HTTP/WebSocket
 EXPOSE 8083
 
+# The build version, reported by /api/health and the cfoperator_agent_info
+# metric (cfshared/version.py). build-cfoperator-main.yml passes the image tag
+# here, so what the running pod says it is matches what was pulled. A build
+# without the arg — the trial compose, the demo — is honestly "dev".
+# Last, on purpose: it changes on every build, and an ENV above apt-get /
+# pip install would invalidate those layers each time.
+ARG CFOP_VERSION=dev
+ENV CFOP_VERSION=${CFOP_VERSION}
+
 # Run the agent
 CMD ["python", "-m", "agent"]

@@ -50,6 +50,7 @@ from observability import (
 
 # Import web server
 from web_server import WebServer
+from cfshared.version import build_version
 
 # Import tool registry
 from tools import ToolRegistry
@@ -876,7 +877,7 @@ class CFOperator:
         TOOLS_REGISTERED.set(len(self.tools.tools))
         MONITORED_HOSTS.set(len(self.config.get('infrastructure', {}).get('hosts', {})))
         AGENT_INFO.info({
-            'version': '1.0.8',
+            'version': build_version(),
             'host_id': 'cfoperator',
             'mode': 'dual_ooda'
         })
@@ -8172,7 +8173,7 @@ def main():
     """Main entry point."""
     logger.info("="*60)
     logger.info("CFOperator - Continuous Feedback Operator")
-    logger.info("Version: 1.0.8")
+    logger.info(f"Version: {build_version()}")
     logger.info("="*60)
 
     # Load a .env file if present, so API keys (XAI_API_KEY, GROQ_API_KEY, ...)

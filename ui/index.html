@@ -959,7 +959,7 @@
             <div id="chat-container">
                 <div class="message agent">
                     <div class="message-header">cfoperator</div>
-                    <div class="message-bubble">CFOperator v1.0.8 ready. Ask me about your infrastructure, or type <code>/</code> for skills.
+                    <div class="message-bubble">CFOperator ready. Ask me about your infrastructure, or type <code>/</code> for skills.
                     </div>
                 </div>
             </div>
@@ -982,7 +982,7 @@
         <span class="status-item"><span class="status-dot" id="connection-status"></span><span id="connection-label">Connected</span></span>
         <span class="status-item" id="status-uptime"></span>
         <span class="status-item" id="status-sweep"></span>
-        <span style="margin-left:auto;" class="status-item" id="status-version">v1.0.8</span>
+        <span style="margin-left:auto;" class="status-item" id="status-version"></span>
     </div>
     <div id="toasts"></div>
 
@@ -1073,7 +1073,7 @@
             chatHistory = [];
             chatSessionId = null;
             const container = document.getElementById('chat-container');
-            container.innerHTML = `<div class="message agent"><div class="message-header">cfoperator</div><div class="message-bubble">CFOperator v1.0.8 ready. Ask me about your infrastructure, or type <code>/</code> for skills.</div></div>`;
+            container.innerHTML = `<div class="message agent"><div class="message-header">cfoperator</div><div class="message-bubble">CFOperator ready. Ask me about your infrastructure, or type <code>/</code> for skills.</div></div>`;
             createChatSession();
         }
 
@@ -1474,6 +1474,8 @@
                 const h = Math.floor(uptime / 3600);
                 const m = Math.floor((uptime % 3600) / 60);
                 document.getElementById('status-uptime').textContent = `Uptime: ${h}h ${m}m`;
+                // The build version comes from the image (CFOP-92): "1.1.0" for a release, "main-<sha>" or "dev" otherwise.
+                if (data.version) document.getElementById('status-version').textContent = /^\d/.test(data.version) ? 'v' + data.version : data.version;
             }).catch(() => setConnected(false));
         }
         updateStatus();

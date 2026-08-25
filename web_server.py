@@ -24,6 +24,7 @@ import time
 import requests
 
 from cfshared import repos as shared_repos
+from cfshared.version import build_version
 from web_auth import ROLE_ADMIN, install_auth, require_role, require_token_scope
 from auth.bootstrap import init_auth_store
 from auth.models import (
@@ -178,12 +179,16 @@ class WebServer:
         def nav_js():
             return send_from_directory('ui', 'nav.js', mimetype='application/javascript')
 
-        # Health check
+        # Health check. `version` is the baked build version (CFOP-92) — the
+        # image tag for a CI build, "dev" from source — and it is what the
+        # console status bar and cfassist's banner show, so it is the answer
+        # to "what is actually running", not a number someone remembered to
+        # bump.
         @self.app.route('/api/health')
         def health():
             return jsonify({
                 'status': 'ok',
-                'version': '1.0.8',
+                'version': build_version(),
                 'current_investigation': self.operator.current_investigation is not None,
                 'uptime_seconds': time.time() - self.operator.start_time if hasattr(self.operator, 'start_time') else 0
             })
