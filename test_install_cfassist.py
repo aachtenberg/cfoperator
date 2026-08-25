@@ -153,7 +153,18 @@ def test_the_versioned_release_notes_include_the_install_one_liner():
         "someone who opened this tag rather than latest needs a pin, not only "
         "the moving one-liner"
     )
-    assert "GITHUB_REF_NAME#cfassist-v" in live, (
+    # The build job also strips GITHUB_REF_NAME#cfassist-v for ldflags, so
+    # asserting that string against the whole file (or everything before the
+    # pointer refresh) stays green if this pin step is deleted and the
+    # rendered notes say `CFASSIST_VERSION=` with nothing after it.
+    assert "steps.version.outputs.number" in create_step, (
+        "the pin must come from the Version number step; the build job's "
+        "ldflags strip is a different one"
+    )
+    version = live.split("- name: Version number for the pin", 1)
+    assert len(version) == 2, "the pin step is missing"
+    version_step = version[1].split("- name:", 1)[0]
+    assert "GITHUB_REF_NAME#cfassist-v" in version_step, (
         "CFASSIST_VERSION=cfassist-v0.11.0 404s; strip the tag prefix so the "
         "pin is 0.11.0"
     )

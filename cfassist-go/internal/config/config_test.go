@@ -280,8 +280,16 @@ func TestDefaultConfigStubsEveryField(t *testing.T) {
 	}
 	content := string(body)
 
+	if strings.Contains(content, "{{") {
+		t.Error("placeholder left unsubstituted in the first-run file")
+	}
+
+	keys, untagged := yamlFieldNames(reflect.TypeOf(Config{}))
+	if len(untagged) > 0 {
+		t.Errorf("exported fields with no yaml tag: %v — this package uses explicit tags, so forgetting one still serializes as the lowercased name with no stub", untagged)
+	}
 	var missing []string
-	for _, key := range yamlFieldNames(reflect.TypeOf(Config{})) {
+	for _, key := range keys {
 		if !templateDeclaresYAMLKey(content, key) {
 			missing = append(missing, key)
 		}
@@ -291,8 +299,9 @@ func TestDefaultConfigStubsEveryField(t *testing.T) {
 	}
 }
 
-func yamlFieldNames(t reflect.Type) []string {
+func yamlFieldNames(t reflect.Type) (keys, untagged []string) {
 	seen := map[string]struct{}{}
+	var forgotten []string
 	var walk func(reflect.Type)
 	walk = func(t reflect.Type) {
 		for t.Kind() == reflect.Ptr {
@@ -306,8 +315,15 @@ func yamlFieldNames(t reflect.Type) []string {
 					continue
 				}
 				tag := f.Tag.Get("yaml")
-				if tag == "" || tag == "-" {
-					walk(f.Type)
+				if tag == "-" {
+					continue
+				}
+				if tag == "" {
+					if f.Anonymous {
+						walk(f.Type)
+						continue
+					}
+					forgotten = append(forgotten, t.Name()+"."+f.Name)
 					continue
 				}
 				name := strings.Split(tag, ",")[0]
@@ -321,12 +337,26 @@ func yamlFieldNames(t reflect.Type) []string {
 		}
 	}
 	walk(t)
-	keys := make([]string, 0, len(seen))
+	keys = make([]string, 0, len(seen))
 	for k := range seen {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	return keys
+	return keys, forgotten
+}
+
+func TestYAMLFieldNamesReportsUntaggedExportedFields(t *testing.T) {
+	type sneak struct {
+		Tagged string `yaml:"tagged"`
+		Forgot string
+	}
+	keys, untagged := yamlFieldNames(reflect.TypeOf(sneak{}))
+	if len(keys) != 1 || keys[0] != "tagged" {
+		t.Errorf("keys = %v, want [tagged]", keys)
+	}
+	if len(untagged) != 1 || untagged[0] != "sneak.Forgot" {
+		t.Errorf("untagged = %v, want [sneak.Forgot]", untagged)
+	}
 }
 
 func templateDeclaresYAMLKey(content, key string) bool {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -298,6 +299,7 @@ func expandPath(p string) string {
 }
 
 func writeDefaultConfig(path string) error {
+	const placeholder = "{{SYSTEM_PROMPT}}"
 	content := strings.Replace(`# cfassist configuration
 # Written on first run. Uncomment a stub to set it; ${ENV} is expanded at load.
 # See: https://github.com/aachtenberg/cfoperator
@@ -383,6 +385,9 @@ max_tool_iterations: 50             # max tool calls per conversation turn
 # Override the default system prompt (unset keeps the built-in SRE prompt):
 # system_prompt: |
 #   {{SYSTEM_PROMPT}}
-`, "{{SYSTEM_PROMPT}}", defaultSystemPrompt, 1)
+`, placeholder, defaultSystemPrompt, 1)
+	if strings.Contains(content, "{{") {
+		return fmt.Errorf("unsubstituted placeholder in default config template")
+	}
 	return os.WriteFile(path, []byte(content), 0644)
 }
