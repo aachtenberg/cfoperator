@@ -84,6 +84,116 @@ sequenceDiagram
   end
 ```
 
+## The FIX contract
+
+Everything above starts with one object. An investigation that ends
+`needs_action` is asked to emit a **FIX** beside its prose recommendation — a
+typed description of the change it is proposing. The FIX is what decides the
+remediation's class, risk and confidence; the prose is what a human reads.
+
+Before it existed the queue was fed by classifying free-form English, which is
+why several parsers still sit upstream of it (see *Feeds*). The FIX replaces
+guessing at a sentence with reading a field.
+
+### Shape
+
+```json
+{
+  "targets":  [{"kind": "gitops-manifest|k8s-object|k8s-imperative|host|database-row|external-system",
+                "id": "path, name, or host",
+                "repo": "a linked repo as owner/name, or omit"}],
+  "observed": [{"source": "the command or file you READ",
+                "value":  "what it actually said, verbatim"}],
+  "steps":    ["ordered action"],
+  "verify":   {"command": "check", "expect": "success signal"},
+  "rejected": [{"alternative": "what you considered", "why_not": "why not"}],
+  "risk":     "low|med|high"
+}
+```
+
+It is read from the region after the **last** `STATUS:` in the reply — a
+line-anchored `FIX:` first, then a fenced JSON block, and for a nudge reply
+the bare object. (`FIX:` is line-anchored on purpose: a substring match also
+hits `hotfix:` and `bugfix:`, then grabs the next `{` — usually findings JSON —
+and drops the real FIX further down the same region.)
+
+### What makes one invalid
+
+Validation is **parse-or-None and never fills in a missing field**. A FIX is
+refused if:
+
+- `targets` is missing, empty, or any target lacks `kind` or `id`
+- `steps` is missing, empty, or any step is not a non-empty string
+- `verify` lacks either `command` or `expect`
+- any `rejected` entry lacks either `alternative` or `why_not`
+- `risk` is present but not one of `low` / `med` / `high`
+- **`observed` is missing or empty**, or an entry is not an object, or lacks
+  either `source` or `value` — every one of these is logged with its reason
+  and the target ids
+- a **`gitops-manifest` target names a `repo` that does not resolve** in the
+  git registry
+
+`observed` is required unconditionally rather than only for steps that change a
+value. Deciding which steps those are means classifying free-form step text,
+and that is the class of parser this contract exists to remove. A
+restart-the-pod FIX records the pod's status and restart count, which is
+evidence worth having.
+
+The repo rule is a property of the kind, not a policy: the executor's first act
+on a manifest patch is to list that repo's files, so an unresolvable repo can
+only bounce. Resolution accepts either the registry short name or the
+`owner/name` slug and always emits the slug, which is the form the executor
+hands to GitHub. For every other kind an unresolvable repo is dropped rather
+than fatal — a `host` target is actionable without one.
+
+### What happens when it is invalid
+
+Nothing is salvaged. On a `needs_action` outcome the agent asks **once** more,
+with the schema; if that reply is also invalid the recommendation **degrades to
+the CFOP-48 classifier** and still reaches the queue. An invalid FIX loses the
+typed hints, not the finding.
+
+### What a valid FIX decides
+
+Class comes from the **first** target's kind:
+
+| target kind | remediation class |
+|---|---|
+| `gitops-manifest` | `gitops-patch` |
+| `k8s-object` | `k8s-action` |
+| `k8s-imperative` | `k8s-imperative` |
+| `host` | `node-action` |
+| `database-row` | `data-fix` |
+| `external-system` | `external-system` |
+
+Confidence is deliberately stingy. **Only** a single-target `gitops-manifest`
+at `risk: low` gets `0.8` — the one shape that can clear the auto gate.
+Everything else gets `None` and parks, including every multi-target FIX. The
+local primary reports 1.0 on calls it got wrong, so high confidence is not
+inferred from the model's own certainty.
+
+Two further bars sit in front of an auto-execute:
+
+- A **fork-shaped** recommendation ("do X, or do Y") has its confidence cleared
+  even when the FIX looks auto-eligible, because the FIX was parsed from the
+  pre-rewrite text and may describe the alternative that was not chosen.
+- The **mutation judge** gives a frontier model a veto on anything that would
+  auto-execute. It is pinned to its own model floor, so a cost downgrade of the
+  executor's model cannot demote the model holding the veto, and it **fails
+  closed** — unavailable, unparseable, or raising all park the row.
+
+`targets`, `observed`, `steps`, `verify` and `rejected` ride onto the queue row
+and are rendered in the console drawer, so an operator sees the claimed current
+state next to the proposed change.
+
+### Limit worth knowing
+
+`observed` is checked for **presence and shape, not truth**. Nothing yet reads
+the target to confirm the claimed value, so a fabricated one passes. The
+mechanism is that filling the field requires a tool call, and the read is what
+puts the target's own context — a comment explaining a limit, say — in front of
+the model. Verification against the live target is tracked separately.
+
 ## Remediation queue state machine
 
 ```mermaid
@@ -113,7 +223,8 @@ stateDiagram-v2
   `list/get/count`). Pure auto-gate: `remediation_is_auto_eligible`.
 - **Feeds** → the queue / investigation pipeline:
   - deep-investigation results carrying `remediation_class` (`_maybe_queue_remediation`)
-  - morning-summary **structured recommendations** (`_feed_remediations_from_summary`),
+  - morning-summary recommendations (`_feed_remediations_from_summary`) — prose,
+    not FIX objects; the summary path does not emit a FIX,
     with raw sweep-finding fallback; `investigate`-class recs are **dispatched as
     autonomous investigations**, not queued as needs-human. Mutation-shaped sweep
     recs go through the **CFOP-48 classifier + auto-queue gates** (CFOP-53) —
