@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -313,6 +314,65 @@ func TestFooterDropOrder(t *testing.T) {
 	}
 	if strings.Contains(narrow, "ollama:") {
 		t.Errorf("at 24 columns the provider half should have gone: %q", narrow)
+	}
+}
+
+// Opening "/" grows the chrome by a menu's worth of rows. The viewport used
+// to keep its YOffset, so the extra chrome ate the bottom of the transcript —
+// the /providers list the operator had just printed, the thing they opened
+// the menu to act on. Stay pinned to that bottom.
+func TestOpeningTheMenuKeepsTheLatestTranscript(t *testing.T) {
+	m := newMenuModel(t)
+	for i := 0; i < 80; i++ {
+		m.outputLines = append(m.outputLines, fmt.Sprintf("history %d", i))
+	}
+	m.textarea.SetValue("/providers")
+	next, _ := m.handleSubmit()
+	m = next.(*model)
+
+	before := plainText(m.View())
+	if !strings.Contains(before, "Configured Providers:") ||
+		!strings.Contains(before, "Switch with: /use") {
+		t.Fatalf("the listing is not on screen before the menu:\n%s", before)
+	}
+
+	m = typeText(t, m, "/")
+	if !m.menu.open {
+		t.Fatal("typing / did not open the menu")
+	}
+	after := plainText(m.View())
+	if !strings.Contains(after, "Configured Providers:") ||
+		!strings.Contains(after, "Switch with: /use") {
+		t.Errorf("opening the menu hid the listing the operator just ran:\n%s", after)
+	}
+	if !strings.Contains(after, "/use") {
+		t.Errorf("the menu itself is missing from the view:\n%s", after)
+	}
+}
+
+// The pin is only for a transcript the operator was already following. A
+// scrolled-up view is a place they chose; the menu must not yank it.
+func TestOpeningTheMenuDoesNotYankAScrolledTranscript(t *testing.T) {
+	m := newMenuModel(t)
+	for i := 0; i < 80; i++ {
+		m.outputLines = append(m.outputLines, fmt.Sprintf("history %d", i))
+	}
+	m.refreshViewport()
+	m.layout()
+	m = press(t, m, tea.KeyPgUp)
+	m = press(t, m, tea.KeyPgUp)
+	offset := m.viewport.YOffset
+	if offset == 0 {
+		t.Fatal("pgup did not leave the bottom; the test proves nothing")
+	}
+
+	m = typeText(t, m, "/")
+	if !m.menu.open {
+		t.Fatal("typing / did not open the menu")
+	}
+	if m.viewport.YOffset != offset {
+		t.Errorf("opening the menu moved a scrolled-up transcript from %d to %d",
+			offset, m.viewport.YOffset)
 	}
 }
 
