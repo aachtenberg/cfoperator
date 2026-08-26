@@ -40,6 +40,7 @@ llm:
   groqApiKey: ""
   xaiApiKey: ""
   geminiApiKey: ""
+  deepseekApiKey: ""
 
 prometheus:
   url: ""            # REQUIRED

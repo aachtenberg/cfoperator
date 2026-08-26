@@ -115,6 +115,7 @@ _PROVIDER_DESCRIPTIONS = {
     'groq': 'Fast cloud inference',
     'xai': 'Grok models',
     'gemini': 'Gemini models',
+    'deepseek': 'DeepSeek models',
 }
 
 

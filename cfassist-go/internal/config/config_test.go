@@ -748,6 +748,7 @@ func TestDefaultConfigStubsRemoteProvidersCommentedOut(t *testing.T) {
 		{"groq", "openai", "/v1"},
 		{"xai", "openai", "/v1"},
 		{"gemini", "gemini", "/v1beta/openai"},
+		{"deepseek", "openai", "api.deepseek.com/v1"},
 		{"claude", "anthropic", "api.anthropic.com"},
 	}
 	for _, tc := range stubs {
@@ -840,7 +841,7 @@ func TestDefaultConfigStubsDoNotNameRetiredModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(body)
-	for _, name := range []string{"groq", "xai", "gemini", "claude"} {
+	for _, name := range []string{"groq", "xai", "gemini", "deepseek", "claude"} {
 		model := stubValue(commentedProviderBlock(content, name), "model")
 		if model == "" {
 			t.Errorf("the %s stub has no model: line", name)

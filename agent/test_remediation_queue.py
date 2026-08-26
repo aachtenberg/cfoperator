@@ -2295,10 +2295,14 @@ def test_gemini_is_not_in_the_investigation_fallback_chain():
     src = inspect.getsource(CFOperator._get_provider_chain)
     line = next(l for l in src.splitlines() if "fallback_order = [" in l)
     assert "gemini" not in line, line
+    # DeepSeek, same decision (CFOP-110): registered and selectable, never an
+    # automatic escalate.
+    assert "deepseek" not in line, line
     assert "anthropic" in line and "xai" in line
-    # ...but it IS a registered provider, so the judge and the admin picker
-    # can still select it by name
+    # ...but they ARE registered providers, so the judge and the admin picker
+    # can still select them by name
     assert "gemini" in agent_mod.OPENAI_COMPAT_PROVIDERS
+    assert "deepseek" in agent_mod.OPENAI_COMPAT_PROVIDERS
 
 
 def test_judge_requests_leave_headroom_for_thinking_models():

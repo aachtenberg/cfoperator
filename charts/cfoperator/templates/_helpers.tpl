@@ -31,7 +31,7 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- fail "prometheus.url is required — the URL of the Prometheus this agent observes" -}}
 {{- end -}}
 {{- $backend := .Values.llm.backend -}}
-{{- $cred := dict "ollama" .Values.llm.url "anthropic" .Values.llm.anthropicApiKey "groq" .Values.llm.groqApiKey "xai" .Values.llm.xaiApiKey "gemini" .Values.llm.geminiApiKey -}}
+{{- $cred := dict "ollama" .Values.llm.url "anthropic" .Values.llm.anthropicApiKey "groq" .Values.llm.groqApiKey "xai" .Values.llm.xaiApiKey "gemini" .Values.llm.geminiApiKey "deepseek" .Values.llm.deepseekApiKey -}}
 {{- if not (hasKey $cred $backend) -}}
 {{- fail (printf "llm.backend must be one of %s, got %q" (keys $cred | sortAlpha | join ", ") $backend) -}}
 {{- end -}}

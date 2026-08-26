@@ -831,6 +831,20 @@ OPENAI_COMPAT_PROVIDERS = {
         'base_url': 'https://generativelanguage.googleapis.com/v1beta/openai',
         'key_env': 'GEMINI_API_KEY',
     },
+    # DeepSeek serves the OpenAI wire under /v1 (the Groq/xAI shape, not the
+    # Gemini no-/v1 shape), so it is one more registry row and no new branch.
+    # default_model is the model _resolve_provider falls back to when neither
+    # the console (deepseek_selected_model) nor llm.fallback names one — so a
+    # key alone makes the provider usable. Only this entry carries one: the
+    # other three would be guesses, and guessed model names are how the
+    # first-run stubs shipped retired Gemini models twice (#199, #201).
+    # Confirmed against GET /models on 2026-08-26.
+    'deepseek': {
+        'label': 'DeepSeek',
+        'base_url': 'https://api.deepseek.com/v1',
+        'key_env': 'DEEPSEEK_API_KEY',
+        'default_model': 'deepseek-v4-pro',
+    },
 }
 
 # Sent once when a model ends the tool loop with an empty message (no tool
@@ -7063,8 +7077,8 @@ Only return the JSON array, no other text."""
             return providers
 
         # Define fallback order: ollama -> groq -> xai -> anthropic
-        # Gemini is deliberately ABSENT here even though it is a registered
-        # provider and selectable by name. Adding it would have put it between
+        # Gemini (and DeepSeek, for the same reason) is deliberately ABSENT
+        # here even though it is a registered provider and selectable by name. Adding it would have put it between
         # xAI and Anthropic for every INVESTIGATION fallback, so a paid
         # escalation that used to reach Opus would reach whatever the config's
         # gemini entry names instead. That is a quality change to the
@@ -7164,6 +7178,11 @@ Only return the JSON array, no other text."""
                         if fb.get('provider') == backend:
                             model = fb.get('model', '')
                             break
+                if not model:
+                    # Registry default, when the provider declares one. Without
+                    # it a key-only provider resolves to model='' and the
+                    # request fails at the vendor instead of here.
+                    model = OPENAI_COMPAT_PROVIDERS.get(backend, {}).get('default_model', '')
             logger.debug(f"Resolved provider: {provider_type}/{model}")
             return (provider_type, url, model)
         else:

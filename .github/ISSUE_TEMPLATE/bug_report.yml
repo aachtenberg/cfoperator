@@ -58,6 +58,7 @@ body:
         - Anthropic
         - Groq
         - Gemini
+        - DeepSeek
         - Other / several
     validations:
       required: true

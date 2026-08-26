@@ -131,7 +131,7 @@ class CfopClient:
         """Start a chat, poll events until done, return the final reply.
 
         backend/model select the agent-side LLM per call (backend one of
-        auto/ollama/groq/anthropic/xai/gemini; model is provider-specific).
+        auto/ollama/groq/anthropic/xai/gemini/deepseek; model is provider-specific).
 
         Returns {chat_id, response, tool_calls}. On deadline the chat is
         stopped server-side (best-effort) and a retryable UpstreamError is

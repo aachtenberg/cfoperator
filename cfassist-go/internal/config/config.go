@@ -48,7 +48,7 @@ func SaveState(provider, model string) {
 	os.WriteFile(statePath(), data, 0644)
 }
 
-var Version = "0.13.2"
+var Version = "0.13.3"
 
 type LLMConfig struct {
 	Provider      string  `yaml:"provider"`
@@ -371,6 +371,13 @@ providers:
   #   model: gemini-3.6-flash
   #   temperature: 0.7
   #   api_key: ${GEMINI_API_KEY}
+  #   context_window: 1048576
+  # deepseek:
+  #   provider: openai           # same wire as groq; /v1 is added back after the strip
+  #   url: https://api.deepseek.com/v1
+  #   model: deepseek-v4-pro
+  #   temperature: 0.7
+  #   api_key: ${DEEPSEEK_API_KEY}
   #   context_window: 1048576
   # claude:
   #   provider: anthropic
