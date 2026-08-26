@@ -93,6 +93,31 @@ def json_object() -> Dict[str, Any]:
     return body if isinstance(body, dict) else {}
 
 
+def _openai_compat_providers() -> dict:
+    """The agent's OpenAI-compatible provider registry (groq, xai, gemini, …).
+
+    Imported lazily: agent/agent.py imports this module, so a top-level import
+    would be circular. At request time the agent package is already loaded
+    (the process is ``python -m agent``), so this is a sys.modules hit, not a
+    second execution of the module. The switcher's model listing and backend
+    allowlist are driven from this registry rather than a hand-copied tuple
+    because the tuple is how gemini fell out — registered on the agent, named
+    in Helm, compose and .env.example, and unreachable from Admin → LLM
+    (CFOP-104).
+    """
+    from agent import OPENAI_COMPAT_PROVIDERS
+    return OPENAI_COMPAT_PROVIDERS
+
+
+# Console-only blurbs for /api/providers; a registry entry without one is
+# described by its label.
+_PROVIDER_DESCRIPTIONS = {
+    'groq': 'Fast cloud inference',
+    'xai': 'Grok models',
+    'gemini': 'Gemini models',
+}
+
+
 class WebServer:
     """
     Web server for CFOperator UI and APIs.
@@ -387,13 +412,17 @@ class WebServer:
                 'available': bool(ollama_url)
             })
 
-            # Check Groq
-            providers.append({
-                'id': 'groq',
-                'name': 'Groq',
-                'description': 'Fast cloud inference',
-                'available': bool(os.getenv('GROQ_API_KEY', ''))
-            })
+            # OpenAI-compat providers (groq, xai, gemini, …) come from the
+            # agent's registry — label and key from the same entry the agent
+            # chats through, so availability cannot drift off the env var
+            # the agent actually reads.
+            for backend, cfg in _openai_compat_providers().items():
+                providers.append({
+                    'id': backend,
+                    'name': cfg['label'],
+                    'description': _PROVIDER_DESCRIPTIONS.get(backend, f"{cfg['label']} models"),
+                    'available': bool(os.getenv(cfg['key_env'], ''))
+                })
 
             # Check Anthropic
             providers.append({
@@ -401,14 +430,6 @@ class WebServer:
                 'name': 'Anthropic',
                 'description': 'Claude models',
                 'available': bool(os.getenv('ANTHROPIC_API_KEY', ''))
-            })
-
-            # Check xAI Grok
-            providers.append({
-                'id': 'xai',
-                'name': 'xAI Grok',
-                'description': 'Grok models',
-                'available': bool(os.getenv('XAI_API_KEY', ''))
             })
 
             return jsonify({'providers': providers})
@@ -432,34 +453,24 @@ class WebServer:
                     selected = self.operator.kb.get_setting('ollama_selected_model', '')
                     return jsonify({'models': models, 'selected': selected})
 
-                elif backend == 'groq':
-                    api_key = os.getenv('GROQ_API_KEY', '')
+                elif backend in _openai_compat_providers():
+                    # groq, xai, gemini, …: one branch for every OpenAI-compat
+                    # provider the agent registers, listing from the same
+                    # base_url the agent chats through. Groq marks retired
+                    # models active=false; the others omit the field.
+                    cfg = _openai_compat_providers()[backend]
+                    api_key = os.getenv(cfg['key_env'], '')
                     if not api_key:
-                        return jsonify({'error': 'GROQ_API_KEY not set', 'models': []}), 500
+                        return jsonify({'error': f"{cfg['key_env']} not set", 'models': []}), 500
                     resp = requests.get(
-                        'https://api.groq.com/openai/v1/models',
+                        f"{cfg['base_url'].rstrip('/')}/models",
                         headers={'Authorization': f'Bearer {api_key}'},
                         timeout=5
                     )
                     resp.raise_for_status()
                     data = resp.json()
                     models = sorted([m['id'] for m in data.get('data', []) if m.get('active', True)])
-                    selected = self.operator.kb.get_setting('groq_selected_model', '')
-                    return jsonify({'models': models, 'selected': selected})
-
-                elif backend == 'xai':
-                    api_key = os.getenv('XAI_API_KEY', '')
-                    if not api_key:
-                        return jsonify({'error': 'XAI_API_KEY not set', 'models': []}), 500
-                    resp = requests.get(
-                        'https://api.x.ai/v1/models',
-                        headers={'Authorization': f'Bearer {api_key}'},
-                        timeout=5
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    models = sorted([m['id'] for m in data.get('data', [])])
-                    selected = self.operator.kb.get_setting('xai_selected_model', '')
+                    selected = self.operator.kb.get_setting(f'{backend}_selected_model', '')
                     return jsonify({'models': models, 'selected': selected})
 
                 elif backend == 'anthropic':
@@ -519,7 +530,7 @@ class WebServer:
             """Set the default LLM provider (without changing model)."""
             data = request.json
             backend = data.get('backend', 'auto')
-            if backend not in ('auto', 'ollama', 'groq', 'anthropic', 'xai'):
+            if backend not in ('auto', 'ollama', 'anthropic', *_openai_compat_providers()):
                 return jsonify({'error': f'Invalid backend: {backend}'}), 400
             try:
                 self.operator.kb.set_setting('selected_backend', backend if backend != 'auto' else '')
