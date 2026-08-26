@@ -76,6 +76,7 @@ func TestTransportHintNamesAPathTheProviderAnswers(t *testing.T) {
 	}{
 		{"ollama", "http://localhost:11434", "/api/tags"},
 		{"openai", "https://api.groq.com/openai", "/v1/models"},
+		{"gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "/models"},
 		{"anthropic", "https://api.anthropic.com", "/v1/models"},
 	}
 
@@ -92,6 +93,10 @@ func TestTransportHintNamesAPathTheProviderAnswers(t *testing.T) {
 			}
 			if tc.provider != "ollama" && !strings.Contains(hint, "$KEY") {
 				t.Errorf("hint for %s omits the auth header the probe needs: %q", tc.provider, hint)
+			}
+			// Google has no /v1 segment; a probe with one is a second 404.
+			if tc.provider == "gemini" && strings.Contains(hint, "/v1/") {
+				t.Errorf("gemini probe would 404 as written: %q", hint)
 			}
 			// Anthropic answers 400 without it, so a probe that omits the
 			// version header sends the operator chasing a second phantom.

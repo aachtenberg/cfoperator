@@ -720,16 +720,31 @@ func TestDefaultConfigStubsRemoteProvidersCommentedOut(t *testing.T) {
 	}
 	content := string(body)
 
-	for _, name := range []string{"groq", "xai", "claude"} {
-		t.Run(name, func(t *testing.T) {
-			block := commentedProviderBlock(content, name)
+	// The wire name is load-bearing: openaiPath() only drops the /v1 segment
+	// for Provider == "gemini", so a gemini stub that copied groq's
+	// `provider: openai` would be the exact 404 CFOP-106 fixed.
+	stubs := []struct{ name, wantProvider, wantURL string }{
+		{"groq", "openai", "/v1"},
+		{"xai", "openai", "/v1"},
+		{"gemini", "gemini", "/v1beta/openai"},
+		{"claude", "anthropic", "api.anthropic.com"},
+	}
+	for _, tc := range stubs {
+		t.Run(tc.name, func(t *testing.T) {
+			block := commentedProviderBlock(content, tc.name)
 			if block == "" {
-				t.Fatalf("first-run config has no commented %q: block under providers", name)
+				t.Fatalf("first-run config has no commented %q: block under providers", tc.name)
 			}
 			for _, key := range []string{"provider:", "url:", "model:", "api_key:"} {
 				if !strings.Contains(block, key) {
-					t.Errorf("the %s stub does not show %s", name, key)
+					t.Errorf("the %s stub does not show %s", tc.name, key)
 				}
+			}
+			if got := stubValue(block, "provider"); got != tc.wantProvider {
+				t.Errorf("%s stub: provider = %q, want %q", tc.name, got, tc.wantProvider)
+			}
+			if got := stubValue(block, "url"); !strings.Contains(got, tc.wantURL) {
+				t.Errorf("%s stub: url = %q, want it to contain %q", tc.name, got, tc.wantURL)
 			}
 		})
 	}
@@ -762,6 +777,23 @@ func commentedProviderBlock(content, name string) string {
 			block = append(block, next)
 		}
 		return strings.Join(block, "\n")
+	}
+	return ""
+}
+
+// stubValue returns the value of `#   key: value` inside a commented stub,
+// without any trailing `# comment`.
+func stubValue(block, key string) string {
+	for _, line := range strings.Split(block, "\n") {
+		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+		if !strings.HasPrefix(rest, key+":") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(rest, key+":"))
+		if i := strings.Index(value, "#"); i >= 0 {
+			value = strings.TrimSpace(value[:i])
+		}
+		return value
 	}
 	return ""
 }
