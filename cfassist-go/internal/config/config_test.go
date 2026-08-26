@@ -376,6 +376,21 @@ func TestTemplateDeclaresYAMLKeyCountsStubsNotProse(t *testing.T) {
 	}
 }
 
+func TestTimescaleConfigured(t *testing.T) {
+	if (TimescaleConfig{Host: "h"}).Configured() {
+		t.Error("host without password must not be configured")
+	}
+	if (TimescaleConfig{Password: "p"}).Configured() {
+		t.Error("password without host must not be configured")
+	}
+	if (TimescaleConfig{Host: "  ", Password: "p"}).Configured() {
+		t.Error("whitespace host must not be configured")
+	}
+	if !(TimescaleConfig{Host: "h", Password: "p"}).Configured() {
+		t.Error("host and password should be configured")
+	}
+}
+
 // TestDefaultConfigLoadsWithoutPointingAtTheExampleAgent: the stubs are for
 // the operator to uncomment. Loading the first-run file must not aim attach
 // at 192.168.1.50, or a first run on a laptop probes someone else's agent.
@@ -402,6 +417,12 @@ func TestDefaultConfigLoadsWithoutPointingAtTheExampleAgent(t *testing.T) {
 	}
 	if cfg.SystemPrompt != defaultSystemPrompt {
 		t.Error("a commented system_prompt stub must not override the built-in prompt")
+	}
+	if cfg.Tools.Timescale.Host != "" {
+		t.Errorf("example timescale host leaked into the live config: %q", cfg.Tools.Timescale.Host)
+	}
+	if cfg.Tools.Timescale.Configured() {
+		t.Error("first-run must not register timescale_query")
 	}
 }
 

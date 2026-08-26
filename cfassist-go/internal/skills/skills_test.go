@@ -160,3 +160,24 @@ func writeSkill(t *testing.T, dir, name, content string) {
 		t.Fatalf("write: %v", err)
 	}
 }
+
+// mqtt-top-talkers used to name a tool cfassist did not have. Models then
+// grepped the whole disk for timescale_query. The playbook has to say the
+// fix is "call the tool or stop", not "find the binary".
+func TestMqttTopTalkersForbidsFilesystemSearch(t *testing.T) {
+	var body string
+	for _, s := range Load("") {
+		if s.Name == "mqtt-top-talkers" {
+			body = s.Body
+			break
+		}
+	}
+	if body == "" {
+		t.Fatal("mqtt-top-talkers is not bundled")
+	}
+	for _, needle := range []string{"not a binary", "grep -R", "list_tools", "timescale_query"} {
+		if !strings.Contains(body, needle) {
+			t.Errorf("playbook must mention %q so the model does not search the disk", needle)
+		}
+	}
+}

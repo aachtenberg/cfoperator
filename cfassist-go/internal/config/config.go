@@ -101,8 +101,28 @@ type ReadFileToolConfig struct {
 }
 
 type ToolsConfig struct {
-	Bash     BashToolConfig     `yaml:"bash"`
-	ReadFile ReadFileToolConfig `yaml:"read_file"`
+	Bash      BashToolConfig     `yaml:"bash"`
+	ReadFile  ReadFileToolConfig `yaml:"read_file"`
+	Timescale TimescaleConfig    `yaml:"timescale"`
+}
+
+// TimescaleConfig registers the timescale_query tool when Host and Password
+// are set. Same sensors DB the agent queries; cfassist reaches it from the
+// LAN (the prod NodePort) rather than from inside the cluster.
+type TimescaleConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	Database string `yaml:"database"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+}
+
+// Configured is whether the timescale_query tool should be offered. A host
+// with no password is the normal case — most machines cfassist runs on have
+// no telemetry DB — and a tool that can only fail teaches the model to grep
+// the disk for a binary that does not exist.
+func (t TimescaleConfig) Configured() bool {
+	return strings.TrimSpace(t.Host) != "" && t.Password != ""
 }
 
 // CFOperatorConfig points `cfassist attach` at a CFOperator agent API.
@@ -215,6 +235,11 @@ func Defaults() *Config {
 		Tools: ToolsConfig{
 			Bash:     BashToolConfig{Enabled: true, Timeout: 30},
 			ReadFile: ReadFileToolConfig{Enabled: true, MaxLines: 500},
+			Timescale: TimescaleConfig{
+				Port:     5432,
+				Database: "sensors",
+				User:     "cfoperator_ro",
+			},
 		},
 		CFOperator: CFOperatorConfig{
 			Timeout:  30,
@@ -375,6 +400,12 @@ tools:
   read_file:
     enabled: true
     max_lines: 500
+  # timescale:                    # registers timescale_query; same sensors DB as the agent
+  #   host: raspberrypi2          # NodePort on the prod cluster, reachable from the LAN
+  #   port: 30433
+  #   database: sensors
+  #   user: cfoperator_ro
+  #   password: ${TIMESCALE_RO_PASSWORD}
 
 # CFOperator agent API — used by 'cfassist attach <investigation-id>'.
 # url and token are optional: unset, they fall back to CFOP_AGENT_URL and
