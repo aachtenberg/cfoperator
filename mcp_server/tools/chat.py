@@ -21,7 +21,7 @@ def register(mcp, client, settings):
 
         backend selects the agent's LLM for this call: auto (default —
         the configured local model with fallback), ollama, groq, anthropic,
-        xai, or gemini. model optionally names a provider-specific model (e.g.
+        xai, gemini, or deepseek. model optionally names a provider-specific model (e.g.
         backend='anthropic', model='claude-opus-5' for a second opinion on
         a suspect local-model conclusion).
         Requires scope: investigate.

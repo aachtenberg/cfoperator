@@ -23,7 +23,8 @@
 profile: investigate
 
 # LLM. Short form of llm.primary — the fallback chain and the embeddings model
-# are in the reference. Shipped providers: ollama, groq, xai, gemini, anthropic.
+# are in the reference. Shipped providers: ollama, groq, xai, gemini,
+# deepseek, anthropic.
 llm:
   backend: ollama
   url: http://localhost:11434

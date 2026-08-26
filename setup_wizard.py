@@ -82,7 +82,7 @@ _LLM_ASKED = ("provider", "url", "model", "api_key")
 
 #: Shipped provider names (mirrors config.yaml.example). These are field
 #: *values*, not fields — an unlisted provider is accepted with a warning.
-_PROVIDERS = ("ollama", "groq", "xai", "gemini", "anthropic")
+_PROVIDERS = ("ollama", "groq", "xai", "gemini", "deepseek", "anthropic")
 
 _OLLAMA_DEFAULT_URL = "http://localhost:11434"
 

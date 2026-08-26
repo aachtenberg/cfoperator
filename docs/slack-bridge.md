@@ -115,7 +115,7 @@ Example session for a suspect diagnosis:
 ```
 
 The same per-call model selection is exposed to every MCP host via
-`ask_sre`'s optional `backend` (`auto|ollama|groq|anthropic|xai|gemini`) and
+`ask_sre`'s optional `backend` (`auto|ollama|groq|anthropic|xai|gemini|deepseek`) and
 `model` params — see [mcp-server.md](mcp-server.md).
 
 ## Design notes

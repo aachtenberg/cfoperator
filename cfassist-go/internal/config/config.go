@@ -372,6 +372,13 @@ providers:
   #   temperature: 0.7
   #   api_key: ${GEMINI_API_KEY}
   #   context_window: 1048576
+  # deepseek:
+  #   provider: openai           # same wire as groq; /v1 is added back after the strip
+  #   url: https://api.deepseek.com/v1
+  #   model: deepseek-v4-pro
+  #   temperature: 0.7
+  #   api_key: ${DEEPSEEK_API_KEY}
+  #   context_window: 1048576
   # claude:
   #   provider: anthropic
   #   url: https://api.anthropic.com

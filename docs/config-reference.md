@@ -180,17 +180,21 @@ llm:
     - provider: gemini       # NOT in the automatic escalation chain — see note
       model: gemini-3.6-flash
       api_key: ${GEMINI_API_KEY}
+    - provider: deepseek     # NOT in the automatic escalation chain — see note
+      model: deepseek-v4-pro # also the registry default when this entry is absent
+      api_key: ${DEEPSEEK_API_KEY}
     - provider: anthropic
       model: claude-3-5-sonnet-20241022
       api_key: ${ANTHROPIC_API_KEY}
 
   # Escalation order is fixed in code (ollama → groq → xai → anthropic); a
   # fallback entry supplies the model and key for its provider, not a
-  # position. Gemini is deliberately excluded from that chain so a paid
-  # escalation that used to reach Anthropic cannot land on it — its entry
-  # here is the model Admin → LLM (selected_backend=gemini) and
+  # position. Gemini and DeepSeek are deliberately excluded from that chain
+  # so a paid escalation that used to reach Anthropic cannot land on them —
+  # an entry here is the model Admin → LLM (selected_backend=gemini) and
   # ask_sre(backend='gemini') resolve to when no model is chosen in the
-  # console. The mutation judge (remediation.judge below) does NOT read this
+  # console. DeepSeek alone has a registry default (deepseek-v4-pro), so its
+  # entry is optional; the key is enough. The mutation judge (remediation.judge below) does NOT read this
   # list: it pins its own floor model per provider in code. (CFOP-104)
 
   # Optional dedicated triage classifier (an ollama model tag, served from
