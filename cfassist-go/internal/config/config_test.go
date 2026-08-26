@@ -793,7 +793,69 @@ func stubValue(block, key string) string {
 		if i := strings.Index(value, "#"); i >= 0 {
 			value = strings.TrimSpace(value[:i])
 		}
-		return value
+		return strings.Trim(value, `"'`)
 	}
 	return ""
+}
+
+// retiredModelIDs are ids a provider has stopped serving to new accounts. The
+// first-run stubs are the one place an operator copies a model name from
+// without checking, and twice now (gemini-2.0-flash-exp, then gemini-2.5-flash
+// in cfoperator #199/#201) the stub shipped a name that Google answered with
+// NOT_FOUND. A denylist catches the recurrence without freezing a provider's
+// catalog in CI; add to it when a live call says a name is gone.
+var retiredModelIDs = []string{
+	"gemini-2.0-flash-exp",
+	"gemini-2.5-flash",
+}
+
+func TestDefaultConfigStubsDoNotNameRetiredModels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(body)
+	for _, name := range []string{"groq", "xai", "gemini", "claude"} {
+		model := stubValue(commentedProviderBlock(content, name), "model")
+		if model == "" {
+			t.Errorf("the %s stub has no model: line", name)
+			continue
+		}
+		for _, retired := range retiredModelIDs {
+			if model == retired {
+				t.Errorf("the %s stub names %q, which the provider no longer serves to new accounts", name, model)
+			}
+		}
+	}
+}
+
+// The agent's config reference carries the other copy an operator pastes
+// from (its llm.fallback example), and it is the copy that had to move twice
+// (cfoperator #199, #201). Same denylist, same reason. The file lives outside
+// this module, so the test skips rather than fails when it is not there —
+// a standalone `go test` of the cfassist tree must not depend on the monorepo.
+func TestConfigReferenceDoesNotNameRetiredModels(t *testing.T) {
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "docs", "config-reference.md"))
+	if err != nil {
+		t.Skip("docs/config-reference.md not alongside cfassist-go; skipping")
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+		if !strings.HasPrefix(rest, "model:") {
+			continue
+		}
+		model := strings.Trim(strings.TrimSpace(strings.TrimPrefix(rest, "model:")), `"'`)
+		if i := strings.Index(model, "#"); i >= 0 {
+			model = strings.TrimSpace(model[:i])
+		}
+		for _, retired := range retiredModelIDs {
+			if model == retired {
+				t.Errorf("docs/config-reference.md names %q, which the provider no longer serves to new accounts: %s", model, strings.TrimSpace(line))
+			}
+		}
+	}
 }
