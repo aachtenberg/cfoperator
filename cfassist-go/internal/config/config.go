@@ -48,7 +48,7 @@ func SaveState(provider, model string) {
 	os.WriteFile(statePath(), data, 0644)
 }
 
-var Version = "0.13.1"
+var Version = "0.13.2"
 
 type LLMConfig struct {
 	Provider      string  `yaml:"provider"`
