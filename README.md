@@ -325,6 +325,13 @@ cfoperator:
   discover: true
 ```
 
+The `providers:` block also carries commented stubs for `groq`, `xai`, `gemini`
+and `claude`. Uncomment one, fill its `api_key`, and `/use <name>` in the TUI
+(or `--provider <name>`). Groq and xAI are `provider: openai` — the same wire —
+while Gemini is its own `provider: gemini` because Google's OpenAI-compatible
+surface lives at `…/v1beta/openai` with no `/v1` segment; copying the groq stub
+onto it would 404.
+
 ### Usage
 
 ```bash
