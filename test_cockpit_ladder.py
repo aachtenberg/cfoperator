@@ -592,6 +592,14 @@ def test_the_pinned_cfassist_version_tracks_the_go_tree():
     assert DEFAULT_CFASSIST_VERSION == go_version.group(1), (
         "cockpit_ladder.DEFAULT_CFASSIST_VERSION must match cfassist-go's Version, "
         "and cfassist-v<version> must be tagged before a cockpit can use it")
+    # The third pin is prose: the config reference's `cfassist_version:`
+    # example. It says "defaults to cfassist-go's own Version", so a bump
+    # that skips it leaves the reference lying with CI green.
+    doc_example = re.search(r"#\s*cfassist_version:\s*(\S+)",
+                            (ROOT / "docs" / "config-reference.md").read_text())
+    assert doc_example, "docs/config-reference.md no longer shows a cfassist_version example"
+    assert doc_example.group(1) == DEFAULT_CFASSIST_VERSION, (
+        "docs/config-reference.md cfassist_version example must move with the bump")
 
 
 def test_the_credential_lands_in_a_file_never_in_argv():
