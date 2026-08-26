@@ -99,7 +99,9 @@ REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remedia
 REMEDIATION_CLASSIFIER = Counter('cfoperator_remediation_classifier_total', 'needs_action classifier outcomes', ['result'])
 # reason: repeat (identifier fold onto an open row, CFOP-78) |
 # fork_committed (a forked recommendation was rewritten to one action) |
-# fork_stuck (the rewrite refused; the row is capped out of the auto gate).
+# fork_stuck (the rewrite refused; the row is capped out of the auto gate) |
+# investigate_followup (a checklist rec became a follow-up investigation
+# instead of a row, CFOP-108).
 REMEDIATION_FOLDED = Counter('cfoperator_remediation_folded_total',
                              'Rows folded or reshaped before enqueue', ['reason'])
 
@@ -209,6 +211,134 @@ _IDENT_ROW = re.compile(r'\b([A-Za-z][A-Za-z0-9]*_id)\W{0,3}(\d+)')
 _HUMAN_ONLY_SHAPED = re.compile(
     r'\b(physically|hardware|power\s+supply|power\s+strip|sd\s+card|'
     r'replace|swap\s+it|wiring|console|hard-?cycle)\b', re.I)
+# A concrete change named in a recommendation or FIX step — the complement of
+# _INVESTIGATE_SHAPED for the follow-up branch (CFOP-108). "Verify the limit,
+# then raise it" is a conditional fix and stays a row; "verify the limit" is a
+# checklist and does not. Deliberately without "open" (a check that "port 10250
+# is open") and "set" ("ensure X is set" is a check too).
+_MUTATION_SHAPED = re.compile(
+    r'\b(update|add|remove|delete|change|switch|configure|increase|decrease|'
+    r'truncate|restart|reboot|scale|migrate|rotate|adjust|modify|patch|apply|'
+    r'upgrade|downgrade|enable|disable|replace|move|retarget|recreate|'
+    r'rollback|roll\s+back|restore|install|uninstall|reinstall|edit|rewrite|'
+    r'raise|lower|bump|cordon|drain|evict|kill|reschedule)\b', re.I)
+
+
+def _fix_is_checklist(fix) -> bool:
+    """True when a FIX changes nothing: no diff, and every step is a check.
+
+    The live #80 shape — target.kind=host, steps "check port", "verify config",
+    "check iptables". A FIX like that classifies to node-action by kind alone
+    (CFOP-80), which is how a list of commands the executor could never run
+    (its allowlist is mutating commands only) ends up parked for a human.
+    """
+    if not isinstance(fix, dict):
+        return True
+    if str(fix.get('proposed_diff') or '').strip():
+        return False
+    steps = [str(s) for s in (fix.get('steps') or []) if str(s or '').strip()]
+    if not steps:
+        return True
+    return all(_INVESTIGATE_SHAPED.search(s) and not _MUTATION_SHAPED.search(s)
+               for s in steps)
+
+
+def _note_followup(op, investigation_id: int, key: str) -> None:
+    """Remember that this investigation's work moved to a follow-up.
+
+    _queue_needs_action_remediation returns None on a dispatch, which the
+    caller would otherwise record as "nothing proposed"; run_investigation
+    pops this into findings['followup_dispatched'] so the console says why
+    there is no remediation id. Tolerates a MagicMock op, which hands back
+    a non-dict for the attribute.
+    """
+    d = getattr(op, '_checklist_followups', None)
+    if not isinstance(d, dict):
+        d = {}
+        try:
+            op._checklist_followups = d
+        except Exception:
+            return
+    d[investigation_id] = key
+
+
+def _dispatch_checklist_followup(op, investigation_id: int, trigger: str,
+                                 alert_info, details: Dict[str, Any], fix) -> bool:
+    """Re-run a needs_action whose "fix" is a checklist, instead of parking it.
+
+    CFOP-108. Sweep recs shaped "check / verify …" are already dispatched as
+    investigations rather than rows (_feed_remediations_from_sweeps); this is
+    the same rule on the path every investigation takes. A row made of checks
+    helps nobody: node-action is never auto-eligible and the executor runs
+    mutating commands only, so the human it waits for would be typing the
+    `ss` and `nslookup` the agent can run itself.
+
+    Exactly one extra pass. The follow-up alert carries ``followup_of`` and
+    this returns False for any alert that already has it, so a model that
+    answers the second pass with another checklist bottoms out at a human,
+    not in a loop. Also defers to the CFOP-71 node-incident collapse (a
+    NotReady host's symptoms fold, they are not re-investigated one by one)
+    and to an open row under the same key (the sweep branch's guard: the
+    evidence was gathered and parked already).
+
+    Module-level, like _parse_structured_fix, so a MagicMock op in the tests
+    cannot make it truthy by accident. Returns True when a follow-up was
+    queued — the caller then enqueues nothing.
+    """
+    ai = alert_info or {}
+    if ai.get('followup_of'):
+        return False
+    rec = str(details.get('recommendation') or '')
+    if not rec or _HUMAN_ONLY_SHAPED.search(rec) or not _INVESTIGATE_SHAPED.search(rec):
+        return False
+    if _MUTATION_SHAPED.search(rec) or not _fix_is_checklist(fix):
+        return False
+    if op._collapse_key_for_node_incident(details):
+        return False
+    dedupe_key = str(details.get('dedupe_key') or '')
+    if dedupe_key and op._open_remediation_for_key(dedupe_key):
+        return False
+    host = str(details.get('host') or '')
+    summary = (
+        f"Follow-up to investigation #{investigation_id}: {str(trigger or '')[:200]}. "
+        f"That pass ended with a checklist instead of running it — \"{rec[:400]}\". "
+        "Run those checks now with your tools (ssh, kubectl, prometheus, logs). "
+        "Conclude with either a concrete change (a FIX that modifies something) "
+        "or no action with the evidence. Do not recommend further verification."
+    )
+    # Keyed: enqueue_investigation dedupes on idempotency_key only, and this
+    # path never creates a row for the open-row guard above to find. Two
+    # needs_action finishes for the same problem (a retry, a manual re-run)
+    # must not each spawn a follow-up — the first one already owns it.
+    idem = f"investigate-followup:{dedupe_key}" if dedupe_key else ''
+    alert = {
+        'summary': summary,
+        'source': 'investigation-followup',
+        'host': host,
+        'labels': dict(details.get('alert_labels') or {}),
+        'dedupe_key': dedupe_key,
+        'followup_of': investigation_id,
+    }
+    if idem:
+        alert['idempotency_key'] = idem
+    try:
+        result = op.enqueue_investigation(alert)
+    except Exception as e:
+        # queue.Full or a dead worker: the finding must not vanish. Fall
+        # through to today's row so a human still sees it.
+        logger.warning(f"Investigation #{investigation_id}: could not queue the follow-up "
+                       f"investigation ({e}); enqueuing the row instead")
+        return False
+    status = str(result.get('status') or '') if isinstance(result, dict) else ''
+    if status == 'deduped':
+        logger.info(f"Investigation #{investigation_id} needs_action is a checklist; a "
+                    f"follow-up for {idem} is already queued — not enqueuing a row")
+    else:
+        REMEDIATION_FOLDED.labels(reason='investigate_followup').inc()
+        logger.info(f"Investigation #{investigation_id} needs_action is a checklist "
+                    f"({rec[:80]!r}); dispatched a follow-up investigation instead of a row")
+    _note_followup(op, investigation_id, idem or summary[:160])
+    return True
 
 # The one definition of what the remediation classes mean. Shared verbatim by
 # the morning-summary prompt and the needs_action recommendation classifier so
@@ -1899,6 +2029,13 @@ FIX: {_FIX_JSON_SCHEMA}"""
                 findings['remediation_proposal'] = proposal.to_details()
             if remediation_id:
                 findings['remediation_id'] = remediation_id
+            followups = getattr(self, '_checklist_followups', None)
+            if isinstance(followups, dict) and inv_id in followups:
+                # CFOP-108: no remediation id because the work moved to a
+                # follow-up investigation. Say so, rather than letting the
+                # console read "nothing proposed" off a row whose child is
+                # doing the work.
+                findings['followup_dispatched'] = followups.pop(inv_id)
 
             # Update investigation record
             self.kb.update_investigation(
@@ -4061,6 +4198,13 @@ FIX: {_FIX_JSON_SCHEMA}"""
             'alert_labels': (alert_info or {}).get('labels')
                             or ((alert_info or {}).get('details') or {}).get('labels') or {},
         })
+        # CFOP-108: a checklist is not a fix. One follow-up pass (guarded by
+        # followup_of on the alert) instead of a row nobody can execute. After
+        # the classifier on purpose: details['host'] is what lets the node-
+        # incident collapse veto this for a NotReady host.
+        if _dispatch_checklist_followup(self, investigation_id, trigger, alert_info,
+                                        details, fix):
+            return None
         rid = self._maybe_queue_remediation(investigation_id, details)
         if rid:
             logger.info(f"Investigation #{investigation_id} needs_action -> remediation #{rid} "

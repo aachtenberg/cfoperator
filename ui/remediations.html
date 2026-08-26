@@ -47,6 +47,10 @@
   .chip:hover { border-color:var(--text-secondary); }
   .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .chip.active { background:var(--accent-dim); border-color:var(--accent); color:#fff; }
+  a.chip { text-decoration:none; }
+  /* The handoff command (CFOP-109). user-select:all so a double-click takes the whole line. */
+  .cmd { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:6px;
+    padding:3px 7px; user-select:all; font-size:12px; }
   .tog.on { background:var(--accent-dim); border-color:var(--accent); color:var(--text-primary); font-weight:600; }
   .tog.drain.on { background:var(--orange); border-color:var(--orange); color:#0a0a0f; }
 
@@ -298,6 +302,7 @@ async function detail(id){
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
       ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify</button>`}
       ${r.investigation_id?`<button class="chip" onclick="viewInvestigation(${r.investigation_id})">🔎 Investigation #${r.investigation_id}</button>`:''}
+      <a class="chip" href="/?remediation=${Number(r.id)}" title="open the console chat on this row">💬 Ask console</a>
     </div>
     ${r.remediation_class==='manual'?`<div class="muted" style="margin:0 0 8px">manual = human-only work: the executor has nothing to run. Reclassify it (gitops-patch / k8s-action / node-action) for the executor, or do it by hand and ✔ Resolve.</div>`:''}
     <div id="actionform"></div>
@@ -308,6 +313,7 @@ async function detail(id){
     ${decidedByHtml(p.decided_by)}
     ${absorbedHtml(p.absorbed)}
     <div class="kv"><b>source investigation</b> ${r.investigation_id?('#'+r.investigation_id):'—'}</div>
+    ${attachBlock(r)}
     <div class="kv"><b>created</b> ${esc(r.created_at)} · <b>attempts</b> ${r.attempts}</div>
     ${safeUrl(r.pr_url)?`<div class="kv"><b>PR</b> <a href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.pr_url)}</a></div>`:''}
     ${prAttemptHtml(p.pr_attempt)}
@@ -492,6 +498,17 @@ async function viewInvestigation(id){
 }
 
 // Deep link from /investigations: /remediations#42 opens that row's drawer.
+// The CFOP-73 handoff for the row's investigation (CFOP-109). The string is the
+// server's — /api/remediations/<id> renders it from the one definition — so this
+// page never spells the command itself. Rows with no investigation get no line.
+function attachBlock(r){
+  const cmd=r.attach_command;
+  if(!cmd) return '';
+  return `<div class="kv"><b>take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>
+    <button type="button" class="chip" onclick="copyAttach()">Copy</button></div>`;
+}
+function copyAttach(){ copyElementText(document.getElementById('attach-cmd'),'attach command'); }
+
 function openFromHash(){ const m=location.hash.match(/^#(\d+)$/); if(m && +m[1]!==OPEN) detail(+m[1]); }
 window.addEventListener('hashchange', openFromHash);
 

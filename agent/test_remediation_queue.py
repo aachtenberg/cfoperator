@@ -2361,3 +2361,194 @@ def test_sweep_human_only_recs_also_fold_onto_a_node_incident():
     }]}]
     op._feed_remediations_from_sweeps(reports)
     op.kb.queue_remediation.assert_not_called()   # folded, not a 13th row
+
+
+# ---- CFOP-108: a checklist is not a fix -------------------------------------
+#
+# Live row #80: investigation #2305 ended with "verify connectivity … check
+# port 10250 … check iptables" and a FIX whose target.kind was host. CFOP-80
+# classifies that to node-action by kind alone, and node-action is never
+# auto-eligible, so a list of commands the agent could have run itself was
+# parked for a human — who, asked in chat, watched the same model run them in
+# one turn. These guard the branch that sends such a rec back for one more
+# pass instead, and every way that branch must NOT fire.
+
+_CHECKLIST_REC = ("Verify network connectivity and firewall rules between the control "
+                  "plane and raspberrypi2 on port 10250, and ensure k3s-agent is "
+                  "correctly configured to expose the kubelet API.")
+
+
+def _host_fix(steps):
+    """The #80 FIX shape, with the given steps."""
+    return {"targets": [{"kind": "host", "id": "raspberrypi2", "repo": ""}],
+            "observed": [{"source": "k8s_get_pod_logs",
+                          "value": "proxy error while dialing 192.168.0.146:10250, code 502"}],
+            "steps": steps,
+            "verify": {"command": "kubectl get nodes raspberrypi2", "expect": "Ready"},
+            "rejected": [], "risk": "low"}
+
+
+_CHECKLIST_STEPS = ["Check if port 10250 is open on raspberrypi2",
+                    "Verify k3s-agent configuration for kubelet API exposure",
+                    "Check for any intermediate firewall or iptables rules blocking 10250"]
+
+
+def _checklist_op():
+    op = _na_op()
+    op.enqueue_investigation = MagicMock(return_value={"status": "queued"})
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "node-action", "risk": "low", "confidence": 0.7,
+        "host": "raspberrypi2", "repo": None})
+    return op
+
+
+_ALERT = {"fingerprint": "abc123", "labels": {"instance": "raspberrypi2"}}
+
+
+def test_a_checklist_recommendation_gets_a_followup_pass_not_a_row():
+    op = _checklist_op()
+    rid = op._queue_needs_action_remediation(2305, "Cloudflared tunnel instability", _ALERT,
+                                             _CHECKLIST_REC, "report", provider="ollama/gemma4:26b")
+    assert rid is None
+    op.kb.queue_remediation.assert_not_called()
+    op.enqueue_investigation.assert_called_once()
+    alert = op.enqueue_investigation.call_args.args[0]
+    assert alert["source"] == "investigation-followup"
+    assert alert["followup_of"] == 2305
+    assert alert["host"] == "raspberrypi2"
+    # The same key the row would have carried, so the eventual enqueue (or
+    # the next morning's feed) sees this as the same problem.
+    assert alert["dedupe_key"] == "alert-abc123"
+    assert "verify" not in alert["summary"].lower().split("do not recommend further")[1]
+    assert "Run those checks now" in alert["summary"]
+
+
+def test_the_live_80_fix_shape_is_a_checklist_too():
+    """A valid FIX skips the classifier (CFOP-80); a valid FIX made of checks
+    must still not become a row. The classifier-not-called assertion is also
+    what proves the fixture validated, i.e. that the FIX branch was the one
+    exercised."""
+    op = _checklist_op()
+    rid = op._queue_needs_action_remediation(
+        2305, "Cloudflared tunnel instability", _ALERT, _CHECKLIST_REC, "report",
+        provider="p", structured_fix=_host_fix(_CHECKLIST_STEPS))
+    assert rid is None
+    op._classify_needs_action_recommendation.assert_not_called()
+    op.kb.queue_remediation.assert_not_called()
+    op.enqueue_investigation.assert_called_once()
+
+
+def test_a_mutating_step_keeps_the_row():
+    """"Check the config, then restart k3s-agent" is a conditional fix. The
+    executor has something to run; the row stays."""
+    op = _checklist_op()
+    steps = _CHECKLIST_STEPS + ["Restart k3s-agent on raspberrypi2"]
+    rid = op._queue_needs_action_remediation(
+        2305, "t", _ALERT, _CHECKLIST_REC, "report", provider="p",
+        structured_fix=_host_fix(steps))
+    assert rid == 9
+    op.enqueue_investigation.assert_not_called()
+
+
+def test_a_mutating_recommendation_keeps_the_row_even_with_a_check_verb():
+    op = _checklist_op()
+    rid = op._queue_needs_action_remediation(
+        2305, "t", _ALERT, "Verify the memory limit and raise it to 512Mi", "report",
+        provider="p")
+    assert rid == 9
+    op.enqueue_investigation.assert_not_called()
+
+
+def test_the_followup_itself_cannot_spawn_another():
+    """The loop guard. Mutation check: drop the followup_of test in
+    _dispatch_checklist_followup and this goes red."""
+    op = _checklist_op()
+    second_pass = dict(_ALERT, followup_of=2305, source="investigation-followup")
+    rid = op._queue_needs_action_remediation(2306, "Follow-up to investigation #2305",
+                                             second_pass, _CHECKLIST_REC, "report",
+                                             provider="p")
+    assert rid == 9, "a second checklist must land with a human, not loop"
+    op.enqueue_investigation.assert_not_called()
+
+
+def test_human_only_work_still_parks_even_when_worded_as_a_check():
+    op = _checklist_op()
+    rid = op._queue_needs_action_remediation(
+        2305, "t", _ALERT, "Physically check the SD card and reseat it", "report",
+        provider="p")
+    assert rid == 9
+    op.enqueue_investigation.assert_not_called()
+
+
+def test_a_full_investigation_queue_degrades_to_the_row():
+    """queue.Full on dispatch must not lose the finding: today's row is the
+    fallback, not silence."""
+    import queue as _queue
+    op = _checklist_op()
+    op.enqueue_investigation.side_effect = _queue.Full()
+    rid = op._queue_needs_action_remediation(2305, "t", _ALERT, _CHECKLIST_REC, "report",
+                                             provider="p")
+    assert rid == 9
+    op.kb.queue_remediation.assert_called_once()
+
+
+def test_an_open_row_under_the_key_means_the_evidence_is_already_parked():
+    """Same guard as the sweep branch: re-gathering evidence a human is
+    already holding IS the loop. The investigation links to that row."""
+    op = _checklist_op()
+    op.kb.queue_remediation.return_value = None
+    op.kb.find_open_remediation_by_dedupe_key.return_value = {"id": 44, "status": "needs-human"}
+    rid = op._queue_needs_action_remediation(2305, "t", _ALERT, _CHECKLIST_REC, "report",
+                                             provider="p")
+    assert rid == 44
+    op.enqueue_investigation.assert_not_called()
+
+
+def test_a_notready_hosts_checklist_folds_onto_the_node_incident():
+    """CFOP-71 wins: one dead node fires many "check X on <host>" recs and
+    they are one incident, not one follow-up investigation each."""
+    op = _nodes_op(_RPI4_DOWN)
+    op.enqueue_investigation = MagicMock()
+    op._investigation_dedupe_key = CFOperator._investigation_dedupe_key
+    op._maybe_queue_remediation = lambda i, d: CFOperator._maybe_queue_remediation(op, i, d)
+    op._open_remediation_for_key = lambda k: CFOperator._open_remediation_for_key(op, k)
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "node-action", "risk": "low", "confidence": 0.7,
+        "host": "raspberrypi4", "repo": None})
+    op._record_absorbed_symptom = lambda k, d: 51
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    rid = CFOperator._queue_needs_action_remediation(
+        op, 2266, "KubePodNotReady", {"fingerprint": "abc123"},
+        "Check the pod on raspberrypi4 and verify the kubelet is up", "report", provider="p")
+    assert rid == 51
+    op.enqueue_investigation.assert_not_called()
+
+
+def test_followups_are_keyed_so_a_rerun_cannot_spawn_a_second():
+    """enqueue_investigation dedupes on idempotency_key only, and this path
+    never makes a row for the open-row guard to find — so the key is the
+    only thing between a retried needs_action and two follow-ups."""
+    op = _checklist_op()
+    op._queue_needs_action_remediation(2305, "t", _ALERT, _CHECKLIST_REC, "report", provider="p")
+    alert = op.enqueue_investigation.call_args.args[0]
+    assert alert["idempotency_key"] == "investigate-followup:alert-abc123"
+
+
+def test_a_deduped_followup_is_still_not_a_row():
+    """The first follow-up owns the problem; the repeat neither re-dispatches
+    nor falls back to parking a row."""
+    op = _checklist_op()
+    op.enqueue_investigation.return_value = {"status": "deduped"}
+    rid = op._queue_needs_action_remediation(2305, "t", _ALERT, _CHECKLIST_REC, "report",
+                                             provider="p")
+    assert rid is None
+    op.kb.queue_remediation.assert_not_called()
+
+
+def test_the_parent_investigation_learns_where_its_work_went():
+    """Returning None reads as "nothing proposed" downstream; the parent must
+    be able to say a child is doing the work. run_investigation pops this
+    into findings['followup_dispatched']."""
+    op = _checklist_op()
+    op._queue_needs_action_remediation(2305, "t", _ALERT, _CHECKLIST_REC, "report", provider="p")
+    assert op._checklist_followups[2305] == "investigate-followup:alert-abc123"

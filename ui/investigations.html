@@ -314,31 +314,8 @@ function attachBlock(r){
   return `<div class="kv"><b>take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>
     <button type="button" class="chip" onclick="copyAttach()">Copy</button>${open}</div>`;
 }
-// navigator.clipboard is a secure-context API, and this console is normally
-// reached over plain HTTP on the LAN — so the execCommand path is the one that
-// actually runs for most operators here, not a legacy branch. Either way the
-// result is stated: a copy that silently did nothing is worse than no button.
-function copyAttach(){
-  const el=document.getElementById('attach-cmd');
-  const text=el?(el.textContent||''):'';
-  if(!text) return;
-  // Copy the element the operator can actually see (it is user-select:all, so
-  // the selection reads as one deliberate act) rather than an off-screen
-  // textarea — a detached node is the flakier thing to ask execCommand to copy,
-  // and this leaves the command visibly selected if the copy fails anyway.
-  const fallback=()=>{
-    let ok=false;
-    try{
-      const sel=window.getSelection(), range=document.createRange();
-      range.selectNodeContents(el); sel.removeAllRanges(); sel.addRange(range);
-      ok=document.execCommand('copy');
-    }catch(e){ ok=false; }
-    toast(ok?'attach command copied':'copy failed — select the command and copy manually', ok?'ok':'err');
-  };
-  if(navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(text).then(()=>toast('attach command copied','ok')).catch(fallback);
-  } else { fallback(); }
-}
+// The copy itself (with its plain-HTTP fallback) is common.js's copyElementText.
+function copyAttach(){ copyElementText(document.getElementById('attach-cmd'),'attach command'); }
 // Cockpit sessions (CFOP-37) — what humans worked out against this
 // investigation, appended beside it rather than merged into `findings`. Placed
 // above the agent's own recommendation on purpose: someone reading this drawer

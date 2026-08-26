@@ -319,7 +319,7 @@ shipped several examples that could never match.
 | `cfoperator_sweeps_total` | `mode` | `proactive`, `reactive` |
 | `cfoperator_remediation_queue` | `status` | the nine queue states — `queued`, `claimed`, `executing`, `pr-open`, `verifying`, `resolved`, `failed`, `needs-human`, `rejected` |
 | `cfoperator_remediation_classifier_total` | `result` | `ok`, `nudged`, `escalated`, `degraded` |
-| `cfoperator_remediation_folded_total` | `reason` | `repeat`, `fork_committed`, `fork_stuck` |
+| `cfoperator_remediation_folded_total` | `reason` | `repeat`, `fork_committed`, `fork_stuck`, `investigate_followup` |
 | `cfoperator_remediation_judge_total` | `verdict` | `confirm`, `downgrade`, `reject`, `unavailable`, `unparseable` |
 | `cfoperator_remediation_executor_spawned_total` | `result` | `ok`, `capped`, `failed` |
 | `cfoperator_remediation_outcome_total` | `outcome` | `resolved`, `rejected` |
