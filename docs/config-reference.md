@@ -191,10 +191,10 @@ llm:
   # fallback entry supplies the model and key for its provider, not a
   # position. Gemini and DeepSeek are deliberately excluded from that chain
   # so a paid escalation that used to reach Anthropic cannot land on them —
-  # an entry here is the model Admin → LLM (selected_backend=gemini) and
-  # ask_sre(backend='gemini') resolve to when no model is chosen in the
-  # console. DeepSeek alone has a registry default (deepseek-v4-pro), so its
-  # entry is optional; the key is enough. The mutation judge (remediation.judge below) does NOT read this
+  # an entry here is the model the selected backend (Admin → LLM
+  # selected_backend, or ask_sre(backend=...)) resolves to when no model is
+  # chosen in the console. DeepSeek alone has a registry default
+  # (deepseek-v4-pro), so its entry is optional; the key is enough. The mutation judge (remediation.judge below) does NOT read this
   # list: it pins its own floor model per provider in code. (CFOP-104)
 
   # Optional dedicated triage classifier (an ollama model tag, served from

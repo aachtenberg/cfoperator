@@ -21,7 +21,6 @@ class _StubKB:
         return default
 
 
-
 def test_registry_has_the_openai_compatible_providers():
     # gemini joined groq and xai: it was named in config.yaml, config.yaml.example
     # and docs/config-reference.md as shipped, but existed in no code path, so a

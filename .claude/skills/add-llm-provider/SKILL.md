@@ -63,7 +63,10 @@ Decisions to make explicitly, not by default:
 
 - **Investigation `fallback_order`** in `_get_provider_chain`: adding a
   provider there changes which paid model an escalation lands on. Gemini and
-  DeepSeek are deliberately out. `test_gemini_is_not_in_the_investigation_fallback_chain` pins it.
+  DeepSeek are deliberately out, and
+  `test_gemini_is_not_in_the_investigation_fallback_chain` asserts each
+  excluded name is absent from the `fallback_order` line — **add the new
+  name to that test**, or the exclusion is a comment, not a guard.
 - **`_JUDGE_MODEL_FLOOR`**: the mutation judge's veto holders, frontier-tier
   only, pinned in code. Adding a vendor is its own issue.
 
