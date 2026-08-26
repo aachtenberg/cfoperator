@@ -30,7 +30,8 @@ COMMON_JS = UI / "common.js"
 
 #: What common.js owns. A page defining any of these locally is the drift
 #: this file exists to stop; add to the list when a helper moves in.
-SHARED_HELPERS = ["esc", "color", "badge", "age", "refreshAges", "toast", "trapFocus"]
+SHARED_HELPERS = ["esc", "color", "badge", "age", "refreshAges", "toast", "trapFocus",
+                  "copyElementText"]
 
 #: Pages whose main content is a polled row list. Same set as
 #: test_console_a11y.LIST_PAGES; repeated rather than imported so this file

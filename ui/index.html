@@ -1001,7 +1001,10 @@
         }
 
         // ── Chat session persistence (fire-and-forget, never blocks UI) ──
-        function createChatSession() {
+        // Fire-and-forget by design: the chat works without a saved session, so
+        // an ordinary page load swallows a failure here. Only a handoff (CFOP-109)
+        // has something riding on the session existing, and it passes `fail`.
+        function createChatSession(then, fail) {
             fetch('/api/chat-sessions', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({})
@@ -1010,8 +1013,44 @@
                     chatSessionId = data.id;
                     localStorage.setItem('cfoperator_chat_session', chatSessionId);
                     loadChatSessions();
+                    if (then) then();
+                } else if (fail) {
+                    fail();
                 }
-            }).catch(() => {});
+            }).catch(() => { if (fail) fail(); });
+        }
+
+        // A row handed over from /remediations (CFOP-109). The question is
+        // composed from the row itself so the operator never types the number,
+        // and it asks for the checks to be *run*, not listed — the failure mode
+        // that made the row in the first place.
+        function remediationQuestion(r) {
+            const p = r.payload || {};
+            const head = `Remediation #${r.id} — status ${r.status}, class ${r.remediation_class}, risk ${r.risk}`
+                + (r.host_id ? `, host ${r.host_id}` : '')
+                + (r.investigation_id ? `, from investigation #${r.investigation_id}` : '') + '.';
+            return [
+                head,
+                p.recommendation ? `Recommendation: ${p.recommendation}` : '',
+                (p.steps && p.steps.length) ? 'Proposed steps: ' + p.steps.map((s, i) => `${i + 1}. ${s}`).join(' ') : '',
+                'Check whether this is still real — run the checks yourself rather than listing them — '
+                + 'and say whether it should be approved, resolved or rejected, with the evidence.',
+            ].filter(Boolean).join('\n');
+        }
+
+        function askAboutRemediation(id) {
+            fetch(`/api/remediations/${id}`)
+                .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+                .then(row => {
+                    document.getElementById('message-input').value = remediationQuestion(row);
+                    sendMessage();
+                    // Consumed only once the question is actually on its way: a
+                    // reload must not ask twice, but a failure above leaves the
+                    // URL intact so a reload retries instead of landing on an
+                    // empty chat with the intent gone.
+                    history.replaceState(null, '', location.pathname + location.hash);
+                })
+                .catch(() => toast(`remediation #${id} could not be loaded — reload to retry`, 'err'));
         }
 
         function saveMessage(role, content, backend, model) {
@@ -1856,9 +1895,20 @@
             }
         });
 
+        // Handed a row by another page (CFOP-109): /?remediation=<id> starts a
+        // fresh session on that row and asks the first question itself; the
+        // saved session is left alone rather than appended to. The param is
+        // stripped by askAboutRemediation once the question is sent.
+        const handoff = new URLSearchParams(location.search);
+        const handedRemediation = /^\d+$/.test(handoff.get('remediation') || '')
+            ? Number(handoff.get('remediation')) : null;
         // Restore or create chat session
         const savedSession = localStorage.getItem('cfoperator_chat_session');
-        if (savedSession) {
+        if (handedRemediation !== null) {
+            createChatSession(
+                () => askAboutRemediation(handedRemediation),
+                () => toast(`could not start a chat session for remediation #${handedRemediation} — reload to retry`, 'err'));
+        } else if (savedSession) {
             chatSessionId = parseInt(savedSession);
             // Verify session still exists, load it
             fetch(`/api/chat-sessions/${chatSessionId}`).then(r => {

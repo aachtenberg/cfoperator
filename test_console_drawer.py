@@ -49,7 +49,7 @@ DRAWER_PAGES = ["investigations.html", "remediations.html"]
 #: Pages offering a one-click copy of something. The console is normally
 #: reached over plain HTTP on the LAN, where ``navigator.clipboard`` does not
 #: exist, so every one of these needs the fallback.
-COPY_PAGES = ["investigations.html", "account.html", "admin.html"]
+COPY_PAGES = ["investigations.html", "remediations.html", "account.html", "admin.html"]
 
 
 def read(name):
@@ -82,6 +82,19 @@ class FakeKB:
 
     def get_investigation(self, investigation_id):
         return self.row if investigation_id == self.row['id'] else None
+
+    # Two remediation rows (CFOP-109): one linked to the investigation above,
+    # one with no investigation at all — there is nothing to attach to there.
+    remediations = {
+        80: {'id': 80, 'investigation_id': 2272, 'status': 'needs-human',
+             'remediation_class': 'node-action', 'risk': 'low', 'host_id': 'raspberrypi4',
+             'payload': {'recommendation': 'verify the backup mount'}},
+        81: {'id': 81, 'investigation_id': None, 'status': 'needs-human',
+             'remediation_class': 'manual', 'risk': 'low', 'host_id': None, 'payload': {}},
+    }
+
+    def get_remediation(self, remediation_id):
+        return self.remediations.get(remediation_id)
 
 
 def _client(kb):
@@ -152,20 +165,86 @@ def test_a_missing_investigation_still_404s():
 
 
 # --------------------------------------------------------------------------
+# a remediation hands over its investigation the same way (CFOP-109)
+# --------------------------------------------------------------------------
+
+def test_the_remediation_drill_in_carries_its_investigations_attach_command():
+    """Mutation check: drop the ``attach_command`` lines from the remediation
+    route and this goes red."""
+    payload = _client(FakeKB()).get('/api/remediations/80').get_json()
+    assert payload['attach_command'] == ATTACH_COMMAND.format(investigation_id=2272)
+    assert payload['attach_command'] == "cfassist attach 2272"
+
+
+def test_a_remediation_with_no_investigation_offers_no_handoff():
+    """``cfassist attach None`` is not a command anyone should be handed."""
+    payload = _client(FakeKB()).get('/api/remediations/81').get_json()
+    assert 'attach_command' not in payload
+
+
+def test_the_remediation_row_is_not_decorated_in_place():
+    kb = FakeKB()
+    _client(kb).get('/api/remediations/80')
+    assert 'attach_command' not in kb.remediations[80]
+
+
+def test_a_missing_remediation_still_404s():
+    assert _client(FakeKB()).get('/api/remediations/9999').status_code == 404
+
+
+# --------------------------------------------------------------------------
 # the drawer offers it, and does not spell it itself
 # --------------------------------------------------------------------------
 
-def test_the_drawer_renders_the_servers_command():
-    assert "attach_command" in inline_script("investigations.html"), (
-        "the drawer no longer reads the command off the investigation payload")
+#: Pages whose drawer offers the take-over line.
+HANDOFF_PAGES = ["investigations.html", "remediations.html"]
 
 
-def test_the_drawer_does_not_write_the_command_itself():
+@pytest.mark.parametrize("page", HANDOFF_PAGES)
+def test_the_drawer_renders_the_servers_command(page):
+    assert "attach_command" in inline_script(page), (
+        f"{page}'s drawer no longer reads the command off the payload")
+
+
+@pytest.mark.parametrize("page", HANDOFF_PAGES)
+def test_the_drawer_does_not_write_the_command_itself(page):
     """A literal here would be a third copy of the handoff line — one the
     cross-artifact contract test cannot see, and the first to drift."""
-    assert "cfassist attach" not in read("investigations.html"), (
-        "investigations.html spells the attach command itself; render the "
+    assert "cfassist attach" not in read(page), (
+        f"{page} spells the attach command itself; render the "
         "server's attach_command instead so the contract test covers it")
+
+
+# --------------------------------------------------------------------------
+# a remediation can be handed to the console chat (CFOP-109)
+# --------------------------------------------------------------------------
+
+def test_the_remediation_drawer_links_the_row_into_the_console():
+    """The whole complaint: reading the number off one page to type it on
+    another. The drawer carries the id in the link; the console reads it."""
+    js = inline_script("remediations.html")
+    assert "/?remediation=" in js, "remediations.html no longer links a row into the console"
+
+
+def test_the_console_reads_a_handed_row_and_asks_about_it():
+    """index.html has several script blocks; this is about the console's own
+    bootstrap, so read the page rather than the single-inline-script helper."""
+    html = read("index.html")
+    assert "get('remediation')" in html, "index.html no longer reads ?remediation="
+    assert "askAboutRemediation(" in html
+    # Consumed once the question is on its way — not before. A reload must
+    # not ask twice, but a failed session create or row fetch must leave the
+    # URL intact so a reload retries rather than landing on an empty chat.
+    ask = html[html.index("function askAboutRemediation("):]
+    ask = ask[:ask.index("\n        }\n")]
+    assert "history.replaceState(null, '', location.pathname" in ask, (
+        "the remediation param is not stripped from the URL once consumed")
+    assert ask.index("sendMessage();") < ask.index("history.replaceState("), (
+        "the param is stripped before the question is sent")
+    boot = html[html.index("const handedRemediation"):]
+    boot = boot[:boot.index("} else if (savedSession)")]
+    assert "history.replaceState" not in boot, "the bootstrap strips the param before anything is sent"
+    assert "reload to retry" in boot, "a failed session create for a handed row is silent"
 
 
 @pytest.mark.parametrize("page", COPY_PAGES)
@@ -174,6 +253,12 @@ def test_copy_does_not_assume_a_secure_context(page):
     console is normally reached on a LAN. A copy button that only tries the
     async API is a button that does nothing for most operators here."""
     html = read(page)
+    if "copyElementText(" in html:
+        # The copy lives in common.js since CFOP-109; the fallback must be there.
+        common = read("common.js")
+        assert "navigator.clipboard" in common and "execCommand('copy')" in common, (
+            "common.js copyElementText lost its plain-HTTP fallback")
+        return
     if "navigator.clipboard" not in html:
         pytest.skip(f"{page} has no copy control")
     assert "execCommand('copy')" in html, (
@@ -403,3 +488,90 @@ def test_a_slow_response_cannot_paint_over_the_newer_row_on_any_drawer_page(tmp_
     assert out.returncode == 0, f"{page}: {out.stderr}"
     assert json.loads(out.stdout)["finalDrawerId"] == "1889", (
         f"{page}: the slow response for the row you left painted over the row you moved to")
+
+
+# The remediations drawer, run for real: open a row and look at what it
+# painted. Same harness shape as the investigations one above, with the
+# fetches that page makes on load answered.
+_REM_STUB = r"""
+const fs=require('fs'), vm=require('vm');
+const html=fs.readFileSync(process.argv[2],'utf8');
+const src=html.match(/<script>([\s\S]*?)<\/script>/)[1];
+function el(){return{className:'',innerHTML:'',textContent:'',value:'',hidden:false,inert:false,
+  style:{},classList:{add(){},remove(){}},setAttribute(){},select(){},remove(){},
+  focus(){},scrollIntoView(){},appendChild(){},addEventListener(){}};}
+const els={};
+const loc={pathname:'/remediations',search:'',hash:'',href:'http://cfop/remediations'};
+const hist={replaceState(){}};
+const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,Set,
+  setTimeout,clearTimeout, setInterval:()=>0, clearInterval:()=>{},
+  location:loc, history:hist,
+  window:{location:loc,history:hist,addEventListener(){},removeEventListener(){}},
+  getComputedStyle:()=>({getPropertyValue:()=>'#888888'}),
+  document:{documentElement:{},body:{appendChild(){}},hidden:false,addEventListener(){},
+    createElement:()=>el(), activeElement:null,
+    getElementById:id=>(els[id]=els[id]||el())},
+  navigator:{},
+  fetch:(url)=>{
+    if(url==='/api/remediations/80'){
+      return Promise.resolve({json:()=>Promise.resolve({id:80,investigation_id:2272,
+        status:'needs-human',remediation_class:'node-action',risk:'low',host_id:'raspberrypi4',
+        attempts:0,created_at:'2026-08-26T12:44:12',attach_command:'cfassist attach 2272',
+        payload:{recommendation:'verify the mount'}})});
+    }
+    if(url==='/api/remediations/81'){
+      return Promise.resolve({json:()=>Promise.resolve({id:81,investigation_id:null,
+        status:'needs-human',remediation_class:'manual',risk:'low',host_id:null,attempts:0,
+        created_at:'2026-08-26T12:44:12',payload:{}})});
+    }
+    if(url.indexOf('/api/remediation/flags')===0){
+      return Promise.resolve({json:()=>Promise.resolve({queue_feed:true,queue_reap:true,queue_drain:true,queue_verify:true})});
+    }
+    return Promise.resolve({json:()=>Promise.resolve({remediations:[]})});
+  }};
+const common=fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]),'common.js'),'utf8');
+box.globalThis=box; vm.createContext(box); vm.runInContext(common,box); vm.runInContext(src,box);
+const tick=()=>new Promise(r=>setImmediate(r));
+(async () => {
+  await tick(); await tick();
+  const out={};
+  await box.detail(80);
+  const linked=box.document.getElementById('detail').innerHTML;
+  out.linkedHasCommand=linked.indexOf('cfassist attach 2272')>=0;
+  out.linkedConsoleHref=(linked.match(/href="([^"]*remediation=[^"]*)"/)||[])[1];
+  box.closeDetail();
+  await box.detail(81);
+  const orphan=box.document.getElementById('detail').innerHTML;
+  out.orphanHasCommand=orphan.indexOf('cfassist attach')>=0;
+  out.orphanHasTakeOver=orphan.indexOf('take over')>=0;
+  console.log(JSON.stringify(out));
+})().catch(e => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.fixture(scope="module")
+def remediation_drawer(tmp_path_factory):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    stub = tmp_path_factory.mktemp("remdrawer") / "stub.js"
+    stub.write_text(_REM_STUB, encoding="utf-8")
+    out = subprocess.run([node, str(stub), str(UI / "remediations.html")],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_the_remediation_drawer_shows_its_investigations_handoff(remediation_drawer):
+    assert remediation_drawer["linkedHasCommand"], (
+        "the remediation drawer rendered without the attach command the payload carried")
+
+
+def test_the_remediation_drawer_links_this_row_into_the_console(remediation_drawer):
+    assert remediation_drawer["linkedConsoleHref"] == "/?remediation=80"
+
+
+def test_a_remediation_with_no_investigation_shows_no_handoff(remediation_drawer):
+    """No investigation, no attach line — not a line with a blank in it."""
+    assert not remediation_drawer["orphanHasCommand"]
+    assert not remediation_drawer["orphanHasTakeOver"]

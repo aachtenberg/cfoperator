@@ -73,3 +73,28 @@ function trapFocus(dialog){
     else { if(!inside||a===last){ e.preventDefault(); first.focus(); } }
   });
 }
+
+// Copy an element's text and say what happened (CFOP-73, CFOP-109).
+// navigator.clipboard is a secure-context API, and this console is normally
+// reached over plain HTTP on the LAN — so the execCommand path is the one that
+// actually runs for most operators here, not a legacy branch. The element the
+// operator can see is selected in place rather than an off-screen textarea: a
+// detached node is the flakier thing to ask execCommand to copy, and a failed
+// copy then leaves the text visibly selected for a manual one.
+function copyElementText(el, what){
+  const text=el?(el.textContent||''):'';
+  if(!text) return;
+  const label=what||'text';
+  const fallback=()=>{
+    let ok=false;
+    try{
+      const sel=window.getSelection(), range=document.createRange();
+      range.selectNodeContents(el); sel.removeAllRanges(); sel.addRange(range);
+      ok=document.execCommand('copy');
+    }catch(e){ ok=false; }
+    toast(ok?label+' copied':'copy failed — select the '+label+' and copy manually', ok?'ok':'err');
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(()=>toast(label+' copied','ok')).catch(fallback);
+  } else { fallback(); }
+}

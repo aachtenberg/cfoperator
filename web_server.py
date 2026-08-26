@@ -1107,7 +1107,15 @@ class WebServer:
                 row = self.operator.kb.get_remediation(remediation_id)
                 if not row:
                     return jsonify({'error': 'not found'}), 404
-                return jsonify(row)
+                # The CFOP-73 handoff, for the row's investigation (CFOP-109):
+                # rendered from the one definition, onto a copy — the KB row is
+                # not ours to grow a field on. A row with no investigation has
+                # nothing to attach to and gets no line.
+                payload = dict(row)
+                if payload.get('investigation_id'):
+                    payload['attach_command'] = ATTACH_COMMAND.format(
+                        investigation_id=payload['investigation_id'])
+                return jsonify(payload)
             except Exception as e:
                 logger.error(f"Error fetching remediation {remediation_id}: {e}")
                 return jsonify({'error': str(e)}), 500
