@@ -702,3 +702,66 @@ func TestSkillsDirectoryIsConfigurableAndTildeExpanded(t *testing.T) {
 		t.Errorf("skills.directory = %q", cfg.Skills.Directory)
 	}
 }
+
+// TestDefaultConfigStubsRemoteProvidersCommentedOut: every remote provider the
+// client can speak to gets a block the operator can uncomment — and only
+// uncomment. The two ways this goes wrong are a provider that is simply
+// missing (the operator reads the source to learn the URL shape, or copies
+// groq's and 404s on Gemini) and a stub that ships live, which makes a first
+// run on a fresh laptop probe a paid API with an empty key.
+func TestDefaultConfigStubsRemoteProvidersCommentedOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(body)
+
+	for _, name := range []string{"groq", "xai", "claude"} {
+		t.Run(name, func(t *testing.T) {
+			block := commentedProviderBlock(content, name)
+			if block == "" {
+				t.Fatalf("first-run config has no commented %q: block under providers", name)
+			}
+			for _, key := range []string{"provider:", "url:", "model:", "api_key:"} {
+				if !strings.Contains(block, key) {
+					t.Errorf("the %s stub does not show %s", name, key)
+				}
+			}
+		})
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("the first-run file must be valid YAML: %v", err)
+	}
+	for name, p := range cfg.Providers {
+		if name != "ollama" {
+			t.Errorf("provider %q (%s) loaded live from the first-run file; it must stay commented", name, p.URL)
+		}
+	}
+}
+
+// commentedProviderBlock returns the lines of a commented-out `# name:` stub
+// under providers: — the heading and the indented `#   key: value` lines that
+// follow it — or "" if there is no such stub.
+func commentedProviderBlock(content, name string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "# "+name+":" {
+			continue
+		}
+		var block []string
+		for _, next := range lines[i+1:] {
+			if !strings.HasPrefix(strings.TrimSpace(next), "#   ") {
+				break
+			}
+			block = append(block, next)
+		}
+		return strings.Join(block, "\n")
+	}
+	return ""
+}
