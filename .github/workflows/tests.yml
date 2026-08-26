@@ -90,7 +90,7 @@ jobs:
             test_cockpit_spawn.py test_cockpit_ladder.py test_cockpit_writeback.py test_cockpit_open.py \
             test_cockpit_bridge.py \
             test_demo_alert.py test_demo_kind.py test_helm_chart.py \
-            test_setup_wizard.py test_docs_fix_contract.py
+            test_setup_wizard.py test_docs_fix_contract.py test_docs_metrics_coverage.py
 
           exit "${fail}"
 
