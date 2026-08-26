@@ -149,9 +149,17 @@ func (t *timescaleTool) queryPostgres(ctx context.Context, sql string, maxRows i
 	}
 	defer conn.Close(context.Background())
 
-	rows, err := conn.Query(ctx, sql)
+	// connectCtx only bounds the dial. Query and row iteration run on the
+	// session context, which is cancel-only — a NodePort that stops answering
+	// after connect hangs the TUI until Esc. statement_timeout is server-side
+	// and does not cover that. Bound the client a little wider than the server
+	// so a stall returns here rather than waiting forever.
+	queryCtx, cancelQuery := timescaleQueryContext(ctx)
+	defer cancelQuery()
+
+	rows, err := conn.Query(queryCtx, sql)
 	if err != nil {
-		return map[string]any{"error": fmt.Sprintf("Query failed: %s", firstLine(err.Error()))}
+		return map[string]any{"error": fmt.Sprintf("Query failed: %s", firstLine(queryError(queryCtx, err)))}
 	}
 	defer rows.Close()
 
@@ -161,7 +169,7 @@ func (t *timescaleTool) queryPostgres(ctx context.Context, sql string, maxRows i
 	for rows.Next() {
 		vals, err := rows.Values()
 		if err != nil {
-			return map[string]any{"error": fmt.Sprintf("Query failed: %s", firstLine(err.Error()))}
+			return map[string]any{"error": fmt.Sprintf("Query failed: %s", firstLine(queryError(queryCtx, err)))}
 		}
 		if len(result) >= maxRows {
 			truncated = true
@@ -178,7 +186,7 @@ func (t *timescaleTool) queryPostgres(ctx context.Context, sql string, maxRows i
 		result = append(result, row)
 	}
 	if err := rows.Err(); err != nil {
-		return map[string]any{"error": fmt.Sprintf("Query failed: %s", firstLine(err.Error()))}
+		return map[string]any{"error": fmt.Sprintf("Query failed: %s", firstLine(queryError(queryCtx, err)))}
 	}
 
 	out := map[string]any{
@@ -273,6 +281,17 @@ func clampIntArg(args map[string]any, key string, def, min, max int) int {
 		return max
 	}
 	return n
+}
+
+func timescaleQueryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, timescaleStatementTimeout+5*time.Second)
+}
+
+func queryError(ctx context.Context, err error) string {
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Sprintf("timed out after %s", timescaleStatementTimeout+5*time.Second)
+	}
+	return err.Error()
 }
 
 func firstLine(s string) string {

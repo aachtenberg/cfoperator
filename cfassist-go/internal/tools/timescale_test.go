@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/config"
 )
@@ -145,6 +146,44 @@ func TestTimescaleQueryUsesInjectedRunner(t *testing.T) {
 	}
 	if result["success"] != true {
 		t.Fatalf("result = %v", result)
+	}
+}
+
+func TestTimescaleQueryPrefixGateIsNotTheSecurityBoundary(t *testing.T) {
+	// A data-modifying CTE starts with WITH, so the prefix gate lets it
+	// through. Writes are stopped by default_transaction_read_only and by
+	// cfoperator_ro having no grants — this test pins that division so the
+	// gate is not mistaken for the guard.
+	sql := "WITH x AS (DELETE FROM esp_status RETURNING *) SELECT count(*) FROM x"
+	ttool := newTimescaleTool(config.TimescaleConfig{Host: "h", Password: "p"})
+	called := false
+	ttool.queryFn = func(ctx context.Context, got string, maxRows int) map[string]any {
+		called = true
+		if got != sql {
+			t.Errorf("sql = %q", got)
+		}
+		return map[string]any{"error": "would have reached the server"}
+	}
+	result := ttool.execute(context.Background(), map[string]any{"sql": sql})
+	if !called {
+		t.Fatal("modifying CTE must reach queryFn; the role and read-only txn are the security boundary")
+	}
+	if result["error"] != "would have reached the server" {
+		t.Fatalf("result = %v", result)
+	}
+}
+
+func TestTimescaleQueryContextHasADeadline(t *testing.T) {
+	ctx, cancel := timescaleQueryContext(context.Background())
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("query context must have a deadline")
+	}
+	remaining := time.Until(deadline)
+	want := timescaleStatementTimeout + 5*time.Second
+	if remaining < want-time.Second || remaining > want+time.Second {
+		t.Fatalf("deadline remaining %v, want ~%v", remaining, want)
 	}
 }
 
