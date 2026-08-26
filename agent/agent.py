@@ -6971,7 +6971,7 @@ Only return the JSON array, no other text."""
         # For 'auto', check if user has selected a preferred backend in UI
         if backend == 'auto':
             db_backend = self.kb.get_setting('selected_backend', '')
-            if db_backend and db_backend in ('ollama', 'groq', 'anthropic', 'xai', 'gemini'):
+            if db_backend and db_backend in ('ollama', 'anthropic', *OPENAI_COMPAT_PROVIDERS):
                 backend = db_backend
                 logger.info(f"[PROVIDER] Using UI-selected backend: {backend}")
             else:
@@ -7008,7 +7008,7 @@ Only return the JSON array, no other text."""
                 source = 'explicit-override'
             logger.debug(f"[PROVIDER] Resolved ollama: {model} (source={source})")
             return (provider_type, url, model)
-        elif backend in ('groq', 'anthropic', 'xai', 'gemini'):
+        elif backend in ('anthropic', *OPENAI_COMPAT_PROVIDERS):
             url = None
             if not model:
                 # Check DB for user's model selection, fall back to config

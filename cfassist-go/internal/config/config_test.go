@@ -702,3 +702,98 @@ func TestSkillsDirectoryIsConfigurableAndTildeExpanded(t *testing.T) {
 		t.Errorf("skills.directory = %q", cfg.Skills.Directory)
 	}
 }
+
+// TestDefaultConfigStubsRemoteProvidersCommentedOut: every remote provider the
+// client can speak to gets a block the operator can uncomment — and only
+// uncomment. The two ways this goes wrong are a provider that is simply
+// missing (the operator reads the source to learn the URL shape, or copies
+// groq's and 404s on Gemini) and a stub that ships live, which makes a first
+// run on a fresh laptop probe a paid API with an empty key.
+func TestDefaultConfigStubsRemoteProvidersCommentedOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(body)
+
+	// The wire name is load-bearing: openaiPath() only drops the /v1 segment
+	// for Provider == "gemini", so a gemini stub that copied groq's
+	// `provider: openai` would be the exact 404 CFOP-106 fixed.
+	stubs := []struct{ name, wantProvider, wantURL string }{
+		{"groq", "openai", "/v1"},
+		{"xai", "openai", "/v1"},
+		{"gemini", "gemini", "/v1beta/openai"},
+		{"claude", "anthropic", "api.anthropic.com"},
+	}
+	for _, tc := range stubs {
+		t.Run(tc.name, func(t *testing.T) {
+			block := commentedProviderBlock(content, tc.name)
+			if block == "" {
+				t.Fatalf("first-run config has no commented %q: block under providers", tc.name)
+			}
+			for _, key := range []string{"provider:", "url:", "model:", "api_key:"} {
+				if !strings.Contains(block, key) {
+					t.Errorf("the %s stub does not show %s", tc.name, key)
+				}
+			}
+			if got := stubValue(block, "provider"); got != tc.wantProvider {
+				t.Errorf("%s stub: provider = %q, want %q", tc.name, got, tc.wantProvider)
+			}
+			if got := stubValue(block, "url"); !strings.Contains(got, tc.wantURL) {
+				t.Errorf("%s stub: url = %q, want it to contain %q", tc.name, got, tc.wantURL)
+			}
+		})
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("the first-run file must be valid YAML: %v", err)
+	}
+	for name, p := range cfg.Providers {
+		if name != "ollama" {
+			t.Errorf("provider %q (%s) loaded live from the first-run file; it must stay commented", name, p.URL)
+		}
+	}
+}
+
+// commentedProviderBlock returns the lines of a commented-out `# name:` stub
+// under providers: — the heading and the indented `#   key: value` lines that
+// follow it — or "" if there is no such stub.
+func commentedProviderBlock(content, name string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.TrimSpace(line) != "# "+name+":" {
+			continue
+		}
+		var block []string
+		for _, next := range lines[i+1:] {
+			if !strings.HasPrefix(strings.TrimSpace(next), "#   ") {
+				break
+			}
+			block = append(block, next)
+		}
+		return strings.Join(block, "\n")
+	}
+	return ""
+}
+
+// stubValue returns the value of `#   key: value` inside a commented stub,
+// without any trailing `# comment`.
+func stubValue(block, key string) string {
+	for _, line := range strings.Split(block, "\n") {
+		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+		if !strings.HasPrefix(rest, key+":") {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(rest, key+":"))
+		if i := strings.Index(value, "#"); i >= 0 {
+			value = strings.TrimSpace(value[:i])
+		}
+		return value
+	}
+	return ""
+}

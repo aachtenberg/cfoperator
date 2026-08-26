@@ -23,7 +23,7 @@ const maxBodyInMessage = 400
 // string-matching provider prose at each call site. StatusCode is 0 when the
 // request never got an HTTP response at all.
 type APIError struct {
-	Provider   string // wire protocol: ollama, openai, or anthropic
+	Provider   string // wire protocol: ollama, openai, gemini (openai JSON, no /v1), or anthropic
 	Label      string // the operator's name for it from config ("groq"); Provider when unset
 	URL        string
 	StatusCode int
@@ -140,7 +140,7 @@ func (e *APIError) Hint() string {
 }
 
 // probe returns a command that actually tests reachability for this provider —
-// each one answers on a different path, and two of the three need a key.
+// each one answers on a different path, and all but ollama need a key.
 func (e *APIError) probe() string {
 	switch e.Provider {
 	case "ollama":
@@ -149,6 +149,10 @@ func (e *APIError) probe() string {
 		// Without anthropic-version the API answers 400, so a probe that omits
 		// it sends the operator chasing a second phantom failure.
 		return `curl -H "x-api-key: $KEY" -H "anthropic-version: 2023-06-01" ` + e.URL + "/v1/models"
+	case "gemini":
+		// Google's OpenAI-compatible surface has no /v1 segment; the generic
+		// probe below would 404 and send the operator chasing the wrong thing.
+		return `curl -H "Authorization: Bearer $KEY" ` + e.URL + "/models"
 	default:
 		return `curl -H "Authorization: Bearer $KEY" ` + e.URL + "/v1/models"
 	}

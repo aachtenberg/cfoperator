@@ -704,3 +704,67 @@ func TestToAnthropicMessagesMarksFailedToolResults(t *testing.T) {
 		t.Fatalf("failed tool_result missing is_error: %s", raw)
 	}
 }
+
+// The OpenAI-compatible hosts do not all agree on where the API lives: Groq
+// and xAI serve it under /v1 (which New() strips and the client re-adds), while
+// Google's compatible surface is rooted at .../v1beta/openai with no /v1
+// segment at all. This pins the exact path each provider is sent to on all
+// three OpenAI-shaped calls — chat, the model list, and the connection check —
+// because a Gemini config that 404s on one of them 404s on the others too,
+// and the first symptom the operator sees is whichever they tried first.
+func TestOpenAICompatPathsFollowTheProvider(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		base     string // appended to the test server URL, as an operator would paste it
+		wantChat string
+		wantList string
+	}{
+		{"groq-shaped openai", "openai", "/openai/v1", "/openai/v1/chat/completions", "/openai/v1/models"},
+		{"xai-shaped openai", "openai", "/v1", "/v1/chat/completions", "/v1/models"},
+		{"gemini", "gemini", "/v1beta/openai", "/v1beta/openai/chat/completions", "/v1beta/openai/models"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotPaths []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPaths = append(gotPaths, r.Method+" "+r.URL.Path)
+				if auth := r.Header.Get("Authorization"); auth != "Bearer test-key" {
+					t.Errorf("%s %s: Authorization = %q, want Bearer test-key", r.Method, r.URL.Path, auth)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch r.Method {
+				case "POST":
+					json.NewEncoder(w).Encode(map[string]any{
+						"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+					})
+				default:
+					json.NewEncoder(w).Encode(map[string]any{"data": []any{map[string]any{"id": "m"}}})
+				}
+			}))
+			defer server.Close()
+
+			c := New(tc.provider, server.URL+tc.base, "model", 0.7, "test-key")
+			if _, err := c.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}}, nil); err != nil {
+				t.Fatalf("Chat: %v", err)
+			}
+			if _, err := c.ListModels(); err != nil {
+				t.Fatalf("ListModels: %v", err)
+			}
+			if err := c.CheckConnection(); err != nil {
+				t.Fatalf("CheckConnection: %v", err)
+			}
+
+			want := []string{"POST " + tc.wantChat, "GET " + tc.wantList, "GET " + tc.wantList}
+			if len(gotPaths) != len(want) {
+				t.Fatalf("requests = %v, want %v", gotPaths, want)
+			}
+			for i := range want {
+				if gotPaths[i] != want[i] {
+					t.Errorf("request %d = %q, want %q", i, gotPaths[i], want[i])
+				}
+			}
+		})
+	}
+}

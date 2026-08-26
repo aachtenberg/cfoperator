@@ -83,6 +83,23 @@ func New(provider, url, model string, temperature float64, apiKey string) *LLMCl
 	}
 }
 
+// openaiPath returns the URL for an OpenAI-shaped endpoint (suffix is
+// "/chat/completions" or "/models") on this provider.
+//
+// Every OpenAI-compatible host but one serves the API under /v1 — Groq, xAI,
+// OpenAI itself — so New() strips a trailing /v1 from the configured URL and
+// the path is put back here. Google is the exception: its compatible surface
+// is rooted at .../v1beta/openai with no /v1 segment, so the "gemini" provider
+// speaks the same JSON on the bare base. Keeping that decision in one place is
+// the point; when it lived at each call site, a Gemini config 404'd on chat,
+// on the connection check, and again on the curl the error hint suggested.
+func (c *LLMClient) openaiPath(suffix string) string {
+	if c.Provider == "gemini" {
+		return c.URL + suffix
+	}
+	return c.URL + "/v1" + suffix
+}
+
 // Chat sends a non-streaming chat request and returns the full response.
 //
 // The context governs the whole request, so a caller that can be interrupted —
@@ -114,7 +131,7 @@ func (c *LLMClient) CheckConnection() error {
 	if c.Provider == "ollama" {
 		url = c.URL + "/api/tags"
 	} else {
-		url = c.URL + "/v1/models"
+		url = c.openaiPath("/models")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -181,7 +198,7 @@ func (c *LLMClient) ListModels() ([]string, error) {
 	if c.Provider == "ollama" {
 		url = c.URL + "/api/tags"
 	} else {
-		url = c.URL + "/v1/models"
+		url = c.openaiPath("/models")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -397,7 +414,7 @@ func (c *LLMClient) openaiChat(ctx context.Context, messages []Message, tools []
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/v1/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.openaiPath("/chat/completions"), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}

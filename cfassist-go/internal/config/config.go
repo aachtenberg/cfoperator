@@ -333,6 +333,20 @@ providers:
   #   temperature: 0.7
   #   api_key: ${GROQ_API_KEY}
   #   context_window: 131072
+  # xai:
+  #   provider: openai           # same wire as groq; /v1 is added back after the strip
+  #   url: https://api.x.ai/v1
+  #   model: grok-4
+  #   temperature: 0.7
+  #   api_key: ${XAI_API_KEY}
+  #   context_window: 131072
+  # gemini:
+  #   provider: gemini           # openai JSON, but Google serves it with no /v1 segment
+  #   url: https://generativelanguage.googleapis.com/v1beta/openai
+  #   model: gemini-2.5-flash
+  #   temperature: 0.7
+  #   api_key: ${GEMINI_API_KEY}
+  #   context_window: 1048576
   # claude:
   #   provider: anthropic
   #   url: https://api.anthropic.com

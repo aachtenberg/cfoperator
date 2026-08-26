@@ -75,6 +75,7 @@ jobs:
           run "root-level" "${root}" \
             test_web_auth.py test_web_auth_db.py test_auth_integration.py \
             test_console_nav.py test_console_brand.py test_console_llm_switcher.py \
+            test_console_provider_registry.py \
             test_console_drawer.py test_console_vendor.py test_console_cockpit.py test_console_repos.py \
             test_console_websocket.py \
             test_console_version.py \
