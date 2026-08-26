@@ -114,7 +114,7 @@ DEFAULT_JANITOR_INTERVAL_SECONDS = 15 * 60
 #: tag that does not exist. It fails loudly when that happens (a 404 naming the
 #: missing asset), which is the right failure — silently falling back to an
 #: older binary would put a cfassist without ``attach`` on the host.
-DEFAULT_CFASSIST_VERSION = "0.13.0"
+DEFAULT_CFASSIST_VERSION = "0.13.1"
 
 #: Where the cockpit image installs its entrypoint. Tier 2 has to name it
 #: because it wraps the session in ``timeout`` (docker has no
