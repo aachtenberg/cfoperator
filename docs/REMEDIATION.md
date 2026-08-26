@@ -111,6 +111,13 @@ guessing at a sentence with reading a field.
 }
 ```
 
+`repo` is **conditional, and the schema line above does not say so.** For a
+`gitops-manifest` target it is required and must resolve in the git registry:
+omitted, empty and unresolvable are all refused alike. For every other kind it
+may be omitted, and a value that does not resolve is dropped rather than fatal.
+The `"or omit"` wording is the prompt's, quoted here verbatim; it is accurate
+for five of the six kinds.
+
 It is read from the region after the **last** `STATUS:` in the reply — a
 line-anchored `FIX:` first, then a fenced JSON block, and for a nudge reply
 the bare object. (`FIX:` is line-anchored on purpose: a substring match also
@@ -130,8 +137,8 @@ refused if:
 - **`observed` is missing or empty**, or an entry is not an object, or lacks
   either `source` or `value` — every one of these is logged with its reason
   and the target ids
-- a **`gitops-manifest` target names a `repo` that does not resolve** in the
-  git registry
+- a **`gitops-manifest` target has no resolvable `repo`** — omitted, empty, or
+  a value absent from the git registry are refused alike
 
 `observed` is required unconditionally rather than only for steps that change a
 value. Deciding which steps those are means classifying free-form step text,
@@ -165,6 +172,13 @@ Class comes from the **first** target's kind:
 | `host` | `node-action` |
 | `database-row` | `data-fix` |
 | `external-system` | `external-system` |
+| *any other kind* | `manual` |
+
+**That table is a mapping, not a whitelist.** Validation does not constrain
+`kind` to the six names — a target kind of `sprocket` produces a perfectly
+valid FIX that maps to `manual` and parks for a human. The enum in *Shape* is
+guidance to the model, not a check, so a misspelled or future kind degrades
+quietly rather than being refused.
 
 Confidence is deliberately stingy. **Only** a single-target `gitops-manifest`
 at `risk: low` gets `0.8` — the one shape that can clear the auto gate.

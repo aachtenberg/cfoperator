@@ -31,7 +31,9 @@ _ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _ROOT)
 sys.path.append(os.path.join(_ROOT, 'agent'))
 
-from agent.agent import _FIX_JSON_SCHEMA, _FIX_KIND_TO_CLASS  # noqa: E402
+from agent.agent import (  # noqa: E402
+    _FIX_JSON_SCHEMA, _FIX_KIND_TO_CLASS, _class_from_fix_kind,
+)
 
 DOC = os.path.join(_ROOT, 'docs', 'REMEDIATION.md')
 
@@ -87,3 +89,26 @@ def test_nested_target_and_observed_keys_are_documented():
     for parent in ('targets', 'observed'):
         for key in schema[parent][0]:
             assert f'"{key}"' in text, f"{parent}.{key} is undocumented"
+
+
+def test_the_documented_fallback_class_matches_the_code():
+    """The row the kind table cannot express, raised in review.
+
+    Validation never constrains `kind` to the six names, and
+    `_class_from_fix_kind` falls back for anything absent from the dict — so an
+    unrecognised kind is a VALID FIX that parks as manual. The table guard
+    above compares only the dict and is blind to that, which is exactly how a
+    reader ends up believing the enum is a whitelist. Pinned separately so the
+    fallback cannot change without the doc changing.
+    """
+    fallback = _class_from_fix_kind('a-kind-that-will-never-exist')
+    text = _doc_text().split('### What a valid FIX decides', 1)[1]
+    row = re.search(r'^\|\s*\*any other kind\*\s*\|\s*`([a-z0-9-]+)`\s*\|\s*$',
+                    text, re.M)
+    assert row, "the kind table does not say what an unrecognised kind maps to"
+    # Read the class off THAT row, not merely somewhere in the section: the
+    # first version asserted the name appeared anywhere, which passed
+    # vacuously when the fallback changed to a class already in the table.
+    assert row.group(1) == fallback, (
+        f"doc says unrecognised kinds map to {row.group(1)!r}, "
+        f"code says {fallback!r}")
