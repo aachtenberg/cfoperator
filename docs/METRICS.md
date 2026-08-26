@@ -59,9 +59,9 @@ cfoperator_event_runtime_events_recorded_total{event_type="alert_received"}
 ### Decisions, Notifications and Completion
 ```promql
 cfoperator_event_runtime_decisions_total{action="investigate"}
-cfoperator_event_runtime_notifications_sent_total{sink="ntfy",result="success"}
-cfoperator_event_runtime_scheduled_tasks_total{scheduler="apscheduler",result="created"}
-cfoperator_event_runtime_completion_requests_total{outcome="resolved"}
+cfoperator_event_runtime_notifications_sent_total{result="success"}
+cfoperator_event_runtime_scheduled_tasks_total{result="success"}
+cfoperator_event_runtime_completion_requests_total{outcome="recorded"}
 ```
 
 `completion_requests_total` counts `POST /v1/investigations/{alert_id}/complete`
@@ -155,8 +155,15 @@ cfoperator_tools_registered
 ```promql
 # Tool calls by name and result (success/error)
 cfoperator_tool_calls_total{tool_name="prometheus_query", result="success"}
-cfoperator_tool_calls_total{tool_name="ssh_execute", result="error"}
+cfoperator_tool_calls_total{tool_name="ssh_execute", result="success"}
 ```
+
+> **`result` is always `success` today, including for tools that failed.** The
+> single call site increments unconditionally after the tool returns, so
+> `result="error"` is never emitted and a success *rate* built on this label
+> equals the total call rate. This doc previously showed an `error` example;
+> it could not match. Treat the counter as "tool invocations", not "tool
+> outcomes", until the call site distinguishes them.
 
 ### Investigation Tracking
 ```promql
@@ -193,15 +200,15 @@ log_messages_total{level="WARN", component="cfoperator"}
 
 ### Ollama Pool
 ```promql
-cfoperator_pool_instances{instance="ubuntu-llm-01",status="available"}
+cfoperator_pool_instances{instance="ubuntu-llm-01",status="healthy"}
 cfoperator_pool_checkouts_total{instance="ubuntu-llm-01",result="success"}
 cfoperator_pool_checkins_total{instance="ubuntu-llm-01"}
-cfoperator_pool_health_checks_total{instance="ubuntu-llm-01",result="success"}
+cfoperator_pool_health_checks_total{instance="ubuntu-llm-01",result="healthy"}
 ```
 
 ### Sweep Timing
 ```promql
-cfoperator_sweep_duration_seconds{mode="deep"}
+cfoperator_sweep_duration_seconds{mode="sequential"}
 cfoperator_sweep_phase_duration_seconds{phase="metrics",instance="ubuntu-llm-01"}
 ```
 
@@ -280,15 +287,15 @@ what each stage means.
 cfoperator_remediation_queue{status="needs-human"}
 
 # Enqueue, and whether the auto-gate let it through
-cfoperator_remediation_enqueued_total{source="investigation",remediation_class="gitops-patch",eligible="true"}
+cfoperator_remediation_enqueued_total{remediation_class="gitops-patch",eligible="true"}
 
 # The gates, in the order a recommendation meets them
-cfoperator_remediation_classifier_total{result="mechanizable"}
-cfoperator_remediation_folded_total{reason="node-incident"}
-cfoperator_remediation_judge_total{verdict="approve"}
+cfoperator_remediation_classifier_total{result="ok"}
+cfoperator_remediation_folded_total{reason="repeat"}
+cfoperator_remediation_judge_total{verdict="confirm"}
 
 # Execution and terminal state
-cfoperator_remediation_executor_spawned_total{result="spawned"}
+cfoperator_remediation_executor_spawned_total{result="ok"}
 cfoperator_remediation_reaped_total
 cfoperator_remediation_outcome_total{outcome="resolved"}
 ```
@@ -296,6 +303,36 @@ cfoperator_remediation_outcome_total{outcome="resolved"}
 `judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
 `verdict="unavailable"` or `verdict="unparseable"` means auto-execution has
 quietly stopped and everything is parking for a human.
+
+### Label values that are a closed set
+
+Verified against every `.labels()` call site. A query using a value absent from
+this table returns nothing — which is how the first version of this section
+shipped several examples that could never match.
+
+| metric | label | emitted values |
+|---|---|---|
+| `cfoperator_pool_instances` | `status` | `healthy`, `unhealthy`, `in_use` |
+| `cfoperator_pool_checkouts_total` | `result` | `success`, `unavailable` |
+| `cfoperator_pool_health_checks_total` | `result` | `healthy`, `unreachable` |
+| `cfoperator_sweep_duration_seconds` | `mode` | `parallel`, `sequential` |
+| `cfoperator_sweeps_total` | `mode` | `proactive`, `reactive` |
+| `cfoperator_remediation_queue` | `status` | the nine queue states — `queued`, `claimed`, `executing`, `pr-open`, `verifying`, `resolved`, `failed`, `needs-human`, `rejected` |
+| `cfoperator_remediation_classifier_total` | `result` | `ok`, `nudged`, `escalated`, `degraded` |
+| `cfoperator_remediation_folded_total` | `reason` | `repeat`, `fork_committed`, `fork_stuck` |
+| `cfoperator_remediation_judge_total` | `verdict` | `confirm`, `downgrade`, `reject`, `unavailable`, `unparseable` |
+| `cfoperator_remediation_executor_spawned_total` | `result` | `ok`, `capped`, `failed` |
+| `cfoperator_remediation_outcome_total` | `outcome` | `resolved`, `rejected` |
+| `cfoperator_remediation_enqueued_total` | `eligible` | `true`, `false` (`str(bool).lower()`) |
+| `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate` |
+| `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |
+| `cfoperator_event_runtime_completion_requests_total` | `outcome` | `recorded`, `auth_missing`, `auth_invalid`, `bad_request`, `error` |
+| `cfoperator_llm_requests_total` | `result` | `success`, `error` |
+| `cfoperator_llm_tokens_total` | `type` | `prompt`, `completion`, `input`, `output` |
+| `cfoperator_llm_empty_final_responses_total` | `disposition` | `nudged`, `exhausted` |
+
+Labels not listed here carry open-ended values — an instance name, a sink, a
+tool name, a scheduler class — and are not enumerable from the source.
 
 ## Sweep Finding Verification
 
@@ -344,7 +381,7 @@ topk(5, sum by (tool_name) (
 ))
 
 # Tool success rate
-sum(rate(cfoperator_tool_calls_total{result="success"}[5m]))
+sum(rate(cfoperator_tool_calls_total[5m]))  # see the note above: result is always "success"
 / sum(rate(cfoperator_tool_calls_total[5m]))
 ```
 
@@ -403,8 +440,16 @@ cfoperator_tools_registered
 ```
 
 ### Tool Failures
+
+> **This rule cannot fire as written, and is kept here to say so.**
+> `cfoperator_tool_calls_total` only ever emits `result="success"` (see *Tool
+> Execution* above), so the numerator is always zero and the ratio is always
+> zero. There is no correct rewrite until the call site records failures;
+> deleting the rule would just lose the fact that tool-failure alerting looks
+> configured and is not.
+
 ```yaml
-- alert: HighToolFailureRate
+- alert: HighToolFailureRate   # inert — see the note above
   expr: |
     rate(cfoperator_tool_calls_total{result="error"}[5m])
     / rate(cfoperator_tool_calls_total[5m]) > 0.1
