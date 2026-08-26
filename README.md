@@ -545,7 +545,10 @@ fails at fixture setup without one.
 - [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md) — Observability surfaces
 - [grafana/README.md](grafana/README.md) — Grafana dashboard guide
 - [docs/llm-observability.md](docs/llm-observability.md) — LLM metrics deep dive
-- [docs/ROADMAP.md](docs/ROADMAP.md) — Planned work
+
+Planned work is tracked in Plane (project **CFOP**), not in this repo — a
+roadmap file here went stale twice in nine days and was dropped rather than
+re-synced by hand.
 
 ### Benchmarks
 - [benchmarks/results.md](benchmarks/results.md) — Ollama inference latency benchmark (TTFT, tokens/sec, GPU stats)

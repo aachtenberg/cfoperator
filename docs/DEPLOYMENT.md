@@ -235,7 +235,8 @@ Skipped: `**.md`, `docs/**`, `benchmarks/**`, `llm-gateway/**`, `grafana/**`. A 
 | cfoperator-deploy YAML (manifests, RBAC) | ArgoCD apply | Push to cfoperator-deploy/main. |
 | homelab-infra YAML (everything else in the cluster) | ArgoCD apply | Push to homelab-infra/main. |
 | Grafana dashboard | Provisioned ConfigMap | Edit `k3s/base/monitoring/files/grafana-dashboards/`, push. |
-| Secret value | Re-sealed SealedSecret | Edit `homelab-infra/secrets/.env.secrets`, run `./scripts/seal-secrets.sh`, push. |
+| Agent config (`remediation`, `ooda.noise`, `llm`) | `cfoperator-config` ConfigMap | Push to cfoperator-deploy/main, **then restart the pod** — config is read at start, so ArgoCD syncing the ConfigMap alone changes nothing. Runtime flags that live in the DB toggle live from the console instead and need no restart. |
+| Secret value | Re-sealed SealedSecret | Edit `homelab-infra/secrets/.env.secrets`, run `homelab-infra/scripts/seal-secrets.sh`, push. |
 
 ## Verification
 

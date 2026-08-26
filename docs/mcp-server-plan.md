@@ -487,7 +487,7 @@ _Checked 2026-07-28 against `mcp_server/`, `web_server.py`, `event_runtime/`,
 | MCP prompts | Phase 2 from `skills/*/SKILL.md` | Done (phase 2): all 8 skills registered, optional `target` argument |
 | Resource scope gating | `read` for resources | Resources skip `require_scope` |
 | Metrics / rate limits / readiness | Phase 4 | None |
-| ROADMAP row | Still “design” wording | Should point at shipped MVP + ops gap |
+| ROADMAP row | Void | `docs/ROADMAP.md` dropped 2026-08-26; roadmap lives in Plane |
 
 ### Upstream routes the plan depends on (confirmed present)
 
