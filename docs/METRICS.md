@@ -6,13 +6,27 @@ CFOperator exposes Prometheus metrics at `http://<cfoperator-host>:8083/metrics`
 
 The portable event runtime also exposes Prometheus metrics at `http://<event-runtime-host>:8080/metrics` when running via `python3 -m event_runtime`.
 
+> **A metric missing from `/metrics` is not necessarily missing from the build.**
+> `prometheus_client` emits nothing for a *labelled* metric until some label
+> combination has been observed, so a counter that has not fired since the pod
+> started is simply absent. Scraping a live endpoint tells you what has
+> happened, not what exists — check the declaration before concluding a metric
+> was removed.
+
 ## Event Runtime Metrics
 
 ### Runtime Health
 ```promql
 cfoperator_event_runtime_up
-cfoperator_event_runtime_info
+cfoperator_event_runtime_info_info
 ```
+
+The doubled suffix is real, not a typo here: the code declares
+`Info("cfoperator_event_runtime_info")` and `prometheus_client` appends `_info`
+to every Info metric, so the exposed series is `..._info_info`. The agent's
+equivalent declares `Info("cfoperator_agent")` and exposes
+`cfoperator_agent_info`, which is the intended idiom. Documented as exposed
+rather than as intended — a query written from the tidier name returns nothing.
 
 ### Alert Throughput
 ```promql
@@ -26,6 +40,7 @@ cfoperator_event_runtime_alert_processing_seconds
 cfoperator_event_runtime_queue_size
 cfoperator_event_runtime_queue_capacity
 cfoperator_event_runtime_queue_oldest_age_seconds
+cfoperator_event_runtime_queue_enqueued_total
 cfoperator_event_runtime_queue_rejected_total
 cfoperator_event_runtime_queue_wait_seconds
 cfoperator_event_runtime_queue_processing_seconds
@@ -40,6 +55,17 @@ cfoperator_event_runtime_replay_events_total{sink="postgres",result="success"}
 cfoperator_event_runtime_replay_batch_size{sink="postgres"}
 cfoperator_event_runtime_events_recorded_total{event_type="alert_received"}
 ```
+
+### Decisions, Notifications and Completion
+```promql
+cfoperator_event_runtime_decisions_total{action="investigate"}
+cfoperator_event_runtime_notifications_sent_total{sink="ntfy",result="success"}
+cfoperator_event_runtime_scheduled_tasks_total{scheduler="apscheduler",result="created"}
+cfoperator_event_runtime_completion_requests_total{outcome="resolved"}
+```
+
+`completion_requests_total` counts `POST /v1/investigations/{alert_id}/complete`
+by outcome — the callback the agent uses to close an investigation out.
 
 ### Bare-Metal Host Observability
 ```promql
@@ -165,6 +191,20 @@ log_messages_total{level="ERROR", component="cfoperator"}
 log_messages_total{level="WARN", component="cfoperator"}
 ```
 
+### Ollama Pool
+```promql
+cfoperator_pool_instances{instance="ubuntu-llm-01",status="available"}
+cfoperator_pool_checkouts_total{instance="ubuntu-llm-01",result="success"}
+cfoperator_pool_checkins_total{instance="ubuntu-llm-01"}
+cfoperator_pool_health_checks_total{instance="ubuntu-llm-01",result="success"}
+```
+
+### Sweep Timing
+```promql
+cfoperator_sweep_duration_seconds{mode="deep"}
+cfoperator_sweep_phase_duration_seconds{phase="metrics",instance="ubuntu-llm-01"}
+```
+
 ## LLM Observability Metrics
 
 ### LLM Request Tracking
@@ -229,6 +269,33 @@ cfoperator_embedding_requests_total{result="unembeddable"} # the input can never
 cfoperator_embedding_cache_hits_total{result="hit"}
 cfoperator_embedding_cache_hits_total{result="miss"}
 ```
+
+## Remediation Pipeline Metrics
+
+The queue and the gates in front of it. See [REMEDIATION.md](REMEDIATION.md) for
+what each stage means.
+
+```promql
+# Queue depth by state — the one to graph
+cfoperator_remediation_queue{status="needs-human"}
+
+# Enqueue, and whether the auto-gate let it through
+cfoperator_remediation_enqueued_total{source="investigation",remediation_class="gitops-patch",eligible="true"}
+
+# The gates, in the order a recommendation meets them
+cfoperator_remediation_classifier_total{result="mechanizable"}
+cfoperator_remediation_folded_total{reason="node-incident"}
+cfoperator_remediation_judge_total{verdict="approve"}
+
+# Execution and terminal state
+cfoperator_remediation_executor_spawned_total{result="spawned"}
+cfoperator_remediation_reaped_total
+cfoperator_remediation_outcome_total{outcome="resolved"}
+```
+
+`judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
+`verdict="unavailable"` or `verdict="unparseable"` means auto-execution has
+quietly stopped and everything is parking for a human.
 
 ## Sweep Finding Verification
 
