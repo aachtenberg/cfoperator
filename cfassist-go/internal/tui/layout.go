@@ -39,16 +39,25 @@ func (m *model) chromeHeight() int {
 // chrome can have changed height — a keystroke, a resize, the menu opening —
 // and from View as a backstop, because a stale height here is the input
 // pushed off the bottom of the terminal.
+//
+// When the menu opens the viewport shrinks. Keeping YOffset would clip the
+// bottom of the transcript — the /providers (or /models, /skills) list the
+// operator just ran, which is why they opened the menu. If they were already
+// following the bottom, stay there. A scrolled-up view is left alone.
 func (m *model) layout() {
 	if !m.ready {
 		return
 	}
+	follow := m.viewport.AtBottom()
 	h := m.height - m.chromeHeight()
 	if h < 1 {
 		h = 1
 	}
 	m.viewport.Height = h
 	m.viewport.Width = m.width
+	if follow {
+		m.viewport.GotoBottom()
+	}
 }
 
 // growInput lets the box follow a multi-line paste up to inputMaxLines, and
