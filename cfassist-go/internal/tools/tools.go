@@ -135,6 +135,8 @@ func New(cfg *config.Config) *Registry {
 		},
 	}
 
+	addTimescale(r, cfg.Tools.Timescale)
+
 	// list_tools — describe available tools
 	r.tools["list_tools"] = tool{
 		schema: client.ToolSchema{

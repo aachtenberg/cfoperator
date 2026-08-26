@@ -6,11 +6,20 @@ description: "Rank IoT/MQTT devices by telemetry volume using one timescale_quer
 # MQTT Top Talkers
 
 Answer "which device is emitting the most telemetry to MQTT?" with a single
-`timescale_query` call. Telegraf subscribes to the MQTT broker and writes one
-row per message into TimescaleDB (`sensors` db), tagged by device — so message
-volume per device is a `count(*)` there. Do NOT try to answer this from
-Prometheus (broker `$SYS` stats are aggregates with no per-client breakdown)
-or Loki (mosquitto only logs connects/disconnects).
+`timescale_query` **tool** call. That is a registered function in this
+session (same name and contract as the CFOperator agent's), not a binary,
+not a kubectl trick, and not a file on disk.
+
+**Do not search the filesystem for it.** Never `grep -R`, `find /`, or walk
+`$PATH` looking for `timescale_query`, the SQL below, or this playbook. If
+`list_tools` does not show `timescale_query`, say that Timescale is not
+configured on this host and stop.
+
+Telegraf subscribes to the MQTT broker and writes one row per message into
+TimescaleDB (`sensors` db), tagged by device — so message volume per device
+is a `count(*)` there. Do NOT try to answer this from Prometheus (broker
+`$SYS` stats are aggregates with no per-client breakdown) or Loki
+(mosquitto only logs connects/disconnects).
 
 ## When to Use
 
@@ -44,8 +53,11 @@ GROUP BY device
 ORDER BY msgs DESC;
 ```
 
-Invoke via: `timescale_query(sql=<above>)`. Adjust the interval to the window
-asked about (divide by the window's minutes for msgs_per_min).
+Call the `timescale_query` tool with `sql` set to the statement above.
+Adjust the interval to the window asked about (divide by the window's
+minutes for msgs_per_min). If a column is missing (`device` vs
+`device_id`), inspect `information_schema.columns` with another
+`timescale_query` call — still the tool, never grep.
 
 ## Interpreting Results
 
