@@ -178,7 +178,7 @@ llm:
       model: grok-3
       api_key: ${XAI_API_KEY}
     - provider: gemini       # NOT in the automatic escalation chain — see note
-      model: gemini-2.5-flash
+      model: gemini-3.6-flash
       api_key: ${GEMINI_API_KEY}
     - provider: anthropic
       model: claude-3-5-sonnet-20241022

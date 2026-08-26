@@ -343,7 +343,7 @@ providers:
   # gemini:
   #   provider: gemini           # openai JSON, but Google serves it with no /v1 segment
   #   url: https://generativelanguage.googleapis.com/v1beta/openai
-  #   model: gemini-2.5-flash
+  #   model: gemini-3.6-flash
   #   temperature: 0.7
   #   api_key: ${GEMINI_API_KEY}
   #   context_window: 1048576
