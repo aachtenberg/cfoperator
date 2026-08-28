@@ -314,8 +314,19 @@
             font-size: 13px;
             border-bottom: 1px solid var(--border-subtle);
             line-height: 1.6;
+            display: flex; gap: 8px; align-items: flex-start;
         }
         .sweep-finding:last-child { border-bottom: none; }
+        .sweep-finding-body { flex: 1; min-width: 0; }
+        /* Hand a finding to the chat (CFOP-115): a quiet chat glyph at the right
+           of the row, the weight of the drawer's copy icons, not a button bar. */
+        .sweep-finding .ask {
+            flex-shrink: 0; background: none; border: 0; padding: 3px; margin-top: 2px; line-height: 0;
+            color: var(--text-muted); cursor: pointer; border-radius: var(--radius-sm);
+        }
+        .sweep-finding .ask:hover { color: var(--accent); background: var(--bg-hover); }
+        .sweep-finding .ask:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+        .sweep-finding .ask svg { width: 15px; height: 15px; }
 
         .sweep-badge {
             display: inline-block;
@@ -1360,11 +1371,18 @@
             }).catch(err => console.error('Feedback error:', err));
         }
 
+        // The send lock. inFlightChatId is set only when /api/chat answers;
+        // until then the disabled Send button was the only thing in the way,
+        // and Enter on the composer never checked it — a second Enter, or a
+        // sweep-finding click, in that window fired a second POST (CFOP-115
+        // review). SENDING covers the gap, synchronously, from the first call.
+        let SENDING = false;
         function sendMessage() {
-            if (inFlightChatId) return;  // a chat is already streaming
+            if (inFlightChatId || SENDING) return;  // streaming, or the POST is still out
             const input = document.getElementById('message-input');
             const message = input.value.trim();
             if (!message) return;
+            SENDING = true;
 
             // Chat uses the server's selected_backend (backend: auto). Provider/
             // model are set via the header chip (or Admin → LLM).
@@ -1388,6 +1406,7 @@
             })
             .then(r => r.json())
             .then(data => {
+                SENDING = false;
                 if (data.chat_id) {
                     setChatInFlight(data.chat_id);
                     pollChatEvents(data.chat_id, 0);
@@ -1398,6 +1417,7 @@
                 }
             })
             .catch(err => {
+                SENDING = false;
                 document.getElementById('thinking').classList.remove('active');
                 addMessage('agent', `Error: ${err.message}`, 'error', 'none');
                 setChatInFlight(null);
@@ -1651,15 +1671,57 @@
             if (e.key === '/') { e.preventDefault(); input.value = '/'; input.focus(); updateSlashMenu(); }
         });
 
-        // Sweep Reports
+        // Sweep Reports. The latest report is kept on the page so a finding's
+        // handoff to the chat (CFOP-115) reads structured fields, not the row.
+        let SWEEP = null;
+        const ASK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+
+        // Same shape as remediationQuestion / investigationQuestion: what is
+        // known about the finding, then the ask that wants the checks run.
+        function findingQuestion(r, i) {
+            const f = (r.findings || [])[i] || {};
+            const head = `Sweep #${r.id}.${i} — severity ${f.severity || 'info'}`
+                + (f.status ? `, status ${f.status}` : '')
+                + (r.swept_at ? `, swept ${r.swept_at}` : '') + '.';
+            return [
+                head,
+                f.finding ? `Finding: ${f.finding}` : '',
+                f.remediation ? `Proposed remediation: ${f.remediation}` : '',
+                f.resolution ? `Recorded resolution: ${f.resolution}` : '',
+                'Check whether this is still the case — run the checks yourself rather than listing them — '
+                + 'and say what should happen next, with the evidence.',
+            ].filter(Boolean).join('\n');
+        }
+
+        // The chat is on this page, so no URL handoff: compose, send, fold the
+        // panel so the answer is in view. A draft in the composer is put back
+        // afterwards rather than lost. A send already out or an answer still
+        // streaming is not interrupted — sendMessage would ignore the call and
+        // leave the question sitting in the box — so the click says to wait.
+        function askAboutFinding(i) {
+            if (!SWEEP) return;
+            if (inFlightChatId || SENDING) { toast('wait for the current answer, then ask again', 'err'); return; }
+            const input = document.getElementById('message-input');
+            const draft = input.value;
+            input.value = findingQuestion(SWEEP, i);
+            sendMessage();
+            if (draft.trim()) { input.value = draft; saveDraft(draft); }
+            const body = document.querySelector('#sweep-panel .sweep-body');
+            if (body) body.classList.remove('open');
+        }
+
         function loadSweepReports() {
             fetch('/api/sweep-reports?limit=1').then(r => r.json()).then(data => {
                 const panel = document.getElementById('sweep-panel');
                 const reports = data.reports || [];
-                if (!reports.length) { panel.classList.remove('active'); return; }
+                if (!reports.length) { panel.classList.remove('active'); SWEEP = null; return; }
                 const r = reports[0];
+                SWEEP = r;
                 const ago = timeAgo(r.swept_at);
                 const meta = r.sweep_meta || {};
+                // The poll repaints every 60 s; the click now lives inside the
+                // open body, so an open panel stays open across the repaint.
+                const wasOpen = !!panel.querySelector('.sweep-body.open');
                 document.getElementById('status-sweep').textContent = `Last sweep: ${ago}`;
                 panel.innerHTML = `
                     <div class="sweep-header" onclick="this.nextElementSibling.classList.toggle('open')">
@@ -1667,9 +1729,10 @@
                         <span class="sweep-time">${ago}</span>
                     </div>
                     <div class="sweep-body">
-                        ${r.findings.map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + escapeHtml(f.status) : ''}"><span class="sweep-badge ${escapeHtml(f.severity || 'info')}">${escapeHtml((f.severity || 'info').toUpperCase())}</span><span class="finding-id">#${escapeHtml(String(r.id))}.${i}</span>${f.status ? `<span class="finding-status ${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div>`).join('')}
+                        ${(r.findings || []).map((f, i) => `<div class="sweep-finding${f.status ? ' finding-' + escapeHtml(f.status) : ''}"><div class="sweep-finding-body"><span class="sweep-badge ${escapeHtml(f.severity || 'info')}">${escapeHtml((f.severity || 'info').toUpperCase())}</span><span class="finding-id">#${escapeHtml(String(r.id))}.${i}</span>${f.status ? `<span class="finding-status ${escapeHtml(f.status)}">${escapeHtml(f.status)}</span>` : ''}${escapeHtml(f.finding || '')}${f.remediation ? `<div class="sweep-remediation">&rarr; ${escapeHtml(f.remediation)}</div>` : ''}${f.resolution ? `<div class="sweep-remediation">&check; ${escapeHtml(f.resolution)}</div>` : ''}</div><button type="button" class="ask" onclick="askAboutFinding(${i})" aria-label="Ask the console about finding #${escapeHtml(String(r.id))}.${i}" title="Ask the console about this finding">${ASK_ICON}</button></div>`).join('')}
                         ${meta.sweep_backend ? `<div class="sweep-meta">${escapeHtml(meta.sweep_backend)}/${escapeHtml(meta.sweep_model || '')}</div>` : ''}
                     </div>`;
+                if (wasOpen) panel.querySelector('.sweep-body').classList.add('open');
                 panel.classList.add('active');
             }).catch(() => {});
         }
