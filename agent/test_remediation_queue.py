@@ -1880,6 +1880,69 @@ def test_judge_providers_accepts_a_single_string():
     assert CFOperator._judge_providers(op) == ["xai"]
 
 
+def _post_returning(status, text, payload=None):
+    """A requests.post double: HTTP status + raw body, raising like requests does."""
+    import requests
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = text
+    resp.json.return_value = payload or {}
+    if status >= 400:
+        resp.raise_for_status.side_effect = requests.HTTPError(
+            f"{status} Client Error for url: https://vendor.example/v1", response=resp)
+    else:
+        resp.raise_for_status.return_value = None
+    return MagicMock(return_value=resp)
+
+
+def _keyed_op():
+    op = MagicMock()
+    op._judge_api_key = lambda backend: "k"
+    return op
+
+
+def test_anthropic_judge_request_carries_no_sampling_parameter():
+    # Opus 4.7 and later reject temperature/top_p/top_k with a 400 — guard the
+    # class, not just the one that parked every auto-eligible row (CFOP-117).
+    post = _post_returning(200, "", {"content": [
+        {"type": "text", "text": '{"verdict": "confirm", "reason": "ok"}'}]})
+    with patch("requests.post", post):
+        out = CFOperator._complete_judge(_keyed_op(), "sys", "user",
+                                         "anthropic", "claude-opus-4-8")
+    assert "confirm" in out
+    body = post.call_args.kwargs["json"]
+    assert body["model"] == "claude-opus-4-8"
+    assert not {"temperature", "top_p", "top_k"} & set(body), sorted(body)
+
+
+def test_judge_http_failure_names_the_vendors_message_not_just_the_status():
+    # raise_for_status carries the status line only; the body is where a vendor
+    # says WHICH thing was wrong, and the exception text is what the parked
+    # row's reason shows (CFOP-117: "404" for a three-vendor failure).
+    import requests
+    post = _post_returning(400, '{"type":"error","error":{"type":"invalid_request_error",'
+                                '"message":"`temperature` is deprecated for this model."}}')
+    with patch("requests.post", post), pytest.raises(requests.HTTPError) as exc:
+        CFOperator._complete_judge(_keyed_op(), "sys", "user",
+                                   "anthropic", "claude-opus-4-8")
+    assert "400" in str(exc.value)
+    assert "`temperature` is deprecated" in str(exc.value)
+
+
+def test_openai_compat_judge_failure_names_the_vendors_message_too():
+    # Same on the compat wire — the xAI 403 was "credits exhausted", which the
+    # status line alone reads as an auth problem. That wire still pins
+    # temperature 0: xAI and Gemini accept it, and a veto should not be
+    # sampled differently each run where the vendor lets us say so.
+    import requests
+    post = _post_returning(403, '{"code":"permission-denied","error":"Your team has '
+                                'used all available credits or reached its limit"}')
+    with patch("requests.post", post), pytest.raises(requests.HTTPError) as exc:
+        CFOperator._complete_judge(_keyed_op(), "sys", "user", "xai", "grok-4.5")
+    assert "403" in str(exc.value) and "credits" in str(exc.value)
+    assert post.call_args.kwargs["json"]["temperature"] == 0
+
+
 def test_judge_unavailable_downgrades_rather_than_confirming():
     op = _judging_op(MagicMock(side_effect=RuntimeError("ANTHROPIC_API_KEY required")))
     out = CFOperator._judge_mutation_remediation(
