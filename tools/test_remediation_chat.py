@@ -2,6 +2,9 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
+import tools as tools_module
 from tools import ToolRegistry
 
 
@@ -82,7 +85,11 @@ class TestResolveRemediation:
             result={"resolution_note": "device decommissioned",
                     "resolved_by": "chat-agent"})
 
-    def test_rejected_is_allowed(self):
+    def test_reject_writes_last_error_like_the_http_twin(self):
+        # POST /reject writes last_error; POST /resolve writes the result
+        # keys. resolutionHtml() paints "resolved by <who>" whenever
+        # result.resolution_note is set — whatever the status — so writing
+        # the resolve keys here would label a rejected row resolved.
         op, reg = _registry()
         op.kb.get_remediation.return_value = {
             "id": 5, "status": "needs-human", "claimed_at": None,
@@ -91,7 +98,21 @@ class TestResolveRemediation:
         op.kb.update_remediation_status.return_value = True
         reg.execute("resolve_remediation", {
             "remediation_id": 5, "note": "wrong fix", "status": "rejected"})
-        assert op.kb.update_remediation_status.call_args[0][1] == "rejected"
+        args, kwargs = op.kb.update_remediation_status.call_args
+        assert args[1] == "rejected"
+        assert kwargs == {"last_error": "wrong fix"}
+        assert "result" not in kwargs
+
+    def test_note_is_capped_like_the_console(self):
+        op, reg = _registry()
+        op.kb.get_remediation.return_value = {
+            "id": 6, "status": "needs-human", "claimed_at": None,
+            "completed_at": None, "payload": {},
+        }
+        op.kb.update_remediation_status.return_value = True
+        reg.execute("resolve_remediation", {"remediation_id": 6, "note": "x" * 5000})
+        note = op.kb.update_remediation_status.call_args[1]["result"]["resolution_note"]
+        assert len(note) == 2000
 
     def test_reports_the_stored_row_not_the_intent(self):
         op, reg = _registry()
@@ -106,29 +127,69 @@ class TestResolveRemediation:
             "remediation_id": 84, "note": "done"})
         assert out["remediation"]["status"] == "resolved"
 
-    def test_refuses_a_row_the_executor_is_running(self):
-        # Closing a claimed row strands the Job that will later POST
+    @pytest.mark.parametrize("status", ["claimed", "executing"])
+    def test_refuses_a_row_the_executor_is_leasing(self, status):
+        # Closing a leased row strands the Job that will later POST
         # /v1/remediations/<id>/complete against a row that moved on.
         op, reg = _registry()
         op.kb.get_remediation.return_value = {
-            "id": 12, "status": "in-progress", "claimed_at": "2026-08-28T12:00:00",
+            "id": 12, "status": status, "claimed_at": "2026-08-28T12:00:00",
             "completed_at": None, "payload": {},
         }
         out = reg.execute("resolve_remediation", {
             "remediation_id": 12, "note": "nope"})
-        assert "claimed by the executor" in out["error"]
+        assert "still running" in out["error"]
         op.kb.update_remediation_status.assert_not_called()
 
-    def test_refuses_a_claimed_row_whatever_its_status(self):
+    @pytest.mark.parametrize("status", ["pr-open", "verifying"])
+    def test_closes_a_finished_row_that_still_looks_claimed(self, status):
+        # update_remediation_status never clears claimed_at and only stamps
+        # completed_at for resolved/rejected/needs-human, so a row whose Job
+        # has finished still has claimed_at set and completed_at null. This
+        # is the row an operator asks chat to close once the PR exists —
+        # gating on claimed_at instead of status would refuse it.
         op, reg = _registry()
         op.kb.get_remediation.return_value = {
-            "id": 13, "status": "queued", "claimed_at": "2026-08-28T12:00:00",
+            "id": 14, "status": status, "claimed_at": "2026-08-28T12:00:00",
             "completed_at": None, "payload": {},
         }
+        op.kb.update_remediation_status.return_value = True
         out = reg.execute("resolve_remediation", {
-            "remediation_id": 13, "note": "nope"})
-        assert "error" in out
-        op.kb.update_remediation_status.assert_not_called()
+            "remediation_id": 14, "note": "PR merged by hand"})
+        assert out["success"] is True
+
+    def test_inflight_statuses_match_the_queue(self):
+        # tools/ cannot import agent.knowledge_base (agent/__init__ pulls in
+        # agent.agent, whose bare imports need agent/ on sys.path), so the
+        # tuple is copied. Read the original back by parsing the source —
+        # no import, no sys.path games — so the copy cannot drift.
+        import ast, pathlib
+        kb = pathlib.Path(__file__).resolve().parent.parent / "agent" / "knowledge_base.py"
+        found = [
+            ast.literal_eval(node.value)
+            for node in ast.parse(kb.read_text()).body
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", "") == "_REMEDIATION_INFLIGHT" for t in node.targets)
+        ]
+        assert found, "_REMEDIATION_INFLIGHT not found in knowledge_base.py"
+        assert tuple(found[0]) == tuple(tools_module._REMEDIATION_INFLIGHT)
+
+    def test_refused_statuses_are_real_queue_statuses(self):
+        # An inflight status the CHECK constraint cannot store is a guard
+        # that never fires. Parse the constraint and confirm overlap.
+        import pathlib, re
+        kb = (pathlib.Path(__file__).resolve().parent.parent
+              / "agent" / "knowledge_base.py").read_text()
+        # Anchor on the constraint NAME: several tables declare a
+        # "status IN (...)" check, and the first one is not this table's.
+        anchor = kb.find("name='valid_remediation_status'")
+        assert anchor != -1, "valid_remediation_status constraint not found"
+        window = kb[max(0, anchor - 400):anchor]
+        start = window.rfind("status IN (")
+        assert start != -1, "remediation status CHECK constraint not found"
+        valid = set(re.findall(r"'([a-z-]+)'", window[start:]))
+        assert "queued" in valid and "pr-open" in valid, valid
+        assert set(tools_module._REMEDIATION_INFLIGHT) <= valid
 
     def test_unknown_id_reports_rather_than_silently_succeeding(self):
         op, reg = _registry()

@@ -24,6 +24,13 @@ from .git import GitTools
 from .github import GitHubTools
 from .timescale import TimescaleTools
 
+# Statuses that mean the executor holds a lease on the row. Mirrors
+# _REMEDIATION_INFLIGHT in agent/knowledge_base.py, which cannot be imported
+# here: agent/__init__.py pulls in agent.agent, whose bare `from
+# knowledge_base import ...` only resolves with agent/ on sys.path. The copy
+# is pinned to the original by test_inflight_statuses_match_the_queue.
+_REMEDIATION_INFLIGHT = ('claimed', 'executing')
+
 logger = logging.getLogger("cfoperator.tools")
 
 class ToolRegistry:
@@ -1038,17 +1045,33 @@ class ToolRegistry:
                 return {'error': f'Remediation #{rid} not found. Use list_remediations to see open rows.'}
 
             # Refuse rows the executor is mid-flight on: it still holds the
-            # claim and will POST /v1/remediations/<id>/complete when its Job
+            # lease and will POST /v1/remediations/<id>/complete when its Job
             # ends, against a row that has moved on underneath it.
-            if row.get('status') == 'in-progress' or (row.get('claimed_at') and not row.get('completed_at')):
-                return {'error': f'Remediation #{rid} is claimed by the executor and still running '
+            #
+            # Keyed on status, NOT on claimed_at: update_remediation_status
+            # never clears claimed_at, and only stamps completed_at for the
+            # terminal three — so a finished 'pr-open' / 'verifying' row still
+            # looks claimed-and-incomplete. That is exactly the row an operator
+            # asks chat to close once the PR exists, so it must stay closeable.
+            if row.get('status') in _REMEDIATION_INFLIGHT:
+                return {'error': f'Remediation #{rid} is leased by the executor and still running '
                         f"(status {row.get('status')!r}). Closing it now would strand that job. "
-                        'Wait for it to finish, or reject it from the console.'}
+                        'Wait for it to finish, then close it.'}
 
-            ok = self.operator.kb.update_remediation_status(
-                rid, status,
-                result={'resolution_note': note, 'resolved_by': 'chat-agent'},
-            )
+            # The two console routes write DIFFERENT fields, and the drawer
+            # reads them: resolutionHtml() paints "resolved by <who>" whenever
+            # result.resolution_note is set, whatever the status. Writing the
+            # resolve keys on a rejected row would label it resolved.
+            note = note.strip()[:2000]  # parity with the console's cap
+            if status == 'resolved':
+                ok = self.operator.kb.update_remediation_status(
+                    rid, 'resolved',
+                    result={'resolved_by': 'chat-agent', 'resolution_note': note},
+                )
+            else:
+                ok = self.operator.kb.update_remediation_status(
+                    rid, 'rejected', last_error=note,
+                )
             if not ok:
                 return {'error': f'Remediation #{rid} could not be updated.'}
             # Re-read so the model reports the stored state, not its intent.
