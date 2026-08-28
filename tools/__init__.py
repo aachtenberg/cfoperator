@@ -24,6 +24,13 @@ from .git import GitTools
 from .github import GitHubTools
 from .timescale import TimescaleTools
 
+# Statuses that mean the executor holds a lease on the row. Mirrors
+# _REMEDIATION_INFLIGHT in agent/knowledge_base.py, which cannot be imported
+# here: agent/__init__.py pulls in agent.agent, whose bare `from
+# knowledge_base import ...` only resolves with agent/ on sys.path. The copy
+# is pinned to the original by test_inflight_statuses_match_the_queue.
+_REMEDIATION_INFLIGHT = ('claimed', 'executing')
+
 logger = logging.getLogger("cfoperator.tools")
 
 class ToolRegistry:
@@ -586,6 +593,45 @@ class ToolRegistry:
             }
         }
 
+        # The one WRITE tool for the remediation queue. It exists because
+        # without it an operator saying "resolve it" left the agent holding
+        # only update_sweep_finding — so it closed a sweep finding, reported
+        # that truthfully, and the remediation stayed on /remediations
+        # (CFOP-123). Mirrors POST /api/remediations/<id>/resolve.
+        self.tools['resolve_remediation'] = {
+            'function': self._resolve_remediation,
+            'schema': {
+                'name': 'resolve_remediation',
+                'description': (
+                    'Close a remediation queue row when the operator says the work is done, '
+                    'no longer needed, or the device/service is decommissioned. This is the ONLY '
+                    'way to take a row off the /remediations worklist — update_sweep_finding does '
+                    'NOT close a remediation. Use get_remediation first to confirm the id.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'remediation_id': {
+                            'type': 'integer',
+                            'description': 'Remediation queue id to close'
+                        },
+                        'status': {
+                            'type': 'string',
+                            'description': ("'resolved' when the underlying problem is handled or moot; "
+                                            "'rejected' when the proposed fix itself was wrong"),
+                            'enum': ['resolved', 'rejected']
+                        },
+                        'note': {
+                            'type': 'string',
+                            'description': ('Why it is being closed, in the operator\'s terms '
+                                            '(e.g. "device permanently decommissioned"). Recorded on the row.')
+                        }
+                    },
+                    'required': ['remediation_id', 'note']
+                }
+            }
+        }
+
         self.tools['get_correlations'] = {
             'function': self._get_correlations,
             'schema': {
@@ -892,6 +938,16 @@ class ToolRegistry:
         if not finding_id and finding_index < 0:
             return {'error': 'Must provide finding_id or finding_index (0-based). '
                     'Use get_sweep_report to list findings and their IDs/indices first.'}
+        if self._is_morning_summary_report(report_id):
+            # A morning summary is stored as a sweep report carrying ONE
+            # synthetic finding whose body is the whole digest (agent.py,
+            # _send_morning_summary). There is no per-subject finding to
+            # close, so resolving index 0 silently closes every issue the
+            # digest mentions — which is what happened in CFOP-123.
+            return {'error': f'Report #{report_id} is a morning summary, not a sweep. Its single '
+                    'finding is the entire digest, so closing it would close every issue the '
+                    'summary mentions. To act on one item, close its remediation with '
+                    'resolve_remediation (find it via list_remediations).'}
         try:
             updated = self.operator.kb.update_sweep_finding(
                 report_id, finding_index=finding_index, status=status,
@@ -964,6 +1020,79 @@ class ToolRegistry:
             return {'success': True, 'remediation': self._trim_remediation_for_tool(row)}
         except Exception as e:
             return {'error': str(e)}
+
+    def _resolve_remediation(self, remediation_id: int = None, note: str = '',
+                             status: str = 'resolved') -> Dict[str, Any]:
+        """Close a remediation queue row on the operator's say-so.
+
+        The chat twin of POST /api/remediations/<id>/resolve. Writes the same
+        ``result`` keys the console route writes so /remediations renders a
+        chat-closed row identically to a button-closed one.
+        """
+        if status not in ('resolved', 'rejected'):
+            return {'error': f"status must be 'resolved' or 'rejected', got {status!r}"}
+        if not (note or '').strip():
+            return {'error': 'A note is required — it is the only record of why this was closed.'}
+        if remediation_id is None:
+            return {'error': 'remediation_id is required. Use list_remediations to find it.'}
+        try:
+            rid = int(remediation_id)
+        except (TypeError, ValueError):
+            return {'error': f'remediation_id must be an integer, got {remediation_id!r}'}
+        try:
+            row = self.operator.kb.get_remediation(rid)
+            if not row:
+                return {'error': f'Remediation #{rid} not found. Use list_remediations to see open rows.'}
+
+            # Refuse rows the executor is mid-flight on: it still holds the
+            # lease and will POST /v1/remediations/<id>/complete when its Job
+            # ends, against a row that has moved on underneath it.
+            #
+            # Keyed on status, NOT on claimed_at: update_remediation_status
+            # never clears claimed_at, and only stamps completed_at for the
+            # terminal three — so a finished 'pr-open' / 'verifying' row still
+            # looks claimed-and-incomplete. That is exactly the row an operator
+            # asks chat to close once the PR exists, so it must stay closeable.
+            if row.get('status') in _REMEDIATION_INFLIGHT:
+                return {'error': f'Remediation #{rid} is leased by the executor and still running '
+                        f"(status {row.get('status')!r}). Closing it now would strand that job. "
+                        'Wait for it to finish, then close it.'}
+
+            # The two console routes write DIFFERENT fields, and the drawer
+            # reads them: resolutionHtml() paints "resolved by <who>" whenever
+            # result.resolution_note is set, whatever the status. Writing the
+            # resolve keys on a rejected row would label it resolved.
+            note = note.strip()[:2000]  # parity with the console's cap
+            if status == 'resolved':
+                ok = self.operator.kb.update_remediation_status(
+                    rid, 'resolved',
+                    result={'resolved_by': 'chat-agent', 'resolution_note': note},
+                )
+            else:
+                ok = self.operator.kb.update_remediation_status(
+                    rid, 'rejected', last_error=note,
+                )
+            if not ok:
+                return {'error': f'Remediation #{rid} could not be updated.'}
+            # Re-read so the model reports the stored state, not its intent.
+            return {'success': True,
+                    'remediation': self._trim_remediation_for_tool(
+                        self.operator.kb.get_remediation(rid) or {})}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _is_morning_summary_report(self, report_id: int) -> bool:
+        """True if this sweep report is a stored morning summary.
+
+        Best-effort: a lookup failure must not block a legitimate finding
+        update, so an error here reads as "not a summary".
+        """
+        try:
+            report = self.operator.kb.get_sweep_report(int(report_id))
+        except Exception:
+            return False
+        meta = (report or {}).get('sweep_meta')
+        return isinstance(meta, dict) and meta.get('type') == 'morning_summary'
 
     @staticmethod
     def _trim_remediation_for_tool(row: Dict[str, Any]) -> Dict[str, Any]:
