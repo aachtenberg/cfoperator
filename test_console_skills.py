@@ -221,3 +221,28 @@ def test_the_health_poll_refetches_an_empty_skill_list():
     start = html.index("function updateStatus()")
     end = html.index("setInterval(updateStatus", start)
     assert "loadSlashCommands()" in html[start:end], "updateStatus never refetches the skill list"
+
+
+# --------------------------------------------------------------------------
+# the composer keeps a draft across navigation (CFOP-113)
+# --------------------------------------------------------------------------
+
+def test_the_composer_keeps_a_draft_across_navigation():
+    """The header links are real navigations, so a half-typed question used
+    to go with the page. Saved on every input event, restored at bootstrap
+    (unless a handed row is about to write its own question), cleared only
+    once the message is actually sent."""
+    h = html()
+    assert "cfoperator_chat_draft" in h, "no draft key"
+    inp = h[h.index("addEventListener('input'"):]
+    inp = inp[:inp.index("});")]
+    assert "saveDraft(" in inp, "typing does not save the draft"
+    send = h[h.index("function sendMessage("):]
+    send = send[:send.index("\n        }\n")]
+    assert "saveDraft('')" in send, "sending does not clear the draft"
+    boot = h[h.index("const handedInvestigation"):]
+    boot = boot[:boot.index("createChatSession(")]
+    assert "restoreDraft()" in boot, "the draft is not restored before the session is set up"
+    assert "handedRemediation === null && handedInvestigation === null" in boot, (
+        "a handed row's question would be overwritten by a stale draft")
+

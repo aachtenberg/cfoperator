@@ -45,7 +45,10 @@
         ::selection { background: var(--accent-dim); color: var(--accent); }
 
         body {
-            font-family: 'Inter', -apple-system, sans-serif;
+            /* One face for the whole page (CFOP-113): the chat, its composer, the
+               controls and the chrome are all JetBrains Mono. A second family for
+               the message text read as the odd one out beside everything else. */
+            font-family: 'JetBrains Mono', monospace;
             background: var(--bg-primary);
             color: var(--text-primary);
             height: 100vh;
@@ -67,6 +70,9 @@
             z-index: 10;
         }
 
+        /* Controls do not inherit a family from body (a bare <button> renders in
+           the browser's own), so the element rule is what makes them match. */
+        button, input, select, textarea { font-family: inherit; }
         .logo {
             font-family: 'JetBrains Mono', monospace;
             font-size: 18px;
@@ -193,6 +199,14 @@
             color: var(--text-muted);
             margin-bottom: 12px;
         }
+        /* A folded sidebar section (CFOP-113): the heading is the summary, with
+           the tool log's chevron; the heading's margin applies only when open. */
+        details.sidebar-section > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; }
+        details.sidebar-section > summary::-webkit-details-marker { display: none; }
+        details.sidebar-section > summary h3 { margin-bottom: 0; }
+        details.sidebar-section[open] > summary { margin-bottom: 12px; }
+        details.sidebar-section > summary::before { content: '\25B6'; font-size: 10px; color: var(--text-muted); transition: transform 0.2s; }
+        details.sidebar-section[open] > summary::before { transform: rotate(90deg); }
 
         .sidebar-field {
             display: flex;
@@ -236,7 +250,6 @@
         .skill-list li:hover { background: var(--bg-hover); color: var(--accent); }
         .skill-list .skill-desc {
             display: block;
-            font-family: 'Inter', sans-serif;
             font-size: 11px;
             color: var(--text-muted);
             margin-top: 2px;
@@ -377,7 +390,6 @@
             color: var(--text-primary);
             padding: 8px 12px;
             border-radius: var(--radius-sm);
-            font-family: inherit;
             font-size: 13px;
             outline: none;
         }
@@ -820,7 +832,6 @@
             color: var(--text-primary);
             padding: 10px 14px;
             border-radius: var(--radius);
-            font-family: inherit;
             font-size: 14px;
             resize: none;
             caret-color: var(--accent);
@@ -930,20 +941,28 @@
     </header>
 
     <div class="main-layout">
-        <aside class="sidebar" id="sidebar">
-            <div class="sidebar-section">
-                <h3>Skills</h3>
+        <!-- Collapsed by default (CFOP-113): the chat is the page; the toggle in
+             the header brings the sidebar back. Not remembered across reloads. -->
+        <aside class="sidebar collapsed" id="sidebar">
+            <!-- Folded by default (CFOP-113): the list is long and the slash menu
+                 is how a skill is actually reached; this is the reference copy.
+                 A <details>, so the fold is keyboard-reachable for free. -->
+            <details class="sidebar-section" id="skills-section">
+                <summary><h3>Skills</h3></summary>
                 <!-- Filled by renderSkillList() from GET /api/skills — the same
                      list the slash menu filters. No entries belong here. -->
                 <ul class="skill-list" id="skill-list"></ul>
-            </div>
-            <div class="sidebar-section">
-                <h3 style="display:flex;justify-content:space-between;align-items:center;">
+            </details>
+            <!-- Foldable like Skills, but open by default (CFOP-113): recent chats
+                 are what you come back for. + New lives in the summary; its click
+                 is stopped so it does not also fold the section. -->
+            <details class="sidebar-section" id="history-section" open>
+                <summary><h3 style="flex:1;display:flex;justify-content:space-between;align-items:center;">
                     Chat History
-                    <button onclick="startNewChat()" style="background:var(--accent);color:var(--bg-primary);border:none;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;">+ New</button>
-                </h3>
+                    <button onclick="event.preventDefault();event.stopPropagation();startNewChat()" style="background:var(--accent);color:var(--bg-primary);border:none;padding:3px 10px;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;">+ New</button>
+                </h3></summary>
                 <ul class="skill-list" id="session-list" style="margin-top:8px;max-height:200px;overflow-y:auto;"></ul>
-            </div>
+            </details>
         </aside>
 
         <div class="chat-area">
@@ -1053,6 +1072,42 @@
                 .catch(() => toast(`remediation #${id} could not be loaded — reload to retry`, 'err'));
         }
 
+        // The investigation handoff (CFOP-113) — the same shape as the
+        // remediation one: what the drawer showed, then a question that asks
+        // for the checks to be run rather than recited. findings.fix is
+        // agent.py's structured fix; every field is optional on older rows.
+        function investigationQuestion(r) {
+            const f = r.findings || {};
+            const fix = (f.fix && typeof f.fix === 'object') ? f.fix : {};
+            const steps = Array.isArray(fix.steps) ? fix.steps : [];
+            const v = (fix.verify && typeof fix.verify === 'object') ? fix.verify : {};
+            const head = `Investigation #${r.id} — outcome ${r.outcome}`
+                + (r.host_id ? `, host ${r.host_id}` : '')
+                + (f.remediation_id ? `, remediation #${f.remediation_id}` : '')
+                + (f.provider ? `, by ${f.provider}` : '') + '.';
+            return [
+                head,
+                r.trigger ? `Trigger: ${r.trigger}` : '',
+                f.recommendation ? `Recommendation: ${f.recommendation}` : '',
+                steps.length ? 'Proposed steps: ' + steps.map((x, i) => `${i + 1}. ${x}`).join(' ') : '',
+                v.command ? `Verify: ${v.command}` + (v.expect ? ` (expect: ${v.expect})` : '') : '',
+                'Check whether this is still the case — run the checks yourself rather than listing them — '
+                + 'and say what should happen next (resolve, act, or keep monitoring), with the evidence.',
+            ].filter(Boolean).join('\n');
+        }
+
+        function askAboutInvestigation(id) {
+            fetch(`/api/investigations/${id}`)
+                .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+                .then(row => {
+                    document.getElementById('message-input').value = investigationQuestion(row);
+                    sendMessage();
+                    // Same rule as askAboutRemediation: consumed only once sent.
+                    history.replaceState(null, '', location.pathname + location.hash);
+                })
+                .catch(() => toast(`investigation #${id} could not be loaded — reload to retry`, 'err'));
+        }
+
         function saveMessage(role, content, backend, model) {
             if (!chatSessionId) return;
             fetch(`/api/chat-sessions/${chatSessionId}/messages`, {
@@ -1120,54 +1175,9 @@
             input.focus();
         }
 
-        // Configure marked for safe rendering. Guarded: marked is vendored, so
-        // the only way it is missing is a 404 on /vendor/marked.min.js - and a
-        // ReferenceError here would take the whole page script (send handler,
-        // slash menu, polling) with it. renderMarkdown already falls back to
-        // escaped text when marked is absent.
-        if (window.marked) {
-            marked.setOptions({
-                breaks: true,
-                gfm: true,
-            });
-        }
-
-        // Agent replies are LLM output and quote log/alert text verbatim, so the
-        // markdown they contain is untrusted: marked emits raw HTML by design.
-        // Parse, then walk the result and drop anything scriptable before it
-        // reaches innerHTML.
-        const MD_ALLOWED_TAGS = new Set(['A','B','BLOCKQUOTE','BR','CODE','DEL','DIV','EM','H1','H2',
-            'H3','H4','H5','H6','HR','I','LI','OL','P','PRE','SPAN','STRONG','TABLE','TBODY','TD',
-            'TH','THEAD','TR','UL']);
-        const MD_ALLOWED_ATTRS = new Set(['href', 'title', 'class', 'colspan', 'rowspan']);
-
-        function sanitizeHtml(html) {
-            const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
-            const root = doc.body.firstChild;
-            for (const el of Array.from(root.querySelectorAll('*'))) {
-                if (!MD_ALLOWED_TAGS.has(el.tagName)) {
-                    el.replaceWith(...el.childNodes);  // keep the text, drop the element
-                    continue;
-                }
-                for (const attr of Array.from(el.attributes)) {
-                    const name = attr.name.toLowerCase();
-                    if (!MD_ALLOWED_ATTRS.has(name)) { el.removeAttribute(attr.name); continue; }
-                    if (name === 'href' && !/^(https?:|mailto:|#|\/)/i.test(attr.value.trim())) {
-                        el.removeAttribute(attr.name);
-                    }
-                }
-                if (el.tagName === 'A') { el.setAttribute('rel', 'noopener noreferrer'); el.setAttribute('target', '_blank'); }
-            }
-            return root.innerHTML;
-        }
-
-        function renderMarkdown(text) {
-            try {
-                return sanitizeHtml(marked.parse(text));
-            } catch (e) {
-                return escapeHtml(text);
-            }
-        }
+        // Markdown rendering (renderMarkdown / sanitizeHtml) lives in common.js
+        // since CFOP-113: the investigations drawer renders the same agent prose.
+        // marked is vendored; common.js escapes the text instead when it is absent.
 
         function addMessage(role, text, backend = null, model = null) {
             const container = document.getElementById('chat-container');
@@ -1363,6 +1373,7 @@
             saveMessage('user', message);
             input.value = '';
             input.rows = 1;
+            saveDraft('');
 
             document.getElementById('send-button').disabled = true;
             document.getElementById('thinking').classList.add('active');
@@ -1608,7 +1619,26 @@
             e.target.rows = 1;
             e.target.rows = Math.min(Math.ceil(e.target.scrollHeight / 22), 6);
             updateSlashMenu();
+            saveDraft(e.target.value);
         });
+
+        // The draft survives leaving the page (CFOP-113). The header links are
+        // real navigations, so a half-typed question went with the page when
+        // you glanced at Remediations. Saved as you type, restored on load,
+        // cleared once sent. A handed row (?remediation= / ?investigation=)
+        // writes its own question, so the restore is skipped for it.
+        const DRAFT_KEY = 'cfoperator_chat_draft';
+        function saveDraft(text) {
+            try { if (text) localStorage.setItem(DRAFT_KEY, text); else localStorage.removeItem(DRAFT_KEY); } catch (e) {}
+        }
+        function restoreDraft() {
+            let draft = '';
+            try { draft = localStorage.getItem(DRAFT_KEY) || ''; } catch (e) {}
+            if (!draft) return;
+            const input = document.getElementById('message-input');
+            input.value = draft;
+            input.rows = Math.min(Math.ceil(input.scrollHeight / 22), 6);
+        }
 
         document.getElementById('message-input').addEventListener('blur', () => {
             setTimeout(() => document.getElementById('slash-menu').classList.remove('active'), 150);
@@ -1895,19 +1925,27 @@
             }
         });
 
-        // Handed a row by another page (CFOP-109): /?remediation=<id> starts a
-        // fresh session on that row and asks the first question itself; the
-        // saved session is left alone rather than appended to. The param is
-        // stripped by askAboutRemediation once the question is sent.
+        // Handed a row by another page (CFOP-109, CFOP-113): /?remediation=<id>
+        // or /?investigation=<id> starts a fresh session on that row and asks
+        // the first question itself; the saved session is left alone rather
+        // than appended to. The param is stripped by askAbout* once the
+        // question is sent.
         const handoff = new URLSearchParams(location.search);
         const handedRemediation = /^\d+$/.test(handoff.get('remediation') || '')
             ? Number(handoff.get('remediation')) : null;
+        const handedInvestigation = /^\d+$/.test(handoff.get('investigation') || '')
+            ? Number(handoff.get('investigation')) : null;
+        if (handedRemediation === null && handedInvestigation === null) restoreDraft();
         // Restore or create chat session
         const savedSession = localStorage.getItem('cfoperator_chat_session');
         if (handedRemediation !== null) {
             createChatSession(
                 () => askAboutRemediation(handedRemediation),
                 () => toast(`could not start a chat session for remediation #${handedRemediation} — reload to retry`, 'err'));
+        } else if (handedInvestigation !== null) {
+            createChatSession(
+                () => askAboutInvestigation(handedInvestigation),
+                () => toast(`could not start a chat session for investigation #${handedInvestigation} — reload to retry`, 'err'));
         } else if (savedSession) {
             chatSessionId = parseInt(savedSession);
             // Verify session still exists, load it
