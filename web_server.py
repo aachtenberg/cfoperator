@@ -109,6 +109,18 @@ def _openai_compat_providers() -> dict:
     return OPENAI_COMPAT_PROVIDERS
 
 
+def _normalize_model_id(backend: str, model: str) -> str:
+    """The agent's normalize_model_id — lazy import, same reason as above.
+
+    Google lists ``models/gemini-*``; the switcher used to persist that
+    verbatim and the chip then showed a different id than the judge floor
+    and the docs (CFOP-112). Applied on list, on persist and on read, so a
+    selection stored before this keeps resolving.
+    """
+    from agent import normalize_model_id
+    return normalize_model_id(backend, model)
+
+
 # Console-only blurbs for /api/providers; a registry entry without one is
 # described by its label.
 _PROVIDER_DESCRIPTIONS = {
@@ -470,8 +482,10 @@ class WebServer:
                     )
                     resp.raise_for_status()
                     data = resp.json()
-                    models = sorted([m['id'] for m in data.get('data', []) if m.get('active', True)])
-                    selected = self.operator.kb.get_setting(f'{backend}_selected_model', '')
+                    models = sorted({_normalize_model_id(backend, m['id'])
+                                     for m in data.get('data', []) if m.get('active', True)})
+                    selected = _normalize_model_id(
+                        backend, self.operator.kb.get_setting(f'{backend}_selected_model', ''))
                     return jsonify({'models': models, 'selected': selected})
 
                 elif backend == 'anthropic':
@@ -504,7 +518,7 @@ class WebServer:
         def select_model(backend):
             """Persist the user's model selection for a backend AND set as default provider."""
             data = request.json
-            model_name = data.get('model', '')
+            model_name = _normalize_model_id(backend, data.get('model', ''))
             setting_key = f'{backend}_selected_model'
             try:
                 # Save model selection for this backend
@@ -522,7 +536,8 @@ class WebServer:
             backend = self.operator.kb.get_setting('selected_backend', 'auto')
             model = ''
             if backend and backend != 'auto':
-                model = self.operator.kb.get_setting(f'{backend}_selected_model', '')
+                model = _normalize_model_id(
+                    backend, self.operator.kb.get_setting(f'{backend}_selected_model', ''))
             return jsonify({'backend': backend, 'model': model})
 
         @self.app.route('/api/settings/provider', methods=['POST'])
