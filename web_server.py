@@ -1159,8 +1159,10 @@ class WebServer:
 
             Refused (409) for manual-class rows — human-only work has nothing
             for the executor to mechanize, and queuing it burns a Job that
-            lands right back at needs-human (CFOP-49). The API is the gate so
-            the console, MCP, and any future caller hit the same wall.
+            lands right back at needs-human (CFOP-49) — and for rows whose PR
+            is already open, where the executor would open a second one
+            (CFOP-116). The API is the gate so the console, MCP, and any
+            future caller hit the same wall.
             """
             try:
                 row = self.operator.kb.get_remediation(remediation_id)
@@ -1168,9 +1170,11 @@ class WebServer:
                     return jsonify({'error': 'not found'}), 404
                 conflict = self.operator.kb.remediation_approve_conflict(row)
                 if conflict:
+                    action = ('reclassify' if row.get('remediation_class') == 'manual'
+                              else 'review-pr')
                     return jsonify({'error': conflict,
                                     'remediation_class': row.get('remediation_class'),
-                                    'action': 'reclassify'}), 409
+                                    'action': action}), 409
                 ok = self.operator.kb.update_remediation_status(remediation_id, 'queued')
                 if not ok:
                     return jsonify({'error': 'not found'}), 404

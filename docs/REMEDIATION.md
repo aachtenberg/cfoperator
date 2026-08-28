@@ -214,6 +214,7 @@ the model. Verification against the live target is tracked separately.
 stateDiagram-v2
   [*] --> queued: auto-eligible (low-risk + mechanizable + conf≥0.8)
   [*] --> needs_human: not eligible
+  [*] --> pr_open: the investigation opened the PR itself
   queued --> claimed: drainer
   claimed --> executing: executor
   executing --> pr_open: PR opened
@@ -228,6 +229,16 @@ stateDiagram-v2
   rejected --> [*]
   needs_human --> [*]
 ```
+
+A PR the investigation opens itself — the model calls `github_create_pr` and
+then recommends merging it — enters as `pr-open` carrying the URL, the state the
+executor's completion would have produced: the reconciler resolves the row on
+merge and rejects it on close, the drainer never claims it, and Approve is
+refused while the PR is open, because the executor regenerates its own diff and
+would open a second one (CFOP-116). Rows from before that fix show the PR their
+recommendation names, when it is in the row's own repo, as `named_pr_url` — a
+link for the operator, not a tracked PR: the reconciler, the stamp path and the
+Approve gate read the column only.
 
 ## Components
 
