@@ -175,20 +175,53 @@ _JUDGE_MODEL_FLOOR = {
 # DeepSeek first: cheapest capable rung, with the frontier peers as failover.
 _JUDGE_DEFAULT_ORDER = ('deepseek', 'anthropic', 'xai', 'gemini')
 
-# Model-name tokens that mark a vendor's FAST tier. A judge may be re-pointed
-# by config (CFOP-121) but never demoted into one of these: the gate exists
-# because a cheap model's confident wrong answer opened three bad PRs
-# (CFOP-70), so "configurable" must not become a way to reintroduce that.
-# Tokens, not substrings — 'mini' is inside 'gemini'.
+# Model-name tokens that mark a vendor's FAST tier, refused in the judge seat
+# (CFOP-121). Tokens, not substrings — 'mini' is inside 'gemini'.
+#
+# Be precise about what this is: a DENYLIST of the names vendors actually use
+# for their cheap tier, not a frontier allowlist. It stops the obvious
+# demotion — pointing the veto at a flash/mini/nano id — and it does NOT prove
+# a configured model is frontier-class: a mid-tier or superseded id carrying
+# none of these markers is accepted, and the operator is trusted for that.
+# An allowlist was considered and rejected: enumerating each vendor's current
+# top model is the failure CFOP-107 already hit twice, where a pinned id the
+# vendor had retired 404'd in production. A list that must be edited every
+# time a vendor ships is a worse guard than one that never goes stale.
 _JUDGE_FAST_TIER_TOKENS = frozenset({
-    'flash', 'mini', 'haiku', 'lite', 'turbo', 'instant', 'small',
+    'flash', 'mini', 'nano', 'micro', 'tiny', 'fast',
+    'haiku', 'lite', 'turbo', 'instant', 'small',
 })
 
 
 def _is_fast_tier_model(model: str) -> bool:
-    """True when a model name carries a vendor's fast-tier marker."""
+    """True when a model name carries a known fast-tier marker."""
     return bool(set(re.split(r'[^a-z0-9]+', str(model or '').lower()))
                 & _JUDGE_FAST_TIER_TOKENS)
+
+
+def _judge_is_self_review(reporter: str, backend: str, model: str) -> bool:
+    """True when this judge peer is the LLM that wrote the recommendation.
+
+    VENDOR-level, not snapshot-level, and that is the whole point. CFOP-70's
+    "the implementer is the wrong seat for the veto" is about who produced the
+    recommendation, not about which dated id they produced it under — and
+    since CFOP-121 lets an operator re-point a backend, matching the exact
+    'backend/model' string would mean setting judge_model_deepseek to any
+    other DeepSeek id silently re-opens that seat. A knob must not be able to
+    switch off a safety guard as a side effect.
+
+    Handles all three shapes _llm_provider_tag emits: 'backend/model', a bare
+    'backend' when no model was recorded, and a bare model when no backend
+    was. Google's listing ids also carry a 'models/' infix
+    ('gemini/models/gemini-3.1-pro-preview'), which the head split absorbs.
+    """
+    tag = str(reporter or '').strip().lower()
+    if not tag:
+        return False
+    if tag.split('/', 1)[0] == str(backend or '').strip().lower():
+        return True
+    # No backend recorded: the tag IS the model, so compare against ours.
+    return '/' not in tag and tag == str(model or '').strip().lower()
 
 # The verdict itself is two short fields, so this is almost all headroom — and
 # that is the point. Models that reason before answering spend this budget
@@ -3750,20 +3783,22 @@ FIX: {_FIX_JSON_SCHEMA}"""
                                + ', '.join(_JUDGE_DEFAULT_ORDER) +
                                "); parked rather than executed unattended")}
 
-        # The model that WROTE this recommendation must not also rule on it.
+        # The vendor that WROTE this recommendation must not also rule on it.
         # CFOP-70 rejected letting the implementer hold the veto, and CFOP-121
         # made that reachable in practice: deepseek-v4-pro is both a judge rung
         # and the backend the console selects for investigations, so a
         # DeepSeek-reported row would otherwise be judged by itself. The
-        # reporter is 'backend/model' on the row (payload.provider).
-        reporter = str(details.get('provider') or '').strip().lower()
+        # reporter is payload.provider — see _judge_is_self_review for why the
+        # match is on the vendor rather than the exact id.
+        reporter = str(details.get('provider') or '').strip()
         last_error = None
         self_reviewed: List[str] = []
         for backend in providers:
             model = self._judge_model(backend)
-            if reporter and f"{backend}/{model}".lower() == reporter:
-                logger.info(f"Mutation judge {backend}/{model} wrote this "
-                            f"recommendation, skipping to the next peer")
+            if _judge_is_self_review(reporter, backend, model):
+                logger.info(f"Mutation judge {backend}/{model} is the vendor that "
+                            f"wrote this recommendation ({reporter}), skipping to "
+                            f"the next peer")
                 REMEDIATION_JUDGE.labels(verdict='self-review-skipped').inc()
                 self_reviewed.append(f"{backend}/{model}")
                 continue
@@ -3876,12 +3911,14 @@ FIX: {_FIX_JSON_SCHEMA}"""
         vendor had stopped serving and no operator could fix either from
         config.
 
-        What does NOT relax is the tier. A configured model carrying a
-        fast-tier token is refused here and the floor is used instead, so the
-        knob can move the judge sideways or up but never down into the class
-        of model whose confident wrong answers the gate exists to catch. The
-        refusal is logged rather than silent: a setting that appears to save
-        and does nothing is worse than one that is rejected out loud.
+        What the knob still cannot do is point the veto at a vendor's cheap
+        tier: a configured model carrying a known fast-tier marker is refused
+        here and the floor is used instead. That is a denylist, not a proof of
+        tier — a mid-generation id with no marker is accepted, and beyond the
+        obvious demotion the operator is trusted (see _JUDGE_FAST_TIER_TOKENS
+        for why an allowlist would be the worse guard). The refusal is logged
+        rather than silent: a setting that appears to save and does nothing is
+        worse than one that is rejected out loud.
 
         Precedence mirrors _triage_model (DB over config) so the console can
         repoint a judge live, and so CFOP-122's per-scope page drives this key

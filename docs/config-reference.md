@@ -415,16 +415,26 @@ remediation:
   # knowledge-base setting `judge_model_<backend>` overrides BOTH so the
   # console can repoint a judge live — the precedence llm.triage_model uses.
   #
-  # What config CANNOT do is lower the tier: a model whose name carries a
-  # fast-tier token (flash / mini / haiku / lite / turbo / instant / small) is
-  # refused at read time, logged, and the pinned default is used instead. The
-  # gate exists because a cheap model's confident wrong answers opened three
-  # bad PRs (CFOP-70), so the knob must not be a way back to that.
+  # One thing the knob cannot do is point the veto at a vendor's cheap tier:
+  # a model whose name carries a known fast-tier marker (flash / mini / nano /
+  # micro / tiny / fast / haiku / lite / turbo / instant / small) is refused
+  # at read time, logged, and the pinned default is used instead. The gate
+  # exists because a cheap model's confident wrong answers opened three bad
+  # PRs (CFOP-70).
   #
-  # The judge also skips any peer whose backend/model equals the LLM that
-  # WROTE the recommendation, and parks the row if that leaves nobody: the
-  # implementer is the wrong seat for the veto, and deepseek-v4-pro is both a
-  # judge rung and a backend the console selects for investigations.
+  # Be clear on what that guard is worth: it is a DENYLIST of the names
+  # vendors use for their cheap tier, not a frontier allowlist. A mid-tier or
+  # superseded id carrying none of those markers is accepted and you are
+  # trusted for it. An allowlist was rejected on purpose — enumerating each
+  # vendor's current top model is exactly the failure CFOP-107 hit twice,
+  # where a pinned id the vendor had retired 404'd in production.
+  #
+  # The judge also skips any peer from the VENDOR that wrote the
+  # recommendation, and parks the row if that leaves nobody. Vendor, not the
+  # exact id: otherwise re-pointing a backend with `models` above would switch
+  # that guard off as a side effect. Consequence worth knowing: leading with
+  # deepseek buys availability for every row EXCEPT the ones deepseek itself
+  # reported -- those still park when the other peers are down.
   judge:
     providers: [deepseek, anthropic, xai, gemini]
     models:
