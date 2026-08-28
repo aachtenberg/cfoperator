@@ -246,3 +246,51 @@ def test_the_composer_keeps_a_draft_across_navigation():
     assert "handedRemediation === null && handedInvestigation === null" in boot, (
         "a handed row's question would be overwritten by a stale draft")
 
+
+# --------------------------------------------------------------------------
+# a sweep finding can be handed to the chat (CFOP-115)
+# --------------------------------------------------------------------------
+
+def test_a_sweep_finding_can_be_handed_to_the_chat():
+    """Each finding row in the sweep panel carries a control that composes a
+    question from the finding's own fields — not the row's text — and sends
+    it through sendMessage(), the same shape as the drawers' Ask console."""
+    h = html()
+    row = h[h.index("(r.findings || []).map((f, i) =>"):]
+    row = row[:row.index("\n")]
+    assert 'onclick="askAboutFinding(${i})"' in row, "no per-finding handoff control"
+    assert 'class="ask"' in row and "aria-label=" in row, "the control is not a labelled button"
+    q = h[h.index("function findingQuestion("):]
+    q = q[:q.index("\n        }\n")]
+    for field in ("f.severity", "f.finding", "f.remediation", "f.resolution", "run the checks yourself"):
+        assert field in q, f"findingQuestion() no longer carries {field}"
+    ask = h[h.index("function askAboutFinding("):]
+    ask = ask[:ask.index("\n        }\n")]
+    assert "findingQuestion(SWEEP, i)" in ask and "sendMessage();" in ask
+    assert "saveDraft(draft)" in ask, "a composer draft is lost by the handoff"
+    # The behaviours the change is about, pinned (CFOP-115 review): the
+    # click waits while a send is out or an answer streams, and folds the
+    # panel afterwards; the poll keeps SWEEP current without folding an
+    # open panel under the operator.
+    assert "if (inFlightChatId || SENDING)" in ask, "the click does not honour the send lock"
+    assert "classList.remove('open')" in ask, "the panel is not folded after the handoff"
+    load = h[h.index("function loadSweepReports("):]
+    load = load[:load.index("\n        }\n")]
+    assert "SWEEP = r;" in load, "the latest report is not kept on the page"
+    assert "wasOpen" in load and "classList.add('open')" in load, "the 60 s repaint folds an open panel"
+    assert "(r.findings || []).map" in load, "a report without findings throws mid-repaint"
+
+
+def test_sending_is_locked_from_the_first_call_not_from_the_reply():
+    """inFlightChatId exists only once /api/chat has answered; before the
+    CFOP-115 review, a second Enter (or a finding click) in that window fired
+    a second POST — the disabled Send button was the only lock and Enter
+    never looked at it. SENDING is set synchronously on the first call and
+    cleared on both outcomes of the POST."""
+    h = html()
+    send = h[h.index("function sendMessage("):]
+    send = send[:send.index("\n        }\n")]
+    assert "if (inFlightChatId || SENDING) return;" in send
+    assert "SENDING = true;" in send
+    assert send.count("SENDING = false;") == 2, "the lock is not released on both outcomes"
+
