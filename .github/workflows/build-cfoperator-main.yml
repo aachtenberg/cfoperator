@@ -299,7 +299,18 @@ jobs:
     # for the chart/demo audience and must not touch the deploy repo — pointing
     # ArgoCD at a release tag would freeze the fleet on it.
     if: github.ref_type == 'branch'
-    runs-on: ubuntu-latest
+    # The homelab's own runner (homelab-infra deploy-github-runner.yml): it is
+    # registered to this repo, carries kustomize, and has no shared egress IP.
+    # What keeps forks off it is this workflow's trigger — on.push.branches:
+    # [main] and no pull_request — not the job `if` above, which only skips
+    # the v* tag builds. test_workflows.py pins both. The repo's fork-PR
+    # approval policy is "all external contributors" (CFOP-114) besides. The
+    # image builds stay on hosted runners: public-repo minutes are free and
+    # the runner user is in the docker group. If itx-01 is down the bump
+    # waits; the revert is this one line. Because the work dir outlives the
+    # job here, nothing below leaves a credential or the private checkout
+    # behind (persist-credentials: false, per-command auth, the cleanup step).
+    runs-on: [self-hosted, linux, x64, ubuntu-itx-01]
     # Serialize bumps so two quick pushes can't race on the deploy repo's main.
     concurrency:
       group: cfoperator-deploy-bump
@@ -311,17 +322,41 @@ jobs:
           repository: aachtenberg/cfoperator-deploy
           token: ${{ secrets.DEPLOY_PAT }}
           path: cfoperator-deploy
+          # Not written into .git: the token rides each git command below as
+          # a header instead. On a persistent runner .git would outlive the job.
+          persist-credentials: false
 
-      - name: Install kustomize
+      - name: Ensure kustomize 5.4.3
+        # The playbook's /usr/local/bin copy is used only if it is the exact
+        # binary (sha256 of the file, not "kustomize version says 5.4.3" — a
+        # persistent runner's PATH is not a trust boundary). Anywhere else,
+        # fetch the release tarball straight from releases/download/ into the
+        # job-scoped $RUNNER_TEMP, checksum the tarball and the binary, no
+        # sudo. Never the upstream install_kustomize.sh: it resolves the
+        # version through api.github.com anonymously, hosted runners' shared
+        # IPs trip that rate limit, and it reports "Version v5.4.3 does not
+        # exist" — what stalled the d328a0c deploy (2026-08-28, run 33135088528).
+        env:
+          KUSTOMIZE_SHA256: 1d6bae90ee8591f7a4ed5b75be3f9bf80b7609f0c785921320827cd93e7c3a9a
+          KUSTOMIZE_TGZ_SHA256: 3669470b454d865c8184d6bce78df05e977c9aea31c30df3c669317d43bcc7a7
         run: |
-          curl -sL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" \
-            | bash -s 5.4.3
-          sudo mv kustomize /usr/local/bin/
+          if echo "$KUSTOMIZE_SHA256  /usr/local/bin/kustomize" | sha256sum -c - >/dev/null 2>&1; then
+            echo "KUSTOMIZE=/usr/local/bin/kustomize" >> "$GITHUB_ENV"; exit 0
+          fi
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o kustomize.tgz \
+            "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv5.4.3/kustomize_v5.4.3_linux_amd64.tar.gz"
+          echo "$KUSTOMIZE_TGZ_SHA256  kustomize.tgz" | sha256sum -c -
+          tar -xzf kustomize.tgz kustomize
+          echo "$KUSTOMIZE_SHA256  kustomize" | sha256sum -c -
+          echo "KUSTOMIZE=$RUNNER_TEMP/kustomize" >> "$GITHUB_ENV"
 
       - name: Bump image tag and push
         working-directory: cfoperator-deploy
+        env:
+          DEPLOY_PAT: ${{ secrets.DEPLOY_PAT }}
         run: |
-          kustomize edit set image \
+          "$KUSTOMIZE" edit set image \
             ghcr.io/aachtenberg/cfoperator=ghcr.io/aachtenberg/cfoperator:${{ needs.build-and-push.outputs.image-tag }}
           if git diff --quiet -- kustomization.yml; then
             echo "Image tag already ${{ needs.build-and-push.outputs.image-tag }}; nothing to commit."
@@ -333,7 +368,16 @@ jobs:
           git commit -m "deploy: bump cfoperator to ${{ needs.build-and-push.outputs.image-tag }}" \
                      -m "Source: ${{ github.repository }}@${{ github.sha }}" \
                      -m "Build: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          # Rebase-pull in case a concurrent bump landed first, then push.
-          git pull --rebase --autostash origin main
-          git push origin main
+          # Rebase-pull in case a concurrent bump landed first, then push. The
+          # token goes on each command as a header (what actions/checkout does
+          # when it persists credentials) and never into .git.
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$DEPLOY_PAT" | base64 -w0)"
+          git -c "http.https://github.com/.extraheader=$auth" pull --rebase --autostash origin main
+          git -c "http.https://github.com/.extraheader=$auth" push origin main
           echo "Pushed bump → ArgoCD will roll the cfoperator deployment."
+
+      - name: Remove the deploy checkout
+        # The runner's work dir persists between jobs: nothing of the private
+        # repo stays behind, whichever way the job ended.
+        if: always()
+        run: rm -rf cfoperator-deploy
