@@ -154,7 +154,15 @@ _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 _JUDGE_MODEL_FLOOR = {
     'anthropic': _ANTHROPIC_DEFAULT_EXEC_MODEL,
     'xai': 'grok-4.5',
-    'gemini': 'gemini-3.1-pro',
+    # The exact id Google serves, not the 'gemini-pro-latest' alias. The alias
+    # keeps the tier but lets Google swap the model beneath a verdict without
+    # anything here changing, and a verdict that cannot be reproduced against
+    # the model that gave it is worth less as a record. The bare
+    # 'gemini-3.1-pro' this held until CFOP-107 was never served: it 404'd the
+    # first time the two peers above it were both down. Confirmed against
+    # GET /v1beta/openai/models on 2026-08-28; the retired-id denylist in
+    # test_remediation_queue.py is what catches the next retirement.
+    'gemini': 'gemini-3.1-pro-preview',
 }
 _JUDGE_DEFAULT_ORDER = ('anthropic', 'xai', 'gemini')
 
@@ -164,6 +172,27 @@ _JUDGE_DEFAULT_ORDER = ('anthropic', 'xai', 'gemini')
 # substantive failure and parks the row. At 1024 a thinking model could look
 # like a permanently stuck gate rather than a judge.
 _JUDGE_MAX_TOKENS = 4096
+
+
+def _raise_for_status_with_body(resp) -> None:
+    """``resp.raise_for_status()``, with the start of the body in the message.
+
+    requests' HTTPError carries the status line and nothing else, and for a
+    judge call the status line is the least useful part: WHICH thing was
+    wrong — a rejected parameter, a retired model id, an exhausted balance —
+    is in the body. The judge's exception text is what lands on a parked
+    row's reason (CFOP-117: three vendors failed three different ways and the
+    console said "404" for the last of them), so the body is the difference
+    between a status code and an operator knowing what to fix.
+    """
+    import requests as req
+    try:
+        resp.raise_for_status()
+    except req.HTTPError as e:
+        snippet = ' '.join(str(getattr(resp, 'text', '') or '').split())[:200]
+        if not snippet:
+            raise
+        raise req.HTTPError(f"{e}: {snippet}", response=resp) from None
 
 # The morning summary is authored by the cheap, unverified primary model, so a
 # mutation-class rec from it is a HYPOTHESIS, not a diagnosis. These are routed
@@ -3756,7 +3785,12 @@ FIX: {_FIX_JSON_SCHEMA}"""
                 json={
                     'model': model,
                     'max_tokens': _JUDGE_MAX_TOKENS,
-                    'temperature': 0,  # a veto should not be sampled differently each run
+                    # No sampling parameters. Opus 4.7 and later reject
+                    # temperature/top_p/top_k with a 400, and that 400 is what
+                    # parked every auto-eligible row until CFOP-117. The
+                    # OpenAI-compat branch below still pins temperature 0;
+                    # here the prompt's "ONLY the JSON object" does the
+                    # steadying.
                     'system': system_prompt,
                     'messages': [{'role': 'user', 'content': user_msg}],
                 },
@@ -3767,7 +3801,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
                 },
                 timeout=120,
             )
-            resp.raise_for_status()
+            _raise_for_status_with_body(resp)
             return '\n'.join(
                 b.get('text', '') for b in resp.json().get('content', [])
                 if b.get('type') == 'text'
@@ -3795,7 +3829,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
             },
             timeout=120,
         )
-        resp.raise_for_status()
+        _raise_for_status_with_body(resp)
         choices = resp.json().get('choices') or []
         if not choices:
             return ''

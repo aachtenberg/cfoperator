@@ -1762,6 +1762,20 @@ def test_every_judge_backend_has_a_pinned_frontier_model():
             is agent_mod._ANTHROPIC_DEFAULT_EXEC_MODEL)
 
 
+# Ids a vendor has stopped serving. The cfassist config_test.go pattern (#202):
+# a denylist catches the recurrence without freezing the floor at one id in
+# CI. Add to it when a live call says a name is gone — 'gemini-3.1-pro' sat in
+# the floor for a week and 404'd the first time both peers above it were down
+# (CFOP-107).
+_RETIRED_JUDGE_MODEL_IDS = {"gemini-3.1-pro"}
+
+
+def test_no_retired_model_id_sits_in_the_judge_floor():
+    for backend, model in agent_mod._JUDGE_MODEL_FLOOR.items():
+        assert model not in _RETIRED_JUDGE_MODEL_IDS, \
+            f"{backend} judge model {model} is no longer served"
+
+
 def test_judge_fails_over_to_the_next_peer_when_a_vendor_is_unreachable():
     # Availability failover, not answer-shopping: anthropic is down, so xai
     # rules instead. Before this, one missing key parked every remediation.
@@ -1864,6 +1878,94 @@ def test_judge_providers_never_emits_a_backend_without_a_pinned_model():
 def test_judge_providers_accepts_a_single_string():
     op = _providers_op("xai", {"anthropic": "k", "xai": "k"})
     assert CFOperator._judge_providers(op) == ["xai"]
+
+
+def _post_returning(status, text, payload=None):
+    """A requests.post double: HTTP status + raw body, raising like requests does."""
+    import requests
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = text
+    resp.json.return_value = payload or {}
+    if status >= 400:
+        resp.raise_for_status.side_effect = requests.HTTPError(
+            f"{status} Client Error for url: https://vendor.example/v1", response=resp)
+    else:
+        resp.raise_for_status.return_value = None
+    return MagicMock(return_value=resp)
+
+
+def _keyed_op():
+    op = MagicMock()
+    op._judge_api_key = lambda backend: "k"
+    return op
+
+
+def test_anthropic_judge_request_carries_no_sampling_parameter():
+    # Opus 4.7 and later reject temperature/top_p/top_k with a 400 — guard the
+    # class, not just the one that parked every auto-eligible row (CFOP-117).
+    post = _post_returning(200, "", {"content": [
+        {"type": "text", "text": '{"verdict": "confirm", "reason": "ok"}'}]})
+    with patch("requests.post", post):
+        out = CFOperator._complete_judge(_keyed_op(), "sys", "user",
+                                         "anthropic", "claude-opus-4-8")
+    assert "confirm" in out
+    body = post.call_args.kwargs["json"]
+    assert body["model"] == "claude-opus-4-8"
+    assert not {"temperature", "top_p", "top_k"} & set(body), sorted(body)
+
+
+def test_judge_http_failure_names_the_vendors_message_not_just_the_status():
+    # raise_for_status carries the status line only; the body is where a vendor
+    # says WHICH thing was wrong, and the exception text is what the parked
+    # row's reason shows (CFOP-117: "404" for a three-vendor failure).
+    import requests
+    post = _post_returning(400, '{"type":"error","error":{"type":"invalid_request_error",'
+                                '"message":"`temperature` is deprecated for this model."}}')
+    with patch("requests.post", post), pytest.raises(requests.HTTPError) as exc:
+        CFOperator._complete_judge(_keyed_op(), "sys", "user",
+                                   "anthropic", "claude-opus-4-8")
+    assert "400" in str(exc.value)
+    assert "`temperature` is deprecated" in str(exc.value)
+
+
+def test_openai_compat_judge_failure_names_the_vendors_message_too():
+    # Same on the compat wire — the xAI 403 was "credits exhausted", which the
+    # status line alone reads as an auth problem. That wire still pins
+    # temperature 0: xAI and Gemini accept it, and a veto should not be
+    # sampled differently each run where the vendor lets us say so.
+    import requests
+    post = _post_returning(403, '{"code":"permission-denied","error":"Your team has '
+                                'used all available credits or reached its limit"}')
+    with patch("requests.post", post), pytest.raises(requests.HTTPError) as exc:
+        CFOperator._complete_judge(_keyed_op(), "sys", "user", "xai", "grok-4.5")
+    assert "403" in str(exc.value) and "credits" in str(exc.value)
+    assert post.call_args.kwargs["json"]["temperature"] == 0
+
+
+def test_parked_row_reason_names_the_vendors_message_when_every_peer_refuses():
+    # CFOP-117's done-when is the ROW, not the exception: with every peer
+    # refusing the request, the reason the operator reads must carry what the
+    # last vendor said, not only its status line. Runs the real ladder over
+    # the real _complete_judge so the composition is pinned, not assumed.
+    op = _judging_op(providers=("anthropic", "gemini"))
+    op._judge_api_key = lambda backend: "k"
+    op._complete_judge = lambda *args: CFOperator._complete_judge(op, *args)
+    op._notready_nodes.return_value = []
+    anthropic_400 = _post_returning(
+        400, '{"type":"error","error":{"message":"`temperature` is deprecated for this model."}}'
+    ).return_value
+    gemini_404 = _post_returning(
+        404, '{"error":{"code":404,"message":"models/gemini-3.1-pro is not found for API version v1beta"}}'
+    ).return_value
+    post = MagicMock(side_effect=[anthropic_400, gemini_404])
+    with patch("requests.post", post):
+        out = CFOperator._judge_mutation_remediation(
+            op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert post.call_count == 2                       # both peers tried, both refused
+    assert out["verdict"] == "downgrade" and out["backend"] is None
+    assert "404" in out["reason"]
+    assert "gemini-3.1-pro is not found" in out["reason"], out["reason"]
 
 
 def test_judge_unavailable_downgrades_rather_than_confirming():
