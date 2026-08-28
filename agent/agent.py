@@ -154,7 +154,15 @@ _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 _JUDGE_MODEL_FLOOR = {
     'anthropic': _ANTHROPIC_DEFAULT_EXEC_MODEL,
     'xai': 'grok-4.5',
-    'gemini': 'gemini-3.1-pro',
+    # The exact id Google serves, not the 'gemini-pro-latest' alias. The alias
+    # keeps the tier but lets Google swap the model beneath a verdict without
+    # anything here changing, and a verdict that cannot be reproduced against
+    # the model that gave it is worth less as a record. The bare
+    # 'gemini-3.1-pro' this held until CFOP-107 was never served: it 404'd the
+    # first time the two peers above it were both down. Confirmed against
+    # GET /v1beta/openai/models on 2026-08-28; the retired-id denylist in
+    # test_remediation_queue.py is what catches the next retirement.
+    'gemini': 'gemini-3.1-pro-preview',
 }
 _JUDGE_DEFAULT_ORDER = ('anthropic', 'xai', 'gemini')
 

@@ -1762,6 +1762,20 @@ def test_every_judge_backend_has_a_pinned_frontier_model():
             is agent_mod._ANTHROPIC_DEFAULT_EXEC_MODEL)
 
 
+# Ids a vendor has stopped serving. The cfassist config_test.go pattern (#202):
+# a denylist catches the recurrence without freezing the floor at one id in
+# CI. Add to it when a live call says a name is gone — 'gemini-3.1-pro' sat in
+# the floor for a week and 404'd the first time both peers above it were down
+# (CFOP-107).
+_RETIRED_JUDGE_MODEL_IDS = {"gemini-3.1-pro"}
+
+
+def test_no_retired_model_id_sits_in_the_judge_floor():
+    for backend, model in agent_mod._JUDGE_MODEL_FLOOR.items():
+        assert model not in _RETIRED_JUDGE_MODEL_IDS, \
+            f"{backend} judge model {model} is no longer served"
+
+
 def test_judge_fails_over_to_the_next_peer_when_a_vendor_is_unreachable():
     # Availability failover, not answer-shopping: anthropic is down, so xai
     # rules instead. Before this, one missing key parked every remediation.
