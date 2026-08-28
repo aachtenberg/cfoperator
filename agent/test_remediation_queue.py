@@ -1712,12 +1712,13 @@ def test_non_auto_eligible_rows_skip_the_judge_entirely(rclass, risk, conf):
     op.kb.queue_remediation.assert_called_once()
 
 
-def _judging_op(complete=None, providers=("anthropic",)):
+def _judging_op(complete=None, providers=("anthropic",), judge_model=None):
     """Op wired to run the real judge ladder over a controllable completion."""
     op = MagicMock()
     op._parse_judge_verdict = CFOperator._parse_judge_verdict
     op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
     op._judge_providers = lambda: list(providers)
+    op._judge_model = judge_model or (lambda b: agent_mod._JUDGE_MODEL_FLOOR[b])
     if complete is not None:
         op._complete_judge = complete
     return op
@@ -1754,7 +1755,8 @@ def test_no_fast_tier_model_sits_in_the_judge_seat():
 def test_every_judge_backend_has_a_pinned_frontier_model():
     # A backend the operator can select but that has no pinned model would
     # KeyError in the ladder; an empty one would send a model-less request.
-    assert set(agent_mod._JUDGE_MODEL_FLOOR) == {"anthropic", "xai", "gemini"}
+    assert set(agent_mod._JUDGE_MODEL_FLOOR) == {
+        "deepseek", "anthropic", "xai", "gemini"}
     assert set(agent_mod._JUDGE_DEFAULT_ORDER) == set(agent_mod._JUDGE_MODEL_FLOOR)
     for backend, model in agent_mod._JUDGE_MODEL_FLOOR.items():
         assert model and isinstance(model, str), backend
@@ -1843,7 +1845,8 @@ def _providers_op(configured, keys):
 
 
 def test_judge_providers_defaults_to_the_full_peer_order():
-    op = _providers_op(None, {"anthropic": "k", "xai": "k", "gemini": "k"})
+    op = _providers_op(None, {"deepseek": "k", "anthropic": "k",
+                              "xai": "k", "gemini": "k"})
     assert CFOperator._judge_providers(op) == list(agent_mod._JUDGE_DEFAULT_ORDER)
 
 
@@ -1967,6 +1970,183 @@ def test_parked_row_reason_names_the_vendors_message_when_every_peer_refuses():
     assert out["verdict"] == "downgrade" and out["backend"] is None
     assert "404" in out["reason"]
     assert "gemini-3.1-pro is not found" in out["reason"], out["reason"]
+
+
+def test_deepseek_leads_the_default_judge_order():
+    # CFOP-121: cheapest capable rung first, frontier peers as failover. The
+    # order is what prod runs — there is no remediation.judge block in the
+    # deployed config, so the default IS the live setting.
+    assert agent_mod._JUDGE_DEFAULT_ORDER[0] == "deepseek"
+    assert agent_mod._JUDGE_MODEL_FLOOR["deepseek"] == "deepseek-v4-pro"
+    # and it must be reachable as an OpenAI-compat backend, not a fourth branch
+    assert "deepseek" in agent_mod.OPENAI_COMPAT_PROVIDERS
+
+
+def test_runtime_fast_tier_tokens_cover_the_guarded_set():
+    # The CI floor guard keeps its own literal set on purpose (an independent
+    # check); this asserts the RUNTIME refusal knows at least as much, so a
+    # config value cannot slip past a guard CI would have caught.
+    assert {"flash", "mini", "haiku", "lite", "turbo", "instant", "small"} \
+        <= agent_mod._JUDGE_FAST_TIER_TOKENS
+
+
+def _model_op(setting="", config_model=""):
+    op = MagicMock()
+    op.kb.get_setting.return_value = setting
+    op.config = {"remediation": {"judge": {"models": {"deepseek": config_model}}}} \
+        if config_model else {"remediation": {}}
+    op._judge_model_setting = lambda b: CFOperator._judge_model_setting(op, b)
+    op._judge_model_config = lambda b: CFOperator._judge_model_config(op, b)
+    return op
+
+
+def test_configured_judge_model_wins_over_the_floor():
+    # CFOP-121 relaxes CFOP-70's outright pin: the two rungs that broke this
+    # week were pinned to ids no operator could change from config.
+    assert CFOperator._judge_model(_model_op(config_model="deepseek-v9-pro"),
+                                   "deepseek") == "deepseek-v9-pro"
+    # the console setting outranks config, mirroring _triage_model
+    assert CFOperator._judge_model(_model_op(setting="deepseek-v8-pro",
+                                             config_model="deepseek-v9-pro"),
+                                   "deepseek") == "deepseek-v8-pro"
+
+
+def test_unset_judge_model_falls_back_to_the_floor():
+    assert CFOperator._judge_model(_model_op(), "deepseek") == "deepseek-v4-pro"
+    # a DB read failure must not break the gate
+    op = _model_op()
+    op.kb.get_setting.side_effect = RuntimeError("db down")
+    assert CFOperator._judge_model(op, "deepseek") == "deepseek-v4-pro"
+
+
+@pytest.mark.parametrize("demoted", ["deepseek-v4-flash", "claude-haiku-4-5",
+                                     "gemini-3.6-flash", "grok-4-mini"])
+def test_a_fast_tier_model_cannot_be_configured_into_the_judge_seat(demoted):
+    # The knob may move the judge sideways or up, never down into the tier
+    # whose confident wrong answers the gate exists to catch (CFOP-70).
+    assert CFOperator._judge_model(_model_op(config_model=demoted),
+                                   "deepseek") == "deepseek-v4-pro"
+    assert CFOperator._judge_model(_model_op(setting=demoted),
+                                   "deepseek") == "deepseek-v4-pro"
+
+
+def test_judge_skips_the_peer_that_wrote_the_recommendation():
+    # deepseek-v4-pro is both a judge rung and the backend the console selects
+    # for investigations, so without this the reporter would rule on its own
+    # recommendation — the seat CFOP-70 rejected. The match is on the VENDOR,
+    # not the exact id: see the configured-id case below.
+    calls = []
+
+    def complete(system, user, backend, model):
+        calls.append((backend, model))
+        return '{"verdict": "confirm", "reason": "independent look"}'
+
+    op = _judging_op(complete, providers=("deepseek", "anthropic"))
+    details = dict(_IMMICH_KIOSK_DETAILS, provider="deepseek/deepseek-v4-pro")
+    out = CFOperator._judge_mutation_remediation(op, details, "gitops-patch", "low", 1.0)
+    assert calls == [("anthropic", "claude-opus-4-8")]   # deepseek never asked
+    assert out["backend"] == "anthropic" and out["verdict"] == "confirm"
+
+
+def test_a_differently_reported_row_still_uses_the_first_peer():
+    # The skip is keyed on the exact reporting model, not on the backend being
+    # deepseek — an ollama-reported row is judged by deepseek as normal.
+    calls = []
+
+    def complete(system, user, backend, model):
+        calls.append((backend, model))
+        return '{"verdict": "confirm", "reason": "ok"}'
+
+    op = _judging_op(complete, providers=("deepseek", "anthropic"))
+    details = dict(_IMMICH_KIOSK_DETAILS, provider="ollama/gemma4:26b")
+    out = CFOperator._judge_mutation_remediation(op, details, "gitops-patch", "low", 1.0)
+    assert calls == [("deepseek", "deepseek-v4-pro")]
+    assert out["backend"] == "deepseek"
+
+
+
+@pytest.mark.parametrize("reporter", [
+    "deepseek/deepseek-v4-pro",          # the ordinary backend/model tag
+    "DeepSeek/DeepSeek-V4-Pro",          # case is not significant
+    "deepseek",                          # _llm_provider_tag's backend-only form
+    "deepseek/models/deepseek-v4-pro",   # a vendor listing id with an infix
+])
+def test_self_review_is_matched_on_the_vendor_whatever_shape_the_tag_takes(reporter):
+    assert agent_mod._judge_is_self_review(reporter, "deepseek", "deepseek-v4-pro")
+    assert not agent_mod._judge_is_self_review(reporter, "anthropic", "claude-opus-4-8")
+
+
+def test_self_review_catches_a_bare_model_tag_with_no_backend():
+    # _llm_provider_tag returns the model alone when no backend was recorded;
+    # the head split cannot see a vendor there, so compare against our model.
+    assert agent_mod._judge_is_self_review("deepseek-v4-pro", "deepseek", "deepseek-v4-pro")
+    assert not agent_mod._judge_is_self_review("gemma4:26b", "deepseek", "deepseek-v4-pro")
+
+
+def test_self_review_ignores_an_absent_reporter():
+    assert not agent_mod._judge_is_self_review("", "deepseek", "deepseek-v4-pro")
+    assert not agent_mod._judge_is_self_review(None, "deepseek", "deepseek-v4-pro")
+
+
+def test_repointing_the_backend_does_not_re_open_the_self_review_seat():
+    # The regression the CFOP-121 knob creates: with an exact backend/model
+    # match, setting judge_model_deepseek to any other DeepSeek id makes the
+    # skip false and DeepSeek judges DeepSeek-reported work again — switching
+    # off a safety guard as a side effect of a cost knob.
+    calls = []
+
+    def complete(system, user, backend, model):
+        calls.append((backend, model))
+        return '{"verdict": "confirm", "reason": "independent look"}'
+
+    op = _judging_op(complete, providers=("deepseek", "anthropic"),
+                     judge_model=lambda b: ("deepseek-v4-pro-0711" if b == "deepseek"
+                                            else agent_mod._JUDGE_MODEL_FLOOR[b]))
+    details = dict(_IMMICH_KIOSK_DETAILS, provider="deepseek/deepseek-v4-pro")
+    out = CFOperator._judge_mutation_remediation(op, details, "gitops-patch", "low", 1.0)
+    assert calls == [("anthropic", "claude-opus-4-8")]
+    assert out["backend"] == "anthropic"
+
+
+def test_a_deepseek_reported_row_parks_when_every_other_peer_is_down():
+    # The consequence of failing closed on self-review, stated as a test: the
+    # availability win from leading with DeepSeek does NOT extend to rows
+    # DeepSeek reported. In the 400/403/404 state that motivated CFOP-121,
+    # those park — which is the safe direction, but it is not "no rows park".
+    def complete(system, user, backend, model):
+        raise RuntimeError(f"{backend} unreachable")
+
+    op = _judging_op(complete, providers=("deepseek", "anthropic", "xai", "gemini"))
+    details = dict(_IMMICH_KIOSK_DETAILS, provider="deepseek/deepseek-v4-pro")
+    out = CFOperator._judge_mutation_remediation(op, details, "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade" and out["backend"] is None
+    # the surviving reason is the transport failure, not the skip
+    assert "unreachable" in out["reason"]
+
+
+def test_the_fast_tier_denylist_covers_the_names_vendors_actually_ship():
+    # Not a frontier allowlist, and the docstring says so — this pins the
+    # markers that ARE refused, including 'nano', which the first cut missed.
+    for demoted in ("gpt-5-nano", "deepseek-v4-flash", "claude-haiku-4-5",
+                    "gemini-3.6-flash", "grok-4-mini", "veo-3.1-fast-generate",
+                    "some-model-lite", "o4-micro", "llama-tiny"):
+        assert agent_mod._is_fast_tier_model(demoted), demoted
+    # and does not fire on frontier ids that merely contain the letters
+    for kept in ("gemini-3.1-pro-preview", "claude-opus-4-8", "deepseek-v4-pro",
+                 "grok-4.5"):
+        assert not agent_mod._is_fast_tier_model(kept), kept
+
+
+def test_judge_parks_when_the_only_peer_is_the_reporter():
+    # Fail closed, and say WHY — an operator reading this row should not have
+    # to guess that the judge was skipped rather than unreachable.
+    op = _judging_op(MagicMock(), providers=("deepseek",))
+    details = dict(_IMMICH_KIOSK_DETAILS, provider="deepseek/deepseek-v4-pro")
+    out = CFOperator._judge_mutation_remediation(op, details, "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade" and out["backend"] is None
+    op._complete_judge.assert_not_called()
+    assert "wrote this recommendation" in out["reason"]
+    assert "deepseek/deepseek-v4-pro" in out["reason"]
 
 
 def test_judge_unavailable_downgrades_rather_than_confirming():

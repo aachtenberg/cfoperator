@@ -401,17 +401,44 @@ remediation:
   # answers, and the one nothing was asking when the pipeline proposed
   # un-pinning a deployment from the node it deliberately runs on.
   #
-  # These are peers, tried in order, and each is pinned to its vendor's
-  # frontier model in code (_JUDGE_MODEL_FLOOR): there is no config key that
-  # can lower the model holding the veto, the same rule node-action follows.
-  # A backend with no API key present is skipped, so listing all three costs
-  # nothing and means one vendor outage does not park every remediation.
+  # These are peers, tried in order. A backend with no API key present is
+  # skipped, so listing all four costs nothing and means one vendor outage
+  # does not park every remediation — on 2026-08-28 three of them failed at
+  # once (400 / 403 / 404) and every auto-eligible row parked.
   #
-  # Omit the block entirely to get all three in this order. Anything not in
-  # {anthropic, xai, gemini} is dropped with a warning, never treated as a new
-  # frontier tier.
+  # Omit the block entirely to get all four in this order. Anything not in
+  # {deepseek, anthropic, xai, gemini} is dropped with a warning, never
+  # treated as a new frontier tier.
+  #
+  # `models` re-points a backend (CFOP-121). Each backend defaults to the
+  # model pinned in code (_JUDGE_MODEL_FLOOR); this key overrides that, and a
+  # knowledge-base setting `judge_model_<backend>` overrides BOTH so the
+  # console can repoint a judge live — the precedence llm.triage_model uses.
+  #
+  # One thing the knob cannot do is point the veto at a vendor's cheap tier:
+  # a model whose name carries a known fast-tier marker (flash / mini / nano /
+  # micro / tiny / fast / haiku / lite / turbo / instant / small) is refused
+  # at read time, logged, and the pinned default is used instead. The gate
+  # exists because a cheap model's confident wrong answers opened three bad
+  # PRs (CFOP-70).
+  #
+  # Be clear on what that guard is worth: it is a DENYLIST of the names
+  # vendors use for their cheap tier, not a frontier allowlist. A mid-tier or
+  # superseded id carrying none of those markers is accepted and you are
+  # trusted for it. An allowlist was rejected on purpose — enumerating each
+  # vendor's current top model is exactly the failure CFOP-107 hit twice,
+  # where a pinned id the vendor had retired 404'd in production.
+  #
+  # The judge also skips any peer from the VENDOR that wrote the
+  # recommendation, and parks the row if that leaves nobody. Vendor, not the
+  # exact id: otherwise re-pointing a backend with `models` above would switch
+  # that guard off as a side effect. Consequence worth knowing: leading with
+  # deepseek buys availability for every row EXCEPT the ones deepseek itself
+  # reported -- those still park when the other peers are down.
   judge:
-    providers: [anthropic, xai, gemini]
+    providers: [deepseek, anthropic, xai, gemini]
+    models:
+      deepseek: deepseek-v4-pro
 
 # Incident cockpit — the session `cfassist attach <id> --spawn` launches, in a
 # pod or on a host outside the cluster (docs/cockpit.md). Every key is
