@@ -118,7 +118,7 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,Uint8Ar
     }
     if(url.indexOf('/api/investigations/')===0){
       const id=Number(url.split('/').pop());
-      return Promise.resolve({json:()=>Promise.resolve({id:id,trigger:'PodUnschedulable on headless-gpu',
+      return Promise.resolve({ok:true,json:()=>Promise.resolve({id:id,trigger:'PodUnschedulable on headless-gpu',
         outcome:'needs_action',attach_command:'cfassist attach '+id,findings:{}})});
     }
     if(url.indexOf('/api/investigations')===0) return Promise.resolve({json:()=>Promise.resolve({investigations:[]})});

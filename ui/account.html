@@ -20,8 +20,10 @@
     --radius:10px; --radius-sm:6px; --header-height:56px;
   }
   * { box-sizing:border-box; }
+  /* Controls do not inherit the page face on their own. */
+  button, input, select, textarea { font-family:inherit; }
   body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
-    font-family:'Inter',-apple-system,sans-serif; font-size:14px; }
+    font-family:'JetBrains Mono',monospace; /* one face, every page (CFOP-113) */ font-size:14px; }
   header { height:var(--header-height); background:var(--bg-secondary);
     border-bottom:1px solid var(--border); display:flex; align-items:center;
     padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }

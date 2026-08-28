@@ -9,6 +9,8 @@
 <link rel="stylesheet" href="/vendor/xterm.css">
 <script src="/vendor/xterm.js" defer></script>
 <script src="/vendor/xterm-addon-fit.js" defer></script>
+<!-- The full report is markdown (CFOP-113); same vendored marked as the chat page. -->
+<script src="/vendor/marked.min.js"></script>
 <style>
   :root {
     --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
@@ -18,8 +20,11 @@
     --radius:10px; --radius-sm:6px; --header-height:56px;
   }
   * { box-sizing:border-box; }
+  /* Form controls do not inherit the page font by default (the note input
+     rendered in the browser's own); everything typed or clicked matches. */
+  button, input, select, textarea { font-family:inherit; }
   body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
-    font-family:'Inter',-apple-system,sans-serif; font-size:14px; }
+    font-family:'JetBrains Mono',monospace; font-size:14px; }  /* one face, every page (CFOP-113) */
   header { height:var(--header-height); background:var(--bg-secondary); border-bottom:1px solid var(--border);
     display:flex; align-items:center; padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
   .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700; color:var(--accent);
@@ -31,9 +36,9 @@
   a { color:var(--cyan); text-decoration:none; } a:hover { text-decoration:underline; }
   .filters { padding:14px 20px 12px; display:flex; gap:8px; flex-wrap:wrap; }
   /* Chips are <button>s (CFOP-94): font-family:inherit is the reset that keeps
-     them looking like the spans they replaced. */
+     them in the page face. */
   .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
-    border-radius:999px; padding:5px 12px; cursor:pointer; font-size:13px; font-family:inherit; }
+    border-radius:var(--radius-sm); padding:5px 12px; cursor:pointer; font-size:13px; font-family:inherit; }
   .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .chip.active { background:var(--accent); border-color:var(--accent); color:#0a0a0f; font-weight:600; }
   table { width:100%; border-collapse:collapse; }
@@ -51,20 +56,74 @@
   #backdrop.open { opacity:1; pointer-events:auto; }
   #detail { position:fixed; top:0; right:0; width:min(620px,94vw); height:100%; z-index:50;
     background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px; overflow:auto;
-    transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; }
+    transform:translateX(100%); transition:transform .15s, width .15s; box-shadow:-8px 0 24px #0008; }
   #detail.open { transform:translateX(0); }
-  #detail h2 { font-family:'JetBrains Mono',monospace; }
+  /* One size for prose, labels and controls in the drawer (CFOP-113): 13px,
+     the chip size, so the meta line, the buttons and the text do not step
+     through 12/13/14px. The family is the page's; size is the only difference. */
+  #detail { font-size:13px; }
+  #detail .muted, #detail .cp-note, #detail .cp-status { font-size:inherit; }
+  #detail input { font-size:inherit; padding:4px 8px; background:var(--bg-primary); color:var(--text-primary);
+    border:1px solid var(--border); border-radius:var(--radius-sm); }
+  #detail h2 { font-size:20px; }
+  #detail h3 { font-size:14px; margin:16px 0 8px; }
   #detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
-    padding:10px; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
-  .kv { margin:4px 0; } .kv b { color:var(--text-secondary); font-weight:600; }
+    padding:10px; margin:0; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
+  /* Key/value lines: room to breathe, and a label column so the values line
+     up (CFOP-113). Only the leading label is a column; an inline one
+     ("· completed") stays inline. */
+  /* One vertical unit — 8px — between every block in the drawer; a section
+     heading gets two above it. No block carries its own odd margin. */
+  .kv { margin:0 0 8px; line-height:1.55; } .kv b { color:var(--text-secondary); font-weight:600; }
+  .kv > b:first-child { display:inline-block; min-width:88px; }
   .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px;
     background:none; border:0; padding:0 2px; font-family:inherit; line-height:1; }
   .x:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+  .x.mx { margin-right:10px; padding:2px; line-height:0; }
+  .x.mx svg { width:16px; height:16px; }
+  .x.mx:hover, .x.mx[aria-pressed="true"] { color:var(--text-primary); }
   .empty { padding:40px; text-align:center; color:var(--text-muted); }
   /* The handoff command. user-select:all so a double-click takes the whole
-     line — the Copy button is the convenience, not the only way out. */
+     line — the copy icon is the convenience, not the only way out. */
   .cmd { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
     padding:3px 7px; user-select:all; font-size:12px; }
+  /* Click-to-copy (CFOP-113): a quiet clipboard beside the thing it copies;
+     bindCopyIcons() in common.js swaps it for a check on success. */
+  .cp { background:none; border:0; padding:2px; margin-left:4px; cursor:pointer; color:var(--text-muted);
+    vertical-align:middle; line-height:0; border-radius:var(--radius-sm); }
+  .cp:hover { color:var(--text-primary); background:var(--bg-hover); }
+  .cp:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+  .cp.done { color:var(--accent); }
+  #detail h2 .cp { margin-left:8px; }
+  /* The recommendation and its fix (CFOP-113): prose and a list, not JSON. */
+  .rec { margin:0 0 8px; line-height:1.55; }
+  .fix > * { margin:0 0 8px; } .fix > :last-child { margin-bottom:0; } .fix { margin:0 0 8px; }
+  .fix-meta { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+  .tgt { font-size:12px; background:var(--bg-tertiary);
+    border:1px solid var(--border); border-radius:var(--radius-sm); padding:2px 8px; }
+  .tgt .k { color:var(--text-secondary); }
+  ol.steps { padding-left:22px; line-height:1.55; }
+  ol.steps li { margin:0; }
+  .verify code { font-family:'JetBrains Mono',monospace; font-size:12px; background:var(--bg-primary);
+    border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:2px 6px; }
+  .ev { margin:0 0 8px 8px; font-size:13px; } .ev:last-child { margin-bottom:0; }
+  .ev .src { font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--text-secondary); }
+  .ev .val { margin-left:12px; white-space:pre-wrap; word-break:break-word; }
+  /* Folded sections: the full report and the raw findings are complete but
+     closed, so the drawer opens on the decision rather than the essay. */
+  #detail details { margin:0 0 8px; }
+  #detail summary { cursor:pointer; color:var(--text-secondary); font-weight:600; font-size:13px; user-select:none; }
+  #detail summary:hover { color:var(--text-primary); }
+  #detail details[open] > summary { margin-bottom:8px; }
+  /* Markdown from the agent (the full report) — see renderMarkdown in common.js. */
+  .md { font-size:13px; line-height:1.5; }
+  .md h1,.md h2,.md h3,.md h4 { font-size:13px; margin:16px 0 8px; } .md > :first-child { margin-top:0; }
+  .md p,.md ul,.md ol,.md pre,.md table,.md blockquote { margin:0 0 8px; } .md ul,.md ol { padding-left:22px; }
+  .md > :last-child { margin-bottom:0; } .md li { margin:0; }
+  .md code { font-family:'JetBrains Mono',monospace; font-size:12px; background:var(--bg-primary);
+    border:1px solid var(--border-subtle); border-radius:var(--radius-sm); padding:1px 5px; }
+  .md pre code { border:0; padding:0; background:none; }
+  .md table { border-collapse:collapse; margin:6px 0; } .md td,.md th { padding:4px 8px; border:1px solid var(--border-subtle); }
   #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
   .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
     color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
@@ -75,10 +134,13 @@
      columns fit beside the finding; it is still the drawer — the finding stays
      in view, which is the reason this is not a new tab. */
   #detail.wide { width:min(1100px,96vw); }
-  #cockpit { margin:12px 0 16px; }
+  /* Maximized (CFOP-113): the whole viewport. Wins over .wide; the class is
+     on #detail, which repaints its contents but is never itself replaced. */
+  #detail.max { width:100vw; }
+  #cockpit { margin:0 0 8px; } #cockpit:empty { display:none; }
   .cp-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
   .cp-head .chips { display:flex; gap:6px; flex-wrap:wrap; font-family:'JetBrains Mono',monospace; font-size:12px; }
-  .cp-head .chips span { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:999px; padding:2px 9px; }
+  .cp-head .chips span { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-sm); padding:2px 9px; }
   .cp-head .chips .ttl.low { color:var(--orange); border-color:var(--orange); }
   .cp-head .chips .ttl.out { color:var(--red); border-color:var(--red); }
   .cp-head .actions { margin-left:auto; display:flex; gap:6px; }
@@ -256,6 +318,36 @@ function restoreFocus(){
 document.addEventListener('keydown',e=>{ if(e.key==='Escape' && !COCKPIT.ws) closeDetail(); });
 // Tab stays inside the open drawer (CFOP-95); a Tab the terminal consumed is left to it.
 trapFocus(document.getElementById('detail'));
+// Maximize (CFOP-113). 620px keeps the table visible beside the drawer; a
+// long report, the raw findings or a terminal want the room. Page state, not
+// stored: it survives every drawer repaint but not a reload, because this
+// page touches no storage at all (test_console_cockpit) so the cockpit ticket
+// can never end up there — a convenience does not get to open that door.
+// var, not let — the console tests read this through the page's global scope.
+var MAX=false;
+const MAX_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
+const RESTORE_ICON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>';
+// The accessible name follows the state along with the title and the icon:
+// a screen reader must not hear "maximize" on a control that restores.
+function maxLabel(){ return MAX?'Restore panel width':'Maximize panel'; }
+function maxButton(){
+  return `<button type="button" class="x mx" id="detail-max" onclick="toggleMax()" aria-pressed="${MAX}" aria-label="${maxLabel()}" title="${maxLabel()}">${MAX?RESTORE_ICON:MAX_ICON}</button>`;
+}
+function applyMax(){
+  const d=document.getElementById('detail');
+  if(MAX) d.classList.add('max'); else d.classList.remove('max');
+  const b=document.getElementById('detail-max');
+  if(b){ b.setAttribute('aria-pressed',String(MAX)); b.setAttribute('aria-label',maxLabel()); b.title=maxLabel(); b.innerHTML=MAX?RESTORE_ICON:MAX_ICON; }
+}
+function toggleMax(){
+  MAX=!MAX;
+  applyMax();
+  refit();  // an open terminal takes the new width
+}
+applyMax();
+// Every copy icon in the drawer (CFOP-113) goes through one listener — the
+// drawer repaints by innerHTML, so nothing bound to a button would survive.
+bindCopyIcons(document);
 
 async function detail(id){
   // Tear any open terminal down FIRST, unconditionally. detail() replaces the
@@ -271,33 +363,129 @@ async function detail(id){
   if(OPEN===null) OPENER=document.activeElement||null;
   d.classList.add('open'); d.inert=false; document.getElementById('backdrop').classList.add('open');
   OPEN=id; history.replaceState(null,'','#'+id);
-  let r; try{ r=await (await fetch('/api/investigations/'+id)).json(); }catch(e){
-    if(OPEN===id){ d.innerHTML='<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button><span class="muted">error loading #'+id+'</span>'; focusDetailClose(); } return; }
+  // A non-OK body (a 401 once the session is gone, a 404) is JSON too; it
+  // used to paint as "Investigation #undefined". Say what happened instead.
+  let r; try{
+    const res=await fetch('/api/investigations/'+id);
+    if(!res.ok) throw new Error(res.status===401?'401 — signed out, sign in again':res.status===403?'403 — not allowed':res.status===404?'404 — no such investigation':'HTTP '+res.status);
+    r=await res.json();
+    if(!r || r.id==null) throw new Error('empty response');
+  }catch(e){
+    if(OPEN===id){ d.innerHTML='<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button><span class="muted">error loading #'+id+(e&&e.message?' ('+esc(e.message)+')':'')+'</span>'; focusDetailClose(); } return; }
   await learnRole();
   // Two clicks in quick succession race: a slow response for the row you left
   // would otherwise paint over the row you are on, while the URL still names
   // the newer one. Last click wins, and a stale response is dropped.
   if(OPEN!==id) return;
   const f=r.findings||{};
+  const title='Investigation #'+r.id;
   d.innerHTML=`
-    <button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>
-    <h2 id="detail-title" style="margin:0 0 8px">Investigation #${r.id}</h2>
+    <button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>${maxButton()}
+    <h2 id="detail-title" style="margin:0 0 8px">${esc(title)}${copyIcon('investigation title',{text:title+(r.trigger?' — '+r.trigger:'')})}</h2>
     <div class="kv">${badge(r.outcome,OC[r.outcome]||'--text-muted')}
-      <span class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':''} · ${r.tool_calls_count||0} tool calls</span></div>
-    <div class="kv"><b>trigger</b> ${esc(r.trigger)}</div>
-    <div class="kv"><b>started</b> ${esc(r.started_at)}${r.completed_at?' · <b>completed</b> '+esc(r.completed_at):''}</div>
+      <span class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':''} · ${r.tool_calls_count||0} tool calls${f.provider?' · '+esc(f.provider):''}</span></div>
+    <div class="kv"><b>trigger</b> <span id="trigger-text">${esc(r.trigger)}</span>${copyIcon('trigger',{from:'trigger-text'})}</div>
+    <div class="kv"><b>started</b> ${fmtTs(r.started_at)}${r.completed_at?' · <b>completed</b> '+fmtTs(r.completed_at, r.started_at):''}</div>
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
     ${attachBlock(r)}
+    ${askBlock(r)}
     <div id="cockpit"></div>
     ${remDrawerLine(r)}
     ${triageBlock(r)}
     ${sessionsBlock(r)}
     ${similarBlock(f)}
-    ${f.recommendation?`<h3>Recommendation</h3><pre>${esc(f.recommendation)}</pre>`:''}
-    ${f.fix?`<h3>FIX</h3><pre>${esc(JSON.stringify(f.fix,null,2))}</pre>`:''}
-    ${f.response?`<h3>Findings</h3><pre>${esc(f.response)}</pre>`:''}
-    <h3>Raw findings</h3><pre>${esc(JSON.stringify(f,null,2))}</pre>`;
+    ${recommendationBlock(f)}
+    ${reportBlock(f)}
+    <details><summary>Raw findings${copyIcon('raw findings',{from:'raw-findings'})}</summary>
+      <pre id="raw-findings">${esc(JSON.stringify(f,null,2))}</pre></details>`;
+  applyMax();
   focusDetailClose();
+}
+// Server timestamps carry microseconds and no zone (they are UTC — see age()
+// in common.js). Shown to the second in the browser's zone, raw value on
+// hover; a second stamp on the same day as `sameDayAs` shows the time only.
+function fmtTs(iso, sameDayAs){
+  if(!iso) return '';
+  const parse=v=>new Date(String(v)+(String(v).endsWith('Z')?'':'Z'));
+  const d=parse(iso); if(isNaN(d)) return esc(iso);
+  const p=n=>String(n).padStart(2,'0');
+  const day=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`, time=`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  let ref=null; if(sameDayAs){ const o=parse(sameDayAs); if(!isNaN(o)) ref=`${o.getFullYear()}-${p(o.getMonth()+1)}-${p(o.getDate())}`; }
+  return `<span title="${esc(iso)}">${ref===day?time:day+' '+time}</span>`;
+}
+// The recommendation and its fix (CFOP-113), as prose rather than the JSON the
+// drawer used to dump. Order is what an operator acts on: the sentence, the
+// risk and what it touches, the steps, how to know it worked. The evidence the
+// model read and the alternatives it turned down justify the steps but are
+// not the steps, so they fold. The shape is agent.py's _FIX_JSON_SCHEMA; every
+// field is optional here because older rows carry fewer of them.
+const RISK={low:'--accent',med:'--orange',medium:'--orange',high:'--red'};
+function recommendationBlock(f){
+  const rec=String(f.recommendation||'').trim();
+  const fix=(f.fix&&typeof f.fix==='object')?f.fix:null;
+  if(!rec && !fix) return '';
+  let h=`<h3>Recommendation${rec?copyIcon('recommendation',{from:'rec-text'}):''}</h3>`;
+  if(rec) h+=`<p class="rec" id="rec-text">${esc(rec)}</p>`;
+  if(!fix) return h;
+  const targets=Array.isArray(fix.targets)?fix.targets.filter(t=>t&&typeof t==='object'):[];
+  const steps=Array.isArray(fix.steps)?fix.steps.filter(x=>x!=null&&String(x).trim()).map(String):[];
+  const observed=Array.isArray(fix.observed)?fix.observed.filter(o=>o&&typeof o==='object'):[];
+  const rejected=Array.isArray(fix.rejected)?fix.rejected.filter(x=>x&&typeof x==='object'):[];
+  const v=(fix.verify&&typeof fix.verify==='object')?fix.verify:null;
+  const meta=[fix.risk?badge('risk '+fix.risk, RISK[String(fix.risk).toLowerCase()]||'--text-muted'):'']
+    .concat(targets.map(t=>`<span class="tgt"><span class="k">${esc(t.kind||'target')}</span> ${esc(t.id||'')}${t.repo?' <span class="k">'+esc(t.repo)+'</span>':''}</span>`))
+    .filter(Boolean).join('');
+  h+=`<div class="fix">`;
+  if(meta) h+=`<div class="fix-meta">${meta}</div>`;
+  if(steps.length) h+=`<div class="kv"><b>steps</b>${copyIcon('steps',{text:steps.map((x,i)=>(i+1)+'. '+x).join('\n')})}</div>
+    <ol class="steps">${steps.map(x=>`<li>${esc(x)}</li>`).join('')}</ol>`;
+  if(v&&(v.command||v.expect)) h+=`<div class="kv verify"><b>verify</b> ${v.command?`<code id="verify-cmd">${esc(v.command)}</code>${copyIcon('verify command',{from:'verify-cmd'})}`:''}${v.expect?` <span class="muted">→ expect: ${esc(v.expect)}</span>`:''}</div>`;
+  if(observed.length||rejected.length){
+    const n=[observed.length?observed.length+' observed':'', rejected.length?rejected.length+' rejected':''].filter(Boolean).join(' · ');
+    h+=`<details><summary>Evidence <span class="muted">(${n})</span></summary>`;
+    h+=observed.map(o=>`<div class="ev"><div class="src">${esc(o.source||'')}</div><div class="val">${esc(o.value||'')}</div></div>`).join('');
+    h+=rejected.map(x=>`<div class="ev"><span class="src">rejected</span> ${esc(x.alternative||'')} <span class="muted">— ${esc(x.why_not||'')}</span></div>`).join('');
+    h+=`</details>`;
+  }
+  return h+`</div>`;
+}
+// The full report (findings.response) is the model's own write-up and mostly
+// the recommendation again, at length; it folds so the drawer opens on the
+// decision, not the essay. Markdown, sanitized — see common.js. The copy is
+// the source text, not the rendered HTML, so it pastes as markdown.
+//
+// The report ends with the protocol tail the agent parses — STATUS:,
+// RECOMMENDATION:, FIX: {json}. They are painted above as the outcome badge,
+// the recommendation and the fix, so when either of those is present the tail
+// is cut from the display. Raw findings keep it verbatim; a report that is
+// only a tail is shown whole.
+//
+// The anchor is stricter than agent.py's (_extract_status takes the last
+// "status:" anywhere, any case): here it is the last line-start STATUS: that
+// carries one of the prompt's verdicts. A bare "Status:" is what kubectl
+// describe prints — "Status: Running" quoted after the verdict would otherwise
+// become the cut point, leaving the JSON tail in the report and dropping the
+// notes after it.
+const VERDICT_LINE=/(?:^|\n)[ \t]*STATUS[ \t]*:[ \t]*(?:resolved|needs[_ -]?action|monitoring|escalated?)\b/ig;
+function reportText(f){
+  const t=String(f.response||'').trim();
+  if(!t || !(f.recommendation||f.fix)) return t;
+  let cut=-1, m; VERDICT_LINE.lastIndex=0;
+  while((m=VERDICT_LINE.exec(t))) cut=m.index;
+  return cut>0 ? t.slice(0,cut).trim() : t;
+}
+function reportBlock(f){
+  const t=reportText(f);
+  if(!t) return '';
+  return `<details><summary>Full report${copyIcon('full report',{text:t})}</summary><div class="md">${renderMarkdown(t)}</div></details>`;
+}
+// Hand the investigation to the console chat (CFOP-113), as the remediations
+// drawer does for its rows (CFOP-109): index.html reads ?investigation=, opens
+// a fresh session and asks about what this drawer shows — trigger,
+// recommendation, steps, verify — so the operator does not carry the id over
+// by hand. A link, not a button: it is navigation.
+function askBlock(r){
+  return `<div class="kv"><a class="chip" href="/?investigation=${Number(r.id)}" title="open the console chat on this investigation">💬 Ask console</a></div>`;
 }
 // The handoff (CFOP-73). Slack, Discord and ntfy all end a notification with
 // this line; the console is where you are actually looking at the
@@ -311,11 +499,8 @@ function attachBlock(r){
   // button is drawn for admins only, and the endpoint refuses everyone else
   // anyway. Members keep the attach line.
   const open=ADMIN?` <button type="button" class="chip" id="open-cockpit" onclick="openCockpit(${Number(r.id)})">Open cockpit</button><span class="cp-note" id="cockpit-note"></span>`:'';
-  return `<div class="kv"><b>take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>
-    <button type="button" class="chip" onclick="copyAttach()">Copy</button>${open}</div>`;
+  return `<div class="kv"><b>take over</b> <code class="mono cmd" id="attach-cmd">${esc(cmd)}</code>${copyIcon('attach command',{from:'attach-cmd'})}${open}</div>`;
 }
-// The copy itself (with its plain-HTTP fallback) is common.js's copyElementText.
-function copyAttach(){ copyElementText(document.getElementById('attach-cmd'),'attach command'); }
 // Cockpit sessions (CFOP-37) — what humans worked out against this
 // investigation, appended beside it rather than merged into `findings`. Placed
 // above the agent's own recommendation on purpose: someone reading this drawer

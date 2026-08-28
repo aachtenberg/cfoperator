@@ -31,7 +31,10 @@ COMMON_JS = UI / "common.js"
 #: What common.js owns. A page defining any of these locally is the drift
 #: this file exists to stop; add to the list when a helper moves in.
 SHARED_HELPERS = ["esc", "color", "badge", "age", "refreshAges", "toast", "trapFocus",
-                  "copyElementText"]
+                  "copyElementText",
+                  # CFOP-113: click-to-copy icons, and the markdown sanitizer that
+                  # index.html used to keep to itself.
+                  "copyText", "copyIcon", "bindCopyIcons", "sanitizeHtml", "renderMarkdown"]
 
 #: Pages whose main content is a polled row list. Same set as
 #: test_console_a11y.LIST_PAGES; repeated rather than imported so this file
@@ -330,3 +333,17 @@ def test_the_age_column_is_refreshed_in_place(page):
     js = "".join(inline_scripts(page))
     assert "data-age=" in js, f"{page} rows carry no data-age for the in-place refresh"
     assert "refreshAges()" in js, f"{page} never refreshes ages on a quiet poll"
+
+
+def test_the_sanitizer_drops_fragment_hrefs():
+    """The investigations drawer is hash-routed (#2272 opens that row), and
+    every sanitized <a> is forced to target=_blank. A fragment href in agent
+    markdown — [see](#2272) — would swap the open row or open another
+    investigation in a new tab. Only http(s), mailto and root-relative
+    survive; the regex is asserted literally because node has no DOM to run
+    the walk against."""
+    js = COMMON_JS.read_text(encoding="utf-8")
+    m = re.search(r"name === 'href' && !(/.+?/i)\.test", js)
+    assert m, "sanitizeHtml no longer filters href"
+    assert m.group(1) == r"/^(https?:|mailto:|\/)/i", f"href allowlist is {m.group(1)}"
+

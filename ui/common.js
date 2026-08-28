@@ -98,3 +98,111 @@ function copyElementText(el, what){
     navigator.clipboard.writeText(text).then(()=>toast(label+' copied','ok')).catch(fallback);
   } else { fallback(); }
 }
+
+// ---- click-to-copy (CFOP-113) ---------------------------------------------
+// copyText: the same two paths as copyElementText, for text that is not one
+// visible element (a title plus its trigger, a numbered list of steps). The
+// fallback puts the text in a textarea appended to the body for the duration
+// of the execCommand — attached, so it is the reliable shape, and gone before
+// anyone sees it. Resolves true/false and says nothing itself; the caller
+// decides what feedback fits.
+function copyText(text){
+  const s=text==null?'':String(text);
+  if(!s) return Promise.resolve(false);
+  const fallback=()=>{
+    let ok=false, ta=null;
+    try{
+      ta=document.createElement('textarea'); ta.value=s; ta.setAttribute('readonly','');
+      ta.style.position='fixed'; ta.style.top='0'; ta.style.left='-9999px';
+      document.body.appendChild(ta); ta.select();
+      ok=document.execCommand('copy');
+    }catch(e){ ok=false; }
+    if(ta&&ta.remove) ta.remove();
+    return ok;
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    return navigator.clipboard.writeText(s).then(()=>true).catch(()=>fallback());
+  }
+  return Promise.resolve(fallback());
+}
+
+// The copy icon: a clipboard that becomes a check for a moment. No toast on
+// success — the check is the feedback, in place, where the eye already is. A
+// failure still toasts, because then the operator has to do something. Text
+// comes from data-copy, or from the textContent of the element data-copy-from
+// names, so long values (raw JSON) are not doubled into an attribute.
+const COPY_ICON='<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="1.5"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+const CHECK_ICON='<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+function copyIcon(what, opts){
+  const o=opts||{};
+  const src=o.from?` data-copy-from="${esc(o.from)}"`:'';
+  const txt=o.text!=null?` data-copy="${esc(o.text)}"`:'';
+  return `<button type="button" class="cp" aria-label="Copy ${esc(what)}" title="Copy ${esc(what)}"${src}${txt}>${COPY_ICON}</button>`;
+}
+// One delegated listener per page. The drawers repaint by innerHTML, so a
+// listener per button would be gone on the next paint; this one survives. It
+// stops the click too: an icon inside a <summary> must not toggle it, and one
+// inside a table row must not open the row.
+function bindCopyIcons(root){
+  const r=root||document;
+  if(!r.addEventListener) return;
+  r.addEventListener('click', e=>{
+    const t=e.target;
+    const b=(t&&t.closest)?t.closest('button.cp'):null;
+    if(!b) return;
+    e.preventDefault(); e.stopPropagation();
+    const from=b.getAttribute('data-copy-from');
+    const src=from?document.getElementById(from):null;
+    const text=b.hasAttribute('data-copy')?b.getAttribute('data-copy'):(src?(src.textContent||''):'');
+    copyText(text).then(ok=>{
+      if(!ok){ toast('copy failed — select the text and copy manually','err'); return; }
+      b.classList.add('done'); b.innerHTML=CHECK_ICON;
+      setTimeout(()=>{ b.classList.remove('done'); b.innerHTML=COPY_ICON; }, 1500);
+    });
+  });
+}
+
+// ---- markdown (from index.html, CFOP-113) ---------------------------------
+// Agent output is LLM text that quotes log and alert lines verbatim, so the
+// markdown it contains is untrusted, and marked emits raw HTML by design.
+// Parse, then walk the result and drop anything scriptable before it reaches
+// innerHTML. marked itself is vendored (ui/vendor); when it is absent — a 404
+// on the script, or a page that never loaded it — the text is escaped, never
+// dropped. The chat page and the investigations drawer render the same agent
+// prose, which is why this is here and not in either of them.
+const MD_ALLOWED_TAGS = new Set(['A','B','BLOCKQUOTE','BR','CODE','DEL','DIV','EM','H1','H2',
+  'H3','H4','H5','H6','HR','I','LI','OL','P','PRE','SPAN','STRONG','TABLE','TBODY','TD',
+  'TH','THEAD','TR','UL']);
+const MD_ALLOWED_ATTRS = new Set(['href', 'title', 'class', 'colspan', 'rowspan']);
+function sanitizeHtml(html) {
+  const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html');
+  const root = doc.body.firstChild;
+  for (const el of Array.from(root.querySelectorAll('*'))) {
+    if (!MD_ALLOWED_TAGS.has(el.tagName)) {
+      el.replaceWith(...el.childNodes);  // keep the text, drop the element
+      continue;
+    }
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (!MD_ALLOWED_ATTRS.has(name)) { el.removeAttribute(attr.name); continue; }
+      // No fragment hrefs: the investigations drawer is hash-routed, so
+      // agent markdown like [see](#2272) would swap the open row (or, with the
+      // target=_blank below, open another investigation in a new tab).
+      if (name === 'href' && !/^(https?:|mailto:|\/)/i.test(attr.value.trim())) {
+        el.removeAttribute(attr.name);
+      }
+    }
+    if (el.tagName === 'A') { el.setAttribute('rel', 'noopener noreferrer'); el.setAttribute('target', '_blank'); }
+  }
+  return root.innerHTML;
+}
+function renderMarkdown(text) {
+  const s = text == null ? '' : String(text);
+  if (typeof marked === 'undefined' || !marked || !marked.parse) return esc(s);
+  try {
+    marked.setOptions({ breaks: true, gfm: true });
+    return sanitizeHtml(marked.parse(s));
+  } catch (e) {
+    return esc(s);
+  }
+}
