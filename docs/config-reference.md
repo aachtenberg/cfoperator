@@ -258,8 +258,11 @@ ooda:
     hour_start: 7   # Start checking at 7 AM
     hour_end: 9     # Stop checking at 9 AM
     # Sent once per day: the date is stored in agent settings
-    # (morning_summary_sent_on), so a pod restart inside the window does
-    # not re-run it.
+    # (morning_summary_sent_on) after the digest is stored, so a pod
+    # restart inside the window does not re-run it. If the database is
+    # unreachable the window is skipped rather than run unguarded — a
+    # missed summary beats a duplicate one, which re-feeds the
+    # remediation queue.
 
 # Chat Interface
 chat:

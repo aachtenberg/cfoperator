@@ -8271,6 +8271,24 @@ IMPORTANT:
         # For now, just log
         logger.info(f"Answer handling not yet fully implemented")
 
+    def _settings_readable(self) -> bool:
+        """Whether a settings read just now can be believed.
+
+        ``ResilientKnowledgeBase.get_setting`` degrades silently: when the
+        health monitor says the connection is down it returns the *default*
+        instead of raising, so an empty read is ambiguous — no marker, or no
+        database. ``is_online()`` disambiguates. A plain KnowledgeBase (and the
+        test doubles) has no such probe; those raise on failure, so absent a
+        probe the read is taken at face value.
+        """
+        probe = getattr(self.kb, 'is_online', None)
+        if not callable(probe):
+            return True
+        try:
+            return bool(probe())
+        except Exception:
+            return False
+
     def _check_morning_summary(self):
         """
         Generate morning summary (TPS report style).
@@ -8308,14 +8326,26 @@ IMPORTANT:
 
         # Check if we already sent today's summary. The in-memory mark is the
         # fast path; the DB setting is what survives a pod restart.
+        #
+        # The read fails *closed*: generating feeds the remediation queue, so a
+        # read that cannot be trusted must skip the tick rather than fall
+        # through to a second run (that is the 2026-08-28 duplicate). The next
+        # loop retries, and if the database stays down for the whole window we
+        # lose the day's summary — the cheaper miss, and one the log names.
         today = now.date()
         if getattr(self, 'last_summary_date', None) == today:
             return
         try:
             sent_on = self.kb.get_setting(_MORNING_SUMMARY_SENT_SETTING, '') or ''
         except Exception as e:
-            logger.warning(f"Could not read {_MORNING_SUMMARY_SENT_SETTING}: {e}")
-            sent_on = ''
+            logger.warning(f"Could not read {_MORNING_SUMMARY_SENT_SETTING} ({e}); "
+                           "skipping this tick rather than risk a duplicate summary")
+            return
+        if not sent_on and not self._settings_readable():
+            logger.warning(
+                "Database is offline; cannot tell whether today's morning summary "
+                "already ran. Skipping this tick rather than risk a duplicate.")
+            return
         if sent_on == today.isoformat():
             logger.info(f"Morning summary already sent today ({sent_on}) per "
                         "agent settings; not re-running after restart")
@@ -8329,15 +8359,11 @@ IMPORTANT:
         # Generate the summary
         summary = self._generate_morning_summary()
 
-        # Mark as sent — in memory and in the DB. The DB write is best-effort:
-        # an offline DB must not block the send; it only loses restart safety
-        # for today. Marked after generation, not before, so a generation
-        # failure is retried next tick rather than silently losing the day.
+        # Mark in memory now: whatever happens to the delivery below, this
+        # process must not re-enter _generate_morning_summary today — that is
+        # the call that feeds the remediation queue. The durable marker waits
+        # until the digest has actually landed (below).
         self.last_summary_date = today
-        try:
-            self.kb.set_setting(_MORNING_SUMMARY_SENT_SETTING, today.isoformat())
-        except Exception as e:
-            logger.warning(f"Could not persist {_MORNING_SUMMARY_SENT_SETTING}: {e}")
 
         # Send to Slack
         for notif in self.notifications:
@@ -8364,6 +8390,7 @@ IMPORTANT:
                 logger.debug(f"Could not record notification history: {e}")
 
         # Store in DB as a sweep report
+        stored = False
         try:
             self.kb.store_sweep_report(
                 severity=summary.get('severity', 'info'),
@@ -8373,10 +8400,25 @@ IMPORTANT:
                 # complete summary; findings stay truncated for the console.
                 sweep_meta={'type': 'morning_summary', 'full_text': summary['text']}
             )
+            stored = True
         except Exception as e:
             logger.warning(f"Could not store morning summary in DB: {e}")
 
-        logger.info("Morning summary sent")
+        # Persist "sent today" only once the digest has landed. Marking before
+        # the store would make a failed store sticky: the restart that used to
+        # retry the day would see the marker and skip, and the digest would
+        # never exist. The write itself is still best-effort — an offline DB
+        # costs restart-safety for today, not the summary.
+        if stored:
+            try:
+                self.kb.set_setting(_MORNING_SUMMARY_SENT_SETTING, today.isoformat())
+            except Exception as e:
+                logger.warning(f"Could not persist {_MORNING_SUMMARY_SENT_SETTING}: {e}")
+            logger.info("Morning summary sent")
+        else:
+            logger.warning("Morning summary sent but not stored; leaving "
+                           f"{_MORNING_SUMMARY_SENT_SETTING} unset so a restart "
+                           "retries today's digest")
 
     def _generate_morning_summary(self) -> Dict[str, Any]:
         """
