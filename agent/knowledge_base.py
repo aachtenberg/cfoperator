@@ -525,11 +525,23 @@ def remediation_approve_conflict(row) -> Optional[str]:
     approve) or do-by-hand + Resolve. Enforced at the API so every caller
     (console, MCP, future clients) hits the same wall.
     """
-    if (row or {}).get('remediation_class') == 'manual':
+    row = row if isinstance(row, dict) else {}
+    if row.get('remediation_class') == 'manual':
         return ("manual-class rows are human-only work — the executor has "
                 "nothing to mechanize. Reclassify it (gitops-patch / "
                 "k8s-action / node-action) if the executor should attempt it, "
                 "or do it by hand and Resolve.")
+    if row.get('pr_url'):
+        # CFOP-116: a PR already exists for this fix — the investigation
+        # opened it, or the executor did on an earlier pass. The executor
+        # regenerates its own diff, so queuing the row again opens a second
+        # PR. Merge closes the row through the reconciler; closing rejects it.
+        # The column only: a PR the recommendation merely names
+        # (named_pr_url) is a link for the operator, not a gate.
+        return (f"a PR is already open for this row ({row['pr_url']}). Merge it "
+                "and the reconciler resolves the row, or close it and the row "
+                "is rejected; approving would have the executor open a second "
+                "PR for the same fix.")
     return None
 
 
@@ -541,18 +553,61 @@ def _investigation_remediation_id(findings) -> Optional[int]:
 
 
 def _investigation_remediation_pr_url(findings) -> Optional[str]:
-    """URL of an inline-proposer PR opened for this investigation, or None.
+    """URL of a PR opened during this investigation, or None.
 
     The inline unschedulable-pod path opens its PR directly and deliberately
     skips the queue (one fix, one driver) — the only trace is
     findings.remediation_proposal.remediation_pr. Surfacing it keeps the
-    console's explicit "none proposed" copy true.
+    console's explicit "none proposed" copy true. A PR the model opened
+    itself through github_create_pr lands in findings.opened_prs (CFOP-116).
     """
     f = findings if isinstance(findings, dict) else {}
     prop = f.get('remediation_proposal')
     pr = prop.get('remediation_pr') if isinstance(prop, dict) else None
     if isinstance(pr, dict) and pr.get('status') == 'opened' and pr.get('html_url'):
         return str(pr['html_url'])
+    opened = f.get('opened_prs')
+    if isinstance(opened, list) and opened and opened[-1]:
+        return str(opened[-1])
+    return None
+
+
+_PR_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/\d+")
+
+
+def _row_repos(payload) -> set:
+    """Repos a row claims, lower-cased: top-level ``repo`` plus every FIX
+    target's ``repo``. Kept as written — the slug, or the short name that
+    ``_resolve_fix_repo`` exists for and older rows still carry."""
+    p = payload if isinstance(payload, dict) else {}
+    names = [p.get('repo')]
+    for t in (p.get('targets') or []):
+        if isinstance(t, dict):
+            names.append(t.get('repo'))
+    return {str(n).strip().lower() for n in names if n and str(n).strip()}
+
+
+def _pr_url_named_by_row(payload) -> Optional[str]:
+    """A PR in the row's own repo that its recommendation names, or None.
+
+    Rows enqueued before CFOP-116 (and any path that still misses the tool
+    result) carry a PR the model opened only as prose — "Merge PR #114
+    (https://github.com/…/pull/114)". The link is real, so the read side
+    surfaces it as ``named_pr_url``: a link, not a tracked PR. ``pr_url``
+    stays the column, which is what the reconciler, the stamp path and the
+    approve gate read — a recommendation that merely cites a PR must not
+    close the gate. Restricted to the row's own repo (slug or short name,
+    top-level or per target) so an upstream PR cited as context cannot pass
+    for the fix.
+    """
+    repos = _row_repos(payload)
+    if not repos:
+        return None
+    p = payload if isinstance(payload, dict) else {}
+    for m in _PR_URL_RE.finditer(str(p.get('recommendation') or '')):
+        slug = m.group(1).lower()
+        if slug in repos or slug.split('/', 1)[1] in repos:
+            return m.group(0)
     return None
 
 
@@ -569,6 +624,8 @@ def remediation_row_dict(r) -> Dict[str, Any]:
         "priority": r.priority,
         "attempts": r.attempts,
         "pr_url": r.pr_url,
+        # A link the row does not track (CFOP-116); None once the column is set.
+        "named_pr_url": None if r.pr_url else _pr_url_named_by_row(r.payload),
         "last_error": r.last_error,
         "result": r.result,
         "created_at": r.created_at.isoformat() if r.created_at else None,
@@ -591,6 +648,7 @@ class RemediationQueue(Base):
 
     Lifecycle:
         queued -> claimed -> executing -> {pr-open -> verifying ->} resolved
+        pr-open on entry when the investigation opened the PR itself (CFOP-116)
         any in-flight state -> failed -> (retry) queued | needs-human
         pr-open -> rejected (human closed the PR)
         any state -> resolved | rejected (operator closes it in the console)
@@ -3784,6 +3842,7 @@ class KnowledgeBase:
         confidence: Optional[float] = None,
         priority: int = 5,
         dedupe_key: Optional[str] = None,
+        pr_url: Optional[str] = None,
     ) -> Optional[int]:
         """Record a recommendation for remediation and return its queue id.
 
@@ -3799,10 +3858,19 @@ class KnowledgeBase:
         ``payload['dedupe_key']``, which this function does NOT inject — the
         caller must put the key in the payload as well as the kwarg, or the
         key silently never matches anything.
+
+        ``pr_url`` (CFOP-116) means the investigation opened the PR itself:
+        the row enters as 'pr-open' carrying it — the state the executor's
+        completion would have produced — so the PR reconciler owns it from
+        the start and the drainer never sees it.
         """
         remediation_class, risk = normalize_remediation_fields(remediation_class, risk)
-        status = 'queued' if remediation_is_auto_eligible(
-            remediation_class, risk, confidence) else 'needs-human'
+        pr_url = str(pr_url or '').strip() or None
+        if pr_url:
+            status = 'pr-open'
+        else:
+            status = 'queued' if remediation_is_auto_eligible(
+                remediation_class, risk, confidence) else 'needs-human'
 
         with self.session_scope() as session:
             if dedupe_key:
@@ -3823,6 +3891,7 @@ class KnowledgeBase:
                 status=status,
                 priority=priority,
                 payload=payload,
+                pr_url=pr_url,
             )
             session.add(item)
             session.flush()

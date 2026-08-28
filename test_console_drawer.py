@@ -711,3 +711,110 @@ def test_a_remediation_with_no_investigation_shows_no_handoff(remediation_drawer
     """No investigation, no attach line — not a line with a blank in it."""
     assert not remediation_drawer["orphanHasCommand"]
     assert not remediation_drawer["orphanHasTakeOver"]
+
+
+# --------------------------------------------------------------------------
+# a PR the row already has (CFOP-116)
+# --------------------------------------------------------------------------
+#
+# Row #85: the investigation opened the PR itself and the drawer still offered
+# Approve, which hands the row to an executor that opens a second PR. The API
+# 409s that now; this is the control the operator actually clicks. Two kinds of
+# link: pr_url is a PR the row tracks (Review PR replaces Approve), named_pr_url
+# is one the recommendation merely names (linked, Approve stays, the note says
+# why). Same harness as the drawer above; the rows are fed to detail() and to
+# rowHtml() for the list.
+
+_PR_STUB = r"""
+const fs=require('fs'), vm=require('vm');
+const html=fs.readFileSync(process.argv[2],'utf8');
+const src=html.match(/<script>([\s\S]*?)<\/script>/)[1];
+function el(){return{className:'',innerHTML:'',textContent:'',value:'',hidden:false,inert:false,
+  style:{},classList:{add(){},remove(){}},setAttribute(){},select(){},remove(){},
+  focus(){},scrollIntoView(){},appendChild(){},addEventListener(){}};}
+const els={};
+const loc={pathname:'/remediations',search:'',hash:'',href:'http://cfop/remediations'};
+const hist={replaceState(){}};
+const TRACKED='https://github.com/aachtenberg/homelab-infra/pull/116';
+const NAMED='https://github.com/aachtenberg/homelab-infra/pull/114';
+const base={investigation_id:2312,remediation_class:'gitops-patch',risk:'low',host_id:'default',
+  attempts:0,created_at:'2026-08-28T11:10:04',payload:{recommendation:'merge the PR'}};
+const ROWS={
+  85:Object.assign({},base,{id:85,status:'needs-human',pr_url:null,named_pr_url:NAMED}),
+  86:Object.assign({},base,{id:86,status:'pr-open',pr_url:TRACKED,named_pr_url:null}),
+  87:Object.assign({},base,{id:87,status:'needs-human',pr_url:null,named_pr_url:null})};
+const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,Set,
+  setTimeout,clearTimeout, setInterval:()=>0, clearInterval:()=>{},
+  location:loc, history:hist,
+  window:{location:loc,history:hist,addEventListener(){},removeEventListener(){}},
+  getComputedStyle:()=>({getPropertyValue:()=>'#888888'}),
+  document:{documentElement:{},body:{appendChild(){}},hidden:false,addEventListener(){},
+    createElement:()=>el(), activeElement:null,
+    getElementById:id=>(els[id]=els[id]||el())},
+  navigator:{},
+  fetch:(url)=>{
+    const m=url.match(/^\/api\/remediations\/(\d+)$/);
+    if(m && ROWS[m[1]]) return Promise.resolve({json:()=>Promise.resolve(ROWS[m[1]])});
+    if(url.indexOf('/api/remediation/flags')===0){
+      return Promise.resolve({json:()=>Promise.resolve({queue_feed:true,queue_reap:true,queue_drain:true,queue_verify:true})});
+    }
+    return Promise.resolve({json:()=>Promise.resolve({remediations:[]})});
+  }};
+const common=fs.readFileSync(require('path').join(require('path').dirname(process.argv[2]),'common.js'),'utf8');
+box.globalThis=box; vm.createContext(box); vm.runInContext(common,box); vm.runInContext(src,box);
+const tick=()=>new Promise(r=>setImmediate(r));
+(async () => {
+  await tick(); await tick();
+  const out={};
+  for (const id of [85,86,87]) {
+    await box.detail(id);
+    out['drawer'+id]=box.document.getElementById('detail').innerHTML;
+    out['row'+id]=box.rowHtml(ROWS[id]);
+    box.closeDetail();
+  }
+  console.log(JSON.stringify(out));
+})().catch(e => { console.error(e); process.exit(1); });
+"""
+
+_TRACKED = "https://github.com/aachtenberg/homelab-infra/pull/116"
+_NAMED = "https://github.com/aachtenberg/homelab-infra/pull/114"
+
+
+@pytest.fixture(scope="module")
+def pr_drawer(tmp_path_factory):
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    stub = tmp_path_factory.mktemp("prdrawer") / "stub.js"
+    stub.write_text(_PR_STUB, encoding="utf-8")
+    out = subprocess.run([node, str(stub), str(UI / "remediations.html")],
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_a_row_with_a_tracked_pr_offers_review_not_approve(pr_drawer):
+    d = pr_drawer["drawer86"]
+    assert "approve(86)" not in d, "Approve on a row with an open PR opens a second PR"
+    assert f'href="{_TRACKED}"' in d and "Review PR" in d
+    assert "second PR" in d
+
+
+def test_a_row_that_only_names_a_pr_keeps_approve_and_links_it(pr_drawer):
+    """A #85-shaped row: the link for the human, the decision stays theirs."""
+    d = pr_drawer["drawer85"]
+    assert "approve(85)" in d
+    assert f'href="{_NAMED}"' in d and "Named PR" in d
+    assert "no row tracks" in d
+
+
+def test_a_row_with_no_pr_is_unchanged(pr_drawer):
+    d = pr_drawer["drawer87"]
+    assert "approve(87)" in d
+    assert "Review PR" not in d and "Named PR" not in d and "github.com" not in d
+
+
+def test_the_list_links_both_kinds_of_pr(pr_drawer):
+    assert f'href="{_TRACKED}"' in pr_drawer["row86"] and "PR ↗" in pr_drawer["row86"]
+    assert f'href="{_NAMED}"' in pr_drawer["row85"] and "not tracked" in pr_drawer["row85"]
+    assert "github.com" not in pr_drawer["row87"]

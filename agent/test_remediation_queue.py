@@ -1163,6 +1163,7 @@ def _na_op(feed=True):
     op._queue_needs_action_remediation = lambda *a, **k: CFOperator._queue_needs_action_remediation(
         op, *a, **k)
     op._open_remediation_for_key = lambda key: CFOperator._open_remediation_for_key(op, key)
+    op._stamp_opened_pr = lambda row, url: CFOperator._stamp_opened_pr(op, row, url)
     op.kb.find_open_remediation_by_dedupe_key.return_value = None
     # A bare MagicMock's git_repos() iterates empty, which now means "nothing
     # resolves" and would sink every gitops-manifest FIX for a reason unrelated
@@ -2658,3 +2659,243 @@ def test_the_parent_investigation_learns_where_its_work_went():
     op = _checklist_op()
     op._queue_needs_action_remediation(2305, "t", _ALERT, _CHECKLIST_REC, "report", provider="p")
     assert op._checklist_followups[2305] == "investigate-followup:alert-abc123"
+
+
+# ---- CFOP-116: a PR the investigation opened itself ---------------------------
+#
+# Row #85: the model called github_create_pr, opened homelab-infra #114, and
+# recommended merging it. The row landed needs-human with pr_url null (the URL
+# only in prose), no link anywhere, and an Approve button that would have had
+# the executor open a second PR. The tool result is the evidence; it has to
+# reach the row.
+
+_OPENED = "https://github.com/aachtenberg/homelab-infra/pull/114"
+
+
+def _pinning_fix():
+    """Single-target gitops-manifest at low risk: the one auto-eligible shape."""
+    return {
+        "targets": [{"kind": "gitops-manifest",
+                     "id": "k3s/base/monitoring/loki-statefulset.yml",
+                     "repo": "aachtenberg/homelab-infra"}],
+        "observed": [{"source": "github_get_file_contents k3s/base/monitoring/loki-statefulset.yml",
+                      "value": "image: grafana/loki:latest"}],
+        "steps": ["merge PR #114"],
+        "verify": {"command": "kubectl -n monitoring get sts loki -o yaml", "expect": "loki:3.7.7"},
+        "rejected": [{"alternative": "patch the live object", "why_not": "ArgoCD reverts it"}],
+        "risk": "low",
+    }
+
+
+def test_dispatch_records_only_a_pr_that_was_actually_opened():
+    from agent.agent import _ToolLoopStats
+    op = MagicMock()
+    stats = _ToolLoopStats()
+
+    def run(name, result, cached=False):
+        op._cached_tool_exec.return_value = ("content", result, cached)
+        CFOperator._dispatch_tool_call(op, name, {}, stats=stats, tool_cache={},
+                                       max_result_chars=1000, iteration=0, max_iterations=5)
+
+    run("github_create_pr", {"success": True, "html_url": _OPENED})
+    run("github_create_pr", {"success": False, "error": "422 branch already exists"})
+    run("github_get_pr", {"success": True, "html_url": "https://github.com/o/r/pull/8"})
+    run("github_create_pr", "Error: tool crashed")
+    run("github_create_pr", {"success": True, "html_url": "https://github.com/o/r/pull/9"},
+        cached=True)
+    assert stats.opened_prs == [_OPENED]
+    assert stats.result("done")["opened_prs"] == [_OPENED]
+    assert stats.tool_calls == 5  # counting is unchanged
+
+
+def test_feed_enqueues_a_pr_the_model_opened_as_pr_open_and_never_auto():
+    op = _na_op()
+    rid = op._queue_needs_action_remediation(
+        2312, "Pin loki and grafana image tags", {"fingerprint": "f1"},
+        f"Merge PR #114 ({_OPENED}) so ArgoCD syncs the pinned tags", "report",
+        provider="deepseek/deepseek-v4-pro", structured_fix=_pinning_fix(),
+        opened_prs=[_OPENED])
+    assert rid == 9
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["pr_url"] == _OPENED
+    # The FIX is the one auto-eligible shape (0.8). With the PR already open
+    # there is nothing left to auto-execute, so no confidence and no judge —
+    # the judge's question is about unattended execution, and a human merge
+    # is not that.
+    assert kw["confidence"] is None
+    op._judge_mutation_remediation.assert_not_called()
+    op._count_enqueued.assert_called_once_with("investigation", "gitops-patch", "low", None)
+    # Without a PR the same FIX still walks the gate as before.
+    op2 = _na_op()
+    op2._queue_needs_action_remediation(
+        2312, "t", {"fingerprint": "f1"}, "pin the image tags", "report",
+        provider="p", structured_fix=_pinning_fix())
+    kw2 = op2.kb.queue_remediation.call_args.kwargs
+    assert kw2["pr_url"] is None and kw2["confidence"] == 0.8
+
+
+def test_feed_stamps_the_opened_pr_on_the_row_it_deduped_onto():
+    # The first run proposed and parked; this run opened the PR. The open row
+    # is the one on the operator's screen, so it gets the link and leaves the
+    # executor's reach.
+    op = _na_op()
+    op.kb.queue_remediation.return_value = None  # the KB saw the key already
+    # Shaped like row #85: the column is null and the serializer offers the
+    # prose URL as named_pr_url. That is a link, not a tracked PR — the stamp
+    # must read the column, or a #85-shaped row could never be promoted.
+    op.kb.find_open_remediation_by_dedupe_key.return_value = {
+        "id": 40, "status": "needs-human", "pr_url": None, "named_pr_url": _OPENED,
+        "payload": {"repo": "aachtenberg/homelab-infra",
+                    "recommendation": f"Merge PR #114 ({_OPENED})"}}
+    rid = op._queue_needs_action_remediation(
+        2313, "t", {"fingerprint": "f1"}, "merge the PR", "report", provider="p",
+        structured_fix=_pinning_fix(), opened_prs=[_OPENED])
+    assert rid == 40
+    op.kb.update_remediation_status.assert_called_once_with(40, "pr-open", pr_url=_OPENED)
+
+
+@pytest.mark.parametrize("row", [
+    {"id": 41, "status": "claimed", "pr_url": None},   # the executor holds it
+    {"id": 42, "status": "needs-human", "pr_url": "https://github.com/o/r/pull/1"},  # has one
+])
+def test_stamping_leaves_rows_with_a_driver_or_a_pr_alone(row):
+    op = _na_op()
+    op.kb.queue_remediation.return_value = None
+    op.kb.find_open_remediation_by_dedupe_key.return_value = row
+    assert op._queue_needs_action_remediation(
+        2313, "t", {"fingerprint": "f1"}, "merge the PR", "report", provider="p",
+        structured_fix=_pinning_fix(), opened_prs=[_OPENED]) == row["id"]
+    op.kb.update_remediation_status.assert_not_called()
+
+
+def test_queue_remediation_inserts_an_opened_pr_as_pr_open():
+    from contextlib import contextmanager
+    from knowledge_base import KnowledgeBase
+    kb = KnowledgeBase.__new__(KnowledgeBase)
+    added = []
+
+    class _Session:
+        def add(self, item):
+            added.append(item)
+
+        def flush(self):
+            added[-1].id = 85
+
+    @contextmanager
+    def scope():
+        yield _Session()
+
+    kb.session_scope = scope
+    rid = kb.queue_remediation("gitops-patch", {"recommendation": "merge"},
+                               investigation_id=2312, risk="low", confidence=0.8,
+                               pr_url=_OPENED)
+    assert rid == 85
+    assert added[-1].status == "pr-open" and added[-1].pr_url == _OPENED
+    # The ordinary path is untouched: same inputs without a PR are auto-eligible.
+    kb.queue_remediation("gitops-patch", {"recommendation": "merge"}, risk="low", confidence=0.8)
+    assert added[-1].status == "queued" and added[-1].pr_url is None
+
+
+def test_row_dict_surfaces_a_pr_named_in_the_rows_own_repo():
+    import types
+    from knowledge_base import remediation_row_dict
+
+    def row(pr_url, payload):
+        return types.SimpleNamespace(
+            id=85, status="needs-human", remediation_class="gitops-patch", risk="low",
+            confidence=None, host_id="default", investigation_id=2312, priority=5,
+            attempts=0, pr_url=pr_url, last_error=None, result=None, created_at=None,
+            claimed_at=None, completed_at=None, payload=payload)
+
+    rec = f"Merge PR #114 ({_OPENED}) so ArgoCD syncs the pinned image tags."
+
+    def named(pr_url, payload):
+        d = remediation_row_dict(row(pr_url, payload))
+        return d["pr_url"], d["named_pr_url"]
+
+    # row #85 as it sits in the DB: the PR only in prose. A link, not a
+    # tracked PR — pr_url stays the column.
+    assert named(None, {"repo": "aachtenberg/homelab-infra", "recommendation": rec}) == (None, _OPENED)
+    # GitHub slugs are case-insensitive
+    assert named(None, {"repo": "Aachtenberg/Homelab-Infra", "recommendation": rec}) == (None, _OPENED)
+    # the short name the model (and older rows) emit, and a repo only on a target
+    assert named(None, {"repo": "homelab-infra", "recommendation": rec}) == (None, _OPENED)
+    assert named(None, {"targets": [{"kind": "gitops-manifest", "id": "x.yml",
+                                     "repo": "aachtenberg/homelab-infra"}],
+                        "recommendation": rec}) == (None, _OPENED)
+    # a PR in someone else's repo is context the model cited, not the fix
+    assert named(None, {"repo": "aachtenberg/homelab-infra",
+                        "recommendation": "Upstream fix: https://github.com/grafana/loki/pull/999"}) == (None, None)
+    # no repo on the row -> nothing to match against, no guess
+    assert named(None, {"recommendation": rec}) == (None, None)
+    # once the column is set it is the one link
+    later = "https://github.com/aachtenberg/homelab-infra/pull/115"
+    assert named(later, {"repo": "aachtenberg/homelab-infra", "recommendation": rec}) == (later, None)
+
+
+def test_approve_is_refused_while_a_pr_is_open():
+    from knowledge_base import remediation_approve_conflict
+    reason = remediation_approve_conflict({"remediation_class": "gitops-patch", "pr_url": _OPENED})
+    assert reason and _OPENED in reason and "second PR" in reason
+    assert remediation_approve_conflict({"remediation_class": "gitops-patch",
+                                         "pr_url": None}) is None
+    # A PR the recommendation merely names is a link for the operator, not a
+    # gate: a row citing an already-merged PR in its own repo stays approvable.
+    assert remediation_approve_conflict({"remediation_class": "gitops-patch",
+                                         "pr_url": None, "named_pr_url": _OPENED}) is None
+
+
+def test_approve_endpoint_refuses_rows_with_an_open_pr_over_http():
+    client, op = _console_client()
+    op.kb.get_remediation.return_value = {"id": 85, "status": "needs-human",
+                                          "remediation_class": "gitops-patch",
+                                          "pr_url": _OPENED}
+    resp = client.post("/api/remediations/85/approve")
+    assert resp.status_code == 409
+    body = resp.get_json()
+    assert _OPENED in body["error"]
+    assert body["action"] == "review-pr"
+    op.kb.update_remediation_status.assert_not_called()
+
+
+def test_investigation_pr_url_falls_back_to_a_pr_the_model_opened():
+    from knowledge_base import _investigation_remediation_pr_url
+    assert _investigation_remediation_pr_url({"opened_prs": [_OPENED]}) == _OPENED
+    assert _investigation_remediation_pr_url({"opened_prs": []}) is None
+
+
+def _folding_op():
+    """An enqueue that the CFOP-71 node collapse folds onto incident row #51."""
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
+    op.config = {"remediation": {"queue_feed": True}}
+    op._collapse_key_for_node_incident = lambda d: "node-raspberrypi4"
+    op._record_absorbed_symptom = lambda k, d: 51   # incident row already open
+    op._stamp_opened_pr = lambda row, url: CFOperator._stamp_opened_pr(op, row, url)
+    return op
+
+
+def test_a_pr_opened_for_a_folded_symptom_lands_on_the_node_incident_row():
+    # The symptom's row never exists; the incident row is the one an operator
+    # acts on, so it is the one that must carry the PR and refuse the executor.
+    op = _folding_op()
+    op.kb.get_remediation.return_value = {"id": 51, "status": "needs-human", "pr_url": None}
+    details = {"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.8,
+               "recommendation": "merge the PR", "host": "raspberrypi4",
+               "dedupe_key": "alert-x", "pr_url": _OPENED}
+    assert CFOperator._maybe_queue_remediation(op, 7, details) == 51
+    op.kb.update_remediation_status.assert_called_once_with(51, "pr-open", pr_url=_OPENED)
+    op.kb.queue_remediation.assert_not_called()
+
+
+def test_a_folded_pr_the_incident_row_cannot_take_is_reported_not_dropped(caplog):
+    op = _folding_op()
+    op.kb.get_remediation.return_value = {"id": 51, "status": "claimed", "pr_url": None}
+    details = {"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.8,
+               "recommendation": "merge the PR", "host": "raspberrypi4",
+               "dedupe_key": "alert-x", "pr_url": _OPENED}
+    import logging
+    with caplog.at_level(logging.WARNING, logger="cfoperator"):
+        assert CFOperator._maybe_queue_remediation(op, 7, details) == 51
+    op.kb.update_remediation_status.assert_not_called()
+    assert any(_OPENED in r.getMessage() and "#51" in r.getMessage()
+               for r in caplog.records), "an orphaned PR must be logged, not silently dropped"

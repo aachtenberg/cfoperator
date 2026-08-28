@@ -910,6 +910,12 @@ class _ToolLoopStats:
     input_tokens: int = 0
     output_tokens: int = 0
     learning_ids: List[str] = field(default_factory=list)
+    # PRs the model opened itself through github_create_pr (html_url, in call
+    # order). The tool result is the only evidence such a PR exists; a queue
+    # row that does not carry it lands needs-human with the URL buried in
+    # prose and is offered to the executor, which opens a second one
+    # (CFOP-116, row #85).
+    opened_prs: List[str] = field(default_factory=list)
 
     def result(self, response: str) -> Dict[str, Any]:
         return {
@@ -919,7 +925,21 @@ class _ToolLoopStats:
             'output_tokens': self.output_tokens,
             'learning_ids': self.learning_ids,
             'cached_tool_hits': self.cached_hits,
+            'opened_prs': list(self.opened_prs),
         }
+
+
+def _opened_pr_url(result) -> Optional[str]:
+    """html_url of a PR that a github_create_pr call actually opened, or None.
+
+    tools.github.create_pr answers ``{"success": True, "html_url": ...}`` on
+    the happy path and ``{"success": False, "error": ...}`` otherwise; the
+    tool layer may also hand back a string. Only the first shape is a PR.
+    """
+    if not isinstance(result, dict) or not result.get('success'):
+        return None
+    url = str(result.get('html_url') or '').strip()
+    return url or None
 
 
 def _with_classifier_identity(hints: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
@@ -2048,12 +2068,17 @@ FIX: {_FIX_JSON_SCHEMA}"""
             # one-shot call) and enqueue through the existing queue gates; the
             # row links back here via investigation_id and lands needs-human.
             # CFOP-80: a valid FIX skips that classifier (class from target.kind).
+            # CFOP-116: a PR the model opened itself (github_create_pr) is
+            # evidence the tool loop holds, not the prose. It rides to the
+            # queue row and into findings, or the console shows a row with
+            # no PR and an Approve button that would open a second one.
+            opened_prs = [u for u in (result.get('opened_prs') or []) if u]
             remediation_id = None
             if outcome == 'needs_action':
                 remediation_id = self._queue_needs_action_remediation(
                     inv_id, trigger, alert_info, recommendation, response_text,
                     provider=f"{provider_type}/{model}", proposal=proposal,
-                    structured_fix=structured_fix)
+                    structured_fix=structured_fix, opened_prs=opened_prs)
 
             findings = {
                 'response': response_text[:5000],
@@ -2063,6 +2088,8 @@ FIX: {_FIX_JSON_SCHEMA}"""
             }
             if structured_fix:
                 findings['fix'] = structured_fix
+            if opened_prs:
+                findings['opened_prs'] = opened_prs
             similar_past = self._similar_past_citations(context)
             if similar_past:
                 findings['similar_past'] = similar_past
@@ -3412,6 +3439,15 @@ FIX: {_FIX_JSON_SCHEMA}"""
             REMEDIATION_FOLDED.labels(reason='fork_stuck').inc()
             details['confidence'] = None
         confidence = details.get('confidence')
+        # CFOP-116: the model opened the PR itself. Nothing is left to
+        # auto-execute, and the mutation judge asks whether a change may be
+        # made UNATTENDED — a human merge is not that. Confidence None is the
+        # one value that can never clear the gate, so the judge does not run
+        # and the row enqueues as pr-open (queue_remediation) for the
+        # reconciler to own.
+        pr_url = str(details.get('pr_url') or '').strip() or None
+        if pr_url and confidence is not None:
+            confidence = None
         dedupe_key = str(details.get('dedupe_key') or '') or None
         # CFOP-71: while a node is NotReady, every symptom attributable to it
         # folds onto one node-incident row rather than opening its own. The
@@ -3427,6 +3463,21 @@ FIX: {_FIX_JSON_SCHEMA}"""
                 # An incident row already exists; this symptom is now recorded
                 # on it. Return its id so the caller links to the incident
                 # instead of reporting nothing proposed.
+                if pr_url:
+                    # CFOP-116: the PR must not vanish with the fold. The
+                    # incident row is the one an operator acts on, so it
+                    # carries the link and leaves the executor's reach; a row
+                    # with a driver keeps its own, and the PR is then
+                    # genuinely untracked — say so.
+                    try:
+                        stamped = self._stamp_opened_pr(self.kb.get_remediation(absorbed), pr_url)
+                    except Exception as e:
+                        stamped = False
+                        logger.warning(f"Could not stamp PR {pr_url} on node incident "
+                                       f"#{absorbed}: {e}")
+                    if not stamped:
+                        logger.warning(f"PR {pr_url} was opened for a symptom folded onto node "
+                                       f"incident #{absorbed}; no row tracks it")
                 return absorbed
             dedupe_key = node_key
             # Mutated IN PLACE, deliberately: _queue_needs_action_remediation
@@ -3446,6 +3497,12 @@ FIX: {_FIX_JSON_SCHEMA}"""
         # identifier matching is only for rows no tier above wants.
         absorbed_repeat = None if node_key else self._absorb_repeat_remediation(details)
         if absorbed_repeat:
+            if pr_url:
+                try:
+                    self._stamp_opened_pr(self.kb.get_remediation(absorbed_repeat), pr_url)
+                except Exception as e:
+                    logger.warning(f"Could not stamp PR {pr_url} on remediation "
+                                   f"#{absorbed_repeat}: {e}")
             return absorbed_repeat
         payload = {
             'recommendation': str(details.get('recommendation') or ''),
@@ -3469,6 +3526,10 @@ FIX: {_FIX_JSON_SCHEMA}"""
         for key in ('targets', 'observed', 'steps', 'verify', 'rejected'):
             if details.get(key) is not None:
                 payload[key] = details[key]
+        if details.get('opened_prs'):
+            # More than one PR opened in one run: pr_url carries the last,
+            # the rest stay visible in the drawer's payload.
+            payload['opened_prs'] = list(details['opened_prs'])
         # Which models actually made the call, recorded on the row. Before
         # CFOP-70 the only LLM identity on a remediation was the
         # *investigation's* provider, so reconstructing which model decided to
@@ -3543,6 +3604,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
                 risk=risk,
                 confidence=confidence,
                 dedupe_key=dedupe_key,
+                pr_url=pr_url,
             )
             if rid:
                 self._count_enqueued(source, str(rclass), risk, confidence)
@@ -4168,7 +4230,8 @@ FIX: {_FIX_JSON_SCHEMA}"""
     def _queue_needs_action_remediation(self, investigation_id: int, trigger: str,
                                         alert_info: Dict[str, Any], recommendation: str,
                                         response_text: str, provider: str,
-                                        proposal=None, structured_fix=None) -> Optional[int]:
+                                        proposal=None, structured_fix=None,
+                                        opened_prs=None) -> Optional[int]:
         """Route a needs_action investigation's recommendation into the queue.
 
         The missing feed from CFOP-46: classify the recommendation (cheap
@@ -4180,6 +4243,12 @@ FIX: {_FIX_JSON_SCHEMA}"""
         CFOP-80: a valid FIX skips the classifier (class from target.kind).
         Missing/invalid FIX still classifies. Parse is module-level so a
         MagicMock self cannot intercept it.
+
+        CFOP-116: ``opened_prs`` are PRs the model opened itself during the
+        run — tool-loop evidence, not prose. The last one becomes the row's
+        ``pr_url`` and the row enqueues as pr-open (see
+        _maybe_queue_remediation), so the reconciler owns it and the executor
+        never gets to open a second one.
         """
         if not self._remediation_flag('queue_feed'):
             return None
@@ -4246,12 +4315,19 @@ FIX: {_FIX_JSON_SCHEMA}"""
             'alert_labels': (alert_info or {}).get('labels')
                             or ((alert_info or {}).get('details') or {}).get('labels') or {},
         })
+        opened = [str(u) for u in (opened_prs or []) if u]
+        if opened:
+            details['pr_url'] = opened[-1]
+            if len(opened) > 1:
+                details['opened_prs'] = opened
         # CFOP-108: a checklist is not a fix. One follow-up pass (guarded by
         # followup_of on the alert) instead of a row nobody can execute. After
         # the classifier on purpose: details['host'] is what lets the node-
-        # incident collapse veto this for a NotReady host.
-        if _dispatch_checklist_followup(self, investigation_id, trigger, alert_info,
-                                        details, fix):
+        # incident collapse veto this for a NotReady host. Never when a PR is
+        # already open (CFOP-116): a follow-up enqueues nothing, and the PR
+        # would have no row to be tracked from.
+        if not opened and _dispatch_checklist_followup(self, investigation_id, trigger,
+                                                       alert_info, details, fix):
             return None
         rid = self._maybe_queue_remediation(investigation_id, details)
         if rid:
@@ -4265,6 +4341,10 @@ FIX: {_FIX_JSON_SCHEMA}"""
         if existing:
             logger.info(f"Investigation #{investigation_id} needs_action deduped onto "
                         f"open remediation #{existing.get('id')}")
+            # CFOP-116: the first run proposed, this run opened the PR. The
+            # open row is the one the operator is looking at, so it is the
+            # one that must carry the link and leave the executor's reach.
+            self._stamp_opened_pr(existing, details.get('pr_url'))
             return existing.get('id')
         return None
 
@@ -4428,6 +4508,35 @@ FIX: {_FIX_JSON_SCHEMA}"""
         except Exception as e:
             logger.warning(f"Could not check open remediations for '{dedupe_key}': {e}")
             return None
+
+    def _stamp_opened_pr(self, row, pr_url) -> bool:
+        """Carry a PR the model opened onto the open row that absorbed its enqueue.
+
+        CFOP-116. Only a row the executor has not touched: queued or
+        needs-human moves to pr-open with the URL, the state its own
+        completion would have produced. A claimed/executing row already has
+        a driver whose completion will report its own PR — log the collision,
+        change nothing. A row that already carries a PR keeps it. Returns
+        True when the row was stamped; fails open, the row stays what it was.
+        """
+        pr_url = str(pr_url or '').strip()
+        if not pr_url or not isinstance(row, dict) or not row.get('id'):
+            return False
+        # The column. A row shaped like #85 — URL only in prose, surfaced as
+        # named_pr_url — has no tracked PR and is exactly what this promotes.
+        if row.get('pr_url'):
+            return False
+        if row.get('status') not in ('queued', 'needs-human'):
+            logger.warning(f"PR {pr_url} opened for remediation #{row['id']} while it is "
+                           f"{row.get('status')}; not stamped — that row has a driver")
+            return False
+        try:
+            self.kb.update_remediation_status(row['id'], 'pr-open', pr_url=pr_url)
+        except Exception as e:
+            logger.warning(f"Could not stamp PR {pr_url} on remediation #{row['id']}: {e}")
+            return False
+        logger.info(f"Remediation #{row['id']} -> pr-open: investigation opened {pr_url}")
+        return True
 
     @staticmethod
     def _recommendation_is_investigate_shaped(text: str) -> bool:
@@ -7027,6 +7136,10 @@ Only return the JSON array, no other text."""
 
         if tool_name == 'find_learnings' and isinstance(result, list):
             stats.learning_ids.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
+        if tool_name == 'github_create_pr' and not was_cached:
+            opened = _opened_pr_url(result)
+            if opened:
+                stats.opened_prs.append(opened)
 
         if event_callback:
             event_callback('tool_result', {

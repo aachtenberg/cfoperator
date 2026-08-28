@@ -188,7 +188,7 @@ let LAST_SIG = null;
 function signature(){
   return ALL.map(r=>{ const p=r.payload||{};
     return [r.id,r.status,r.remediation_class,r.risk,r.confidence,r.host_id,p.provider,
-      String(p.recommendation||p.title||'').slice(0,160),r.pr_url].join('\u0001'); }).join('\n');
+      String(p.recommendation||p.title||'').slice(0,160),r.pr_url,r.named_pr_url].join('\u0001'); }).join('\n');
 }
 async function load(){
   // A hidden tab has nobody looking; the visibilitychange hook below catches up.
@@ -235,8 +235,10 @@ function rowHtml(r){
   const p = r.payload||{}; const rec = p.recommendation || p.title || '';
   // Reporting LLM only — absence means the row predates the tag, not "unknown".
   const llm = p.provider ? `<span class="mono muted">${esc(p.provider)}</span>` : '—';
-  const prHref = safeUrl(r.pr_url);
-  const pr = prHref ? `<a href="${esc(prHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">PR ↗</a>` : '—';
+  // pr_url is a PR this row tracks; named_pr_url one its recommendation
+  // names (CFOP-116) — a link either way, the drawer says which.
+  const prHref = safeUrl(r.pr_url) || safeUrl(r.named_pr_url);
+  const pr = prHref ? `<a href="${esc(prHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"${safeUrl(r.pr_url)?'':' title="named in the recommendation; not tracked by this row"'}>PR ↗</a>` : '—';
   return `<tr id="row-${r.id}" tabindex="0" onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
     <td class="mono">#${r.id}</td>
     <td>${badge(r.status, SC[r.status]||'--text-muted')}</td>
@@ -308,7 +310,10 @@ async function detail(id){
     <div style="margin:0 0 8px;display:flex;gap:8px;flex-wrap:wrap">
       ${r.remediation_class==='manual'
         ? `<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify first</button>`
+        : safeUrl(r.pr_url)
+        ? `<a class="chip" href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">↗ Review PR</a>`
         : `<button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>`}
+      ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">↗ Named PR</a>`:''}
       <button class="chip" onclick="showResolve(${r.id})">✔ Resolve</button>
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
       ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify</button>`}
@@ -316,6 +321,8 @@ async function detail(id){
       <a class="chip" href="/?remediation=${Number(r.id)}" title="open the console chat on this row">💬 Ask console</a>
     </div>
     ${r.remediation_class==='manual'?`<div class="muted" style="margin:0 0 8px">manual = human-only work: the executor has nothing to run. Reclassify it (gitops-patch / k8s-action / node-action) for the executor, or do it by hand and ✔ Resolve.</div>`:''}
+    ${r.remediation_class!=='manual'&&safeUrl(r.pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">a PR is open for this row: merge it and the reconciler resolves the row; close it and the row is rejected. Approve is off — the executor would open a second PR.</div>`:''}
+    ${r.remediation_class!=='manual'&&!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">the recommendation names a PR in this repo that no row tracks. If that PR is the fix, merge it and ✔ Resolve; Approve would have the executor open another.</div>`:''}
     <div id="actionform"></div>
     <div class="kv">${badge(r.status,SC[r.status]||'--text-muted')} ${badge(r.risk,RC[r.risk]||'--text-muted')}
       <span class="muted">${esc(r.remediation_class)} · conf ${r.confidence==null?'—':r.confidence}</span></div>
@@ -326,7 +333,8 @@ async function detail(id){
     <div class="kv"><b>source investigation</b> ${r.investigation_id?('#'+r.investigation_id):'—'}</div>
     ${attachBlock(r)}
     <div class="kv"><b>created</b> ${esc(r.created_at)} · <b>attempts</b> ${r.attempts}</div>
-    ${safeUrl(r.pr_url)?`<div class="kv"><b>PR</b> <a href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.pr_url)}</a></div>`:''}
+    ${safeUrl(r.pr_url)?`<div class="kv"><b>PR</b> <a href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.pr_url)}</a></div>`
+      :safeUrl(r.named_pr_url)?`<div class="kv"><b>PR named</b> <a href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.named_pr_url)}</a> <span class="muted">not tracked by this row</span></div>`:''}
     ${prAttemptHtml(p.pr_attempt)}
     ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
     ${resolutionHtml(r)}
