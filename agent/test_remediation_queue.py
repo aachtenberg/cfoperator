@@ -2371,6 +2371,129 @@ def test_collapse_ignores_a_host_that_is_not_a_node():
     assert CFOperator._collapse_key_for_node_incident(op, {"host": ""}) is None
 
 
+# ---- CFOP-126: the collapse reads the hosts INSIDE a target id --------------
+# A FIX target id is prose as often as a hostname ("raspberrypi4, raspberrypi5",
+# "raspberrypi4 (192.168.0.116)"), and the row's host is that id verbatim; #82
+# and #83 sat in needs-human for 4.5 h after #81 auto-resolved because neither
+# string matched a node. The fold finds the NotReady node inside the string by
+# asking the INVENTORY, never by knowing what a hostname looks like -- an
+# install names its nodes "aweoriujwoedf", and the guard has to hold there.
+
+_PI5_DOWN = [{"name": "raspberrypi4", "ready": "True"},
+             {"name": "raspberrypi5", "ready": "Unknown"}]
+
+
+@pytest.mark.parametrize("target_id,nodes,expected", [
+    # the two live shapes, #82 and #83
+    ("raspberrypi4, raspberrypi5", _PI5_DOWN, "node-down-raspberrypi5"),
+    ("raspberrypi4 (192.168.0.116)", _RPI4_DOWN, "node-down-raspberrypi4"),
+    # an arbitrary name: nothing about its shape is recognised, only the inventory;
+    # the word "node" and the Ready sibling are passed over
+    ("node aweoriujwoedf and sandbox-01",
+     [{"name": "aweoriujwoedf", "ready": "False"}, {"name": "sandbox-01", "ready": "True"}],
+     "node-down-aweoriujwoedf"),
+    # FQDN both ways: short target vs FQDN-registered node ...
+    ("aweoriujwoedf (10.0.0.7)",
+     [{"name": "aweoriujwoedf.example.com", "ready": "False"}],
+     "node-down-aweoriujwoedf.example.com"),
+    # ... and FQDN target vs short-registered node
+    ("aweoriujwoedf.example.com, other.example.com",
+     [{"name": "aweoriujwoedf", "ready": "False"}, {"name": "other", "ready": "True"}],
+     "node-down-aweoriujwoedf"),
+    # the IP IS the registered name: the inventory decides, a regex would have stripped it
+    ("kiosk (192.168.0.116)",
+     [{"name": "192.168.0.116", "ready": "False"}],
+     "node-down-192.168.0.116"),
+])
+def test_collapse_finds_the_notready_node_inside_a_target_id(target_id, nodes, expected):
+    op = _nodes_op(nodes)
+    assert CFOperator._collapse_key_for_node_incident(op, {"host": target_id}) == expected
+
+
+def test_collapse_keys_on_the_registered_name_so_recovery_can_find_it():
+    # The recovery sweep builds keys from registered node names
+    # (resolve_node_incidents_for_ready_hosts); a key built from the alert's
+    # spelling would never be matched by it, and the row would never close.
+    op = _nodes_op([{"name": "aweoriujwoedf.example.com", "ready": "False"}])
+    key = CFOperator._collapse_key_for_node_incident(op, {"host": "aweoriujwoedf"})
+    assert key == "node-down-aweoriujwoedf.example.com"
+
+
+def test_a_list_of_ready_hosts_does_not_fold():
+    op = _nodes_op([{"name": "raspberrypi4", "ready": "True"},
+                    {"name": "raspberrypi5", "ready": "True"}])
+    assert CFOperator._collapse_key_for_node_incident(
+        op, {"host": "raspberrypi4, raspberrypi5"}) is None
+
+
+def test_unknown_tokens_are_ignored_not_guessed():
+    # A pod name, an IP nobody registered, the word "node": none is a host
+    # just because it sits in the host field.
+    op = _nodes_op(_RPI4_DOWN)
+    assert CFOperator._collapse_key_for_node_incident(
+        op, {"host": "immich-kiosk, 10.0.0.9 and node"}) is None
+
+
+def test_two_fqdns_in_different_domains_are_not_the_same_host():
+    op = _nodes_op([{"name": "db.staging.example", "ready": "False"}])
+    assert CFOperator._collapse_key_for_node_incident(
+        op, {"host": "db.prod.example"}) is None
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("raspberrypi4, raspberrypi5", ["raspberrypi4", "raspberrypi5"]),
+    ("raspberrypi4 (192.168.0.116)", ["raspberrypi4", "192.168.0.116"]),
+    ("a and b", ["a", "b"]),
+    ("a & b / c", ["a", "b", "c"]),
+    ("a/b", ["a", "b"]),
+    ("sandbox-01 and andrew-node", ["sandbox-01", "andrew-node"]),   # never a substring split
+    ("http://node.lan:9100/metrics", ["node.lan"]),
+    ("Node.LAN:9100", ["node.lan"]),
+    ("raspberrypi4, raspberrypi4", ["raspberrypi4"]),
+    ("", []),
+    (None, []),
+])
+def test_host_candidates_is_lexical_only(raw, expected):
+    assert agent_mod._host_candidates(raw) == expected
+
+
+def test_incident_row_created_from_a_multi_host_target_names_the_node():
+    # #82 enqueued with host_id "raspberrypi4, raspberrypi5" -- not a host
+    # anything can ssh to, and not what the row is about. When the node tier
+    # creates the incident row it names the node; the FIX targets stay as the
+    # model wrote them.
+    op = _nodes_op(_PI5_DOWN)
+    op.kb.queue_remediation.return_value = 82
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    targets = [{"kind": "host", "id": "raspberrypi4, raspberrypi5"}]
+    rid = CFOperator._maybe_queue_remediation(op, 2308, {
+        "remediation_class": "node-action", "risk": "low", "confidence": None,
+        "recommendation": "physically inspect raspberrypi4 and raspberrypi5",
+        "host": "raspberrypi4, raspberrypi5", "targets": targets,
+        "trigger": "NodeUnreachable", "dedupe_key": "tgt-4ee3c1d7214b03bd"})
+    assert rid == 82
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["dedupe_key"] == "node-down-raspberrypi5"
+    assert kwargs["host_id"] == "raspberrypi5"
+    assert kwargs["payload"]["target"] == {"host": "raspberrypi5"}
+    assert kwargs["payload"]["targets"] == targets   # as the model wrote them
+
+
+def test_a_row_the_node_tier_does_not_claim_keeps_its_host_as_written():
+    # No inventory match -> nothing more honest to show than what was named.
+    op = _nodes_op([{"name": "raspberrypi4", "ready": "True"},
+                    {"name": "raspberrypi5", "ready": "True"}])
+    op.kb.queue_remediation.return_value = 7
+    op.kb.find_open_remediation_by_dedupe_key.return_value = None
+    CFOperator._maybe_queue_remediation(op, 1, {
+        "remediation_class": "node-action", "risk": "low", "confidence": None,
+        "recommendation": "check both", "host": "raspberrypi4, raspberrypi5",
+        "trigger": "t", "dedupe_key": "tgt-x"})
+    kwargs = op.kb.queue_remediation.call_args.kwargs
+    assert kwargs["dedupe_key"] == "tgt-x"
+    assert kwargs["host_id"] == "raspberrypi4, raspberrypi5"
+
+
 # ---- CFOP-71: the open-PR cap reaches the executor path ----------------------
 
 

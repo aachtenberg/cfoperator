@@ -783,6 +783,70 @@ def _fix_targets_dedupe_key(fix: Dict[str, Any]) -> str:
     return 'tgt-' + hashlib.sha1(blob.encode('utf-8')).hexdigest()[:16]
 
 
+# CFOP-126: a FIX target id is prose-shaped as often as it is a hostname --
+# "raspberrypi4, raspberrypi5", "raspberrypi4 (192.168.0.116)" -- and the row's
+# host is that id verbatim. The node collapse has to see the hosts inside it,
+# and it has to do so WITHOUT knowing what a hostname looks like: an install
+# registers nodes as "joeblowxxxx" as readily as "raspberrypi4", so any
+# name-shape heuristic is wrong somewhere by construction. The split below is
+# purely lexical; deciding which tokens ARE hosts is the inventory's job
+# (_match_known_host). Module-level so the summary-path dedupe (CFOP-120) can
+# reuse the same tokenizer rather than growing a second one.
+_HOST_TOKEN_SPLIT = re.compile(r'[,;\s]+')
+# Connectors the model writes between hosts. Matched only as WHOLE tokens after
+# the whitespace split -- never as substrings, so "sandbox-01" and
+# "andrew-node" come through intact.
+_HOST_CONNECTORS = frozenset({'and', 'or', '&', '/', '+', '|', '->', '\u2192', '-', '--'})
+_HOST_TOKEN_STRIP = '()[]{}<>"\'`.,;:'
+
+
+def _host_candidates(raw) -> List[str]:
+    """Ordered, de-duplicated host-shaped tokens in a target id or host field.
+
+    Lexical only: every token that is not a connector word comes back, an IP
+    and a stray word included. Nothing here decides what is a host -- that is
+    _match_known_host against the live inventory, which is how a node named
+    "aweoriujwoedf" and one registered by its IP both work.
+    """
+    text = str(raw or '').strip()
+    if not text:
+        return []
+    out: List[str] = []
+    for tok in _HOST_TOKEN_SPLIT.split(text):
+        tok = tok.strip(_HOST_TOKEN_STRIP)
+        if not tok or tok.lower() in _HOST_CONNECTORS:
+            continue
+        # "a/b" is two hosts unless it is a URL, which _normalize_host handles.
+        parts = [tok] if '://' in tok else tok.split('/')
+        for part in parts:
+            host = CFOperator._normalize_host(part.strip(_HOST_TOKEN_STRIP))
+            if host and host not in out:
+                out.append(host)
+    return out
+
+
+def _match_known_host(token: str, known) -> Optional[str]:
+    """The inventory name ``token`` refers to, or None.
+
+    Exact, or short name vs FQDN in EITHER direction -- an alert may say
+    ``node.lan`` for a node registered as ``node``, and a FIX may say ``node``
+    for one registered as ``node.example.com``. Two FQDNs with different
+    domains are not the same host. Returns the REGISTERED name, because that
+    is what the recovery sweep keys on: a key built from the alert's spelling
+    would never be matched by it, and the row would never auto-close.
+    """
+    token = str(token or '').strip().lower()
+    if not token:
+        return None
+    short = token.split('.', 1)[0]
+    for name in sorted(str(n or '').strip().lower() for n in (known or [])):
+        if not name:
+            continue
+        if token == name or short == name or token == name.split('.', 1)[0]:
+            return name
+    return None
+
+
 def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
     """Queue hints from a valid FIX. Class from the first target's kind.
 
@@ -3657,6 +3721,12 @@ FIX: {_FIX_JSON_SCHEMA}"""
             # the incident row sits there under the node key. Every caller
             # builds details fresh, so there is no aliasing to worry about.
             details['dedupe_key'] = node_key
+            # CFOP-126: the incident row is about the NODE. host_id and
+            # target.host name it -- the console shows host_id, and the
+            # executor's ssh target has to be one real host, not
+            # "raspberrypi4, raspberrypi5". payload['targets'] below keeps the
+            # ids exactly as the model wrote them.
+            details['host'] = node_key[len('node-down-'):]
         # CFOP-78: the same problem re-found under different wording folds onto
         # the open row instead of standing beside it. Skipped ENTIRELY while
         # the node collapse claims the row: with no incident row yet, the
@@ -4433,16 +4503,28 @@ FIX: {_FIX_JSON_SCHEMA}"""
         Conditional on the node actually being NotReady: a disk-full and a
         crash-looping pod on a HEALTHY host are two problems, not one incident,
         and merging them would lose the second.
+
+        The host field is matched against the inventory, never against a name
+        shape (CFOP-126): "raspberrypi4, raspberrypi5" folds because the
+        inventory says raspberrypi5 is NotReady, not because it looks like a
+        pi. See _host_candidates / _match_known_host.
         """
-        host = self._normalize_host(details.get('host'))
-        if not host:
+        candidates = _host_candidates(details.get('host'))
+        if not candidates:
             return None
         down = self._notready_nodes()
         if not down:
             return None
-        # An alert's host may be the FQDN of a node registered by short name.
-        if host in down or host.split('.', 1)[0] in down:
-            return self._node_incident_dedupe_key(host.split('.', 1)[0])
+        # CFOP-126: the host field is whatever the model wrote -- a list, a
+        # host with its IP in parentheses, an alert's FQDN. The first token
+        # that names a NotReady node in the inventory wins; tokens naming a
+        # Ready node, or nothing registered at all, are passed over rather
+        # than guessed at. The key carries the REGISTERED name so the recovery
+        # sweep, which builds keys from registered names, can find the row.
+        for token in candidates:
+            node = _match_known_host(token, down)
+            if node:
+                return self._node_incident_dedupe_key(node)
         return None
 
     @staticmethod
