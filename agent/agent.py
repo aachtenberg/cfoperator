@@ -96,21 +96,33 @@ def _tool_call_result_label(result) -> str:
     as success, so HighToolFailureRate could not fire.
 
     A valid empty read (empty pod list, PromQL with no series, ``success:
-    True``) is success. A tool that could not do the job is error. A third
-    label like ``not_found`` was rejected: we have no per-tool vocabulary for
-    it, and collapsing those into error would make the new rate as useless as
-    the old one, in the opposite direction.
+    True``) is success. A tool that could not do the job is error.
+
+    ``ssh_execute`` and ``_run_kubectl`` (every ``k8s_*`` tool) set
+    ``success`` from the process exit code. A command that ran and answered
+    non-zero — ``k8s_get_pod_logs(previous=True)`` on a pod that has not
+    restarted, ``systemctl is-active`` on a stopped unit — carries
+    ``exit_code`` and never ``error``. That is a result, not a tool failure;
+    counting it as error would make HighToolFailureRate fire on every
+    CrashLoopBackOff investigation (the same "useless in the opposite
+    direction" outcome a ``not_found`` label was rejected to avoid).
+    Timeouts and exceptions set ``error`` and omit ``exit_code``.
     """
     if isinstance(result, dict):
         if result.get('success') is False:
+            # ssh_execute / _run_kubectl map the remote exit code onto
+            # success; a command that ran and answered non-zero is a result,
+            # not a tool failure. Those paths carry exit_code and never error.
+            if 'exit_code' in result and not result.get('error'):
+                return 'success'
             return 'error'
         if result.get('success') is True:
             return 'success'
         if result.get('error'):
             return 'error'
         return 'success'
-    if isinstance(result, str) and result.lstrip().lower().startswith('error'):
-        return 'error'
+    # execute() returns a dict, or a list (find_learnings). A bare string is
+    # not a registered tool shape; do not heuristic-match "Error: ...".
     return 'success'
 
 

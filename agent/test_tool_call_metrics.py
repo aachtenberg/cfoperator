@@ -52,9 +52,23 @@ def test_success_true_is_success_even_with_an_error_key():
     assert _tool_call_result_label({'success': True, 'result': []}) == 'success'
 
 
-def test_success_false_is_error():
+def test_success_false_with_error_is_error():
     assert _tool_call_result_label(
         {'success': False, 'error': 'Unknown host: nope'}) == 'error'
+    assert _tool_call_result_label(
+        {'success': False, 'error': 'Command timed out after 30s'}) == 'error'
+
+
+def test_nonzero_exit_without_error_is_success():
+    # ssh_execute / _run_kubectl: the command ran and answered no.
+    assert _tool_call_result_label({
+        'success': False, 'stdout': '', 'stderr': 'previous terminated',
+        'exit_code': 1,
+    }) == 'success'
+    assert _tool_call_result_label({
+        'success': False, 'exit_code': 1,
+        'stderr': 'Error from server (NotFound): pods "x" not found',
+    }) == 'success'
 
 
 def test_truthy_error_key_without_success_true_is_error():
@@ -67,11 +81,6 @@ def test_empty_read_without_error_is_success():
     assert _tool_call_result_label([{'id': 1}]) == 'success'
 
 
-def test_error_string_payload_is_error():
-    assert _tool_call_result_label('Error: tool crashed') == 'error'
-    assert _tool_call_result_label('ok') == 'success'
-
-
 # --- dispatch increments -----------------------------------------------------
 
 def test_failed_tool_increments_error_not_success():
@@ -82,12 +91,38 @@ def test_failed_tool_increments_error_not_success():
     assert _sample(tool, 'success') == before_s
 
 
+def test_nonzero_kubectl_exit_increments_success_not_error():
+    tool = 'cfop101-k8s-previous-logs'
+    before_e, before_s = _sample(tool, 'error'), _sample(tool, 'success')
+    _dispatch(tool, {
+        'success': False,
+        'stdout': '',
+        'stderr': 'previous terminated container not found',
+        'exit_code': 1,
+    })
+    assert _sample(tool, 'success') == before_s + 1
+    assert _sample(tool, 'error') == before_e
+
+
 def test_successful_tool_still_increments_success():
     tool = 'cfop101-k8s-empty-list'
     before_e, before_s = _sample(tool, 'error'), _sample(tool, 'success')
     _dispatch(tool, {'success': True, 'pods': []})
     assert _sample(tool, 'success') == before_s + 1
     assert _sample(tool, 'error') == before_e
+
+
+def test_ssh_timeout_still_increments_error():
+    tool = 'cfop101-ssh-timeout'
+    before_e, before_s = _sample(tool, 'error'), _sample(tool, 'success')
+    _dispatch(tool, {
+        'success': False,
+        'error': 'Command timed out after 30s',
+        'host': 'ubuntu-llm-01',
+        'command': 'uptime',
+    })
+    assert _sample(tool, 'error') == before_e + 1
+    assert _sample(tool, 'success') == before_s
 
 
 def test_cached_repeat_keeps_the_original_result_label():
@@ -150,11 +185,13 @@ def test_metrics_doc_alert_is_live_and_lists_error():
     with open(_METRICS_DOC, encoding='utf-8') as fh:
         text = fh.read()
     assert 'HighToolFailureRate' in text
-    assert 'inert' not in text.lower()
+    section = text.split('HighToolFailureRate', 1)[1][:400]
+    assert 'inert' not in section.lower()
+    assert '> 0.1' in section
     assert 'cfoperator_tool_calls_total{result="error"}' in text
-    assert '| `cfoperator_tool_calls_total` | `result` | `success`, `error` |' in text
-    # The rule's threshold must stay the one the tests above evaluate.
-    assert '> 0.1' in text.split('HighToolFailureRate', 1)[1][:400]
+    row = next(l for l in text.splitlines()
+               if l.startswith('| `cfoperator_tool_calls_total` |'))
+    assert '`success`' in row and '`error`' in row
 
 
 if __name__ == '__main__':

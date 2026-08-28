@@ -158,10 +158,14 @@ cfoperator_tool_calls_total{tool_name="prometheus_query", result="success"}
 cfoperator_tool_calls_total{tool_name="ssh_execute", result="error"}
 ```
 
-`result` is `success` or `error`. A tool that returns `{success: false}` or a
-truthy `error` key counts as `error`; a valid empty read (`success: true`,
-empty pod list, PromQL with no series) counts as `success`. Cached repeats
-use the original result's label, not the stub.
+`result` is `success` or `error`. A tool that could not do its job — timeout,
+unknown host, backend not configured, a truthy `error` key, `success: false`
+without a ran-and-answered `exit_code` — counts as `error`. A valid empty
+read (`success: true`, empty pod list, PromQL with no series) counts as
+`success`. So does a command that ran and returned non-zero: `ssh_execute`
+and every `k8s_*` tool set `success` from the process exit code, and those
+payloads carry `exit_code` with no `error`. Cached repeats use the original
+result's label, not the stub.
 
 ### Investigation Tracking
 ```promql
