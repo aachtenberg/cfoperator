@@ -163,8 +163,32 @@ _JUDGE_MODEL_FLOOR = {
     # GET /v1beta/openai/models on 2026-08-28; the retired-id denylist in
     # test_remediation_queue.py is what catches the next retirement.
     'gemini': 'gemini-3.1-pro-preview',
+    # CFOP-121. Priced ~2-3x under the Anthropic rung per verdict (measured:
+    # $0.002-0.004 against $0.0065, reasoning tokens included — v4-pro thinks
+    # before it answers, which eats most of the headline price difference).
+    # The money is small either way: the judge fires only on rows that would
+    # auto-execute, twice in the last twenty-five. It leads the order for
+    # availability as much as cost, after 2026-08-28 put all three previous
+    # rungs down at once (400 / 403 / 404).
+    'deepseek': 'deepseek-v4-pro',
 }
-_JUDGE_DEFAULT_ORDER = ('anthropic', 'xai', 'gemini')
+# DeepSeek first: cheapest capable rung, with the frontier peers as failover.
+_JUDGE_DEFAULT_ORDER = ('deepseek', 'anthropic', 'xai', 'gemini')
+
+# Model-name tokens that mark a vendor's FAST tier. A judge may be re-pointed
+# by config (CFOP-121) but never demoted into one of these: the gate exists
+# because a cheap model's confident wrong answer opened three bad PRs
+# (CFOP-70), so "configurable" must not become a way to reintroduce that.
+# Tokens, not substrings — 'mini' is inside 'gemini'.
+_JUDGE_FAST_TIER_TOKENS = frozenset({
+    'flash', 'mini', 'haiku', 'lite', 'turbo', 'instant', 'small',
+})
+
+
+def _is_fast_tier_model(model: str) -> bool:
+    """True when a model name carries a vendor's fast-tier marker."""
+    return bool(set(re.split(r'[^a-z0-9]+', str(model or '').lower()))
+                & _JUDGE_FAST_TIER_TOKENS)
 
 # The verdict itself is two short fields, so this is almost all headroom — and
 # that is the point. Models that reason before answering spend this budget
@@ -3726,9 +3750,23 @@ FIX: {_FIX_JSON_SCHEMA}"""
                                + ', '.join(_JUDGE_DEFAULT_ORDER) +
                                "); parked rather than executed unattended")}
 
+        # The model that WROTE this recommendation must not also rule on it.
+        # CFOP-70 rejected letting the implementer hold the veto, and CFOP-121
+        # made that reachable in practice: deepseek-v4-pro is both a judge rung
+        # and the backend the console selects for investigations, so a
+        # DeepSeek-reported row would otherwise be judged by itself. The
+        # reporter is 'backend/model' on the row (payload.provider).
+        reporter = str(details.get('provider') or '').strip().lower()
         last_error = None
+        self_reviewed: List[str] = []
         for backend in providers:
-            model = _JUDGE_MODEL_FLOOR[backend]
+            model = self._judge_model(backend)
+            if reporter and f"{backend}/{model}".lower() == reporter:
+                logger.info(f"Mutation judge {backend}/{model} wrote this "
+                            f"recommendation, skipping to the next peer")
+                REMEDIATION_JUDGE.labels(verdict='self-review-skipped').inc()
+                self_reviewed.append(f"{backend}/{model}")
+                continue
             try:
                 reply = self._complete_judge(self._JUDGE_SYSTEM_PROMPT, user_msg,
                                              backend, model)
@@ -3772,9 +3810,16 @@ FIX: {_FIX_JSON_SCHEMA}"""
             REMEDIATION_JUDGE.labels(verdict=parsed['verdict']).inc()
             return parsed
 
-        # Every configured peer was unreachable.
-        logger.warning("Every mutation judge provider was unavailable, parking for human review")
+        # Every configured peer was unreachable, or was the reporter itself.
         REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
+        if self_reviewed and last_error is None:
+            logger.warning("Every eligible mutation judge wrote the recommendation "
+                           "under review, parking for human review")
+            return {'verdict': 'downgrade', 'backend': None, 'model': None,
+                    'reason': ("the only available judge (" + ', '.join(self_reviewed) +
+                               ") is the model that wrote this recommendation; parked "
+                               "rather than letting it review its own work")}
+        logger.warning("Every mutation judge provider was unavailable, parking for human review")
         return {'verdict': 'downgrade', 'backend': None, 'model': None,
                 'reason': f"judge unavailable ({last_error}); parked rather than "
                           "executed unattended"}
@@ -3821,6 +3866,54 @@ FIX: {_FIX_JSON_SCHEMA}"""
             return os.getenv('ANTHROPIC_API_KEY', '').strip()
         cfg = OPENAI_COMPAT_PROVIDERS.get(backend) or {}
         return os.getenv(cfg.get('key_env', ''), '').strip() if cfg else ''
+
+    def _judge_model(self, backend: str) -> str:
+        """Model this judge backend runs: DB setting, else config, else floor.
+
+        CFOP-70 pinned the judge outright — "config picks which vendors are
+        eligible, never which model they run" — and CFOP-121 relaxes that
+        deliberately, because two of the three rungs were pinned to ids the
+        vendor had stopped serving and no operator could fix either from
+        config.
+
+        What does NOT relax is the tier. A configured model carrying a
+        fast-tier token is refused here and the floor is used instead, so the
+        knob can move the judge sideways or up but never down into the class
+        of model whose confident wrong answers the gate exists to catch. The
+        refusal is logged rather than silent: a setting that appears to save
+        and does nothing is worse than one that is rejected out loud.
+
+        Precedence mirrors _triage_model (DB over config) so the console can
+        repoint a judge live, and so CFOP-122's per-scope page drives this key
+        rather than growing a second mechanism.
+        """
+        floor = _JUDGE_MODEL_FLOOR[backend]
+        for source, value in (('console', self._judge_model_setting(backend)),
+                              ('config', self._judge_model_config(backend))):
+            if not value:
+                continue
+            if _is_fast_tier_model(value):
+                logger.warning(
+                    f"Ignoring {source} judge model '{value}' for {backend}: a "
+                    f"fast-tier model cannot hold the mutation veto, using {floor}")
+                continue
+            return value
+        return floor
+
+    def _judge_model_setting(self, backend: str) -> str:
+        """``judge_model_<backend>`` from the knowledge base, or ''."""
+        try:
+            return str(self.kb.get_setting(f'judge_model_{backend}', '') or '').strip()
+        except Exception as e:
+            logger.debug(f"Could not read judge_model_{backend} from DB: {e}")
+            return ''
+
+    def _judge_model_config(self, backend: str) -> str:
+        """``remediation.judge.models.<backend>`` from config.yaml, or ''."""
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        jcfg = rcfg.get('judge') if isinstance(rcfg.get('judge'), dict) else {}
+        models = jcfg.get('models') if isinstance(jcfg.get('models'), dict) else {}
+        return str(models.get(backend) or '').strip()
 
     def _complete_judge(self, system_prompt: str, user_msg: str,
                         backend: str, model: str) -> str:
