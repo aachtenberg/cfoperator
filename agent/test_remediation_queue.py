@@ -1943,6 +1943,31 @@ def test_openai_compat_judge_failure_names_the_vendors_message_too():
     assert post.call_args.kwargs["json"]["temperature"] == 0
 
 
+def test_parked_row_reason_names_the_vendors_message_when_every_peer_refuses():
+    # CFOP-117's done-when is the ROW, not the exception: with every peer
+    # refusing the request, the reason the operator reads must carry what the
+    # last vendor said, not only its status line. Runs the real ladder over
+    # the real _complete_judge so the composition is pinned, not assumed.
+    op = _judging_op(providers=("anthropic", "gemini"))
+    op._judge_api_key = lambda backend: "k"
+    op._complete_judge = lambda *args: CFOperator._complete_judge(op, *args)
+    op._notready_nodes.return_value = []
+    anthropic_400 = _post_returning(
+        400, '{"type":"error","error":{"message":"`temperature` is deprecated for this model."}}'
+    ).return_value
+    gemini_404 = _post_returning(
+        404, '{"error":{"code":404,"message":"models/gemini-3.1-pro is not found for API version v1beta"}}'
+    ).return_value
+    post = MagicMock(side_effect=[anthropic_400, gemini_404])
+    with patch("requests.post", post):
+        out = CFOperator._judge_mutation_remediation(
+            op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert post.call_count == 2                       # both peers tried, both refused
+    assert out["verdict"] == "downgrade" and out["backend"] is None
+    assert "404" in out["reason"]
+    assert "gemini-3.1-pro is not found" in out["reason"], out["reason"]
+
+
 def test_judge_unavailable_downgrades_rather_than_confirming():
     op = _judging_op(MagicMock(side_effect=RuntimeError("ANTHROPIC_API_KEY required")))
     out = CFOperator._judge_mutation_remediation(
