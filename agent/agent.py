@@ -202,6 +202,12 @@ def _raise_for_status_with_body(resp) -> None:
 _SUMMARY_MUTATION_CLASSES = ('node-action', 'gitops-patch', 'k8s-action',
                              'k8s-imperative')
 _SUMMARY_CONFIDENCE_CAP = 0.5
+# Agent-settings key recording the date (YYYY-MM-DD) the morning summary was
+# last sent. Persisted so a pod restart inside the summary window does not
+# re-run the report — the in-memory mark alone let every deploy between
+# hour_start and hour_end generate another one (2026-08-28: three summaries,
+# two of them from back-to-back rollouts, each feeding the remediation queue).
+_MORNING_SUMMARY_SENT_SETTING = 'morning_summary_sent_on'
 
 # Sweep/summary recs that say "check/verify/…" are evidence-gathering the agent
 # can do itself — never park them as needs-human. Exclude physically-human work
@@ -8300,9 +8306,20 @@ IMPORTANT:
         if not (summary_hour_start <= now.hour < summary_hour_end):
             return
 
-        # Check if we already sent today's summary
-        last_summary_date = getattr(self, 'last_summary_date', None)
-        if last_summary_date == now.date():
+        # Check if we already sent today's summary. The in-memory mark is the
+        # fast path; the DB setting is what survives a pod restart.
+        today = now.date()
+        if getattr(self, 'last_summary_date', None) == today:
+            return
+        try:
+            sent_on = self.kb.get_setting(_MORNING_SUMMARY_SENT_SETTING, '') or ''
+        except Exception as e:
+            logger.warning(f"Could not read {_MORNING_SUMMARY_SENT_SETTING}: {e}")
+            sent_on = ''
+        if sent_on == today.isoformat():
+            logger.info(f"Morning summary already sent today ({sent_on}) per "
+                        "agent settings; not re-running after restart")
+            self.last_summary_date = today
             return
 
         logger.info("="*60)
@@ -8312,8 +8329,15 @@ IMPORTANT:
         # Generate the summary
         summary = self._generate_morning_summary()
 
-        # Mark as sent
-        self.last_summary_date = now.date()
+        # Mark as sent — in memory and in the DB. The DB write is best-effort:
+        # an offline DB must not block the send; it only loses restart safety
+        # for today. Marked after generation, not before, so a generation
+        # failure is retried next tick rather than silently losing the day.
+        self.last_summary_date = today
+        try:
+            self.kb.set_setting(_MORNING_SUMMARY_SENT_SETTING, today.isoformat())
+        except Exception as e:
+            logger.warning(f"Could not persist {_MORNING_SUMMARY_SENT_SETTING}: {e}")
 
         # Send to Slack
         for notif in self.notifications:

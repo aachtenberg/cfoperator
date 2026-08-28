@@ -257,6 +257,9 @@ ooda:
     enabled: true
     hour_start: 7   # Start checking at 7 AM
     hour_end: 9     # Stop checking at 9 AM
+    # Sent once per day: the date is stored in agent settings
+    # (morning_summary_sent_on), so a pod restart inside the window does
+    # not re-run it.
 
 # Chat Interface
 chat:
