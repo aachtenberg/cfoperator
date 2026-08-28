@@ -85,6 +85,35 @@ logger = logging.getLogger("cfoperator")
 OODA_CYCLES = Counter('cfoperator_ooda_cycles_total', 'Total OODA cycles executed')
 SWEEPS = Counter('cfoperator_sweeps_total', 'Total sweeps executed', ['mode'])  # reactive/proactive
 TOOL_CALLS = Counter('cfoperator_tool_calls_total', 'Tool executions', ['tool_name', 'result'])
+
+
+def _tool_call_result_label(result) -> str:
+    """Map a tool return value to the TOOL_CALLS ``result`` label.
+
+    ``success`` or ``error`` only. Tools do not raise out of
+    ``ToolRegistry.execute`` — they return ``{error: ...}`` or
+    ``{success: False}`` — and until CFOP-101 every one of those was counted
+    as success, so HighToolFailureRate could not fire.
+
+    A valid empty read (empty pod list, PromQL with no series, ``success:
+    True``) is success. A tool that could not do the job is error. A third
+    label like ``not_found`` was rejected: we have no per-tool vocabulary for
+    it, and collapsing those into error would make the new rate as useless as
+    the old one, in the opposite direction.
+    """
+    if isinstance(result, dict):
+        if result.get('success') is False:
+            return 'error'
+        if result.get('success') is True:
+            return 'success'
+        if result.get('error'):
+            return 'error'
+        return 'success'
+    if isinstance(result, str) and result.lstrip().lower().startswith('error'):
+        return 'error'
+    return 'success'
+
+
 TOOLS_REGISTERED = Gauge('cfoperator_tools_registered', 'Number of registered tools')
 INVESTIGATIONS = Counter('cfoperator_investigations_total', 'Total investigations', ['outcome'])
 LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'component'])
@@ -7261,8 +7290,15 @@ Only return the JSON array, no other text."""
                 'max': max_iterations
             })
 
-        content, result, was_cached = self._cached_tool_exec(
-            tool_name, tool_args, tool_cache, max_result_chars)
+        try:
+            content, result, was_cached = self._cached_tool_exec(
+                tool_name, tool_args, tool_cache, max_result_chars)
+        except Exception:
+            # execute() itself does not raise (it returns {error: ...}), but a
+            # serialize blow-up still has to hit result="error" or the metric
+            # goes silent on the only path that actually crashed.
+            TOOL_CALLS.labels(tool_name=tool_name, result='error').inc()
+            raise
         stats.tool_calls += 1
         if was_cached:
             stats.cached_hits += 1
@@ -7284,7 +7320,10 @@ Only return the JSON array, no other text."""
                 'iteration': iteration + 1
             })
 
-        TOOL_CALLS.labels(tool_name=tool_name, result='success').inc()
+        TOOL_CALLS.labels(
+            tool_name=tool_name,
+            result=_tool_call_result_label(result),
+        ).inc()
         return content
 
     @staticmethod

@@ -155,15 +155,13 @@ cfoperator_tools_registered
 ```promql
 # Tool calls by name and result (success/error)
 cfoperator_tool_calls_total{tool_name="prometheus_query", result="success"}
-cfoperator_tool_calls_total{tool_name="ssh_execute", result="success"}
+cfoperator_tool_calls_total{tool_name="ssh_execute", result="error"}
 ```
 
-> **`result` is always `success` today, including for tools that failed.** The
-> single call site increments unconditionally after the tool returns, so
-> `result="error"` is never emitted and a success *rate* built on this label
-> equals the total call rate. This doc previously showed an `error` example;
-> it could not match. Treat the counter as "tool invocations", not "tool
-> outcomes", until the call site distinguishes them.
+`result` is `success` or `error`. A tool that returns `{success: false}` or a
+truthy `error` key counts as `error`; a valid empty read (`success: true`,
+empty pod list, PromQL with no series) counts as `success`. Cached repeats
+use the original result's label, not the stub.
 
 ### Investigation Tracking
 ```promql
@@ -327,6 +325,7 @@ shipped several examples that could never match.
 | `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate` |
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |
 | `cfoperator_event_runtime_completion_requests_total` | `outcome` | `recorded`, `auth_missing`, `auth_invalid`, `bad_request`, `error` |
+| `cfoperator_tool_calls_total` | `result` | `success`, `error` |
 | `cfoperator_llm_requests_total` | `result` | `success`, `error` |
 | `cfoperator_llm_tokens_total` | `type` | `prompt`, `completion`, `input`, `output` |
 | `cfoperator_llm_empty_final_responses_total` | `disposition` | `nudged`, `exhausted` |
@@ -381,7 +380,7 @@ topk(5, sum by (tool_name) (
 ))
 
 # Tool success rate
-sum(rate(cfoperator_tool_calls_total[5m]))  # see the note above: result is always "success"
+sum(rate(cfoperator_tool_calls_total{result="success"}[5m]))
 / sum(rate(cfoperator_tool_calls_total[5m]))
 ```
 
@@ -440,16 +439,8 @@ cfoperator_tools_registered
 ```
 
 ### Tool Failures
-
-> **This rule cannot fire as written, and is kept here to say so.**
-> `cfoperator_tool_calls_total` only ever emits `result="success"` (see *Tool
-> Execution* above), so the numerator is always zero and the ratio is always
-> zero. There is no correct rewrite until the call site records failures;
-> deleting the rule would just lose the fact that tool-failure alerting looks
-> configured and is not.
-
 ```yaml
-- alert: HighToolFailureRate   # inert — see the note above
+- alert: HighToolFailureRate
   expr: |
     rate(cfoperator_tool_calls_total{result="error"}[5m])
     / rate(cfoperator_tool_calls_total[5m]) > 0.1
