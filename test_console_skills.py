@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -163,7 +164,7 @@ def test_an_unreachable_agent_shows_no_invented_list():
 # the route, on the real WebServer
 # --------------------------------------------------------------------------
 
-def _client(commands):
+def _client(commands, operator=None):
     from unittest.mock import MagicMock
 
     from flask import Flask
@@ -171,7 +172,7 @@ def _client(commands):
     from web_auth import install_auth
     from web_server import WebServer
 
-    operator = MagicMock()
+    operator = operator if operator is not None else MagicMock()
     operator.list_slash_commands.return_value = commands
 
     server = WebServer.__new__(WebServer)
@@ -266,7 +267,7 @@ def test_a_sweep_finding_can_be_handed_to_the_chat():
         assert field in q, f"findingQuestion() no longer carries {field}"
     ask = h[h.index("function askAboutFinding("):]
     ask = ask[:ask.index("\n        }\n")]
-    assert "findingQuestion(SWEEP, i)" in ask and "sendMessage();" in ask
+    assert "findingQuestion(SWEEP, i)" in ask and "sendMessage({mode: 'verify'});" in ask
     assert "saveDraft(draft)" in ask, "a composer draft is lost by the handoff"
     # The behaviours the change is about, pinned (CFOP-115 review): the
     # click waits while a send is out or an answer streams, and folds the
@@ -294,3 +295,61 @@ def test_sending_is_locked_from_the_first_call_not_from_the_reply():
     assert "SENDING = true;" in send
     assert send.count("SENDING = false;") == 2, "the lock is not released on both outcomes"
 
+
+
+# --------------------------------------------------------------------------
+# hand-offs are verification passes, and the route knows who is asking (CFOP-124)
+# --------------------------------------------------------------------------
+
+def test_every_handoff_is_a_verification_pass():
+    """The three question builders share one VERIFY_ONLY clause and the three
+    hand-offs send mode: 'verify', which the agent turns into a tool policy
+    that withholds mutating tools for that turn. Before this, gemini ran a
+    sweep's "Proposed remediation: sudo systemctl restart …" under a "check
+    whether this is still the case" ask (session 23, 2026-08-28)."""
+    h = html()
+    const = re.search(r"const VERIFY_ONLY = (.*?);\n", h, re.S)
+    assert const, "index.html has no VERIFY_ONLY clause"
+    assert "do not restart" in const.group(1)
+    for builder in ("remediationQuestion", "investigationQuestion", "findingQuestion"):
+        src = function_source(h, builder)
+        assert "VERIFY_ONLY" in src, f"{builder}() does not carry the verify-only clause"
+        assert "run the checks yourself" in src, f"{builder}() no longer asks for the checks to be run"
+    for ask in ("askAboutRemediation", "askAboutInvestigation", "askAboutFinding"):
+        src = function_source(h, ask)
+        assert "sendMessage({mode: 'verify'})" in src, f"{ask}() does not send mode: 'verify'"
+    send = function_source(h, "sendMessage")
+    assert "payload.mode = opts.mode" in send, "sendMessage() drops the mode"
+
+
+def test_api_chat_resolves_the_role_in_the_route_and_threads_it(monkeypatch):
+    """The role is resolved in the route — the only place request context
+    exists; the chat runs in a thread — and reaches the agent with the verify
+    flag. An unknown identity is a member: None would mean "internal caller"
+    and lift every restriction."""
+    from unittest.mock import MagicMock
+
+    import web_server
+
+    operator = MagicMock()
+
+    def stream(*args, **kwargs):
+        yield {"event": "done", "data": {"response": "ok", "backend": "x", "model": "y", "tool_calls": 0}}
+    operator.handle_chat_message_stream.side_effect = stream
+    c = _client([], operator=operator)
+
+    def ask(role, body):
+        monkeypatch.setattr(web_server, "_effective_role", lambda: role)
+        resp = c.post("/api/chat", json=body)
+        assert resp.status_code == 200, resp.get_data(as_text=True)
+        chat_id = resp.get_json()["chat_id"]
+        for _ in range(100):
+            if c.get(f"/api/chat/events/{chat_id}").get_json().get("done"):
+                break
+            time.sleep(0.02)
+        return operator.handle_chat_message_stream.call_args.kwargs
+
+    assert ask("admin", {"message": "hi"}) == {"model": None, "actor_role": "admin", "verify_only": False}
+    kw = ask("member", {"message": "hi", "mode": "verify"})
+    assert kw["actor_role"] == "member" and kw["verify_only"] is True
+    assert ask(None, {"message": "hi"})["actor_role"] == "member"

@@ -349,6 +349,7 @@ class SSHTools:
         return [
             {
                 'name': 'ssh_execute',
+                'mutating': True,  # CFOP-124: withheld from members and verify-only turns
                 'description': 'Execute shell command on remote host via SSH. Use for troubleshooting, checking status, or any remote operation.',
                 'parameters': {
                     'type': 'object',
@@ -384,6 +385,7 @@ class SSHTools:
             },
             {
                 'name': 'ssh_restart_service',
+                'mutating': True,  # CFOP-124: withheld from members and verify-only turns
                 'description': 'Restart systemd service on remote host (requires sudo)',
                 'parameters': {
                     'type': 'object',
@@ -431,6 +433,7 @@ class SSHTools:
             },
             {
                 'name': 'ssh_docker_restart',
+                'mutating': True,  # CFOP-124: withheld from members and verify-only turns
                 'description': 'Restart Docker container on remote host',
                 'parameters': {
                     'type': 'object',

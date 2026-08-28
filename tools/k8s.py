@@ -842,6 +842,7 @@ class K8sTools:
             },
             {
                 'name': 'k8s_rollout_restart',
+                'mutating': True,  # CFOP-124: withheld from members and verify-only turns
                 'description': 'Restart a deployment by triggering a rolling update.',
                 'parameters': {
                     'type': 'object',
@@ -917,6 +918,7 @@ class K8sTools:
             },
             {
                 'name': 'k8s_exec_pod',
+                'mutating': True,  # CFOP-124: withheld from members and verify-only turns
                 'description': 'Execute a command inside a pod. Use for debugging or collecting info.',
                 'parameters': {
                     'type': 'object',

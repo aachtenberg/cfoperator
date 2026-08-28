@@ -1050,6 +1050,14 @@
             }).catch(() => { if (fail) fail(); });
         }
 
+        // Every hand-off is a verification pass (CFOP-124). The question says
+        // so, and sendMessage({mode: 'verify'}) has the agent withhold its
+        // mutating tools for that one turn — a "check whether this is still
+        // the case" ask once had the sweep's own "Proposed remediation: sudo
+        // systemctl restart …" executed under it.
+        const VERIFY_ONLY = 'This is a verification pass: run read-only checks only — do not restart, '
+            + 'edit, resolve or approve anything. Say what should be done and an operator will do it.';
+
         // A row handed over from /remediations (CFOP-109). The question is
         // composed from the row itself so the operator never types the number,
         // and it asks for the checks to be *run*, not listed — the failure mode
@@ -1065,6 +1073,7 @@
                 (p.steps && p.steps.length) ? 'Proposed steps: ' + p.steps.map((s, i) => `${i + 1}. ${s}`).join(' ') : '',
                 'Check whether this is still real — run the checks yourself rather than listing them — '
                 + 'and say whether it should be approved, resolved or rejected, with the evidence.',
+                VERIFY_ONLY,
             ].filter(Boolean).join('\n');
         }
 
@@ -1073,7 +1082,7 @@
                 .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
                 .then(row => {
                     document.getElementById('message-input').value = remediationQuestion(row);
-                    sendMessage();
+                    sendMessage({mode: 'verify'});
                     // Consumed only once the question is actually on its way: a
                     // reload must not ask twice, but a failure above leaves the
                     // URL intact so a reload retries instead of landing on an
@@ -1104,6 +1113,7 @@
                 v.command ? `Verify: ${v.command}` + (v.expect ? ` (expect: ${v.expect})` : '') : '',
                 'Check whether this is still the case — run the checks yourself rather than listing them — '
                 + 'and say what should happen next (resolve, act, or keep monitoring), with the evidence.',
+                VERIFY_ONLY,
             ].filter(Boolean).join('\n');
         }
 
@@ -1112,7 +1122,7 @@
                 .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
                 .then(row => {
                     document.getElementById('message-input').value = investigationQuestion(row);
-                    sendMessage();
+                    sendMessage({mode: 'verify'});
                     // Same rule as askAboutRemediation: consumed only once sent.
                     history.replaceState(null, '', location.pathname + location.hash);
                 })
@@ -1377,7 +1387,7 @@
         // sweep-finding click, in that window fired a second POST (CFOP-115
         // review). SENDING covers the gap, synchronously, from the first call.
         let SENDING = false;
-        function sendMessage() {
+        function sendMessage(opts) {
             if (inFlightChatId || SENDING) return;  // streaming, or the POST is still out
             const input = document.getElementById('message-input');
             const message = input.value.trim();
@@ -1398,6 +1408,8 @@
             document.getElementById('chat-container').scrollTop = document.getElementById('chat-container').scrollHeight;
 
             const payload = {message, history: chatHistory, backend: 'auto'};
+            // mode: 'verify' is a hand-off turn — the agent withholds mutating tools.
+            if (opts && opts.mode) payload.mode = opts.mode;
 
             fetch('/api/chat', {
                 method: 'POST',
@@ -1690,6 +1702,7 @@
                 f.resolution ? `Recorded resolution: ${f.resolution}` : '',
                 'Check whether this is still the case — run the checks yourself rather than listing them — '
                 + 'and say what should happen next, with the evidence.',
+                VERIFY_ONLY,
             ].filter(Boolean).join('\n');
         }
 
@@ -1704,7 +1717,7 @@
             const input = document.getElementById('message-input');
             const draft = input.value;
             input.value = findingQuestion(SWEEP, i);
-            sendMessage();
+            sendMessage({mode: 'verify'});
             if (draft.trim()) { input.value = draft; saveDraft(draft); }
             const body = document.querySelector('#sweep-panel .sweep-body');
             if (body) body.classList.remove('open');
