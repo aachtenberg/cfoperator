@@ -345,7 +345,7 @@ def test_failover_is_withheld_once_a_mutating_tool_ran(no_keys):
     op.tools = SimpleNamespace(
         get_schemas=lambda: [TOOL_SCHEMA],
         execute=lambda name, args: {'restarted': True},
-        tools={TOOL: {'mutating': True}},   # the flag CFOP-124 owns
+        tools={TOOL: {'schema': {'mutating': True}}},   # the flag's one home (CFOP-124)
     )
     fake = _FakePost({'gemini-3.6-flash': [_compat_msg(tool_calls=[TOOL]),
                                            requests.exceptions.ReadTimeout('t')]})
@@ -356,7 +356,7 @@ def test_failover_is_withheld_once_a_mutating_tool_ran(no_keys):
     op.tools = SimpleNamespace(
         get_schemas=lambda: [TOOL_SCHEMA],
         execute=lambda name, args: {'pods': []},
-        tools={TOOL: {'mutating': False}},
+        tools={TOOL: {'schema': {'mutating': False}}},
     )
     fake = _FakePost({'gemini-3.6-flash': [_compat_msg(tool_calls=[TOOL]),
                                            requests.exceptions.ReadTimeout('t')]})
@@ -369,6 +369,47 @@ def _timeout_after_one_call():
                                            requests.exceptions.ReadTimeout('t')]})
 
 
+def test_the_guard_reads_the_same_marker_home_as_the_live_registry(no_keys):
+    """The guard and ToolRegistry.is_mutating must agree, or the fallback drifts.
+
+    CFOP-124 gives the marker one home (the tool's own schema) and raises at
+    registration if it is anywhere else. This pins that the fallback path
+    reads that home and only that home, by running the real reader over the
+    same entries.
+    """
+    import sys as _sys
+    from pathlib import Path
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
+    from tools import ToolRegistry
+
+    entries = {
+        'mutating_tool': {'schema': {'name': 'mutating_tool', 'mutating': True}},
+        'read_tool': {'schema': {'name': 'read_tool'}},
+        'explicitly_false': {'schema': {'name': 'explicitly_false', 'mutating': False}},
+    }
+    live = SimpleNamespace(tools=entries)
+    op = _operator()
+    # No probe on this double: exercise the fallback, then compare it with
+    # the registry's own reader over the identical entries.
+    op.tools = SimpleNamespace(get_schemas=lambda: [TOOL_SCHEMA],
+                               execute=lambda name, args: {}, tools=entries)
+    for name in entries:
+        assert op._tool_is_mutating(name) == ToolRegistry.is_mutating(live, name), name
+    assert op._tool_is_mutating('mutating_tool') is True
+    assert op._tool_is_mutating('read_tool') is False
+
+
+def test_an_entry_level_marker_is_not_honoured(no_keys):
+    # The live registry raises at registration when the marker sits on the
+    # entry instead of the schema, so reading it here would honour a shape
+    # that cannot reach production and would mask the misplacement.
+    op = _operator()
+    op.tools = SimpleNamespace(get_schemas=lambda: [TOOL_SCHEMA],
+                               execute=lambda name, args: {},
+                               tools={TOOL: {'mutating': True}})
+    assert op._tool_is_mutating(TOOL) is False
+
+
 def test_a_refused_mutating_tool_does_not_withhold_failover(no_keys):
     # CFOP-124's registry refuses a mutating tool for a member or a verify
     # turn without running it. Nothing executed, so a later timeout must
@@ -378,15 +419,18 @@ def test_a_refused_mutating_tool_does_not_withhold_failover(no_keys):
     op.tools = SimpleNamespace(
         get_schemas=lambda: [TOOL_SCHEMA],
         execute=lambda name, args: {'refused': True, 'error': 'ssh_execute needs an admin'},
-        tools={TOOL: {'mutating': True}},
+        tools={TOOL: {'schema': {'mutating': True}}},
     )
     with pytest.raises(requests.exceptions.ReadTimeout):
         _run_inner(op, _timeout_after_one_call(), no_keys)
 
 
 def test_marker_is_read_from_the_registry_probe_or_the_schema(no_keys):
-    # Wherever CFOP-124 finally puts the flag — an is_mutating() probe on the
-    # registry, or the marker on the tool's schema — the guard sees it.
+    # CFOP-124 landed the marker in one home — the tool's own schema — read
+    # by ToolRegistry.is_mutating. The guard asks the probe, and falls back
+    # to that same home for a double that predates it. An entry-level key is
+    # never consulted: the live registry raises at registration if one is
+    # there, so honouring it here would contradict the check.
     no_keys.setenv('GEMINI_API_KEY', 'k')
     op = _operator()
     op.tools = SimpleNamespace(

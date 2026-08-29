@@ -7361,11 +7361,12 @@ Only return the JSON array, no other text."""
     def _tool_is_mutating(self, tool_name: str) -> bool:
         """True when the registry marks ``tool_name`` as mutating.
 
-        The flag is CFOP-124's and lives in the registry, so it is read from
-        there rather than from a list kept here: the registry's own
-        ``is_mutating`` probe when it has one, else the marker on the entry
-        or on its schema. No tool carries it until 124 lands, so this is
-        False for every tool today.
+        Asks ``ToolRegistry.is_mutating`` (CFOP-124), which is the one reader
+        of the one home the marker has: inside the tool's own schema, where
+        ``_check_marker_placement`` raises at registration if it is put
+        anywhere else. The schema fallback is for registry doubles that
+        predate the probe; it reads the same place, never an entry-level key,
+        which the live registry rejects outright.
         """
         registry = self.tools
         probe = getattr(registry, 'is_mutating', None)
@@ -7378,8 +7379,7 @@ Only return the JSON array, no other text."""
         entry = entries.get(tool_name) if isinstance(entries, dict) else None
         if not isinstance(entry, dict):
             return False
-        schema = entry.get('schema') if isinstance(entry.get('schema'), dict) else {}
-        return bool(entry.get('mutating') or schema.get('mutating'))
+        return bool((entry.get('schema') or {}).get('mutating'))
 
     def _dispatch_tool_call(self, tool_name: str, tool_args: dict, *,
                             stats: '_ToolLoopStats', tool_cache: dict,
