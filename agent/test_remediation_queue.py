@@ -2440,6 +2440,42 @@ def test_two_fqdns_in_different_domains_are_not_the_same_host():
         op, {"host": "db.prod.example"}) is None
 
 
+def test_a_bare_token_shared_by_two_fqdns_is_ambiguous_and_does_not_fold():
+    # PR #218 review: "db" names both db.prod.example and db.staging.example.
+    # Folding onto whichever sorts first would be a guess, and nothing else on
+    # this path guesses. Ambiguous is unknown: no fold, whatever the order.
+    for nodes in ([{"name": "db.prod.example", "ready": "False"},
+                   {"name": "db.staging.example", "ready": "False"}],
+                  [{"name": "db.staging.example", "ready": "False"},
+                   {"name": "db.prod.example", "ready": "False"}]):
+        op = _nodes_op(nodes)
+        assert CFOperator._collapse_key_for_node_incident(op, {"host": "db"}) is None
+    # ... but an exact registered name beside them is not ambiguous
+    op = _nodes_op([{"name": "db", "ready": "False"},
+                    {"name": "db.prod.example", "ready": "False"},
+                    {"name": "db.staging.example", "ready": "False"}])
+    assert CFOperator._collapse_key_for_node_incident(op, {"host": "db"}) == "node-down-db"
+    # ... and a unique first label still is a match
+    op = _nodes_op([{"name": "db.prod.example", "ready": "False"},
+                    {"name": "web.prod.example", "ready": "False"}])
+    assert CFOperator._collapse_key_for_node_incident(
+        op, {"host": "db"}) == "node-down-db.prod.example"
+
+
+def test_collapse_writes_the_registered_name_onto_details():
+    # PR #218 review: the collapse is the one place that knows which registered
+    # name matched, so it carries that forward instead of the enqueue path
+    # recovering it by slicing the key it just built.
+    op = _nodes_op(_PI5_DOWN)
+    details = {"host": "raspberrypi4, raspberrypi5"}
+    assert CFOperator._collapse_key_for_node_incident(op, details) == "node-down-raspberrypi5"
+    assert details["host"] == "raspberrypi5"
+    # no match -> nothing written
+    details = {"host": "immich-kiosk"}
+    assert CFOperator._collapse_key_for_node_incident(op, details) is None
+    assert details["host"] == "immich-kiosk"
+
+
 @pytest.mark.parametrize("raw,expected", [
     ("raspberrypi4, raspberrypi5", ["raspberrypi4", "raspberrypi5"]),
     ("raspberrypi4 (192.168.0.116)", ["raspberrypi4", "192.168.0.116"]),

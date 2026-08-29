@@ -828,22 +828,37 @@ def _host_candidates(raw) -> List[str]:
 def _match_known_host(token: str, known) -> Optional[str]:
     """The inventory name ``token`` refers to, or None.
 
-    Exact, or short name vs FQDN in EITHER direction -- an alert may say
-    ``node.lan`` for a node registered as ``node``, and a FIX may say ``node``
-    for one registered as ``node.example.com``. Two FQDNs with different
-    domains are not the same host. Returns the REGISTERED name, because that
-    is what the recovery sweep keys on: a key built from the alert's spelling
-    would never be matched by it, and the row would never auto-close.
+    Exact first. Otherwise short name vs FQDN in EITHER direction -- an alert
+    may say ``node.lan`` for a node registered as ``node``, and a FIX may say
+    ``node`` for one registered as ``node.example.com`` -- but a bare token
+    matches an FQDN only when exactly ONE registered FQDN has that first
+    label. Two FQDNs sharing a first label (``db.prod.example`` and
+    ``db.staging.example``) make ``db`` ambiguous, and an ambiguous token is
+    an unknown token: no match, no fold. Picking one would be a guess, and
+    nothing else on this path guesses. Two FQDNs with different domains are
+    never the same host. Independent of inventory order and of spelling.
+
+    Returns the REGISTERED name, because that is what the recovery sweep keys
+    on: a key built from the alert's spelling would never be matched by it,
+    and the row would never auto-close.
     """
     token = str(token or '').strip().lower()
     if not token:
         return None
-    short = token.split('.', 1)[0]
-    for name in sorted(str(n or '').strip().lower() for n in (known or [])):
-        if not name:
-            continue
-        if token == name or short == name or token == name.split('.', 1)[0]:
-            return name
+    names = [n for n in (str(x or '').strip().lower() for x in (known or [])) if n]
+    if token in names:
+        return token
+    if '.' in token:
+        # FQDN token, node registered by its first label. At most one name
+        # can equal that label, so this cannot be ambiguous.
+        short = token.split('.', 1)[0]
+        return short if short in names else None
+    hits = [n for n in names if '.' in n and n.split('.', 1)[0] == token]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        logger.debug("Host token %r matches %d registered nodes (%s); ambiguous, not folding",
+                     token, len(hits), ', '.join(sorted(hits)))
     return None
 
 
@@ -3721,12 +3736,9 @@ FIX: {_FIX_JSON_SCHEMA}"""
             # the incident row sits there under the node key. Every caller
             # builds details fresh, so there is no aliasing to worry about.
             details['dedupe_key'] = node_key
-            # CFOP-126: the incident row is about the NODE. host_id and
-            # target.host name it -- the console shows host_id, and the
-            # executor's ssh target has to be one real host, not
-            # "raspberrypi4, raspberrypi5". payload['targets'] below keeps the
-            # ids exactly as the model wrote them.
-            details['host'] = node_key[len('node-down-'):]
+            # details['host'] is already the registered node name here --
+            # _collapse_key_for_node_incident wrote it when it matched
+            # (CFOP-126), so host_id and target.host below name the node.
         # CFOP-78: the same problem re-found under different wording folds onto
         # the open row instead of standing beside it. Skipped ENTIRELY while
         # the node collapse claims the row: with no incident row yet, the
@@ -4507,7 +4519,9 @@ FIX: {_FIX_JSON_SCHEMA}"""
         The host field is matched against the inventory, never against a name
         shape (CFOP-126): "raspberrypi4, raspberrypi5" folds because the
         inventory says raspberrypi5 is NotReady, not because it looks like a
-        pi. See _host_candidates / _match_known_host.
+        pi. See _host_candidates / _match_known_host. On a fold this also
+        rewrites ``details['host']`` to the registered node name -- the one
+        deliberate side effect, explained inline.
         """
         candidates = _host_candidates(details.get('host'))
         if not candidates:
@@ -4524,6 +4538,17 @@ FIX: {_FIX_JSON_SCHEMA}"""
         for token in candidates:
             node = _match_known_host(token, down)
             if node:
+                # The incident row is about the NODE: host_id and target.host
+                # must name it (the console shows host_id; the executor's ssh
+                # target has to be one real host, not "raspberrypi4,
+                # raspberrypi5"), and this is the one place that knows which
+                # registered name matched. Written here rather than recovered
+                # from the key downstream, so a key-format change can never
+                # leak into host_id. payload['targets'] keeps the ids as the
+                # model wrote them. Callers that pass a throwaway dict (the
+                # sweep feed) or use the key as a bare veto (the checklist
+                # follow-up) are unaffected.
+                details['host'] = node
                 return self._node_incident_dedupe_key(node)
         return None
 
