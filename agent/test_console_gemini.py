@@ -46,6 +46,13 @@ class _KB:
         return self.settings.get(name, default)
 
 
+class _LooseKB(_KB):
+    """Any KB method the extraction sites touch after the request is a no-op."""
+
+    def __getattr__(self, name):
+        return lambda *a, **k: {}
+
+
 def _operator(max_iterations=4, **settings):
     op = CFOperator.__new__(CFOperator)
     op.kb = _KB(**settings)
@@ -198,7 +205,19 @@ def test_every_declared_prefix_is_a_namespace():
 # ---- 4. request parameters come from the registry --------------------------
 
 
-def test_gemini_requests_carry_the_registry_params_and_others_do_not(no_keys):
+def test_registry_params_split_wire_params_from_the_loop_budget():
+    # request_params ride every chat/completions request; the raised budget
+    # is the tool loop's alone (thinking shares max_tokens with a long,
+    # tool-driven answer there; the json_object extraction sites do not).
+    assert CFOperator._openai_compat_request_params('gemini') == {'reasoning_effort': 'low'}
+    assert CFOperator._openai_compat_tool_loop_params('gemini') == \
+        {'reasoning_effort': 'low', 'max_tokens': 16384}
+    for other in ('deepseek', 'groq', 'xai'):
+        assert CFOperator._openai_compat_request_params(other) == {}
+        assert CFOperator._openai_compat_tool_loop_params(other) == {}
+
+
+def test_gemini_tool_loop_requests_carry_the_params_and_others_do_not(no_keys):
     no_keys.setenv('GEMINI_API_KEY', 'k')
     no_keys.setenv('DEEPSEEK_API_KEY', 'k')
     op = _operator()
@@ -215,6 +234,31 @@ def test_gemini_requests_carry_the_registry_params_and_others_do_not(no_keys):
     payload = fake.payloads[0]
     assert 'reasoning_effort' not in payload
     assert payload['max_tokens'] == 4096
+
+
+@pytest.mark.parametrize('backend, model, wants_effort', [
+    ('gemini', 'gemini-3.6-flash', True),
+    ('deepseek', 'deepseek-v4-pro', False),
+])
+def test_extraction_sites_keep_their_own_budget(no_keys, backend, model, wants_effort):
+    # _extract_learnings and _analyze_correlations are short json_object
+    # calls capped at 2048. They take the wire params (Gemini's
+    # reasoning_effort) but not the loop's raised budget.
+    no_keys.setenv(OPENAI_COMPAT_PROVIDERS[backend]['key_env'], 'k')
+    op = _operator(selected_backend=backend, **{f'{backend}_selected_model': model})
+    op.kb = _LooseKB(selected_backend=backend, **{f'{backend}_selected_model': model})
+
+    fake = _FakePost({model: [_compat_msg('{"learnings": []}'), _compat_msg('{"insights": []}')]})
+    no_keys.setattr('requests.post', fake)
+    op._extract_learnings(1, 'Node x not ready', {'response': 'resolved', 'recommendation': 'none'})
+    op._analyze_correlations([{'finding': 'x', 'severity': 'info'}], [])
+
+    assert len(fake.payloads) == 2, 'both extraction sites must have sent a request'
+    for payload in fake.payloads:
+        assert payload['max_tokens'] == 2048
+        assert ('reasoning_effort' in payload) is wants_effort
+        if wants_effort:
+            assert payload['reasoning_effort'] == 'low'
 
 
 # ---- 5. a transport failure on any iteration rotates the chain -------------
@@ -261,8 +305,13 @@ def test_mid_loop_timeout_reaches_the_next_provider(no_keys):
                          'reason': 'read timeout=120'}) in events
 
 
-@pytest.mark.parametrize('status, propagates', [(503, True), (400, False)])
-def test_http_status_mid_loop_5xx_rotates_4xx_is_reported(no_keys, status, propagates):
+@pytest.mark.parametrize('status, propagates', [
+    (503, True), (502, True),
+    (429, True),   # quota: "try later, try elsewhere" — not an answer
+    (408, True),   # the server's own timeout
+    (400, False), (401, False), (404, False),
+])
+def test_http_status_mid_loop_transport_rotates_refusal_is_reported(no_keys, status, propagates):
     no_keys.setenv('GEMINI_API_KEY', 'k')
     op = _operator()
     err = requests.exceptions.HTTPError(f'{status} for url',
@@ -313,3 +362,45 @@ def test_failover_is_withheld_once_a_mutating_tool_ran(no_keys):
                                            requests.exceptions.ReadTimeout('t')]})
     with pytest.raises(requests.exceptions.ReadTimeout):
         _run_inner(op, fake, no_keys)
+
+
+def _timeout_after_one_call():
+    return _FakePost({'gemini-3.6-flash': [_compat_msg(tool_calls=[TOOL]),
+                                           requests.exceptions.ReadTimeout('t')]})
+
+
+def test_a_refused_mutating_tool_does_not_withhold_failover(no_keys):
+    # CFOP-124's registry refuses a mutating tool for a member or a verify
+    # turn without running it. Nothing executed, so a later timeout must
+    # still rotate the chain — "marked" is not "ran".
+    no_keys.setenv('GEMINI_API_KEY', 'k')
+    op = _operator()
+    op.tools = SimpleNamespace(
+        get_schemas=lambda: [TOOL_SCHEMA],
+        execute=lambda name, args: {'refused': True, 'error': 'ssh_execute needs an admin'},
+        tools={TOOL: {'mutating': True}},
+    )
+    with pytest.raises(requests.exceptions.ReadTimeout):
+        _run_inner(op, _timeout_after_one_call(), no_keys)
+
+
+def test_marker_is_read_from_the_registry_probe_or_the_schema(no_keys):
+    # Wherever CFOP-124 finally puts the flag — an is_mutating() probe on the
+    # registry, or the marker on the tool's schema — the guard sees it.
+    no_keys.setenv('GEMINI_API_KEY', 'k')
+    op = _operator()
+    op.tools = SimpleNamespace(
+        get_schemas=lambda: [TOOL_SCHEMA],
+        execute=lambda name, args: {'restarted': True},
+        is_mutating=lambda name: name == TOOL,
+    )
+    assert _run_inner(op, _timeout_after_one_call(), no_keys)['response'].startswith(
+        'Error during tool execution')
+
+    op.tools = SimpleNamespace(
+        get_schemas=lambda: [TOOL_SCHEMA],
+        execute=lambda name, args: {'restarted': True},
+        tools={TOOL: {'schema': {'mutating': True}}},
+    )
+    assert _run_inner(op, _timeout_after_one_call(), no_keys)['response'].startswith(
+        'Error during tool execution')

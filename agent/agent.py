@@ -970,11 +970,15 @@ OPENAI_COMPAT_PROVIDERS = {
         # and resolve, so a stored namespaced id keeps working (CFOP-112).
         'model_id_prefix': 'models/',
         # Gemini 3.x thinks before answering and thinking cannot be switched
-        # off on Pro; on this surface max_tokens bounds thinking AND output
-        # together, so the loop's 4096 let a Pro spend the whole budget
-        # thinking and hit the 120 s read timeout with nothing to show
-        # (CFOP-112). 16384 is a quarter of the 65536 output cap.
-        'request_params': {'reasoning_effort': 'low', 'max_tokens': 16384},
+        # off on Pro. request_params go on every chat/completions request
+        # this provider gets; tool_loop_max_tokens replaces the tool loop's
+        # 4096 only — on this surface max_tokens bounds thinking AND output
+        # together, so a Pro spent the whole 4096 thinking and hit the 120 s
+        # read timeout with nothing to show (CFOP-112). The json_object
+        # extraction sites keep their own 2048 cap. 16384 is a quarter of
+        # the 65536 output cap.
+        'request_params': {'reasoning_effort': 'low'},
+        'tool_loop_max_tokens': 16384,
     },
     # DeepSeek serves the OpenAI wire under /v1 (the Groq/xAI shape, not the
     # Gemini no-/v1 shape), so it is one more registry row and no new branch.
@@ -1009,16 +1013,31 @@ def normalize_model_id(provider_type: str, model_id) -> str:
 
 
 def _is_transport_failure(error: Exception) -> bool:
-    """A timeout, a connection failure, or a 5xx — the provider was not reached
-    or could not serve. Anything else (a 4xx, a parse error) is the provider's
-    answer to this request and is not this."""
+    """The provider was not reached, could not serve, or said "not now".
+
+    Timeouts, connection failures, 5xx, and the two 4xx that mean the same
+    thing — 408 (request timeout) and 429 (quota: try later, try elsewhere).
+    A 400/401/403/404 is the provider's answer to this request and is not
+    this: the next rung would be sent the same shape."""
     import requests
     if isinstance(error, (requests.Timeout, requests.ConnectionError)):
         return True
     if isinstance(error, requests.HTTPError):
         status = getattr(getattr(error, 'response', None), 'status_code', None)
-        return bool(status and int(status) >= 500)
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            return False
+        return status in (408, 429) or status >= 500
     return False
+
+
+def _tool_was_refused(result) -> bool:
+    """True when the registry declined to run the tool at all (CFOP-124's
+    ``refused`` result for a member or a verify-only turn). Nothing executed,
+    so nothing can be replayed by a provider fallback. A tool that ran and
+    reported an error is NOT this — a failed ssh command still ran."""
+    return bool(isinstance(result, dict) and result.get('refused'))
 
 
 # Sent once when a model ends the tool loop with an empty message (no tool
@@ -1061,10 +1080,11 @@ class _ToolLoopStats:
     # prose and is offered to the executor, which opens a second one
     # (CFOP-116, row #85).
     opened_prs: List[str] = field(default_factory=list)
-    # Set once a tool the registry marks ``mutating`` has executed in this
-    # loop. A mid-loop transport failure then returns error text instead of
-    # propagating: the fallback chain restarts the next provider from the
-    # caller's messages, and replaying the conversation would run it again.
+    # Set once a tool the registry marks ``mutating`` has actually executed
+    # in this loop (a refused call does not count). A mid-loop transport
+    # failure then returns error text instead of propagating: the fallback
+    # chain restarts the next provider from the caller's messages, and
+    # replaying the conversation would run it again.
     mutating_ran: bool = False
 
     def result(self, response: str) -> Dict[str, Any]:
@@ -7341,13 +7361,25 @@ Only return the JSON array, no other text."""
     def _tool_is_mutating(self, tool_name: str) -> bool:
         """True when the registry marks ``tool_name`` as mutating.
 
-        Read off the registry entry (the ``mutating`` flag CFOP-124 owns)
-        rather than a list kept here, so the flag has one owner. No entry
-        carries it until 124 lands, so this is False for every tool today.
+        The flag is CFOP-124's and lives in the registry, so it is read from
+        there rather than from a list kept here: the registry's own
+        ``is_mutating`` probe when it has one, else the marker on the entry
+        or on its schema. No tool carries it until 124 lands, so this is
+        False for every tool today.
         """
-        entries = getattr(self.tools, 'tools', None)
+        registry = self.tools
+        probe = getattr(registry, 'is_mutating', None)
+        if callable(probe):
+            try:
+                return bool(probe(tool_name))
+            except Exception:
+                return False
+        entries = getattr(registry, 'tools', None)
         entry = entries.get(tool_name) if isinstance(entries, dict) else None
-        return bool(isinstance(entry, dict) and entry.get('mutating'))
+        if not isinstance(entry, dict):
+            return False
+        schema = entry.get('schema') if isinstance(entry.get('schema'), dict) else {}
+        return bool(entry.get('mutating') or schema.get('mutating'))
 
     def _dispatch_tool_call(self, tool_name: str, tool_args: dict, *,
                             stats: '_ToolLoopStats', tool_cache: dict,
@@ -7383,7 +7415,9 @@ Only return the JSON array, no other text."""
             logger.info(f"Tool result reused from cache: {tool_name}")
         else:
             logger.info(f"Executing tool: {tool_name}")
-            if self._tool_is_mutating(tool_name):
+            # "Ran", not "was asked for": a refusal executed nothing, so a
+            # later transport failure may still rotate the chain.
+            if self._tool_is_mutating(tool_name) and not _tool_was_refused(result):
                 stats.mutating_ran = True
 
         if tool_name == 'find_learnings' and isinstance(result, list):
@@ -7463,6 +7497,22 @@ Only return the JSON array, no other text."""
         """
         params = OPENAI_COMPAT_PROVIDERS.get(provider_type, {}).get('request_params') or {}
         return dict(params)
+
+    @staticmethod
+    def _openai_compat_tool_loop_params(provider_type: str) -> Dict[str, Any]:
+        """The tool loop's parameters: request_params plus the provider's
+        ``tool_loop_max_tokens`` when it declares one.
+
+        Only the loop (and its iteration-limit summary) takes the raised
+        budget — that is where thinking shares max_tokens with a long,
+        tool-driven answer. The short json_object extraction sites keep
+        their own cap and get request_params alone.
+        """
+        params = CFOperator._openai_compat_request_params(provider_type)
+        budget = OPENAI_COMPAT_PROVIDERS.get(provider_type, {}).get('tool_loop_max_tokens')
+        if budget:
+            params['max_tokens'] = int(budget)
+        return params
 
     def _configured_model_for(self, backend: str) -> str:
         """Model for a hosted backend, normalised; '' when nothing names one.
@@ -7963,7 +8013,7 @@ Only return the JSON array, no other text."""
                         'temperature': 0.7,
                         'max_tokens': 4096
                     }
-                    payload.update(self._openai_compat_request_params(provider_type))
+                    payload.update(self._openai_compat_tool_loop_params(provider_type))
                     if offered_tools:
                         payload['tools'] = offered_tools
                     headers = {
@@ -8204,7 +8254,7 @@ Only return the JSON array, no other text."""
                     'temperature': 0.7,
                     'max_tokens': 4096
                 }
-                payload.update(self._openai_compat_request_params(provider_type))
+                payload.update(self._openai_compat_tool_loop_params(provider_type))
                 headers = {
                     'Content-Type': 'application/json',
                     'Authorization': f'Bearer {api_key}'
