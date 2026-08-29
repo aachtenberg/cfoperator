@@ -53,7 +53,7 @@ from web_server import WebServer
 from cfshared.version import build_version
 
 # Import tool registry
-from tools import ToolRegistry
+from tools import ToolRegistry, ToolPolicy
 
 # Import Ollama pool (for parallel sweeps)
 from ollama_pool import OllamaPool
@@ -7245,7 +7245,7 @@ Only return the JSON array, no other text."""
     })
 
     def _cached_tool_exec(self, tool_name: str, tool_args: dict, cache: dict,
-                          max_chars: int):
+                          max_chars: int, policy: Optional[ToolPolicy] = None):
         """Execute a tool, memoizing read-only inspection tools within one session.
 
         On a repeated identical (tool, args) call the tool is NOT re-run — a
@@ -7268,7 +7268,13 @@ Only return the JSON array, no other text."""
                          f"above instead of re-fetching."),
             })
             return stub, prior, True
-        result = self.tools.execute(tool_name, tool_args)
+        # The kwarg travels only when a policy exists (CFOP-124): internal
+        # callers make the same call they always did, and the registry stubs
+        # across the test suite keep their two-argument signature.
+        if policy is None:
+            result = self.tools.execute(tool_name, tool_args)
+        else:
+            result = self.tools.execute(tool_name, tool_args, policy=policy)
         if key is not None:
             cache[key] = result
         return self._serialize_tool_result(result, max_chars), result, False
@@ -7287,7 +7293,8 @@ Only return the JSON array, no other text."""
     def _dispatch_tool_call(self, tool_name: str, tool_args: dict, *,
                             stats: '_ToolLoopStats', tool_cache: dict,
                             max_result_chars: int, iteration: int,
-                            max_iterations: int, event_callback=None) -> str:
+                            max_iterations: int, event_callback=None,
+                            tool_policy: Optional[ToolPolicy] = None) -> str:
         """Execute one model-requested tool call and return its message content.
 
         Shared by every provider branch of the tool loop: streams the
@@ -7304,7 +7311,7 @@ Only return the JSON array, no other text."""
 
         try:
             content, result, was_cached = self._cached_tool_exec(
-                tool_name, tool_args, tool_cache, max_result_chars)
+                tool_name, tool_args, tool_cache, max_result_chars, policy=tool_policy)
         except Exception:
             # execute() itself does not raise (it returns {error: ...}), but a
             # serialize blow-up still has to hit result="error" or the metric
@@ -7530,6 +7537,7 @@ Only return the JSON array, no other text."""
         model: str = None,
         max_iterations: int = None,
         event_callback=None,
+        tool_policy: Optional[ToolPolicy] = None,
     ) -> Dict[str, Any]:
         """Run _chat_with_tools across the configured provider fallback chain.
 
@@ -7570,10 +7578,15 @@ Only return the JSON array, no other text."""
                     f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: "
                     f"{provider_type}/{model_name}"
                 )
+                # The policy kwarg travels only when one exists (CFOP-124), so
+                # every internal caller — and every test double of this hop —
+                # sees the call it always did.
+                policy_kw = {'tool_policy': tool_policy} if tool_policy is not None else {}
                 result = self._chat_with_tools(
                     provider_type=provider_type, url=url, model=model_name,
                     messages=messages, system_context=system_context,
                     max_iterations=max_iterations, event_callback=event_callback,
+                    **policy_kw,
                 )
                 provider_key = (
                     f"{provider_type}/{url}/{model_name}" if url
@@ -7606,7 +7619,8 @@ Only return the JSON array, no other text."""
 
     def _chat_with_tools(self, provider_type: str, url: str, model: str,
                          messages: List[Dict[str, str]], system_context: str,
-                         max_iterations: int = None, event_callback=None) -> Dict[str, Any]:
+                         max_iterations: int = None, event_callback=None,
+                         tool_policy: Optional[ToolPolicy] = None) -> Dict[str, Any]:
         """
         Execute LLM chat with tool calling support.
 
@@ -7614,9 +7628,10 @@ Only return the JSON array, no other text."""
         """
         start = time.time()
         try:
+            policy_kw = {'tool_policy': tool_policy} if tool_policy is not None else {}
             result = self._chat_with_tools_inner(
                 provider_type, url, model, messages, system_context,
-                max_iterations, event_callback
+                max_iterations, event_callback, **policy_kw,
             )
             latency = time.time() - start
             LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
@@ -7635,7 +7650,8 @@ Only return the JSON array, no other text."""
 
     def _chat_with_tools_inner(self, provider_type: str, url: str, model: str,
                          messages: List[Dict[str, str]], system_context: str,
-                         max_iterations: int = None, event_callback=None) -> Dict[str, Any]:
+                         max_iterations: int = None, event_callback=None,
+                         tool_policy: Optional[ToolPolicy] = None) -> Dict[str, Any]:
         """
         Execute LLM chat with tool calling support.
 
@@ -7668,12 +7684,17 @@ Only return the JSON array, no other text."""
             'max_result_chars': self._max_tool_result_chars(),
             'max_iterations': max_iterations,
             'event_callback': event_callback,
+            'tool_policy': tool_policy,
         }
         final_answer_forced = False  # final-iteration nudge sent only once
         empty_nudge_sent = False  # empty-final-response nudge sent only once
 
-        # Get tool schemas
-        tools = self.tools.get_schemas()
+        # Get tool schemas, filtered by what this turn may do (CFOP-124).
+        # Same shape as _cached_tool_exec: no kwarg unless a policy exists.
+        if tool_policy is None:
+            tools = self.tools.get_schemas()
+        else:
+            tools = self.tools.get_schemas(policy=tool_policy)
 
         # Build initial messages with system context
         full_messages = [{'role': 'system', 'content': system_context}] + messages
@@ -8066,7 +8087,8 @@ Only return the JSON array, no other text."""
         return stats.result(
             "Maximum tool iterations reached. Please simplify your request.")
 
-    def _build_chat_system_context(self, mention_skills: bool = False) -> str:
+    def _build_chat_system_context(self, mention_skills: bool = False,
+                                   tool_policy: Optional[ToolPolicy] = None) -> str:
         """Build the chat system prompt: infra state, capabilities, recent learnings.
 
         Shared by the buffered and streaming chat paths. ``mention_skills``
@@ -8081,13 +8103,21 @@ Only return the JSON array, no other text."""
         # Capability list is derived from the live tool registry so it cannot
         # drift behind newly registered tools (CFOP-22 C). One line per schema.
         tool_lines = []
+        offered = set()
         try:
-            for schema in (self.tools.get_schemas() if self.tools else []):
+            if not self.tools:
+                schemas = []
+            elif tool_policy is None:
+                schemas = self.tools.get_schemas()
+            else:
+                schemas = self.tools.get_schemas(policy=tool_policy)
+            for schema in schemas:
                 fn = (schema.get('function') or {}) if isinstance(schema, dict) else {}
                 name = fn.get('name') or ''
                 desc = str(fn.get('description') or '').strip()
                 if not name:
                     continue
+                offered.add(name)
                 # Keep the prompt compact: first sentence / ~100 chars of desc.
                 short = desc.split('. ')[0].strip()
                 if len(short) > 100:
@@ -8096,6 +8126,25 @@ Only return the JSON array, no other text."""
         except Exception as e:
             logger.debug(f"Could not enumerate tool schemas for chat prompt: {e}")
         tools_block = '\n'.join(tool_lines) if tool_lines else '- (tool registry unavailable)'
+
+        # What this turn may not do, said up front (CFOP-124). The list above
+        # already omits the mutating tools; this stops the model apologising
+        # for a capability it never had this turn, and the store_learning
+        # instruction below is dropped when that tool is not on offer.
+        if tool_policy is not None and tool_policy.verify_only:
+            policy_block = ("\nThis turn is a verification pass: run the checks yourself and report what "
+                            "you found and what should happen next. Tools that change the system are "
+                            "withheld, and ssh_execute accepts read-only commands only — a command "
+                            "that restarts, edits or installs is refused, so send the one that "
+                            "observes the state instead. An operator applies changes from the console.\n")
+        elif tool_policy is not None and not tool_policy.allows_mutation():
+            policy_block = ("\nThe person asking is a member: tools that change the system are "
+                            "withheld. When a change is needed, say exactly what you would run "
+                            "and why, so an admin can do it from the console.\n")
+        else:
+            policy_block = ''
+        learning_line = ("- ALWAYS use store_learning to save solutions when you or the user resolves an issue\n"
+                         if 'store_learning' in offered else '')
 
         system_context = f"""You are CFOperator, an autonomous infrastructure monitoring agent.
 
@@ -8106,15 +8155,14 @@ Current System State:
 
 You have access to these tools (use them — do not claim you lack a capability that appears here):
 {tools_block}
-
+{policy_block}
 Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
 Use ssh_list_services to see BOTH containers and systemd services on a host.
 
 Your role:
 - Answer infrastructure-specific questions
 - Investigate issues using available tools
-{skills_line}- ALWAYS use store_learning to save solutions when you or the user resolves an issue
-- Use find_learnings to check for known solutions before investigating
+{skills_line}{learning_line}- Use find_learnings to check for known solutions before investigating
 - NOT general system administration (user has Claude Code CLI for that)
 
 Be concise and infrastructure-focused.
@@ -8275,9 +8323,16 @@ IMPORTANT:
                 'learning_ids': []
             }
 
-    def handle_chat_message_stream(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None):
+    def handle_chat_message_stream(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None,
+                                   actor_role: Optional[str] = None, verify_only: bool = False):
         """
         Streaming version of handle_chat_message. Yields SSE event dicts.
+
+        ``actor_role`` is the console role of whoever is asking, captured by
+        the route while request context exists; ``verify_only`` marks a
+        drawer / sweep-banner hand-off. Together they become the turn's
+        ToolPolicy (CFOP-124). Neither set means an internal caller: no
+        policy, every tool, exactly as before.
 
         Events yielded:
             {'event': 'tool_call', 'data': {'tool': ..., 'args': ..., 'iteration': ..., 'max': ...}}
@@ -8286,6 +8341,8 @@ IMPORTANT:
             {'event': 'error', 'data': {'error': ...}}
         """
         event_queue = queue.Queue()
+        tool_policy = (ToolPolicy(actor_role=actor_role, verify_only=verify_only)
+                       if (actor_role is not None or verify_only) else None)
 
         def event_callback(event_type, data):
             event_queue.put({'event': event_type, 'data': data})
@@ -8298,12 +8355,14 @@ IMPORTANT:
 
                 # Check for skill/command invocation
                 if message.startswith('/'):
-                    result = self._execute_skill_stream(message, backend=backend, model=model, event_callback=event_callback)
+                    result = self._execute_skill_stream(message, backend=backend, model=model, event_callback=event_callback,
+                                                        tool_policy=tool_policy)
                 elif message.lower().strip() in ('summary', 'report', 'status', 'tps report', 'morning summary', 'give me a summary', 'show summary'):
                     summary = self._generate_morning_summary()
                     result = {'response': summary['text'], 'backend': 'N/A', 'model': 'N/A', 'tool_calls': 0}
                 else:
-                    result = self._handle_chat_with_stream(message, history, backend, model, event_callback)
+                    result = self._handle_chat_with_stream(message, history, backend, model, event_callback,
+                                                           tool_policy=tool_policy)
                 event_queue.put({'event': 'done', 'data': result})
             except Exception as e:
                 logger.error(f"Stream chat failed: {e}", exc_info=True)
@@ -8325,9 +8384,10 @@ IMPORTANT:
                 yield {'event': 'error', 'data': {'error': 'Timeout waiting for response'}}
                 break
 
-    def _handle_chat_with_stream(self, message, history, backend, model, event_callback):
+    def _handle_chat_with_stream(self, message, history, backend, model, event_callback,
+                                 tool_policy: Optional[ToolPolicy] = None):
         """Internal: runs handle_chat_message logic but passes event_callback to _chat_with_tools."""
-        system_context = self._build_chat_system_context()
+        system_context = self._build_chat_system_context(tool_policy=tool_policy)
 
         messages = list(history) + [{'role': 'user', 'content': message}]
 
@@ -8338,6 +8398,7 @@ IMPORTANT:
                 backend=backend,
                 model=model,
                 event_callback=event_callback,
+                tool_policy=tool_policy,
             )
         except RuntimeError as e:
             if "No LLM providers available" in str(e):
@@ -8353,7 +8414,8 @@ IMPORTANT:
             'fallback_used': result.get('fallback_used', False),
         }
 
-    def _execute_skill_stream(self, message: str, backend: str = 'auto', model: str = None, event_callback=None) -> Dict[str, Any]:
+    def _execute_skill_stream(self, message: str, backend: str = 'auto', model: str = None, event_callback=None,
+                              tool_policy: Optional[ToolPolicy] = None) -> Dict[str, Any]:
         """Execute a skill with streaming events."""
         system_context, user_message, skill_name = self._prepare_skill_invocation(message)
         if system_context is None:
@@ -8366,6 +8428,7 @@ IMPORTANT:
                 backend=backend,
                 model=model,
                 event_callback=event_callback,
+                tool_policy=tool_policy,
             )
             return {
                 'response': result.get('response', ''),

@@ -836,6 +836,21 @@ class WebServer:
             if not message:
                 return jsonify({'error': 'No message provided'}), 400
 
+            # CFOP-124: who is asking, resolved HERE while request context
+            # still exists — the chat runs in a thread where current_role()
+            # is gone, which is why no check ever reached the tool call. A
+            # member, or a token without the remediate scope, gets a registry
+            # without mutating tools. An unknown identity is treated as a
+            # member, not as nobody: None would mean "internal caller" and
+            # lift every restriction. mode=verify is the drawer / sweep-banner
+            # hand-off — read-only for one turn whatever the role.
+            try:
+                actor_role = _effective_role() or ROLE_MEMBER
+            except Exception as e:
+                logger.warning(f"Chat role lookup failed; treating caller as member: {e}")
+                actor_role = ROLE_MEMBER
+            verify_only = data.get('mode') == 'verify'
+
             chat_id = str(uuid.uuid4())[:8]
             with self._sessions_lock:
                 self._chat_sessions[chat_id] = {
@@ -848,7 +863,8 @@ class WebServer:
 
             def run_chat():
                 stream = self.operator.handle_chat_message_stream(
-                    message, history, backend, model=model
+                    message, history, backend, model=model,
+                    actor_role=actor_role, verify_only=verify_only,
                 )
                 try:
                     logger.debug(f"Chat {chat_id} started")

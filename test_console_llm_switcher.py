@@ -27,7 +27,7 @@ def test_console_mounts_llm_switcher():
 def test_console_chat_still_uses_server_selected_backend():
     """Chat must not reintroduce a per-request backend from the chip."""
     html = INDEX.read_text(encoding="utf-8")
-    start = html.index("function sendMessage()")
+    start = html.index("function sendMessage(")
     end = html.index("function stopChat()", start)
     body = html[start:end]
     assert "backend: 'auto'" in body

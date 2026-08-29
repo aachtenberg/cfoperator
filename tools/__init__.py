@@ -13,11 +13,16 @@ Provides infrastructure monitoring tools to the LLM:
 Tools for CFOperator's single-agent architecture.
 """
 
-from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Any, List, Optional, Tuple
+from urllib.parse import urlsplit
+import ipaddress
 import logging
 import os
+import re
 import requests as _requests
-from .ssh import SSHTools
+from cfshared.config import ROLE_ADMIN
+from .ssh import SSHTools, ssh_mutation_reason
 from .discovery import DiscoveryTools
 from .k8s import K8sTools
 from .git import GitTools
@@ -32,6 +37,131 @@ from .timescale import TimescaleTools
 _REMEDIATION_INFLIGHT = ('claimed', 'executing')
 
 logger = logging.getLogger("cfoperator.tools")
+
+# Tools that stay available on a verification turn even though they can write,
+# because withholding them would leave a verification pass unable to verify:
+# the sweep's own checks are ssh one-liners (mountpoint, systemctl status,
+# journalctl, nc). Each command is classified instead — see ssh_mutation_reason.
+# The ROLE gate is separate and stricter: a member never gets these at all.
+_VERIFY_COMMAND_GATED = {'ssh_execute': 'command'}
+
+
+@dataclass(frozen=True)
+class ToolPolicy:
+    """What one chat turn may do with the registry (CFOP-124).
+
+    ``None`` in place of a policy is an internal caller — sweep, investigation,
+    morning summary — and is unrestricted, exactly as before. A policy exists
+    only for user-initiated chat: ``actor_role`` is the console role captured
+    in ``POST /api/chat`` while request context still exists (the chat itself
+    runs in a thread where it is gone), and ``verify_only`` marks a drawer or
+    sweep-banner hand-off that asks for checks, not changes.
+
+    Both layers consult it: ``get_schemas(policy)`` withholds mutating tools
+    from what the model is offered, and ``execute(..., policy)`` refuses them
+    anyway if the model names one regardless.
+    """
+    actor_role: Optional[str] = None
+    verify_only: bool = False
+
+    def role_allows_mutation(self) -> bool:
+        """Whether the ASKER may change things at all, ignoring the turn's mode."""
+        return self.actor_role is None or self.actor_role == ROLE_ADMIN
+
+    def allows_mutation(self) -> bool:
+        return self.role_allows_mutation() and not self.verify_only
+
+    def allows_tool(self, tool_name: str, mutating: bool) -> bool:
+        """Whether this turn may be OFFERED the tool at all.
+
+        A verification turn keeps the command-gated tools (ssh_execute): the
+        checks a hand-off asks for are ssh one-liners, and withholding the tool
+        outright leaves the model narrating what it would have run. What it
+        sends is classified at execute time instead. A member is refused them
+        whatever the mode — that is the role gate, and it is not negotiable by
+        the turn's purpose.
+        """
+        if not mutating:
+            return True
+        if self.allows_mutation():
+            return True
+        return (self.verify_only and self.role_allows_mutation()
+                and tool_name in _VERIFY_COMMAND_GATED)
+
+    def refusal(self, tool_name: str) -> str:
+        """The error the model sees. Refusal, not escalation: it names what is
+        needed and asks for the intent in words so an admin can act on it."""
+        if self.verify_only and self.role_allows_mutation():
+            return (f"{tool_name} changes the system, and this turn is a verification pass. "
+                    "Report what you found and what should happen next; an operator "
+                    "applies changes from the console.")
+        return (f"{tool_name} changes the system; that needs an admin. Say exactly what "
+                "you would run and why, so an admin can do it from the console.")
+
+    def command_refusal(self, tool_name: str, reason: str) -> str:
+        """The error for a read-only tool call carrying a command that writes."""
+        return (f"{tool_name} is available on this verification turn for read-only checks, "
+                f"but the command was refused: {reason}. Run the check that observes the "
+                "state and report what should be done; an operator applies it.")
+
+    def describe(self) -> str:
+        return f"actor_role={self.actor_role!r} verify_only={self.verify_only}"
+
+
+_NAMESPACE_FILE = '/var/run/secrets/kubernetes.io/serviceaccount/namespace'
+
+
+def _own_namespace() -> Optional[str]:
+    """The namespace this agent runs in, or None off-cluster / unknown."""
+    for var in ('POD_NAMESPACE', 'CFOP_NAMESPACE'):
+        value = os.getenv(var, '').strip()
+        if value:
+            return value.lower()
+    try:
+        with open(_NAMESPACE_FILE, encoding='utf-8') as fh:
+            return fh.read().strip().lower() or None
+    except OSError:
+        return None
+
+
+def _service_from_host(host: Optional[str]) -> Optional[Tuple[str, Optional[str], bool]]:
+    """(service, namespace-or-None, ambiguous) for a host a pod could exec into.
+
+    Kubernetes service DNS is ``svc``, ``svc.ns``, ``svc.ns.svc`` or
+    ``svc.ns.svc.cluster.local``. An IP literal, localhost, or a name with
+    three-plus labels that is not ``…svc…`` is not a pod in this cluster, so
+    there is nothing for ``k8s_exec_pod`` to protect and the caller gets None,
+    not an error.
+
+    Two labels cannot be told apart lexically: ``kb-db.aweoriujwoedf`` is
+    cluster DNS and ``timescale.local`` is a LAN name, and both parse the same
+    way. Those come back with ``ambiguous=True`` and the caller settles it by
+    asking the cluster whether that namespace exists — the only thing that
+    actually distinguishes them. A bare service name resolves in the caller's
+    own namespace; that is left None here and filled in by the registry.
+    """
+    h = str(host or '').strip().lower().rstrip('.')
+    if h.startswith('['):            # [ipv6] or [ipv6]:port
+        h = h[1:].split(']', 1)[0]
+    elif h.count(':') == 1:          # host:port
+        h = h.split(':', 1)[0]
+    # More than one ':' without brackets is a bare IPv6 literal; it falls
+    # through to the address check below.
+    if not h or h == 'localhost':
+        return None
+    try:
+        ipaddress.ip_address(h)
+        return None
+    except ValueError:
+        pass
+    labels = [label for label in h.split('.') if label]
+    if len(labels) == 1:
+        return labels[0], None, False
+    if len(labels) == 2:
+        return labels[0], labels[1], True
+    if labels[2] == 'svc':
+        return labels[0], labels[1], False
+    return None
 
 class ToolRegistry:
     """
@@ -95,6 +225,7 @@ class ToolRegistry:
 
         # Register all tools
         self._register_tools()
+        self._check_marker_placement()
 
         logger.info(f"Tool registry initialized with {len(self.tools)} tools")
 
@@ -353,6 +484,11 @@ class ToolRegistry:
             'function': self._store_learning,
             'schema': {
                 'name': 'store_learning',
+                # A learning is read by future sweeps and investigations and can
+                # act as a suppression — it decides what the system will and
+                # will not act on, the same test the admin gate on
+                # PATCH /api/findings cites.
+                'mutating': True,
                 'description': 'Save a learning/insight to the knowledge base. Use this when you diagnose an issue, the user tells you how they fixed something, or you discover a useful pattern. Learnings are reused in future investigations.',
                 'parameters': {
                     'type': 'object',
@@ -449,6 +585,7 @@ class ToolRegistry:
             'function': self._update_sweep_finding,
             'schema': {
                 'name': 'update_sweep_finding',
+                'mutating': True,  # its HTTP twin PATCH /api/findings is admin-gated
                 'description': 'Update the status of a specific finding in a sweep report. Use finding_id (preferred) or finding_index to identify the finding.',
                 'parameters': {
                     'type': 'object',
@@ -602,11 +739,13 @@ class ToolRegistry:
             'function': self._resolve_remediation,
             'schema': {
                 'name': 'resolve_remediation',
+                'mutating': True,
                 'description': (
                     'Close a remediation queue row when the operator says the work is done, '
-                    'no longer needed, or the device/service is decommissioned. This is the ONLY '
-                    'way to take a row off the /remediations worklist — update_sweep_finding does '
-                    'NOT close a remediation. Use get_remediation first to confirm the id.'
+                    'no longer needed, or the device/service is decommissioned — or approve it, '
+                    'handing it to the executor. This is the ONLY way to take a row off the '
+                    '/remediations worklist or send it on — update_sweep_finding does NOT close a '
+                    'remediation. Use get_remediation first to confirm the id.'
                 ),
                 'parameters': {
                     'type': 'object',
@@ -618,16 +757,18 @@ class ToolRegistry:
                         'status': {
                             'type': 'string',
                             'description': ("'resolved' when the underlying problem is handled or moot; "
-                                            "'rejected' when the proposed fix itself was wrong"),
-                            'enum': ['resolved', 'rejected']
+                                            "'rejected' when the proposed fix itself was wrong; "
+                                            "'approved' to queue it for the executor (the console's Approve)"),
+                            'enum': ['resolved', 'rejected', 'approved']
                         },
                         'note': {
                             'type': 'string',
                             'description': ('Why it is being closed, in the operator\'s terms '
-                                            '(e.g. "device permanently decommissioned"). Recorded on the row.')
+                                            '(e.g. "device permanently decommissioned"). Recorded on the row. '
+                                            'Required to resolve or reject; optional to approve.')
                         }
                     },
-                    'required': ['remediation_id', 'note']
+                    'required': ['remediation_id']
                 }
             }
         }
@@ -673,19 +814,56 @@ class ToolRegistry:
             }
             logger.info(f"Web search tool enabled (SearXNG: {searxng_url})")
 
-    def execute(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    def _check_marker_placement(self) -> None:
+        """Fail registration if a ``mutating`` marker is in the wrong home.
+
+        There is one home: inside the tool's own schema, beside its name —
+        where a family (tools/ssh.py, tools/k8s.py, tools/github.py) already
+        puts it. An entry-level key would be silently read as False by
+        is_mutating and leave a write tool open, which is the whole defect
+        this issue is about, so it stops the process rather than shipping.
+        """
+        misplaced = sorted(name for name, entry in self.tools.items() if 'mutating' in entry)
+        if misplaced:
+            raise ValueError(
+                "'mutating' belongs inside the tool's schema, not on the registry entry: "
+                + ', '.join(misplaced))
+
+    def is_mutating(self, tool_name: str) -> bool:
+        """True if the tool changes the system, or what the system will act on."""
+        entry = self.tools.get(tool_name)
+        return bool(entry and (entry.get('schema') or {}).get('mutating'))
+
+    def execute(self, tool_name: str, arguments: Dict[str, Any],
+                policy: Optional[ToolPolicy] = None) -> Dict[str, Any]:
         """
         Execute a tool by name with given arguments.
 
         Args:
             tool_name: Name of the tool to execute
             arguments: Dictionary of arguments for the tool
+            policy: What this turn may do (CFOP-124); None is unrestricted
 
         Returns:
             Tool execution result
         """
         if tool_name not in self.tools:
             return {'error': f'Tool {tool_name} not found'}
+        if policy is not None and self.is_mutating(tool_name):
+            if not policy.allows_tool(tool_name, True):
+                # Defence in depth: get_schemas(policy) already withheld this
+                # tool from the model. A model that names it anyway is refused.
+                logger.warning(f"Tool {tool_name} refused ({policy.describe()})")
+                return {'error': policy.refusal(tool_name), 'refused': True, 'tool': tool_name}
+            if not policy.allows_mutation():
+                # Offered only because it is command-gated (verify turn): the
+                # tool may run, this particular command may not.
+                arg = _VERIFY_COMMAND_GATED.get(tool_name)
+                reason = ssh_mutation_reason((arguments or {}).get(arg)) if arg else None
+                if reason:
+                    logger.warning(f"Tool {tool_name} command refused ({policy.describe()}): {reason}")
+                    return {'error': policy.command_refusal(tool_name, reason),
+                            'refused': True, 'tool': tool_name}
 
         try:
             # Defensive: handle arguments that may still be JSON strings
@@ -704,20 +882,28 @@ class ToolRegistry:
             logger.error(f"Tool {tool_name} failed: {e}", exc_info=True)
             return {'error': str(e)}
 
-    def get_schemas(self) -> List[Dict[str, Any]]:
+    def get_schemas(self, policy: Optional[ToolPolicy] = None) -> List[Dict[str, Any]]:
         """
         Get tool schemas for LLM function calling.
+
+        Args:
+            policy: What this turn may do (CFOP-124). Mutating tools are left
+                out when the policy does not allow them, so the model is never
+                offered — or told about — a tool that would refuse. None
+                returns everything.
 
         Returns:
             List of tool schemas in OpenAI function calling format
         """
-        # Wrap each schema in OpenAI format (required by Ollama)
+        # The marker lives in the schema (one home), so it is stripped here on
+        # the way to the model: a stray key is a 400 on the stricter providers.
         return [
             {
                 'type': 'function',
-                'function': tool['schema']
+                'function': {k: v for k, v in tool['schema'].items() if k != 'mutating'}
             }
-            for tool in self.tools.values()
+            for name, tool in self.tools.items()
+            if policy is None or policy.allows_tool(name, bool(tool['schema'].get('mutating')))
         ]
 
     # Tool implementations
@@ -1029,9 +1215,10 @@ class ToolRegistry:
         ``result`` keys the console route writes so /remediations renders a
         chat-closed row identically to a button-closed one.
         """
-        if status not in ('resolved', 'rejected'):
-            return {'error': f"status must be 'resolved' or 'rejected', got {status!r}"}
-        if not (note or '').strip():
+        if status not in ('resolved', 'rejected', 'approved'):
+            return {'error': f"status must be 'resolved', 'rejected' or 'approved', got {status!r}"}
+        note = (note or '').strip()
+        if status != 'approved' and not note:
             return {'error': 'A note is required — it is the only record of why this was closed.'}
         if remediation_id is None:
             return {'error': 'remediation_id is required. Use list_remediations to find it.'}
@@ -1062,8 +1249,18 @@ class ToolRegistry:
             # reads them: resolutionHtml() paints "resolved by <who>" whenever
             # result.resolution_note is set, whatever the status. Writing the
             # resolve keys on a rejected row would label it resolved.
-            note = note.strip()[:2000]  # parity with the console's cap
-            if status == 'resolved':
+            note = note[:2000]  # parity with the console's cap
+            if status == 'approved':
+                # The console's Approve (POST /api/remediations/<id>/approve):
+                # the same policy refuses manual-class rows and rows whose PR
+                # is already open, then the row goes to the executor as
+                # 'queued'. No note is stored — the route takes none, and the
+                # executor's result overwrites the row.
+                conflict = self.operator.kb.remediation_approve_conflict(row)
+                if conflict:
+                    return {'error': f'Remediation #{rid} cannot be approved: {conflict}'}
+                ok = self.operator.kb.update_remediation_status(rid, 'queued')
+            elif status == 'resolved':
                 ok = self.operator.kb.update_remediation_status(
                     rid, 'resolved',
                     result={'resolved_by': 'chat-agent', 'resolution_note': note},
@@ -1239,15 +1436,150 @@ class ToolRegistry:
         if not method_name:
             return lambda **kwargs: {'error': f'Unknown K8s tool: {tool_name}'}
 
-        method = getattr(self.k8s_tools, method_name)
-
         def wrapper(**kwargs):
             try:
-                return method(**kwargs)
+                if tool_name == 'k8s_exec_pod':
+                    refusal = self._exec_pod_refusal(kwargs.get('namespace'), kwargs.get('pod_name'))
+                    if refusal:
+                        logger.warning(f"k8s_exec_pod refused: {refusal}")
+                        return {'error': refusal, 'refused': True, 'tool': tool_name}
+                # Resolved at call time so a replaced k8s_tools (tests, a
+                # re-initialised client) is what runs, not the one bound at
+                # registration.
+                return getattr(self.k8s_tools, method_name)(**kwargs)
             except Exception as e:
                 return {'error': str(e), 'tool': tool_name}
 
         return wrapper
+
+    # ---- the agent's own datastore is off-limits to k8s_exec_pod (CFOP-124) --
+    #
+    # Session 21 (2026-08-28) resolved two queue rows by running psql inside
+    # the knowledge-base pod through k8s_exec_pod — credential guessing, a
+    # schema-probing SELECT, then an UPDATE the console never writes. The KB
+    # has first-class tools for every legitimate write, so nothing in chat
+    # needs a shell inside it, whoever is asking.
+    #
+    # Nothing here is deployment-specific: the protected set is DERIVED from
+    # the connections the agent itself opens (the KB's db_url, the TimescaleDB
+    # host), plus whatever chat.protected_exec_hosts adds. Another install with
+    # its database under any name in any namespace is covered the same way.
+
+    # A pod backs a service when its name is the service name itself, or the
+    # service name plus a suffix of the shape a controller generates:
+    #   StatefulSet        kb-db-0            -> ordinal
+    #   Deployment/RS      kb-db-7f9c6b4d8-x2k9p -> replicaset hash + pod suffix
+    # Bare startswith(service + '-') over-matches — with service `kb`, the
+    # unrelated `kb-database-0` would be refused. DaemonSet pods (`name-xxxxx`)
+    # are deliberately not matched: a datastore is not a DaemonSet, and that
+    # shape collides with ordinary names like `kb-cache`.
+    _POD_SUFFIX = re.compile(r'^(?:\d+|[a-z0-9]{5,10}-[a-z0-9]{5})$')
+
+    def _namespace_exists(self, namespace: str) -> Optional[bool]:
+        """Whether the cluster has this namespace. None if it cannot be asked.
+
+        One kubectl call, cached for the process: the hosts this is asked about
+        come from config and never change, so in practice it runs once. A
+        failed lookup is not cached — it is not an answer.
+        """
+        cache = getattr(self, '_ns_cache', None)
+        if cache is None:
+            cache = self._ns_cache = {}
+        if namespace in cache:
+            return cache[namespace]
+        try:
+            result = self.k8s_tools.get_namespaces()
+        except Exception as e:
+            logger.debug(f"Namespace lookup failed: {e}")
+            return None
+        if not (isinstance(result, dict) and result.get('success')):
+            return None
+        names = {str(n.get('name') or '').lower() for n in result.get('namespaces') or []}
+        if not names:
+            return None
+        for known in names:
+            cache[known] = True
+        cache.setdefault(namespace, namespace in names)
+        return cache[namespace]
+
+    def _protected_exec_targets(self) -> List[Tuple[str, Optional[str], str]]:
+        """(service, namespace-or-None, what it is) for every datastore host.
+
+        A bare service name is filled in with this agent's own namespace —
+        what Kubernetes DNS would resolve it in — and left None when that is
+        unknown, which protects the name in every namespace: a refusal with an
+        explanation is the cheap mistake.
+
+        A two-label host is ambiguous (``kb-db.aweoriujwoedf`` is cluster DNS,
+        ``timescale.local`` is a LAN name) so the cluster settles it: if that
+        namespace exists it is cluster DNS, and if it does not the host is
+        somewhere k8s_exec_pod cannot reach and nothing needs protecting. When
+        the cluster cannot be asked at all, the target is kept — an unnecessary
+        refusal is recoverable, and a datastore left open is the hole this
+        exists to close.
+        """
+        targets: List[Tuple[str, Optional[str], str]] = []
+
+        def add(host, source):
+            parsed = _service_from_host(host)
+            if not parsed:
+                return
+            service, namespace, ambiguous = parsed
+            if ambiguous:
+                exists = self._namespace_exists(namespace)
+                if exists is False:
+                    logger.debug(f"{host} has no namespace {namespace!r} in this cluster; "
+                                 "treating it as an external name")
+                    return
+            if namespace is None:
+                namespace = _own_namespace()
+            targets.append((service, namespace, source))
+
+        try:
+            db_url = getattr(getattr(self.operator, 'kb', None), 'db_url', None)
+            if isinstance(db_url, str) and db_url:
+                add(urlsplit(db_url).hostname, 'the knowledge base')
+        except Exception as e:  # a KB wrapper that refuses attribute access
+            logger.debug(f"Could not read the knowledge-base host: {e}")
+        ts_host = getattr(self.timescale_tools, 'host', None)
+        if isinstance(ts_host, str):
+            add(ts_host, 'TimescaleDB')
+        config = getattr(self.operator, 'config', None)
+        chat_cfg = config.get('chat') if isinstance(config, dict) else None
+        for extra in ((chat_cfg or {}).get('protected_exec_hosts') or []):
+            if isinstance(extra, str):
+                add(extra, 'chat.protected_exec_hosts')
+        return targets
+
+    def _pod_backs_service(self, pod: str, service: str) -> bool:
+        if pod == service:
+            return True
+        if not pod.startswith(service + '-'):
+            return False
+        return bool(self._POD_SUFFIX.match(pod[len(service) + 1:]))
+
+    def _exec_pod_refusal(self, namespace, pod_name) -> Optional[str]:
+        """Why k8s_exec_pod must not run in this pod, or None.
+
+        An omitted namespace is resolved the way kubectl would resolve it —
+        the agent's own namespace — rather than being treated as a wildcard;
+        with no namespace known at all it stays a wildcard, which is the
+        fail-closed end of an unanswerable question.
+        """
+        ns = str(namespace or '').strip().lower() or (_own_namespace() or '')
+        pod = str(pod_name or '').strip().lower()
+        if not pod:
+            return None
+        for service, svc_ns, source in self._protected_exec_targets():
+            if svc_ns is not None and ns and svc_ns != ns:
+                continue
+            if self._pod_backs_service(pod, service):
+                where = f"{ns}/{pod}" if ns else pod
+                return (f"k8s_exec_pod refuses {where}: it backs {source}, the agent's own "
+                        "datastore. The knowledge base has its own tools — list_remediations, "
+                        "resolve_remediation, store_learning, find_learnings — use those; nothing "
+                        "in chat needs a shell inside it.")
+        return None
 
     def _make_git_tool_wrapper(self, tool_name: str):
         """Create wrapper function for Git tools."""

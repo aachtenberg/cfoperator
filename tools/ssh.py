@@ -6,6 +6,7 @@ Provides tools for CFOperator to SSH into infrastructure hosts
 for troubleshooting, log retrieval, service management, etc.
 """
 
+import re
 import subprocess
 import json
 import logging
@@ -32,6 +33,106 @@ def _int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+# ---------------------------------------------------------------------------
+# Read-only classification for verification turns (CFOP-124)
+# ---------------------------------------------------------------------------
+# A verify-only chat turn (a drawer or sweep-banner hand-off) keeps ssh_execute
+# — the sweep's own checks are ssh one-liners: mountpoint, systemctl status,
+# journalctl, nc — but every command it sends goes through this classifier,
+# which refuses the mutators it knows. It is a denylist of known write shapes,
+# not a proof of harmlessness: an interpreter one-liner (python -c, perl -e)
+# is not classified and runs. That gap is accepted; the role gate is separate
+# and a member never gets ssh_execute at all.
+
+_SEGMENT_SPLIT = re.compile(r"\s*(?:\|\||&&|;|\||\n|&(?![>\d])|\$\(|`|\(|\))\s*")
+_ENV_ASSIGN = re.compile(r"^(?:[A-Za-z_]\w*=\S*\s+)+")
+_WRAPPER = re.compile(
+    r"^(?:sudo(?:\s+-\S+)*|doas|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\S+)*"
+    r"|timeout(?:\s+-\S+)*\s+\S+|command|exec|nohup|time|stdbuf(?:\s+-\S+)*|\\)\s+")
+_SHELL_C = re.compile(r"^(?:ba|z|da|k|a)?sh\s+(?:-\S+\s+)*-c\s+(['\"])(.*)\1", re.S)
+_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
+_REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\|?(?!\s*(?:&\s*[12]|/dev/(?:null|tcp|udp|std)))")
+
+_MUTATORS = [
+    (re.compile(r"^systemctl\s+(?:--?\S+\s+)*(restart|stop|start|reload|reload-or-restart|try-restart|"
+                r"enable|disable|mask|unmask|kill|daemon-reload|daemon-reexec|reset-failed|isolate|"
+                r"set-default|set-property|revert|edit)\b"), "systemctl {0} changes service state"),
+    (re.compile(r"^(reboot|shutdown|poweroff|halt|init\s+[06])\b"), "{0} takes the host down"),
+    (re.compile(r"^(kill|pkill|killall)\b"), "{0} ends processes"),
+    (re.compile(r"^(rm|rmdir|mv|cp|dd|truncate|shred|ln|chmod|chown|chgrp|touch|mkdir|mkfs\S*|fdisk|"
+                r"parted|wipefs|swapoff|swapon)\b"), "{0} changes the filesystem"),
+    (re.compile(r"^sed\b(?=.*(?:\s-[a-zA-Z]*i[a-zA-Z]*\b|\s--in-place))"), "sed -i edits a file in place"),
+    (re.compile(r"^tee\b"), "tee writes a file"),
+    (re.compile(r"^(apt|apt-get|dnf|yum|zypper|pacman|snap|pip3?|npm|brew)\s+(?:-\S+\s+)*"
+                r"(install|remove|purge|upgrade|update|dist-upgrade|autoremove|uninstall|refresh)\b"),
+     "{0} {1} changes installed packages"),
+    (re.compile(r"^umount\b"), "umount unmounts a filesystem"),
+    (re.compile(r"^mount\s+(?!-l\b)\S"), "mount with arguments mounts something"),
+    (re.compile(r"^docker\s+(?:compose\s+)?(restart|stop|start|rm|rmi|kill|run|exec|up|down|prune|"
+                r"pull|create|rename|update|pause|unpause|cp)\b"), "docker {0} changes container state"),
+    (re.compile(r"^(?:kubectl|k3s\s+kubectl|oc)\s+(?:--?\S+\s+)*(apply|delete|patch|edit|scale|exec|cp|"
+                r"drain|cordon|uncordon|taint|label|annotate|create|replace|rollout|set|expose|run)\b"),
+     "kubectl {0} changes cluster state"),
+    (re.compile(r"^(iptables|ip6tables)\b(?!.*\s-[LSC]\b)"), "{0} without -L changes firewall rules"),
+    (re.compile(r"^nft\b(?!\s+list\b)"), "nft changes firewall rules"),
+    (re.compile(r"^ufw\b(?!\s+status\b)"), "ufw changes firewall rules"),
+    (re.compile(r"^crontab\s+(?!-l\b)"), "crontab edits scheduled jobs"),
+    (re.compile(r"^(useradd|userdel|usermod|passwd|chpasswd|groupadd|groupdel|groupmod|visudo)\b"),
+     "{0} changes accounts"),
+    (re.compile(r"^git\s+(?:-C\s+\S+\s+)?(push|commit|reset|checkout|switch|rebase|merge|clean|stash|"
+                r"pull|rm|mv|add|tag|restore)\b"), "git {0} changes the working tree or remote"),
+    (re.compile(r"^(sysctl\s+(?:-w|\S+=)|modprobe|rmmod|insmod|hostnamectl\s+set|timedatectl\s+set|"
+                r"nmcli\s+(?:con|connection|dev|device)\s+(?:up|down|mod|modify|del|delete|add)|"
+                r"ip\s+(?:link|addr|address|route|neigh)\s+(?:add|del|delete|set|flush|change|replace))\b"),
+     "{0} changes network or kernel state"),
+    (re.compile(r"^(systemd-run|at|batch)\b"), "{0} schedules work on the host"),
+    (re.compile(r"^journalctl\b(?=.*--(?:vacuum|rotate|flush))"), "journalctl --vacuum/--rotate changes the journal"),
+    (re.compile(r"^find\b(?=.*\s(?:-delete\b|-exec\s+(?:rm|mv|chmod|chown|sed\s+-i)\b))"), "find -delete/-exec changes files"),
+    (re.compile(r"^curl\b(?=.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request\s+(?:POST|PUT|DELETE|PATCH)\b|"
+                r"-d\b|--data\S*|-F\b|-T\b|-o\s|--output\s|-O\b))"), "curl that writes or sends data"),
+    (re.compile(r"^wget\b(?!.*(?:-q?O\s*-|--spider))"), "wget writes a file"),
+]
+
+
+def _unwrap(segment: str) -> str:
+    """Strip sudo/env/timeout-style prefixes so the program word is first."""
+    seg = segment.strip()
+    while True:
+        before = seg
+        seg = _ENV_ASSIGN.sub('', seg)
+        seg = _WRAPPER.sub('', seg)
+        if seg == before:
+            return seg
+
+
+def ssh_mutation_reason(command) -> Optional[str]:
+    """Why this shell command is not read-only, or None if nothing known matched.
+
+    Every pipeline segment, subshell and ``sh -c`` body is unwrapped and its
+    program word checked against the known mutators; output redirected to a
+    file counts as a write (``2>&1``, ``/dev/null`` and ``/dev/tcp`` probes do
+    not).
+    """
+    text = str(command or '')
+    for raw in _SEGMENT_SPLIT.split(text):
+        seg = _unwrap(raw)
+        if not seg:
+            continue
+        inner = _SHELL_C.match(seg)
+        if inner:
+            reason = ssh_mutation_reason(inner.group(2))
+            if reason:
+                return reason
+            continue
+        for pattern, reason in _MUTATORS:
+            m = pattern.match(seg)
+            if m:
+                return reason.format(*[g or '' for g in m.groups()])
+        if _REDIRECT.search(_QUOTED.sub("''", seg)):
+            return "output is redirected to a file"
+    return None
 
 
 class SSHTools:
@@ -349,6 +450,7 @@ class SSHTools:
         return [
             {
                 'name': 'ssh_execute',
+                'mutating': True,  # CFOP-124: withheld from members and verify-only turns
                 'description': 'Execute shell command on remote host via SSH. Use for troubleshooting, checking status, or any remote operation.',
                 'parameters': {
                     'type': 'object',
@@ -384,6 +486,7 @@ class SSHTools:
             },
             {
                 'name': 'ssh_restart_service',
+                'mutating': True,  # CFOP-124: withheld from members and verify-only turns
                 'description': 'Restart systemd service on remote host (requires sudo)',
                 'parameters': {
                     'type': 'object',
@@ -431,6 +534,7 @@ class SSHTools:
             },
             {
                 'name': 'ssh_docker_restart',
+                'mutating': True,  # CFOP-124: withheld from members and verify-only turns
                 'description': 'Restart Docker container on remote host',
                 'parameters': {
                     'type': 'object',

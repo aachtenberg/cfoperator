@@ -387,6 +387,7 @@ class GitHubTools:
             },
             {
                 "name": "github_create_pr",
+                "mutating": True,  # CFOP-124: withheld from members and verify-only turns
                 "description": "Create a new pull request on GitHub. Requires an existing branch with commits.",
                 "parameters": {
                     "type": "object",
@@ -402,6 +403,7 @@ class GitHubTools:
             },
             {
                 "name": "github_create_issue_comment",
+                "mutating": True,  # CFOP-124: withheld from members and verify-only turns
                 "description": "Post a comment on a GitHub issue or pull request.",
                 "parameters": {
                     "type": "object",

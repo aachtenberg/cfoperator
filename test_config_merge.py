@@ -780,6 +780,12 @@ def test_scope_ladder_matches_the_auth_module():
     assert cfg.expand_scopes([cfg.SCOPE_REMEDIATE]) == models.expand_scopes([models.SCOPE_REMEDIATE])
     assert cfg.expand_scopes([cfg.SCOPE_INVESTIGATE]) == models.expand_scopes([models.SCOPE_INVESTIGATE])
     assert cfg.expand_scopes([cfg.SCOPE_READ]) == models.expand_scopes([models.SCOPE_READ])
+    # The roles ride the same restatement (CFOP-124): tools/ reads them from
+    # cfshared, the console from auth.models and web_auth.
+    import web_auth
+
+    assert cfg.ROLE_ADMIN == models.ROLE_ADMIN == web_auth.ROLE_ADMIN
+    assert cfg.ROLE_MEMBER == models.ROLE_MEMBER == web_auth.ROLE_MEMBER
 
 
 # ---------------------------------------------------------------------------
