@@ -9,8 +9,6 @@ execution, and k8s_exec_pod never opens a shell in the agent's own datastore,
 whoever asks and whatever that datastore is called.
 """
 
-import ast
-import pathlib
 import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -19,6 +17,7 @@ import pytest
 
 import tools as tools_module
 from tools import ToolPolicy, ToolRegistry, _service_from_host
+from tools.ssh import ssh_mutation_reason
 from tools.github import GitHubTools
 from tools.k8s import K8sTools
 from tools.ssh import SSHTools
@@ -77,6 +76,20 @@ def test_reads_are_not_marked():
         assert name in reg.tools and not reg.is_mutating(name), name
 
 
+def test_the_marker_has_one_home_and_the_wrong_home_fails_registration():
+    """Family schemas and inline tools both carry 'mutating' INSIDE the schema.
+    An entry-level key reads as False through is_mutating — a write tool left
+    open, the defect this issue is about — so it stops registration instead."""
+    _, reg = _registry()
+    for name in KNOWN_MUTATING:
+        assert reg.tools[name]["schema"].get("mutating") is True, f"{name} marks the wrong home"
+        assert "mutating" not in reg.tools[name], f"{name} still marks the entry"
+    reg.tools["invented_tool"] = {"function": lambda: None, "mutating": True,
+                                  "schema": {"name": "invented_tool"}}
+    with pytest.raises(ValueError, match="belongs inside the tool's schema"):
+        reg._check_marker_placement()
+
+
 def test_family_schemas_carry_the_marker_and_the_model_never_sees_it():
     by_name = {s["name"]: s for s in SSHTools(HOSTS).get_schemas()}
     assert all(by_name[n].get("mutating") for n in ("ssh_execute", "ssh_restart_service", "ssh_docker_restart"))
@@ -93,18 +106,6 @@ def test_family_schemas_carry_the_marker_and_the_model_never_sees_it():
     # with a stray key is a 400 on the stricter providers.
     _, reg = _registry()
     assert not any("mutating" in s["function"] for s in reg.get_schemas())
-
-
-def test_the_role_string_matches_the_console():
-    # tools/ mirrors auth.models.ROLE_ADMIN rather than importing it; read the
-    # original from source so the copy cannot drift.
-    src = (pathlib.Path(__file__).resolve().parent.parent / "auth" / "models.py").read_text()
-    literal = [
-        ast.literal_eval(node.value)
-        for node in ast.parse(src).body
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "ROLE_ADMIN" for t in node.targets)
-    ]
-    assert literal == [tools_module._ROLE_ADMIN]
 
 
 # --------------------------------------------------------------------------
@@ -139,7 +140,9 @@ def test_a_verification_turn_refuses_with_its_own_message():
     _, reg = _registry()
     run = MagicMock()
     reg.tools["ssh_restart_service"]["function"] = run
-    assert not (_names(reg.get_schemas(policy=VERIFY)) & KNOWN_MUTATING)
+    # ssh_execute is the one documented exception (it is command-gated instead,
+    # so a verification turn can still run its checks); everything else goes.
+    assert (_names(reg.get_schemas(policy=VERIFY)) & KNOWN_MUTATING) == {"ssh_execute"}
     out = reg.execute("ssh_restart_service", {"host": "box1", "service": "x"}, policy=VERIFY)
     assert out["refused"] is True and "verification pass" in out["error"]
     run.assert_not_called()
@@ -164,12 +167,15 @@ def test_an_admin_runs_a_mutating_tool():
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("host, expected", [
-    ("kb-db.aweoriujwoedf.svc.cluster.local", ("kb-db", "aweoriujwoedf")),
-    ("kb-db.aweoriujwoedf.svc", ("kb-db", "aweoriujwoedf")),
-    ("kb-db.aweoriujwoedf", ("kb-db", "aweoriujwoedf")),
-    ("KB-DB.Aweoriujwoedf.svc.cluster.local.", ("kb-db", "aweoriujwoedf")),
-    ("kb-db.aweoriujwoedf:5432", ("kb-db", "aweoriujwoedf")),
-    ("kb-db", ("kb-db", None)),
+    ("kb-db.aweoriujwoedf.svc.cluster.local", ("kb-db", "aweoriujwoedf", False)),
+    ("kb-db.aweoriujwoedf.svc", ("kb-db", "aweoriujwoedf", False)),
+    # Two labels are ambiguous until the cluster is asked — see the class below.
+    ("kb-db.aweoriujwoedf", ("kb-db", "aweoriujwoedf", True)),
+    ("timescale.local", ("timescale", "local", True)),
+    ("kb-db.lan", ("kb-db", "lan", True)),
+    ("KB-DB.Aweoriujwoedf.svc.cluster.local.", ("kb-db", "aweoriujwoedf", False)),
+    ("kb-db.aweoriujwoedf:5432", ("kb-db", "aweoriujwoedf", True)),
+    ("kb-db", ("kb-db", None, False)),
     ("10.0.0.5", None),
     ("::1", None),
     ("[::1]:5432", None),
@@ -188,7 +194,8 @@ class TestExecPodRefusesTheDatastore:
     derived from the connections the agent opens — nothing here knows what
     the database is called or where it lives."""
 
-    def _reg(self, monkeypatch, db_url=None, ts_host=None, extra=None, own_ns=None):
+    def _reg(self, monkeypatch, db_url=None, ts_host=None, extra=None, own_ns=None,
+             namespaces=("aweoriujwoedf", "joeblowxxxx"), ns_fails=False):
         monkeypatch.delenv("POD_NAMESPACE", raising=False)
         monkeypatch.delenv("CFOP_NAMESPACE", raising=False)
         monkeypatch.setattr(tools_module, "_NAMESPACE_FILE", "/nonexistent/serviceaccount/namespace")
@@ -198,14 +205,23 @@ class TestExecPodRefusesTheDatastore:
         op.kb = SimpleNamespace(db_url=db_url) if db_url else SimpleNamespace()
         reg.timescale_tools = SimpleNamespace(host=ts_host) if ts_host else None
         calls = []
-        reg.k8s_tools = SimpleNamespace(exec_pod=lambda **kw: calls.append(kw) or {"success": True})
+        self.ns_calls = []
+
+        def get_namespaces():
+            self.ns_calls.append(1)
+            if ns_fails:
+                raise RuntimeError("kubectl unavailable")
+            return {"success": True, "namespaces": [{"name": n} for n in namespaces]}
+        reg.k8s_tools = SimpleNamespace(
+            exec_pod=lambda **kw: calls.append(kw) or {"success": True},
+            get_namespaces=get_namespaces)
         return reg, calls
 
     @staticmethod
     def _exec(reg, ns, pod, policy=None):
         return reg.execute("k8s_exec_pod", {"namespace": ns, "pod_name": pod, "command": "id"}, policy=policy)
 
-    @pytest.mark.parametrize("pod", ["kb-db-0", "kb-db-7f9c6b-x2k9", "kb-db"])
+    @pytest.mark.parametrize("pod", ["kb-db-0", "kb-db-12", "kb-db-7f9c6b4d8-x2k9p", "kb-db"])
     def test_pods_backing_the_kb_service_are_refused(self, monkeypatch, pod):
         reg, calls = self._reg(monkeypatch, db_url="postgresql://u:p@kb-db.aweoriujwoedf.svc.cluster.local:5432/kb")
         out = self._exec(reg, "aweoriujwoedf", pod)
@@ -218,6 +234,15 @@ class TestExecPodRefusesTheDatastore:
         assert self._exec(reg, "aweoriujwoedf", "kb-database-0")["success"] is True  # not <service>-
         assert len(calls) == 3
 
+    @pytest.mark.parametrize("pod", ["kb-database-0", "kb-cache", "kb-db-migrations", "kb-db-backup-nightly"])
+    def test_a_prefix_alone_is_not_a_match(self, monkeypatch, pod):
+        """`startswith(service + '-')` over-matches: with service `kb`, the
+        unrelated `kb-database-0` would be refused. Only a controller-shaped
+        suffix — StatefulSet ordinal, ReplicaSet hash + pod suffix — counts."""
+        reg, calls = self._reg(monkeypatch, db_url="postgresql://u:p@kb.aweoriujwoedf.svc:5432/kb")
+        assert self._exec(reg, "aweoriujwoedf", pod)["success"] is True
+        assert len(calls) == 1
+
     def test_it_holds_for_admins_too(self, monkeypatch):
         reg, calls = self._reg(monkeypatch, db_url="postgresql://u:p@kb-db.aweoriujwoedf.svc:5432/kb")
         assert self._exec(reg, "aweoriujwoedf", "kb-db-0", policy=ADMIN)["refused"] is True
@@ -227,6 +252,19 @@ class TestExecPodRefusesTheDatastore:
         reg, calls = self._reg(monkeypatch, db_url="postgresql://u:p@kb-db:5432/kb", own_ns="aweoriujwoedf")
         assert self._exec(reg, "aweoriujwoedf", "kb-db-0")["refused"] is True
         assert self._exec(reg, "joeblowxxxx", "kb-db-0")["success"] is True
+
+    def test_an_omitted_namespace_resolves_the_way_kubectl_would(self, monkeypatch):
+        # kubectl exec with no -n uses the context's default namespace, which
+        # in-cluster is the agent's own. Treating "" as a wildcard refused the
+        # pod name in every namespace, including ones it could never reach.
+        reg, calls = self._reg(monkeypatch,
+                               db_url="postgresql://u:p@kb-db.aweoriujwoedf.svc:5432/kb",
+                               own_ns="joeblowxxxx")
+        assert self._exec(reg, "", "kb-db-0")["success"] is True
+        reg2, _ = self._reg(monkeypatch,
+                            db_url="postgresql://u:p@kb-db.aweoriujwoedf.svc:5432/kb",
+                            own_ns="aweoriujwoedf")
+        assert self._exec(reg2, "", "kb-db-0")["refused"] is True
 
     def test_a_bare_service_name_with_no_namespace_known_is_protected_everywhere(self, monkeypatch):
         reg, calls = self._reg(monkeypatch, db_url="postgresql://u:p@kb-db:5432/kb")
@@ -254,6 +292,32 @@ class TestExecPodRefusesTheDatastore:
         out = self._exec(reg, "aweoriujwoedf", "tsdb-0")
         assert out["refused"] is True and "TimescaleDB" in out["error"]
 
+    def test_a_two_label_host_is_cluster_dns_when_that_namespace_exists(self, monkeypatch):
+        reg, calls = self._reg(monkeypatch, db_url="postgresql://u:p@kb-db.aweoriujwoedf:5432/kb")
+        assert self._exec(reg, "aweoriujwoedf", "kb-db-0")["refused"] is True
+        assert self._exec(reg, "joeblowxxxx", "kb-db-0")["success"] is True
+
+    def test_a_two_label_lan_name_is_not_cluster_dns(self, monkeypatch):
+        # `timescale.local` parses exactly like `svc.ns`, and treating it as one
+        # protected a fictional `local` namespace while leaving the real pod
+        # open. Only the cluster can tell them apart.
+        reg, calls = self._reg(monkeypatch, ts_host="timescale.local")
+        assert self._exec(reg, "local", "timescale-0")["success"] is True
+        assert self._exec(reg, "aweoriujwoedf", "timescale-0")["success"] is True
+
+    def test_the_namespace_lookup_is_cached(self, monkeypatch):
+        reg, _ = self._reg(monkeypatch, db_url="postgresql://u:p@kb-db.aweoriujwoedf:5432/kb")
+        for _ in range(4):
+            self._exec(reg, "aweoriujwoedf", "kb-db-0")
+        assert len(self.ns_calls) == 1, "the namespace list is re-fetched on every exec"
+
+    def test_an_unanswerable_namespace_lookup_keeps_the_target(self, monkeypatch):
+        # Fail closed: an unnecessary refusal is recoverable, a datastore left
+        # open is the hole this exists to close.
+        reg, calls = self._reg(monkeypatch, db_url="postgresql://u:p@kb-db.aweoriujwoedf:5432/kb",
+                               ns_fails=True)
+        assert self._exec(reg, "aweoriujwoedf", "kb-db-0")["refused"] is True
+
     def test_config_can_add_a_target_but_never_defines_the_default(self, monkeypatch):
         reg, calls = self._reg(monkeypatch, extra=["metrics-db.joeblowxxxx"])
         out = self._exec(reg, "joeblowxxxx", "metrics-db-0")
@@ -262,48 +326,102 @@ class TestExecPodRefusesTheDatastore:
 
 
 # --------------------------------------------------------------------------
-# CFOP-123 residual: the hand-off asks for approve / resolve / reject
+# a verification turn keeps ssh_execute, and classifies what it sends
 # --------------------------------------------------------------------------
 
-class TestApproveFromChat:
-    def _row(self, status="needs-human"):
-        return {"id": 7, "status": status, "claimed_at": None, "completed_at": None,
-                "payload": {}, "remediation_class": "k8s-action"}
+# The checks session 23 actually needed, verbatim from the agent log.
+VERIFY_READS = [
+    "mountpoint /mnt/router-share || df -h /mnt/router-share; systemctl status 'mnt-router\\x2dshare.mount'",
+    "journalctl -u 'mnt-router\\x2dshare.mount' -n 15",
+    "sudo dmesg | grep -i cifs | tail -n 10",
+    "nc -zv -w 2 192.168.0.1 21 22 80 139 445 8080 2>&1",
+    "grep -i router-share /etc/fstab || true",
+    "timeout 5 bash -c 'echo > /dev/tcp/192.168.0.1/445'",
+    "systemctl list-units --type=service --state=running --no-pager --no-legend",
+    "df -h /mnt/nas-backup /mnt/hdd-pictures",
+    "cat /etc/fstab",
+    "ps aux | grep cfoperator",
+    "iptables -L -n",
+    "mount -l | grep cifs",
+    "curl -s http://localhost:9100/metrics",
+    "git -C /home/x/homelab-infra log -1 --oneline",
+    "kubectl get pods -n data",
+]
 
-    def test_approved_queues_the_row_like_the_console(self):
-        op, reg = _registry()
-        op.kb.get_remediation.return_value = self._row()
-        op.kb.remediation_approve_conflict.return_value = None
-        op.kb.update_remediation_status.return_value = True
-        out = reg.execute("resolve_remediation", {"remediation_id": 7, "status": "approved"})
-        assert out["success"] is True
-        op.kb.update_remediation_status.assert_called_once_with(7, "queued")
+VERIFY_WRITES = [
+    ("sudo systemctl restart 'mnt-router\\x2dshare.mount'", "systemctl restart"),
+    ("grep router-share /etc/fstab; sudo systemctl restart x.mount", "systemctl restart"),
+    ("sudo sed -i '/mnt\\/router-share/d' /etc/fstab", "sed -i"),
+    ("echo x > /etc/fstab", "redirected"),
+    ("cat a >> /etc/fstab", "redirected"),
+    ("sudo systemctl daemon-reload", "systemctl daemon-reload"),
+    ("bash -c \"systemctl restart nginx\"", "systemctl restart"),
+    ("docker restart immich", "docker restart"),
+    ("rm -rf /tmp/x", "changes the filesystem"),
+    ("sudo -n reboot", "takes the host down"),
+    ("sudo umount /mnt/router-share", "unmounts"),
+    ("apt-get install -y jq", "installed packages"),
+    ("sudo tee /etc/fstab", "tee writes"),
+    ("kubectl exec kb-db-0 -n data -- psql", "changes cluster state"),
+    ("find /tmp -name x -delete", "changes files"),
+    ("curl -X POST http://x/admin", "writes or sends data"),
+    ("df -h; sudo systemctl stop nginx", "systemctl stop"),
+    ("systemctl restart x", "systemctl restart"),
+]
 
-    def test_the_consoles_approve_policy_applies(self):
-        op, reg = _registry()
-        op.kb.get_remediation.return_value = self._row()
-        op.kb.remediation_approve_conflict.return_value = "manual-class rows are human-only work"
-        out = reg.execute("resolve_remediation", {"remediation_id": 7, "status": "approved", "note": "go"})
-        assert "human-only" in out["error"]
-        op.kb.update_remediation_status.assert_not_called()
 
-    @pytest.mark.parametrize("status", ["claimed", "executing"])
-    def test_a_leased_row_cannot_be_approved(self, status):
-        op, reg = _registry()
-        op.kb.get_remediation.return_value = self._row(status)
-        out = reg.execute("resolve_remediation", {"remediation_id": 7, "status": "approved"})
-        assert "still running" in out["error"]
-        op.kb.update_remediation_status.assert_not_called()
+@pytest.mark.parametrize("command", VERIFY_READS)
+def test_the_classifier_lets_a_read_through(command):
+    assert ssh_mutation_reason(command) is None, command
 
-    def test_a_note_is_optional_to_approve_but_still_required_to_close(self):
-        op, reg = _registry()
-        op.kb.get_remediation.return_value = self._row()
-        assert "note is required" in reg.execute("resolve_remediation", {"remediation_id": 7})["error"]
-        assert "note is required" in reg.execute(
-            "resolve_remediation", {"remediation_id": 7, "status": "rejected"})["error"]
 
-    def test_the_schema_advertises_approved(self):
-        _, reg = _registry()
-        params = reg.tools["resolve_remediation"]["schema"]["parameters"]
-        assert params["properties"]["status"]["enum"] == ["resolved", "rejected", "approved"]
-        assert params["required"] == ["remediation_id"]
+@pytest.mark.parametrize("command, fragment", VERIFY_WRITES)
+def test_the_classifier_names_why_a_write_is_refused(command, fragment):
+    reason = ssh_mutation_reason(command)
+    assert reason and fragment in reason, (command, reason)
+
+
+def test_a_verification_turn_can_still_run_the_checks():
+    """Withholding ssh_execute outright left a verification pass unable to
+    verify — the sweep's own checks are ssh one-liners. The tool stays; the
+    command is classified."""
+    _, reg = _registry()
+    assert "ssh_execute" in _names(reg.get_schemas(policy=VERIFY))
+    ran = []
+    reg.tools["ssh_execute"]["function"] = lambda **kw: ran.append(kw) or {"stdout": "active"}
+    out = reg.execute("ssh_execute", {"host": "box1", "command": "systemctl status x"}, policy=VERIFY)
+    assert out == {"stdout": "active"} and len(ran) == 1
+
+
+def test_a_verification_turn_refuses_a_command_that_writes():
+    _, reg = _registry()
+    ran = []
+    reg.tools["ssh_execute"]["function"] = lambda **kw: ran.append(kw) or {"stdout": ""}
+    out = reg.execute("ssh_execute", {"host": "box1", "command": "sudo systemctl restart x"},
+                      policy=VERIFY)
+    assert out["refused"] is True and "systemctl restart" in out["error"]
+    assert ran == []
+
+
+def test_the_other_ssh_writers_are_still_withheld_on_a_verification_turn():
+    # Only the command-gated tool comes back; restart_service has no read form.
+    _, reg = _registry()
+    offered = _names(reg.get_schemas(policy=VERIFY))
+    assert "ssh_execute" in offered
+    for name in ("ssh_restart_service", "ssh_docker_restart", "k8s_exec_pod",
+                 "k8s_rollout_restart", "resolve_remediation", "store_learning"):
+        assert name not in offered
+
+
+def test_a_member_never_gets_ssh_execute_even_to_verify():
+    """The role gate is stricter than the turn's purpose and is not softened
+    by it: command-gating is for an admin verifying, not for a member."""
+    _, reg = _registry()
+    member_verify = ToolPolicy(actor_role="member", verify_only=True)
+    assert "ssh_execute" not in _names(reg.get_schemas(policy=member_verify))
+    ran = []
+    reg.tools["ssh_execute"]["function"] = lambda **kw: ran.append(kw)
+    out = reg.execute("ssh_execute", {"host": "box1", "command": "systemctl status x"},
+                      policy=member_verify)
+    assert out["refused"] is True and "needs an admin" in out["error"]
+    assert ran == []

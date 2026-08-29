@@ -255,3 +255,55 @@ class TestMorningSummaryGuard:
         out = reg.execute("update_sweep_finding", {
             "report_id": 1570, "finding_id": "abc", "status": "resolved"})
         assert out["success"] is True
+
+
+class TestApproveFromChat:
+    """CFOP-124: the hand-off question asks for "approved, resolved or
+    rejected" and the tool could only do two of the three. 'approved' is the
+    chat twin of POST /api/remediations/<id>/approve."""
+
+    def _row(self, status="needs-human"):
+        return {"id": 7, "status": status, "claimed_at": None, "completed_at": None,
+                "payload": {}, "remediation_class": "k8s-action"}
+
+    def test_approved_queues_the_row_like_the_console(self):
+        op, reg = _registry()
+        op.kb.get_remediation.return_value = self._row()
+        op.kb.remediation_approve_conflict.return_value = None
+        op.kb.update_remediation_status.return_value = True
+        out = reg.execute("resolve_remediation", {"remediation_id": 7, "status": "approved"})
+        assert out["success"] is True
+        op.kb.update_remediation_status.assert_called_once_with(7, "queued")
+
+    def test_the_consoles_approve_policy_applies(self):
+        # manual-class and PR-already-open are refused by the same policy the
+        # route uses, so chat cannot walk around the wall the API puts up.
+        op, reg = _registry()
+        op.kb.get_remediation.return_value = self._row()
+        op.kb.remediation_approve_conflict.return_value = "manual-class rows are human-only work"
+        out = reg.execute("resolve_remediation", {"remediation_id": 7, "status": "approved", "note": "go"})
+        assert "human-only" in out["error"]
+        op.kb.update_remediation_status.assert_not_called()
+
+    @pytest.mark.parametrize("status", ["claimed", "executing"])
+    def test_a_leased_row_cannot_be_approved(self, status):
+        op, reg = _registry()
+        op.kb.get_remediation.return_value = self._row(status)
+        out = reg.execute("resolve_remediation", {"remediation_id": 7, "status": "approved"})
+        assert "still running" in out["error"]
+        op.kb.update_remediation_status.assert_not_called()
+
+    def test_a_note_is_optional_to_approve_but_still_required_to_close(self):
+        # The approve route stores no note and the executor's result overwrites
+        # the row; resolve/reject keep the note as the only record of why.
+        op, reg = _registry()
+        op.kb.get_remediation.return_value = self._row()
+        assert "note is required" in reg.execute("resolve_remediation", {"remediation_id": 7})["error"]
+        assert "note is required" in reg.execute(
+            "resolve_remediation", {"remediation_id": 7, "status": "rejected"})["error"]
+
+    def test_the_schema_advertises_approved(self):
+        _, reg = _registry()
+        params = reg.tools["resolve_remediation"]["schema"]["parameters"]
+        assert params["properties"]["status"]["enum"] == ["resolved", "rejected", "approved"]
+        assert params["required"] == ["remediation_id"]

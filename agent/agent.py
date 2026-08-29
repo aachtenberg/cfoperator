@@ -8132,9 +8132,11 @@ Only return the JSON array, no other text."""
         # for a capability it never had this turn, and the store_learning
         # instruction below is dropped when that tool is not on offer.
         if tool_policy is not None and tool_policy.verify_only:
-            policy_block = ("\nThis turn is a verification pass: run read-only checks and report what "
-                            "you found and what should happen next. Tools that change the system "
-                            "are withheld; an operator applies changes from the console.\n")
+            policy_block = ("\nThis turn is a verification pass: run the checks yourself and report what "
+                            "you found and what should happen next. Tools that change the system are "
+                            "withheld, and ssh_execute accepts read-only commands only — a command "
+                            "that restarts, edits or installs is refused, so send the one that "
+                            "observes the state instead. An operator applies changes from the console.\n")
         elif tool_policy is not None and not tool_policy.allows_mutation():
             policy_block = ("\nThe person asking is a member: tools that change the system are "
                             "withheld. When a change is needed, say exactly what you would run "

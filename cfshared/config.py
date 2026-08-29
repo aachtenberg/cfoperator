@@ -72,6 +72,13 @@ SCOPE_INVESTIGATE = "investigate"
 SCOPE_REMEDIATE = "remediate"
 SCOPES = (SCOPE_READ, SCOPE_INVESTIGATE, SCOPE_REMEDIATE)
 
+# The two console roles, restated from auth/models.py for the same reason:
+# tools/ is imported wherever cfshared is, with nothing heavier on the path.
+# The same agreement test pins these copies.
+ROLE_ADMIN = "admin"
+ROLE_MEMBER = "member"
+ROLES = (ROLE_ADMIN, ROLE_MEMBER)
+
 _SCOPE_IMPLIES = {
     SCOPE_READ: (SCOPE_READ,),
     SCOPE_INVESTIGATE: (SCOPE_INVESTIGATE, SCOPE_READ),

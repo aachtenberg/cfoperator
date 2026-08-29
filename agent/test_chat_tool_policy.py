@@ -174,7 +174,12 @@ def test_a_verification_prompt_says_so():
     text = _real_operator()._build_chat_system_context(
         tool_policy=ToolPolicy(actor_role='admin', verify_only=True))
     assert 'verification pass' in text
-    assert '- ssh_execute' not in text and '- k8s_get_pods' in text
+    assert '- k8s_get_pods' in text
+    # ssh_execute stays (the checks a hand-off asks for are ssh one-liners) but
+    # the prompt has to say what it will and will not accept, or the model
+    # spends a round discovering the refusal.
+    assert '- ssh_execute' in text and 'read-only commands only' in text
+    assert '- ssh_restart_service' not in text and '- store_learning' not in text
 
 
 def test_an_internal_prompt_is_unchanged():

@@ -25,7 +25,7 @@ import requests
 
 from cfshared import repos as shared_repos
 from cfshared.version import build_version
-from web_auth import ROLE_ADMIN, ROLE_MEMBER, install_auth, require_role, require_token_scope
+from web_auth import ROLE_ADMIN, install_auth, require_role, require_token_scope
 from auth.bootstrap import init_auth_store
 from auth.models import (
     EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
