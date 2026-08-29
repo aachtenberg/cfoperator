@@ -681,6 +681,18 @@
             font-size: 10px;
         }
 
+        /* A provider rotation inside one chat (CFOP-112): the chip's choice
+           was skipped, or a rung failed mid-loop and the next one took over. */
+        .tool-fallback {
+            color: var(--text-muted);
+            font-size: 11px;
+            padding: 4px 8px;
+            margin: 4px 0;
+            border-left: 2px solid var(--accent);
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
         .tool-card .tc-summary {
             color: var(--text-muted);
             font-size: 11px;
@@ -1498,12 +1510,31 @@
                         msgEl.querySelector('.message-bubble').appendChild(fbDiv);
                     }
                 }
+            } else if (type === 'fallback') {
+                addFallbackNote(data.from, data.to, data.reason);
             } else if (type === 'error') {
                 document.getElementById('thinking').classList.remove('active');
                 setChatInFlight(null);
                 currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                 addMessage('agent', `Error: ${data.error}`, 'error', 'none');
             }
+        }
+
+        // The server already emitted 'fallback' whenever it rotated providers
+        // inside a chat; nothing rendered it, so the reply arrived labelled
+        // gemma4 while the chip still said Gemini and the minute in between
+        // was a bare spinner (CFOP-112). One line in the tool log, as soon
+        // as the rotation happens.
+        function addFallbackNote(from, to, reason) {
+            const log = getOrCreateToolLog();
+            const body = log.querySelector('.tool-log-body');
+            const line = document.createElement('div');
+            line.className = 'tool-fallback';
+            line.textContent = `fallback: ${from || '?'} \u2192 ${to || '?'}`
+                + (reason ? ` \u2014 ${reason}` : '');
+            body.appendChild(line);
+            const container = document.getElementById('chat-container');
+            container.scrollTop = container.scrollHeight;
         }
 
         // Escapes quotes as well as angle brackets — textContent alone leaves

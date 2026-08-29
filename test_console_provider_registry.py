@@ -153,3 +153,40 @@ def test_ask_sre_backend_docs_name_every_registered_provider():
         text = (ROOT / rel).read_text(encoding="utf-8")
         for backend in OPENAI_COMPAT_PROVIDERS:
             assert backend in text, f"{rel} does not name backend {backend!r}"
+
+
+def test_namespaced_listing_ids_are_stripped_on_list_select_and_read(server, monkeypatch):
+    """CFOP-112: Google lists ``models/gemini-…``; the switcher persisted it verbatim.
+
+    Guards the class through the registry: any provider that declares a
+    ``model_id_prefix`` is listed bare, persists bare, and a selection stored
+    before the strip still reads back bare — so the chip, the judge floor and
+    the docs name the same id, and the live selection keeps working.
+    """
+    import web_server
+
+    prefixed = [(b, cfg) for b, cfg in OPENAI_COMPAT_PROVIDERS.items() if cfg.get("model_id_prefix")]
+    assert prefixed, "the guard needs a namespaced provider in the registry (gemini today)"
+    for backend, cfg in prefixed:
+        prefix = cfg["model_id_prefix"]
+        monkeypatch.setenv(cfg["key_env"], "k")
+        # Stored before this change, with the prefix on.
+        server.settings[f"{backend}_selected_model"] = f"{prefix}stored-model"
+
+        def fake_get(url, headers=None, timeout=None):
+            resp = MagicMock()
+            resp.json.return_value = {"data": [{"id": f"{prefix}b-model"}, {"id": "a-model"}]}
+            return resp
+
+        monkeypatch.setattr(web_server.requests, "get", fake_get)
+        c = server.app.test_client()
+
+        resp = c.get(f"/api/models/{backend}")
+        assert resp.status_code == 200, (backend, resp.get_json())
+        assert resp.get_json() == {"models": ["a-model", "b-model"], "selected": "stored-model"}
+
+        resp = c.post(f"/api/models/{backend}/select", json={"model": f"{prefix}picked"})
+        assert resp.status_code == 200, (backend, resp.get_json())
+        assert server.settings[f"{backend}_selected_model"] == "picked"
+
+        assert c.get("/api/settings/provider").get_json() == {"backend": backend, "model": "picked"}

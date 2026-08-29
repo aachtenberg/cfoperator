@@ -80,3 +80,21 @@ def test_admin_wires_triage_model_setting():
     assert "require_role(ROLE_ADMIN)" in preceding, (
         "POST /api/settings/triage_model lost its ROLE_ADMIN gate"
     )
+
+
+def test_console_renders_provider_fallback_events():
+    """CFOP-112: a provider rotation inside a chat is shown, not swallowed.
+
+    The server already emitted ``fallback`` when a rung failed mid-loop, and
+    now also when the chip's selection is skipped (no key, no model); the
+    console ignored the event, so the reply arrived labelled gemma4 under a
+    chip that said Gemini with a bare spinner in between.
+    """
+    html = INDEX.read_text(encoding="utf-8")
+    start = html.index("function handleChatEvent(evt)")
+    end = html.index("function escapeHtml(text)", start)
+    body = html[start:end]
+    assert "type === 'fallback'" in body
+    assert "addFallbackNote(data.from, data.to, data.reason)" in body
+    assert "function addFallbackNote(from, to, reason)" in html
+    assert ".tool-fallback" in html

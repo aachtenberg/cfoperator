@@ -963,6 +963,22 @@ OPENAI_COMPAT_PROVIDERS = {
         'label': 'Google Gemini',
         'base_url': 'https://generativelanguage.googleapis.com/v1beta/openai',
         'key_env': 'GEMINI_API_KEY',
+        # Google's /models listing namespaces ids ("models/gemini-3.6-flash")
+        # and its chat surface accepts either spelling, so the prefix used to
+        # survive list -> select -> chat while the judge floor and every doc
+        # say the bare id. normalize_model_id() strips it on list, persist
+        # and resolve, so a stored namespaced id keeps working (CFOP-112).
+        'model_id_prefix': 'models/',
+        # Gemini 3.x thinks before answering and thinking cannot be switched
+        # off on Pro. request_params go on every chat/completions request
+        # this provider gets; tool_loop_max_tokens replaces the tool loop's
+        # 4096 only — on this surface max_tokens bounds thinking AND output
+        # together, so a Pro spent the whole 4096 thinking and hit the 120 s
+        # read timeout with nothing to show (CFOP-112). The json_object
+        # extraction sites keep their own 2048 cap. 16384 is a quarter of
+        # the 65536 output cap.
+        'request_params': {'reasoning_effort': 'low'},
+        'tool_loop_max_tokens': 16384,
     },
     # DeepSeek serves the OpenAI wire under /v1 (the Groq/xAI shape, not the
     # Gemini no-/v1 shape), so it is one more registry row and no new branch.
@@ -979,6 +995,50 @@ OPENAI_COMPAT_PROVIDERS = {
         'default_model': 'deepseek-v4-pro',
     },
 }
+
+
+def normalize_model_id(provider_type: str, model_id) -> str:
+    """The bare model id for ``provider_type`` — the registry's namespace prefix off.
+
+    Driven by the registry's ``model_id_prefix`` so a future provider with
+    namespaced ids gets the same treatment without a branch of its own
+    (CFOP-104's rule: derive, do not copy). Providers without a prefix get
+    the id back untouched beyond whitespace.
+    """
+    model = str(model_id or '').strip()
+    prefix = OPENAI_COMPAT_PROVIDERS.get(provider_type, {}).get('model_id_prefix')
+    if prefix and model.startswith(prefix):
+        model = model[len(prefix):]
+    return model
+
+
+def _is_transport_failure(error: Exception) -> bool:
+    """The provider was not reached, could not serve, or said "not now".
+
+    Timeouts, connection failures, 5xx, and the two 4xx that mean the same
+    thing — 408 (request timeout) and 429 (quota: try later, try elsewhere).
+    A 400/401/403/404 is the provider's answer to this request and is not
+    this: the next rung would be sent the same shape."""
+    import requests
+    if isinstance(error, (requests.Timeout, requests.ConnectionError)):
+        return True
+    if isinstance(error, requests.HTTPError):
+        status = getattr(getattr(error, 'response', None), 'status_code', None)
+        try:
+            status = int(status)
+        except (TypeError, ValueError):
+            return False
+        return status in (408, 429) or status >= 500
+    return False
+
+
+def _tool_was_refused(result) -> bool:
+    """True when the registry declined to run the tool at all (CFOP-124's
+    ``refused`` result for a member or a verify-only turn). Nothing executed,
+    so nothing can be replayed by a provider fallback. A tool that ran and
+    reported an error is NOT this — a failed ssh command still ran."""
+    return bool(isinstance(result, dict) and result.get('refused'))
+
 
 # Sent once when a model ends the tool loop with an empty message (no tool
 # calls, no text). gemma4:26b does this on virtually every healthy-cluster
@@ -1020,6 +1080,12 @@ class _ToolLoopStats:
     # prose and is offered to the executor, which opens a second one
     # (CFOP-116, row #85).
     opened_prs: List[str] = field(default_factory=list)
+    # Set once a tool the registry marks ``mutating`` has actually executed
+    # in this loop (a refused call does not count). A mid-loop transport
+    # failure then returns error text instead of propagating: the fallback
+    # chain restarts the next provider from the caller's messages, and
+    # replaying the conversation would run it again.
+    mutating_ran: bool = False
 
     def result(self, response: str) -> Dict[str, Any]:
         return {
@@ -5440,6 +5506,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     'max_tokens': 2048,
                     'response_format': {'type': 'json_object'}
                 }
+                payload.update(self._openai_compat_request_params(provider_type))
                 resp = req.post(
                     endpoint,
                     json=payload,
@@ -6208,6 +6275,7 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                     'max_tokens': 2048,
                     'response_format': {'type': 'json_object'}
                 }
+                payload.update(self._openai_compat_request_params(provider_type))
                 headers = {
                     'Content-Type': 'application/json',
                     'Authorization': f'Bearer {api_key}'
@@ -7290,6 +7358,29 @@ Only return the JSON array, no other text."""
             return json.loads(raw_args) if raw_args.strip() else {}
         return raw_args if raw_args else {}
 
+    def _tool_is_mutating(self, tool_name: str) -> bool:
+        """True when the registry marks ``tool_name`` as mutating.
+
+        Asks ``ToolRegistry.is_mutating`` (CFOP-124), which is the one reader
+        of the one home the marker has: inside the tool's own schema, where
+        ``_check_marker_placement`` raises at registration if it is put
+        anywhere else. The schema fallback is for registry doubles that
+        predate the probe; it reads the same place, never an entry-level key,
+        which the live registry rejects outright.
+        """
+        registry = self.tools
+        probe = getattr(registry, 'is_mutating', None)
+        if callable(probe):
+            try:
+                return bool(probe(tool_name))
+            except Exception:
+                return False
+        entries = getattr(registry, 'tools', None)
+        entry = entries.get(tool_name) if isinstance(entries, dict) else None
+        if not isinstance(entry, dict):
+            return False
+        return bool((entry.get('schema') or {}).get('mutating'))
+
     def _dispatch_tool_call(self, tool_name: str, tool_args: dict, *,
                             stats: '_ToolLoopStats', tool_cache: dict,
                             max_result_chars: int, iteration: int,
@@ -7324,6 +7415,10 @@ Only return the JSON array, no other text."""
             logger.info(f"Tool result reused from cache: {tool_name}")
         else:
             logger.info(f"Executing tool: {tool_name}")
+            # "Ran", not "was asked for": a refusal executed nothing, so a
+            # later transport failure may still rotate the chain.
+            if self._tool_is_mutating(tool_name) and not _tool_was_refused(result):
+                stats.mutating_ran = True
 
         if tool_name == 'find_learnings' and isinstance(result, list):
             stats.learning_ids.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
@@ -7391,6 +7486,88 @@ Only return the JSON array, no other text."""
             return None, None
         return os.getenv(cfg['key_env'], ''), cfg['base_url'].rstrip('/') + '/chat/completions'
 
+    @staticmethod
+    def _openai_compat_request_params(provider_type: str) -> Dict[str, Any]:
+        """Per-provider chat/completions parameters from the registry, or {}.
+
+        Applied with ``payload.update`` at every compat request site, so a
+        provider-specific need (Gemini's thinking budget, CFOP-112) is one
+        registry row rather than a branch per call site. Providers that
+        declare nothing send exactly what they sent before.
+        """
+        params = OPENAI_COMPAT_PROVIDERS.get(provider_type, {}).get('request_params') or {}
+        return dict(params)
+
+    @staticmethod
+    def _openai_compat_tool_loop_params(provider_type: str) -> Dict[str, Any]:
+        """The tool loop's parameters: request_params plus the provider's
+        ``tool_loop_max_tokens`` when it declares one.
+
+        Only the loop (and its iteration-limit summary) takes the raised
+        budget — that is where thinking shares max_tokens with a long,
+        tool-driven answer. The short json_object extraction sites keep
+        their own cap and get request_params alone.
+        """
+        params = CFOperator._openai_compat_request_params(provider_type)
+        budget = OPENAI_COMPAT_PROVIDERS.get(provider_type, {}).get('tool_loop_max_tokens')
+        if budget:
+            params['max_tokens'] = int(budget)
+        return params
+
+    def _configured_model_for(self, backend: str) -> str:
+        """Model for a hosted backend, normalised; '' when nothing names one.
+
+        Console selection -> ``llm.fallback`` entry -> registry
+        ``default_model``. Shared by _resolve_provider and the reason text
+        the console shows when the selection is skipped, so the two cannot
+        disagree about what is configured.
+        """
+        model = self.kb.get_setting(f'{backend}_selected_model', '')
+        if not model:
+            for fb in self.config.get('llm', {}).get('fallback', []):
+                if fb.get('provider') == backend:
+                    model = fb.get('model', '')
+                    break
+        if not model:
+            model = OPENAI_COMPAT_PROVIDERS.get(backend, {}).get('default_model', '')
+        return normalize_model_id(backend, model)
+
+    def _provider_unusable_reason(self, backend: str) -> Optional[str]:
+        """Why a hosted backend cannot be called right now, or None if it can."""
+        cfg = OPENAI_COMPAT_PROVIDERS.get(backend)
+        key_env = cfg['key_env'] if cfg else ('ANTHROPIC_API_KEY' if backend == 'anthropic' else None)
+        if not key_env:
+            return None
+        if not os.getenv(key_env):
+            return f"{key_env} not set"
+        if not self._configured_model_for(backend):
+            return "no model selected (pick one in Admin → LLM, or name one in llm.fallback)"
+        return None
+
+    def _skipped_selection(self, backend: str, head) -> Optional[Tuple[str, str]]:
+        """(label, reason) when the chain head is not the backend that was selected.
+
+        ``backend`` is the caller's ask; 'auto' means the console chip's
+        ``selected_backend``. The head differs only when that selection did
+        not resolve (no key, or no model — CFOP-112), and the chat should say
+        so up front instead of answering from the next rung while the chip
+        still names the first.
+        """
+        # Best-effort throughout: an announcement must never be what fails
+        # the chat, so a KB that is down (or absent, in tests) reads as
+        # "nothing selected".
+        try:
+            selected = backend
+            if selected == 'auto':
+                selected = self.kb.get_setting('selected_backend', '') or ''
+            if not selected or selected == 'auto' or selected == head[0]:
+                return None
+            reason = self._provider_unusable_reason(selected) or 'not resolvable'
+        except Exception as e:
+            logger.debug(f"[FALLBACK] could not compare the selection to the chain head: {e}")
+            return None
+        return (f"{selected}/(not callable)", reason)
+
     def _get_provider_chain(self, backend: str = 'auto', model: str = None) -> List[Tuple[str, str, str]]:
         """
         Get ordered list of providers to try for fallback.
@@ -7407,8 +7584,17 @@ Only return the JSON array, no other text."""
         """
         providers = []
 
-        # First, add the selected/resolved provider
+        # First, add the selected/resolved provider — if it can be called.
+        # The key check below used to apply to the fallback rungs only, so a
+        # selected backend with no key headed the chain and failed on its
+        # first request; a selection with no model is now None from the
+        # resolver, and a selection with no key is dropped here for the same
+        # reason (CFOP-112). Both are announced by _chat_with_tools_with_fallback.
         primary = self._resolve_provider(backend, model)
+        unusable = self._provider_unusable_reason(primary[0]) if primary else None
+        if unusable:
+            logger.debug(f"[PROVIDER] {primary[0]}: {unusable} — skipped")
+            primary = None
         if primary:
             providers.append(primary)
 
@@ -7509,21 +7695,26 @@ Only return the JSON array, no other text."""
             return (provider_type, url, model)
         elif backend in ('anthropic', *OPENAI_COMPAT_PROVIDERS):
             url = None
+            if model:
+                model = normalize_model_id(backend, model)
+            else:
+                # Console selection -> llm.fallback -> registry default.
+                model = self._configured_model_for(backend)
             if not model:
-                # Check DB for user's model selection, fall back to config
-                db_model = self.kb.get_setting(f'{backend}_selected_model', '')
-                if db_model:
-                    model = db_model
-                else:
-                    for fb in llm_config.get('fallback', []):
-                        if fb.get('provider') == backend:
-                            model = fb.get('model', '')
-                            break
-                if not model:
-                    # Registry default, when the provider declares one. Without
-                    # it a key-only provider resolves to model='' and the
-                    # request fails at the vendor instead of here.
-                    model = OPENAI_COMPAT_PROVIDERS.get(backend, {}).get('default_model', '')
+                # Not callable — the same answer as a missing key. Before this
+                # the tuple went out as ('gemini', None, '') and Google
+                # answered 400 on every chat until someone picked a model
+                # (CFOP-112). None rather than raise: the sweep, summary and
+                # classifier paths share this resolver and must stay on the
+                # fallback chain when the chip points at an unconfigured
+                # provider. The registry deliberately gives Gemini no
+                # default_model (#199/#201), so this is the honest outcome.
+                # DEBUG, not WARNING: _get_provider_chain resolves every
+                # fallback rung through here, and unconfigured rungs are the
+                # normal case. The selected backend's skip is announced once,
+                # with its reason, by _chat_with_tools_with_fallback.
+                logger.debug(f"[PROVIDER] {backend}: no model selected — not callable")
+                return None
             logger.debug(f"Resolved provider: {provider_type}/{model}")
             return (provider_type, url, model)
         else:
@@ -7563,6 +7754,21 @@ Only return the JSON array, no other text."""
         provider_chain = self._get_provider_chain(backend, model)
         if not provider_chain:
             raise RuntimeError("No LLM providers available")
+
+        # The selected backend may be absent from the chain head — no key, or
+        # no model picked (CFOP-112). Say so on the same event the mid-chain
+        # failovers use, before the first request, instead of answering from
+        # whatever came next while the console chip still names the first.
+        skipped = self._skipped_selection(backend, provider_chain[0])
+        if skipped:
+            logger.warning(f"[FALLBACK] Selected {skipped[0]} skipped: {skipped[1]}; "
+                           f"starting at {provider_chain[0][0]}/{provider_chain[0][2]}")
+            if event_callback:
+                event_callback('fallback', {
+                    'from': skipped[0],
+                    'to': f"{provider_chain[0][0]}/{provider_chain[0][2]}",
+                    'reason': skipped[1],
+                })
 
         last_error = None
         prev_provider = None
@@ -7807,6 +8013,7 @@ Only return the JSON array, no other text."""
                         'temperature': 0.7,
                         'max_tokens': 4096
                     }
+                    payload.update(self._openai_compat_tool_loop_params(provider_type))
                     if offered_tools:
                         payload['tools'] = offered_tools
                     headers = {
@@ -7978,7 +8185,18 @@ Only return the JSON array, no other text."""
                 if iteration == 0:
                     # First failure, raise immediately
                     raise
-                # Subsequent failure during tool loop, return what we have
+                if _is_transport_failure(e) and not stats.mutating_ran:
+                    # The provider went away mid-loop (read timeout, connection
+                    # reset, 5xx). Returning error text here is how a Gemini
+                    # Pro's 120 s think on iteration 1 became the console's
+                    # answer with no fallback (CFOP-112). Propagate so
+                    # _chat_with_tools_with_fallback rotates. It restarts the
+                    # next provider from the caller's messages — the partial
+                    # loop is discarded and tools re-run — which is why this
+                    # is withheld once a mutating tool has executed here.
+                    raise
+                # A refusal (4xx) or a parse failure is this provider's answer
+                # to this request; report it rather than re-run it elsewhere.
                 return stats.result(f"Error during tool execution: {str(e)}")
 
         # Hit max iterations — do one final no-tools call to get a summary.
@@ -8036,6 +8254,7 @@ Only return the JSON array, no other text."""
                     'temperature': 0.7,
                     'max_tokens': 4096
                 }
+                payload.update(self._openai_compat_tool_loop_params(provider_type))
                 headers = {
                     'Content-Type': 'application/json',
                     'Authorization': f'Bearer {api_key}'
