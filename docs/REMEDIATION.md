@@ -296,8 +296,12 @@ still escalates the queue row. For evidence-grade approval, deploy the
 **changerecord** microservice (`changerecord/`) and point the agent at it with
 `CFOP_EXEC_CHANGE_URL` (also under `remediation.executor.node_action.change_record.url`).
 
-When the URL is **unset** (homelab default), behavior is unchanged: console
-escalation → drain → executor SSH. No change-record HTTP at all.
+When the URL is **unset**, a `node-action` is **refused**: the row is parked at
+`needs-human` naming the setting to configure, and nothing is spawned (CFOP-131).
+The record is the only thing between an approved row and shell on a host, and an
+unset URL used to be indistinguishable from an approval. Other classes are
+unaffected — `gitops-patch` keeps its own human gate, the PR merge, and drains
+normally with no recorder configured.
 
 When the URL is **set**:
 

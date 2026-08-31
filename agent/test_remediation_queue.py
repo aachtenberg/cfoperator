@@ -48,9 +48,15 @@ def _fake_op(*, drain=False, reap=False, max_per_tick=3):
     op.config = {"remediation": {
         "queue_drain": drain, "queue_reap": reap, "max_drain_per_tick": max_per_tick,
     }}
-    # Unset change-record URL → prepare is a no-op pass-through (homelab default).
+    # Unset change-record URL — the unconfigured default. The gate is wired
+    # REAL, not stubbed to pass-through: a `lambda work: work` here would model
+    # the pre-CFOP-131 contract, so every drain test would quietly assert that
+    # an unconfigured recorder lets a node-action spawn. With the real method,
+    # non-node-action rows pass through (what these tests actually exercise)
+    # and a node-action is refused, which is the point.
     op._change_record_url = lambda: ""
-    op._prepare_node_action_change_record = lambda work: work
+    op._prepare_node_action_change_record = (
+        lambda work: CFOperator._prepare_node_action_change_record(op, work))
     # CFOP-71: no outstanding PRs by default, so drain tests exercise draining.
     # A bare MagicMock is not comparable to the int cap and would TypeError.
     op._open_remediation_pr_count = lambda: 0
@@ -117,7 +123,6 @@ def test_drain_spawn_failure_fails_the_claim():
     op = _fake_op(drain=True, max_per_tick=1)
     op.kb.claim_next_remediation.return_value = {
         "id": 7, "remediation_class": "gitops-patch", "risk": "low"}
-    op._prepare_node_action_change_record = lambda work: work
     op._spawn_remediation_executor.side_effect = RuntimeError("boom")
     assert CFOperator._drain_remediation_queue(op) == 0
     op.kb.fail_remediation.assert_called_once()
@@ -307,8 +312,18 @@ def test_approved_change_record_spawns_with_ref():
     assert spawned_work["approved_plan"]["commands"] == _PLAN["commands"]
 
 
-def test_unset_change_url_node_action_spawns_without_gate():
-    """Unset URL → console-escalation path unchanged (no open/approval HTTP)."""
+def test_unset_change_url_node_action_refuses_without_calling_the_recorder():
+    """Unset URL → refuse, and attempt no recorder HTTP on the way out.
+
+    REVERSED by CFOP-131. This test previously asserted ``spawned == 1``
+    under the name ``..._spawns_without_gate``, with the rationale "console-
+    escalation path unchanged (no open/approval HTTP)". That was written
+    alongside CFOP-80 to prove the new gate did not disturb installs with no
+    recorder — and it is precisely the hole: an unset URL was
+    indistinguishable from an approval, so an approved node-action spawned
+    and ran over SSH with no record. The no-HTTP half of the original intent
+    is still right and is kept: refusing must not call open() or approval().
+    """
     op = _fake_op(drain=True, max_per_tick=1)
     op._change_record_url = lambda: ""
     op._prepare_node_action_change_record = (
@@ -316,14 +331,14 @@ def test_unset_change_url_node_action_spawns_without_gate():
     )
     work = {"id": 12, "remediation_class": "node-action", "risk": "med",
             "payload": {"recommendation": "fix"}}
-    op.kb.claim_next_remediation.return_value = work
+    op.kb.claim_next_remediation.side_effect = [work, None]
     with patch.object(agent_mod, "change_record_open") as opened, \
          patch.object(agent_mod, "change_record_approval") as approved:
         spawned = CFOperator._drain_remediation_queue(op)
-    assert spawned == 1
+    assert spawned == 0
     opened.assert_not_called()
     approved.assert_not_called()
-    op._spawn_remediation_executor.assert_called_once()
+    op._spawn_remediation_executor.assert_not_called()
 
 
 def test_awaiting_approval_does_not_starve_later_rows():
@@ -3405,3 +3420,112 @@ def test_summary_title_matching_cannot_invent_a_node():
         op, _summary_with_host("").replace("raspberrypi5", "some-vendor-appliance"), []) == 1
     kw = op.kb.queue_remediation.call_args.kwargs
     assert kw["dedupe_key"].startswith("summary-")
+
+
+# ---- CFOP-131: an unconfigured change recorder refuses, never passes through -
+
+
+def _unconfigured_gate_op(work):
+    """Drain op with node-action enabled and NO change-recorder URL.
+
+    The shape a real deploy has today: the recorder service merged (CFOP-80)
+    but nothing wires its URL, so _change_record_url() returns ''.
+    """
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.config["remediation"]["executor"] = {
+        "node_action": {"enabled": True, "host": "controller"},
+    }
+    op._change_record_url = lambda: ""
+    op._executor_config = lambda: op.config["remediation"]["executor"]
+    op._generate_node_action_plan = lambda w: dict(_PLAN)
+    op._prepare_node_action_change_record = (
+        lambda w: CFOperator._prepare_node_action_change_record(op, w)
+    )
+    op.kb.claim_next_remediation.side_effect = [work, None]
+    return op
+
+
+def test_node_action_without_a_recorder_never_reaches_spawn():
+    # The record is the only thing between an approved row and shell on a host.
+    # Unset URL used to be indistinguishable from an approval: the row spawned.
+    work = {
+        "id": 12,
+        "remediation_class": "node-action",
+        "risk": "low",
+        "confidence": 0.9,
+        "payload": {"recommendation": "restart nginx", "target": {"host": "controller"}},
+    }
+    op = _unconfigured_gate_op(work)
+    assert CFOperator._drain_remediation_queue(op) == 0
+    op._spawn_remediation_executor.assert_not_called()
+
+
+def test_refused_node_action_parks_at_needs_human_naming_the_setting():
+    # An operator has to be able to see why, and what to set. A silent skip
+    # would leave the row cycling with no explanation.
+    work = {
+        "id": 13,
+        "remediation_class": "node-action",
+        "risk": "low",
+        "payload": {"recommendation": "restart nginx", "target": {"host": "controller"}},
+    }
+    op = _unconfigured_gate_op(work)
+    CFOperator._drain_remediation_queue(op)
+    rid, status = op.kb.update_remediation_status.call_args.args
+    assert rid == 13 and status == "needs-human"
+    err = op.kb.update_remediation_status.call_args.kwargs["last_error"]
+    assert "CFOP_EXEC_CHANGE_URL" in err
+    assert "change_record.url" in err
+
+
+def test_refusing_burns_no_attempt_and_does_not_requeue():
+    # Not fail_remediation: a deploy misconfiguration is not the row's fault,
+    # and 'max attempts exceeded' would hide the cause. Not release_claim
+    # either: the condition is permanent, so requeueing spins every tick.
+    work = {
+        "id": 14,
+        "remediation_class": "node-action",
+        "risk": "low",
+        "payload": {"recommendation": "restart nginx", "target": {"host": "controller"}},
+    }
+    op = _unconfigured_gate_op(work)
+    CFOperator._drain_remediation_queue(op)
+    op.kb.fail_remediation.assert_not_called()
+    op.kb.release_remediation_claim.assert_not_called()
+
+
+def test_a_recorder_outage_does_not_block_gitops_work():
+    # The refusal is scoped to node-action. gitops-patch has its own human gate
+    # (the PR merge) and must keep draining with no recorder configured -- this
+    # is the pass-through that has to survive.
+    work = {
+        "id": 15,
+        "remediation_class": "gitops-patch",
+        "risk": "low",
+        "confidence": 0.9,
+        "payload": {"recommendation": "bump the limit", "repo": "homelab-infra"},
+    }
+    op = _unconfigured_gate_op(work)
+    assert CFOperator._drain_remediation_queue(op) == 1
+    op._spawn_remediation_executor.assert_called_once()
+    op.kb.update_remediation_status.assert_not_called()
+
+
+def test_the_default_drain_fixture_refuses_a_node_action():
+    """The fixture itself must model the post-CFOP-131 contract.
+
+    _fake_op wires the real gate rather than stubbing it pass-through. If that
+    ever regresses to `lambda work: work`, every drain test in this file would
+    silently assert that an unconfigured recorder lets a node-action spawn --
+    the exact shape that made the original hole look deliberate. This test
+    takes the bare fixture, changes nothing, and pins the refusal.
+    """
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.kb.claim_next_remediation.side_effect = [
+        {"id": 30, "remediation_class": "node-action", "risk": "low",
+         "payload": {"recommendation": "restart nginx"}},
+        None,
+    ]
+    assert CFOperator._drain_remediation_queue(op) == 0
+    op._spawn_remediation_executor.assert_not_called()
+    assert op.kb.update_remediation_status.call_args.args == (30, "needs-human")
