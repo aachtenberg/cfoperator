@@ -3333,3 +3333,75 @@ def test_summary_fold_fails_open_when_the_incident_row_cannot_be_read():
     assert CFOperator._feed_remediations_from_summary(
         op, _summary_with_host("raspberrypi5"), []) == 1
     assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "node-down-raspberrypi5"
+
+
+def _summary_investigate_shaped(host):
+    """The same node, worded so the rec routes to the dispatch branch.
+
+    #94's own TITLE reads this way -- it only landed on the manual queue
+    because its recommendation text said "power supply". One rewording and
+    the fold has to hold on the dispatch side too.
+    """
+    return ('## Summary\n```json\n{"recommendations": [\n'
+            '  {"title": "Verify raspberrypi5 connectivity",\n'
+            '   "recommendation": "Verify connectivity and kubelet health on '
+            'raspberrypi5.",\n'
+            f'   "host": "{host}", "remediation_class": "manual",\n'
+            '   "risk": "low", "confidence": 0.5}\n]}\n```\n')
+
+
+def test_summary_does_not_investigate_a_node_that_is_already_down():
+    # An investigate-shaped rec for a NotReady node must fold, not dispatch:
+    # the deep tier would spend a call to re-derive "the host is unreachable"
+    # while the incident row already says exactly that.
+    op = _summary_nodes_op(_RPI5_DOWN,
+                           open_rows={"node-down-raspberrypi5": {"id": 93}})
+    assert CFOperator._feed_remediations_from_summary(
+        op, _summary_investigate_shaped("raspberrypi5"), []) == 0
+    op.enqueue_investigation.assert_not_called()
+    op.kb.queue_remediation.assert_not_called()
+    assert op.kb.record_remediation_absorbed.call_args.args[0] == 93
+
+
+def test_summary_investigate_shaped_rec_opens_the_incident_row_not_a_dispatch():
+    # With no incident row yet it still must not dispatch -- it becomes the row.
+    op = _summary_nodes_op(_RPI5_DOWN)
+    assert CFOperator._feed_remediations_from_summary(
+        op, _summary_investigate_shaped("raspberrypi5"), []) == 1
+    op.enqueue_investigation.assert_not_called()
+    assert op.kb.queue_remediation.call_args.kwargs["dedupe_key"] == "node-down-raspberrypi5"
+
+
+def test_summary_still_investigates_an_investigate_shaped_rec_for_a_ready_host():
+    # The node tier's veto is conditional on the node being down; nothing else
+    # about the dispatch path changes.
+    op = _summary_nodes_op(_ALL_READY)
+    assert CFOperator._feed_remediations_from_summary(
+        op, _summary_investigate_shaped("raspberrypi5"), []) == 0
+    op.enqueue_investigation.assert_called_once()
+    op.kb.queue_remediation.assert_not_called()
+
+
+@pytest.mark.parametrize("summary_for", [_summary_with_host,
+                                         _summary_investigate_shaped])
+def test_summary_fold_reads_the_title_when_the_model_left_host_blank(summary_for):
+    # This feed does emit recs with an empty host (see _SUMMARY_MISLABELLED_MANUAL)
+    # and puts the node in the title instead. A blank host must not blind the
+    # fold -- _host_candidates pulls the node out of the title, and an unknown
+    # token is passed over rather than guessed at.
+    op = _summary_nodes_op(_RPI5_DOWN,
+                           open_rows={"node-down-raspberrypi5": {"id": 93}})
+    assert CFOperator._feed_remediations_from_summary(op, summary_for(""), []) == 0
+    op.kb.queue_remediation.assert_not_called()
+    op.enqueue_investigation.assert_not_called()
+    assert op.kb.record_remediation_absorbed.call_args.args[0] == 93
+
+
+def test_summary_title_matching_cannot_invent_a_node():
+    # The title names nothing registered as NotReady, so no fold: a title-shaped
+    # match is only ever a lookup against the live inventory.
+    op = _summary_nodes_op(_RPI5_DOWN)
+    assert CFOperator._feed_remediations_from_summary(
+        op, _summary_with_host("").replace("raspberrypi5", "some-vendor-appliance"), []) == 1
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["dedupe_key"].startswith("summary-")
