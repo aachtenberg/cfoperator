@@ -369,15 +369,40 @@ class TestTriageInvestigation:
         assert params["required"] == ["investigation_id", "action", "note"]
 
     def test_an_invented_outcome_argument_is_refused_not_applied(self):
-        # A model that names outcome= anyway (the CFOP-138 agent offered to
-        # flip it to false_positive "for the record") gets an error, and the
-        # KB is never called. Fail-closed, not silently dropped.
+        """A model that names outcome= anyway (the CFOP-138 agent offered to
+        flip it to false_positive "for the record") gets an error, and the KB
+        is never called.
+
+        The refusal comes from execute()'s `func(**arguments)` splat, not from
+        a guard in this method — assert the mechanism, so that if execute ever
+        filters unknown keys to the schema, this fails loudly and names why
+        rather than quietly testing something else. The sibling
+        test_it_never_passes_outcome_to_the_kb is the guard that survives that
+        change on its own.
+        """
         op, reg = _registry()
         out = reg.execute("triage_investigation", {
             "investigation_id": 2336, "action": "resolved", "note": "x",
             "outcome": "false_positive"})
-        assert "error" in out
+        assert "unexpected keyword argument" in out["error"]
+        assert "outcome" in out["error"]
         op.kb.update_investigation_triage.assert_not_called()
+
+    def test_the_read_twins_point_at_the_write_tool(self):
+        """The descriptions the model reads BEFORE it has a verdict to record.
+
+        list_investigations described the surface as "triggers and outcomes /
+        whether issues were resolved" and named no write tool — which is the
+        sentence that taught the #2324 agent to reach for `outcome` and then
+        explain why it could not have it. A read tool that describes this
+        surface without naming triage_action and its write twin is the
+        regression; pin that rather than today's wording.
+        """
+        _, reg = _registry()
+        for name in ("list_investigations", "get_investigation"):
+            desc = reg.tools[name]["schema"]["description"]
+            assert "triage_investigation" in desc, f"{name} does not name the write tool"
+            assert "triage_action" in desc, f"{name} does not name the operator's field"
 
     def test_it_returns_the_untouched_outcome(self):
         # The re-read puts the agent's own outcome back in front of the model

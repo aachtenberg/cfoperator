@@ -44,8 +44,42 @@ def register(mcp, client, settings):
     async def list_investigations(limit: int = 20) -> dict:
         """List recent investigations (summary rows, newest first).
 
+        Rows carry the agent's `outcome` and the operator's `triage_action`
+        (null means still untriaged). Record a verdict with
+        triage_investigation; `outcome` is the agent's own conclusion and is
+        not editable.
+
         Requires scope: read.
         """
         return await guarded(
             settings, "read", lambda: client.list_investigations(limit=limit),
             tool="list_investigations")
+
+    # CFOP-138 landed this on console chat first, because that is where the
+    # incident happened: with no write twin the model explained the gap with
+    # whatever was nearby — "outcome is an immutable snapshot, go write the
+    # DB", then "give me a Finding ID or Remediation ID". cfassist reaches
+    # these same rows through MCP (the API hands out `cfassist attach <id>`),
+    # so leaving this surface read-only just relocates the invention.
+    @mcp.tool()
+    async def triage_investigation(
+        investigation_id: int, action: str, note: str,
+    ) -> dict:
+        """Record the operator's verdict on an investigation.
+
+        action is 'resolved' (the underlying problem is handled or moot) or
+        'ack' (seen and accepted, without claiming it is fixed). This is the
+        only way to take an investigation out of the console's Untriaged view
+        — resolving a remediation does NOT triage the investigation it came
+        from. note is required: it is the only record of the reasoning.
+
+        Writes the human verdict to `triage_action`. It does not and cannot
+        rewrite the agent's own `outcome`, which later investigations cite as
+        precedent.
+
+        Requires scope: remediate.
+        """
+        return await guarded(
+            settings, "remediate",
+            lambda: client.triage_investigation(investigation_id, action, note=note),
+            tool="triage_investigation")

@@ -665,7 +665,13 @@ class ToolRegistry:
             'function': self._list_investigations,
             'schema': {
                 'name': 'list_investigations',
-                'description': 'List recent investigations with triggers and outcomes. Use this to see what the agent has investigated, whether issues were resolved, and how long investigations took.',
+                'description': (
+                    'List recent investigations with triggers, the agent\'s outcome, and the '
+                    'operator\'s triage_action (null means still untriaged). Use this to see what '
+                    'the agent has investigated and how long it took. `outcome` is the agent\'s own '
+                    'conclusion and is not editable; the operator\'s verdict is `triage_action` — '
+                    'set it with triage_investigation.'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {
@@ -683,7 +689,13 @@ class ToolRegistry:
             'function': self._get_investigation,
             'schema': {
                 'name': 'get_investigation',
-                'description': 'Fetch a single investigation by id (trigger, findings, outcome, duration). Use when following an investigation_id from a remediation or when the operator asks about a specific investigation.',
+                'description': (
+                    'Fetch a single investigation by id (trigger, findings, outcome, '
+                    'triage_action, duration). Use when following an investigation_id from a '
+                    'remediation or when the operator asks about a specific investigation. To '
+                    'record the operator\'s verdict on it, use triage_investigation — `outcome` is '
+                    'the agent\'s finding and stays as it is.'
+                ),
                 'parameters': {
                     'type': 'object',
                     'properties': {
