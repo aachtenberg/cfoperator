@@ -50,7 +50,11 @@ def _render(row):
     if node is None:
         pytest.skip("node not available")
     harness = f"""
-      const TERMINAL = new Set(['resolved','rejected','failed']);
+      // No TERMINAL here on purpose. The first version of this harness invented
+      // one as {{resolved,rejected,failed}} while the page defines
+      // {{resolved,rejected}} -- the same "test environment is not the page" trap
+      // this suite exists to close. The render now keys off r.last_error, so
+      // there is no set to get wrong.
       const esc = s => String(s==null?'':s).replace(/[&<>"']/g,
         c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
       const safeUrl = u => {{
@@ -110,13 +114,26 @@ def test_the_commands_are_shown_before_they_run():
     assert "raspberrypi2" in out["block"]
 
 
-def test_a_waiting_row_reads_as_waiting_not_broken():
+def test_a_waiting_row_reads_as_waiting_and_a_failed_one_does_not():
     out = _render(_row())
     assert "waiting on a human" in out["block"]
-    # and a finished row drops the call to action rather than still nagging
-    done = _render(_row(status="resolved"))
-    assert "waiting on a human" not in done["block"]
-    assert _URL in done["block"], "a resolved row should still show its record"
+
+    # A row the operator CLOSED without merging is failed by the 409 path -- and
+    # `failed` is deliberately NOT terminal on this page, so it stays in the
+    # active table. Telling that row to go merge the PR that was just closed is
+    # exactly wrong, which is why `waiting` keys off the last_error sentinel
+    # rather than off status.
+    closed = _render(_row(status="failed", last_error="change record gate: closed without merge"))
+    assert "waiting on a human" not in closed["block"]
+    assert _URL in closed["block"], "a failed row should still show the record that failed it"
+
+    # Same for a row already running: claimed is not waiting.
+    running = _render(_row(status="claimed", last_error=None))
+    assert "waiting on a human" not in running["block"]
+
+    resolved = _render(_row(status="resolved", last_error=None))
+    assert "waiting on a human" not in resolved["block"]
+    assert _URL in resolved["block"], "a resolved row should still show its record"
 
 
 def test_rows_without_a_change_record_render_nothing():
@@ -166,8 +183,19 @@ def test_the_helpers_are_actually_wired_into_the_drawer():
     """
     src = _inline_script()
     # The chip belongs in the action row, the block in the drawer body.
-    assert "${changeRecordChip(r)}" in src, \
-        "nothing renders the change-record chip — the PR is unreachable again"
+    assert "changeRecordChip(r)" in src, \
+        "nothing renders the change-record chip -- the PR is unreachable again"
+    # It must REPLACE Approve while a record is pending, not sit beside it:
+    # Approve on a waiting row is a no-op that contradicts the copy telling the
+    # operator to go merge. Same shape as the gitops `pr_url ? Review PR : Approve`.
+    approve_branch = re.search(r"changeRecordChip\(r\)\s*\n\s*\?\s*changeRecordChip\(r\)\s*\n\s*:\s*`<button class=\"chip\" onclick=\"approve", src)
+    assert approve_branch, "the change-record chip must stand in for Approve while a record is pending"
+    # And the queue LIST must LINK it -- the operator who found this had to open
+    # the drawer because the row showed an em dash. Asserted on the href
+    # expression itself: a first version checked only that changeRecord(r) was
+    # mentioned, which survived dropping it from the link.
+    assert re.search(r"const prHref = [^;]*crHref", src), \
+        "the row list computes a change-record href but does not link it"
     assert "${changeRecordHtml(r)}" in src, \
         "nothing renders the change-record block — the commands are hidden again"
     # And the block must sit after last_error, so "awaiting change-record
