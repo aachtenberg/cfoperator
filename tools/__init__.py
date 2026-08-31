@@ -36,6 +36,13 @@ from .timescale import TimescaleTools
 # is pinned to the original by test_inflight_statuses_match_the_queue.
 _REMEDIATION_INFLIGHT = ('claimed', 'executing')
 
+# The triage verdicts an operator may set on an investigation. Mirrors
+# _INVESTIGATION_TRIAGE_ACTIONS in web_server.py: 'retry'/'context' need the
+# re-investigation path wired and 'suppress' needs a reader in the alert path,
+# so the chat tool must not reach further than the console does. Pinned to the
+# route by test_the_chat_tool_offers_exactly_the_routes_actions.
+_INVESTIGATION_TRIAGE_ACTIONS = ('resolved', 'ack')
+
 logger = logging.getLogger("cfoperator.tools")
 
 # Tools that stay available on a verification turn even though they can write,
@@ -690,6 +697,55 @@ class ToolRegistry:
             }
         }
 
+        # The WRITE tool for the investigation surface, twin of
+        # POST /api/investigations/<id>/triage. Without it an operator saying
+        # "resolve it" got a truthful "I have no tool" wrapped in an invented
+        # reason — that the outcome field is an immutable snapshot needing a
+        # direct DB write — and was steered at psql past a supported console
+        # control (CFOP-138). update_sweep_finding and resolve_remediation do
+        # NOT clear an investigation; they are different objects.
+        #
+        # Deliberately narrower than kb.update_investigation_triage, which
+        # also takes outcome=. See _triage_investigation for why that argument
+        # must not exist here.
+        self.tools['triage_investigation'] = {
+            'function': self._triage_investigation,
+            'schema': {
+                'name': 'triage_investigation',
+                'mutating': True,  # its HTTP twin is ROLE_ADMIN (CFOP-124 gates this)
+                'description': (
+                    'Record the operator\'s verdict on an investigation when they say it is '
+                    'handled, verified, or no longer worth chasing. This is the ONLY way to take '
+                    'an investigation out of the console\'s Untriaged view — closing a sweep '
+                    'finding or a remediation does NOT triage the investigation they came from. '
+                    'Use get_investigation first to confirm the id. This records the HUMAN verdict '
+                    'in triage_action; it does not and cannot rewrite the agent\'s own outcome.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'investigation_id': {
+                            'type': 'integer',
+                            'description': 'Investigation id to triage'
+                        },
+                        'action': {
+                            'type': 'string',
+                            'description': ("'resolved' when the underlying problem is handled or "
+                                            "moot; 'ack' to mark it seen and accepted without "
+                                            "claiming it is fixed"),
+                            'enum': list(_INVESTIGATION_TRIAGE_ACTIONS)
+                        },
+                        'note': {
+                            'type': 'string',
+                            'description': ('Why — the only record of the operator\'s reasoning. '
+                                            'Required.')
+                        }
+                    },
+                    'required': ['investigation_id', 'action', 'note']
+                }
+            }
+        }
+
         self.tools['list_remediations'] = {
             'function': self._list_remediations,
             'schema': {
@@ -1183,6 +1239,54 @@ class ToolRegistry:
             if not inv:
                 return {'error': f'Investigation #{investigation_id} not found'}
             return {'success': True, 'investigation': self._trim_investigation_for_tool(inv)}
+        except Exception as e:
+            return {'error': str(e)}
+
+    def _triage_investigation(self, investigation_id: int = None, action: str = '',
+                              note: str = '') -> Dict[str, Any]:
+        """Record the operator's verdict on an investigation (CFOP-138).
+
+        The chat twin of POST /api/investigations/<id>/triage, and deliberately
+        no wider than it. ``kb.update_investigation_triage`` also accepts
+        ``outcome=``, and this method has no argument that reaches it: the
+        outcome is the agent's own conclusion, and it is what
+        ``find_similar_investigations_hybrid`` cites as precedent into future
+        triage decisions. Letting an operator overwrite it through chat would
+        edit the retrieval corpus that later classifications reason from —
+        investigation 2324's own similar_past block cited three prior rows by
+        outcome, so that corpus is load-bearing rather than theoretical. The
+        human's verdict lives in ``triage_action``; the agent's finding stays.
+
+        That constraint is why this is not simply a passthrough. The chat agent
+        that prompted CFOP-138 asked to flip ``outcome`` "for the record"; the
+        capability it actually lacked was triage.
+        """
+        if action not in _INVESTIGATION_TRIAGE_ACTIONS:
+            return {'error': f"action must be one of "
+                             f"{', '.join(_INVESTIGATION_TRIAGE_ACTIONS)}, got {action!r}"}
+        note = (note or '').strip()
+        if not note:
+            return {'error': 'A note is required — it is the only record of why this was triaged.'}
+        if investigation_id is None:
+            return {'error': 'investigation_id is required. '
+                             'Use list_investigations to find it.'}
+        try:
+            inv_id = int(investigation_id)
+        except (TypeError, ValueError):
+            return {'error': f'investigation_id must be an integer, got {investigation_id!r}'}
+        try:
+            ok = self.operator.kb.update_investigation_triage(
+                inv_id, action, operator_notes=note[:2000])  # 2000 = parity with the route
+            if not ok:
+                return {'error': f'Investigation #{inv_id} not found. '
+                                 'Use list_investigations to see recent rows.'}
+            # Re-read so the model reports the stored state, not its intent —
+            # the CFOP-123 lesson. It also puts the untouched `outcome` in
+            # front of the model, so it describes the split correctly instead
+            # of claiming the investigation was "cleared".
+            return {'success': True,
+                    'investigation': self._trim_investigation_for_tool(
+                        self.operator.kb.get_investigation(inv_id) or {})}
         except Exception as e:
             return {'error': str(e)}
 

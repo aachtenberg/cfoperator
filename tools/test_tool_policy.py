@@ -31,8 +31,13 @@ KNOWN_MUTATING = {
     "ssh_execute", "ssh_restart_service", "ssh_docker_restart",
     "k8s_rollout_restart", "k8s_exec_pod",
     "update_sweep_finding", "resolve_remediation", "store_learning",
+    "triage_investigation",
 }
-WRITE_SHAPED = re.compile(r"restart|_exec|create_|resolve_|update_|store_|delete_|patch_|apply_")
+# 'triage_' is in the pattern because triage_investigation is the first write
+# tool whose name carries none of the other verbs — an unmarked one would have
+# landed open (CFOP-138).
+WRITE_SHAPED = re.compile(
+    r"restart|_exec|create_|resolve_|update_|store_|delete_|patch_|apply_|triage_")
 
 MEMBER = ToolPolicy(actor_role="member")
 ADMIN = ToolPolicy(actor_role="admin")
