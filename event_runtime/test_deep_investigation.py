@@ -107,7 +107,10 @@ def _handler(tmp_path, kubectl, **config_overrides) -> DeepInvestigationActionHa
         completion_base_url="http://event-runtime:8000",
         agent_url="http://agent:8083",
         budget_state_path=str(tmp_path / "budget.json"),
-        **config_overrides,
+        # ssh_user required since CFOP-137 -- the handler refuses without it
+        # rather than spending a budget slot on a worker that would render
+        # "ssh @host". Overridable so the refusal itself can be tested.
+        **{"ssh_user": "someoperator", **config_overrides},
     )
     return DeepInvestigationActionHandler(config, kubectl_runner=kubectl)
 
@@ -487,3 +490,21 @@ def test_boot_forensics_handler_uses_template_and_fingerprint(tmp_path):
     assert result.details["template"] == "boot-forensics"
     # Explicit per-boot fingerprint flows into the dedupe label
     assert manifest["metadata"]["labels"][JOB_FINGERPRINT_LABEL] == alert.effective_fingerprint()[:12]
+
+
+def test_handler_refuses_before_spending_budget_when_no_ssh_user(tmp_path):
+    """CFOP-137: an unset ssh_user must not cost a budget slot or a Job.
+
+    The worker renders "ssh {ssh_user}@{host}" into a billed prompt rather than
+    connecting itself, so an empty user is not a fast connect error -- it is a
+    Job that flails until claude_timeout. Refuse alongside the host,
+    concurrency and budget guards, naming the setting.
+    """
+    kubectl = _FakeKubectl()
+    handler = _handler(tmp_path, kubectl, ssh_user="")
+    result = handler.execute(_request(_host_alert()))
+    assert result.details.get("outcome") == "failed"
+    assert "no SSH user configured" in (result.message or "")
+    assert "CFOP_DEEP_SSH_USER" in (result.message or "")
+    assert not any("create" in str(c) for c in kubectl.calls), \
+        "no Job may be created without an ssh user"

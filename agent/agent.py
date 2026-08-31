@@ -1568,7 +1568,7 @@ class CFOperator:
             if backend_type == 'prometheus':
                 from observability.prometheus_containers import PrometheusContainers
                 prometheus_url = metrics_config.get('url')
-                ssh_user = str(container_config.get('ssh_user') or '').strip()
+                ssh_user = container_config.get('ssh_user', 'sre')
                 backend = PrometheusContainers(prometheus_url=prometheus_url, ssh_user=ssh_user)
                 container_backends.append(backend)
                 logger.info(f"Initialized Prometheus container backend (SSH user: {ssh_user})")
@@ -6354,7 +6354,12 @@ Only return the JSON array, no other text."""
 
                 # If no data for this host, try SSH docker ps (only if a Docker-type backend is configured)
                 if not actual_names and host_addr and has_docker_backend:
-                    ssh_user = str(host_info.get('ssh', {}).get('user') or '').strip()
+                    ssh_user = str(host_info.get("ssh", {}).get("user") or "").strip()
+                    if not ssh_user:
+                        # No configured user: skip rather than spend a 5s
+                        # connect timeout per host on "@host" (CFOP-137).
+                        logger.debug(f"No ssh user for {host_addr}; skipping docker ps probe")
+                        continue
                     try:
                         result = subprocess.run(
                             ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',

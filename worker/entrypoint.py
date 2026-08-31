@@ -111,10 +111,11 @@ def load_inputs(env: Dict[str, str] | None = None) -> WorkerInputs:
         deep_context=_json_env("CFOP_DEEP_CONTEXT_JSON"),
         template=env.get("CFOP_TEMPLATE", "host-forensics").strip(),
         target_host=env.get("CFOP_TARGET_HOST", "").strip(),
-        # No default (CFOP-137): deep_investigation.py always injects this into
-        # the Job env, so a fallback here only masks a misconfigured spawner --
-        # and the one that used to be here was a personal username in a public
-        # image. Empty surfaces at connect time with the value plainly missing.
+        # No default (CFOP-137). This worker does NOT ssh itself -- it renders
+        # "ssh {ssh_user}@{host}" into the Claude prompt -- so an empty value is
+        # not a connect-time error, it is a BILLED forensics Job that tries
+        # "@host" until the deadline. Validated below rather than defaulted;
+        # the old fallback was a personal username in a public image.
         ssh_user=env.get("CFOP_SSH_USER", "").strip(),
         model=env.get("CLAUDE_MODEL", "").strip(),
         claude_timeout=int(env.get("CFOP_CLAUDE_TIMEOUT", "600") or 600),
@@ -425,6 +426,21 @@ def main() -> int:
         "Deep investigation starting: host=%s template=%s model=%s",
         inputs.target_host, inputs.template, inputs.model or "(default)",
     )
+    # CFOP-137: refuse BEFORE spending a claude run. This worker renders
+    # "ssh {ssh_user}@{host}" into the prompt rather than connecting itself, so
+    # an empty user is not a fast connect error -- it is a BILLED Job that
+    # flails at "@host" until claude_timeout. The spawner always injects this,
+    # so arriving without it means the deploy never configured one. Posts back
+    # like any other failure so the row does not sit waiting on a Job that
+    # already gave up.
+    if not inputs.ssh_user:
+        msg = ("no SSH user configured: set event_runtime.deep_investigation."
+               "ssh_user (or CFOP_DEEP_SSH_USER on the event runtime), which "
+               "reaches this Job as CFOP_SSH_USER")
+        logger.error(msg)
+        result = build_action_result(ClaudeRun(False, "", msg, 0.0), inputs)
+        return 0 if post_completion(inputs, result) else 1
+
     try:
         prepare_ssh(inputs.ssh_secret_dir, Path.home() / ".ssh")
         template_path = inputs.templates_dir / f"{inputs.template}.md"
