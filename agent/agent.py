@@ -3041,10 +3041,12 @@ FIX: {_FIX_JSON_SCHEMA}"""
         the reaper/retry path recovers it rather than leaving it stuck claimed.
         Returns the number of executor Jobs spawned.
 
-        When ``CFOP_EXEC_CHANGE_URL`` is set, node-action rows are gated on the
-        changerecord microservice (open + named approval) before spawn — so an
-        unapproved record never reaches ``run_ssh_plan``. Unset URL preserves
-        prior console-escalation behavior byte-for-byte.
+        node-action rows are gated on the changerecord microservice (open +
+        named approval) before spawn, so an unapproved record never reaches
+        ``run_ssh_plan``. With the URL UNSET a node-action is refused outright
+        and parked at needs-human (CFOP-131) -- it used to pass through, which
+        made an unconfigured recorder indistinguishable from an approval.
+        Other classes are unaffected either way.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_drain'):

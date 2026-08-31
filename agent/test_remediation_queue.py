@@ -48,9 +48,15 @@ def _fake_op(*, drain=False, reap=False, max_per_tick=3):
     op.config = {"remediation": {
         "queue_drain": drain, "queue_reap": reap, "max_drain_per_tick": max_per_tick,
     }}
-    # Unset change-record URL → prepare is a no-op pass-through (homelab default).
+    # Unset change-record URL — the unconfigured default. The gate is wired
+    # REAL, not stubbed to pass-through: a `lambda work: work` here would model
+    # the pre-CFOP-131 contract, so every drain test would quietly assert that
+    # an unconfigured recorder lets a node-action spawn. With the real method,
+    # non-node-action rows pass through (what these tests actually exercise)
+    # and a node-action is refused, which is the point.
     op._change_record_url = lambda: ""
-    op._prepare_node_action_change_record = lambda work: work
+    op._prepare_node_action_change_record = (
+        lambda work: CFOperator._prepare_node_action_change_record(op, work))
     # CFOP-71: no outstanding PRs by default, so drain tests exercise draining.
     # A bare MagicMock is not comparable to the int cap and would TypeError.
     op._open_remediation_pr_count = lambda: 0
@@ -117,7 +123,6 @@ def test_drain_spawn_failure_fails_the_claim():
     op = _fake_op(drain=True, max_per_tick=1)
     op.kb.claim_next_remediation.return_value = {
         "id": 7, "remediation_class": "gitops-patch", "risk": "low"}
-    op._prepare_node_action_change_record = lambda work: work
     op._spawn_remediation_executor.side_effect = RuntimeError("boom")
     assert CFOperator._drain_remediation_queue(op) == 0
     op.kb.fail_remediation.assert_called_once()
@@ -3504,3 +3509,23 @@ def test_a_recorder_outage_does_not_block_gitops_work():
     assert CFOperator._drain_remediation_queue(op) == 1
     op._spawn_remediation_executor.assert_called_once()
     op.kb.update_remediation_status.assert_not_called()
+
+
+def test_the_default_drain_fixture_refuses_a_node_action():
+    """The fixture itself must model the post-CFOP-131 contract.
+
+    _fake_op wires the real gate rather than stubbing it pass-through. If that
+    ever regresses to `lambda work: work`, every drain test in this file would
+    silently assert that an unconfigured recorder lets a node-action spawn --
+    the exact shape that made the original hole look deliberate. This test
+    takes the bare fixture, changes nothing, and pins the refusal.
+    """
+    op = _fake_op(drain=True, max_per_tick=1)
+    op.kb.claim_next_remediation.side_effect = [
+        {"id": 30, "remediation_class": "node-action", "risk": "low",
+         "payload": {"recommendation": "restart nginx"}},
+        None,
+    ]
+    assert CFOperator._drain_remediation_queue(op) == 0
+    op._spawn_remediation_executor.assert_not_called()
+    assert op.kb.update_remediation_status.call_args.args == (30, "needs-human")
