@@ -99,6 +99,13 @@ class CfopClient:
     async def get_investigation(self, investigation_id):
         return await self._request("GET", f"/api/investigations/{investigation_id}")
 
+    async def triage_investigation(self, investigation_id, action, note=None):
+        # Note is optional on the wire (the route coerces '' to None), but the
+        # tool above requires one — the operator's reason is the audit trail.
+        return await self._request(
+            "POST", f"/api/investigations/{investigation_id}/triage",
+            json={"action": action, "note": note} if note else {"action": action})
+
     # --- knowledge / digests ---
 
     async def search_knowledge(self, query, limit=5):

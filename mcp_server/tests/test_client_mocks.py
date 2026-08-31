@@ -83,6 +83,25 @@ def test_resolve_posts_note_body():
     assert seen["body"] == {}
 
 
+def test_triage_posts_action_and_note():
+    seen = {}
+
+    def handler(request):
+        seen["path"] = request.url.path
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": 2336, "outcome": "needs_action",
+                                         "triage_action": "resolved"})
+
+    client = make_client(handler)
+    run(client.triage_investigation(2336, "resolved", note="node came back"))
+    assert seen["path"] == "/api/investigations/2336/triage"
+    assert seen["body"] == {"action": "resolved", "note": "node came back"}
+
+    # The route requires an action even when there is no note.
+    run(client.triage_investigation(2336, "ack"))
+    assert seen["body"] == {"action": "ack"}
+
+
 def test_404_maps_to_not_found_not_retryable():
     client = make_client(
         lambda request: httpx.Response(404, json={"error": "not found"}))

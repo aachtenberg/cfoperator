@@ -307,3 +307,157 @@ class TestApproveFromChat:
         params = reg.tools["resolve_remediation"]["schema"]["parameters"]
         assert params["properties"]["status"]["enum"] == ["resolved", "rejected", "approved"]
         assert params["required"] == ["remediation_id"]
+
+
+class TestTriageInvestigation:
+    """CFOP-138: the investigation surface needs a WRITE tool too.
+
+    An operator said "clear that" about an investigation and the agent
+    answered, truthfully, that it had no tool — then wrapped that in an
+    invented reason (the outcome field is "an immutable historical snapshot")
+    and pointed at a direct DB write, past a supported console control it did
+    not know about. Same shape as CFOP-123 one object over.
+    """
+
+    ROW = {"id": 2336, "trigger": "Pod resume/resume-site-x not ready for 30m",
+           "outcome": "needs_action", "triage_action": "resolved",
+           "operator_notes": "node came back", "findings": {"provider": "ollama/gemma4:26b"}}
+
+    def test_the_investigation_surface_has_a_write_tool(self):
+        # Pins the class of regression (a missing registration), not the
+        # argument list — same guard CFOP-123 added for the queue.
+        _, reg = _registry()
+        names = {s["function"]["name"] for s in reg.get_schemas()}
+        assert "triage_investigation" in names
+
+    def test_it_triages_and_records_the_note(self):
+        op, reg = _registry()
+        op.kb.update_investigation_triage.return_value = True
+        op.kb.get_investigation.return_value = self.ROW
+        out = reg.execute("triage_investigation", {
+            "investigation_id": 2336, "action": "resolved",
+            "note": "raspberrypi5 came back at 17:18; the evicted pod is gone."})
+        assert out["success"] is True
+        op.kb.update_investigation_triage.assert_called_once_with(
+            2336, "resolved",
+            operator_notes="raspberrypi5 came back at 17:18; the evicted pod is gone.")
+        assert out["investigation"]["triage_action"] == "resolved"
+
+    # ---- the corpus guard: the reason this tool is narrower than the KB ----
+
+    def test_it_never_passes_outcome_to_the_kb(self):
+        """kb.update_investigation_triage takes outcome= and executes
+        `inv.outcome = outcome`. `outcome` is what
+        find_similar_investigations_hybrid cites as precedent into future
+        triage, so an operator verdict written there edits the corpus later
+        classifications reason from. Mutation-checked: adding an outcome
+        passthrough to _triage_investigation fails this."""
+        op, reg = _registry()
+        op.kb.update_investigation_triage.return_value = True
+        op.kb.get_investigation.return_value = self.ROW
+        reg.execute("triage_investigation", {
+            "investigation_id": 2336, "action": "ack", "note": "seen"})
+        _, kwargs = op.kb.update_investigation_triage.call_args
+        assert "outcome" not in kwargs, "chat triage must not reach the outcome field"
+
+    def test_the_schema_has_no_outcome_argument(self):
+        # The model cannot even ask for it — the argument does not exist,
+        # rather than existing with a safe default someone later overrides.
+        _, reg = _registry()
+        params = reg.tools["triage_investigation"]["schema"]["parameters"]
+        assert "outcome" not in params["properties"]
+        assert params["required"] == ["investigation_id", "action", "note"]
+
+    def test_an_invented_outcome_argument_is_refused_not_applied(self):
+        """A model that names outcome= anyway (the CFOP-138 agent offered to
+        flip it to false_positive "for the record") gets an error, and the KB
+        is never called.
+
+        The refusal comes from execute()'s `func(**arguments)` splat, not from
+        a guard in this method — assert the mechanism, so that if execute ever
+        filters unknown keys to the schema, this fails loudly and names why
+        rather than quietly testing something else. The sibling
+        test_it_never_passes_outcome_to_the_kb is the guard that survives that
+        change on its own.
+        """
+        op, reg = _registry()
+        out = reg.execute("triage_investigation", {
+            "investigation_id": 2336, "action": "resolved", "note": "x",
+            "outcome": "false_positive"})
+        assert "unexpected keyword argument" in out["error"]
+        assert "outcome" in out["error"]
+        op.kb.update_investigation_triage.assert_not_called()
+
+    def test_the_read_twins_point_at_the_write_tool(self):
+        """The descriptions the model reads BEFORE it has a verdict to record.
+
+        list_investigations described the surface as "triggers and outcomes /
+        whether issues were resolved" and named no write tool — which is the
+        sentence that taught the #2324 agent to reach for `outcome` and then
+        explain why it could not have it. A read tool that describes this
+        surface without naming triage_action and its write twin is the
+        regression; pin that rather than today's wording.
+        """
+        _, reg = _registry()
+        for name in ("list_investigations", "get_investigation"):
+            desc = reg.tools[name]["schema"]["description"]
+            assert "triage_investigation" in desc, f"{name} does not name the write tool"
+            assert "triage_action" in desc, f"{name} does not name the operator's field"
+
+    def test_it_returns_the_untouched_outcome(self):
+        # The re-read puts the agent's own outcome back in front of the model
+        # so it reports the split. The CFOP-138 agent told the operator the
+        # row was "effectively cleared" while triage_action was still null.
+        op, reg = _registry()
+        op.kb.update_investigation_triage.return_value = True
+        op.kb.get_investigation.return_value = self.ROW
+        out = reg.execute("triage_investigation", {
+            "investigation_id": 2336, "action": "resolved", "note": "handled"})
+        assert out["investigation"]["outcome"] == "needs_action"
+
+    # ---- refusals ----
+
+    def test_an_unknown_id_reports_rather_than_claiming_success(self):
+        op, reg = _registry()
+        op.kb.update_investigation_triage.return_value = False
+        out = reg.execute("triage_investigation", {
+            "investigation_id": 999999, "action": "resolved", "note": "x"})
+        assert "not found" in out["error"]
+        assert "success" not in out
+
+    def test_a_note_is_required(self):
+        op, reg = _registry()
+        out = reg.execute("triage_investigation", {
+            "investigation_id": 2336, "action": "resolved"})
+        assert "note is required" in out["error"]
+        op.kb.update_investigation_triage.assert_not_called()
+
+    @pytest.mark.parametrize("action", ["suppress", "retry", "context", "", "Resolved"])
+    def test_the_chat_tool_reaches_no_further_than_the_console(self, action):
+        # retry/context need the re-investigation path wired and suppress
+        # needs a reader in the alert path; the route refuses them, so chat
+        # must too rather than writing a triage_action nothing acts on.
+        op, reg = _registry()
+        out = reg.execute("triage_investigation", {
+            "investigation_id": 2336, "action": action, "note": "x"})
+        assert "action must be one of" in out["error"]
+        op.kb.update_investigation_triage.assert_not_called()
+
+    def test_the_chat_tool_offers_exactly_the_routes_actions(self):
+        # web_server.py declares its tuple INSIDE setup_routes, so it cannot
+        # be imported; read it back by parsing the source (same technique as
+        # test_inflight_statuses_match_the_queue) so the copy cannot drift.
+        import ast, pathlib
+        web = pathlib.Path(__file__).resolve().parent.parent / "web_server.py"
+        found = [
+            ast.literal_eval(node.value)
+            for node in ast.walk(ast.parse(web.read_text()))
+            if isinstance(node, ast.Assign)
+            and any(getattr(t, "id", "") == "_INVESTIGATION_TRIAGE_ACTIONS"
+                    for t in node.targets)
+        ]
+        assert found, "_INVESTIGATION_TRIAGE_ACTIONS not found in web_server.py"
+        assert tuple(found[0]) == tuple(tools_module._INVESTIGATION_TRIAGE_ACTIONS)
+        _, reg = _registry()
+        enum = reg.tools["triage_investigation"]["schema"]["parameters"]["properties"]["action"]["enum"]
+        assert tuple(enum) == tuple(found[0])

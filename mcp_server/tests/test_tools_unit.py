@@ -96,6 +96,11 @@ class StubClient:
         self.calls.append(("resolve_remediation", remediation_id, note))
         return {"id": remediation_id, "status": "resolved"}
 
+    async def triage_investigation(self, investigation_id, action, note=None):
+        self.calls.append(("triage_investigation", investigation_id, action, note))
+        return {"id": investigation_id, "outcome": "needs_action",
+                "triage_action": action}
+
 
 def call(server, tool, args):
     result = asyncio.run(server.call_tool(tool, args))
@@ -170,6 +175,47 @@ def test_resolve_note_is_optional():
     server, stub = make()
     call(server, "resolve_remediation", {"remediation_id": 4})
     assert stub.calls == [("resolve_remediation", 4, None)]
+
+
+# --- investigation triage (CFOP-138) ---
+
+def test_the_investigation_surface_has_a_write_tool():
+    # Pins the class of regression: a read-only surface is what made the model
+    # invent a reason it could not act. Not today's argument list.
+    server, _ = make()
+    names = {t.name for t in asyncio.run(server.list_tools())}
+    assert "triage_investigation" in names
+
+
+def test_remediate_scope_can_triage():
+    server, stub = make()
+    out = call(server, "triage_investigation",
+               {"investigation_id": 2336, "action": "resolved",
+                "note": "raspberrypi5 came back; the evicted pod is gone"})
+    assert out["triage_action"] == "resolved"
+    assert stub.calls == [("triage_investigation", 2336, "resolved",
+                           "raspberrypi5 came back; the evicted pod is gone")]
+
+
+def test_read_scope_cannot_triage():
+    # Triage is an operator verdict, so it sits behind the same scope as
+    # resolving a remediation — read alone must not reach it.
+    server, stub = make(scopes={"read", "investigate"})
+    out = call(server, "triage_investigation",
+               {"investigation_id": 2336, "action": "resolved", "note": "x"})
+    assert out["error"]["code"] == "unauthorized"
+    assert stub.calls == []
+
+
+def test_triage_leaves_the_agents_outcome_alone():
+    # The response carries the untouched outcome next to the new
+    # triage_action, so the model reports the split instead of telling the
+    # operator the row was "cleared" (CFOP-138).
+    server, _ = make()
+    out = call(server, "triage_investigation",
+               {"investigation_id": 2336, "action": "ack", "note": "seen"})
+    assert out["outcome"] == "needs_action"
+    assert out["triage_action"] == "ack"
 
 
 # --- payload assembly ---
