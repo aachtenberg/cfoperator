@@ -5112,7 +5112,9 @@ FIX: {_FIX_JSON_SCHEMA}"""
         which raw sweep findings don't contain. Falls back to structured sweep
         findings when the LLM emits no usable block. Gated by queue_feed; the
         per-item remediation_class/risk/confidence drive the auto-execute gate,
-        so a low-risk gitops-patch can become auto-eligible. Deduped by title.
+        so a low-risk gitops-patch can become auto-eligible. Deduped by title,
+        and by the CFOP-71 node collapse: a rec naming a NotReady node folds
+        onto that node's incident row instead of opening its own (CFOP-130).
 
         ``provider`` is the summary LLM tag (``backend/model``) stamped onto
         queued rows as ``payload.provider`` — not applied on the sweep fallback,
@@ -5188,8 +5190,40 @@ FIX: {_FIX_JSON_SCHEMA}"""
                     logger.warning(f"could not dispatch investigation for '{title}': {e}")
                 continue
             try:
+                # CFOP-130: this branch enqueues directly rather than through
+                # _maybe_queue_remediation, so — exactly like the sweep
+                # fallback above — it has to run the CFOP-71 collapse itself.
+                # A summary echo of a node that is already down ("check the
+                # power supply for X") is the SAME finding as the
+                # investigation's node-incident row, not a second one; live
+                # rows #93/#94 on 2026-08-31 were that pair, 7h apart under
+                # two different keys. The fold is deliberately the only
+                # choke-point gate replayed here: the CFOP-78 identifier fold,
+                # the fork cap and the CFOP-70 judge stay off the summary path
+                # on purpose (self-labelled classes with no second opinion,
+                # and _SUMMARY_CONFIDENCE_CAP already bars every summary row
+                # from the auto floor, so the judge would have nothing to
+                # judge). Fails open like every other read here — a KB error
+                # means today's behaviour, a second row, never a lost finding.
+                host = r.get('host')
+                node_details = {'host': host, 'recommendation': rec}
+                node_key = self._collapse_key_for_node_incident(node_details)
+                if node_key and node_key != key:
+                    absorbed = self._record_absorbed_symptom(
+                        node_key, {'trigger': title, 'recommendation': rec})
+                    if absorbed:
+                        logger.info(f"Folding summary rec '{title}' onto node "
+                                    f"incident #{absorbed} ({node_key})")
+                        continue
+                    # No incident row yet — this rec opens it, under the node
+                    # key and naming the matched node (_collapse_key_… rewrote
+                    # node_details['host'] to the registered name), so the
+                    # investigation feed's later enqueue folds onto THIS row
+                    # rather than the two standing side by side again.
+                    key = node_key
+                    host = node_details['host']
                 payload = {'recommendation': rec, 'title': title,
-                           'target': {'host': r.get('host')},
+                           'target': {'host': host},
                            'repo': (str(r.get('repo') or '').strip() or None),
                            'source': 'morning-summary', 'dedupe_key': key}
                 if provider:
@@ -5197,7 +5231,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
                 rid = self.kb.queue_remediation(
                     remediation_class=rclass,
                     payload=payload,
-                    host_id=str(r.get('host') or 'default')[:64],
+                    host_id=str(host or 'default')[:64],
                     risk=risk,
                     confidence=conf,
                     dedupe_key=key,
