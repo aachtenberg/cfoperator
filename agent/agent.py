@@ -3225,14 +3225,41 @@ FIX: {_FIX_JSON_SCHEMA}"""
         Generates the concrete command plan *before* open() so the record PR
         a human merges is exactly what the executor will run. Returns the
         (possibly enriched) work order when spawn may proceed, or None when
-        the claim was released/failed and spawn must be skipped.
-        Non-node-action work and unset URL are pass-through (no behavior change).
+        the row was parked or its claim released, and spawn must be skipped.
+        Non-node-action work is pass-through (no behavior change). A
+        node-action with no recorder configured is REFUSED (CFOP-131): the
+        record is the only thing standing between an approved row and shell
+        on a host, and an unset URL used to be indistinguishable from an
+        approval -- the row spawned, ran over SSH, and left no record. The
+        whole approval route is open without it: remediation_approve_conflict
+        permits node-action, Approve makes the row 'queued', and the drainer
+        brings it straight here. Only CFOP_NODE_ACTION_ENABLED stopped it, at
+        the far end, after the agent had already decided to run it.
         """
         if (work.get('remediation_class') or '') != 'node-action':
             return work
         base_url = self._change_record_url()
         if not base_url:
-            return work
+            # Park at needs-human rather than release or fail. release_
+            # remediation_claim returns the row to 'queued', which is right
+            # for "approval not ready yet" and wrong for a missing recorder:
+            # the condition is permanent, so the row would reclaim and refuse
+            # on every drain tick forever. fail_remediation burns an attempt
+            # and reaches 'failed' after three, hiding a deploy
+            # misconfiguration behind "max attempts". needs-human is where an
+            # operator already looks, and last_error names the setting.
+            msg = ("node-action refused: no change recorder configured, so the "
+                   "approval record that must precede shell on a host cannot be "
+                   "opened. Set CFOP_EXEC_CHANGE_URL, or "
+                   "remediation.executor.node_action.change_record.url.")
+            logger.error(f"Remediation #{work.get('id')} {msg}")
+            try:
+                self.kb.update_remediation_status(
+                    work['id'], 'needs-human', last_error=msg)
+            except Exception as e:
+                logger.error(f"Could not park remediation #{work.get('id')} "
+                             f"after refusing it: {e}")
+            return None
 
         result = work.get('result') if isinstance(work.get('result'), dict) else {}
         cr = dict(result.get('change_record')) if isinstance(result.get('change_record'), dict) else {}
