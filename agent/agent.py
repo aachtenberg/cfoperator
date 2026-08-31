@@ -1073,6 +1073,24 @@ OPENAI_COMPAT_PROVIDERS = {
         'base_url': 'https://api.deepseek.com/v1',
         'key_env': 'DEEPSEEK_API_KEY',
         'default_model': 'deepseek-v4-pro',
+        # default_model is a *reasoning* model, and this surface spends
+        # max_tokens on thinking before any visible output — the same shape
+        # CFOP-112 found on Gemini Pro, missed here because that issue was
+        # framed as "Gemini needs a budget" rather than "reasoning models do".
+        # Measured against the live API at the tool loop's own 4096 (CFOP-134):
+        #
+        #   effort=medium/high -> finish=length, content 0 chars, all 4096
+        #                         completion tokens spent as reasoning_tokens
+        #   effort=low         -> finish=length, content 2514 chars
+        #   effort=low + 16384 -> finish=stop,   content 8255 chars
+        #
+        # so neither key alone is enough: 'low' still truncates at 4096, and a
+        # raised cap without it just buys more thinking. An empty final is not
+        # a quiet degrade — _handle_empty_final nudges, gets a second empty and
+        # raises to rotate the chain, which reads to the operator as a console
+        # chat that spins for minutes and never answers.
+        'request_params': {'reasoning_effort': 'low'},
+        'tool_loop_max_tokens': 16384,
     },
 }
 
@@ -7739,7 +7757,8 @@ Only return the JSON array, no other text."""
         """Per-provider chat/completions parameters from the registry, or {}.
 
         Applied with ``payload.update`` at every compat request site, so a
-        provider-specific need (Gemini's thinking budget, CFOP-112) is one
+        provider-specific need (a reasoning backend's thinking budget,
+        CFOP-112 for Gemini, CFOP-134 for DeepSeek) is one
         registry row rather than a branch per call site. Providers that
         declare nothing send exactly what they sent before.
         """
