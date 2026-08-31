@@ -202,3 +202,45 @@ def test_the_helpers_are_actually_wired_into_the_drawer():
     # approval" is immediately followed by the record it refers to.
     assert src.index("${r.last_error?") < src.index("${changeRecordHtml(r)}"), \
         "the record should follow the last_error line it explains"
+
+
+def _signature(rows):
+    """Run the page's own signature() over a row set, under node."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    src = _inline_script()
+    m = re.search(r"^function signature\(\).*?^}", src, re.S | re.M)
+    assert m, "signature() is gone from remediations.html"
+    harness = f"""
+      const ALL = {json.dumps(rows)};
+      {m.group(0)}
+      console.log(JSON.stringify(signature()));
+    """
+    out = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_attaching_a_change_record_rebuilds_the_list():
+    """signature() must notice the record arriving, or the column never paints.
+
+    load() only calls paint() when the signature changes. Attaching a record is
+    routinely the ONLY thing that changes on a poll -- the row is queued before
+    the gate opens the PR and queued after it -- so a signature blind to
+    result.change_record leaves the list showing an em dash until something
+    unrelated happens to the row. The fix that adds the column is worth nothing
+    without this, and no source grep would catch it.
+    """
+    before = _row(result={})
+    after = _row()  # same row, now carrying the record
+    assert _signature([before]) != _signature([after]), \
+        "signature() ignores result.change_record — the list will not repaint when a record arrives"
+
+
+def test_the_signature_still_reacts_to_the_fields_it_always_did():
+    """Guard against 'fixing' the above by making the signature indiscriminate."""
+    base = _row(result={})
+    assert _signature([base]) != _signature([_row(result={}, status="failed")])
+    assert _signature([base]) == _signature([_row(result={})]), \
+        "signature() is unstable for an unchanged row — the list would repaint every poll"

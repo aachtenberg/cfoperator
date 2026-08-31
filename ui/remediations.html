@@ -187,8 +187,15 @@ let ALL = [];
 let LAST_SIG = null;
 function signature(){
   return ALL.map(r=>{ const p=r.payload||{};
+    // The change-record url belongs here for the same reason pr_url does: the
+    // row list paints it (CFOP-139). Attaching a record is often the ONLY thing
+    // that changes on a poll -- the row is queued before the gate opens the PR
+    // and queued after -- so leaving it out means the signature matches,
+    // paint() is skipped, and the record column never appears until something
+    // unrelated to the record happens to the row.
     return [r.id,r.status,r.remediation_class,r.risk,r.confidence,r.host_id,p.provider,
-      String(p.recommendation||p.title||'').slice(0,160),r.pr_url,r.named_pr_url].join('\u0001'); }).join('\n');
+      String(p.recommendation||p.title||'').slice(0,160),r.pr_url,r.named_pr_url,
+      ((r.result||{}).change_record||{}).url].join('\u0001'); }).join('\n');
 }
 async function load(){
   // A hidden tab has nobody looking; the visibilitychange hook below catches up.
