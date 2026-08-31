@@ -150,3 +150,26 @@ def test_a_self_hosted_job_lives_only_in_a_main_push_workflow():
             assert isinstance(push, dict) and push.get("branches") == ["main"], (
                 f"{wf.name} job {name!r} is self-hosted but the workflow's push trigger is "
                 f"{push!r}; want branches: [main]")
+
+
+def test_every_root_level_test_file_is_registered_in_ci():
+    """The root-level suite is an explicit list, not a glob (CFOP-139).
+
+    CLAUDE.md warns about this in prose -- "an unregistered test file silently
+    never runs in CI" -- but nothing enforced it, so the warning only worked on
+    people who had read it recently. A forgotten file is worse than a missing
+    one: it is green locally, invisible in CI, and the gap surfaces as a
+    regression nobody can explain.
+
+    Directory suites (agent/, executor/, ...) are run as directories and need no
+    entry; only files sitting at the repo root do.
+    """
+    root = Path(__file__).parent
+    ci = (root / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+    # The root-level invocation is one continuation-joined command; matching on
+    # the filename anywhere in the workflow is enough and stays robust to
+    # reflowing the list.
+    missing = sorted(p.name for p in root.glob("test_*.py") if p.name not in ci)
+    assert not missing, (
+        "root-level test files not registered in .github/workflows/tests.yml — "
+        "they pass locally and never run in CI:\n  " + "\n  ".join(missing))

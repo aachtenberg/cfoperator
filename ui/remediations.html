@@ -187,8 +187,15 @@ let ALL = [];
 let LAST_SIG = null;
 function signature(){
   return ALL.map(r=>{ const p=r.payload||{};
+    // The change-record url belongs here for the same reason pr_url does: the
+    // row list paints it (CFOP-139). Attaching a record is often the ONLY thing
+    // that changes on a poll -- the row is queued before the gate opens the PR
+    // and queued after -- so leaving it out means the signature matches,
+    // paint() is skipped, and the record column never appears until something
+    // unrelated to the record happens to the row.
     return [r.id,r.status,r.remediation_class,r.risk,r.confidence,r.host_id,p.provider,
-      String(p.recommendation||p.title||'').slice(0,160),r.pr_url,r.named_pr_url].join('\u0001'); }).join('\n');
+      String(p.recommendation||p.title||'').slice(0,160),r.pr_url,r.named_pr_url,
+      ((r.result||{}).change_record||{}).url].join('\u0001'); }).join('\n');
 }
 async function load(){
   // A hidden tab has nobody looking; the visibilitychange hook below catches up.
@@ -235,10 +242,19 @@ function rowHtml(r){
   const p = r.payload||{}; const rec = p.recommendation || p.title || '';
   // Reporting LLM only — absence means the row predates the tag, not "unknown".
   const llm = p.provider ? `<span class="mono muted">${esc(p.provider)}</span>` : '—';
-  // pr_url is a PR this row tracks; named_pr_url one its recommendation
-  // names (CFOP-116) — a link either way, the drawer says which.
-  const prHref = safeUrl(r.pr_url) || safeUrl(r.named_pr_url);
-  const pr = prHref ? `<a href="${esc(prHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"${safeUrl(r.pr_url)?'':' title="named in the recommendation; not tracked by this row"'}>PR ↗</a>` : '—';
+  // pr_url is a PR this row tracks; named_pr_url one its recommendation names
+  // (CFOP-116); a node-action also has its change-record PR, whose merge
+  // authorises shell on a host (CFOP-139). That last one is what an operator
+  // most needs to find while scanning the queue, and it was the only one that
+  // showed here as an em dash — the gate was reachable only by opening the
+  // drawer. A link either way; the drawer says which.
+  const crHref = safeUrl((changeRecord(r)||{}).url);
+  const prHref = safeUrl(r.pr_url) || crHref || safeUrl(r.named_pr_url);
+  const prTitle = safeUrl(r.pr_url) ? ''
+    : crHref ? ' title="change record: merging it authorises the commands on this row"'
+    : ' title="named in the recommendation; not tracked by this row"';
+  const prLabel = (!safeUrl(r.pr_url) && crHref) ? 'record ↗' : 'PR ↗';
+  const pr = prHref ? `<a href="${esc(prHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"${prTitle}>${prLabel}</a>` : '—';
   return `<tr id="row-${r.id}" tabindex="0" onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
     <td class="mono">#${r.id}</td>
     <td>${badge(r.status, SC[r.status]||'--text-muted')}</td>
@@ -312,7 +328,10 @@ async function detail(id){
         ? `<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify first</button>`
         : safeUrl(r.pr_url)
         ? `<a class="chip" href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">↗ Review PR</a>`
+        : awaitingRecordMerge(r)
+        ? changeRecordChip(r)
         : `<button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>`}
+      ${!awaitingRecordMerge(r)?changeRecordChip(r):''}
       ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">↗ Named PR</a>`:''}
       <button class="chip" onclick="showResolve(${r.id})">✔ Resolve</button>
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
@@ -337,6 +356,7 @@ async function detail(id){
       :safeUrl(r.named_pr_url)?`<div class="kv"><b>PR named</b> <a href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.named_pr_url)}</a> <span class="muted">not tracked by this row</span></div>`:''}
     ${prAttemptHtml(p.pr_attempt)}
     ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
+    ${changeRecordHtml(r)}
     ${resolutionHtml(r)}
     <h3>Recommendation</h3><pre>${esc(p.recommendation||p.title||'—')}</pre>
     ${p.targets?`<h3>Targets</h3><pre>${esc(JSON.stringify(p.targets,null,2))}</pre>`:''}
@@ -389,6 +409,53 @@ function prAttemptHtml(attempt){
   return `<div class="kv"><b>PR attempt</b> ${esc(status)}` +
     (detail?` — ${esc(detail)}`:'') +
     (extra?`<br><span class="muted mono">${esc(extra)}</span>`:'') + `</div>`;
+}
+
+// A node-action's change record: the PR whose merge authorises shell on a
+// host, plus the exact commands that will run (CFOP-139).
+//
+// Deliberately NOT r.pr_url. That column is the executor-opened gitops PR, and
+// putting the record there would trip two things it has nothing to do with:
+// the "a PR is already open, Approve is off" note below, and the CFOP-116
+// reconciler that resolves a row when its PR merges. The record lives in
+// result.change_record, so it is read and rendered separately.
+//
+// Without this the whole second gate is invisible: the row shows `queued` and
+// `awaiting change-record approval`, and an operator has no way to reach the
+// PR they are being asked to merge or to see what it authorises. Found by the
+// first live node-action (row #95).
+function changeRecord(r){
+  const cr = (r.result||{}).change_record;
+  return (cr && typeof cr === 'object') ? cr : null;
+}
+// Parked on the record gate: queued, with the sentinel the agent writes while
+// it polls for the merge. NOT "has a change-record url" -- that url is stamped
+// at open() and never cleared, so it outlives the gate. Used by both the chip
+// decision and the drawer copy so the button and the sentence cannot disagree.
+function awaitingRecordMerge(r){
+  return r.status === 'queued' && r.last_error === 'awaiting change-record approval';
+}
+function changeRecordChip(r){
+  const href = safeUrl((changeRecord(r)||{}).url);
+  return href ? `<a class="chip" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="merging this authorises the commands below to run on the host">↗ Review change record</a>` : '';
+}
+function changeRecordHtml(r){
+  const cr = changeRecord(r);
+  if(!cr) return '';
+  const href = safeUrl(cr.url);
+  const cmds = ((cr.plan||{}).commands||[]).filter(c=>typeof c==='string');
+  // Keyed off the exact state the copy describes, not off TERMINAL. The page
+  // treats only resolved/rejected as terminal, so a row failed by a
+  // closed-without-merge 409 stays active -- and would otherwise still be told
+  // to go merge the PR that was just closed. A claimed row is running, not
+  // waiting, for the same reason. This string is what _prepare_node_action_
+  // change_record writes while it polls for approval.
+  const waiting = awaitingRecordMerge(r);
+  return `<h3>Change record</h3>` +
+    (href?`<div class="kv"><b>record PR</b> <a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(cr.url)}</a></div>`:'') +
+    (cmds.length?`<div class="kv"><b>runs on</b> ${esc(r.host_id)}</div><pre>${esc(cmds.join('\n'))}</pre>`
+      :`<div class="muted" style="margin:0 0 8px">no command plan recorded yet</div>`) +
+    (waiting&&href?`<div class="muted" style="margin:0 0 8px">this row is waiting on a human, not stuck: merging the record PR authorises exactly the commands above and the executor then runs them. Closing it without merging fails the row instead.</div>`:'');
 }
 
 // Every resolved row gets a close line (so completed_at is always visible),
