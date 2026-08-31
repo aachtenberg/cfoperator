@@ -216,15 +216,28 @@ def test_every_declared_prefix_is_a_namespace():
 # to cover the thinking AND the answer. Gemini arrived here in CFOP-112;
 # DeepSeek in CFOP-134, having shipped unbudgeted because CFOP-112 was framed
 # as a Gemini fix rather than a reasoning-model one.
-REASONING_BACKENDS = ('gemini', 'deepseek')
+#
+# Derived from the registry, not listed: a hardcoded tuple is a second copy of
+# the split, and a third reasoning row would simply be absent from both halves
+# and go unchecked rather than failing anything (CFOP-134 review).
+REASONING_BACKENDS = tuple(sorted(
+    b for b, cfg in OPENAI_COMPAT_PROVIDERS.items() if cfg.get('tool_loop_max_tokens')))
 # Everything else sends what it always sent.
-PLAIN_BACKENDS = ('groq', 'xai')
+PLAIN_BACKENDS = tuple(sorted(
+    b for b, cfg in OPENAI_COMPAT_PROVIDERS.items() if not cfg.get('tool_loop_max_tokens')))
+# Deriving alone would let the set quietly shrink to nothing — every backend
+# would land in PLAIN_BACKENDS and the split would still "pass". These two have
+# been measured against the live API and must stay budgeted.
+MEASURED_REASONING = frozenset({'gemini', 'deepseek'})
 
 
 def test_registry_params_split_wire_params_from_the_loop_budget():
     # request_params ride every chat/completions request; the raised budget
     # is the tool loop's alone (thinking shares max_tokens with a long,
     # tool-driven answer there; the json_object extraction sites do not).
+    assert MEASURED_REASONING <= set(REASONING_BACKENDS), (
+        f'a measured reasoning backend lost its budget: '
+        f'{sorted(MEASURED_REASONING - set(REASONING_BACKENDS))}')
     for backend in REASONING_BACKENDS:
         assert CFOperator._openai_compat_request_params(backend) == \
             {'reasoning_effort': 'low'}, backend

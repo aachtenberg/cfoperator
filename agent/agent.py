@@ -7757,7 +7757,8 @@ Only return the JSON array, no other text."""
         """Per-provider chat/completions parameters from the registry, or {}.
 
         Applied with ``payload.update`` at every compat request site, so a
-        provider-specific need (Gemini's thinking budget, CFOP-112) is one
+        provider-specific need (a reasoning backend's thinking budget,
+        CFOP-112 for Gemini, CFOP-134 for DeepSeek) is one
         registry row rather than a branch per call site. Providers that
         declare nothing send exactly what they sent before.
         """
