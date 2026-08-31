@@ -77,7 +77,7 @@ def _extract_helpers():
     """Lift the three changeRecord* functions out of the page verbatim."""
     src = _inline_script()
     got = []
-    for name in ("changeRecord", "changeRecordChip", "changeRecordHtml"):
+    for name in ("changeRecord", "awaitingRecordMerge", "changeRecordChip", "changeRecordHtml"):
         m = re.search(rf"^function {name}\(.*?^}}", src, re.S | re.M)
         assert m, f"{name}() is gone from remediations.html — the gate render was removed"
         got.append(m.group(0))
@@ -188,8 +188,14 @@ def test_the_helpers_are_actually_wired_into_the_drawer():
     # It must REPLACE Approve while a record is pending, not sit beside it:
     # Approve on a waiting row is a no-op that contradicts the copy telling the
     # operator to go merge. Same shape as the gitops `pr_url ? Review PR : Approve`.
-    approve_branch = re.search(r"changeRecordChip\(r\)\s*\n\s*\?\s*changeRecordChip\(r\)\s*\n\s*:\s*`<button class=\"chip\" onclick=\"approve", src)
-    assert approve_branch, "the change-record chip must stand in for Approve while a record is pending"
+    # ...and only WHILE PENDING. Keyed off the waiting predicate, not off url
+    # presence: the record url is stamped at open() and never cleared, so
+    # keying on it hides Approve forever -- including on the needs-human row
+    # that Approve exists to retry. See test_approve_survives_a_failed_row.
+    approve_branch = re.search(
+        r"awaitingRecordMerge\(r\)\s*\n\s*\?\s*changeRecordChip\(r\)\s*\n\s*:\s*`<button class=\"chip\" onclick=\"approve",
+        src)
+    assert approve_branch, "the change-record chip must stand in for Approve only while the record is pending"
     # And the queue LIST must LINK it -- the operator who found this had to open
     # the drawer because the row showed an em dash. Asserted on the href
     # expression itself: a first version checked only that changeRecord(r) was
@@ -244,3 +250,83 @@ def test_the_signature_still_reacts_to_the_fields_it_always_did():
     assert _signature([base]) != _signature([_row(result={}, status="failed")])
     assert _signature([base]) == _signature([_row(result={})]), \
         "signature() is unstable for an unchanged row — the list would repaint every poll"
+
+
+def _action_row(row):
+    """Render just the chip decision for one row, under node."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    src = _inline_script()
+    fns = []
+    for name in ("changeRecord", "changeRecordChip", "awaitingRecordMerge"):
+        m = re.search(rf"^function {name}\(.*?^}}", src, re.S | re.M)
+        assert m, f"{name}() is gone"
+        fns.append(m.group(0))
+    harness = f"""
+      const esc = s => String(s==null?'':s).replace(/[&<>"']/g,
+        c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
+      const safeUrl = u => {{ const s = String(u||'').trim();
+        return /^https?:\\/\\//i.test(s) ? s : ''; }};
+      {chr(10).join(fns)}
+      const r = {json.dumps(row)};
+      // the page's ternary, reproduced only as far as the branch under test
+      const chip = awaitingRecordMerge(r) ? changeRecordChip(r) : 'APPROVE';
+      const trailing = !awaitingRecordMerge(r) ? changeRecordChip(r) : '';
+      console.log(JSON.stringify({{primary: chip, trailing: trailing}}));
+    """
+    out = subprocess.run([node, "-e", harness], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def test_approve_survives_a_failed_row_that_still_carries_a_record():
+    """The regression this nearly shipped.
+
+    fail_remediation requeues under the attempt cap and parks needs-human AT it
+    (knowledge_base.fail_remediation). needs-human is the console's retry path:
+    Approve sends it back to queued. But the change-record url is stamped at
+    open() and never cleared, so keying the chip off url presence hides Approve
+    on exactly the row an operator is supposed to re-approve.
+
+    Gitops can hide Approve whenever pr_url is set because that column means
+    "do not open a second PR". A change-record url carries no such meaning --
+    it outlives the gate.
+    """
+    parked = _action_row(_row(status="needs-human",
+                              last_error="node action failed: ssh could not connect"))
+    assert parked["primary"] == "APPROVE", \
+        "Approve is gone on the needs-human row it exists to retry"
+    # the record stays reachable, just not in Approve's place
+    assert _URL in parked["trailing"]
+
+
+def test_the_chip_replaces_approve_only_while_the_record_is_pending():
+    waiting = _action_row(_row())  # queued + sentinel
+    assert _URL in waiting["primary"], "a waiting row should offer the record, not Approve"
+    assert waiting["trailing"] == "", "no duplicate chip while it stands in for Approve"
+
+    for state in (dict(status="claimed", last_error=None),
+                  dict(status="resolved", last_error=None),
+                  dict(status="queued", last_error=None)):
+        out = _action_row(_row(**state))
+        assert out["primary"] == "APPROVE", f"Approve should be present for {state}"
+        assert _URL in out["trailing"], f"the record should stay reachable for {state}"
+
+
+def test_a_row_being_worked_is_not_waiting_even_though_the_sentinel_lingers():
+    """The state that makes `queued &&` load-bearing, not decorative.
+
+    last_error is never cleared, so after the merge the row goes `claimed` with
+    "awaiting change-record approval" still on it while the executor runs. The
+    live smoke test showed exactly this: #95 cycled claimed <-> queued carrying
+    that string throughout. Keying on the sentinel alone would tell the operator
+    a running row is waiting on them, and would hide Approve on it.
+
+    A drain tick holding the claim is the same shape, which is why the status
+    half of the predicate is not optional.
+    """
+    running = _row(status="claimed")  # sentinel still set, as in production
+    assert "waiting on a human" not in _render(running)["block"]
+    assert _action_row(running)["primary"] == "APPROVE"
+    assert _URL in _action_row(running)["trailing"], "the record stays reachable while it runs"

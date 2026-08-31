@@ -328,9 +328,10 @@ async function detail(id){
         ? `<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify first</button>`
         : safeUrl(r.pr_url)
         ? `<a class="chip" href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">↗ Review PR</a>`
-        : changeRecordChip(r)
+        : awaitingRecordMerge(r)
         ? changeRecordChip(r)
         : `<button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>`}
+      ${!awaitingRecordMerge(r)?changeRecordChip(r):''}
       ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">↗ Named PR</a>`:''}
       <button class="chip" onclick="showResolve(${r.id})">✔ Resolve</button>
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
@@ -427,6 +428,13 @@ function changeRecord(r){
   const cr = (r.result||{}).change_record;
   return (cr && typeof cr === 'object') ? cr : null;
 }
+// Parked on the record gate: queued, with the sentinel the agent writes while
+// it polls for the merge. NOT "has a change-record url" -- that url is stamped
+// at open() and never cleared, so it outlives the gate. Used by both the chip
+// decision and the drawer copy so the button and the sentence cannot disagree.
+function awaitingRecordMerge(r){
+  return r.status === 'queued' && r.last_error === 'awaiting change-record approval';
+}
 function changeRecordChip(r){
   const href = safeUrl((changeRecord(r)||{}).url);
   return href ? `<a class="chip" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="merging this authorises the commands below to run on the host">↗ Review change record</a>` : '';
@@ -442,7 +450,7 @@ function changeRecordHtml(r){
   // to go merge the PR that was just closed. A claimed row is running, not
   // waiting, for the same reason. This string is what _prepare_node_action_
   // change_record writes while it polls for approval.
-  const waiting = r.status === "queued" && r.last_error === "awaiting change-record approval";
+  const waiting = awaitingRecordMerge(r);
   return `<h3>Change record</h3>` +
     (href?`<div class="kv"><b>record PR</b> <a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(cr.url)}</a></div>`:'') +
     (cmds.length?`<div class="kv"><b>runs on</b> ${esc(r.host_id)}</div><pre>${esc(cmds.join('\n'))}</pre>`
