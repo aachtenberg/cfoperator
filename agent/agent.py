@@ -5112,7 +5112,9 @@ FIX: {_FIX_JSON_SCHEMA}"""
         which raw sweep findings don't contain. Falls back to structured sweep
         findings when the LLM emits no usable block. Gated by queue_feed; the
         per-item remediation_class/risk/confidence drive the auto-execute gate,
-        so a low-risk gitops-patch can become auto-eligible. Deduped by title.
+        so a low-risk gitops-patch can become auto-eligible. Deduped by title,
+        and by the CFOP-71 node collapse: a rec naming a NotReady node folds
+        onto that node's incident row instead of opening its own (CFOP-130).
 
         ``provider`` is the summary LLM tag (``backend/model``) stamped onto
         queued rows as ``payload.provider`` — not applied on the sweep fallback,
@@ -5139,6 +5141,43 @@ FIX: {_FIX_JSON_SCHEMA}"""
             # hallucination must not surface as a high-confidence queue row.
             if conf is not None:
                 conf = min(conf, _SUMMARY_CONFIDENCE_CAP)
+            # CFOP-130: the node collapse runs BEFORE routing, above both the
+            # dispatch branch and the enqueue, because a NotReady node owns
+            # every finding that names it regardless of how the rec is worded
+            # or which class the summarizer self-labelled it. Placing it lower
+            # would only catch the human-only leftover: "Verify raspberrypi5
+            # connectivity" is investigate-shaped, so it would dispatch a
+            # deep-tier investigation to re-derive "the host is unreachable"
+            # while #93 already says exactly that. Same reasoning as CFOP-108's
+            # refusal to re-investigate a NotReady host's symptoms one at a
+            # time, and the same order _maybe_queue_remediation uses: the node
+            # tier is asked first and no tier below it gets a say.
+            #
+            # Matched on host-or-title deliberately. _collapse_key_for_node_incident
+            # reads only details['host'], and this feed does emit recs with an
+            # empty host (the model puts the node in the title instead), so a
+            # blank host must not blind the fold. CFOP-126's _host_candidates
+            # tokenizes the string and _match_known_host accepts only tokens
+            # naming a registered NotReady node -- an unknown word is passed
+            # over, never guessed at -- so feeding it a title cannot invent a
+            # match. Fails open throughout: a KB or inventory error means
+            # today's behaviour, never a lost finding.
+            host = r.get('host')
+            node_details = {'host': host or title}
+            node_key = self._collapse_key_for_node_incident(node_details)
+            if node_key and node_key != key:
+                absorbed = self._record_absorbed_symptom(
+                    node_key, {'trigger': title, 'recommendation': rec})
+                if absorbed:
+                    logger.info(f"Folding summary rec '{title}' onto node "
+                                f"incident #{absorbed} ({node_key})")
+                    continue
+                # No incident row yet -- this rec opens it, under the node key
+                # and named for the matched node, so the investigation feed's
+                # later enqueue folds onto THIS row. It enqueues rather than
+                # dispatches for the reason above: the answer is already known.
+                key = node_key
+                host = node_details['host']
             # 'investigate' findings are evidence-gathering the agent does itself.
             # A mutation-class rec from the summary is an UNVERIFIED hypothesis
             # (cheap model, no enforced grounding), so route it the same way:
@@ -5157,11 +5196,16 @@ FIX: {_FIX_JSON_SCHEMA}"""
             # they are dispatch-only. Trust the classifier's classification,
             # not the summarizer's; do not "unify" the two feeds by loosening
             # this one.
+            # ``and not node_key``: the node tier already claimed this rec above,
+            # and dispatching would spend a deep-tier call to re-derive what the
+            # incident row already says. The node tier is asked first and no tier
+            # below it gets a say -- the same precedence _maybe_queue_remediation
+            # applies when it skips the CFOP-78 fold on a node-key match.
             route_investigate = (
                 rclass == 'investigate'
                 or rclass in _SUMMARY_MUTATION_CLASSES
                 or (rclass == 'manual' and self._recommendation_is_investigate_shaped(rec))
-            )
+            ) and not node_key
             if route_investigate:
                 # CFOP-46 D: same loop-break as the sweep path — an open
                 # remediation row under this key means an earlier dispatch
@@ -5189,7 +5233,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
                 continue
             try:
                 payload = {'recommendation': rec, 'title': title,
-                           'target': {'host': r.get('host')},
+                           'target': {'host': host},
                            'repo': (str(r.get('repo') or '').strip() or None),
                            'source': 'morning-summary', 'dedupe_key': key}
                 if provider:
@@ -5197,7 +5241,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
                 rid = self.kb.queue_remediation(
                     remediation_class=rclass,
                     payload=payload,
-                    host_id=str(r.get('host') or 'default')[:64],
+                    host_id=str(host or 'default')[:64],
                     risk=risk,
                     confidence=conf,
                     dedupe_key=key,
