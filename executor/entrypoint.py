@@ -35,7 +35,8 @@ from diff import extract_diff_block
 from github import GitHubClient, get_file, list_repo_files, open_pr_from_diff
 from llm import make_llm
 from nodeaction import (
-    build_command_prompt, parse_command_plan, run_ssh_plan, validate_plan,
+    allowlist_from_env, build_command_prompt, parse_command_plan, run_ssh_plan,
+    validate_plan,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -271,6 +272,10 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
         return build_completion_payload(work_order, "needs-human", None,
                                         "node-action execution not enabled on this executor", None)
 
+    # CFOP-133: what this Job may run, as the agent handed it over. No built-in
+    # fallback -- an absent list refuses every command, which is what an
+    # executor newer than its agent, or an install that declared nothing, gets.
+    allow = allowlist_from_env(env)
     approved = work_order.get("approved_plan") if isinstance(work_order.get("approved_plan"), dict) else None
     if approved and approved.get("commands"):
         plan = {
@@ -282,12 +287,12 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
                     len(plan["commands"]))
     else:
         llm = make_llm(env)
-        plan = parse_command_plan(llm.complete(build_command_prompt(work_order)))
+        plan = parse_command_plan(llm.complete(build_command_prompt(work_order, allow)))
         if not plan:
             return build_completion_payload(work_order, "needs-human", None,
                                             "model produced no parseable command plan", None)
     commands = plan.get("commands") or []
-    ok, reason = validate_plan(commands)
+    ok, reason = validate_plan(commands, allow)
     if not ok:
         return build_completion_payload(work_order, "needs-human", None,
                                         f"command plan failed safety gate: {reason}",

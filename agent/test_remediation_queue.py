@@ -3529,3 +3529,86 @@ def test_the_default_drain_fixture_refuses_a_node_action():
     assert CFOperator._drain_remediation_queue(op) == 0
     op._spawn_remediation_executor.assert_not_called()
     assert op.kb.update_remediation_status.call_args.args == (30, "needs-human")
+
+
+# ---- CFOP-133: the allowlist is resolved from config and handed to the Job ---
+
+_CEILING = {
+    "allow_binaries": ["chmod", "chown", "systemctl"],
+    "allow_systemctl_verbs": ["restart", "status"],
+    "max_commands": 3,
+}
+
+
+def _allowlist_op(ceiling=None, selected_b="", selected_v=""):
+    """An op with a real allowlist resolver over a config ceiling + DB selection."""
+    op = MagicMock()
+    op._executor_config.return_value = {
+        "node_action": {"enabled": True, "host": "controller",
+                        **(ceiling if ceiling is not None else _CEILING)}}
+    op.kb.get_setting.side_effect = lambda name, default='': {
+        "node_action_allow_binaries": selected_b,
+        "node_action_allow_systemctl_verbs": selected_v,
+    }.get(name, default)
+    op._node_action_setting = lambda n: CFOperator._node_action_setting(op, n)
+    op._node_action_allowlist = lambda: CFOperator._node_action_allowlist(op)
+    return op
+
+
+def _manifest_env(op):
+    work = {"id": 10, "remediation_class": "node-action", "risk": "low",
+            "payload": {"recommendation": "fix perms"}}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-n", work)
+    containers = spec["spec"]["template"]["spec"]["containers"][0]
+    return {e["name"]: e["value"] for e in containers["env"] if "value" in e}
+
+
+def test_job_env_carries_the_resolved_allowlist():
+    # The executor ships no built-in list, so these three env vars are the only
+    # thing between it and refusing everything. A MagicMock op yields empty
+    # strings here and would pass a test that only checked the keys exist.
+    env = _manifest_env(_allowlist_op())
+    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == "chmod,chown,systemctl"
+    assert env["CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS"] == "restart,status"
+    assert env["CFOP_NODE_ACTION_MAX_COMMANDS"] == "3"
+
+
+def test_console_selection_narrows_what_reaches_the_job():
+    env = _manifest_env(_allowlist_op(selected_b="systemctl", selected_v="restart"))
+    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == "systemctl"
+    assert env["CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS"] == "restart"
+
+
+def test_console_selection_cannot_widen_past_the_ceiling():
+    # The whole security model. A DB row naming rm, or naming a binary the
+    # deploy never blessed, must not reach the Job -- console-admin is not
+    # allowed to become root on every host the executor's key reaches.
+    env = _manifest_env(_allowlist_op(selected_b="chmod,rm,journalctl,dd"))
+    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == "chmod"
+
+
+def test_an_undeclared_ceiling_hands_over_nothing():
+    # An install that never said what node-actions may run gets an empty list,
+    # which the executor treats as "refuse everything" -- not a built-in guess.
+    env = _manifest_env(_allowlist_op(ceiling={}))
+    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == ""
+    assert env["CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS"] == ""
+
+
+def test_an_unreadable_db_falls_back_to_the_whole_ceiling_not_to_nothing():
+    # A read failure is indistinguishable from "unset", and unset means the
+    # whole ceiling. Failing to nothing would take node-actions offline
+    # whenever the database blipped.
+    op = _allowlist_op()
+    op.kb.get_setting.side_effect = RuntimeError("db down")
+    env = _manifest_env(op)
+    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == "chmod,chown,systemctl"
+
+
+def test_a_corrupted_setting_is_treated_as_unset():
+    # AgentSettings.value is a Text column; anything else is a corrupted row
+    # and must not silently become the allowlist.
+    op = _allowlist_op()
+    op.kb.get_setting.side_effect = lambda name, default='': object()
+    env = _manifest_env(op)
+    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == "chmod,chown,systemctl"

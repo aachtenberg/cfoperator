@@ -64,6 +64,7 @@ from change_record_client import (
     open_record as change_record_open,
 )
 from node_action_plan import (
+    allowlist_from_config as _na_allowlist_from_config,
     build_command_prompt as _na_build_command_prompt,
     normalize_plan as _na_normalize_plan,
     parse_command_plan as _na_parse_command_plan,
@@ -3195,28 +3196,68 @@ FIX: {_FIX_JSON_SCHEMA}"""
             if b.get('type') == 'text'
         )
 
+
+    def _node_action_setting(self, name: str) -> str:
+        """A console-written allowlist selection, or '' when unset.
+
+        Same DB-over-config shape as _remediation_flag, and the same failure
+        posture: a read error means "unset", which resolves to the whole
+        config ceiling rather than to nothing. Non-string values are treated as
+        unset -- AgentSettings.value is a Text column, so anything else is a
+        corrupted row, and a corrupted row must not silently become the
+        allowlist.
+        """
+        try:
+            val = self.kb.get_setting(name, '')
+        except Exception as e:
+            logger.debug(f"Could not read allowlist setting '{name}': {e}")
+            return ''
+        return val.strip() if isinstance(val, str) else ''
+
+    def _node_action_allowlist(self):
+        """The effective node-action allowlist: config ceiling ∩ console selection.
+
+        CFOP-133. config.yaml declares the maximum an install may ever run; the
+        console picks a subset of it, live, with no redeploy. The DB can only
+        NARROW -- widening past the ceiling would make console-admin equivalent
+        to root on every host the executor's key reaches, which is the same
+        privilege-escalation shape _remediation_flag closes with the profile
+        and ROLE_SCOPE_CEILING closes in auth/models.py.
+
+        A config block that declares nothing yields an allowlist that refuses
+        everything. Deliberate: an install that has not said what node-actions
+        may run does not get a built-in guess.
+        """
+        na = self._executor_config().get('node_action')
+        na = na if isinstance(na, dict) else {}
+        return _na_allowlist_from_config(
+            na,
+            selected_binaries=self._node_action_setting('node_action_allow_binaries'),
+            selected_verbs=self._node_action_setting('node_action_allow_systemctl_verbs'),
+        )
     def _generate_node_action_plan(self, work: Dict[str, Any]) -> Dict[str, Any]:
         """Produce a validated {host, commands, explanation} plan for open()/spawn.
 
         Reuses any plan already persisted on the change_record / payload so a
         reclaim after release does not re-call the LLM.
         """
+        allow = self._node_action_allowlist()
         result = work.get('result') if isinstance(work.get('result'), dict) else {}
         cr = result.get('change_record') if isinstance(result.get('change_record'), dict) else {}
         for candidate in (cr.get('plan'), work.get('approved_plan'),
                           (work.get('payload') or {}).get('plan') if isinstance(work.get('payload'), dict) else None):
             if isinstance(candidate, dict) and candidate.get('commands'):
                 plan = _na_normalize_plan(candidate)
-                ok, reason = _na_validate_plan(plan['commands'])
+                ok, reason = _na_validate_plan(plan["commands"], allow)
                 if ok:
                     return plan
                 raise RuntimeError(f"persisted plan failed safety gate: {reason}")
-        reply = self._complete_node_action_plan(_na_build_command_prompt(work))
+        reply = self._complete_node_action_plan(_na_build_command_prompt(work, allow))
         parsed = _na_parse_command_plan(reply)
         if not parsed:
             raise RuntimeError("model produced no parseable command plan")
         plan = _na_normalize_plan(parsed)
-        ok, reason = _na_validate_plan(plan['commands'])
+        ok, reason = _na_validate_plan(plan["commands"], allow)
         if not ok:
             raise RuntimeError(f"command plan failed safety gate: {reason}")
         return plan
@@ -3396,11 +3437,23 @@ FIX: {_FIX_JSON_SCHEMA}"""
             # uses to SSH into hosts. Mount it at a staging dir (group-readable);
             # the executor copies it into ~/.ssh at 0600 (ssh refuses looser).
             ssh_secret = na.get('ssh_secret', 'cfop-forensics-ssh')
+            # CFOP-133: the Job is TOLD what it may run. The executor keeps no
+            # built-in allowlist, so these three are the only thing standing
+            # between it and "refuse everything" -- which is the correct
+            # failure mode for an install that never declared a list, and for
+            # an executor image newer than the agent that spawned it.
+            allow = self._node_action_allowlist()
             env += [
                 {"name": "CFOP_NODE_ACTION_ENABLED", "value": "true"},
                 {"name": "CFOP_NODE_ACTION_HOST", "value": str(na.get('host', ''))},
                 {"name": "CFOP_SSH_USER", "value": str(na.get('ssh_user', 'sre'))},
                 {"name": "CFOP_SSH_SECRET_DIR", "value": "/ssh-secret"},
+                {"name": "CFOP_NODE_ACTION_ALLOW_BINARIES",
+                 "value": ",".join(sorted(allow.binaries))},
+                {"name": "CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS",
+                 "value": ",".join(sorted(allow.systemctl_verbs))},
+                {"name": "CFOP_NODE_ACTION_MAX_COMMANDS",
+                 "value": str(allow.max_commands)},
             ]
             # Change-record close URL for the executor (agent already gated on
             # approval before spawn). Unset → executor skips close entirely.

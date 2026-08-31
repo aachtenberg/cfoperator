@@ -12,6 +12,22 @@ from nodeaction import (
     SSHError, parse_command_plan, validate_command, validate_plan,
 )
 
+# The allowlist the agent hands this Job. Test data: the executor image ships
+# no default, so every call site must be explicit (CFOP-133).
+_ALLOW_B = "chmod,chown,chgrp,ln,mkdir,install,touch,restorecon,chattr,systemctl"
+_ALLOW_V = ("restart,start,reload,reload-or-restart,status,is-active,"
+            "is-enabled,enable,daemon-reload")
+_ALLOW = nodeaction.AllowList(
+    binaries=frozenset(_ALLOW_B.split(",")),
+    systemctl_verbs=frozenset(_ALLOW_V.split(",")),
+    max_commands=4,
+)
+_ALLOW_ENV = {
+    "CFOP_NODE_ACTION_ALLOW_BINARIES": _ALLOW_B,
+    "CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS": _ALLOW_V,
+    "CFOP_NODE_ACTION_MAX_COMMANDS": "4",
+}
+
 
 # ---- the safety gate ---------------------------------------------------------
 
@@ -25,7 +41,7 @@ from nodeaction import (
     "mkdir -p /etc/cfop",
 ])
 def test_validate_command_allows_safe(cmd):
-    ok, reason = validate_command(cmd)
+    ok, reason = validate_command(cmd, _ALLOW)
     assert ok, reason
 
 
@@ -46,23 +62,23 @@ def test_validate_command_allows_safe(cmd):
     ("", "empty"),
 ])
 def test_validate_command_refuses_unsafe(cmd, needle):
-    ok, reason = validate_command(cmd)
+    ok, reason = validate_command(cmd, _ALLOW)
     assert not ok
     assert needle in reason
 
 
 def test_validate_plan_rejects_too_many():
-    ok, reason = validate_plan(["chmod 600 /a"] * 5)
+    ok, reason = validate_plan(["chmod 600 /a"] * 5, _ALLOW)
     assert not ok and "too many" in reason
 
 
 def test_validate_plan_rejects_empty():
-    ok, reason = validate_plan([])
+    ok, reason = validate_plan([], _ALLOW)
     assert not ok and "no commands" in reason
 
 
 def test_validate_plan_rejects_if_any_bad():
-    ok, reason = validate_plan(["chmod 600 /a", "rm -rf /b"])
+    ok, reason = validate_plan(["chmod 600 /a", "rm -rf /b"], _ALLOW)
     assert not ok and "denied" in reason
 
 
@@ -101,7 +117,8 @@ def _node_order(**payload_extra):
 
 
 def _env(order, **extra):
-    env = {"CFOP_REMEDIATION_JSON": json.dumps(order), "CFOP_NODE_ACTION_ENABLED": "true"}
+    env = {"CFOP_REMEDIATION_JSON": json.dumps(order), "CFOP_NODE_ACTION_ENABLED": "true",
+           **_ALLOW_ENV}
     env.update(extra)
     return env
 
