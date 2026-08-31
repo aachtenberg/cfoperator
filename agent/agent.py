@@ -1568,7 +1568,7 @@ class CFOperator:
             if backend_type == 'prometheus':
                 from observability.prometheus_containers import PrometheusContainers
                 prometheus_url = metrics_config.get('url')
-                ssh_user = container_config.get('ssh_user', 'sre')
+                ssh_user = str(container_config.get('ssh_user') or '').strip()
                 backend = PrometheusContainers(prometheus_url=prometheus_url, ssh_user=ssh_user)
                 container_backends.append(backend)
                 logger.info(f"Initialized Prometheus container backend (SSH user: {ssh_user})")
@@ -3479,7 +3479,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
             env += [
                 {"name": "CFOP_NODE_ACTION_ENABLED", "value": "true"},
                 {"name": "CFOP_NODE_ACTION_HOST", "value": str(na.get('host', ''))},
-                {"name": "CFOP_SSH_USER", "value": str(na.get('ssh_user', 'sre'))},
+                {"name": "CFOP_SSH_USER", "value": str(na.get("ssh_user") or "")},
                 {"name": "CFOP_SSH_SECRET_DIR", "value": "/ssh-secret"},
                 {"name": "CFOP_NODE_ACTION_ALLOW_BINARIES",
                  "value": ",".join(sorted(allow.binaries))},
@@ -6354,7 +6354,7 @@ Only return the JSON array, no other text."""
 
                 # If no data for this host, try SSH docker ps (only if a Docker-type backend is configured)
                 if not actual_names and host_addr and has_docker_backend:
-                    ssh_user = host_info.get('ssh', {}).get('user', 'sre')
+                    ssh_user = str(host_info.get('ssh', {}).get('user') or '').strip()
                     try:
                         result = subprocess.run(
                             ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',

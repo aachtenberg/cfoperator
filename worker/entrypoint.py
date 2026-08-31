@@ -111,7 +111,11 @@ def load_inputs(env: Dict[str, str] | None = None) -> WorkerInputs:
         deep_context=_json_env("CFOP_DEEP_CONTEXT_JSON"),
         template=env.get("CFOP_TEMPLATE", "host-forensics").strip(),
         target_host=env.get("CFOP_TARGET_HOST", "").strip(),
-        ssh_user=env.get("CFOP_SSH_USER", "aachten").strip(),
+        # No default (CFOP-137): deep_investigation.py always injects this into
+        # the Job env, so a fallback here only masks a misconfigured spawner --
+        # and the one that used to be here was a personal username in a public
+        # image. Empty surfaces at connect time with the value plainly missing.
+        ssh_user=env.get("CFOP_SSH_USER", "").strip(),
         model=env.get("CLAUDE_MODEL", "").strip(),
         claude_timeout=int(env.get("CFOP_CLAUDE_TIMEOUT", "600") or 600),
         completion_url=env.get("CFOP_COMPLETION_URL", "").strip(),

@@ -69,7 +69,9 @@ class DeepInvestigationConfig:
     secrets_name: str = "cfoperator-secrets"
     image_pull_secret: str = "ghcr-pull-secret"
     ssh_secret_name: str = "cfop-forensics-ssh"
-    ssh_user: str = "aachten"
+    # No default (CFOP-137) -- see DeepInvestigationConfig users. An install
+    # that never says who to SSH as does not get this project's operator.
+    ssh_user: str = ""
     completion_base_url: str = ""
     agent_url: str = ""
     max_concurrent: int = 2

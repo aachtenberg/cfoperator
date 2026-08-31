@@ -251,7 +251,16 @@ def run_ssh_plan(host: str, commands: List[str], env: Dict[str, str]) -> List[Di
     secret_dir = (env.get("CFOP_SSH_SECRET_DIR") or "").strip()
     if secret_dir:
         prepare_ssh(Path(secret_dir), Path.home() / ".ssh")  # -> default identity
-    user = (env.get("CFOP_SSH_USER") or "aachten").strip()
+    # No default (CFOP-137). There is no defensible SSH username for an
+    # arbitrary install, and the one that used to be here was a personal
+    # account baked into a public image. The agent resolves this and passes it
+    # in; an empty value means the deploy never said who to connect as, which
+    # is a refusal, not a guess. Same posture as the empty AllowList.
+    user = (env.get("CFOP_SSH_USER") or "").strip()
+    if not user:
+        raise SSHError(
+            "no SSH user configured: set remediation.executor.node_action.ssh_user "
+            "(the agent passes it as CFOP_SSH_USER)")
     key = (env.get("CFOP_SSH_KEY") or "").strip()  # optional explicit -i override
     timeout = int(env.get("CFOP_SSH_CONNECT_TIMEOUT", "5") or 5)
     cmd_timeout = int(env.get("CFOP_NODE_ACTION_TIMEOUT", "60") or 60)
