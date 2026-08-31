@@ -314,6 +314,7 @@ async function detail(id){
         ? `<a class="chip" href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">↗ Review PR</a>`
         : `<button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>`}
       ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">↗ Named PR</a>`:''}
+      ${changeRecordChip(r)}
       <button class="chip" onclick="showResolve(${r.id})">✔ Resolve</button>
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
       ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify</button>`}
@@ -337,6 +338,7 @@ async function detail(id){
       :safeUrl(r.named_pr_url)?`<div class="kv"><b>PR named</b> <a href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.named_pr_url)}</a> <span class="muted">not tracked by this row</span></div>`:''}
     ${prAttemptHtml(p.pr_attempt)}
     ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
+    ${changeRecordHtml(r)}
     ${resolutionHtml(r)}
     <h3>Recommendation</h3><pre>${esc(p.recommendation||p.title||'—')}</pre>
     ${p.targets?`<h3>Targets</h3><pre>${esc(JSON.stringify(p.targets,null,2))}</pre>`:''}
@@ -389,6 +391,40 @@ function prAttemptHtml(attempt){
   return `<div class="kv"><b>PR attempt</b> ${esc(status)}` +
     (detail?` — ${esc(detail)}`:'') +
     (extra?`<br><span class="muted mono">${esc(extra)}</span>`:'') + `</div>`;
+}
+
+// A node-action's change record: the PR whose merge authorises shell on a
+// host, plus the exact commands that will run (CFOP-139).
+//
+// Deliberately NOT r.pr_url. That column is the executor-opened gitops PR, and
+// putting the record there would trip two things it has nothing to do with:
+// the "a PR is already open, Approve is off" note below, and the CFOP-116
+// reconciler that resolves a row when its PR merges. The record lives in
+// result.change_record, so it is read and rendered separately.
+//
+// Without this the whole second gate is invisible: the row shows `queued` and
+// `awaiting change-record approval`, and an operator has no way to reach the
+// PR they are being asked to merge or to see what it authorises. Found by the
+// first live node-action (row #95).
+function changeRecord(r){
+  const cr = (r.result||{}).change_record;
+  return (cr && typeof cr === 'object') ? cr : null;
+}
+function changeRecordChip(r){
+  const href = safeUrl((changeRecord(r)||{}).url);
+  return href ? `<a class="chip" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="merging this authorises the commands below to run on the host">↗ Review change record</a>` : '';
+}
+function changeRecordHtml(r){
+  const cr = changeRecord(r);
+  if(!cr) return '';
+  const href = safeUrl(cr.url);
+  const cmds = ((cr.plan||{}).commands||[]).filter(c=>typeof c==='string');
+  const waiting = !TERMINAL.has(r.status);
+  return `<h3>Change record</h3>` +
+    (href?`<div class="kv"><b>record PR</b> <a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(cr.url)}</a></div>`:'') +
+    (cmds.length?`<div class="kv"><b>runs on</b> ${esc(r.host_id)}</div><pre>${esc(cmds.join('\n'))}</pre>`
+      :`<div class="muted" style="margin:0 0 8px">no command plan recorded yet</div>`) +
+    (waiting&&href?`<div class="muted" style="margin:0 0 8px">this row is waiting on a human, not stuck: merging the record PR authorises exactly the commands above and the executor then runs them. Closing it without merging fails the row instead.</div>`:'');
 }
 
 // Every resolved row gets a close line (so completed_at is always visible),
