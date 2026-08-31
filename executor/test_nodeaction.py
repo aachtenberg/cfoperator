@@ -1,6 +1,8 @@
 """Tests for the node-action execution path — the safety gate is the focus."""
 
 import json
+import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -11,6 +13,38 @@ from entrypoint import run
 from nodeaction import (
     SSHError, parse_command_plan, validate_command, validate_plan,
 )
+
+
+def _ceiling_from_chart(key):
+    """The shipped ceiling, read out of the Helm chart -- DERIVED, not copied.
+
+    Same guard as the agent-side suite (CFOP-133 review): a hand-kept copy here
+    would drift from the chart the moment either was edited, and a chart edit
+    adding `journalctl` would fail nothing. The chart is a Helm template, so it
+    is not valid YAML; the two lists are plain inline sequences.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "charts", "cfoperator", "templates", "configmap.yaml")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    m = re.search(r"^\s*%s:\s*\[([^\]]*)\]" % re.escape(key), text, re.MULTILINE)
+    assert m, f"{key} not found in the chart -- the shipped ceiling moved or was removed"
+    return frozenset(t.strip() for t in m.group(1).split(",") if t.strip())
+
+
+_ALLOW_BS = _ceiling_from_chart("allow_binaries")
+_ALLOW_VS = _ceiling_from_chart("allow_systemctl_verbs")
+assert "systemctl" in _ALLOW_BS and len(_ALLOW_BS) >= 5
+assert "restart" in _ALLOW_VS and len(_ALLOW_VS) >= 5
+_ALLOW_B = ",".join(sorted(_ALLOW_BS))
+_ALLOW_V = ",".join(sorted(_ALLOW_VS))
+_ALLOW = nodeaction.AllowList(binaries=_ALLOW_BS, systemctl_verbs=_ALLOW_VS,
+                              max_commands=4)
+_ALLOW_ENV = {
+    "CFOP_NODE_ACTION_ALLOW_BINARIES": _ALLOW_B,
+    "CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS": _ALLOW_V,
+    "CFOP_NODE_ACTION_MAX_COMMANDS": "4",
+}
 
 
 # ---- the safety gate ---------------------------------------------------------
@@ -25,7 +59,7 @@ from nodeaction import (
     "mkdir -p /etc/cfop",
 ])
 def test_validate_command_allows_safe(cmd):
-    ok, reason = validate_command(cmd)
+    ok, reason = validate_command(cmd, _ALLOW)
     assert ok, reason
 
 
@@ -46,23 +80,23 @@ def test_validate_command_allows_safe(cmd):
     ("", "empty"),
 ])
 def test_validate_command_refuses_unsafe(cmd, needle):
-    ok, reason = validate_command(cmd)
+    ok, reason = validate_command(cmd, _ALLOW)
     assert not ok
     assert needle in reason
 
 
 def test_validate_plan_rejects_too_many():
-    ok, reason = validate_plan(["chmod 600 /a"] * 5)
+    ok, reason = validate_plan(["chmod 600 /a"] * 5, _ALLOW)
     assert not ok and "too many" in reason
 
 
 def test_validate_plan_rejects_empty():
-    ok, reason = validate_plan([])
+    ok, reason = validate_plan([], _ALLOW)
     assert not ok and "no commands" in reason
 
 
 def test_validate_plan_rejects_if_any_bad():
-    ok, reason = validate_plan(["chmod 600 /a", "rm -rf /b"])
+    ok, reason = validate_plan(["chmod 600 /a", "rm -rf /b"], _ALLOW)
     assert not ok and "denied" in reason
 
 
@@ -101,7 +135,8 @@ def _node_order(**payload_extra):
 
 
 def _env(order, **extra):
-    env = {"CFOP_REMEDIATION_JSON": json.dumps(order), "CFOP_NODE_ACTION_ENABLED": "true"}
+    env = {"CFOP_REMEDIATION_JSON": json.dumps(order), "CFOP_NODE_ACTION_ENABLED": "true",
+           **_ALLOW_ENV}
     env.update(extra)
     return env
 

@@ -27,40 +27,86 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 logger = logging.getLogger("cfop-executor.nodeaction")
 
-# Non-destructive admin binaries the executor may run on a host. Anything not
-# listed is refused — the allowlist, not a denylist, is the boundary.
-_ALLOWED_BINARIES = {
-    "chmod", "chown", "chgrp", "ln", "mkdir", "install", "touch", "restorecon",
-    "chattr", "systemctl",
-}
-# systemctl is allowed only for these verbs (no stop/disable/mask/kill).
-_ALLOWED_SYSTEMCTL_VERBS = {
-    "restart", "start", "reload", "reload-or-restart", "status", "is-active",
-    "is-enabled", "enable", "daemon-reload",
-}
-# Catastrophic binaries refused even if they somehow reach the allowlist — pure
-# defense in depth so a future allowlist edit cannot open a hole by accident.
+# ---- the floor: hardcoded on purpose, not configurable (CFOP-133) -----------
+#
+# Catastrophic binaries refused even if they are somehow named in the allowlist,
+# and the metacharacters that would chain/redirect/expand around the gate. These
+# are NOT a capability list — they are the "never, under any circumstances"
+# rules, and their whole value is that no config file, no database row and no
+# compromised console can switch them off. Do not make these configurable; the
+# allowlist above them is the operator's dial.
 _DENY_BINARIES = {
     "rm", "rmdir", "dd", "mkfs", "shutdown", "reboot", "halt", "poweroff",
     "kill", "pkill", "killall", "userdel", "useradd", "usermod", "passwd",
     "iptables", "nft", "wipefs", "fdisk", "parted", "mv", "cp", "sh", "bash",
     "curl", "wget", "eval", "exec", "tee", "sed", "awk", "python", "python3",
 }
-# Shell metacharacters that would chain/redirect/expand around the gate. Their
-# presence in the raw command string is an automatic refusal.
 _METACHARS = re.compile(r"[;&|<>`$(){}\[\]*?~\n\r\\]|\$\(|&&|\|\|")
 
-_MAX_COMMANDS = 4
+
+class AllowList(NamedTuple):
+    """What this Job may run, as handed to it by the agent.
+
+    There is deliberately no default and no built-in fallback: the executor
+    does not decide what is allowed, it is *told*, and an empty AllowList
+    refuses everything. A built-in default here would be the CFOP-131
+    pass-through shape again — an unconfigured deploy silently permitting
+    work instead of refusing it — and would also mean an executor image newer
+    than its agent quietly ran on its own idea of the rules.
+    """
+
+    binaries: frozenset
+    systemctl_verbs: frozenset
+    max_commands: int
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.binaries)
 
 
-def build_command_prompt(work_order: Dict[str, Any]) -> str:
-    """Ask the LLM to translate the recommendation into a concrete command plan."""
+def _split_list(raw: str) -> frozenset:
+    """Parse a comma/whitespace separated env list into a set of tokens."""
+    return frozenset(t for t in re.split(r"[,\s]+", (raw or "").strip()) if t)
+
+
+def allowlist_from_env(env: Dict[str, str]) -> AllowList:
+    """The allowlist the agent passed in this Job's environment.
+
+    Absent or empty means refuse everything — never a built-in default. See
+    AllowList. ``max_commands`` has a numeric fallback because a bad integer is
+    a malformed value rather than a missing permission, and 0 would refuse
+    every plan for a reason that reads like a bug.
+    """
+    try:
+        max_commands = int(env.get("CFOP_NODE_ACTION_MAX_COMMANDS") or 4)
+    except (TypeError, ValueError):
+        max_commands = 4
+    return AllowList(
+        binaries=_split_list(env.get("CFOP_NODE_ACTION_ALLOW_BINARIES", "")),
+        systemctl_verbs=_split_list(env.get("CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS", "")),
+        max_commands=max(1, max_commands),
+    )
+
+
+def build_command_prompt(work_order: Dict[str, Any], allow: AllowList) -> str:
+    """Ask the LLM to translate the recommendation into a concrete command plan.
+
+    The rules are GENERATED from ``allow``, never written by hand (CFOP-133).
+    Both copies of this prompt used to spell the list out, and both had drifted
+    from the gate beside them: they named 5 systemctl verbs where 9 were
+    accepted, and 8 denied binaries out of 33. A hand-written prompt also
+    breaks the operator dial outright once the list is configurable — a binary
+    added in the console would be accepted by the gate but never offered to the
+    model, so the change would appear to do nothing.
+    """
     payload = work_order.get("payload") or {}
     target = payload.get("target") or {}
+    binaries = ", ".join(sorted(allow.binaries)) or "(none — every command will be refused)"
+    verbs = ", ".join(sorted(allow.systemctl_verbs)) or "(none)"
     return (
         "You are a careful site-reliability operator translating a remediation "
         "recommendation into concrete shell commands to run on ONE host over SSH.\n\n"
@@ -68,14 +114,14 @@ def build_command_prompt(work_order: Dict[str, Any]) -> str:
         f"Target: {json.dumps(target)}\n"
         f"Context: {str(payload.get('rendered_context', ''))[:4000]}\n\n"
         "Rules:\n"
-        "- Output ONLY the minimal commands needed; prefer one or two.\n"
+        f"- Output at most {allow.max_commands} command(s); prefer one or two.\n"
         "- Each command must be a single, simple command (NO pipes, &&, ;, "
         "redirection, globbing, command substitution, or shell builtins).\n"
-        "- Allowed binaries: chmod, chown, chgrp, ln, mkdir, install, touch, "
-        "restorecon, chattr, systemctl (restart/start/reload/status/enable only).\n"
+        f"- Allowed binaries: {binaries}.\n"
+        f"- systemctl is allowed only with these verbs: {verbs}.\n"
         "- Prefix with 'sudo -n' if (and only if) root is required.\n"
-        "- NEVER use rm, dd, mv, cp, reboot, kill, curl, sed, or any data-destructive "
-        "or network command.\n\n"
+        "- Anything not named above is refused, as is any data-destructive or "
+        "network command.\n\n"
         "Reply with EXACTLY one JSON object and nothing else:\n"
         '{"host": "<hostname or empty to use the configured default>", '
         '"commands": ["cmd1", "cmd2"], "explanation": "one line"}'
@@ -105,15 +151,22 @@ def parse_command_plan(reply: str) -> Optional[Dict[str, Any]]:
     return plan
 
 
-def validate_command(command: str) -> Tuple[bool, str]:
+def validate_command(command: str, allow: AllowList) -> Tuple[bool, str]:
     """Deterministic safety gate for one command. Returns (ok, reason).
 
     The LLM proposes; this function disposes. It is the security boundary, so it
     is intentionally strict: allowlisted binary, no metacharacters, no globs.
+
+    ``allow`` is supplied by the caller and has no default (CFOP-133): the
+    executor enforces the list it was handed and cannot widen it, and an
+    unconfigured AllowList refuses everything rather than falling back.
     """
     raw = (command or "").strip()
     if not raw:
         return False, "empty command"
+    if not allow.configured:
+        return False, ("no allowlist configured for this Job — refusing every "
+                       "command (set remediation.executor.node_action.allow_binaries)")
     if _METACHARS.search(raw):
         return False, f"shell metacharacter in command: {raw!r}"
     try:
@@ -132,23 +185,23 @@ def validate_command(command: str) -> Tuple[bool, str]:
     binary = tokens[0]
     if binary in _DENY_BINARIES:
         return False, f"binary is explicitly denied: {binary}"
-    if binary not in _ALLOWED_BINARIES:
+    if binary not in allow.binaries:
         return False, f"binary not in allowlist: {binary}"
     if binary == "systemctl":
         verb = tokens[1] if len(tokens) > 1 else ""
-        if verb not in _ALLOWED_SYSTEMCTL_VERBS:
+        if verb not in allow.systemctl_verbs:
             return False, f"systemctl verb not allowed: {verb!r}"
     return True, "ok"
 
 
-def validate_plan(commands: List[str]) -> Tuple[bool, str]:
+def validate_plan(commands: List[str], allow: AllowList) -> Tuple[bool, str]:
     """Validate the whole command plan; refuse the lot if any command fails."""
     if not commands:
         return False, "plan has no commands"
-    if len(commands) > _MAX_COMMANDS:
-        return False, f"plan has too many commands ({len(commands)} > {_MAX_COMMANDS})"
+    if len(commands) > allow.max_commands:
+        return False, f"plan has too many commands ({len(commands)} > {allow.max_commands})"
     for cmd in commands:
-        ok, reason = validate_command(cmd)
+        ok, reason = validate_command(cmd, allow)
         if not ok:
             return False, reason
     return True, "ok"

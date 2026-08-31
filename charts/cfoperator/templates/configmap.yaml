@@ -50,4 +50,14 @@ data:
         secrets_name: {{ include "cfoperator.fullname" . }}-generated
         completion_base_url: http://{{ include "cfoperator.fullname" . }}-agent:{{ .Values.console.service.port }}/v1/remediations
         git_repo: {{ .Values.remediate.gitRepo }}
+        # Ceiling for what a node-action may ever run (CFOP-133). The console
+        # picks a subset of this live and can only narrow it; widening needs a
+        # chart change. There is no built-in default in the agent or executor
+        # image, so an install that omits this refuses every node-action.
+        # The deny list and metacharacter rule are the floor and are hardcoded
+        # in both artifacts -- no config can switch them off.
+        node_action:
+          allow_binaries: [chmod, chown, chgrp, ln, mkdir, install, touch, restorecon, chattr, systemctl]
+          allow_systemctl_verbs: [restart, start, reload, reload-or-restart, status, is-active, is-enabled, enable, daemon-reload]
+          max_commands: 4
 {{- end }}
