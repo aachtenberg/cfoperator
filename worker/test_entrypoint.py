@@ -35,7 +35,7 @@ def _inputs(**env_overrides):
         ),
         "CFOP_TEMPLATE": "host-forensics",
         "CFOP_TARGET_HOST": "raspberrypi3",
-        "CFOP_SSH_USER": "aachten",
+        "CFOP_SSH_USER": "someoperator",
         "CLAUDE_MODEL": "claude-opus-4-8",
         "CFOP_CLAUDE_TIMEOUT": "600",
         "CFOP_COMPLETION_URL": "http://event-runtime:8000/v1/investigations/abc-123/complete",
@@ -92,7 +92,7 @@ def test_load_inputs_tolerates_garbage_json():
 def test_build_prompt_substitutes_placeholders():
     template = "Host {host} via {ssh_user}: {alert_summary} ({severity} at {occurred_at})\n{prior_findings}"
     prompt = build_prompt(template, _inputs())
-    assert "Host raspberrypi3 via aachten" in prompt
+    assert "Host raspberrypi3 via someoperator" in prompt
     assert "NodeUnreachable raspberrypi3" in prompt
     assert "critical" in prompt
     assert "triage_reasoning" in prompt  # prior findings serialized in
@@ -357,3 +357,32 @@ def test_run_claude_retries_once_on_overloaded(monkeypatch):
     assert len(calls) == 2
     assert run.success is True
     assert "STATUS: monitoring" in run.report
+
+
+# ---- CFOP-137: an unset SSH user must not cost a claude run ------------------
+
+def test_main_refuses_without_an_ssh_user_before_spending_a_claude_run(monkeypatch):
+    """This worker renders "ssh {ssh_user}@{host}" into the prompt rather than
+    connecting itself, so an empty user is not a fast connect error -- it is a
+    BILLED Job that flails at "@host" until claude_timeout. Refuse first.
+    """
+    monkeypatch.setattr(entrypoint, "load_inputs", lambda: _inputs(CFOP_SSH_USER=""))
+    ran = []
+    monkeypatch.setattr(entrypoint, "run_claude",
+                        lambda *a, **k: ran.append(1) or ClaudeRun(True, "", "", 0.0))
+    posted = {}
+
+    def _post(inputs, result):
+        posted["result"] = result
+        return True
+
+    monkeypatch.setattr(entrypoint, "post_completion", _post)
+    monkeypatch.setattr(entrypoint, "prepare_ssh", lambda *a, **k: None)
+
+    rc = entrypoint.main()
+
+    assert not ran, "claude must not be invoked without an ssh user"
+    assert rc == 0, "the failure was delivered, so the Job should not be retried"
+    msg = json.dumps(posted["result"])
+    assert "no SSH user configured" in msg
+    assert "CFOP_DEEP_SSH_USER" in msg

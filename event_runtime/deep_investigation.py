@@ -69,7 +69,9 @@ class DeepInvestigationConfig:
     secrets_name: str = "cfoperator-secrets"
     image_pull_secret: str = "ghcr-pull-secret"
     ssh_secret_name: str = "cfop-forensics-ssh"
-    ssh_user: str = "aachten"
+    # No default (CFOP-137) -- see DeepInvestigationConfig users. An install
+    # that never says who to SSH as does not get this project's operator.
+    ssh_user: str = ""
     completion_base_url: str = ""
     agent_url: str = ""
     max_concurrent: int = 2
@@ -343,6 +345,21 @@ class DeepInvestigationActionHandler(ActionHandler):
         host = _target_host(alert)
         if not host:
             return self._loud_failure(alert, "no target host resolvable from alert", outcome="failed")
+
+        # CFOP-137: alongside the host / concurrency / budget guards below,
+        # because it costs the same things. ssh_user has no default any more,
+        # and _build_job_manifest would happily write an empty one into
+        # CFOP_SSH_USER -- spending a daily-budget slot and an active-Job slot
+        # on a worker that renders "ssh @host" into a billed prompt. Fail here
+        # instead, naming the setting. completion_base_url is treated as
+        # required and keeps the tier off without it; ssh_user is now equally
+        # required and deserves the same treatment.
+        if not (self._config.ssh_user or "").strip():
+            return self._loud_failure(
+                alert,
+                "no SSH user configured: set event_runtime.deep_investigation."
+                "ssh_user or CFOP_DEEP_SSH_USER",
+                outcome="failed")
 
         fp12 = alert.effective_fingerprint()[:12]
 

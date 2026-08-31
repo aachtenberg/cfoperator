@@ -259,3 +259,40 @@ def test_prepare_ssh_copies_keys_at_0600(tmp_path):
 
 def test_prepare_ssh_missing_dir_is_not_fatal(tmp_path):
     nodeaction.prepare_ssh(tmp_path / "nope", tmp_path / "dotssh")  # no raise
+
+
+# ---- CFOP-137: no hardcoded SSH username -------------------------------------
+
+def test_run_ssh_plan_refuses_when_no_user_is_configured():
+    """An unset CFOP_SSH_USER must refuse, not fall back to a personal account.
+
+    The executor used to default to "aachten" — this project's operator — in a
+    public image. There is no defensible default for an arbitrary install, so
+    an empty value means the deploy never said who to connect as. Refusing
+    names the setting; guessing produces an auth failure against someone
+    else's username at connect time.
+    """
+    with pytest.raises(SSHError) as e:
+        nodeaction.run_ssh_plan("controller", ["chmod 600 /a"], dict(_ALLOW_ENV))
+    assert "no SSH user configured" in str(e.value)
+    assert "ssh_user" in str(e.value)
+
+
+def test_run_ssh_plan_refuses_before_attempting_any_connection():
+    # The refusal must come before subprocess.run, or a misconfigured deploy
+    # spends an ssh timeout per command discovering it.
+    with patch.object(nodeaction.subprocess, "run") as ran:
+        with pytest.raises(SSHError):
+            nodeaction.run_ssh_plan("controller", ["chmod 600 /a"],
+                                    dict(_ALLOW_ENV))
+    ran.assert_not_called()
+
+
+def test_run_ssh_plan_uses_the_user_it_was_given():
+    env = {**_ALLOW_ENV, "CFOP_SSH_USER": "someoperator"}
+    with patch.object(nodeaction.subprocess, "run") as ran:
+        ran.return_value = type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        nodeaction.run_ssh_plan("controller", ["chmod 600 /a"], env)
+    argv = ran.call_args[0][0]
+    assert "someoperator@controller" in argv
+    assert not any("aachten" in str(a) for a in argv)

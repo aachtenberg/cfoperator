@@ -320,7 +320,7 @@ event_runtime:
     service_account: cfoperator-worker  # read-only SA the Job runs as
     secrets_name: cfoperator-secrets    # holds ANTHROPIC_API_KEY + completion secret
     ssh_secret_name: cfop-forensics-ssh # dedicated forensics SSH keypair
-    ssh_user: aachten
+    ssh_user: ""                        # REQUIRED — no default; the tier refuses without it
     # Where the Job posts its report back (event runtime service URL).
     # Required — the tier stays off without it. CFOP_DEEP_COMPLETION_BASE_URL
     completion_base_url: ""
