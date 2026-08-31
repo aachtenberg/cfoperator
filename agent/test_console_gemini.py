@@ -16,6 +16,13 @@ the skip is announced on the ``fallback`` event; the registry's namespace
 prefix comes off on resolve; Gemini's request parameters come from the
 registry; a transport failure on any iteration propagates — unless a
 mutating tool already ran in that loop.
+
+CFOP-134 widened section 4 from Gemini to every reasoning backend. DeepSeek
+had the identical defect the whole time — ``deepseek-v4-pro`` spending all
+4096 tokens on thinking and ending the tool loop empty — and this file was
+asserting that it declared nothing, because CFOP-112 was written as a Gemini
+fix rather than a reasoning-model one. The budget guards here are now about
+the class.
 """
 
 import os
@@ -205,21 +212,63 @@ def test_every_declared_prefix_is_a_namespace():
 # ---- 4. request parameters come from the registry --------------------------
 
 
+# Providers whose configured model thinks before answering, so max_tokens has
+# to cover the thinking AND the answer. Gemini arrived here in CFOP-112;
+# DeepSeek in CFOP-134, having shipped unbudgeted because CFOP-112 was framed
+# as a Gemini fix rather than a reasoning-model one.
+REASONING_BACKENDS = ('gemini', 'deepseek')
+# Everything else sends what it always sent.
+PLAIN_BACKENDS = ('groq', 'xai')
+
+
 def test_registry_params_split_wire_params_from_the_loop_budget():
     # request_params ride every chat/completions request; the raised budget
     # is the tool loop's alone (thinking shares max_tokens with a long,
     # tool-driven answer there; the json_object extraction sites do not).
-    assert CFOperator._openai_compat_request_params('gemini') == {'reasoning_effort': 'low'}
-    assert CFOperator._openai_compat_tool_loop_params('gemini') == \
-        {'reasoning_effort': 'low', 'max_tokens': 16384}
-    for other in ('deepseek', 'groq', 'xai'):
-        assert CFOperator._openai_compat_request_params(other) == {}
-        assert CFOperator._openai_compat_tool_loop_params(other) == {}
+    for backend in REASONING_BACKENDS:
+        assert CFOperator._openai_compat_request_params(backend) == \
+            {'reasoning_effort': 'low'}, backend
+        assert CFOperator._openai_compat_tool_loop_params(backend) == \
+            {'reasoning_effort': 'low', 'max_tokens': 16384}, backend
+    for other in PLAIN_BACKENDS:
+        assert CFOperator._openai_compat_request_params(other) == {}, other
+        assert CFOperator._openai_compat_tool_loop_params(other) == {}, other
 
 
-def test_gemini_tool_loop_requests_carry_the_params_and_others_do_not(no_keys):
+def test_a_thinking_budget_is_declared_in_both_halves_or_neither():
+    # The guard for the class, not the values. Measured on deepseek-v4-pro
+    # (CFOP-134): reasoning_effort='low' at the loop's own 4096 still stops at
+    # finish_reason=length with a truncated answer, and a raised cap without
+    # the effort just buys more thinking. Half a budget reads as "handled" in
+    # review and still returns an empty final, so a row declares both or
+    # neither.
+    for backend, cfg in OPENAI_COMPAT_PROVIDERS.items():
+        effort = (cfg.get('request_params') or {}).get('reasoning_effort')
+        budget = cfg.get('tool_loop_max_tokens')
+        assert (effort is None) == (budget is None), (
+            f'{backend} declares half a thinking budget: '
+            f'reasoning_effort={effort!r}, tool_loop_max_tokens={budget!r}')
+
+
+def test_a_default_model_must_be_budgeted_or_declared_non_reasoning():
+    # The checkpoint DeepSeek slipped through: it shipped a default_model that
+    # reasons (CFOP-110) and no budget, so the first console chat on it hung
+    # for minutes and answered nothing. A row that names a default_model has
+    # made a claim about what runs when nobody chose a model, so it must
+    # either budget that model or say here that it does not think.
+    non_reasoning_defaults = frozenset()  # add a backend here only with evidence
+    for backend, cfg in OPENAI_COMPAT_PROVIDERS.items():
+        if not cfg.get('default_model') or backend in non_reasoning_defaults:
+            continue
+        assert cfg.get('tool_loop_max_tokens'), (
+            f"{backend} names default_model {cfg['default_model']!r} with no "
+            f'thinking budget — budget it, or add it to non_reasoning_defaults')
+
+
+def test_reasoning_backends_carry_the_budget_into_the_tool_loop(no_keys):
     no_keys.setenv('GEMINI_API_KEY', 'k')
     no_keys.setenv('DEEPSEEK_API_KEY', 'k')
+    no_keys.setenv('GROQ_API_KEY', 'k')
     op = _operator()
 
     fake = _FakePost({'gemini-3.6-flash': [_compat_msg('Loki is healthy.')]})
@@ -229,8 +278,18 @@ def test_gemini_tool_loop_requests_carry_the_params_and_others_do_not(no_keys):
     assert payload['reasoning_effort'] == 'low'
     assert payload['max_tokens'] == 16384
 
+    # Regression for CFOP-134: this used to assert the opposite — deepseek was
+    # the file's example of a provider that declares nothing, which is exactly
+    # the bug. deepseek-v4-pro spent all 4096 tokens thinking and returned an
+    # empty final, so the loop nudged, got a second empty, and rotated.
     fake = _FakePost({'deepseek-v4-pro': [_compat_msg('Loki is healthy.')]})
     _run_inner(op, fake, no_keys, provider='deepseek', model='deepseek-v4-pro')
+    payload = fake.payloads[0]
+    assert payload['reasoning_effort'] == 'low'
+    assert payload['max_tokens'] == 16384
+
+    fake = _FakePost({'llama-3.3-70b-versatile': [_compat_msg('Loki is healthy.')]})
+    _run_inner(op, fake, no_keys, provider='groq', model='llama-3.3-70b-versatile')
     payload = fake.payloads[0]
     assert 'reasoning_effort' not in payload
     assert payload['max_tokens'] == 4096
@@ -238,11 +297,12 @@ def test_gemini_tool_loop_requests_carry_the_params_and_others_do_not(no_keys):
 
 @pytest.mark.parametrize('backend, model, wants_effort', [
     ('gemini', 'gemini-3.6-flash', True),
-    ('deepseek', 'deepseek-v4-pro', False),
+    ('deepseek', 'deepseek-v4-pro', True),
+    ('groq', 'llama-3.3-70b-versatile', False),
 ])
 def test_extraction_sites_keep_their_own_budget(no_keys, backend, model, wants_effort):
     # _extract_learnings and _analyze_correlations are short json_object
-    # calls capped at 2048. They take the wire params (Gemini's
+    # calls capped at 2048. They take the wire params (a reasoning backend's
     # reasoning_effort) but not the loop's raised budget.
     no_keys.setenv(OPENAI_COMPAT_PROVIDERS[backend]['key_env'], 'k')
     op = _operator(selected_backend=backend, **{f'{backend}_selected_model': model})
