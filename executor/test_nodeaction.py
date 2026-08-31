@@ -1,6 +1,8 @@
 """Tests for the node-action execution path — the safety gate is the focus."""
 
 import json
+import os
+import re
 from unittest.mock import patch
 
 import pytest
@@ -12,16 +14,32 @@ from nodeaction import (
     SSHError, parse_command_plan, validate_command, validate_plan,
 )
 
-# The allowlist the agent hands this Job. Test data: the executor image ships
-# no default, so every call site must be explicit (CFOP-133).
-_ALLOW_B = "chmod,chown,chgrp,ln,mkdir,install,touch,restorecon,chattr,systemctl"
-_ALLOW_V = ("restart,start,reload,reload-or-restart,status,is-active,"
-            "is-enabled,enable,daemon-reload")
-_ALLOW = nodeaction.AllowList(
-    binaries=frozenset(_ALLOW_B.split(",")),
-    systemctl_verbs=frozenset(_ALLOW_V.split(",")),
-    max_commands=4,
-)
+
+def _ceiling_from_chart(key):
+    """The shipped ceiling, read out of the Helm chart -- DERIVED, not copied.
+
+    Same guard as the agent-side suite (CFOP-133 review): a hand-kept copy here
+    would drift from the chart the moment either was edited, and a chart edit
+    adding `journalctl` would fail nothing. The chart is a Helm template, so it
+    is not valid YAML; the two lists are plain inline sequences.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "charts", "cfoperator", "templates", "configmap.yaml")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    m = re.search(r"^\s*%s:\s*\[([^\]]*)\]" % re.escape(key), text, re.MULTILINE)
+    assert m, f"{key} not found in the chart -- the shipped ceiling moved or was removed"
+    return frozenset(t.strip() for t in m.group(1).split(",") if t.strip())
+
+
+_ALLOW_BS = _ceiling_from_chart("allow_binaries")
+_ALLOW_VS = _ceiling_from_chart("allow_systemctl_verbs")
+assert "systemctl" in _ALLOW_BS and len(_ALLOW_BS) >= 5
+assert "restart" in _ALLOW_VS and len(_ALLOW_VS) >= 5
+_ALLOW_B = ",".join(sorted(_ALLOW_BS))
+_ALLOW_V = ",".join(sorted(_ALLOW_VS))
+_ALLOW = nodeaction.AllowList(binaries=_ALLOW_BS, systemctl_verbs=_ALLOW_VS,
+                              max_commands=4)
 _ALLOW_ENV = {
     "CFOP_NODE_ACTION_ALLOW_BINARIES": _ALLOW_B,
     "CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS": _ALLOW_V,

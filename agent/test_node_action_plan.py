@@ -8,6 +8,7 @@ reviewer never saw.
 """
 
 import importlib.util
+import re
 import os
 import sys
 
@@ -37,12 +38,31 @@ def _load_executor_nodeaction():
 
 _executor = _load_executor_nodeaction()
 
-# The list this suite validates against: the shipped ceiling (charts/.../configmap.yaml).
-# Kept here as TEST DATA, not as a production default -- neither module has one.
-_ALLOW_B = frozenset({"chmod", "chown", "chgrp", "ln", "mkdir", "install",
-                      "touch", "restorecon", "chattr", "systemctl"})
-_ALLOW_V = frozenset({"restart", "start", "reload", "reload-or-restart", "status",
-                      "is-active", "is-enabled", "enable", "daemon-reload"})
+
+def _ceiling_from_chart(key: str) -> frozenset:
+    """The shipped ceiling, read out of charts/cfoperator/templates/configmap.yaml.
+
+    DERIVED, not copied (CFOP-133 review). A hand-kept copy here would be the
+    fourth-copy problem again one layer over: the chart and the test data would
+    agree only until someone edited one, and a chart edge adding `journalctl`
+    would fail nothing. The chart is a Helm template so it is not valid YAML;
+    the two lists are plain inline sequences, which is all this needs to read.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "charts", "cfoperator", "templates", "configmap.yaml")
+    with open(path, encoding="utf-8") as fh:
+        text = fh.read()
+    m = re.search(rf"^\s*{re.escape(key)}:\s*\[([^\]]*)\]", text, re.MULTILINE)
+    assert m, f"{key} not found in the chart -- the shipped ceiling moved or was removed"
+    return frozenset(t.strip() for t in m.group(1).split(",") if t.strip())
+
+
+_ALLOW_B = _ceiling_from_chart("allow_binaries")
+_ALLOW_V = _ceiling_from_chart("allow_systemctl_verbs")
+# The chart is the source, so guard it rather than the copy: an edit that
+# empties either list would otherwise make every test below vacuously pass.
+assert "systemctl" in _ALLOW_B and len(_ALLOW_B) >= 5
+assert "restart" in _ALLOW_V and len(_ALLOW_V) >= 5
 _ALLOW = node_action_plan.AllowList(_ALLOW_B, _ALLOW_V, 4)
 
 
@@ -325,3 +345,38 @@ class TestExecutorParity:
         allow_e = _executor.AllowList(rogue, _ALLOW_V, 4)
         assert validate_command("rm -rf /", allow_a)[0] is False
         assert _executor.validate_command("rm -rf /", allow_e)[0] is False
+
+
+# ---- the shipped ceiling itself ---------------------------------------------
+
+class TestShippedCeiling:
+    """Guards on charts/cfoperator/templates/configmap.yaml, the single source.
+
+    Deriving the fixtures above from the chart removes the drift the review
+    flagged -- there is no second copy left to disagree with it. What deriving
+    cannot do is notice that the ceiling CHANGED, so these assert the
+    properties a ceiling must hold whatever it lists. Widening it by one
+    ordinary binary is deliberately a reviewable chart diff rather than a test
+    failure; widening it into the floor is not reviewable, it is a bug.
+    """
+
+    def test_the_ceiling_never_names_a_denied_binary(self):
+        # A chart edit adding rm/curl/dd would be refused at runtime by the
+        # floor, but silently: the operator would see it offered in the console
+        # and never work. Fail the build instead.
+        overlap = _ALLOW_B & node_action_plan._DENY_BINARIES
+        assert not overlap, f"shipped ceiling names denied binaries: {sorted(overlap)}"
+
+    def test_every_binary_in_the_ceiling_is_actually_usable(self):
+        # Each entry must pass the gate in a plausible command; an entry the
+        # gate can never accept is dead config that misleads the operator.
+        for binary in _ALLOW_B:
+            cmd = f"systemctl restart sshd" if binary == "systemctl" else f"{binary} /tmp/x"
+            ok, reason = validate_command(cmd, _ALLOW)
+            assert ok, f"{binary} is in the ceiling but the gate refuses it: {reason}"
+
+    def test_the_ceiling_grants_no_systemctl_verb_that_stops_things(self):
+        # The list is for restoring service, not withdrawing it. stop/disable/
+        # mask/kill belong to a human.
+        forbidden = {"stop", "disable", "mask", "kill"} & _ALLOW_V
+        assert not forbidden, f"ceiling grants withdrawal verbs: {sorted(forbidden)}"

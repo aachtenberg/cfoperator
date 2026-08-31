@@ -3595,20 +3595,38 @@ def test_an_undeclared_ceiling_hands_over_nothing():
     assert env["CFOP_NODE_ACTION_ALLOW_SYSTEMCTL_VERBS"] == ""
 
 
-def test_an_unreadable_db_falls_back_to_the_whole_ceiling_not_to_nothing():
-    # A read failure is indistinguishable from "unset", and unset means the
-    # whole ceiling. Failing to nothing would take node-actions offline
-    # whenever the database blipped.
-    op = _allowlist_op()
+def test_an_unreadable_db_refuses_rather_than_restoring_the_ceiling(caplog):
+    """A read error must not silently undo a narrowing (CFOP-133 review).
+
+    Falling back to '' would resolve to the whole ceiling -- so an operator who
+    had narrowed to systemctl gets chmod, chattr and ln back on a postgres
+    blip. That is a silent widening of the only control this mechanism adds.
+    Unset is the ONE path back to the ceiling; an error is not unset.
+    """
+    op = _allowlist_op(selected_b="systemctl")
     op.kb.get_setting.side_effect = RuntimeError("db down")
-    env = _manifest_env(op)
-    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == "chmod,chown,systemctl"
+    import logging
+    with caplog.at_level(logging.WARNING, logger="cfoperator"):
+        env = _manifest_env(op)
+    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == ""
+    assert any("allowlist setting" in r.getMessage() for r in caplog.records), \
+        "a blip must be visible at warning, not inferred from a debug line"
 
 
-def test_a_corrupted_setting_is_treated_as_unset():
-    # AgentSettings.value is a Text column; anything else is a corrupted row
-    # and must not silently become the allowlist.
-    op = _allowlist_op()
+def test_a_corrupted_setting_refuses_rather_than_widening(caplog):
+    # AgentSettings.value is a Text column; anything else is a corrupted row,
+    # and a corrupted row must not resolve to the maximum either.
+    op = _allowlist_op(selected_b="systemctl")
     op.kb.get_setting.side_effect = lambda name, default='': object()
-    env = _manifest_env(op)
+    import logging
+    with caplog.at_level(logging.WARNING, logger="cfoperator"):
+        env = _manifest_env(op)
+    assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == ""
+    assert any("not text" in r.getMessage() for r in caplog.records)
+
+
+def test_unset_is_still_the_path_back_to_the_ceiling():
+    # The distinction only matters if unset still works: clearing a row in the
+    # console must restore the full ceiling, which is what '' means.
+    env = _manifest_env(_allowlist_op(selected_b="", selected_v=""))
     assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == "chmod,chown,systemctl"

@@ -66,14 +66,22 @@ def allowlist_from_config(ceiling: Dict[str, Any],
 
     ``ceiling`` is the ``node_action`` config block. The selections come from
     the database (console-written) and may only ever NARROW -- they are
-    intersected with the ceiling, never unioned. An unset selection (empty)
+    intersected with the ceiling, never unioned. An unset selection (``''``)
     means "the whole ceiling", which is a first-class state and not an empty
     list; that is what lets an operator clear a row back to the default.
+
+    A selection of ``None`` means the read FAILED, and refuses everything.
+    Deliberately distinct from unset: collapsing the two would make a database
+    blip silently restore binaries an operator had removed, which is a silent
+    undo of the only control this mechanism adds. Unset is the one path back
+    to the ceiling.
 
     A ceiling that names nothing yields an AllowList that refuses everything.
     That is the intended failure mode: an install that has not declared what
     node-actions may run does not get a built-in guess.
     """
+    if selected_binaries is None or selected_verbs is None:
+        return AllowList(frozenset(), frozenset(), 1)
     binaries = _split_list(ceiling.get('allow_binaries'))
     verbs = _split_list(ceiling.get('allow_systemctl_verbs'))
     picked_b = _split_list(selected_binaries)

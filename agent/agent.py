@@ -3197,22 +3197,37 @@ FIX: {_FIX_JSON_SCHEMA}"""
         )
 
 
-    def _node_action_setting(self, name: str) -> str:
-        """A console-written allowlist selection, or '' when unset.
+    def _node_action_setting(self, name: str) -> Optional[str]:
+        """A console-written allowlist selection: the value, '' when unset, None on error.
 
-        Same DB-over-config shape as _remediation_flag, and the same failure
-        posture: a read error means "unset", which resolves to the whole
-        config ceiling rather than to nothing. Non-string values are treated as
-        unset -- AgentSettings.value is a Text column, so anything else is a
-        corrupted row, and a corrupted row must not silently become the
-        allowlist.
+        Three states on purpose, and the distinction is the point. '' means the
+        operator has not narrowed anything, which resolves to the whole config
+        ceiling -- that is how a row is cleared back to the default. None means
+        the read FAILED, which must not resolve to the ceiling.
+
+        Not the same posture as _remediation_flag, despite the similar shape: a
+        flag read error falls back to this deploy's own chosen default, whereas
+        collapsing an error into '' here falls back to the MAXIMUM. An operator
+        who narrowed to systemctl as a live reduction would silently get chmod,
+        chattr and ln back on a database blip -- a silent undo of the only
+        control this mechanism adds. Read errors therefore refuse, and are
+        logged at warning so a blip is visible rather than inferred.
+
+        Non-string values are also None: AgentSettings.value is a Text column,
+        so anything else is a corrupted row, and a corrupted row must not
+        silently widen the allowlist either.
         """
         try:
             val = self.kb.get_setting(name, '')
         except Exception as e:
-            logger.debug(f"Could not read allowlist setting '{name}': {e}")
-            return ''
-        return val.strip() if isinstance(val, str) else ''
+            logger.warning(f"Could not read allowlist setting '{name}' ({e}); "
+                           f"refusing node-actions until it is readable")
+            return None
+        if not isinstance(val, str):
+            logger.warning(f"Allowlist setting '{name}' is not text ({type(val).__name__}); "
+                           f"refusing node-actions rather than widening")
+            return None
+        return val.strip()
 
     def _node_action_allowlist(self):
         """The effective node-action allowlist: config ceiling ∩ console selection.
