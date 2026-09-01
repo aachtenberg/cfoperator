@@ -394,6 +394,39 @@ remediation:
   deep_open_prs: false     # deep-investigation diffs -> PRs (same gates + shared cap)
   default_repo: my-manifests    # which `git.repos[].name` owns manifests to patch
   max_open_prs: 3
+  # How a change reaches YOUR cluster (CFOP-148). This is the one thing an
+  # investigating model cannot work out for itself and must not guess: a fleet
+  # deployed through GitOps and a box you `kubectl apply` to want opposite
+  # advice, and getting it wrong is silent — the model picks a FIX target kind
+  # that no part of this system can act on, and the row parks at needs-human
+  # having never been attempted.
+  #
+  # Omit the block, or leave `mode: none`, and the investigator is told nothing
+  # about delivery at all. That is the default on purpose: an installation that
+  # has not said how it deploys gets no guess about its own cluster.
+  delivery:
+    # gitops   manifests live in a git repo; the executor opens a PR and a
+    #          syncer reconciles it. `gitops-manifest` becomes the preferred
+    #          target kind and direct-to-cluster steps are ruled out.
+    # direct   no manifest repo; changes are applied to the cluster. Prefers
+    #          `k8s-object` / `k8s-imperative` and rules out `gitops-manifest`.
+    # none     say nothing (default).
+    mode: none
+    # gitops only. A `git.repos[].name` or an owner/name slug; falls back to
+    # `default_repo` above, and resolved against the registry before it is
+    # shown to the model. If neither resolves, the guidance is suppressed
+    # ENTIRELY and a warning is logged: a gitops-manifest target with an
+    # unresolvable repo is refused downstream, so steering the model there
+    # would only produce a fix that cannot be queued. `mode: gitops` with no
+    # resolvable repo therefore behaves like `none` until you register one.
+    # repo: my-manifests
+    # gitops only, optional. Whatever actually syncs the repo — named in the
+    # prompt purely so the model's wording matches your stack. Free text: this
+    # is not an integration, and nothing here is ArgoCD-specific.
+    # tool: ArgoCD
+    # Optional free text appended verbatim to whichever mode is selected, for
+    # a site rule the two modes above do not cover.
+    # notes: ""
   # Queue / executor flags. Also toggleable live from the operator console,
   # which stores them in the database — the database wins over this file, and
   # `profile: investigate` wins over both.

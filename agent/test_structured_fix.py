@@ -25,6 +25,7 @@ from agent.agent import (  # noqa: E402
     _FIX_KIND_TO_CLASS,
     _FORK_SHAPED,
     _class_from_fix_kind,
+    _delivery_guidance,
     _fix_targets_dedupe_key,
     _hints_from_structured_fix,
     _parse_structured_fix,
@@ -644,3 +645,313 @@ def test_every_observed_refusal_is_logged_not_silent(caplog, bad, reason):
     assert any(reason in m for m in warnings), warnings
     # The target ids ride along, so the log names which recommendation was lost.
     assert any("apps/promtail.yaml" in m for m in warnings), warnings
+
+
+# ---- delivery guidance (CFOP-148) -------------------------------------------
+#
+# These guard the CLASS of regression behind live row #96: the prompt telling
+# the model nothing about how a change reaches this cluster, so it picks a
+# target kind the site cannot act on. What matters is that the guidance is
+# CONFIGURED -- absent when unset, and naming the operator's own repo and
+# mechanism rather than any value this repo happened to pick. Deliberately not
+# pinned to the wording, which is prompt copy and expected to be reworded.
+
+_DELIVERY_REGISTRY = [
+    {"name": "my-manifests", "github": "acme/my-manifests"},
+    {"name": "other-repo", "github": "acme/other-repo"},
+]
+
+
+def _cfg(delivery=None, default_repo=None):
+    rem = {}
+    if delivery is not None:
+        rem["delivery"] = delivery
+    if default_repo is not None:
+        rem["default_repo"] = default_repo
+    return {"remediation": rem}
+
+
+@pytest.mark.parametrize("config", [
+    {},                                       # no remediation block at all
+    {"remediation": {}},                      # no delivery block
+    _cfg({}),                                 # delivery block, no mode
+    _cfg({"mode": "none"}),                   # explicitly off
+    _cfg({"mode": "None"}),                   # case-folded
+    _cfg({"mode": "kubectl"}),                # unrecognised -> silent, not a guess
+    _cfg({"mode": None}),
+    {"remediation": {"delivery": "gitops"}},  # wrong type
+    {"remediation": "nonsense"},
+    None,
+])
+def test_unconfigured_delivery_says_nothing(config):
+    """The default is silence. An installation that has not said how it deploys
+    gets the pre-CFOP-148 prompt, never a guess about its own cluster."""
+    assert _delivery_guidance(config, _DELIVERY_REGISTRY) == ""
+
+
+def test_gitops_names_the_configured_repo_not_a_baked_one():
+    text = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "my-manifests"}), _DELIVERY_REGISTRY)
+    assert "acme/my-manifests" in text     # the resolved SLUG, as the executor uses
+    assert "gitops-manifest" in text
+    # Mutation check: the value must come from config, not from this codebase.
+    assert "homelab-infra" not in text
+    assert "aachtenberg" not in text
+
+
+def test_a_second_installation_gets_its_own_repo():
+    """Two sites, two repos. The guidance is a pure function of config, so
+    nothing from one installation can leak into another's prompt."""
+    a = _delivery_guidance(_cfg({"mode": "gitops", "repo": "my-manifests"}), _DELIVERY_REGISTRY)
+    b = _delivery_guidance(_cfg({"mode": "gitops", "repo": "other-repo"}), _DELIVERY_REGISTRY)
+    assert "acme/my-manifests" in a and "acme/other-repo" not in a
+    assert "acme/other-repo" in b and "acme/my-manifests" not in b
+
+
+def test_gitops_repo_falls_back_to_default_repo():
+    """`default_repo` already names the manifest repo; delivery must not make
+    an operator write the same repo down twice."""
+    text = _delivery_guidance(
+        _cfg({"mode": "gitops"}, default_repo="my-manifests"), _DELIVERY_REGISTRY)
+    assert "acme/my-manifests" in text
+
+
+def test_gitops_rules_out_direct_to_cluster_steps():
+    """Row #96 wrote "Apply the updated manifest to the cluster" on a GitOps
+    fleet. The guidance has to say that lands nothing there."""
+    text = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "my-manifests"}), _DELIVERY_REGISTRY)
+    assert "kubectl" in text and "pull request" in text
+
+
+def test_gitops_tool_is_free_text_and_optional():
+    """No syncer is special-cased. The tool name only shapes wording, and
+    omitting it must not break the guidance."""
+    named = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "my-manifests", "tool": "Flux"}), _DELIVERY_REGISTRY)
+    assert "Flux" in named
+    bare = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "my-manifests"}), _DELIVERY_REGISTRY)
+    assert bare and "Flux" not in bare
+    assert "ArgoCD" not in bare        # nothing ArgoCD-shaped is baked in
+
+
+def test_unresolvable_repo_gives_no_guidance_at_all():
+    """PR #229 review. An earlier cut kept the "prefer `gitops-manifest`"
+    steer when the repo did not resolve, and that steers into a wall:
+    _validate_structured_fix REFUSES a gitops-manifest target whose repo is
+    missing or unresolvable (CFOP-85), so the FIX cannot enqueue and the row
+    falls through to the classifier -- row #96's path, one layer over.
+
+    A gitops site whose manifest repo does not resolve has no working gitops
+    lane, so the honest output is silence (plus a log for the operator), not
+    advice naming a kind that will be refused."""
+    text = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "nowhere"}), _DELIVERY_REGISTRY)
+    assert text == ""
+
+
+def test_unresolvable_repo_is_logged_not_silent(caplog):
+    """Silence in the prompt must not mean silence to the operator: setting
+    mode: gitops and getting no behaviour change is otherwise unexplainable."""
+    import logging
+    with caplog.at_level(logging.WARNING):
+        _delivery_guidance(_cfg({"mode": "gitops", "repo": "nowhere"}),
+                           _DELIVERY_REGISTRY)
+    assert any("gitops" in r.message and "resolve" in r.message
+               for r in caplog.records), caplog.records
+
+
+def test_direct_mode_steers_at_the_class_that_parks():
+    """A cluster with no manifest repo -- plain kubectl, possibly not k3s.
+
+    PR #229 re-review: an earlier cut offered `k8s-object` here, which maps to
+    the k8s-action CLASS. That class is auto-eligible and is not in the
+    executor's _NO_EXECUTOR_PATH, so it reaches run_gitops -- whose whole job
+    is opening a pull request against a manifest repo the site does not have.
+    `k8s-imperative` is the class that parks with a legible message.
+    """
+    text = _delivery_guidance(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
+    assert "k8s-imperative" in text
+    assert "`k8s-object`" in text and "Do NOT emit" in text
+    assert "gitops-manifest" in text
+
+
+def test_direct_mode_never_recommends_a_pr_delivered_class():
+    """The guard that matters, stated against the executor's own routing
+    rather than against wording: nothing a `direct` site is steered toward may
+    be a class that run_gitops would try to open a PR for."""
+    import re
+
+    no_executor_path = _executor_no_executor_path()
+    text = _delivery_guidance(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
+    # The kinds this text tells the model to USE (backticked, not preceded by
+    # a "Do NOT emit" clause). Parse rather than hardcode so a reworded
+    # sentence cannot quietly reintroduce the defect.
+    recommended = set()
+    for sentence in re.split(r'(?<=[.:])\s+', text):
+        if 'do not' in sentence.lower():
+            continue
+        recommended.update(re.findall(r'`([a-z0-9-]+)`', sentence))
+    assert recommended, "direct mode must name at least one usable kind"
+    for kind in recommended:
+        rclass = _FIX_KIND_TO_CLASS.get(kind, kind)
+        assert rclass in no_executor_path, (
+            f"direct mode recommends `{kind}` -> class {rclass}, which the "
+            "executor delivers by opening a PR; there is no manifest repo "
+            "on a direct site")
+        assert rclass not in _AUTO_REMEDIATION_CLASSES, (
+            f"direct mode recommends `{kind}` -> class {rclass}, which can "
+            "auto-execute")
+
+
+def test_direct_mode_never_names_a_repo():
+    """There is no manifest repo in this mode; a stale `repo` or `default_repo`
+    left in config must not conjure one into the prompt."""
+    text = _delivery_guidance(
+        _cfg({"mode": "direct", "repo": "my-manifests"}, default_repo="other-repo"),
+        _DELIVERY_REGISTRY)
+    assert "my-manifests" not in text and "other-repo" not in text
+
+
+@pytest.mark.parametrize("mode", ["gitops", "direct"])
+def test_notes_are_appended_to_either_mode(mode):
+    text = _delivery_guidance(
+        _cfg({"mode": mode, "repo": "my-manifests", "notes": "Staging first."}),
+        _DELIVERY_REGISTRY)
+    assert text.endswith("Staging first.")
+
+
+def test_guidance_is_wired_into_both_fix_prompts():
+    """The helper existing is not the fix -- row #96 failed because the prompt
+    never carried the steer. Both places that ask for a FIX must render it, and
+    they must agree: the nudge is a second attempt at the SAME object, so one
+    that forgot the site's delivery mechanism would quietly undo the steer that
+    produced the retry.
+
+    Asserted against the source rather than a captured prompt string because
+    what regresses here is the CALL being dropped in a refactor, and that is
+    exactly what this reads.
+    """
+    import inspect
+    from agent.agent import CFOperator as _CFOp
+
+    for fn in (_CFOp._act, _CFOp._nudge_structured_fix):
+        src = inspect.getsource(fn)
+        assert '_FIX_JSON_SCHEMA' in src, f"{fn.__name__} no longer asks for a FIX"
+        assert '_delivery_guidance' in src, (
+            f"{fn.__name__} asks for a FIX without telling the model how "
+            "changes are delivered here")
+
+
+def test_shared_rubric_carries_no_baked_repo():
+    """PR #229 review finding 1. _REMEDIATION_CLASS_RUBRIC goes verbatim to
+    the needs_action classifier AND the morning summary. It used to name this
+    project's own repos, so every other installation was told to file its
+    manifest changes against two repositories it does not have -- the exact
+    assumption CFOP-148 removed from the FIX prompt, one feed over."""
+    from agent.agent import _REMEDIATION_CLASS_RUBRIC
+    lowered = _REMEDIATION_CLASS_RUBRIC.lower()
+    assert "aachtenberg" not in lowered
+    assert "homelab-infra" not in lowered
+    assert "cfoperator-deploy" not in lowered
+    # Still the single definition of the classes -- de-baking must not have
+    # dropped the bullet the classifier needs.
+    assert "- gitops-patch:" in _REMEDIATION_CLASS_RUBRIC
+
+
+def test_rubric_takes_its_repo_from_the_same_config_as_the_fix_prompt():
+    """One site, one answer. The rubric and the FIX prompt must not disagree
+    about where a manifest change goes."""
+    from agent.agent import _remediation_class_rubric
+    cfg = _cfg({"mode": "gitops", "repo": "my-manifests"})
+    rubric = _remediation_class_rubric(cfg, _DELIVERY_REGISTRY)
+    assert "acme/my-manifests" in rubric
+    assert "acme/my-manifests" in _delivery_guidance(cfg, _DELIVERY_REGISTRY)
+
+
+def test_rubric_direct_mode_rules_out_every_pr_delivered_class():
+    """The classifier feed is the dangerous one: unlike a FIX-derived
+    k8s-action (confidence always None), a classifier-derived one can clear
+    the auto gate and reach run_gitops. On a site with no manifest repo the
+    appendix must name neither gitops-patch nor k8s-action as the answer.
+
+    PR #229 re-review -- the first cut said "an in-cluster change is
+    k8s-action or k8s-imperative", steering the one auto-executing class at a
+    delivery lane that does not exist there.
+    """
+    from agent.agent import _remediation_class_rubric
+    rubric = _remediation_class_rubric(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
+    appendix = rubric[len(_bare_rubric()):]
+    assert "no GitOps repository" in appendix
+    assert "acme/" not in appendix
+    assert "k8s-imperative" in appendix
+    # Both PR-delivered classes must appear only as ruled OUT.
+    for rclass in _AUTO_REMEDIATION_CLASSES:
+        assert rclass not in appendix.split("An in-cluster change is")[-1], (
+            f"{rclass} is offered as the answer on a site with no repo")
+
+
+def _bare_rubric():
+    from agent.agent import _REMEDIATION_CLASS_RUBRIC
+    return _REMEDIATION_CLASS_RUBRIC
+
+
+@pytest.mark.parametrize("config", [
+    None,
+    {},
+    {"remediation": {}},
+    _cfg({"mode": "none"}),
+    _cfg({"mode": "gitops", "repo": "nowhere"}),   # unresolvable -> no site line
+])
+def test_rubric_unconfigured_is_the_bare_rubric(config):
+    """Same posture as the FIX prompt: an installation that has not said how
+    it deploys gets the neutral rubric, never a guess."""
+    from agent.agent import _REMEDIATION_CLASS_RUBRIC, _remediation_class_rubric
+    assert _remediation_class_rubric(config, _DELIVERY_REGISTRY) == \
+        _REMEDIATION_CLASS_RUBRIC
+
+
+def test_both_rubric_feeds_read_the_renderer():
+    """The classifier and the morning summary are the two feeds the rubric
+    exists to keep in step; a call site left on the bare constant would miss
+    the site line and silently drift.
+
+    Unconditional on purpose. The first cut of this guard only asserted when
+    one of the two names already appeared in the source, so DELETING the call
+    outright made the condition false and the test pass -- it caught a
+    reversion to the constant (the mutation that was checked) and nothing
+    else. Flagged on the PR #229 re-review.
+    """
+    import inspect
+    from agent.agent import CFOperator as _CFOp
+
+    for fn in (_CFOp._classify_needs_action_recommendation,
+               _CFOp._generate_morning_summary):
+        src = inspect.getsource(fn)
+        assert '_remediation_class_rubric(' in src, (
+            f"{fn.__name__} does not render the shared rubric through the "
+            "site-aware renderer")
+
+
+def _executor_no_executor_path():
+    """executor/entrypoint.py's _NO_EXECUTOR_PATH, read from source.
+
+    Not imported: that module uses bare imports needing executor/ on
+    sys.path, and CI runs this suite with PYTHONPATH=<root>/agent:<root>, so
+    importing it passes locally and ModuleNotFoundErrors in CI. Read via ast
+    so the test still tracks the real routing table rather than a copy of it
+    that can drift.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    tree = ast.parse((root / "executor" / "entrypoint.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "_NO_EXECUTOR_PATH":
+                return set(ast.literal_eval(node.value))
+    raise AssertionError("_NO_EXECUTOR_PATH not found in executor/entrypoint.py")

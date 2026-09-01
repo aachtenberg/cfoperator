@@ -484,9 +484,8 @@ _REMEDIATION_CLASS_RUBRIC = (
     "responds, look for a pattern. PREFER THIS over manual for anything "
     "'check/verify/confirm/investigate/monitor'; the agent will investigate "
     "autonomously rather than ask a human.\n"
-    "- gitops-patch: a single manifest change in a GitOps repo (set repo: "
-    "aachtenberg/homelab-infra for cluster apps, aachtenberg/cfoperator-deploy "
-    "for cfoperator/event-runtime itself).\n"
+    "- gitops-patch: a single manifest change in a GitOps repo. Set repo to "
+    "the repository that owns the manifests you are changing.\n"
     "- k8s-action: an in-cluster change that can be expressed as a MANIFEST "
     "EDIT in the GitOps repo — scale a deployment (replicas), a rollout "
     "restart (annotation bump), a resource-limit change. The executor "
@@ -507,6 +506,47 @@ _REMEDIATION_CLASS_RUBRIC = (
     "- manual: genuinely needs a human's hands or judgement (hardware, wiring, "
     "a risky decision) — NOT something you could investigate first.\n"
 )
+
+
+def _remediation_class_rubric(config=None, known_repos=None) -> str:
+    """The shared rubric with this site's delivery reality appended.
+
+    The rubric proper is site-neutral on purpose. It used to name this
+    project's own repos ("set repo: aachtenberg/homelab-infra for cluster
+    apps, aachtenberg/cfoperator-deploy for cfoperator itself") and went
+    verbatim to the needs_action classifier and the morning summary, so every
+    other installation was told to file its manifest changes against two
+    repositories it does not have -- the same baked assumption CFOP-148 took
+    out of the FIX prompt, one feed over. Caught on the PR #229 review, which
+    noted the new tests assert those slugs are absent from
+    _delivery_guidance while they still sat eighty lines above it.
+
+    Both feeds get the site line from the same config as the FIX prompt, so
+    the three cannot drift apart on where a manifest change goes.
+    """
+    rubric = _REMEDIATION_CLASS_RUBRIC
+    rcfg = (config or {}).get('remediation') if isinstance(config, dict) else None
+    if not isinstance(rcfg, dict):
+        return rubric
+    dcfg = rcfg.get('delivery')
+    if not isinstance(dcfg, dict):
+        return rubric
+    mode = str(dcfg.get('mode') or 'none').strip().lower()
+    if mode == 'direct':
+        return rubric + (
+            "On this installation there is no GitOps repository. Neither "
+            "gitops-patch nor k8s-action applies: the executor delivers both "
+            "by opening a pull request against a manifest repository, and "
+            "there is none here. An in-cluster change is k8s-imperative, "
+            "which parks for a human to run.\n")
+    if mode == 'gitops':
+        repo = _resolve_fix_repo(dcfg.get('repo') or rcfg.get('default_repo'),
+                                 known_repos)
+        if repo:
+            return rubric + (
+                f"On this installation manifests live in {repo}; use it as "
+                "repo for gitops-patch.\n")
+    return rubric
 
 # CFOP-80: investigation kinds are not queue classes. Mapped at enqueue.
 # Unknown kind → manual (never salvage a class from a typo).
@@ -530,6 +570,112 @@ _FIX_JSON_SCHEMA = (
     '"rejected": [{"alternative": "what you considered", '
     '"why_not": "why not"}], "risk": "low|med|high"}'
 )
+
+# Why `direct` steers at k8s-imperative and not the more obvious k8s-object:
+# k8s-object maps to the k8s-action class, which is in
+# _AUTO_REMEDIATION_CLASSES and is NOT in the executor's _NO_EXECUTOR_PATH, so
+# it reaches run_gitops -- the path whose whole job is opening a pull request
+# against a manifest repository. A site in `direct` mode has none. Saying
+# "nothing is applied unattended" in the prompt does not bind
+# remediation_is_auto_eligible, so on the classifier feed that steer would
+# have pointed the one auto-executing class at a delivery lane that does not
+# exist there (PR #229 re-review). k8s-imperative is the class that parks with
+# a legible message instead. The FIX feed parks either way (a FIX-derived
+# k8s-action never carries a confidence), but only until a human approves the
+# row, so both prompts say the same thing.
+#
+# CFOP-148: how a change reaches THIS installation's cluster is site policy,
+# not something the model can infer and not something this file may assume.
+# The schema above lists the target kinds; which of them is the honest answer
+# depends entirely on whether the site delivers cluster changes through a
+# manifest repo or by touching the cluster directly. A fleet running pure
+# GitOps and a box running plain `kubectl apply` want opposite advice, and a
+# cluster need not be k3s -- or ArgoCD, or ours -- so the advice is configured
+# (`remediation.delivery`) and silent by default rather than written here.
+#
+# Live row #96 is what this is for. gemma4 chose `k8s-object` for a deployment
+# probe change and wrote "Apply the updated manifest to the cluster" as a step.
+# On a GitOps cluster nothing lands that way, and a `k8s-object` FIX cannot
+# carry a confidence (_hints_from_structured_fix), so the row parked at
+# needs-human with attempts=0 and no PR could ever be opened against it. The
+# model was not wrong so much as uninformed: it picked a kind from a bare enum
+# with nothing telling it which one this installation can actually act on.
+
+_DELIVERY_DIRECT = (
+    "\n\nHow changes are delivered here: this installation has no GitOps "
+    "repository for cluster manifests -- changes are applied to the cluster "
+    "directly, by a human. Use `k8s-imperative` for an in-cluster change. Do "
+    "NOT emit `gitops-manifest` or `k8s-object` targets: both are delivered "
+    "by opening a pull request against a manifest repository, and there is "
+    "none here. Write steps a human will run."
+)
+
+
+def _delivery_guidance(config, known_repos=None) -> str:
+    """Prompt text describing how cluster changes reach this site, or ``''``.
+
+    Read from ``remediation.delivery``. Mode ``none`` -- the default, and any
+    value this function does not recognise -- returns the empty string, which
+    is exactly the prompt that shipped before this existed: an installation
+    that has not said how it deploys is told nothing rather than a guess.
+
+    Nothing here names a repo or a syncer that this module chose. ``repo``
+    falls back to ``remediation.default_repo`` and is resolved through the git
+    registry, so the prompt shows the same slug the executor will hand to
+    GitHub; one that does not resolve drops the repo sentence rather than
+    naming a repo the executor would only bounce (CFOP-85, one layer earlier).
+    """
+    rcfg = (config or {}).get('remediation') if isinstance(config, dict) else None
+    if not isinstance(rcfg, dict):
+        return ''
+    dcfg = rcfg.get('delivery')
+    if not isinstance(dcfg, dict):
+        return ''
+    mode = str(dcfg.get('mode') or 'none').strip().lower()
+    if mode == 'direct':
+        text = _DELIVERY_DIRECT
+    elif mode == 'gitops':
+        repo = _resolve_fix_repo(dcfg.get('repo') or rcfg.get('default_repo'),
+                                 known_repos)
+        if not repo:
+            # A gitops site whose manifest repo does not resolve has no
+            # working gitops lane at all: _validate_structured_fix refuses a
+            # gitops-manifest target whose repo is missing or unresolvable
+            # (CFOP-85), so preferring that kind here would steer the model
+            # into a FIX that cannot enqueue. The row would then fall through
+            # to the classifier -- row #96's path again, one layer over.
+            #
+            # Say nothing rather than steer into a refusal, and log, because
+            # the alternative is an operator who set mode: gitops and cannot
+            # see why nothing changed. Deliberately stronger than the PR
+            # review's suggestion (drop just the prefer sentence): what would
+            # remain says "do not touch the cluster directly" while naming no
+            # kind that can carry the change, which is guidance to nowhere.
+            logger.warning(
+                "remediation.delivery.mode is 'gitops' but no manifest repo "
+                "resolves (delivery.repo=%r, remediation.default_repo=%r); "
+                "the FIX prompt carries no delivery guidance until one of "
+                "them names an entry in git.repos",
+                dcfg.get('repo'), rcfg.get('default_repo'))
+            return ''
+        tool = str(dcfg.get('tool') or '').strip()
+        text = ("\n\nHow changes are delivered here: this installation deploys "
+                "through GitOps")
+        text += f" ({tool})." if tool else "."
+        text += (f" Cluster manifests live in the git repository {repo}. "
+                 "Anything you can express as an edit to a file in that "
+                 f'repository is a `gitops-manifest` target with "repo": '
+                 f'"{repo}" -- prefer it.')
+        text += (" The change is delivered by opening a pull request and takes "
+                 "effect when that PR merges and the syncer reconciles, so do "
+                 "NOT write steps that change the cluster directly (kubectl "
+                 "apply/edit/scale/patch). Use `k8s-object` or `k8s-imperative` "
+                 "only for something that genuinely cannot be written as a file "
+                 "change in that repository.")
+    else:
+        return ''
+    notes = str(dcfg.get('notes') or '').strip()
+    return f"{text} {notes}" if notes else text
 
 
 def _class_from_fix_kind(kind) -> str:
@@ -2249,7 +2395,7 @@ STATUS: <one of: resolved | needs_action | monitoring | escalate>
   - escalate: urgent; a human should look now.
 RECOMMENDATION: <the single most useful operator-facing next step — a concrete command or config change, or "No action needed" when the resource is genuinely healthy>
 When STATUS is needs_action, also emit a FIX object after RECOMMENDATION (JSON, not inside the RECOMMENDATION line). targets is a list so a two-repo ordered fix can be stated. Omit FIX only when no change is required.
-FIX: {_FIX_JSON_SCHEMA}"""
+FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
             # Run LLM investigation with tools, with provider fallback so a
             # transient Ollama timeout (e.g. GPU cold-start) doesn't abort
@@ -2503,6 +2649,11 @@ FIX: {_FIX_JSON_SCHEMA}"""
                         f"Your previous ending:\n{str(response_text)[-1500:]}\n\n"
                         "That reply is missing a valid FIX JSON object. "
                         f"Reply with ONLY a FIX object matching: {_FIX_JSON_SCHEMA}"
+                        # Same guidance as the investigation prompt: the nudge
+                        # is a second chance at the SAME object, and one that
+                        # forgot which target kinds this site can act on would
+                        # quietly undo the steer that produced the retry.
+                        f"{_delivery_guidance(self.config, self.git_repos())}"
                     ),
                 }],
                 system_context=(
@@ -4418,7 +4569,7 @@ FIX: {_FIX_JSON_SCHEMA}"""
             "Example of a correctly FORMATTED response (the values here are "
             "placeholders — judge the actual recommendation on its merits):\n"
             f"{json.dumps(_CLASSIFIER_SAFE_EXAMPLE)}\n\n"
-            f"{_REMEDIATION_CLASS_RUBRIC}"
+            f"{_remediation_class_rubric(self.config, self.git_repos())}"
             "Be conservative with risk."
         )
         labels = alert_info.get('labels') or (alert_info.get('details') or {}).get('labels') or {}
@@ -9250,7 +9401,7 @@ IMPORTANT:
             f'"risk": "low|med|high", "confidence": 0.0, '
             f'"repo": "owning GitOps repo slug or empty"}}]}}\n'
             f"```\n"
-            f"{_REMEDIATION_CLASS_RUBRIC}"
+            f"{_remediation_class_rubric(self.config, self.git_repos())}"
             f"Be conservative with risk."
         )
 
