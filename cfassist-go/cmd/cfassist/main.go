@@ -148,7 +148,9 @@ func run(cmd *cobra.Command, args []string) error {
 		url, token, timeout := cfoperator.ResolveEndpoint(
 			cfg.CFOperator.URL, cfg.CFOperator.Token, cfg.CFOperator.Timeout, os.Getenv,
 		)
-		toolReg.AddCFOperator(cfoperator.New(url, token, timeout))
+		api := cfoperator.New(url, token, timeout)
+		api.URLFrom = cfoperator.AgentURLSource(cfg.CFOperator.URL, os.Getenv)
+		toolReg.AddCFOperator(api)
 	}
 
 	// Load context files

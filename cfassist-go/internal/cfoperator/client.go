@@ -67,10 +67,25 @@ func newError(hint, format string, args ...any) *Error {
 	return &Error{Message: fmt.Sprintf(format, args...), Hint: hint}
 }
 
+// Where a resolved agent URL came from. Only the unreachable hint reads this,
+// and it reads it for one reason: to name an override that will actually work.
+// Telling an operator to export CFOP_AGENT_URL is false advice on any host
+// whose managed config sets cfoperator.url, because config wins (CFOP-145).
+const (
+	URLFromConfig  = "config"
+	URLFromEnv     = "env"
+	URLFromDefault = "default"
+	URLFromFlag    = "flag"
+)
+
 // Client is a synchronous, read-only HTTP client for the agent API.
 type Client struct {
 	URL   string
 	Token string
+	// URLFrom is one of the URLFrom* constants, or "" when the caller did not
+	// say. Empty keeps the generic hint — a wrong-but-plausible provenance
+	// would be worse than none.
+	URLFrom string
 
 	http *http.Client
 	// ctx bounds every request this client makes. Nil means unbounded, which
@@ -161,18 +176,7 @@ func (c *Client) do(method, path string, params url.Values) ([]byte, error) {
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			return nil, newError("", "Timed out talking to CFOperator at %s", c.URL)
 		}
-		// The hint leads with the two fixes that work anywhere. It used to name
-		// only the port-forward, which quietly assumes kubectl and a kubeconfig
-		// on this machine — an assumption that fails on exactly the hardware
-		// attach is for (a Pi, a phone-tethered laptop), and leaves an operator
-		// whose real problem is "the URL points at the wrong host" with nothing
-		// to act on. Port-forward stays, third, labelled with what it needs.
-		return nil, newError(
-			fmt.Sprintf("Is the agent up, and is %s the right address? "+
-				"Set the agent host with %s=http://<agent-host>:8083, "+
-				"or a cfoperator: block (url/token) in ~/.cfassist/config.yaml. "+
-				"With kubectl here, kubectl -n apps port-forward svc/cfoperator 8083:8083 "+
-				"makes 127.0.0.1:8083 work instead.", c.URL, EnvAgentURL),
+		return nil, newError(c.unreachableHint(),
 			"Cannot reach CFOperator at %s: %v", c.URL, err,
 		)
 	}
@@ -455,4 +459,69 @@ func ResolveEndpoint(cfgURL, cfgToken string, cfgTimeout float64, lookupEnv func
 	}
 
 	return strings.TrimRight(resolvedURL, "/"), token, timeout
+}
+
+// AgentURLSource reports which rung of ResolveEndpoint's precedence supplied the
+// URL, given the same inputs. It lives next to ResolveEndpoint so the two cannot
+// drift into disagreeing about the order.
+func AgentURLSource(cfgURL string, lookupEnv func(string) string) string {
+	if lookupEnv == nil {
+		lookupEnv = os.Getenv
+	}
+	if strings.TrimSpace(cfgURL) != "" {
+		return URLFromConfig
+	}
+	if strings.TrimSpace(lookupEnv(EnvAgentURL)) != "" {
+		return URLFromEnv
+	}
+	return URLFromDefault
+}
+
+// unreachableHint is what to try when nothing answered at c.URL.
+//
+// The advice is provenance-specific because the generic version was actively
+// misleading (CFOP-145): it told every operator to export CFOP_AGENT_URL, which
+// on an ansible-managed fleet host cannot work — the template always writes
+// cfoperator.url, and config beats the environment. Following the hint produced
+// byte-identical output, which reads as "my override was ignored" rather than
+// "that knob is not the live one", and cost a real incident's worth of time.
+//
+// Every named provenance needs its own case. Folding one into the default is
+// how this defect reappears a rung lower: the generic text tells the reader to
+// set CFOP_AGENT_URL, which is useless advice for someone who reached this line
+// *by* setting it. The default is only for a caller that did not say.
+//
+// Port-forward stays last, labelled with what it needs: it quietly assumes
+// kubectl and a kubeconfig on this machine, an assumption that fails on exactly
+// the hardware attach is for (a Pi, a phone-tethered laptop).
+func (c *Client) unreachableHint() string {
+	var override string
+	switch c.URLFrom {
+	case URLFromConfig:
+		override = fmt.Sprintf(
+			"That address came from cfoperator.url in ~/.cfassist/config.yaml, which "+
+				"wins over %s — exporting that variable will not change it. Override "+
+				"this run with --agent-url http://<agent-host>:8083, or edit the file.",
+			EnvAgentURL)
+	case URLFromEnv:
+		// Names the config file as well as the flag: this is the first-run
+		// shape (env set, no config yet), and that run has just scaffolded a
+		// cfoperator: block whose whole purpose is to be filled in.
+		// TestFailedFirstRunStillLeavesAConfigToEdit pins both mentions.
+		override = fmt.Sprintf(
+			"That address came from %s in your environment, so it is already the "+
+				"override — check the host and port. Use --agent-url "+
+				"http://<agent-host>:8083 for one run, or a cfoperator: block "+
+				"(url/token) in ~/.cfassist/config.yaml to make it stick.", EnvAgentURL)
+	case URLFromFlag:
+		override = "That address came from --agent-url, so it is already the override; " +
+			"check the host and port."
+	default:
+		override = fmt.Sprintf(
+			"Set the agent host with %s=http://<agent-host>:8083, or a cfoperator: "+
+				"block (url/token) in ~/.cfassist/config.yaml.", EnvAgentURL)
+	}
+	return fmt.Sprintf("Is the agent up, and is %s the right address? %s "+
+		"With kubectl here, kubectl -n apps port-forward svc/cfoperator 8083:8083 "+
+		"makes 127.0.0.1:8083 work instead.", c.URL, override)
 }

@@ -397,6 +397,89 @@ func TestResolveEndpointFallsBackToEnv(t *testing.T) {
 	}
 }
 
+// Both functions, one set of inputs. AgentURLSource hand-copies
+// ResolveEndpoint's precedence, and living next to it is a convention, not an
+// enforcement — asserting AgentURLSource alone would pin its behaviour while
+// letting a reorder of ResolveEndpoint silently make every hint name the wrong
+// source, which is the CFOP-145 failure mode again. Driving both from the same
+// inputs is what makes "these two agree" a fact rather than a comment.
+func TestAgentURLSourceTracksResolveEndpointPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name, cfgURL, env, wantSource, wantURL string
+	}{
+		{"config wins", "http://from-config:9000", "http://from-env:8083",
+			URLFromConfig, "http://from-config:9000"},
+		{"env fills in", "", "http://from-env:8083", URLFromEnv, "http://from-env:8083"},
+		{"neither", "", "", URLFromDefault, DefaultAgentURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := func(k string) string {
+				if k == EnvAgentURL {
+					return tc.env
+				}
+				return ""
+			}
+			url, _, _ := ResolveEndpoint(tc.cfgURL, "", 0, lookup)
+			if url != tc.wantURL {
+				t.Errorf("ResolveEndpoint gave %q, want %q", url, tc.wantURL)
+			}
+			if got := AgentURLSource(tc.cfgURL, lookup); got != tc.wantSource {
+				t.Errorf("AgentURLSource attributed %q to a URL that came from %q",
+					got, tc.wantSource)
+			}
+		})
+	}
+}
+
+// MUTATION GUARD (CFOP-145). The generic hint told every operator to export
+// CFOP_AGENT_URL. On an ansible-managed fleet host that cannot work — the
+// template always writes cfoperator.url, and config beats the environment — so
+// following the advice reproduced the identical error and read as "my override
+// was ignored". Point unreachableHint back at one wording for all cases and
+// this fails.
+func TestTheUnreachableHintNamesAnOverrideThatWorks(t *testing.T) {
+	fromConfig := &Client{URL: "http://192.168.0.167:8083", URLFrom: URLFromConfig}
+	hint := fromConfig.unreachableHint()
+	if !strings.Contains(hint, "--agent-url") {
+		t.Errorf("a config-sourced address must point at the flag, got %q", hint)
+	}
+	if !strings.Contains(hint, "will not change it") {
+		t.Errorf("it must say the env var is inert here, got %q", hint)
+	}
+
+	// Unknown provenance keeps the generic wording: a confidently wrong
+	// attribution would be worse than none.
+	for _, c := range []*Client{
+		{URL: "http://127.0.0.1:8083"},
+		{URL: "http://127.0.0.1:8083", URLFrom: URLFromDefault},
+	} {
+		if got := c.unreachableHint(); !strings.Contains(got, "Set the agent host with "+EnvAgentURL) {
+			t.Errorf("URLFrom=%q should keep the generic hint, got %q", c.URLFrom, got)
+		}
+	}
+
+	// The flag is already the override; telling them to use it again is noise.
+	if got := (&Client{URL: "http://x:8083", URLFrom: URLFromFlag}).unreachableHint(); !strings.Contains(got, "already the override") {
+		t.Errorf("a flag-sourced address should say so, got %q", got)
+	}
+
+	// Every *named* provenance must get its own advice. URLFromEnv folded into
+	// the default once, which shipped CFOP-145 one rung down: it told an
+	// operator who had set CFOP_AGENT_URL to set CFOP_AGENT_URL, and the retry
+	// was byte-identical. Assert on the whole set so a future constant added
+	// without a case fails here rather than in an incident.
+	for _, from := range []string{URLFromConfig, URLFromEnv, URLFromFlag} {
+		got := (&Client{URL: "http://x:8083", URLFrom: from}).unreachableHint()
+		if strings.Contains(got, "Set the agent host with "+EnvAgentURL) {
+			t.Errorf("URLFrom=%q fell through to the generic hint, which advises "+
+				"the one knob that provenance already rules out: %q", from, got)
+		}
+		if !strings.Contains(got, "--agent-url") {
+			t.Errorf("URLFrom=%q must name an override that works, got %q", from, got)
+		}
+	}
+}
+
 func TestResolveEndpointDefaultsToLocalPortForward(t *testing.T) {
 	url, token, _ := ResolveEndpoint("", "", 0, func(string) string { return "" })
 	if url != DefaultAgentURL {
