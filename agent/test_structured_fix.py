@@ -25,6 +25,7 @@ from agent.agent import (  # noqa: E402
     _FIX_KIND_TO_CLASS,
     _FORK_SHAPED,
     _class_from_fix_kind,
+    _delivery_guidance,
     _fix_targets_dedupe_key,
     _hints_from_structured_fix,
     _parse_structured_fix,
@@ -644,3 +645,149 @@ def test_every_observed_refusal_is_logged_not_silent(caplog, bad, reason):
     assert any(reason in m for m in warnings), warnings
     # The target ids ride along, so the log names which recommendation was lost.
     assert any("apps/promtail.yaml" in m for m in warnings), warnings
+
+
+# ---- delivery guidance (CFOP-148) -------------------------------------------
+#
+# These guard the CLASS of regression behind live row #96: the prompt telling
+# the model nothing about how a change reaches this cluster, so it picks a
+# target kind the site cannot act on. What matters is that the guidance is
+# CONFIGURED -- absent when unset, and naming the operator's own repo and
+# mechanism rather than any value this repo happened to pick. Deliberately not
+# pinned to the wording, which is prompt copy and expected to be reworded.
+
+_DELIVERY_REGISTRY = [
+    {"name": "my-manifests", "github": "acme/my-manifests"},
+    {"name": "other-repo", "github": "acme/other-repo"},
+]
+
+
+def _cfg(delivery=None, default_repo=None):
+    rem = {}
+    if delivery is not None:
+        rem["delivery"] = delivery
+    if default_repo is not None:
+        rem["default_repo"] = default_repo
+    return {"remediation": rem}
+
+
+@pytest.mark.parametrize("config", [
+    {},                                       # no remediation block at all
+    {"remediation": {}},                      # no delivery block
+    _cfg({}),                                 # delivery block, no mode
+    _cfg({"mode": "none"}),                   # explicitly off
+    _cfg({"mode": "None"}),                   # case-folded
+    _cfg({"mode": "kubectl"}),                # unrecognised -> silent, not a guess
+    _cfg({"mode": None}),
+    {"remediation": {"delivery": "gitops"}},  # wrong type
+    {"remediation": "nonsense"},
+    None,
+])
+def test_unconfigured_delivery_says_nothing(config):
+    """The default is silence. An installation that has not said how it deploys
+    gets the pre-CFOP-148 prompt, never a guess about its own cluster."""
+    assert _delivery_guidance(config, _DELIVERY_REGISTRY) == ""
+
+
+def test_gitops_names_the_configured_repo_not_a_baked_one():
+    text = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "my-manifests"}), _DELIVERY_REGISTRY)
+    assert "acme/my-manifests" in text     # the resolved SLUG, as the executor uses
+    assert "gitops-manifest" in text
+    # Mutation check: the value must come from config, not from this codebase.
+    assert "homelab-infra" not in text
+    assert "aachtenberg" not in text
+
+
+def test_a_second_installation_gets_its_own_repo():
+    """Two sites, two repos. The guidance is a pure function of config, so
+    nothing from one installation can leak into another's prompt."""
+    a = _delivery_guidance(_cfg({"mode": "gitops", "repo": "my-manifests"}), _DELIVERY_REGISTRY)
+    b = _delivery_guidance(_cfg({"mode": "gitops", "repo": "other-repo"}), _DELIVERY_REGISTRY)
+    assert "acme/my-manifests" in a and "acme/other-repo" not in a
+    assert "acme/other-repo" in b and "acme/my-manifests" not in b
+
+
+def test_gitops_repo_falls_back_to_default_repo():
+    """`default_repo` already names the manifest repo; delivery must not make
+    an operator write the same repo down twice."""
+    text = _delivery_guidance(
+        _cfg({"mode": "gitops"}, default_repo="my-manifests"), _DELIVERY_REGISTRY)
+    assert "acme/my-manifests" in text
+
+
+def test_gitops_rules_out_direct_to_cluster_steps():
+    """Row #96 wrote "Apply the updated manifest to the cluster" on a GitOps
+    fleet. The guidance has to say that lands nothing there."""
+    text = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "my-manifests"}), _DELIVERY_REGISTRY)
+    assert "kubectl" in text and "pull request" in text
+
+
+def test_gitops_tool_is_free_text_and_optional():
+    """No syncer is special-cased. The tool name only shapes wording, and
+    omitting it must not break the guidance."""
+    named = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "my-manifests", "tool": "Flux"}), _DELIVERY_REGISTRY)
+    assert "Flux" in named
+    bare = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "my-manifests"}), _DELIVERY_REGISTRY)
+    assert bare and "Flux" not in bare
+    assert "ArgoCD" not in bare        # nothing ArgoCD-shaped is baked in
+
+
+def test_unresolvable_repo_drops_the_repo_not_the_guidance():
+    """A repo the executor could not reach must not be named at it (CFOP-85's
+    failure, one layer earlier) -- but the mode is still known, so the rest of
+    the steer survives."""
+    text = _delivery_guidance(_cfg({"mode": "gitops", "repo": "nowhere"}), _DELIVERY_REGISTRY)
+    assert "nowhere" not in text
+    assert "gitops-manifest" in text
+
+
+def test_direct_mode_steers_away_from_gitops():
+    """A cluster with no manifest repo -- plain kubectl, possibly not k3s.
+    Proposing a gitops-manifest target there is the mirror image of row #96."""
+    text = _delivery_guidance(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
+    assert "k8s-object" in text and "k8s-imperative" in text
+    assert "Do NOT emit `gitops-manifest`" in text
+    assert "pull request" not in text
+
+
+def test_direct_mode_never_names_a_repo():
+    """There is no manifest repo in this mode; a stale `repo` or `default_repo`
+    left in config must not conjure one into the prompt."""
+    text = _delivery_guidance(
+        _cfg({"mode": "direct", "repo": "my-manifests"}, default_repo="other-repo"),
+        _DELIVERY_REGISTRY)
+    assert "my-manifests" not in text and "other-repo" not in text
+
+
+@pytest.mark.parametrize("mode", ["gitops", "direct"])
+def test_notes_are_appended_to_either_mode(mode):
+    text = _delivery_guidance(
+        _cfg({"mode": mode, "repo": "my-manifests", "notes": "Staging first."}),
+        _DELIVERY_REGISTRY)
+    assert text.endswith("Staging first.")
+
+
+def test_guidance_is_wired_into_both_fix_prompts():
+    """The helper existing is not the fix -- row #96 failed because the prompt
+    never carried the steer. Both places that ask for a FIX must render it, and
+    they must agree: the nudge is a second attempt at the SAME object, so one
+    that forgot the site's delivery mechanism would quietly undo the steer that
+    produced the retry.
+
+    Asserted against the source rather than a captured prompt string because
+    what regresses here is the CALL being dropped in a refactor, and that is
+    exactly what this reads.
+    """
+    import inspect
+    from agent.agent import CFOperator as _CFOp
+
+    for fn in (_CFOp._act, _CFOp._nudge_structured_fix):
+        src = inspect.getsource(fn)
+        assert '_FIX_JSON_SCHEMA' in src, f"{fn.__name__} no longer asks for a FIX"
+        assert '_delivery_guidance' in src, (
+            f"{fn.__name__} asks for a FIX without telling the model how "
+            "changes are delivered here")

@@ -186,6 +186,36 @@ Everything else gets `None` and parks, including every multi-target FIX. The
 local primary reports 1.0 on calls it got wrong, so high confidence is not
 inferred from the model's own certainty.
 
+That stinginess has a corollary worth stating plainly: **a `k8s-object` FIX can
+never auto-execute**, even though `k8s-action` is in the auto-eligible class
+set. `k8s-action` reaches the gate only via the classifier, never via a FIX. So
+a model that reaches for `k8s-object` where a manifest edit was meant has
+written a row that parks at needs-human with `attempts=0` and no PR — which is
+what live row #96 did, and why the prompt now says which kind this installation
+can act on (below).
+
+### Telling the model how changes are delivered here
+
+Which target kind is *honest* depends on the site, not on the resource. Editing
+a Deployment's probes is a `gitops-manifest` change where manifests live in a
+repo and a `k8s-object` change where they do not, and the model cannot tell
+which from the cluster alone. Before CFOP-148 it was told nothing: the prompt
+carried the bare kind enum and no semantics, so on a GitOps fleet it would
+reasonably pick `k8s-object` for a Deployment and write `kubectl apply` steps
+that describe a delivery path that does not exist there.
+
+`remediation.delivery.mode` supplies the missing half, and is **off by
+default** — `none` renders no guidance at all, which is exactly the prompt that
+shipped before. `gitops` names the configured repo (resolved through the git
+registry, so it is the same slug the executor uses) and steers manifest-
+expressible work to `gitops-manifest`; `direct` says there is no manifest repo
+and steers to `k8s-object` / `k8s-imperative`. Nothing about a specific syncer
+is baked in: `tool` is free text that only shapes wording, and a cluster that
+is neither GitOps nor k3s is served by `direct` or by saying nothing.
+
+The same text goes to the FIX nudge retry, or the retry would quietly undo the
+steer that produced it. See `docs/config-reference.md` for the block.
+
 Two further bars sit in front of an auto-execute:
 
 - A **fork-shaped** recommendation ("do X, or do Y") has its confidence cleared

@@ -247,6 +247,12 @@ DEFAULT_CONFIG: dict = {
         "queue_verify": False,
         "max_open_prs": 3,
         "max_drain_per_tick": 3,
+        # CFOP-148: how cluster changes reach this site. Shape and enablement
+        # only -- `repo` and `tool` are absent for the same reason
+        # `default_repo` is, and `none` renders no prompt guidance at all, so
+        # an installation that has not said how it deploys is never told a
+        # guess about its own cluster.
+        "delivery": {"mode": "none"},
         "executor": {"node_action": {"enabled": False}},
     },
 

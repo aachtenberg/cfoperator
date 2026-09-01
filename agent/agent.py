@@ -531,6 +531,84 @@ _FIX_JSON_SCHEMA = (
     '"why_not": "why not"}], "risk": "low|med|high"}'
 )
 
+# CFOP-148: how a change reaches THIS installation's cluster is site policy,
+# not something the model can infer and not something this file may assume.
+# The schema above lists the target kinds; which of them is the honest answer
+# depends entirely on whether the site delivers cluster changes through a
+# manifest repo or by touching the cluster directly. A fleet running pure
+# GitOps and a box running plain `kubectl apply` want opposite advice, and a
+# cluster need not be k3s -- or ArgoCD, or ours -- so the advice is configured
+# (`remediation.delivery`) and silent by default rather than written here.
+#
+# Live row #96 is what this is for. gemma4 chose `k8s-object` for a deployment
+# probe change and wrote "Apply the updated manifest to the cluster" as a step.
+# On a GitOps cluster nothing lands that way, and a `k8s-object` FIX cannot
+# carry a confidence (_hints_from_structured_fix), so the row parked at
+# needs-human with attempts=0 and no PR could ever be opened against it. The
+# model was not wrong so much as uninformed: it picked a kind from a bare enum
+# with nothing telling it which one this installation can actually act on.
+
+_DELIVERY_DIRECT = (
+    "\n\nHow changes are delivered here: this installation has no GitOps "
+    "repository for cluster manifests -- changes are applied to the cluster "
+    "directly. Use `k8s-object` for a change expressible as an edit to a live "
+    "object, and `k8s-imperative` for a one-off command with no object "
+    "equivalent. Do NOT emit `gitops-manifest` targets; there is no manifest "
+    "repository to edit. Nothing here is applied unattended, so write steps a "
+    "human will run."
+)
+
+
+def _delivery_guidance(config, known_repos=None) -> str:
+    """Prompt text describing how cluster changes reach this site, or ``''``.
+
+    Read from ``remediation.delivery``. Mode ``none`` -- the default, and any
+    value this function does not recognise -- returns the empty string, which
+    is exactly the prompt that shipped before this existed: an installation
+    that has not said how it deploys is told nothing rather than a guess.
+
+    Nothing here names a repo or a syncer that this module chose. ``repo``
+    falls back to ``remediation.default_repo`` and is resolved through the git
+    registry, so the prompt shows the same slug the executor will hand to
+    GitHub; one that does not resolve drops the repo sentence rather than
+    naming a repo the executor would only bounce (CFOP-85, one layer earlier).
+    """
+    rcfg = (config or {}).get('remediation') if isinstance(config, dict) else None
+    if not isinstance(rcfg, dict):
+        return ''
+    dcfg = rcfg.get('delivery')
+    if not isinstance(dcfg, dict):
+        return ''
+    mode = str(dcfg.get('mode') or 'none').strip().lower()
+    if mode == 'direct':
+        text = _DELIVERY_DIRECT
+    elif mode == 'gitops':
+        repo = _resolve_fix_repo(dcfg.get('repo') or rcfg.get('default_repo'),
+                                 known_repos)
+        tool = str(dcfg.get('tool') or '').strip()
+        text = ("\n\nHow changes are delivered here: this installation deploys "
+                "through GitOps")
+        text += f" ({tool})." if tool else "."
+        if repo:
+            text += (f" Cluster manifests live in the git repository {repo}. "
+                     "Anything you can express as an edit to a file in that "
+                     f'repository is a `gitops-manifest` target with "repo": '
+                     f'"{repo}" -- prefer it.')
+        else:
+            text += (" Anything you can express as an edit to a file in the "
+                     "manifest repository is a `gitops-manifest` target -- "
+                     "prefer it.")
+        text += (" The change is delivered by opening a pull request and takes "
+                 "effect when that PR merges and the syncer reconciles, so do "
+                 "NOT write steps that change the cluster directly (kubectl "
+                 "apply/edit/scale/patch). Use `k8s-object` or `k8s-imperative` "
+                 "only for something that genuinely cannot be written as a file "
+                 "change in that repository.")
+    else:
+        return ''
+    notes = str(dcfg.get('notes') or '').strip()
+    return f"{text} {notes}" if notes else text
+
 
 def _class_from_fix_kind(kind) -> str:
     return _FIX_KIND_TO_CLASS.get(str(kind or '').strip().lower(), 'manual')
@@ -2249,7 +2327,7 @@ STATUS: <one of: resolved | needs_action | monitoring | escalate>
   - escalate: urgent; a human should look now.
 RECOMMENDATION: <the single most useful operator-facing next step — a concrete command or config change, or "No action needed" when the resource is genuinely healthy>
 When STATUS is needs_action, also emit a FIX object after RECOMMENDATION (JSON, not inside the RECOMMENDATION line). targets is a list so a two-repo ordered fix can be stated. Omit FIX only when no change is required.
-FIX: {_FIX_JSON_SCHEMA}"""
+FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
             # Run LLM investigation with tools, with provider fallback so a
             # transient Ollama timeout (e.g. GPU cold-start) doesn't abort
@@ -2503,6 +2581,11 @@ FIX: {_FIX_JSON_SCHEMA}"""
                         f"Your previous ending:\n{str(response_text)[-1500:]}\n\n"
                         "That reply is missing a valid FIX JSON object. "
                         f"Reply with ONLY a FIX object matching: {_FIX_JSON_SCHEMA}"
+                        # Same guidance as the investigation prompt: the nudge
+                        # is a second chance at the SAME object, and one that
+                        # forgot which target kinds this site can act on would
+                        # quietly undo the steer that produced the retry.
+                        f"{_delivery_guidance(self.config, self.git_repos())}"
                     ),
                 }],
                 system_context=(
