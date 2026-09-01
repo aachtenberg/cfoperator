@@ -138,8 +138,13 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// environment (ResolveEndpoint's own precedence). Passed as the config
 	// value rather than as a fourth source so there is one precedence rule.
 	agentURL := cfg.CFOperator.URL
+	// Resolved before the flag override, so it describes where the *config*
+	// address came from; the flag then says so itself. This is what lets an
+	// unreachable-agent hint name an override that will actually work.
+	urlFrom := cfoperator.AgentURLSource(agentURL, os.Getenv)
 	if flagAgentURL, _ := cmd.Flags().GetString("agent-url"); strings.TrimSpace(flagAgentURL) != "" {
 		agentURL = strings.TrimSpace(flagAgentURL)
+		urlFrom = cfoperator.URLFromFlag
 	}
 
 	url, token, timeout := cfoperator.ResolveEndpoint(
@@ -164,6 +169,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	}
 
 	api := cfoperator.New(url, token, timeout)
+	api.URLFrom = urlFrom
 
 	attachCtx, err := api.CollectAttachContext(investigationID, 5, 200)
 	if err != nil {

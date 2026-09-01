@@ -397,6 +397,59 @@ func TestResolveEndpointFallsBackToEnv(t *testing.T) {
 	}
 }
 
+func TestAgentURLSourceTracksResolveEndpointPrecedence(t *testing.T) {
+	withEnv := func(k string) string {
+		if k == EnvAgentURL {
+			return "http://from-env:8083"
+		}
+		return ""
+	}
+	empty := func(string) string { return "" }
+
+	if got := AgentURLSource("http://from-config:9000", withEnv); got != URLFromConfig {
+		t.Errorf("a config url is URLFromConfig, got %q", got)
+	}
+	if got := AgentURLSource("", withEnv); got != URLFromEnv {
+		t.Errorf("no config url falls through to the env, got %q", got)
+	}
+	if got := AgentURLSource("", empty); got != URLFromDefault {
+		t.Errorf("nothing set is the built-in default, got %q", got)
+	}
+}
+
+// MUTATION GUARD (CFOP-145). The generic hint told every operator to export
+// CFOP_AGENT_URL. On an ansible-managed fleet host that cannot work — the
+// template always writes cfoperator.url, and config beats the environment — so
+// following the advice reproduced the identical error and read as "my override
+// was ignored". Point unreachableHint back at one wording for all cases and
+// this fails.
+func TestTheUnreachableHintNamesAnOverrideThatWorks(t *testing.T) {
+	fromConfig := &Client{URL: "http://192.168.0.167:8083", URLFrom: URLFromConfig}
+	hint := fromConfig.unreachableHint()
+	if !strings.Contains(hint, "--agent-url") {
+		t.Errorf("a config-sourced address must point at the flag, got %q", hint)
+	}
+	if !strings.Contains(hint, "will not change it") {
+		t.Errorf("it must say the env var is inert here, got %q", hint)
+	}
+
+	// Unknown provenance keeps the generic wording: a confidently wrong
+	// attribution would be worse than none.
+	for _, c := range []*Client{
+		{URL: "http://127.0.0.1:8083"},
+		{URL: "http://127.0.0.1:8083", URLFrom: URLFromDefault},
+	} {
+		if got := c.unreachableHint(); !strings.Contains(got, "Set the agent host with "+EnvAgentURL) {
+			t.Errorf("URLFrom=%q should keep the generic hint, got %q", c.URLFrom, got)
+		}
+	}
+
+	// The flag is already the override; telling them to use it again is noise.
+	if got := (&Client{URL: "http://x:8083", URLFrom: URLFromFlag}).unreachableHint(); !strings.Contains(got, "already the override") {
+		t.Errorf("a flag-sourced address should say so, got %q", got)
+	}
+}
+
 func TestResolveEndpointDefaultsToLocalPortForward(t *testing.T) {
 	url, token, _ := ResolveEndpoint("", "", 0, func(string) string { return "" })
 	if url != DefaultAgentURL {
