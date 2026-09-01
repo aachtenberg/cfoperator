@@ -464,6 +464,20 @@ def test_a_fix_target_that_is_not_a_host_is_ignored():
     assert host == ""
 
 
+def test_a_multi_host_fix_takes_the_first_target():
+    """Nothing caps the number of FIX targets, and a fix lists them in the order
+    it acts on them, so the leading host is where the session belongs. Pinned
+    because it is otherwise an accident of iteration — and this is the rung
+    where the wrong pick is a session on the wrong machine."""
+    host, why = resolve_target_host(
+        investigation={"trigger": "etcd quorum lost", "findings": {"fix": {"targets": [
+            {"kind": "host", "id": "raspberrypi3"},
+            {"kind": "host", "id": "ubuntu-cm5-01"}]}}},
+        known_hosts=["raspberrypi3", "ubuntu-cm5-01"],
+    )
+    assert host == "raspberrypi3" and "FIX target" in why
+
+
 def test_the_remediation_row_still_outranks_the_fix_block():
     """Ordering, not preference. The queue row carries a classified host a human
     may already have corrected; the FIX block is the model's own unreviewed

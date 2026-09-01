@@ -397,8 +397,15 @@ def resolve_target_host(
         if host and host.lower() not in _NON_HOSTS:
             return host, "from the remediation queued off this investigation"
 
-    for host in _fix_target_hosts(investigation):
-        return host, "the investigation's own FIX target"
+    fix_hosts = _fix_target_hosts(investigation)
+    if fix_hosts:
+        # First wins. A FIX may legally carry several host targets —
+        # ``_validate_structured_fix`` caps nothing — and it lists them in the
+        # order it intends to act on them, so the leading one is where a session
+        # belongs. Said out loud rather than left to a ``for`` that returns on
+        # its first pass: this is the rung where picking the wrong one is
+        # precisely the bug this whole change exists to fix.
+        return fix_hosts[0], "the investigation's own FIX target"
 
     names = sorted({(n or "").strip() for n in known_hosts if (n or "").strip()},
                    key=len, reverse=True)
@@ -451,6 +458,23 @@ def _fix_target_hosts(investigation: Optional[Dict[str, Any]]) -> List[str]:
 #: inventory against the provenance half is what put the #2339 cockpit on the
 #: wrong machine, so it is dropped here; ``value`` stays, because that is the
 #: half naming the subject.
+#:
+#: **Safe only because of an invariant in another module.** A ``source`` cannot
+#: occur without a validated FIX above it: ``agent.py`` sets ``findings['fix']``
+#: only from ``_validate_structured_fix``, which refuses any FIX whose
+#: ``targets`` is missing or empty, and ``source`` appears nowhere else in
+#: findings. So whenever this text would have carried provenance, the rung that
+#: outranks it is populated. If that validation ever relaxes — ``observed``
+#: without ``targets``, say — revisit this, because provenance is *not* noise in
+#: general: ``ssh_execute (raspberrypi5)`` on a host-level check usually names
+#: the subject, and its ``value`` half is verbatim output (``df -h``,
+#: ``systemctl status``) that often never repeats the hostname.
+#:
+#: Known residual: a FIX whose targets are all non-host kinds
+#: (``gitops-manifest``, ``k8s-object``, …) yields no host from the rung above,
+#: and a machine named *only* in provenance no longer resolves where it once
+#: did. Narrow, and the right trade for a manifest-shaped fix, but it is a real
+#: behaviour change and not merely a tightening.
 _PROVENANCE_KEYS = frozenset({"source"})
 
 
