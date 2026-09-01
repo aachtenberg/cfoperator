@@ -484,9 +484,8 @@ _REMEDIATION_CLASS_RUBRIC = (
     "responds, look for a pattern. PREFER THIS over manual for anything "
     "'check/verify/confirm/investigate/monitor'; the agent will investigate "
     "autonomously rather than ask a human.\n"
-    "- gitops-patch: a single manifest change in a GitOps repo (set repo: "
-    "aachtenberg/homelab-infra for cluster apps, aachtenberg/cfoperator-deploy "
-    "for cfoperator/event-runtime itself).\n"
+    "- gitops-patch: a single manifest change in a GitOps repo. Set repo to "
+    "the repository that owns the manifests you are changing.\n"
     "- k8s-action: an in-cluster change that can be expressed as a MANIFEST "
     "EDIT in the GitOps repo — scale a deployment (replicas), a rollout "
     "restart (annotation bump), a resource-limit change. The executor "
@@ -507,6 +506,45 @@ _REMEDIATION_CLASS_RUBRIC = (
     "- manual: genuinely needs a human's hands or judgement (hardware, wiring, "
     "a risky decision) — NOT something you could investigate first.\n"
 )
+
+
+def _remediation_class_rubric(config=None, known_repos=None) -> str:
+    """The shared rubric with this site's delivery reality appended.
+
+    The rubric proper is site-neutral on purpose. It used to name this
+    project's own repos ("set repo: aachtenberg/homelab-infra for cluster
+    apps, aachtenberg/cfoperator-deploy for cfoperator itself") and went
+    verbatim to the needs_action classifier and the morning summary, so every
+    other installation was told to file its manifest changes against two
+    repositories it does not have -- the same baked assumption CFOP-148 took
+    out of the FIX prompt, one feed over. Caught on the PR #229 review, which
+    noted the new tests assert those slugs are absent from
+    _delivery_guidance while they still sat eighty lines above it.
+
+    Both feeds get the site line from the same config as the FIX prompt, so
+    the three cannot drift apart on where a manifest change goes.
+    """
+    rubric = _REMEDIATION_CLASS_RUBRIC
+    rcfg = (config or {}).get('remediation') if isinstance(config, dict) else None
+    if not isinstance(rcfg, dict):
+        return rubric
+    dcfg = rcfg.get('delivery')
+    if not isinstance(dcfg, dict):
+        return rubric
+    mode = str(dcfg.get('mode') or 'none').strip().lower()
+    if mode == 'direct':
+        return rubric + (
+            "On this installation there is no GitOps repository: gitops-patch "
+            "does not apply, and an in-cluster change is k8s-action or "
+            "k8s-imperative. Nothing is applied unattended.\n")
+    if mode == 'gitops':
+        repo = _resolve_fix_repo(dcfg.get('repo') or rcfg.get('default_repo'),
+                                 known_repos)
+        if repo:
+            return rubric + (
+                f"On this installation manifests live in {repo}; use it as "
+                "repo for gitops-patch.\n")
+    return rubric
 
 # CFOP-80: investigation kinds are not queue classes. Mapped at enqueue.
 # Unknown kind → manual (never salvage a class from a typo).
@@ -585,19 +623,35 @@ def _delivery_guidance(config, known_repos=None) -> str:
     elif mode == 'gitops':
         repo = _resolve_fix_repo(dcfg.get('repo') or rcfg.get('default_repo'),
                                  known_repos)
+        if not repo:
+            # A gitops site whose manifest repo does not resolve has no
+            # working gitops lane at all: _validate_structured_fix refuses a
+            # gitops-manifest target whose repo is missing or unresolvable
+            # (CFOP-85), so preferring that kind here would steer the model
+            # into a FIX that cannot enqueue. The row would then fall through
+            # to the classifier -- row #96's path again, one layer over.
+            #
+            # Say nothing rather than steer into a refusal, and log, because
+            # the alternative is an operator who set mode: gitops and cannot
+            # see why nothing changed. Deliberately stronger than the PR
+            # review's suggestion (drop just the prefer sentence): what would
+            # remain says "do not touch the cluster directly" while naming no
+            # kind that can carry the change, which is guidance to nowhere.
+            logger.warning(
+                "remediation.delivery.mode is 'gitops' but no manifest repo "
+                "resolves (delivery.repo=%r, remediation.default_repo=%r); "
+                "the FIX prompt carries no delivery guidance until one of "
+                "them names an entry in git.repos",
+                dcfg.get('repo'), rcfg.get('default_repo'))
+            return ''
         tool = str(dcfg.get('tool') or '').strip()
         text = ("\n\nHow changes are delivered here: this installation deploys "
                 "through GitOps")
         text += f" ({tool})." if tool else "."
-        if repo:
-            text += (f" Cluster manifests live in the git repository {repo}. "
-                     "Anything you can express as an edit to a file in that "
-                     f'repository is a `gitops-manifest` target with "repo": '
-                     f'"{repo}" -- prefer it.')
-        else:
-            text += (" Anything you can express as an edit to a file in the "
-                     "manifest repository is a `gitops-manifest` target -- "
-                     "prefer it.")
+        text += (f" Cluster manifests live in the git repository {repo}. "
+                 "Anything you can express as an edit to a file in that "
+                 f'repository is a `gitops-manifest` target with "repo": '
+                 f'"{repo}" -- prefer it.')
         text += (" The change is delivered by opening a pull request and takes "
                  "effect when that PR merges and the syncer reconciles, so do "
                  "NOT write steps that change the cluster directly (kubectl "
@@ -4501,7 +4555,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             "Example of a correctly FORMATTED response (the values here are "
             "placeholders — judge the actual recommendation on its merits):\n"
             f"{json.dumps(_CLASSIFIER_SAFE_EXAMPLE)}\n\n"
-            f"{_REMEDIATION_CLASS_RUBRIC}"
+            f"{_remediation_class_rubric(self.config, self.git_repos())}"
             "Be conservative with risk."
         )
         labels = alert_info.get('labels') or (alert_info.get('details') or {}).get('labels') or {}
@@ -9333,7 +9387,7 @@ IMPORTANT:
             f'"risk": "low|med|high", "confidence": 0.0, '
             f'"repo": "owning GitOps repo slug or empty"}}]}}\n'
             f"```\n"
-            f"{_REMEDIATION_CLASS_RUBRIC}"
+            f"{_remediation_class_rubric(self.config, self.git_repos())}"
             f"Be conservative with risk."
         )
 

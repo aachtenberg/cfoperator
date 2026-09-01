@@ -736,13 +736,30 @@ def test_gitops_tool_is_free_text_and_optional():
     assert "ArgoCD" not in bare        # nothing ArgoCD-shaped is baked in
 
 
-def test_unresolvable_repo_drops_the_repo_not_the_guidance():
-    """A repo the executor could not reach must not be named at it (CFOP-85's
-    failure, one layer earlier) -- but the mode is still known, so the rest of
-    the steer survives."""
-    text = _delivery_guidance(_cfg({"mode": "gitops", "repo": "nowhere"}), _DELIVERY_REGISTRY)
-    assert "nowhere" not in text
-    assert "gitops-manifest" in text
+def test_unresolvable_repo_gives_no_guidance_at_all():
+    """PR #229 review. An earlier cut kept the "prefer `gitops-manifest`"
+    steer when the repo did not resolve, and that steers into a wall:
+    _validate_structured_fix REFUSES a gitops-manifest target whose repo is
+    missing or unresolvable (CFOP-85), so the FIX cannot enqueue and the row
+    falls through to the classifier -- row #96's path, one layer over.
+
+    A gitops site whose manifest repo does not resolve has no working gitops
+    lane, so the honest output is silence (plus a log for the operator), not
+    advice naming a kind that will be refused."""
+    text = _delivery_guidance(
+        _cfg({"mode": "gitops", "repo": "nowhere"}), _DELIVERY_REGISTRY)
+    assert text == ""
+
+
+def test_unresolvable_repo_is_logged_not_silent(caplog):
+    """Silence in the prompt must not mean silence to the operator: setting
+    mode: gitops and getting no behaviour change is otherwise unexplainable."""
+    import logging
+    with caplog.at_level(logging.WARNING):
+        _delivery_guidance(_cfg({"mode": "gitops", "repo": "nowhere"}),
+                           _DELIVERY_REGISTRY)
+    assert any("gitops" in r.message and "resolve" in r.message
+               for r in caplog.records), caplog.records
 
 
 def test_direct_mode_steers_away_from_gitops():
@@ -791,3 +808,68 @@ def test_guidance_is_wired_into_both_fix_prompts():
         assert '_delivery_guidance' in src, (
             f"{fn.__name__} asks for a FIX without telling the model how "
             "changes are delivered here")
+
+
+def test_shared_rubric_carries_no_baked_repo():
+    """PR #229 review finding 1. _REMEDIATION_CLASS_RUBRIC goes verbatim to
+    the needs_action classifier AND the morning summary. It used to name this
+    project's own repos, so every other installation was told to file its
+    manifest changes against two repositories it does not have -- the exact
+    assumption CFOP-148 removed from the FIX prompt, one feed over."""
+    from agent.agent import _REMEDIATION_CLASS_RUBRIC
+    lowered = _REMEDIATION_CLASS_RUBRIC.lower()
+    assert "aachtenberg" not in lowered
+    assert "homelab-infra" not in lowered
+    assert "cfoperator-deploy" not in lowered
+    # Still the single definition of the classes -- de-baking must not have
+    # dropped the bullet the classifier needs.
+    assert "- gitops-patch:" in _REMEDIATION_CLASS_RUBRIC
+
+
+def test_rubric_takes_its_repo_from_the_same_config_as_the_fix_prompt():
+    """One site, one answer. The rubric and the FIX prompt must not disagree
+    about where a manifest change goes."""
+    from agent.agent import _remediation_class_rubric
+    cfg = _cfg({"mode": "gitops", "repo": "my-manifests"})
+    rubric = _remediation_class_rubric(cfg, _DELIVERY_REGISTRY)
+    assert "acme/my-manifests" in rubric
+    assert "acme/my-manifests" in _delivery_guidance(cfg, _DELIVERY_REGISTRY)
+
+
+def test_rubric_direct_mode_rules_gitops_patch_out():
+    """A site with no manifest repo must not be told gitops-patch is how a
+    manifest change is delivered."""
+    from agent.agent import _remediation_class_rubric
+    rubric = _remediation_class_rubric(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
+    assert "no GitOps repository" in rubric
+    assert "acme/" not in rubric
+
+
+@pytest.mark.parametrize("config", [
+    None,
+    {},
+    {"remediation": {}},
+    _cfg({"mode": "none"}),
+    _cfg({"mode": "gitops", "repo": "nowhere"}),   # unresolvable -> no site line
+])
+def test_rubric_unconfigured_is_the_bare_rubric(config):
+    """Same posture as the FIX prompt: an installation that has not said how
+    it deploys gets the neutral rubric, never a guess."""
+    from agent.agent import _REMEDIATION_CLASS_RUBRIC, _remediation_class_rubric
+    assert _remediation_class_rubric(config, _DELIVERY_REGISTRY) == \
+        _REMEDIATION_CLASS_RUBRIC
+
+
+def test_both_rubric_feeds_read_the_renderer():
+    """The classifier and the morning summary are the two feeds the rubric
+    exists to keep in step; a call site left on the bare constant would miss
+    the site line and silently drift."""
+    import inspect
+    from agent.agent import CFOperator as _CFOp
+
+    for fn in (_CFOp._classify_needs_action_recommendation,
+               _CFOp._generate_morning_summary):
+        src = inspect.getsource(fn)
+        if '_REMEDIATION_CLASS_RUBRIC' in src or '_remediation_class_rubric' in src:
+            assert '_remediation_class_rubric(' in src, (
+                f"{fn.__name__} still interpolates the bare rubric constant")

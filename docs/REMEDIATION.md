@@ -216,6 +216,23 @@ is neither GitOps nor k3s is served by `direct` or by saying nothing.
 The same text goes to the FIX nudge retry, or the retry would quietly undo the
 steer that produced it. See `docs/config-reference.md` for the block.
 
+Two edges worth knowing:
+
+- **`gitops` with an unresolvable repo renders nothing** (and logs a warning).
+  `_validate_structured_fix` refuses a `gitops-manifest` target whose repo is
+  missing or unresolvable, so preferring that kind with no repo to name would
+  steer the model into a FIX that cannot enqueue — the row would fall through
+  to the classifier, which is row #96's path one layer over. A GitOps site
+  whose manifest repo does not resolve has no working GitOps lane, and saying
+  so in the log beats guidance that goes nowhere.
+- **The class rubric reads the same config.** `_REMEDIATION_CLASS_RUBRIC` is
+  shared verbatim by the needs_action classifier and the morning summary, and
+  it used to name this project's own repos — so those two feeds carried the
+  assumption the FIX prompt had just been cleaned of. The rubric proper is now
+  site-neutral and `_remediation_class_rubric(config, repos)` appends the site
+  line from `remediation.delivery`, so all three prompts agree about where a
+  manifest change goes or all three stay quiet.
+
 Two further bars sit in front of an auto-execute:
 
 - A **fork-shaped** recommendation ("do X, or do Y") has its confidence cleared
