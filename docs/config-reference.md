@@ -413,9 +413,12 @@ remediation:
     # none     say nothing (default).
     mode: none
     # gitops only. A `git.repos[].name` or an owner/name slug; falls back to
-    # `default_repo` above. Resolved against the registry before it is shown to
-    # the model, so a name that resolves to nothing drops the sentence rather
-    # than sending the executor after a repo it cannot reach.
+    # `default_repo` above, and resolved against the registry before it is
+    # shown to the model. If neither resolves, the guidance is suppressed
+    # ENTIRELY and a warning is logged: a gitops-manifest target with an
+    # unresolvable repo is refused downstream, so steering the model there
+    # would only produce a fix that cannot be queued. `mode: gitops` with no
+    # resolvable repo therefore behaves like `none` until you register one.
     # repo: my-manifests
     # gitops only, optional. Whatever actually syncs the repo — named in the
     # prompt purely so the model's wording matches your stack. Free text: this

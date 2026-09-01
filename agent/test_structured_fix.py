@@ -762,13 +762,47 @@ def test_unresolvable_repo_is_logged_not_silent(caplog):
                for r in caplog.records), caplog.records
 
 
-def test_direct_mode_steers_away_from_gitops():
+def test_direct_mode_steers_at_the_class_that_parks():
     """A cluster with no manifest repo -- plain kubectl, possibly not k3s.
-    Proposing a gitops-manifest target there is the mirror image of row #96."""
+
+    PR #229 re-review: an earlier cut offered `k8s-object` here, which maps to
+    the k8s-action CLASS. That class is auto-eligible and is not in the
+    executor's _NO_EXECUTOR_PATH, so it reaches run_gitops -- whose whole job
+    is opening a pull request against a manifest repo the site does not have.
+    `k8s-imperative` is the class that parks with a legible message.
+    """
     text = _delivery_guidance(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
-    assert "k8s-object" in text and "k8s-imperative" in text
-    assert "Do NOT emit `gitops-manifest`" in text
-    assert "pull request" not in text
+    assert "k8s-imperative" in text
+    assert "`k8s-object`" in text and "Do NOT emit" in text
+    assert "gitops-manifest" in text
+
+
+def test_direct_mode_never_recommends_a_pr_delivered_class():
+    """The guard that matters, stated against the executor's own routing
+    rather than against wording: nothing a `direct` site is steered toward may
+    be a class that run_gitops would try to open a PR for."""
+    import re
+
+    no_executor_path = _executor_no_executor_path()
+    text = _delivery_guidance(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
+    # The kinds this text tells the model to USE (backticked, not preceded by
+    # a "Do NOT emit" clause). Parse rather than hardcode so a reworded
+    # sentence cannot quietly reintroduce the defect.
+    recommended = set()
+    for sentence in re.split(r'(?<=[.:])\s+', text):
+        if 'do not' in sentence.lower():
+            continue
+        recommended.update(re.findall(r'`([a-z0-9-]+)`', sentence))
+    assert recommended, "direct mode must name at least one usable kind"
+    for kind in recommended:
+        rclass = _FIX_KIND_TO_CLASS.get(kind, kind)
+        assert rclass in no_executor_path, (
+            f"direct mode recommends `{kind}` -> class {rclass}, which the "
+            "executor delivers by opening a PR; there is no manifest repo "
+            "on a direct site")
+        assert rclass not in _AUTO_REMEDIATION_CLASSES, (
+            f"direct mode recommends `{kind}` -> class {rclass}, which can "
+            "auto-execute")
 
 
 def test_direct_mode_never_names_a_repo():
@@ -836,13 +870,31 @@ def test_rubric_takes_its_repo_from_the_same_config_as_the_fix_prompt():
     assert "acme/my-manifests" in _delivery_guidance(cfg, _DELIVERY_REGISTRY)
 
 
-def test_rubric_direct_mode_rules_gitops_patch_out():
-    """A site with no manifest repo must not be told gitops-patch is how a
-    manifest change is delivered."""
+def test_rubric_direct_mode_rules_out_every_pr_delivered_class():
+    """The classifier feed is the dangerous one: unlike a FIX-derived
+    k8s-action (confidence always None), a classifier-derived one can clear
+    the auto gate and reach run_gitops. On a site with no manifest repo the
+    appendix must name neither gitops-patch nor k8s-action as the answer.
+
+    PR #229 re-review -- the first cut said "an in-cluster change is
+    k8s-action or k8s-imperative", steering the one auto-executing class at a
+    delivery lane that does not exist there.
+    """
     from agent.agent import _remediation_class_rubric
     rubric = _remediation_class_rubric(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
-    assert "no GitOps repository" in rubric
-    assert "acme/" not in rubric
+    appendix = rubric[len(_bare_rubric()):]
+    assert "no GitOps repository" in appendix
+    assert "acme/" not in appendix
+    assert "k8s-imperative" in appendix
+    # Both PR-delivered classes must appear only as ruled OUT.
+    for rclass in _AUTO_REMEDIATION_CLASSES:
+        assert rclass not in appendix.split("An in-cluster change is")[-1], (
+            f"{rclass} is offered as the answer on a site with no repo")
+
+
+def _bare_rubric():
+    from agent.agent import _REMEDIATION_CLASS_RUBRIC
+    return _REMEDIATION_CLASS_RUBRIC
 
 
 @pytest.mark.parametrize("config", [
@@ -863,13 +915,43 @@ def test_rubric_unconfigured_is_the_bare_rubric(config):
 def test_both_rubric_feeds_read_the_renderer():
     """The classifier and the morning summary are the two feeds the rubric
     exists to keep in step; a call site left on the bare constant would miss
-    the site line and silently drift."""
+    the site line and silently drift.
+
+    Unconditional on purpose. The first cut of this guard only asserted when
+    one of the two names already appeared in the source, so DELETING the call
+    outright made the condition false and the test pass -- it caught a
+    reversion to the constant (the mutation that was checked) and nothing
+    else. Flagged on the PR #229 re-review.
+    """
     import inspect
     from agent.agent import CFOperator as _CFOp
 
     for fn in (_CFOp._classify_needs_action_recommendation,
                _CFOp._generate_morning_summary):
         src = inspect.getsource(fn)
-        if '_REMEDIATION_CLASS_RUBRIC' in src or '_remediation_class_rubric' in src:
-            assert '_remediation_class_rubric(' in src, (
-                f"{fn.__name__} still interpolates the bare rubric constant")
+        assert '_remediation_class_rubric(' in src, (
+            f"{fn.__name__} does not render the shared rubric through the "
+            "site-aware renderer")
+
+
+def _executor_no_executor_path():
+    """executor/entrypoint.py's _NO_EXECUTOR_PATH, read from source.
+
+    Not imported: that module uses bare imports needing executor/ on
+    sys.path, and CI runs this suite with PYTHONPATH=<root>/agent:<root>, so
+    importing it passes locally and ModuleNotFoundErrors in CI. Read via ast
+    so the test still tracks the real routing table rather than a copy of it
+    that can drift.
+    """
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    tree = ast.parse((root / "executor" / "entrypoint.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "_NO_EXECUTOR_PATH":
+                return set(ast.literal_eval(node.value))
+    raise AssertionError("_NO_EXECUTOR_PATH not found in executor/entrypoint.py")

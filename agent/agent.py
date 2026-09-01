@@ -534,9 +534,11 @@ def _remediation_class_rubric(config=None, known_repos=None) -> str:
     mode = str(dcfg.get('mode') or 'none').strip().lower()
     if mode == 'direct':
         return rubric + (
-            "On this installation there is no GitOps repository: gitops-patch "
-            "does not apply, and an in-cluster change is k8s-action or "
-            "k8s-imperative. Nothing is applied unattended.\n")
+            "On this installation there is no GitOps repository. Neither "
+            "gitops-patch nor k8s-action applies: the executor delivers both "
+            "by opening a pull request against a manifest repository, and "
+            "there is none here. An in-cluster change is k8s-imperative, "
+            "which parks for a human to run.\n")
     if mode == 'gitops':
         repo = _resolve_fix_repo(dcfg.get('repo') or rcfg.get('default_repo'),
                                  known_repos)
@@ -569,6 +571,19 @@ _FIX_JSON_SCHEMA = (
     '"why_not": "why not"}], "risk": "low|med|high"}'
 )
 
+# Why `direct` steers at k8s-imperative and not the more obvious k8s-object:
+# k8s-object maps to the k8s-action class, which is in
+# _AUTO_REMEDIATION_CLASSES and is NOT in the executor's _NO_EXECUTOR_PATH, so
+# it reaches run_gitops -- the path whose whole job is opening a pull request
+# against a manifest repository. A site in `direct` mode has none. Saying
+# "nothing is applied unattended" in the prompt does not bind
+# remediation_is_auto_eligible, so on the classifier feed that steer would
+# have pointed the one auto-executing class at a delivery lane that does not
+# exist there (PR #229 re-review). k8s-imperative is the class that parks with
+# a legible message instead. The FIX feed parks either way (a FIX-derived
+# k8s-action never carries a confidence), but only until a human approves the
+# row, so both prompts say the same thing.
+#
 # CFOP-148: how a change reaches THIS installation's cluster is site policy,
 # not something the model can infer and not something this file may assume.
 # The schema above lists the target kinds; which of them is the honest answer
@@ -589,11 +604,10 @@ _FIX_JSON_SCHEMA = (
 _DELIVERY_DIRECT = (
     "\n\nHow changes are delivered here: this installation has no GitOps "
     "repository for cluster manifests -- changes are applied to the cluster "
-    "directly. Use `k8s-object` for a change expressible as an edit to a live "
-    "object, and `k8s-imperative` for a one-off command with no object "
-    "equivalent. Do NOT emit `gitops-manifest` targets; there is no manifest "
-    "repository to edit. Nothing here is applied unattended, so write steps a "
-    "human will run."
+    "directly, by a human. Use `k8s-imperative` for an in-cluster change. Do "
+    "NOT emit `gitops-manifest` or `k8s-object` targets: both are delivered "
+    "by opening a pull request against a manifest repository, and there is "
+    "none here. Write steps a human will run."
 )
 
 
