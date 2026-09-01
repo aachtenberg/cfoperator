@@ -388,6 +388,95 @@ def test_only_configured_hosts_are_guessed_at():
     assert host == ""
 
 
+def test_a_host_named_only_as_a_command_source_is_not_the_affected_host():
+    """MUTATION GUARD (CFOP-142). ``{"source": "ssh_execute (raspberrypi)"}``
+    records where a check ran, never what it ran against. Feed provenance back
+    into the haystack and this resolves to ``raspberrypi`` — a cockpit on the
+    wrong physical machine, which is the incident this test exists for.
+
+    Resolving to *nothing* is the correct answer here, not a weaker one: it
+    makes the drawer say it could not find a host instead of guessing one."""
+    host, _why = resolve_target_host(
+        investigation={
+            "trigger": "Pod monitoring/node-exporter-5dn6g not ready for 30m",
+            "findings": {"observed": [{"source": "ssh_execute (raspberrypi)",
+                                       "value": "192.168.0.216 dev eth0 REACHABLE"}]},
+        },
+        known_hosts=["raspberrypi", "raspberrypi2"],
+    )
+    assert host == "", "provenance names the box a check ran from, not the subject"
+
+
+def test_the_value_half_of_an_observation_is_still_searched():
+    """Dropping provenance must not cost the observation itself — ``value`` is
+    the half where the subject actually gets named."""
+    host, why = resolve_target_host(
+        investigation={"trigger": "etcd latency",
+                       "findings": {"observed": [{"source": "k8s_get_nodes",
+                                                  "value": "ubuntu-cm5-01: ready=Unknown"}]}},
+        known_hosts=["ubuntu-cm5-01"],
+    )
+    assert host == "ubuntu-cm5-01" and "named in" in why
+
+
+def test_the_fix_block_outranks_prose_naming_a_different_host():
+    """The #2339 shape. The findings name two machines: ``raspberrypi5``, which
+    the incident is on, and ``raspberrypi``, which a check ran *from* — and only
+    the second is in the inventory, so the prose fallback can match nothing but
+    the wrong one. The FIX target is what makes the right answer reachable."""
+    host, why = resolve_target_host(
+        investigation={
+            "trigger": "Pod monitoring/node-exporter-5dn6g not ready for 30m",
+            "findings": {"fix": {
+                "targets": [{"kind": "host", "id": "raspberrypi5"}],
+                "observed": [{"source": "ssh_execute (raspberrypi)",
+                              "value": "192.168.0.216 dev eth0 REACHABLE"}],
+            }},
+        },
+        known_hosts=["raspberrypi", "raspberrypi2"],
+    )
+    assert host == "raspberrypi5" and "FIX target" in why
+
+
+def test_a_fix_target_outside_the_inventory_is_returned_not_dropped():
+    """Deliberate, and the opposite of ``test_only_configured_hosts_are_guessed_at``
+    — a FIX target is a structured claim, not a guess at prose. The caller turns
+    an unknown name into "add raspberrypi5 to infrastructure.hosts", which is
+    the repair; filtering it here falls through to the prose and spawns
+    somewhere plausible and wrong instead."""
+    host, why = resolve_target_host(
+        investigation={"trigger": "node down", "findings": {"fix": {
+            "targets": [{"kind": "host", "id": "raspberrypi5"}]}}},
+        known_hosts=["raspberrypi"],
+    )
+    assert host == "raspberrypi5" and "FIX target" in why
+
+
+def test_a_fix_target_that_is_not_a_host_is_ignored():
+    """FIX targets are repos and manifests too; only ``kind: host`` says
+    anything about where a session belongs."""
+    host, _why = resolve_target_host(
+        investigation={"trigger": "argocd drift", "findings": {"fix": {"targets": [
+            {"kind": "repo", "id": "homelab-infra"},
+            {"kind": "manifest", "id": "k3s/base/apps/immich.yml"}]}}},
+        known_hosts=["raspberrypi"],
+    )
+    assert host == ""
+
+
+def test_the_remediation_row_still_outranks_the_fix_block():
+    """Ordering, not preference. The queue row carries a classified host a human
+    may already have corrected; the FIX block is the model's own unreviewed
+    claim. The reviewed one wins."""
+    host, why = resolve_target_host(
+        remediation_hosts=["raspberrypi2"],
+        investigation={"findings": {"fix": {
+            "targets": [{"kind": "host", "id": "raspberrypi5"}]}}},
+        known_hosts=["raspberrypi2", "raspberrypi5"],
+    )
+    assert host == "raspberrypi2" and "remediation" in why
+
+
 # --------------------------------------------------------------------------
 # tier 2 — the container
 # --------------------------------------------------------------------------

@@ -375,10 +375,18 @@ def resolve_target_host(
 
     The finding's own host does exist — on the remediation rows fed from it,
     whose ``host_id`` comes from the classified finding rather than from the
-    agent's identity. Failing that, the trigger text names it often enough to
-    be worth matching against the hosts we actually know about; guessing beyond
-    the configured inventory is not, because the cost of a wrong match is a
-    session on the wrong machine mid-incident.
+    agent's identity. Failing that, the investigation's own ``FIX`` block names
+    its targets structurally (``_fix_target_hosts``). Only then is the trigger
+    text worth matching against the hosts we actually know about; guessing
+    beyond the configured inventory is not, because the cost of a wrong match
+    is a session on the wrong machine mid-incident.
+
+    **The prose fallback is last for a reason, and it is not paranoia.** Reading
+    it ahead of the FIX block is what put the #2339 cockpit on ``raspberrypi``
+    — a different physical machine from the ``raspberrypi5`` the incident was
+    actually on — because the findings carried
+    ``"source": "ssh_execute (raspberrypi)"``, which names the box a check ran
+    *from*. See ``_PROVENANCE_KEYS``.
     """
     requested = (requested or "").strip()
     if requested:
@@ -388,6 +396,9 @@ def resolve_target_host(
         host = (candidate or "").strip()
         if host and host.lower() not in _NON_HOSTS:
             return host, "from the remediation queued off this investigation"
+
+    for host in _fix_target_hosts(investigation):
+        return host, "the investigation's own FIX target"
 
     names = sorted({(n or "").strip() for n in known_hosts if (n or "").strip()},
                    key=len, reverse=True)
@@ -400,19 +411,77 @@ def resolve_target_host(
     return "", "no affected host could be resolved from the investigation"
 
 
+def _fix_target_hosts(investigation: Optional[Dict[str, Any]]) -> List[str]:
+    """The hosts the investigation itself named as the subject of its fix.
+
+    ``findings.fix.targets`` is the structured half of the model's answer —
+    ``{"kind": "host", "id": "raspberrypi5"}`` — written by the same pass that
+    wrote the prose, and it answers precisely the question this module asks:
+    what does the fix act *on*. That beats reading the prose back out again.
+    CFOP-126 established the same reading for the node-incident collapse key.
+
+    Deliberately **not** filtered against ``known_hosts``. An inventory miss is
+    worth surfacing rather than hiding: returning the name lets the caller
+    refuse with "add raspberrypi5 to infrastructure.hosts"
+    (``_cockpit_refusal`` in ``web_server``), which is the actual repair.
+    Filtering it out instead falls through to the prose and spawns on whichever
+    *configured* host the text happens to mention — the wrong machine,
+    silently, which is exactly how #2339 went.
+    """
+    findings = investigation.get("findings") if isinstance(investigation, dict) else None
+    fix = findings.get("fix") if isinstance(findings, dict) else None
+    if not isinstance(fix, dict):
+        return []
+    hosts: List[str] = []
+    for target in fix.get("targets") or []:
+        if not isinstance(target, dict):
+            continue
+        if str(target.get("kind") or "").strip().lower() != "host":
+            continue
+        host = str(target.get("id") or "").strip()
+        if host and host.lower() not in _NON_HOSTS and host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
+#: Findings keys recording *where a check ran*, never what it ran against. An
+#: observation is a pair, and the halves make opposite claims:
+#: ``{"source": "ssh_execute (raspberrypi)", "value": "192.168.0.216 … REACHABLE"}``
+#: is a fact *about raspberrypi5* established *from raspberrypi*. Matching the
+#: inventory against the provenance half is what put the #2339 cockpit on the
+#: wrong machine, so it is dropped here; ``value`` stays, because that is the
+#: half naming the subject.
+_PROVENANCE_KEYS = frozenset({"source"})
+
+
 def _investigation_text(investigation: Optional[Dict[str, Any]]) -> str:
     """Trigger plus findings, flattened. Both matter: the trigger is where an
     alert puts ``instance=raspberrypi5``, the findings are where the agent's own
-    conclusion names the box it could not reach."""
+    conclusion names the box it could not reach.
+
+    Walked structurally rather than ``str()``-ed wholesale, so provenance keys
+    can be dropped on the way past. The free-text ``response`` is still included
+    verbatim and *can* echo a ``source`` string back inside it — which is why
+    the FIX block outranks this function rather than merely feeding it.
+    """
     if not isinstance(investigation, dict):
         return ""
     parts = [str(investigation.get("trigger") or "")]
-    findings = investigation.get("findings")
-    if isinstance(findings, dict):
-        parts.extend(str(v) for v in findings.values())
-    elif findings:
-        parts.append(str(findings))
+    _flatten_findings(investigation.get("findings"), parts)
     return "\n".join(parts)
+
+
+def _flatten_findings(node: Any, out: List[str]) -> None:
+    """Every string under ``node``, minus the provenance values."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if str(key).strip().lower() not in _PROVENANCE_KEYS:
+                _flatten_findings(value, out)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _flatten_findings(item, out)
+    elif node is not None and node != "":
+        out.append(str(node))
 
 
 # ---- the spawner --------------------------------------------------------------
