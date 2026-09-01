@@ -486,6 +486,11 @@ func AgentURLSource(cfgURL string, lookupEnv func(string) string) string {
 // byte-identical output, which reads as "my override was ignored" rather than
 // "that knob is not the live one", and cost a real incident's worth of time.
 //
+// Every named provenance needs its own case. Folding one into the default is
+// how this defect reappears a rung lower: the generic text tells the reader to
+// set CFOP_AGENT_URL, which is useless advice for someone who reached this line
+// *by* setting it. The default is only for a caller that did not say.
+//
 // Port-forward stays last, labelled with what it needs: it quietly assumes
 // kubectl and a kubeconfig on this machine, an assumption that fails on exactly
 // the hardware attach is for (a Pi, a phone-tethered laptop).
@@ -498,6 +503,16 @@ func (c *Client) unreachableHint() string {
 				"wins over %s — exporting that variable will not change it. Override "+
 				"this run with --agent-url http://<agent-host>:8083, or edit the file.",
 			EnvAgentURL)
+	case URLFromEnv:
+		// Names the config file as well as the flag: this is the first-run
+		// shape (env set, no config yet), and that run has just scaffolded a
+		// cfoperator: block whose whole purpose is to be filled in.
+		// TestFailedFirstRunStillLeavesAConfigToEdit pins both mentions.
+		override = fmt.Sprintf(
+			"That address came from %s in your environment, so it is already the "+
+				"override — check the host and port. Use --agent-url "+
+				"http://<agent-host>:8083 for one run, or a cfoperator: block "+
+				"(url/token) in ~/.cfassist/config.yaml to make it stick.", EnvAgentURL)
 	case URLFromFlag:
 		override = "That address came from --agent-url, so it is already the override; " +
 			"check the host and port."
