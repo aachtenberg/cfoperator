@@ -46,9 +46,22 @@ if PROMETHEUS_AVAILABLE:
     # Advanced only after a poll cycle that completed WITHOUT raising, so a
     # runtime that is alive and failing every poll looks stale rather than
     # healthy.
+    # LABELLED on purpose, and the label is load-bearing twice over.
+    #
+    # (1) An unlabelled Gauge is exported the moment it is registered, with the
+    # value 0.0. The documented consumer query `time() - metric > 300` would
+    # then be ~1.7e9 > 300 -- true -- for every scrape between process start
+    # and the first clean poll, so copying it without a long `for:` makes every
+    # deploy flap. A labelled Gauge creates no child series until .labels()
+    # .set(), so the same query is an empty vector until there is something
+    # real to say. HOST_DISCOVERY_TIMESTAMP below already does this.
+    #
+    # (2) Per-source is the honest granularity: one wedged source should not
+    # be masked by a healthy sibling updating a shared timestamp.
     LAST_POLL = Gauge(
         "cfoperator_event_runtime_last_poll_timestamp_seconds",
-        "Unix timestamp of the last alert-source poll cycle that completed without error.",
+        "Unix timestamp of the last successful poll of this alert source.",
+        ["source"],
     )
     ALERTS_RECEIVED = Counter(
         "cfoperator_event_runtime_alerts_received_total",
@@ -199,10 +212,12 @@ def mark_runtime_down() -> None:
         RUNTIME_UP.set(0)
 
 
-def mark_poll_completed(when: float | None = None) -> None:
-    """Record that a poll cycle finished cleanly. Call only on success."""
+def mark_poll_completed(source: object, when: float | None = None) -> None:
+    """Record that ``source`` answered a poll. Call only on success."""
     if PROMETHEUS_AVAILABLE:
-        LAST_POLL.set(time.time() if when is None else when)
+        LAST_POLL.labels(source=_sanitize_label(source, "unknown")).set(
+            time.time() if when is None else when
+        )
 
 
 def observe_alert_received(alert) -> None:

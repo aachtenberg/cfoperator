@@ -259,26 +259,47 @@ def _start_poll_loop(
 
     def _loop() -> None:
         while not stop_event.wait(interval_seconds):
-            try:
-                for source in runtime.plugins.alert_sources:
-                    for alert in source.poll():
+            # Per source, and each isolated. Previously one raising source
+            # aborted the whole cycle, so a single wedged source silently
+            # stopped the others from being polled at all.
+            polled_any = False
+            for source in runtime.plugins.alert_sources:
+                name = getattr(source, "name", type(source).__name__)
+                try:
+                    alerts = list(source.poll())
+                except Exception:
+                    # This source is unhealthy: its timestamp stops advancing
+                    # and goes stale on its own. That is the whole point of a
+                    # timestamp -- "the process is running" would still read
+                    # healthy here forever (CFOP-152).
+                    logger.exception("Error polling alert source %s", name)
+                    continue
+                mark_poll_completed(name)
+                polled_any = True
+
+                for alert in alerts:
+                    try:
                         if worker is not None:
                             worker.enqueue(alert)
                         else:
                             runtime.handle_alert(alert)
-            except Exception:
-                logger.exception("Error during alert source poll cycle")
-            else:
-                # CFOP-152. Only a cycle that raised NOTHING counts as alive.
-                # The except: above deliberately swallows and continues, which
-                # is right for resilience and is exactly why "the process is
-                # running" says nothing: a source failing every poll loops here
-                # forever looking healthy. Both signals hang off this else so a
-                # stall shows up as staleness rather than as silence nobody
-                # notices.
-                mark_poll_completed()
-                if heartbeat is not None:
-                    heartbeat.beat()
+                    except QueueFullError:
+                        # NOT a liveness failure. The source answered; we just
+                        # cannot accept the work right now, and
+                        # CFOperatorEventRuntimeQueueRejecting already covers
+                        # that. Letting it mark the poll unhealthy would make
+                        # the dead-man's-switch page "the runtime is gone" for
+                        # a runtime that is up and polling -- and the DMS is
+                        # the one signal that must only ever mean silence.
+                        # The HTTP ingest path catches this the same way.
+                        logger.warning("Alert queue is full; dropped an alert from %s", name)
+                    except Exception:
+                        # Same reasoning: dispatching one bad alert says
+                        # nothing about whether the loop is still polling.
+                        logger.exception("Error handling an alert from %s", name)
+
+            if polled_any and heartbeat is not None:
+                heartbeat.beat()
 
     thread = threading.Thread(target=_loop, daemon=True, name="event-runtime-poll")
     thread.start()

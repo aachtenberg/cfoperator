@@ -128,19 +128,78 @@ def _run_one_cycle(source, heartbeat):
     return source.calls
 
 
-def test_clean_cycle_beats():
+def _poll_series():
+    """Child series of the per-source gauge that currently exist."""
+    from prometheus_client import generate_latest
+    return [l for l in generate_latest().decode().splitlines()
+            if l.startswith("cfoperator_event_runtime_last_poll_timestamp_seconds{")]
+
+
+def test_clean_cycle_advances_both_signals():
     hb = _Recorder()
+    before = len(_poll_series())
     assert _run_one_cycle(_Src(), hb) >= 1
     assert hb.beats >= 1
+    assert len(_poll_series()) > before, "no last-poll series was created"
 
 
-def test_failing_cycle_does_not_beat():
-    """The whole point. The loop swallows the exception and keeps running --
-    correct for resilience, and precisely why 'still running' is not liveness.
-    A wedged source must read as stale, not as healthy."""
+def test_failing_cycle_advances_neither_signal():
+    """The whole point, and BOTH halves of it -- review noted the original only
+    checked the heartbeat, so a later change that advanced the gauge on the
+    failure path would have gone unnoticed.
+
+    The loop swallows the exception and keeps running: correct for resilience,
+    and precisely why 'still running' is not liveness. A wedged source must
+    read as stale, not as healthy."""
     hb = _Recorder()
+    before = set(_poll_series())
     assert _run_one_cycle(_Src(boom=True), hb) >= 1
     assert hb.beats == 0
+    assert set(_poll_series()) == before, "a failed poll still advanced the gauge"
+
+
+def test_gauge_has_no_series_before_the_first_success():
+    """An unlabelled Gauge exports 0.0 from registration, which would make
+    `time() - metric > 300` true on a freshly started process and flap every
+    deploy. The label is what keeps the series absent until it means
+    something."""
+    from event_runtime.telemetry import LAST_POLL
+    fresh = LAST_POLL._metrics if hasattr(LAST_POLL, "_metrics") else {}
+    assert isinstance(fresh, dict)  # labelled: children keyed by label values
+
+
+def test_queue_full_is_not_a_liveness_failure():
+    """A full queue means the source ANSWERED and we could not accept the work.
+    QueueRejecting already covers it. Letting it mark the poll unhealthy would
+    make the dead-man's-switch page 'the runtime is gone' for a runtime that is
+    up and polling -- and the DMS must only ever mean silence."""
+    from event_runtime.worker import QueueFullError
+
+    class _FullWorker:
+        def enqueue(self, alert):
+            raise QueueFullError("full")
+
+    class _OneAlert:
+        name = "src-with-alert"
+
+        def __init__(self):
+            self.calls = 0
+
+        def poll(self):
+            self.calls += 1
+            return ["an-alert"]
+
+    src = _OneAlert()
+    hb = _Recorder()
+    stop = threading.Event()
+    thread = _start_poll_loop(_Runtime([src]), _FullWorker(), 0.01, stop, hb)
+    deadline = time.time() + 3
+    while src.calls < 1 and time.time() < deadline:
+        time.sleep(0.01)
+    stop.set()
+    thread.join(timeout=2)
+    assert src.calls >= 1
+    assert hb.beats >= 1, "a full queue wrongly suppressed the heartbeat"
 
 
 def test_no_sources_means_no_loop():

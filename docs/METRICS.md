@@ -29,13 +29,21 @@ vector for an absent series, so it cannot fire for the failure it looks like it
 covers (HOMELAB-15). Use `up{}` for "is it gone".
 
 `cfoperator_event_runtime_last_poll_timestamp_seconds` answers the question `up{}`
-cannot: *is it still working?* It advances only after a poll cycle that completed
-without raising, so a runtime that is alive and failing every poll goes stale
-instead of looking healthy. Alert on age, never on presence:
+cannot: *is it still working?* It is labelled by `source` and advances only after
+that source has been polled without raising, so a runtime that is alive with a
+wedged source goes stale instead of looking healthy. Alert on age, never on
+presence:
 
 ```promql
-time() - cfoperator_event_runtime_last_poll_timestamp_seconds > 300
+time() - max by (source) (cfoperator_event_runtime_last_poll_timestamp_seconds) > 300
 ```
+
+The label is not decoration. An **unlabelled** Gauge is exported from
+registration with the value `0.0`, which would make that query `~1.7e9 > 300` —
+true — on every scrape between process start and the first successful poll, so
+every deploy would flap. Labelled, no child series exists until the first
+`.set()`, and the query is an empty vector until there is something real to say.
+Keep that property if you add timestamp metrics of your own.
 
 For liveness that survives losing the cluster entirely, the runtime can also push
 to an external dead-man's-switch — see `event_runtime.heartbeat` in
