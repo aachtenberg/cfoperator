@@ -3279,7 +3279,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 token_verifier=self.web_server.verify_bridge_token,
                 audit=self.web_server.record_bridge_event,
             )
-            self.cockpit.bridge = bridge
+            self.cockpit_bridge = bridge
             if bridge.start():
                 logger.info("Cockpit PTY bridge listening on :%s", config.port)
         except Exception as e:
