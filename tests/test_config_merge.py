@@ -31,16 +31,19 @@ import yaml
 from cfshared import config as cfg
 
 
-REPO_ROOT = str(REPO_ROOT)
-EXAMPLE_CONFIG = os.path.join(REPO_ROOT, "config.yaml.example")
+# os.path.join throughout this module, so bind the str form under its own name
+# rather than rebinding the imported Path — a later `REPO_ROOT / "x"` would
+# otherwise fail on a str that looks like it came from repo_paths.
+_ROOT = str(REPO_ROOT)
+EXAMPLE_CONFIG = os.path.join(_ROOT, "config.yaml.example")
 
 #: The 319-line `config.yaml.example` as it stood immediately before CFOP-26,
 #: kept as a fixture rather than pointed at the live example — the example is
 #: now the minimal getting-started file, and the thing that has to keep working
 #: is the *old* format, which no file in the tree would otherwise exercise.
-LEGACY_FULL_CONFIG = os.path.join(REPO_ROOT, "tests", "fixtures", "legacy_full_config.yaml")
+LEGACY_FULL_CONFIG = os.path.join(_ROOT, "tests", "fixtures", "legacy_full_config.yaml")
 PRODUCTION_SHAPED_CONFIG = os.path.join(
-    REPO_ROOT, "tests", "fixtures", "production_shaped_config.yaml"
+    _ROOT, "tests", "fixtures", "production_shaped_config.yaml"
 )
 
 
