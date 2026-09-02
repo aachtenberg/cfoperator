@@ -318,6 +318,15 @@ The Modelfile reuses the **base model's exact chat template** — the fine-tune
 was trained against it, and a paraphrased template would not transfer. It also
 sets `PARSER ministral` and `PARAMETER temperature 0.15`.
 
+**The 0.15 is mostly decorative.** Both the production triage path
+(`_chat_with_tools`, ollama branch) and `benchmarks/triage_eval.py` send
+`temperature: 0.7` explicitly in the request, which overrides the Modelfile
+default. Every eval number in this document was measured at 0.7, and the
+zero-variance result across runs was obtained at 0.7 — not at a low sampling
+temperature. The 0.15 applies only to ad-hoc `ollama run`. Nothing currently
+asserts that the eval and production literals agree; that is a Tier 0 item in
+the [eval v2 plan](triage-eval-v2-plan.md).
+
 ---
 
 ## Evaluation
@@ -399,12 +408,22 @@ model learned exactly that mapping. Two consequences:
 > `cfop-triage-ministral3:v1-q4` — "similar past investigation resolved with
 > little effort."
 
-Triage reasons reach humans on the Slack path, so this is a live regression that
-`triage_eval.py` cannot see — it scores `action` and JSON validity only. Tracked
-as **CFOP-153**.
+Where that reason goes matters for how much this hurts. It does **not** reach
+Slack — `notifications.py` renders only the `Triaged by: backend/model`
+attribution. It does surface in the **console activity feed** (the
+`decision_made` timeline note), is recorded in the investigation result's
+details, and rides along as `triage_reasoning` when the deep-investigation tier
+reroutes. So the console and the stored record lost their explanation; Slack
+never had one. Either way `triage_eval.py` cannot see it — it scores `action`
+and JSON validity only. Tracked as **CFOP-153**.
 
 **`confidence` is a label alias, not a confidence.** Anything thresholding on it
-is thresholding on the action. Worth an audit.
+is thresholding on the action. Audit result: two consumers. The deep-investigation
+tier reroutes `investigate` decisions when `0 < confidence <
+CFOP_DEEP_CONFIDENCE_THRESHOLD` (default 0.4) — the fine-tune emits ≥0.80 and
+gemma4 ≥0.95, so that path is inert for both. The 5-minute triage cache gates on
+`confidence > 0`, which both always satisfy. Nothing is misrouted today; the
+threshold just assumes a calibration neither model provides.
 
 ### Two of the three input fields were noise or constant
 
@@ -542,8 +561,13 @@ file and tag it `:v1`.
 
 ## Open follow-ups
 
-Carried over from the v1 session; none are blocking:
+Carried over from the v1 session plus the 2026-09-02 review; none are blocking:
 
+- **Eval v2** — the test suite that would have caught the `reason`/`confidence`
+  regression and the majority-class soak blind spot. Tiered plan, power
+  calculations, counterfactual pairs, and a promotion gate in
+  [docs/triage-eval-v2-plan.md](triage-eval-v2-plan.md). First step is a
+  no-code soak of the `log_only`/`notify` cases.
 - **`llm.triage_timeout` knob** — currently no dedicated timeout for the triage
   call.
 - **Helm support for `llm.triage_model`** — the key works in raw config; the

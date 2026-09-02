@@ -11,7 +11,10 @@
 # The TEMPLATE below is the BASE model's chat template, reproduced exactly. The
 # fine-tune was trained against it; a paraphrased template would not transfer.
 # PARSER ministral is required for ollama to handle Mistral's wire format, and
-# temperature 0.15 is what the eval numbers in benchmarks/ were measured at.
+# temperature 0.15 is the Modelfile default, but note that BOTH the production
+# triage path (agent._chat_with_tools, ollama branch) and benchmarks/triage_eval.py
+# send temperature 0.7 explicitly in the request, which overrides it. The eval
+# numbers were measured at 0.7. The 0.15 only applies to ad-hoc `ollama run`.
 # Do not "clean up" any of the three without re-running benchmarks/triage_eval.py.
 
 FROM /mnt/nas-backup/cfoperator-finetune/mistral-trained-01/ministral-3-14b-instruct-2512.Q4_K_M.gguf
