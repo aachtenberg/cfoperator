@@ -411,11 +411,17 @@ remediation:
   # about delivery at all. That is the default on purpose: an installation that
   # has not said how it deploys gets no guess about its own cluster.
   #
-  # Omitting it is not free, though, and the silence is easy to miss: this
-  # installation ran the feature for twelve hours with the block absent and
-  # only found out from a parked row (CFOP-154). So if `queue_feed` is on and
-  # no mode is set, the agent logs a warning at startup naming this key. An
-  # explicit `mode: none` is a decision and silences it.
+  # Omitting and `none` are the same to the PROMPT and different to the LOG.
+  # Nothing is added to the prompt either way. But omitting it is not free and
+  # the silence is easy to miss -- this installation ran the feature for twelve
+  # hours with the block absent and only found out from a parked remediation
+  # row (CFOP-154) -- so when `queue_feed` is on and no mode is set, the agent
+  # logs one warning at startup naming this key. Writing `mode: none` is how
+  # you say you meant it, and it silences that warning.
+  #
+  # This is also why `mode` has no value in the default schema: a default gets
+  # merged into your config before anything downstream can tell it apart from
+  # something you wrote, which is precisely the distinction the warning needs.
   delivery:
     # gitops   manifests live in a git repo; the executor opens a PR and a
     #          syncer reconciles it. `gitops-manifest` becomes the preferred

@@ -1031,3 +1031,71 @@ def test_the_warning_is_actually_emitted_at_startup():
     src = inspect.getsource(_CFOp.__init__)
     assert '_delivery_unset_warning' in src, (
         "__init__ no longer checks whether this install said how it deploys")
+
+
+# --- and the same helper through the REAL loader -------------------------
+#
+# PR #232 review. The hand-built cases above pass a dict straight in; every
+# real caller passes load_config() output, i.e. deep_merge(DEFAULT_CONFIG,
+# file). The schema used to fill in `delivery: {"mode": "none"}`, which erased
+# the difference between "chose silence" and "said nothing" before the helper
+# ever saw it -- so the warning returned None for the exact production shape
+# it was written for, while every test above stayed green. Testing the merge
+# is the only way this stays fixed.
+
+
+def _prod_fixture_path():
+    import os
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "tests", "fixtures", "production_shaped_config.yaml")
+
+
+def test_schema_supplies_no_delivery_mode():
+    """The regression, guarded at its source. A default here is not a harmless
+    convenience: it is indistinguishable downstream from an operator's answer,
+    and `repo`/`tool` are already absent for the same reason."""
+    from cfshared.config import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["remediation"]["delivery"] == {}
+
+
+def test_omitted_delivery_warns_after_merge():
+    """The merge is where this broke. A config that never mentions delivery
+    must still look unset after the schema has been merged over it."""
+    from cfshared.config import DEFAULT_CONFIG, deep_merge
+    cfg = deep_merge(DEFAULT_CONFIG, {"remediation": {"queue_feed": True}})
+    assert _delivery_unset_warning(cfg)
+
+
+def test_omitted_delivery_warns_through_load_config():
+    """The live shape, not a reconstruction of it. production_shaped_config is
+    the redacted clone of the deployed ConfigMap: queue_feed on, no delivery
+    block -- the twelve hours in which CFOP-148 rendered nothing."""
+    from cfshared.config import load_config
+    cfg = load_config(_prod_fixture_path())
+    assert cfg["remediation"]["queue_feed"] is True
+    assert _delivery_unset_warning(cfg), (
+        "the config that produced row #97 did not warn")
+
+
+def test_explicit_none_in_the_file_still_silences_after_merge(tmp_path):
+    """The other half. Removing the default must not turn a deliberate
+    `mode: none` into a warning the operator cannot switch off."""
+    import yaml
+    from cfshared.config import load_config
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.safe_dump(
+        {"remediation": {"queue_feed": True, "delivery": {"mode": "none"}}}))
+    assert _delivery_unset_warning(load_config(str(p))) is None
+
+
+@pytest.mark.parametrize("delivery", [None, {}, {"mode": "none"}])
+def test_removing_the_default_did_not_start_prompting(delivery):
+    """Behaviour that must NOT change. Dropping the schema default is a
+    warning-only change: the prompt still says nothing about delivery unless
+    an installation chose gitops or direct."""
+    from cfshared.config import DEFAULT_CONFIG, deep_merge
+    rem = {"queue_feed": True}
+    if delivery is not None:
+        rem["delivery"] = delivery
+    cfg = deep_merge(DEFAULT_CONFIG, {"remediation": rem})
+    assert _delivery_guidance(cfg, _DELIVERY_REGISTRY) == ""

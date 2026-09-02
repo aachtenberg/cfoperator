@@ -247,12 +247,22 @@ DEFAULT_CONFIG: dict = {
         "queue_verify": False,
         "max_open_prs": 3,
         "max_drain_per_tick": 3,
-        # CFOP-148: how cluster changes reach this site. Shape and enablement
-        # only -- `repo` and `tool` are absent for the same reason
-        # `default_repo` is, and `none` renders no prompt guidance at all, so
-        # an installation that has not said how it deploys is never told a
-        # guess about its own cluster.
-        "delivery": {"mode": "none"},
+        # CFOP-148: how cluster changes reach this site. Shape only -- `mode`
+        # is as absent as `repo` and `tool`, for the same reason `default_repo`
+        # is: every value here would be somebody's answer. A missing mode still
+        # renders no prompt guidance, because _delivery_guidance reads it as
+        # `dcfg.get('mode') or 'none'`, so an installation that has not said how
+        # it deploys is never told a guess about its own cluster.
+        #
+        # `"mode": "none"` used to live here and had to come out (CFOP-154).
+        # Merging it in erased the difference between "the operator chose
+        # silence" and "the operator said nothing", and _delivery_unset_warning
+        # needs exactly that difference: with the default present it saw an
+        # explicit decision on every config and warned on none of them --
+        # including the live one it was written for. Filling a default in and
+        # then trying to detect its absence downstream is not recoverable;
+        # resolve_profile reads the raw file to dodge the same trap.
+        "delivery": {},
         "executor": {"node_action": {"enabled": False}},
     },
 
