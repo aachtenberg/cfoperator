@@ -18,8 +18,12 @@ trained on a 5080 in 17 min via unsloth studio; merged Q8_0 GGUF):
 | **cfop-triage-ministral3:v1** | **42/42** | **12/12** | **12/12** | 100% | **~0.8–1.1s** |
 
 Both notify-shortcut classes eliminated; matches the incumbent's clean sheet
-at ~6x lower latency. Eval loss stayed flat through epoch 2 (no
-memorization signal), and the training set excluded every eval case by
+at ~6x lower latency. Eval loss stayed flat through epoch 2 — but read that
+as "no divergence", not as evidence the boundary was learned: the val split is
+46/50 `investigate`, so a constant predictor scores 92% on it, and thousandths
+of masked JSON-verdict loss carry little information (see the Analysis section
+of `docs/triage-fine-tune.md`). The evidence that it learned the rubric is the
+held-out suite below; the training set excluded every eval case by
 construction. ×50 soak on both hard cases: **100/100** (an 8%-rate shortcut
 would escape a ×50 soak only ~1.5% of the time —
 `triage_eval_cfop_triage_ministral3_v1_soak_x50.json`).

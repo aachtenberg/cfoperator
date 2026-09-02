@@ -46,7 +46,7 @@ measurement (95%).
 | 2 | **`confidence` is not scored.** | Fine-tune confidence is a 1:1 alias of the action (0.80/0.85/0.90). The deep-investigation tier reroutes on `0 < confidence < 0.4` — a path that is inert for both the fine-tune (≥0.80) and gemma4 (≥0.95). Nothing tests that assumption. |
 | 3 | **Soak runs are concentrated on the majority class.** | All 100 soak runs went to two cases that both expect `investigate` — the 75% training majority. An over-investigate bias is invisible there. |
 | 4 | **Uneven statistical power.** | 3 runs on 12 cases, 50 on 2. At 3 runs a 10%-rate regression on a `log_only` case escapes 73% of the time. |
-| 5 | **No latency SLO.** | Production times out triage at `CFOP_TRIAGE_TIMEOUT_SECONDS` (default **5s**), resolving to `investigate` / confidence 0, uncached. gemma4's recorded max was **12.59s** and the Q8 fine-tune's 11.12s. The suite reports mean and max; it never says "this will time out in production." |
+| 5 | **No latency SLO, and no knowledge of the deployed timeout.** | event_runtime times out triage at `CFOP_TRIAGE_TIMEOUT_SECONDS`, resolving to `investigate` / confidence 0, uncached. The **code default is 5s** when the env is unset — which is what a Helm or compose install gets, since neither sets it. The **homelab's `cfoperator-deploy` sets 120s**, and this repo's own earlier write-ups (`benchmarks/gemma4-26b-vs-qwen3.6-27b.md`, `qwen3.8-27b-vs-gemma4-26b.md`) benchmark against 120s. At 120s, gemma4's 12.59s max and the Q8 fine-tune's 11.12s do **not** time out; at 5s both would. The suite reports mean and max and never reads the configured value, so it cannot say which world it is in. (The Q4 fine-tune's 3.4s max is one cold-start run — `watchdog` run 0; its soak max is 0.72s. It clears either threshold.) |
 | 6 | **Sampling parameters are not asserted.** | Eval and production both send `temperature: 0.7` — but only by coincidence of two hard-coded literals. The Modelfile says 0.15 and is overridden by both. Nothing checks they agree. |
 | 7 | **Input-shape robustness is accidental.** | The training set had exactly 3 precedents in 100% of rows and severity `unknown` in 90%; 10/14 eval cases have 0 precedents and real severity. The model generalised — but the suite did not *design* for that, it got lucky. |
 | 8 | **Fallback paths are never exercised end-to-end.** | Unparseable output → standard chain; tag absent → standard chain. Unit tests exist in `agent/test_triage.py`; the benchmark never checks the deployed system takes them. |
@@ -129,7 +129,7 @@ boundary" as opposed to "learned that most things are `investigate`".
 | `precedent-monitoring` (precedents outcome=monitoring) | same precedents, outcome=**resolved** | `investigate` → `notify` |
 | `critical-narrow` (critical, one hobby service) | same alert, summary names **three** correlated services | `investigate` → `escalate` |
 | `warning-correlated` (broad, warning) | same, severity=**critical** | `investigate` → `escalate` |
-| `smoke-test-pod` (`smoke-test-*`, crash-loop) | same alert, pod renamed to a **real** service | `log_only` → `investigate` |
+| `smoke-test-pod` (`smoke-test-*`, crash-loop) | same alert, pod renamed to a **real** service in **both** the summary and `labels.pod` — the base case carries `smoke-test-` in both, and a later Tier 1 item asks whether the model reads `Labels` at all, so renaming only the summary would not isolate the noise clause | `log_only` → `investigate` |
 | `known-sdcard` (resolved precedent 0.94) | same, precedents **removed** | `notify` → `investigate` |
 | `precedent-resolved-oom` (resolved precedents) | same, precedents' outcome=**needs_action** | `notify` → `investigate` |
 
@@ -141,6 +141,14 @@ which one.
 
 Cheap, deterministic checks that catch the two regressions the fine-tune
 shipped with. They do not need a judge model.
+
+**Prerequisite: the harness has to persist `reason` first.** Today
+`triage_eval.py` writes only `action`, `confidence`, `latency_s` and (on parse
+failure) `raw` into `results`. The committed JSON therefore cannot support a
+retroactive reason audit — the `known-sdcard` comparison in the model card had
+to be a live query. Add `reason` (and ideally the full raw text) to every
+result row before any of the checks below can run, and so that `--baseline` can
+diff reasons across model versions.
 
 **`reason`:**
 
@@ -247,9 +255,15 @@ integration version confirms the wiring, not the code.
 - **`--baseline <results.json>`** — print per-case deltas (action, accuracy,
   latency p50/p95/max) against a previous run; exit non-zero if any case
   regressed. Every promotion decision is a diff, not a score.
-- **Latency SLO assertion.** Report p50/p95/p99/max and **fail if p99 ≥
-  `CFOP_TRIAGE_TIMEOUT_SECONDS`** (read from the same env var production uses).
-  gemma4 would have failed this; the Q4 fine-tune passes it with room.
+- **Latency SLO assertion, against the *configured* timeout.** Report
+  p50/p95/p99/max and fail if p99 ≥ `CFOP_TRIAGE_TIMEOUT_SECONDS`, **reading the
+  same env var production reads, with the same 5s default when unset**, and
+  printing which value was used. The distinction is the whole point: against the
+  homelab's 120s every model in `benchmarks/` passes; against the 5s a chart
+  install gets, gemma4 and the Q8 fine-tune fail on their tail. A p99 assertion
+  that hard-codes either number is wrong for the other deployment. Treat "p99
+  exceeds the *unset* default" as a separate warning, so an operator who never
+  set the env learns that before the first tail call does.
 - **Quantization parity** — `--compare <tag-a> <tag-b>` runs both and reports
   any case where they differ. Q4 vs Q8 today: none. Keep it that way on purpose.
 - **Emit the training-template list** from `build_triage_dataset.py` (it owns the
@@ -267,7 +281,8 @@ All of these, or it does not ship:
 4. Tier 3: `reason` not-canned rate 100%, alert-grounded rate ≥ 90%, confidence
    not an action alias. (For v1 these are *known failing* and tracked in
    CFOP-153; the gate applies from the next model.)
-5. Latency p99 < production timeout; Q4/Q8 parity on every case.
+5. Latency p99 < the configured `CFOP_TRIAGE_TIMEOUT_SECONDS` (homelab: 120s;
+   unset default: 5s — the gate prints which); Q4/Q8 parity on every case.
 6. Tier 6 shadow: disagreement queue adjudicated, no disagreement where the
    candidate is wrong and the incumbent right on an `escalate` or `log_only`.
 
@@ -280,8 +295,10 @@ All of these, or it does not ship:
      --model cfop-triage-ministral3:v1-q4 --runs 36 \
      --only watchdog,smoke-test-pod,tmp-pod-critical,known-sdcard,precedent-resolved-oom,info-severity,info-novel-cert
    ```
-2. **Small change:** `--runs` default 36, the not-canned `reason` check, the
-   latency SLO line, and the Tier 0 temperature assertion. One afternoon.
+2. **Small change:** persist `reason` and raw text in `results` (nothing in Tier
+   3 can run without it), `--runs` default 36, the not-canned `reason` check,
+   the latency SLO line reading the configured timeout, and the Tier 0
+   temperature assertion. One afternoon.
 3. **Medium:** counterfactual pairs and the new Tier 1 cases. Each needs a
    `rubric` citation, which is the slow and valuable part.
 4. **Larger:** shape variants (Tier 4) and the shadow replay (Tier 6). The

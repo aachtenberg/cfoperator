@@ -408,22 +408,42 @@ model learned exactly that mapping. Two consequences:
 > `cfop-triage-ministral3:v1-q4` — "similar past investigation resolved with
 > little effort."
 
-Where that reason goes matters for how much this hurts. It does **not** reach
-Slack — `notifications.py` renders only the `Triaged by: backend/model`
-attribution. It does surface in the **console activity feed** (the
-`decision_made` timeline note), is recorded in the investigation result's
-details, and rides along as `triage_reasoning` when the deep-investigation tier
-reroutes. So the console and the stored record lost their explanation; Slack
-never had one. Either way `triage_eval.py` cannot see it — it scores `action`
-and JSON validity only. Tracked as **CFOP-153**.
+Where that reason goes matters for how much this hurts, and the honest answer
+is: one place. Traced against the consuming code (not the portable stubs):
+
+| Surface | Reaches it? |
+|---|---|
+| event_runtime **activity timeline** — the `decision_made` note is `decision.reasoning` | **yes** |
+| Slack — `notifications.py` renders only the `Triaged by: backend/model` attribution | no |
+| The investigation record — production `HTTPInvestigateActionHandler` POSTs `alert.to_dict()` only and records `{agent_url, alert_id}`; the `"decision": reasoning` field lives in the portable `defaults.py` stub, which is not the deployed handler | no |
+| `deep_context.triage_reasoning` — only on the host-shaped low-confidence reroute, which never fires (next paragraph) | effectively no |
+
+So this is an **activity-feed / audit-log** regression. Slack never carried the
+reason and the investigation record never stored it. That narrows CFOP-153 but
+does not close it — the timeline is the place an operator looks to see *why* an
+alert was routed the way it was. Either way `triage_eval.py` cannot see it — it
+scores `action` and JSON validity only.
 
 **`confidence` is a label alias, not a confidence.** Anything thresholding on it
-is thresholding on the action. Audit result: two consumers. The deep-investigation
-tier reroutes `investigate` decisions when `0 < confidence <
-CFOP_DEEP_CONFIDENCE_THRESHOLD` (default 0.4) — the fine-tune emits ≥0.80 and
-gemma4 ≥0.95, so that path is inert for both. The 5-minute triage cache gates on
-`confidence > 0`, which both always satisfy. Nothing is misrouted today; the
-threshold just assumes a calibration neither model provides.
+is thresholding on the action. Audit result: two consumers.
+
+The deep-investigation tier (`EscalationRoutingDecisionEngine`) reroutes an
+`investigate` decision to forensics when `0 < confidence <
+CFOP_DEEP_CONFIDENCE_THRESHOLD` (default 0.4) — **but only after
+`_is_host_shaped()` passes**; non-host alerts return before the gate
+(`test_non_host_alert_decisions_untouched` pins this: a pod `investigate` at
+0.1 stays `investigate`). So the path is inert for two independent reasons:
+
+1. Both models emit well above 0.4 — the fine-tune ≥0.80, gemma4 ≥0.9 on the
+   committed 14-case JSON (`warning-correlated` is its floor).
+2. Most triage traffic is pod/workload-shaped and would not reroute at any
+   confidence.
+
+That second reason matters for a v2: fixing calibration alone will not send a
+CrashLoop pod to forensics. The 5-minute triage cache gates on `confidence >
+0`, which both models always satisfy. Nothing is misrouted today; the
+threshold just assumes a calibration neither model provides, on a subset of
+alerts that mostly never reaches it.
 
 ### Two of the three input fields were noise or constant
 
@@ -519,8 +539,9 @@ Semantics:
 - **Rollback is deleting the line.** The key is inert on any image without the
   wiring, so config and image can be deployed in either order.
 
-**The gotcha that will bite you:** a config-only deploy commit syncs the
-ConfigMap and **restarts nothing**. You need:
+**The gotcha that will bite you — on the homelab's raw-manifest path.** In
+`cfoperator-deploy` the ConfigMap is a plain manifest, so a config-only commit
+syncs it and **restarts nothing**. You need:
 
 ```bash
 kubectl rollout restart deploy/cfoperator
@@ -528,6 +549,14 @@ kubectl rollout restart deploy/cfoperator
 
 Image-tag bumps restart on their own because they touch the pod spec; config-only
 changes do not.
+
+**This does not apply to the Helm chart.** `charts/cfoperator/templates/agent.yaml`
+and `event-runtime.yaml` both annotate the pod with `checksum/config` (a sha256
+of the rendered ConfigMap), so a `helm upgrade` that changes config rolls both
+deployments by itself. Chart users should not cargo-cult the restart. The Helm
+deployment names also differ (`{release}-cfoperator-agent` /
+`{release}-cfoperator-event-runtime`), so the command above is homelab-specific
+twice over.
 
 Verifying it is live — the response names the model that served it:
 
@@ -568,8 +597,13 @@ Carried over from the v1 session plus the 2026-09-02 review; none are blocking:
   calculations, counterfactual pairs, and a promotion gate in
   [docs/triage-eval-v2-plan.md](triage-eval-v2-plan.md). First step is a
   no-code soak of the `log_only`/`notify` cases.
-- **`llm.triage_timeout` knob** — currently no dedicated timeout for the triage
-  call.
+- **Expose the triage timeout as a config/Helm knob.** A dedicated timeout
+  already exists: `CFOP_TRIAGE_TIMEOUT_SECONDS` on event_runtime's HTTP client
+  (since #39; code default **5s** when unset, and the homelab's
+  `cfoperator-deploy` sets it to **120s**). What is missing is a
+  `llm.triage_timeout` key in `config.yaml` and the env plumbing in
+  `charts/cfoperator/templates/event-runtime.yaml`, which currently passes no
+  `CFOP_TRIAGE_*` at all — so a chart install silently runs at 5s.
 - **Helm support for `llm.triage_model`** — the key works in raw config; the
   chart does not expose it.
 - **Ansible provisioning** of the ollama tag on `ubuntu-llm-01`, so a node
