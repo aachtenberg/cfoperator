@@ -676,6 +676,10 @@ Carried over from the v1 session plus the 2026-09-02 review; none are blocking:
 
 ## See also
 
+- [`docs/triage-retrain-runbook.md`](triage-retrain-runbook.md) — the ordered
+  procedure for producing a new tag. This page is the record of what v1 *is*;
+  that one is what you follow with the training box in front of you.
+
 - [`benchmarks/ministral-3-14b-baseline.md`](../benchmarks/ministral-3-14b-baseline.md) — the before/after benchmark write-up
 - [`scripts/build_triage_dataset.py`](../scripts/build_triage_dataset.py) — dataset builder, and the authority on label derivation
 - [`docs/config-reference.md`](config-reference.md) — the `llm.triage_model` key
