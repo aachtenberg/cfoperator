@@ -87,11 +87,13 @@ empty; only `_1787248524` has weights. Nothing else needed archiving.
    chain at ~8x the latency. There is no alert for this. See
    [Rebuilding from the NAS](#rebuilding-from-the-nas), and consider an ansible
    task for it.
-2. The NAS is the only backup of both the GGUFs and the training run, and the NAS
-   itself is a single USB disk on `headless-gpu`. Whether the
-   `cfoperator-finetune/` directory is included in the NAS→iDrive cloud leg is
-   worth confirming; at 23GB it is not free to replicate, but the 668MB training
-   run alone is, and it is the part that cannot be regenerated.
+2. The NAS is a single USB disk on `headless-gpu`. It **is** replicated to iDrive
+   e2 — the `nas-cloud-backup` timer rsyncs all of `/mnt/nas-backup` daily with
+   only three media excludes, and the GGUFs and dataset are confirmed present in
+   the bucket. But `rclone sync` is a **mirror, not a versioned backup**: a delete
+   or corruption on the NAS propagates to the cloud within 24h. Keeping the
+   original run directory on the training box is currently the only third copy —
+   don't clean it up. Bucket versioning or `--backup-dir` would fix this properly.
 3. Neither the GGUFs nor the adapter are in git (too large, and this repo is
    public).
 
@@ -364,6 +366,116 @@ PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
   --only precedent-monitoring,critical-narrow \
   --output benchmarks/triage_eval_<name>_soak_x50.json
 ```
+
+---
+
+## Analysis — what the data and the model actually are
+
+The eval scores are real, but they are stronger than the training data on its own
+would justify, and one thing regressed without the gate noticing. Read this
+before building a v2.
+
+### The targets are a four-way lookup, not reasoning
+
+Across all 451 training rows there are exactly **four** distinct `reason` strings
+and **four** `confidence` values, mapped 1:1 onto the action:
+
+| action | n | `reason` | `confidence` |
+|---|---:|---|---:|
+| `investigate` | 338 | "no resolved precedent for this pattern" | 0.80 |
+| `notify` | 96 | "similar past investigation resolved with little effort" | 0.85 |
+| `escalate` | 16 | "critical with broad impact, operator should page in" | 0.90 |
+| `log_only` | 1 | "known noise pattern (test pod or watchdog heartbeat)" | 0.95 |
+
+So `reason` and `confidence` carry **zero information beyond `action`**, and the
+model learned exactly that mapping. Two consequences:
+
+**The `reason` field stopped explaining anything.** Both models, same eval alert
+(`known-sdcard`), same production prompt:
+
+> `gemma4:26b` — "The issue matches a known pattern of a failing SD card on this
+> device for which replacement is already scheduled."
+>
+> `cfop-triage-ministral3:v1-q4` — "similar past investigation resolved with
+> little effort."
+
+Triage reasons reach humans on the Slack path, so this is a live regression that
+`triage_eval.py` cannot see — it scores `action` and JSON validity only. Tracked
+as **CFOP-153**.
+
+**`confidence` is a label alias, not a confidence.** Anything thresholding on it
+is thresholding on the action. Worth an audit.
+
+### Two of the three input fields were noise or constant
+
+| Field | In training | In production |
+|---|---|---|
+| `Alert severity` | `unknown` 405, `warning` 43, `critical` 3 | always a real value |
+| `Labels` | empty in 53% of rows; ~19% of populated values are English stopwords | real Alertmanager labels |
+| similar-past block | **exactly 3 entries in 100% of rows** | 0–3 |
+
+The `Labels` corruption is a bug in `build_triage_dataset.py`: it takes the word
+following "pod"/"namespace" in the summary prose, producing entries like
+`{"pod": "with", "namespace": "has"}`. Node names extract correctly; pod and
+namespace do not. Net effect: the model was effectively trained on the summary
+line alone.
+
+### The val split cannot support the claim usually made of it
+
+`triage_val.jsonl` is 46/50 `investigate`, so a constant predictor scores 92% on
+it, and its `label_basis` mix is nothing like train (62% `outcome-needs-action`
+vs 4%). **Eval loss falling to 0.0034 mostly measures "emits well-formed JSON
+with the majority label."** It is not evidence of learning the boundary.
+`triage_eval.py` is the only thing that is.
+
+### The model is nonetheless better than that data deserves
+
+Two results carry the weight:
+
+**The eval discriminates.** The 14 cases span all four actions — 3 strict
+`log_only`, 2 `log_only|notify`, 2 `notify`, 5 `investigate`, 2 `escalate`. A
+constant-`investigate` model scores **5/14 (36%)**. The fine-tune scores 14/14,
+identical across all three runs, zero variance.
+
+**It generalizes off-distribution.** Ten of the fourteen eval cases have **zero**
+similar-past entries and all carry real severity — shapes occurring in 0% and 10%
+of training respectively. It still gets them right. The sharpest case is
+`critical-narrow` (similar=0, severity=critical, a shape absent from training),
+where the base model failed 8/12 and the fine-tune passes 50/50. That is transfer,
+not memorization: 451 narrow examples moved behavior on inputs never seen.
+
+Note also that `log_only` competence is **inherited, not trained** — with one
+example, the model returns confidence 0.9 on `log_only` cases rather than the 0.95
+its single row teaches. The base model and the system-prompt rubric are doing that
+work.
+
+### The gap: the soak is pointed at the wrong cases
+
+All 100 soak runs went to `precedent-monitoring` and `critical-narrow`, and
+**both expect `investigate`** — the 75% majority class. The likeliest failure mode
+given this training set is an over-`investigate` bias, and it is invisible there.
+The only guard is the 14-case screen at ×3, where a 10%-rate regression on a
+`log_only` case escapes ~73% of the time (0.9³).
+
+Run this before trusting any retrain:
+
+```bash
+PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
+  --model cfop-triage-ministral3:v1-q4 --runs 50 \
+  --only watchdog,smoke-test-pod,tmp-pod-critical,known-sdcard,precedent-resolved-oom
+```
+
+### What a v2 should change
+
+1. Generate varied, alert-grounded `reason` text instead of four templates —
+   otherwise you are training a classifier and shipping it as an explainer.
+2. Fix the `Labels` stopword-extraction bug.
+3. Vary the similar-past block 0–3 and carry real severity, so training shape
+   matches serving shape.
+4. Oversample `log_only` and `escalate`, or accept that those two labels are the
+   base model's behavior and say so.
+5. Build a val split that is distributionally comparable to train, or stop
+   quoting val loss as evidence.
 
 ---
 
