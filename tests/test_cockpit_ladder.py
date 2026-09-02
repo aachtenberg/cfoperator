@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from cockpit_ladder import (
+from cockpit.ladder import (
     COCKPIT_ENTRYPOINT,
     CONTAINER_ARCHES,
     DEFAULT_CFASSIST_VERSION,
@@ -42,7 +42,7 @@ from cockpit_ladder import (
     resolve_target_host,
     session_name,
 )
-from cockpit_spawn import CockpitConfig, CockpitSpawnError
+from cockpit.spawn import CockpitConfig, CockpitSpawnError
 
 ROOT = REPO_ROOT
 SECRET = "cfop_s3cret_do_not_leak"
@@ -191,7 +191,7 @@ def test_arch_normalisation(reported, want):
 def test_the_probe_never_asks_the_docker_daemon():
     """`docker info` blocks for seconds when docker is installed but stopped,
     and this probe runs inline on a spawn someone is waiting for."""
-    from cockpit_ladder import PROBE_SCRIPT
+    from cockpit.ladder import PROBE_SCRIPT
     assert "command -v" in PROBE_SCRIPT
     assert "docker info" not in PROBE_SCRIPT and "podman info" not in PROBE_SCRIPT
 
@@ -694,7 +694,7 @@ def test_the_pinned_cfassist_version_tracks_the_go_tree():
                            (ROOT / "cfassist-go" / "internal" / "config" / "config.go").read_text())
     assert go_version, "cfassist-go no longer declares Version where this test looks"
     assert DEFAULT_CFASSIST_VERSION == go_version.group(1), (
-        "cockpit_ladder.DEFAULT_CFASSIST_VERSION must match cfassist-go's Version, "
+        "cockpit.ladder.DEFAULT_CFASSIST_VERSION must match cfassist-go's Version, "
         "and cfassist-v<version> must be tagged before a cockpit can use it")
     # The third pin is prose: the config reference's `cfassist_version:`
     # example. It says "defaults to cfassist-go's own Version", so a bump
@@ -1047,7 +1047,7 @@ def _ladder_client(ssh, *, investigation=None, hosts=None, remediations=(),
 
     from flask import Flask
 
-    from cockpit_spawn import CockpitSpawner
+    from cockpit.spawn import CockpitSpawner
     from web_auth import install_auth
     from web_server import WebServer
 

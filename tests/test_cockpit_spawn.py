@@ -2,7 +2,7 @@
 
 Two layers, tested at the layer the defect would live in:
 
-* ``cockpit_spawn.CockpitSpawner`` — the manifest and the guards (dedupe,
+* ``cockpit.spawn.CockpitSpawner`` — the manifest and the guards (dedupe,
   concurrency cap, placement fallback, token delivery, rollback).
 * ``POST /api/cockpit/spawn`` — through the real Flask app, because a
   pure-policy test leaves the handler deletable.
@@ -25,7 +25,7 @@ from sqlalchemy import create_engine
 
 from auth.models import ROLE_ADMIN, ROLE_MEMBER
 from auth.store import AuthStore
-from cockpit_spawn import (
+from cockpit.spawn import (
     COCKPIT_LABEL,
     DEFAULT_TTL_SECONDS,
     JOB_ROLE_LABEL,
@@ -521,7 +521,7 @@ def test_spawn_endpoint_never_pins_from_the_investigations_host_id():
 
     Which host the incident is on now comes from the remediation rows fed off
     the investigation (their host_id IS finding-derived) or from the trigger
-    text; see cockpit_ladder.resolve_target_host.
+    text; see cockpit.ladder.resolve_target_host.
     """
     spawner, kubectl, _ = _spawner(node={"spec": {}})
     client, _ = _client(spawner=spawner,

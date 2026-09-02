@@ -6,7 +6,7 @@ The class of regression, not today's output:
      generated from the alias tables in `cfshared.config`; the guard extends
      the schema at test time and asserts the wizard surfaces the new entry —
      in the plan, and end-to-end into a written file the real loader resolves
-     — without `setup_wizard.py` being edited.
+     — without `scripts/setup_wizard.py` being edited.
   2. **The written file must mean what the answers said.** Checked through
      `cfshared.config.load_config`, the loader every deployment actually
      runs, never through a re-implementation of it.
@@ -32,7 +32,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-import setup_wizard as wiz
+# setup_wizard lives in scripts/, which is not a package and is not on the path
+# by default — the same bare-import-plus-sys.path convention the rest of the
+# repo uses, and what the `cfoperator` CLI does for the same module.
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+import setup_wizard as wiz  # noqa: E402
 from cfshared import config as cfg
 
 REPO = REPO_ROOT
@@ -340,7 +345,7 @@ def test_non_interactive_knobs_are_documented(monkeypatch, tmp_path, stub):
     and silently gets a default it never chose.
     """
     documented = (REPO / ".env.example").read_text()
-    read_by_wizard = set(re.findall(r"CFOP_INIT_[A-Z_]+", (REPO / "setup_wizard.py").read_text()))
+    read_by_wizard = set(re.findall(r"CFOP_INIT_[A-Z_]+", (REPO / "scripts" / "setup_wizard.py").read_text()))
     assert read_by_wizard, "the pattern stopped matching — reread the collector"
     undocumented = sorted(name for name in read_by_wizard if name not in documented)
     assert not undocumented, f"read by --non-interactive but absent from .env.example: {undocumented}"

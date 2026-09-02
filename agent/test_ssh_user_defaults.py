@@ -8,7 +8,7 @@ review on #225 was right that only one of them is an invariant:
     public reference, so a default of ``aachten`` pointed strangers at this
     project's operator. That is the regression this guards, and it is guarded
     across the WHOLE TREE rather than a hand-kept file list -- the first
-    version of this test listed five files and missed ``cockpit_ladder.py``,
+    version of this test listed five files and missed ``cockpit/ladder.py``,
     ``observability/prometheus_containers.py``, the Helm values and
     ``docs/config-reference.md``, which is exactly how a list-based guard
     fails.

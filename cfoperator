@@ -14,7 +14,15 @@ import sys
 
 # Runnable from anywhere, not just the repo root: the verbs import repo
 # modules (setup_wizard, cfshared) by bare name.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+#
+# Two entries, because the verbs' modules no longer all sit beside this file:
+# the repo root for packages like cfshared, and scripts/ for the verb modules
+# themselves (setup_wizard moved there when the root was cleared of loose
+# files). Both are needed — dropping the second makes `cfoperator init` fail
+# with ModuleNotFoundError at the import below.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+sys.path.insert(1, os.path.join(_HERE, "scripts"))
 
 
 def main(argv):

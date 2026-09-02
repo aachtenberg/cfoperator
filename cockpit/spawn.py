@@ -48,7 +48,7 @@ JOB_ROLE_LABEL = "cfop.dev/role"
 JOB_ROLE_VALUE = "cockpit"
 COCKPIT_LABEL = "cfop-cockpit"
 # Tier 1's name in the ladder (CFOP-36). Defined here rather than imported from
-# cockpit_ladder so the dependency runs one way: the ladder builds on tier 1,
+# cockpit.ladder so the dependency runs one way: the ladder builds on tier 1,
 # not the other way round.
 TIER_POD = "pod"
 

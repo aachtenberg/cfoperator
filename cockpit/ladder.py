@@ -1,6 +1,6 @@
 """The cockpit runtime ladder for non-k8s hosts — tiers 2/3 (CFOP-36).
 
-Tier 1 (``cockpit_spawn.py``) puts the briefed session in an ephemeral pod. Most
+Tier 1 (``cockpit/spawn.py``) puts the briefed session in an ephemeral pod. Most
 of this fleet is not in the cluster: bare Pis, a GPU box, VMs. The contract has
 to be the same everywhere — *briefing in, session out* — and only the isolation
 and cleanup mechanism is allowed to degrade:
@@ -50,7 +50,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from cockpit_spawn import (
+from cockpit.spawn import (
     COCKPIT_LABEL,
     DEFAULT_MAX_CONCURRENT,
     JOB_ROLE_LABEL,
@@ -67,7 +67,7 @@ logger = logging.getLogger("cfoperator.cockpit.ladder")
 
 # ---- the ladder ------------------------------------------------------------
 
-# TIER_POD comes from cockpit_spawn: tier 1 owns its own name, and re-declaring
+# TIER_POD comes from cockpit.spawn: tier 1 owns its own name, and re-declaring
 # it here is how the two would eventually disagree.
 TIER_CONTAINER = "container"
 TIER_HOST = "host"
