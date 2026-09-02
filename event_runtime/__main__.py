@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 
-from .bootstrap import build_portable_runtime, build_portable_worker
+from .bootstrap import build_portable_runtime, build_portable_worker, build_heartbeat
 from .server import serve
 
 
@@ -47,7 +47,9 @@ def main() -> None:
 
     runtime = build_portable_runtime(config_path=args.config)
     worker = build_portable_worker(runtime, config_path=args.config)
-    serve(runtime, host=args.host, port=args.port, worker=worker, poll_interval_seconds=args.poll_interval)
+    heartbeat = build_heartbeat(config_path=args.config)
+    serve(runtime, host=args.host, port=args.port, worker=worker,
+          poll_interval_seconds=args.poll_interval, heartbeat=heartbeat)
 
 
 if __name__ == "__main__":

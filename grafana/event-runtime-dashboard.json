@@ -65,7 +65,7 @@
       },
       "targets": [
         {
-          "expr": "max(cfoperator_event_runtime_up)",
+          "expr": "max(up{app=\"cfoperator-event-runtime\"})",
           "refId": "A"
         }
       ],

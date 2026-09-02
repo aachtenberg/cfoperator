@@ -234,6 +234,12 @@ DEFAULT_CONFIG: dict = {
         # rest of this block's defaults and enumerating them here would be two
         # sources of truth for the same numbers.
         "deep_investigation": {"enabled": False},
+        # CFOP-152. Outbound liveness ping to a dead-man's-switch endpoint.
+        # Shape only -- `url` is absent, and its absence is what disables the
+        # feature, so a default here would switch it on for everyone and point
+        # it at nothing. Same rule as remediation.delivery.mode (CFOP-154): do
+        # not merge in a value whose absence something downstream must detect.
+        "heartbeat": {},
     },
 
     # `default_repo` is deliberately absent: every value would be somebody's

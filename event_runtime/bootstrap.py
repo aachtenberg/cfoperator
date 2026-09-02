@@ -35,6 +35,7 @@ from .http_actions import (
 )
 from .escalation import EscalationLedger
 from .notifications import SlackNotificationSink, DiscordNotificationSink, NtfyNotificationSink
+from .heartbeat import HeartbeatPusher, build_heartbeat_pusher
 from .plugins import AlertSource
 from .sources import AlertmanagerAlertSource
 from .engine import EventRuntime
@@ -485,6 +486,23 @@ def _default_scheduler_jobstore_url(schedule_dir: str, pg_settings: dict) -> str
     sqlite_path = Path(schedule_dir) / "apscheduler.sqlite"
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     return f"sqlite:///{sqlite_path}"
+
+
+def build_heartbeat(config_path: str | None = None) -> HeartbeatPusher:
+    """Build the outbound liveness pusher from ``event_runtime.heartbeat``.
+
+    Unconfigured returns an inert pusher rather than None, so callers have one
+    shape to handle and "off" is not a second code path that can rot.
+    """
+    pusher = build_heartbeat_pusher(_load_root_config(config_path))
+    if pusher.enabled:
+        # The URL is a credential on most dead-man's-switch services (the ping
+        # path IS the auth), so log that it is on, never where it points.
+        _log.info(
+            "Event-runtime heartbeat enabled (%s, min interval %ss)",
+            pusher.method, pusher.min_interval_seconds,
+        )
+    return pusher
 
 
 def _load_root_config(config_path: str | None = None) -> dict:

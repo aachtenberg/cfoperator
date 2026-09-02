@@ -287,6 +287,30 @@ chat:
 
 # Event Runtime
 event_runtime:
+  # Outbound liveness ping to a dead-man's-switch endpoint (CFOP-152).
+  #
+  # The runtime already exports `cfoperator_event_runtime_last_poll_timestamp_seconds`,
+  # which is the better in-cluster signal: alert on `time() - metric > N` and a
+  # poll loop that is alive but failing every cycle reads as stale. But that
+  # metric is scraped by a Prometheus in the same cluster and routed by an
+  # Alertmanager in the same cluster, so the failures that take out the cluster
+  # take out the evidence too.
+  #
+  # This block covers that last case, and ONLY that case. It pushes to a URL you
+  # own; the endpoint alerts when the pings stop. healthchecks.io, an Uptime Kuma
+  # push monitor, a cron-ping on a VPS -- nothing here is vendor-specific.
+  #
+  # Off unless `url` is set. There is deliberately no default: the absence of a
+  # URL is what disables the feature, so a value here would enable it for every
+  # installation and aim it at nothing.
+  #
+  # Treat the URL as a credential. On most of these services the ping path IS
+  # the authentication, so put it in a secret, not in a repo. Nothing logs it.
+  # heartbeat:
+  #   url: ${CFOP_HEARTBEAT_URL}
+  #   method: GET            # GET or POST; anything else falls back to GET
+  #   timeout_seconds: 5     # a slow endpoint must not stall the poll loop
+  #   min_interval_seconds: 0  # 0 = ping after every clean poll cycle
   scheduler:
     backend: json-file  # or apscheduler
     # jobstore_url: postgresql://user:password@host:5432/dbname  # optional; defaults to event runtime Postgres DSN, else local SQLite
