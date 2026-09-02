@@ -75,9 +75,15 @@ function install() {
   try {
     execFileSync(
       "npm",
-      ["install", "--silent", "--no-audit", "--no-fund", "--prefix", CACHE, SPEC],
-      // stdout to stderr: npm must never write to the MCP channel.
-      { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env } },
+      // --ignore-scripts keeps dependency postinstalls off the channel entirely.
+      // @scarf/scarf is a dependency of 0.1.4 and its postinstall console.logs;
+      // nothing here needs a build step, so skipping scripts costs nothing.
+      ["install", "--silent", "--no-audit", "--no-fund", "--ignore-scripts",
+       "--prefix", CACHE, SPEC],
+      // Both child streams go to OUR stderr. "inherit" for stdout would hand the
+      // child fd 1 -- the MCP JSON-RPC channel -- and an npm notice or a
+      // postinstall line there corrupts every response the host parses.
+      { stdio: ["ignore", process.stderr, process.stderr], env: { ...process.env } },
     );
   } catch (err) {
     log(`npm install failed: ${err.message}`);
