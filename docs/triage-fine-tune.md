@@ -263,6 +263,23 @@ consumer-GPU training run.
    `UNSLOTH_CE_LOSS_TARGET_GB=1` and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
    **in the shell that launches studio**. `setx` alone does not reach an
    already-running app.
+
+   **These are a LAUNCH REQUIREMENT, not a one-time fix, and a reboot silently
+   removes them (CFOP-153, 2026-09-02).** Studio started from a shortcut,
+   service or auto-start after a reboot has neither variable, and the symptom
+   is *not* the CE-loss crash filed above — it is a **10x slowdown that looks
+   like a hardware limit**: 70–90 s/step, 99% GPU utilisation at 71–93 W of a
+   360 W board, VRAM pegged near total, with runs dying at random steps. With
+   both variables set the same config ran at **6.7 s/step at 279 W** — faster
+   than v1. Power draw is the tell: high utilisation at low watts is PCIe
+   waiting, not compute.
+
+   Counterintuitively a *clean reboot makes this worse*, because rebooting is
+   what unsets them. Several hours were spent on VRAM arithmetic, sequence
+   length and `gradient_checkpointing` before this was the answer.
+
+   `gradient_checkpointing` was **not** implicated — it was `'unsloth'` on
+   every run. Do not re-check it.
 2. **179s/step at 79W with VRAM pegged at 15.4/15.9GB and "99% utilization".**
    Power that low with utilization that high means the GPU is waiting on PCIe,
    not computing. The cause was **WDDM silently paging VRAM to system RAM**. Fix:
@@ -276,7 +293,9 @@ consumer-GPU training run.
    apps.
 
 Also: unsloth studio's API is token-authed and was reachable over the LAN
-(`http://192.168.0.115:8888`, token in `/tmp/unsloth.token`), which is how the
+(**`http://192.168.0.110:8888`** as of 2026-09-02 — this document previously
+said `.115`; verify before trusting it, the box is DHCP. Token in
+`/tmp/unsloth.token` **on the cfoperator host**, not the training box), which is how the
 exports were driven remotely. `/api/train/progress` is a long-poll that never
 returned data remotely; `/api/train/runs` gives status only. The studio host is
 a workstation, not always on — treat LAN access as opportunistic.

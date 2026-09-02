@@ -114,6 +114,23 @@ the output directory happened to survive twelve days on the box. That was luck.
 
 ## 5. Train
 
+### Before you press start: the two environment variables
+
+```
+set UNSLOTH_CE_LOSS_TARGET_GB=1
+set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+**Launch studio from that shell.** These are a launch requirement, not a
+one-time fix — a reboot removes them, and studio started from a shortcut or
+auto-start will not have them.
+
+Without them the run does not crash in an obvious way. It runs at **70–90
+s/step instead of ~7**, showing 99% GPU utilisation at 71–93 W of a 360 W
+board, and dies at random steps. That reads like "the card is too small" and
+it is not. **High utilisation at low wattage means PCIe waiting, not
+compute** — check watts before touching any other setting.
+
 ~17 minutes for v1 at 2 epochs; budget proportionally. If it is dramatically
 slower, read the model card's
 [Windows/5080 gotchas](triage-fine-tune.md#the-windows5080-gotchas--a-30x-speed-story)
@@ -206,6 +223,7 @@ insists on a new tag.
 | Loss much higher than v1 | Expected. See §5. |
 | Loss as low as v1 | Suspicious — look for a shortcut, not a success |
 | Eval passes but reasons are canned | The dataset, not the model. Re-run §2. |
-| Training far slower than ~17 min | [Windows/5080 gotchas](triage-fine-tune.md#the-windows5080-gotchas--a-30x-speed-story) |
+| Training far slower than ~17 min | **Check watts first.** High util + low watts = the two env vars are missing (§5). Not VRAM, not `gradient_checkpointing`, not sequence length — all three were investigated and none was the cause. |
+| Run dies at a random early step | Same cause as above, most likely |
 | Model lost, no retrain wanted | [Rebuilding from the NAS](triage-fine-tune.md#rebuilding-from-the-nas) — two commands |
 | `/v1/triage` returns the primary's name | Tag missing on the host; nothing asserts this today (eval plan Tier 7) |
