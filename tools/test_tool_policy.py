@@ -31,13 +31,16 @@ KNOWN_MUTATING = {
     "ssh_execute", "ssh_restart_service", "ssh_docker_restart",
     "k8s_rollout_restart", "k8s_exec_pod",
     "update_sweep_finding", "resolve_remediation", "store_learning",
-    "triage_investigation",
+    "triage_investigation", "queue_gitops_patch",
 }
 # 'triage_' is in the pattern because triage_investigation is the first write
 # tool whose name carries none of the other verbs — an unmarked one would have
 # landed open (CFOP-138).
+# 'queue_' joins them for queue_gitops_patch (CFOP-160): it enqueues work an
+# executor will run, which is a write even though nothing changes at the
+# moment it returns.
 WRITE_SHAPED = re.compile(
-    r"restart|_exec|create_|resolve_|update_|store_|delete_|patch_|apply_|triage_")
+    r"restart|_exec|create_|resolve_|update_|store_|delete_|patch|apply_|triage_|queue_")
 
 MEMBER = ToolPolicy(actor_role="member")
 ADMIN = ToolPolicy(actor_role="admin")

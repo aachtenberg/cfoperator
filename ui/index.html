@@ -1067,8 +1067,16 @@
         // mutating tools for that one turn — a "check whether this is still
         // the case" ask once had the sweep's own "Proposed remediation: sudo
         // systemctl restart …" executed under it.
-        const VERIFY_ONLY = 'This is a verification pass: run read-only checks only — do not restart, '
-            + 'edit, resolve or approve anything. Say what should be done and an operator will do it.';
+        //
+        // The clause has to say that it covers this message only (CFOP-160).
+        // mode: 'verify' rides on the hand-off turn alone, but the text of it
+        // stays in the history for the rest of the session, and the model
+        // reads it as a standing order: in session 35 an admin asked for the
+        // patch three turns later and was told the agent could not, under a
+        // policy that had stopped applying two turns earlier.
+        const VERIFY_ONLY = 'For this first pass, run read-only checks only — do not restart, '
+            + 'edit, resolve or approve anything. Say what you found and what should happen next. '
+            + 'That applies to this message only: if I then ask you to act, use the tools you have.';
 
         // A row handed over from /remediations (CFOP-109). The question is
         // composed from the row itself so the operator never types the number,

@@ -16,6 +16,7 @@ Tools for CFOperator's single-agent architecture.
 from dataclasses import dataclass
 from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlsplit
+import hashlib
 import ipaddress
 import logging
 import os
@@ -841,6 +842,82 @@ class ToolRegistry:
             }
         }
 
+        # The remediation queue's one entry point from chat (CFOP-160).
+        #
+        # Without it the console agent could diagnose a fix, be told by an
+        # admin to make it, and have nowhere to put it: github_create_pr takes
+        # a `head` branch that already exists, nothing in this registry writes
+        # a file, and the three remediation tools above read, read and close.
+        # An agent in that position offers to ssh somewhere and run git by
+        # hand, which is what it did (observed in chat session 35).
+        #
+        # It queues work rather than opening a PR itself. The executor already
+        # regenerates its own diff, opens the PR and hands the row to the
+        # reconciler, with a change record, a dedupe key and an attempt limit
+        # around it; a second PR-opening path in the agent would have none of
+        # that.
+        #
+        # gitops-patch ONLY, deliberately. k8s-action, k8s-imperative and
+        # node-action reach the cluster or a host directly and are gated by
+        # the change-record machinery, not by a sentence typed into a chat
+        # box. This class's whole effect is an open PR — the merge button is
+        # still the human gate.
+        self.tools['queue_gitops_patch'] = {
+            'function': self._queue_gitops_patch,
+            'schema': {
+                'name': 'queue_gitops_patch',
+                'mutating': True,
+                'description': (
+                    'Queue a GitOps configuration change for the executor, which writes the diff '
+                    'and opens a pull request against the infrastructure repo. Use this when an '
+                    'operator asks you to make, apply, patch or PR a config change — a probe '
+                    'timeout, a resource limit, a replica count, an image tag. You do NOT write '
+                    'the diff: describe the change precisely and the executor generates it. '
+                    'Nothing is applied to the cluster; the result is a PR for a human to merge. '
+                    'This is the only way you can change infrastructure — do not offer to ssh '
+                    'somewhere and run git. Changes to a host or to a live cluster object do not '
+                    'go through this tool; for those, say what should be run and let an operator '
+                    'run it.'
+                ),
+                'parameters': {
+                    'type': 'object',
+                    'properties': {
+                        'recommendation': {
+                            'type': 'string',
+                            'description': (
+                                'What to change and to what, specific enough for another model to '
+                                'write the patch without having read this conversation: name the '
+                                'resource, the field, and the old and new values. E.g. "In the '
+                                'plane-ce Helm values, raise the plane-api readinessProbe '
+                                'timeoutSeconds from 1 to 5".'
+                            )
+                        },
+                        'repo': {
+                            'type': 'string',
+                            'description': ('Which linked repo holds the manifests, if it is not '
+                                            'the default GitOps repo. A configured name or an '
+                                            'owner/repo slug.')
+                        },
+                        'target': {
+                            'type': 'object',
+                            'description': ('What the change is aimed at, as far as you know it: '
+                                            'namespace, kind, name, file. Passed to the executor '
+                                            'to help it find the file.')
+                        },
+                        'investigation_id': {
+                            'type': 'integer',
+                            'description': 'The investigation this fix came out of, if there is one.'
+                        },
+                        'host_id': {
+                            'type': 'string',
+                            'description': 'Host or cluster the change concerns, for the queue row.'
+                        }
+                    },
+                    'required': ['recommendation']
+                }
+            }
+        }
+
         self.tools['get_correlations'] = {
             'function': self._get_correlations,
             'schema': {
@@ -1391,6 +1468,121 @@ class ToolRegistry:
             return {'success': True,
                     'remediation': self._trim_remediation_for_tool(
                         self.operator.kb.get_remediation(rid) or {})}
+        except Exception as e:
+            return {'error': str(e)}
+
+    #: A one-line "fix it" gives the executor's file-select pass nothing to go
+    #: on: it picks a file by the identifiers in the recommendation, so a
+    #: recommendation without any is two LLM passes spent to produce a wrong
+    #: diff. Cheap floor, not a quality bar — the model is told what to include
+    #: in the schema, and this only catches the obviously empty ask.
+    _MIN_RECOMMENDATION_CHARS = 30
+
+    def _queue_gitops_patch(self, recommendation: str = '', repo: str = '',
+                            target: Optional[Dict[str, Any]] = None,
+                            investigation_id: Optional[int] = None,
+                            host_id: str = '') -> Dict[str, Any]:
+        """Queue a gitops-patch for the executor and approve it (CFOP-160).
+
+        Two steps rather than one because they answer different questions.
+        ``queue_remediation`` records the work and applies the auto-execute
+        gate; the approve that follows is the console's own Approve
+        transition, and it is what an admin asking for this in chat means.
+
+        The gate is deliberately not bypassed by handing the row a confidence.
+        ``remediation_is_auto_eligible`` exists so a *model* cannot decide its
+        own work is safe to run unattended, and a tool that passed 0.9 to get
+        past it would hollow that out for every caller. The row is queued
+        unapproved, then approved because a human asked — and the approve path
+        still consults ``remediation_approve_conflict``.
+        """
+        recommendation = (recommendation or '').strip()
+        if len(recommendation) < self._MIN_RECOMMENDATION_CHARS:
+            return {'error': 'recommendation is too vague to patch from. Name the resource, '
+                             'the field and the old and new values — the executor writes the '
+                             'diff from this text alone, without your conversation.'}
+        recommendation = recommendation[:8000]
+
+        if not getattr(self.operator, 'kb', None):
+            return {'error': 'The remediation queue is unavailable (no knowledge base).'}
+
+        # A repo must resolve against the LINKED repos, never be taken on the
+        # model's word. An unresolvable name is refused rather than passed
+        # through: payload['repo'] overrides the deployment's own git_repo, so
+        # an accepted string is a PR opened wherever the sentence said.
+        slug = ''
+        raw_repo = (repo or '').strip()
+        if raw_repo:
+            gh = getattr(self, 'github_tools', None)
+            slug = (gh._resolve_slug(raw_repo) or '') if gh else ''
+            if not slug:
+                known = ', '.join(sorted(gh.repos)) if gh and getattr(gh, 'repos', None) else 'none'
+                return {'error': f'Unknown repo {raw_repo!r}. Linked repos: {known}. Omit repo '
+                                 "to use this deployment's default GitOps repo."}
+
+        target = target if isinstance(target, dict) else {}
+        try:
+            inv_id = int(investigation_id) if investigation_id is not None else None
+        except (TypeError, ValueError):
+            return {'error': f'investigation_id must be an integer, got {investigation_id!r}'}
+
+        # Two identical asks in one conversation are one fix, and the executor
+        # regenerates its diff per row — a duplicate row is a duplicate PR. The
+        # key must ALSO live in the payload: queue_remediation matches on
+        # payload['dedupe_key'] and does not inject it.
+        dedupe_key = 'chat-gitops:' + hashlib.sha1(
+            f"{slug}|{recommendation}".encode('utf-8')).hexdigest()[:16]
+
+        payload = {
+            'recommendation': recommendation,
+            'target': target,
+            'rendered_context': ('Requested by an operator in the console chat. '
+                                 'No investigation ran for this row.' if inv_id is None
+                                 else f'Requested by an operator in the console chat, '
+                                      f'following investigation #{inv_id}.'),
+            'dedupe_key': dedupe_key,
+            'source': 'console-chat',
+            'requested_by': 'chat-agent',
+        }
+        if slug:
+            payload['repo'] = slug
+
+        try:
+            rid = self.operator.kb.queue_remediation(
+                remediation_class='gitops-patch',
+                payload=payload,
+                investigation_id=inv_id,
+                host_id=(host_id or '').strip() or 'default',
+                risk='low',
+                # No confidence: the auto-execute gate must not be cleared by
+                # a number the model chose. The approve below is the gate.
+                confidence=None,
+                dedupe_key=dedupe_key,
+            )
+            if rid is None:
+                existing = self.operator.kb.find_open_remediation_by_dedupe_key(dedupe_key)
+                if existing:
+                    return {'success': False, 'duplicate': True,
+                            'remediation': self._trim_remediation_for_tool(existing),
+                            'message': (f"This fix is already queued as remediation "
+                                        f"#{existing.get('id')} ({existing.get('status')}). "
+                                        'Nothing new was created.')}
+                return {'error': 'A matching remediation is already open; nothing was queued.'}
+
+            # The console's Approve, through the one implementation of it.
+            approved = self._resolve_remediation(remediation_id=rid, status='approved')
+            if approved.get('error'):
+                # The row exists and is on /remediations as needs-human; say
+                # so rather than reporting a failure that lost the work.
+                return {'success': True, 'remediation_id': rid, 'approved': False,
+                        'message': (f'Queued as remediation #{rid}, but it could not be handed '
+                                    f"to the executor: {approved['error']} It is on "
+                                    '/remediations awaiting a human.')}
+            return {'success': True, 'remediation_id': rid, 'approved': True,
+                    'remediation': approved.get('remediation'),
+                    'message': (f'Queued as remediation #{rid} and handed to the executor, which '
+                                'will write the diff and open a PR. Watch it on /remediations; '
+                                'nothing changes until someone merges that PR.')}
         except Exception as e:
             return {'error': str(e)}
 
