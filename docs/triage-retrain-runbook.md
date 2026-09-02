@@ -234,7 +234,9 @@ Verify rather than eyeball it:
 .venv/bin/python - <<'EOF'
 def block(p):
     s = open(p).read()
-    return s[s.index('TEMPLATE'):]
+    # anchor on the directive, not the word -- "TEMPLATE" also appears in
+    # the header comment, and slicing from there reports a false mismatch
+    return s[s.index('TEMPLATE \"\"\"'):]
 a = block("benchmarks/Modelfile.cfop-triage")
 b = block("benchmarks/Modelfile.cfop-triage-v2")
 print("identical:", a == b)
