@@ -266,8 +266,13 @@ integration version confirms the wiring, not the code.
   set the env learns that before the first tail call does.
 - **Quantization parity** — `--compare <tag-a> <tag-b>` runs both and reports
   any case where they differ. Q4 vs Q8 today: none. Keep it that way on purpose.
-- **Emit the training-template list** from `build_triage_dataset.py` (it owns the
-  four strings) so the eval imports them rather than duplicating.
+- ~~**Emit the training-template list** from `build_triage_dataset.py` (it owns
+  the four strings) so the eval imports them rather than duplicating.~~
+  **Superseded by CFOP-153:** the builder no longer has four strings to emit —
+  reasons are generated per alert. The not-canned check therefore has to compare
+  against a *frozen historical constant* (the four v1 templates, kept in the
+  eval as the thing a regression would look like), not against a live import.
+  `tests/test_build_triage_dataset.py` holds that list as `V1_CANNED_REASONS`.
 - **`--runs` default → 36**, with the low-run warning retained for anyone who
   passes less.
 

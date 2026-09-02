@@ -14,6 +14,8 @@ module's docstrings promise (PR #144 review):
 from repo_paths import REPO_ROOT
 import importlib.util
 import os
+import re
+import pytest
 
 _REPO_ROOT = str(REPO_ROOT)
 _spec = importlib.util.spec_from_file_location(
@@ -134,3 +136,186 @@ def test_pod_labels_handle_both_trigger_forms():
     got = btd.derive_labels("Pod foo-abc in namespace apps was OOMKilled")
     assert got["pod"] == "foo-abc"
     assert got["namespace"] == "apps"
+
+
+# ── CFOP-153: reasons must describe the alert, not the action ────────────────
+#
+# v1 emitted one fixed string per action, so `reason` and `confidence` were
+# renames of `action` and the fine-tune learned that four-way lookup. These
+# pin the properties that stop it recurring, and they are the same properties
+# docs/triage-eval-v2-plan.md Tier 3 grades on the model's output.
+
+V1_CANNED_REASONS = frozenset({
+    "no resolved precedent for this pattern",
+    "similar past investigation resolved with little effort",
+    "critical with broad impact, operator should page in",
+    "known noise pattern (test pod or watchdog heartbeat)",
+})
+
+
+def _derive(trigger, outcome, similar_past=()):
+    labels = btd.derive_labels(trigger)
+    return btd.derive_label(trigger, outcome, list(similar_past), labels), labels
+
+
+_ALERTS = [
+    ("Pod promtail-2xvvb is dropping log entries", "resolved",
+     [{"outcome": "resolved", "similarity": 0.94, "trigger": "promtail on raspberrypi2 failed to push"}]),
+    ("Pod promtail-9zzzz is dropping log entries", "monitoring",
+     [{"outcome": "resolved", "similarity": 0.87, "trigger": "promtail push failure on pi2"}]),
+    ("Pod loki-0 restarting repeatedly", "monitoring",
+     [{"outcome": "monitoring", "similarity": 0.81, "trigger": "loki ingester memory pressure"}]),
+    ("Pod camera-api-5f in namespace apps exited 255", "needs_action", []),
+    ("Node raspberrypi3 NotReady, etcd quorum at risk", "escalate", []),
+    ("Pod smoke-test-runner-7d9 in namespace ci is crash-looping", "resolved", []),
+]
+
+
+def test_no_reason_is_a_v1_canned_string():
+    """The regression itself. Any of the four v1 templates coming back means
+    the dataset would train the lookup again."""
+    for trigger, outcome, sp in _ALERTS:
+        derived, _ = _derive(trigger, outcome, sp)
+        assert derived is not None, trigger
+        reason = derived[2].strip().lower()
+        assert reason not in {c.lower() for c in V1_CANNED_REASONS}, trigger
+
+
+def test_reasons_are_distinct_across_alerts():
+    """Six different alerts must not collapse to four strings."""
+    reasons = {_derive(t, o, sp)[0][2] for t, o, sp in _ALERTS}
+    assert len(reasons) == len(_ALERTS), sorted(reasons)
+
+
+def test_every_reason_names_something_from_its_alert():
+    """Grounding: the reason has to contain a token the alert contains.
+
+    This is Tier 3's `anchors` check applied to the training targets. A model
+    cannot learn to cite the alert from data that does not.
+    """
+    for trigger, outcome, sp in _ALERTS:
+        derived, labels = _derive(trigger, outcome, sp)
+        reason = derived[2].lower()
+        anchors = {v.lower() for v in labels.values()}
+        anchors |= {t.lower() for t in re.findall(r"[A-Za-z0-9][A-Za-z0-9.-]{3,}", trigger)}
+        assert any(a in reason for a in anchors), (trigger, derived[2])
+
+
+def test_confidence_is_not_an_action_alias():
+    """v1's confidence took exactly one value per action. At least one class
+    must now vary, or it is still a rename of the label."""
+    by_action = {}
+    for trigger, outcome, sp in _ALERTS:
+        action, _, _, conf = _derive(trigger, outcome, sp)[0]
+        by_action.setdefault(action, set()).add(conf)
+    assert any(len(v) > 1 for v in by_action.values()), by_action
+
+
+def test_confidence_tracks_precedent_strength_for_notify():
+    """A 0.94 precedent is better evidence than a 0.87 one, and the number
+    should say so rather than being a constant."""
+    strong = _derive("Pod promtail-2xvvb is dropping log entries", "resolved",
+                     [{"outcome": "resolved", "similarity": 0.94, "trigger": "x"}])[0]
+    weak = _derive("Pod promtail-2xvvb is dropping log entries", "resolved",
+                   [{"outcome": "resolved", "similarity": 0.86, "trigger": "x"}])[0]
+    assert strong[0] == weak[0] == "notify"
+    assert strong[3] > weak[3], (strong[3], weak[3])
+
+
+def test_near_miss_precedent_is_less_confident_than_no_precedent():
+    """Something similar happened and did NOT resolve cheaply -- that is more
+    ambiguous than a genuinely novel alert, and the confidence should fall."""
+    near = _derive("Pod loki-0 restarting repeatedly", "monitoring",
+                   [{"outcome": "monitoring", "similarity": 0.83, "trigger": "x"}])[0]
+    novel = _derive("Pod loki-0 restarting repeatedly", "monitoring", [])[0]
+    assert near[0] == novel[0] == "investigate"
+    assert near[3] < novel[3], (near[3], novel[3])
+
+
+def test_deep_tier_reroute_stays_unreachable():
+    """Deliberate, and asserted so it is a decision rather than an accident:
+    nothing emits below the 0.4 deep-investigation reroute threshold. Making
+    that path live is a separate behaviour change (CFOP-153 plan)."""
+    for trigger, outcome, sp in _ALERTS:
+        assert _derive(trigger, outcome, sp)[0][3] >= 0.45
+
+
+# ── CFOP-153: the Labels stopword bug ───────────────────────────────────────
+
+@pytest.mark.parametrize("trigger", [
+    "Pod with high memory usage detected",
+    "Pod has been restarting",
+    "namespace has been terminating for 10 minutes",
+])
+def test_prose_words_are_not_taken_as_object_names(trigger):
+    """~19% of populated v1 labels were English stopwords: {"pod": "with"}."""
+    labels = btd.derive_labels(trigger)
+    assert "with" not in labels.values() and "has" not in labels.values(), labels
+    assert all(re.search(r"[-0-9]", v) for v in labels.values()), labels
+
+
+@pytest.mark.parametrize("trigger,expect", [
+    ("Pod promtail-2xvvb is dropping log entries", {"pod": "promtail-2xvvb"}),
+    ("Pod apps/camera-api-5f exited 255", {"pod": "camera-api-5f", "namespace": "apps"}),
+    ("Node raspberrypi3 NotReady", {"node": "raspberrypi3"}),
+])
+def test_real_object_names_still_extract(trigger, expect):
+    """The shape test must not throw away the labels that were working."""
+    got = btd.derive_labels(trigger)
+    for k, v in expect.items():
+        assert got.get(k) == v, (trigger, got)
+
+
+@pytest.mark.parametrize("trigger,key,expect", [
+    # Caught in development: the first shape test required a digit or hyphen
+    # everywhere, which dropped all three of these. Namespaces are plain
+    # words and one node is literally named `raspberrypi`, so the shape test
+    # applies only to captures with no structural anchor.
+    ("Pod apps/camera-api-5f exited 255", "namespace", "apps"),
+    ("Pod monitoring/loki-0 restarting", "namespace", "monitoring"),
+    ("Node raspberrypi NotReady", "node", "raspberrypi"),
+])
+def test_anchored_captures_keep_plain_names(trigger, key, expect):
+    assert btd.derive_labels(trigger).get(key) == expect, btd.derive_labels(trigger)
+
+
+@pytest.mark.parametrize("trigger", [
+    "Pod restarting frequently on the edge node",
+    "Pod crashlooping since the deploy",
+    "Pod terminating unexpectedly",
+])
+def test_prose_words_outside_the_stopword_list_are_still_rejected(trigger):
+    """The shape test's own case, and it needs to exist.
+
+    `with` and `has` are in _LABEL_STOPWORDS, so the earlier stopword tests
+    pass whether or not the digit/hyphen requirement is present -- removing
+    it left the whole suite green. These words are NOT in the list, so only
+    the shape test rejects them. No stopword list will ever cover English;
+    the shape requirement is what makes the guard general.
+    """
+    assert "pod" not in btd.derive_labels(trigger), btd.derive_labels(trigger)
+
+
+def test_resolved_precedent_wins_even_when_outranked_by_a_monitoring_one():
+    """The notify rule is ANY resolved hit at >=0.85, not "the closest
+    precedent is resolved".
+
+    Introduced this bug while adding grounded reasons: switching to the
+    top-ranked precedent silently reclassified rows whose nearest match was
+    `monitoring` but which had a resolved hit just behind it. 35 notify
+    examples vanished (96 -> 61) and every existing test stayed green,
+    because none of them put a higher-similarity non-resolved precedent in
+    front of a qualifying one. It moves the LABEL while looking like a
+    wording change, which is the worst shape for a dataset bug.
+    """
+    similar = [
+        {"outcome": "monitoring", "similarity": 0.91, "trigger": "noisy neighbour"},
+        {"outcome": "resolved", "similarity": 0.88, "trigger": "same fault, fixed last week"},
+    ]
+    action, basis, reason, conf = btd.derive_label(
+        "Pod loki-0 restarting repeatedly", "resolved", similar,
+        btd.derive_labels("Pod loki-0 restarting repeatedly"))
+    assert action == "notify", (action, reason)
+    assert basis == "resolved-precedent"
+    # and it must cite the resolved one, not the closer monitoring one
+    assert "0.88" in reason and "fixed last week" in reason, reason

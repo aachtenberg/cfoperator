@@ -506,15 +506,49 @@ PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
 
 ### What a v2 should change
 
-1. Generate varied, alert-grounded `reason` text instead of four templates —
-   otherwise you are training a classifier and shipping it as an explainer.
-2. Fix the `Labels` stopword-extraction bug.
+1. ~~Generate varied, alert-grounded `reason` text instead of four templates~~ —
+   **done (CFOP-153).** See [v2 dataset](#v2-dataset-cfop-153) below.
+2. ~~Fix the `Labels` stopword-extraction bug.~~ — **done (CFOP-153).**
 3. Vary the similar-past block 0–3 and carry real severity, so training shape
    matches serving shape.
 4. Oversample `log_only` and `escalate`, or accept that those two labels are the
    base model's behavior and say so.
 5. Build a val split that is distributionally comparable to train, or stop
    quoting val loss as evidence.
+
+
+### v2 dataset (CFOP-153)
+
+Rebuilt 2026-09-02 from 1,882 investigations. **Not yet trained** — this is the
+data the next run should use.
+
+| | v1 (2026-08-20) | v2 |
+|---|---:|---:|
+| train rows | 451 | 522 |
+| distinct `reason` strings | **4** | **424** |
+| distinct `confidence` values | **4** | **39** |
+| rows using a v1 canned reason | 451 | **0** |
+| reasons containing a token from their own alert | 0% | **100%** |
+
+Confidence now varies *within* an action instead of renaming it —
+`investigate` spans 0.45–0.60 (a near-miss precedent that did not resolve is
+less certain than a genuinely novel alert), `notify` spans 0.70–0.93 with the
+cited precedent's similarity. `escalate` and `log_only` remain single-valued;
+neither has enough examples for a spread to mean anything.
+
+Label mix is essentially unchanged, which is the point — this was a
+reason/confidence change, not a relabelling: `investigate` 338→402,
+`notify` 96→103, `escalate` 16→16, `log_only` 1→1.
+
+**The `Labels` trade is worth stating.** Empty-label rows went *up*, 53%→69%,
+because the shape test now rejects what it used to invent. v1 had ~19% of its
+populated labels as English stopwords (`{"pod": "with"}`); v2 has none. Fewer
+labels, none of them lies. A bare single-word name like `prometheus` is dropped
+too — deliberately conservative, same posture as `derive_severity`.
+
+**Still open, and now more visible:** `log_only` still has exactly one example
+and `escalate` sixteen. Items 3–5 above are untouched. The class imbalance is
+the largest remaining data defect, and no amount of better reason text fixes it.
 
 ---
 

@@ -175,24 +175,142 @@ def derive_severity(trigger: str):
     return "unknown", "unknown"
 
 
+# CFOP-153. The regexes above take whatever word follows "pod"/"namespace",
+# which in prose is usually an English word: "Pod with high memory" yielded
+# {"pod": "with"} and "namespace has been" yielded {"namespace": "has"}. That
+# was ~19% of populated Labels in the v1 training set, so the model was
+# effectively trained on the summary line alone.
+#
+# The shape test is the fix. Every pod/namespace/node name in this fleet
+# carries a digit or a hyphen (promtail-2xvvb, loki-0, raspberrypi3), and no
+# English stopword does. Deliberately conservative in the same direction as
+# derive_severity: a bare single-word name like "prometheus" is dropped rather
+# than guessed at. A missing label is a known gap; a wrong one is training
+# noise that looks like signal.
+_LABEL_STOPWORDS = frozenset("""
+a an and are as at be been by during for from had has have in is it its no not
+of on or that the this to was were when where which while with without after
+before above below over under
+""".split())
+
+
+def _plausible_k8s_name(token, *, from_prose: bool = False) -> str | None:
+    """A token that could be a real object name here, else None.
+
+    ``from_prose`` is the important distinction. Where the token has no
+    structural anchor -- the bare word after "Pod" -- prose supplies things
+    like "restarting" that no stopword list will ever fully cover, so the
+    name is additionally required to LOOK like a Kubernetes object: a digit
+    or a hyphen, which every pod name in this fleet carries (promtail-2xvvb,
+    loki-0) and no English word does.
+
+    Where the token IS anchored, that extra test would do damage rather than
+    good: the namespace in "Pod apps/camera-api-5f" is fixed by the slash,
+    and _NODE_RE already constrains its capture to names containing
+    pi/cm5/llm/gpu. Namespaces (`apps`, `argocd`, `monitoring`) and the node
+    literally named `raspberrypi` carry neither a digit nor a hyphen, so
+    requiring one there silently drops correct labels -- which is the same
+    class of error as the bug being fixed, pointed the other way.
+    """
+    tok = str(token or "").strip().lower().rstrip(".,;:)!?'\"")
+    if len(tok) < 3 or tok in _LABEL_STOPWORDS:
+        return None
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", tok):
+        return None
+    if from_prose and not re.search(r"[-0-9]", tok):
+        return None
+    return tok
+
+
 def derive_labels(trigger: str) -> dict:
     labels = {}
     m = _POD_RE.search(trigger)
     if m:
-        labels["pod"] = m.group(2)
-        if m.group(1):
-            labels["namespace"] = m.group(1)
+        # The pod name is the one capture with no structural anchor.
+        pod = _plausible_k8s_name(m.group(2), from_prose=True)
+        if pod:
+            labels["pod"] = pod
+            # Anchored by the slash, so plain names like "apps" are fine.
+            ns = _plausible_k8s_name(m.group(1)) if m.group(1) else None
+            if ns:
+                labels["namespace"] = ns
     if "namespace" not in labels:
         m = _NS_RE.search(trigger)
         if m:
-            labels["namespace"] = m.group(1)
+            # From prose, but namespaces are plain words, so the stopword
+            # list is the only guard available here.
+            ns = _plausible_k8s_name(m.group(1))
+            if ns:
+                labels["namespace"] = ns
     m = _NODE_RE.search(trigger)
     if m:
-        labels["node"] = m.group(1)
+        # _NODE_RE already requires pi/cm5/llm/gpu in the name.
+        node = _plausible_k8s_name(m.group(1))
+        if node:
+            labels["node"] = node
     return labels
 
 
-def derive_label(trigger: str, outcome: str, similar_past: list):
+def _alert_subject(trigger: str, labels: dict) -> str:
+    """The most specific thing this alert is about, for use in a reason.
+
+    Prefers a real object name (labels are shape-checked upstream), then any
+    distinctive token in the trigger, and only then a generic fallback. A
+    reason that says "this alert" is not grounded, so the fallback is a last
+    resort and shows up in the grounding test as such.
+    """
+    for key in ("pod", "node", "namespace"):
+        if labels.get(key):
+            return str(labels[key])
+    for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9.-]{3,}", trigger or ""):
+        if re.search(r"[-0-9]", tok) and tok.lower() not in _LABEL_STOPWORDS:
+            return tok
+    return "this alert"
+
+
+def _clause(text: str, limit: int = 90) -> str:
+    """First clause of a trigger, trimmed on a word boundary."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit].rsplit(" ", 1)[0] + "..."
+
+
+def _best_resolved_precedent(similar_past: list):
+    """Highest-similarity RESOLVED precedent at or above the notify threshold.
+
+    Separate from _best_precedent on purpose: this one decides the label, so
+    it must keep the original rule's semantics exactly (any resolved hit at
+    >=0.85), while _best_precedent only supplies wording for the branches
+    where no such hit exists.
+    """
+    best = None
+    for s in similar_past or []:
+        if str(s.get("outcome") or "") != "resolved":
+            continue
+        sim = float(s.get("similarity") or 0)
+        if sim < 0.85:
+            continue
+        if best is None or sim > best["similarity"]:
+            best = {"similarity": sim, "outcome": "resolved",
+                    "trigger": str(s.get("trigger") or "")}
+    return best
+
+
+def _best_precedent(similar_past: list):
+    """Highest-similarity precedent as a plain dict, or None."""
+    best = None
+    for s in similar_past or []:
+        sim = float(s.get("similarity") or 0)
+        if best is None or sim > best["similarity"]:
+            best = {"similarity": sim,
+                    "outcome": str(s.get("outcome") or "?"),
+                    "trigger": str(s.get("trigger") or "")}
+    return best
+
+
+def derive_label(trigger: str, outcome: str, similar_past: list,
+                 labels: dict | None = None):
     """Rubric-correct action from the context VISIBLE AT TRIAGE TIME.
 
     Returns (action, basis, reason, confidence), or None when the visible
@@ -216,35 +334,93 @@ def derive_label(trigger: str, outcome: str, similar_past: list):
     eval's critical-narrow and warning-correlated traps measure, so a bad
     reflex is caught at the gate rather than silently deployed.
 
-    Reasons are short and rubric-flavoured — training targets for the style
-    of reason run_triage's parser accepts, not incident ground truth.
+    REASONS ARE GROUNDED IN THE ALERT (CFOP-153). v1 emitted one of four fixed
+    strings, one per action, so `reason` and `confidence` carried no
+    information beyond `action` and the fine-tune learned exactly that
+    four-way lookup: it shipped as an explainer that cannot explain. Every
+    reason here names something from the alert it is describing — the pod,
+    node or namespace, the noise token that matched, the precedent it is
+    leaning on and how close it was. That is also the property
+    docs/triage-eval-v2-plan.md Tier 3 grades ("must contain at least one
+    token from the alert"), so the data is built to satisfy the test that
+    will judge it.
+
+    Deterministic templating, not an LLM. The goal is grounding, not fluency:
+    a generated reason would need its own review pass, and an ungrounded
+    fluent sentence is exactly the failure being fixed.
+
+    CONFIDENCE TRACKS EVIDENCE, not the action. It scales with how good the
+    precedent actually is, so it varies within an action class instead of
+    being a rename of it. Note the floor: nothing here drops below ~0.45, so
+    the deep-tier reroute (`0 < confidence < 0.4`) stays unreachable. Making
+    it reachable is a live behaviour change for host-shaped alerts and is a
+    separate decision, not a side effect of fixing the alias.
     """
-    if NOISE_RE.search(trigger):
+    labels = labels or {}
+    subject = _alert_subject(trigger, labels)
+    best = _best_precedent(similar_past)
+
+    m = NOISE_RE.search(trigger)
+    if m:
         if outcome in ("needs_action", "escalate", "escalated"):
             return None  # noise-shaped trigger that turned out real
-        return ("log_only", "noise-pattern",
-                "known noise pattern (test pod or watchdog heartbeat)", 0.95)
+        token = m.group(0).strip()
+        if token.lower() in subject.lower():
+            reason = (f"{subject} is known-noise traffic (test/watchdog), "
+                      f"not a real workload")
+        else:
+            reason = (f"{subject} matches the known-noise pattern "
+                      f"'{token}' — test/watchdog traffic, not a real workload")
+        return ("log_only", "noise-pattern", reason, 0.9)
+
     if outcome in ("escalate", "escalated"):
+        clause = _clause(trigger)
+        # Don't say "raspberrypi3: Node raspberrypi3 NotReady..." -- the
+        # clause usually already names the subject.
+        head = clause if subject.lower() in clause.lower() else f"{subject}: {clause}"
         return ("escalate", "outcome-escalate",
-                "critical with broad impact, operator should page in", 0.9)
-    resolved_precedent = any(
-        (s.get("outcome") == "resolved"
-         and float(s.get("similarity") or 0) >= 0.85)
-        for s in similar_past
-    )
-    if resolved_precedent:
+                f"{head} — severity and blast radius both present, "
+                f"page an operator now", 0.88)
+
+    # The notify rule is ANY resolved precedent at >=0.85, not "the closest
+    # precedent happens to be a resolved one". Those differ whenever a
+    # monitoring precedent outranks a resolved one -- and picking the wrong
+    # side of that moves the LABEL, not just the wording. Getting this wrong
+    # in development cost 35 notify examples (96 -> 61) and would have
+    # retrained the class imbalance harder while looking like a reason-only
+    # change.
+    cited = _best_resolved_precedent(similar_past)
+    if cited:
         if outcome in ("resolved", "monitoring"):
+            conf = round(min(0.93, 0.70 + (cited["similarity"] - 0.85) * 1.5), 2)
             return ("notify", "resolved-precedent",
-                    "similar past investigation resolved with little effort",
-                    0.85)
+                    f"{subject} repeats an earlier investigation that resolved "
+                    f"({cited['similarity']:.2f} similarity): "
+                    f"{_clause(cited['trigger'])}", conf)
         return None  # rubric said notify, reality needed action — conflict
+
     basis = {
         "needs_action": "outcome-needs-action",
         "monitoring": "outcome-monitoring",
         "resolved": "novel-but-resolved",
     }.get(outcome, "default")
-    return ("investigate", basis,
-            "no resolved precedent for this pattern", 0.8)
+
+    if not best:
+        reason = (f"no earlier investigation resembles {subject}; "
+                  f"nothing to lean on, needs a first look")
+        conf = 0.62
+    elif best["similarity"] < 0.70:
+        reason = (f"nothing close to {subject} in history "
+                  f"(nearest {best['similarity']:.2f}); needs a first look")
+        conf = 0.60
+    else:
+        # A near miss is genuinely more ambiguous than no precedent at all:
+        # something similar happened and did NOT resolve cheaply.
+        reason = (f"closest earlier match to {subject} ended "
+                  f"{best['outcome']} at {best['similarity']:.2f} — "
+                  f"no resolved precedent to lean on")
+        conf = round(max(0.45, 0.58 - (best["similarity"] - 0.70) * 0.6), 2)
+    return ("investigate", basis, reason, conf)
 
 
 def build_user_message(severity: str, trigger: str, labels: dict,
@@ -394,7 +570,7 @@ def build_examples(investigations: list, system_prompt: str,
         similar_past = similar_by_index.get(idx, [])
         severity, severity_source = derive_severity(trigger)
         labels = derive_labels(trigger)
-        derived = derive_label(trigger, outcome, similar_past)
+        derived = derive_label(trigger, outcome, similar_past, labels)
         if derived is None:
             skipped["conflict"] += 1
             conflicts.append({"investigation_id": inv.get("id"),
