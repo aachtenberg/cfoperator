@@ -33,6 +33,10 @@ KNOWN_MUTATING = {
     "update_sweep_finding", "resolve_remediation", "store_learning",
     "triage_investigation", "queue_gitops_patch",
 }
+# Mutating AND needing a named admin behind the turn: an internal caller
+# (policy=None) is refused these, unlike every other mutating tool. See
+# _SCHEMA_MARKERS in tools/__init__.py for why the two are not the same gate.
+KNOWN_HUMAN_ONLY = {"queue_gitops_patch"}
 # 'triage_' is in the pattern because triage_investigation is the first write
 # tool whose name carries none of the other verbs — an unmarked one would have
 # landed open (CFOP-138).
@@ -94,7 +98,12 @@ def test_the_marker_has_one_home_and_the_wrong_home_fails_registration():
         assert "mutating" not in reg.tools[name], f"{name} still marks the entry"
     reg.tools["invented_tool"] = {"function": lambda: None, "mutating": True,
                                   "schema": {"name": "invented_tool"}}
-    with pytest.raises(ValueError, match="belongs inside the tool's schema"):
+    with pytest.raises(ValueError, match="belong inside the tool's schema"):
+        reg._check_marker_placement()
+    del reg.tools["invented_tool"]
+    reg.tools["invented_tool"] = {"function": lambda: None, "human_only": True,
+                                  "schema": {"name": "invented_tool"}}
+    with pytest.raises(ValueError, match="belong inside the tool's schema"):
         reg._check_marker_placement()
 
 
@@ -128,11 +137,42 @@ def test_a_member_is_offered_reads_only():
 
 
 def test_admin_and_internal_callers_are_unchanged():
+    """Unchanged for everything except the human_only tools, which an internal
+    caller never had."""
     _, reg = _registry()
     everything = _names(reg.get_schemas())
-    assert KNOWN_MUTATING <= everything
-    assert _names(reg.get_schemas(policy=ADMIN)) == everything
+    assert (KNOWN_MUTATING - KNOWN_HUMAN_ONLY) <= everything
+    assert _names(reg.get_schemas(policy=ADMIN)) == everything | KNOWN_HUMAN_ONLY
     assert _names(reg.get_schemas(policy=None)) == everything
+
+
+# --------------------------------------------------------------------------
+# human_only: mutating is not the same question as "did a person ask"
+# --------------------------------------------------------------------------
+
+def test_a_human_only_tool_is_withheld_from_internal_callers():
+    """policy=None is the sweep, the investigation and the morning summary.
+    They are trusted to restart a service, and are still not a person — a tool
+    that treats its caller's request AS the human approval must not be
+    reachable from one (CFOP-160, caught in review)."""
+    _, reg = _registry()
+    for name in KNOWN_HUMAN_ONLY:
+        assert name not in _names(reg.get_schemas(policy=None)), name
+        assert name not in _names(reg.get_schemas())
+
+
+def test_a_human_only_tool_is_offered_to_a_named_admin():
+    _, reg = _registry()
+    assert KNOWN_HUMAN_ONLY <= _names(reg.get_schemas(policy=ADMIN))
+
+
+@pytest.mark.parametrize("policy", [None, MEMBER, VERIFY], ids=["internal", "member", "verify"])
+def test_a_human_only_tool_named_anyway_is_refused_before_it_runs(policy):
+    op, reg = _registry()
+    for name in KNOWN_HUMAN_ONLY:
+        out = reg.execute(name, {"recommendation": "x" * 60}, policy=policy)
+        assert out.get("refused") is True, out
+        op.kb.queue_remediation.assert_not_called()
 
 
 def test_a_member_naming_a_mutating_tool_is_refused_before_it_runs():
