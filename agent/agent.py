@@ -678,6 +678,51 @@ def _delivery_guidance(config, known_repos=None) -> str:
     return f"{text} {notes}" if notes else text
 
 
+def _delivery_unset_warning(config) -> Optional[str]:
+    """Why an operator is getting no delivery guidance, or None if fine.
+
+    ``_delivery_guidance`` returning '' is correct behaviour and says nothing,
+    which is the same shape of silence that made CFOP-154 cost a day: the
+    guidance shipped, production never set the key, and the only evidence was
+    a parked row whose payload looked like an ordinary bad recommendation.
+    The unresolvable-repo branch above already logs for exactly this reason;
+    this covers the case one step earlier, where nobody set a mode at all.
+
+    Deliberately narrow, so the warning stays worth reading:
+
+    * Gated on ``queue_feed``, the flag that turns a FIX into a queue row.
+      That is the only path where a target kind chosen blind has a cost, and
+      the flag is already clamped to the profile by the loader, so an
+      ``investigate`` install is silent without checking the profile here.
+    * An explicit ``mode: none`` does NOT warn. It is a documented choice, and
+      a warning an operator cannot silence by deciding is noise that teaches
+      people to stop reading warnings.
+    * An unrecognised mode DOES warn: nobody chooses ``gitpos``.
+
+    Pure, so the condition is testable without booting an agent.
+    """
+    rcfg = (config or {}).get('remediation') if isinstance(config, dict) else None
+    if not isinstance(rcfg, dict) or not rcfg.get('queue_feed'):
+        return None
+    dcfg = rcfg.get('delivery')
+    if isinstance(dcfg, dict):
+        raw = dcfg.get('mode')
+        mode = str(raw or '').strip().lower()
+        if mode in ('gitops', 'direct', 'none'):
+            return None
+        if raw is not None:
+            return (f"remediation.delivery.mode is {raw!r}, which is not one of "
+                    "gitops/direct/none, so the FIX prompt carries no delivery "
+                    "guidance. See docs/config-reference.md.")
+    return ("remediation.queue_feed is on but remediation.delivery.mode is unset, "
+            "so the FIX prompt says nothing about how a change reaches this "
+            "cluster. The model picks a target kind blind and a wrong one parks "
+            "the row at needs-human with no attempt (CFOP-154). Set "
+            "remediation.delivery.mode to 'gitops' or 'direct' — or to 'none' "
+            "to say so deliberately and silence this. See "
+            "docs/config-reference.md.")
+
+
 def _class_from_fix_kind(kind) -> str:
     return _FIX_KIND_TO_CLASS.get(str(kind or '').strip().lower(), 'manual')
 
@@ -1488,6 +1533,10 @@ class CFOperator:
             'host_id': 'cfoperator',
             'mode': 'dual_ooda'
         })
+
+        delivery_warning = _delivery_unset_warning(self.config)
+        if delivery_warning:
+            logger.warning(delivery_warning)
 
         logger.info("CFOperator initialized successfully")
 
