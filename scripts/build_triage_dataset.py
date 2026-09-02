@@ -194,6 +194,24 @@ before above below over under
 """.split())
 
 
+# Words that appear in alert prose but never as a whole segment of an object
+# name here. Only used to spot compounds like "crash-looping" / "not-ready";
+# a name is rejected only when EVERY segment is one of these, so
+# node-exporter-zgzxm and kube-state-metrics survive.
+_PROSE_SEGMENTS = _LABEL_STOPWORDS | frozenset("""
+crash crashing looping loop ready unready memory cpu disk usage high low full
+restart restarting restarted pending failed failing error errors down up out
+killed unavailable unhealthy timeout timed slow stuck stalled missing lost
+degraded oom evicted terminating unreachable
+""".split())
+
+
+def _is_english_compound(tok: str) -> bool:
+    """True when every hyphen-separated segment is an ordinary word."""
+    segs = [x for x in tok.split("-") if x]
+    return len(segs) > 1 and all(x in _PROSE_SEGMENTS for x in segs)
+
+
 def _plausible_k8s_name(token, *, from_prose: bool = False) -> str | None:
     """A token that could be a real object name here, else None.
 
@@ -202,7 +220,19 @@ def _plausible_k8s_name(token, *, from_prose: bool = False) -> str | None:
     like "restarting" that no stopword list will ever fully cover, so the
     name is additionally required to LOOK like a Kubernetes object: a digit
     or a hyphen, which every pod name in this fleet carries (promtail-2xvvb,
-    loki-0) and no English word does.
+    loki-0).
+
+    "and no English word does" was the overstatement, caught in review on
+    PR #240: single words do not, but COMPOUNDS do, so "Pod crash-looping"
+    still produced {"pod": "crash-looping"} -- and the regression test used
+    the unhyphenated "crashlooping", so it did not catch it. Hence the
+    second test: a token whose hyphen-separated segments are ALL ordinary
+    words is prose, whatever its punctuation.
+
+    Rejecting hyphens outright, or demanding a digit, was measured against
+    the corpus first and costs four real names (node-exporter-zgzxm,
+    kube-state-metrics, promtail-fdppw, node-exporter-nvtfv) whose random
+    suffix happens to be all letters. The segment test costs none of them.
 
     Where the token IS anchored, that extra test would do damage rather than
     good: the namespace in "Pod apps/camera-api-5f" is fixed by the slash,
@@ -217,8 +247,11 @@ def _plausible_k8s_name(token, *, from_prose: bool = False) -> str | None:
         return None
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", tok):
         return None
-    if from_prose and not re.search(r"[-0-9]", tok):
-        return None
+    if from_prose:
+        if not re.search(r"[-0-9]", tok):
+            return None
+        if _is_english_compound(tok):
+            return None
     return tok
 
 

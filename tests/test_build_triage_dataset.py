@@ -346,3 +346,34 @@ def test_alerts_naming_no_object_still_get_a_grounded_subject(trigger):
     assert subject.split()[0].lower() in trigger.lower()
     reason = btd.derive_label(trigger, "monitoring", [], labels)[2]
     assert "this alert" not in reason, reason
+
+
+@pytest.mark.parametrize("trigger", [
+    "Pod crash-looping since the deploy",
+    "Pod not-ready after restart",
+    "Pod out-of-memory killed",
+])
+def test_hyphenated_prose_is_not_an_object_name(trigger):
+    """PR #240 review. The shape test accepted a hyphen as evidence of a
+    Kubernetes name, and the comment claimed no English word carries one.
+    Single words do not; COMPOUNDS do. The earlier test used the
+    unhyphenated `crashlooping`, so it passed while `crash-looping` sailed
+    through as {"pod": "crash-looping"}.
+
+    Rejecting hyphens outright, or requiring a digit, was measured against
+    the corpus first: it costs four real names whose random suffix happens
+    to be all letters. The segment test costs none of them, which is why it
+    is a segment test and not a stricter character class.
+    """
+    assert "pod" not in btd.derive_labels(trigger), btd.derive_labels(trigger)
+
+
+@pytest.mark.parametrize("name", [
+    "node-exporter-zgzxm", "kube-state-metrics", "promtail-fdppw",
+    "node-exporter-nvtfv", "smoke-test-panic",
+])
+def test_real_hyphenated_names_without_digits_survive(name):
+    """The four names a digit requirement would have cost, plus one that is
+    entirely English-looking but real. Guarding the trade-off, not just the
+    fix -- a future tightening should have to fail this deliberately."""
+    assert btd.derive_labels(f"Pod {name} is unavailable").get("pod") == name

@@ -525,10 +525,20 @@ data the next run should use.
 | | v1 (2026-08-20) | v2 |
 |---|---:|---:|
 | train rows | 451 | 522 |
-| distinct `reason` strings | **4** | **424** |
+| distinct `reason` strings | **4** | **467** |
 | distinct `confidence` values | **4** | **39** |
 | rows using a v1 canned reason | 451 | **0** |
-| reasons containing a token from their own alert | 0% | **100%** |
+| reasons falling back to the generic "this alert" | n/a | **0** |
+
+Fingerprint for checking you have the right file before training: **522 train
+rows, 467 distinct reasons, 39 distinct confidences, 0 generic subjects.**
+
+A "100% of reasons contain a token from the alert" figure appeared in an
+earlier draft of this table and is deliberately not repeated. Review showed it
+was close to vacuous: 106 rows (20.3%) said only "this alert" and satisfied the
+token-overlap test via the similarity *number* shared between prompt and
+reason. The generic-subject count is the number that actually moved, so that is
+the one recorded.
 
 Confidence now varies *within* an action instead of renaming it —
 `investigate` spans 0.45–0.60 (a near-miss precedent that did not resolve is
