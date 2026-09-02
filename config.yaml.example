@@ -36,6 +36,7 @@ llm:
   # small fine-tuned model that answers the triage rubric fast; investigations
   # are unaffected. The console Admin -> LLM tab can override this live
   # (DB over config; 'off' there disables despite this key). (CFOP-57/58)
+  # How ours was built and how to rebuild it: docs/triage-fine-tune.md
   # triage_model: cfop-triage-ministral3:v1-q4
 
 # Metrics. Shipped backend: prometheus.

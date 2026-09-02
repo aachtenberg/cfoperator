@@ -203,6 +203,12 @@ llm:
   # unset, triage uses the primary chain unchanged. Investigations are
   # unaffected. The console Admin -> LLM tab can override this live (DB over
   # config; 'off' there disables despite this key). (CFOP-57/58)
+  # The shipped value below is a local fine-tune; see docs/triage-fine-tune.md
+  # for what it is, how it was trained, and how to rebuild it.
+  # NOTE (raw-manifest deploys only): a config-only commit syncs the ConfigMap
+  # but restarts nothing, so changing this key needs a manual rollout restart.
+  # The Helm chart annotates both Deployments with checksum/config and rolls
+  # them on `helm upgrade` by itself — chart users need no manual restart.
   # triage_model: cfop-triage-ministral3:v1-q4
 
   # Embeddings (for semantic search)
