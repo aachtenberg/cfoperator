@@ -158,14 +158,33 @@ def test_failing_cycle_advances_neither_signal():
     assert set(_poll_series()) == before, "a failed poll still advanced the gauge"
 
 
-def test_gauge_has_no_series_before_the_first_success():
-    """An unlabelled Gauge exports 0.0 from registration, which would make
-    `time() - metric > 300` true on a freshly started process and flap every
-    deploy. The label is what keeps the series absent until it means
-    something."""
-    from event_runtime.telemetry import LAST_POLL
-    fresh = LAST_POLL._metrics if hasattr(LAST_POLL, "_metrics") else {}
-    assert isinstance(fresh, dict)  # labelled: children keyed by label values
+def test_gauge_is_never_exported_in_the_unlabelled_form():
+    """The footgun, pinned at the scrape rather than at an attribute.
+
+    An unlabelled Gauge is exported from registration as
+
+        cfoperator_event_runtime_last_poll_timestamp_seconds 0.0
+
+    which makes the documented `time() - metric > 300` true (~1.7e9 > 300) on
+    every scrape of a healthy process that has not polled yet.
+
+    The previous version of this test asserted
+    `isinstance(LAST_POLL._metrics, dict)`, which review showed was vacuous:
+    an UNLABELLED Gauge has no `_metrics` at all, so the hasattr fallback
+    produced `{}` and `isinstance({}, dict)` passed -- a revert to unlabelled
+    went green. It also ran after other tests had already created children, so
+    "before the first success" was never what it observed.
+
+    Reading the scrape avoids both problems: the unlabelled form is the metric
+    name followed by a space, and no amount of earlier test activity can
+    produce it while the gauge is labelled."""
+    from prometheus_client import generate_latest
+    name = "cfoperator_event_runtime_last_poll_timestamp_seconds"
+    bare = [l for l in generate_latest().decode().splitlines()
+            if l.startswith(name + " ")]
+    assert not bare, (
+        f"gauge is exported unlabelled ({bare}); `time() - metric` would read "
+        "as ~55 years stale on a process that has not polled yet")
 
 
 def test_queue_full_is_not_a_liveness_failure():

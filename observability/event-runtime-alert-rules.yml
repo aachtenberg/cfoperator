@@ -43,8 +43,9 @@ groups:
           summary: "CFOperator event runtime has not polled {{ $labels.source }} successfully"
           description: >-
             The runtime is up and being scraped, but this alert source has not
-            been polled without error for over 5 minutes. Check the runtime log
-            for "Error polling alert source".
+            been polled without error for more than 5 minutes, and that has
+            held for at least 10 -- so roughly 15 minutes since the last
+            success. Check the runtime log for "Error polling alert source".
 
       - alert: CFOperatorEventRuntimeQueueRejecting
         expr: sum(rate(cfoperator_event_runtime_queue_rejected_total[10m])) > 0
