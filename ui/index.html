@@ -1497,23 +1497,31 @@
                 // chat. fetch does not reject on 404 and the body is still
                 // JSON, so reading it straight left `done` undefined and this
                 // function re-polling a dead id every second, forever.
-                if (!r.ok) { chatSessionLost(chatId, `HTTP ${r.status}`); return null; }
-                return r.json();
-            })
-            .then(data => {
-                if (data === null) return;
-                // `done` absent means this is not an events payload at all —
-                // an error body, or a proxy's idea of a response. Treat it the
-                // same way rather than reading `undefined` as "keep going".
-                if (typeof data.done === 'undefined') { chatSessionLost(chatId, 'malformed response'); return; }
-                // Only render while this chat is still the active one. After a
-                // Stop the worker may emit a few more events before it notices;
-                // we keep polling (so the session is cleaned up) but drop them.
-                if (chatId === inFlightChatId) {
-                    for (const evt of (data.events || [])) handleChatEvent(evt);
-                }
-                const next = (typeof data.cursor === 'number') ? data.cursor : cursor;
-                if (!data.done) setTimeout(() => pollChatEvents(chatId, next, 0), 1000);
+                if (!r.ok) { chatSessionLost(chatId, `HTTP ${r.status}`); return; }
+                // Handled inside this branch rather than by returning a
+                // sentinel to a second .then: any sentinel is a value the
+                // server could also send. `null` was the first pick, and a
+                // 200 carrying a literal `null` body then read as "already
+                // handled" and left the spinner up forever — the same bug in
+                // a narrower window.
+                return r.json().then(data => {
+                    // Not an events payload at all — an error body, a `null`,
+                    // a proxy's idea of a response. Ending here rather than
+                    // reading a missing `done` as "keep going".
+                    if (!data || typeof data.done === 'undefined') {
+                        chatSessionLost(chatId, 'malformed response');
+                        return;
+                    }
+                    // Only render while this chat is still the active one.
+                    // After a Stop the worker may emit a few more events
+                    // before it notices; we keep polling (so the session is
+                    // cleaned up) but drop them.
+                    if (chatId === inFlightChatId) {
+                        for (const evt of (data.events || [])) handleChatEvent(evt);
+                    }
+                    const next = (typeof data.cursor === 'number') ? data.cursor : cursor;
+                    if (!data.done) setTimeout(() => pollChatEvents(chatId, next, 0), 1000);
+                });
             })
             .catch(() => {
                 // A genuine transport failure — the pod is mid-restart, the LAN
