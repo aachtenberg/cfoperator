@@ -2,8 +2,8 @@
   "mcpServers": {
     "plane": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@makeplane/plane-mcp-server@0.1.4"],
+      "command": "node",
+      "args": ["scripts/plane-mcp-server.mjs"],
       "env": {
         "PLANE_API_HOST_URL": "https://plane.xgrunt.com",
         "PLANE_BASE_URL": "https://plane.xgrunt.com",
@@ -13,4 +13,3 @@
     }
   }
 }
-
