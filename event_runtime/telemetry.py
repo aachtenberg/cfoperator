@@ -6,6 +6,7 @@ The runtime stays operational even if prometheus-client is unavailable.
 from __future__ import annotations
 
 import os
+import time
 from typing import Dict
 
 try:
@@ -32,6 +33,22 @@ if PROMETHEUS_AVAILABLE:
     RUNTIME_UP = Gauge(
         "cfoperator_event_runtime_up",
         "Whether the event runtime transport is currently up.",
+    )
+    # CFOP-152. RUNTIME_UP cannot answer "is it still working": it is set once
+    # at start() and cleared only on a graceful stop(), so a crash leaves it
+    # reading 1 until the series simply ends, and a poll loop that throws every
+    # cycle leaves it reading 1 forever. This is a TIMESTAMP, not a flag, for
+    # exactly that reason -- a consumer asks `time() - metric > N`, which grows
+    # on its own when nothing is updating it. Alerting on the VALUE of a
+    # self-reported liveness flag is the bug HOMELAB-15 documents; a timestamp
+    # cannot be read that way by accident.
+    #
+    # Advanced only after a poll cycle that completed WITHOUT raising, so a
+    # runtime that is alive and failing every poll looks stale rather than
+    # healthy.
+    LAST_POLL = Gauge(
+        "cfoperator_event_runtime_last_poll_timestamp_seconds",
+        "Unix timestamp of the last alert-source poll cycle that completed without error.",
     )
     ALERTS_RECEIVED = Counter(
         "cfoperator_event_runtime_alerts_received_total",
@@ -153,6 +170,7 @@ if PROMETHEUS_AVAILABLE:
 else:
     RUNTIME_INFO = None
     RUNTIME_UP = None
+    LAST_POLL = None
 
 
 def telemetry_available() -> bool:
@@ -179,6 +197,12 @@ def mark_runtime_up() -> None:
 def mark_runtime_down() -> None:
     if PROMETHEUS_AVAILABLE:
         RUNTIME_UP.set(0)
+
+
+def mark_poll_completed(when: float | None = None) -> None:
+    """Record that a poll cycle finished cleanly. Call only on success."""
+    if PROMETHEUS_AVAILABLE:
+        LAST_POLL.set(time.time() if when is None else when)
 
 
 def observe_alert_received(alert) -> None:

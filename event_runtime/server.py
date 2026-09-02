@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .activity import render_activity_html
 from .engine import EventRuntime
+from .heartbeat import HeartbeatPusher
 from .http_actions import (
     COMPLETION_AUTH_HEADER,
     parse_completion_payload,
@@ -19,6 +20,7 @@ from .http_actions import (
     verify_runtime_auth,
 )
 from .models import Alert
+from .telemetry import mark_poll_completed
 from .telemetry import observe_completion_request, render_metrics
 from .worker import BackgroundAlertWorker, QueueFullError
 
@@ -249,6 +251,7 @@ def _start_poll_loop(
     worker: BackgroundAlertWorker | None,
     interval_seconds: int,
     stop_event: threading.Event,
+    heartbeat: HeartbeatPusher | None = None,
 ) -> threading.Thread | None:
     """Start a background thread that polls alert sources on an interval."""
     if not runtime.plugins.alert_sources:
@@ -265,6 +268,17 @@ def _start_poll_loop(
                             runtime.handle_alert(alert)
             except Exception:
                 logger.exception("Error during alert source poll cycle")
+            else:
+                # CFOP-152. Only a cycle that raised NOTHING counts as alive.
+                # The except: above deliberately swallows and continues, which
+                # is right for resilience and is exactly why "the process is
+                # running" says nothing: a source failing every poll loops here
+                # forever looking healthy. Both signals hang off this else so a
+                # stall shows up as staleness rather than as silence nobody
+                # notices.
+                mark_poll_completed()
+                if heartbeat is not None:
+                    heartbeat.beat()
 
     thread = threading.Thread(target=_loop, daemon=True, name="event-runtime-poll")
     thread.start()
@@ -277,13 +291,14 @@ def serve(
     port: int = 8080,
     worker: BackgroundAlertWorker | None = None,
     poll_interval_seconds: int = 30,
+    heartbeat: HeartbeatPusher | None = None,
 ) -> None:
     """Start the portable threaded HTTP server."""
     runtime.start()
     if worker is not None:
         worker.start()
     stop_event = threading.Event()
-    poll_thread = _start_poll_loop(runtime, worker, poll_interval_seconds, stop_event)
+    poll_thread = _start_poll_loop(runtime, worker, poll_interval_seconds, stop_event, heartbeat)
     handler = make_handler(runtime, worker=worker)
     server = ThreadingHTTPServer((host, port), handler)
     try:

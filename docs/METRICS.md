@@ -19,7 +19,28 @@ The portable event runtime also exposes Prometheus metrics at `http://<event-run
 ```promql
 cfoperator_event_runtime_up
 cfoperator_event_runtime_info_info
+cfoperator_event_runtime_last_poll_timestamp_seconds
 ```
+
+`cfoperator_event_runtime_up` is **self-reported**: set on `start()`, cleared only
+on a graceful `stop()`. A crash, OOM or lost node never writes 0 — the series just
+ends. **Do not alert on its value.** `max_over_time(...) < 1` returns an empty
+vector for an absent series, so it cannot fire for the failure it looks like it
+covers (HOMELAB-15). Use `up{}` for "is it gone".
+
+`cfoperator_event_runtime_last_poll_timestamp_seconds` answers the question `up{}`
+cannot: *is it still working?* It advances only after a poll cycle that completed
+without raising, so a runtime that is alive and failing every poll goes stale
+instead of looking healthy. Alert on age, never on presence:
+
+```promql
+time() - cfoperator_event_runtime_last_poll_timestamp_seconds > 300
+```
+
+For liveness that survives losing the cluster entirely, the runtime can also push
+to an external dead-man's-switch — see `event_runtime.heartbeat` in
+[config-reference.md](config-reference.md). That path emits no metric by design:
+a signal that depends on this cluster cannot report this cluster being gone.
 
 The doubled suffix is real, not a typo here: the code declares
 `Info("cfoperator_event_runtime_info")` and `prometheus_client` appends `_info`
