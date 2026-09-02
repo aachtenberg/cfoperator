@@ -26,6 +26,7 @@ from agent.agent import (  # noqa: E402
     _FORK_SHAPED,
     _class_from_fix_kind,
     _delivery_guidance,
+    _delivery_unset_warning,
     _fix_targets_dedupe_key,
     _hints_from_structured_fix,
     _parse_structured_fix,
@@ -955,3 +956,146 @@ def _executor_no_executor_path():
             if isinstance(target, ast.Name) and target.id == "_NO_EXECUTOR_PATH":
                 return set(ast.literal_eval(node.value))
     raise AssertionError("_NO_EXECUTOR_PATH not found in executor/entrypoint.py")
+
+
+# ---------------------------------------------------------------------------
+# CFOP-154: the guidance is only as good as somebody having switched it on.
+#
+# _delivery_guidance returning '' is correct and silent, and that silence is
+# what let this installation run PR #229's code for twelve hours with the key
+# unset. Row #97 was the only evidence, and it read like an ordinary bad
+# recommendation. These guard the class of failure -- a remediating install
+# that never chose a delivery mode should say so once, at startup.
+
+
+def _feed_cfg(delivery=None, feed=True):
+    rem = {"queue_feed": feed}
+    if delivery is not None:
+        rem["delivery"] = delivery
+    return {"remediation": rem}
+
+
+@pytest.mark.parametrize("config", [
+    _feed_cfg(),                                  # no delivery block at all
+    _feed_cfg({}),                                # delivery block, no mode
+    _feed_cfg({"mode": ""}),                      # blank
+    _feed_cfg({"mode": "gitpos"}),                # typo, not a decision
+    {"remediation": {"queue_feed": True, "delivery": "gitops"}},  # wrong type
+])
+def test_unset_delivery_warns_when_rows_can_be_queued(config):
+    """The whole point: an install that feeds the queue and never said how it
+    deploys is told so, rather than discovering it from a parked row."""
+    msg = _delivery_unset_warning(config)
+    assert msg, "a queue-feeding install with no delivery mode said nothing"
+    assert "delivery.mode" in msg
+    assert "docs/config-reference.md" in msg
+
+
+@pytest.mark.parametrize("config", [
+    _feed_cfg({"mode": "gitops"}),
+    _feed_cfg({"mode": "direct"}),
+    _feed_cfg({"mode": "GitOps"}),                # case-folded, still a choice
+    _feed_cfg({"mode": "none"}),                  # deliberate silence
+    _feed_cfg({"mode": "None"}),
+])
+def test_a_chosen_mode_never_warns(config):
+    """`none` is a documented decision, not an omission. A warning an operator
+    cannot silence by deciding is noise, and noise is how warnings stop being
+    read -- which is the failure this whole issue is about."""
+    assert _delivery_unset_warning(config) is None
+
+
+@pytest.mark.parametrize("config", [
+    {},
+    None,
+    {"remediation": {}},                          # remediation off entirely
+    _feed_cfg(feed=False),                        # investigate-only install
+    _feed_cfg({"mode": "gitpos"}, feed=False),    # typo, but nothing consumes it
+    {"remediation": "nonsense"},
+])
+def test_no_warning_without_a_queue_to_feed(config):
+    """Gated on queue_feed, the flag that turns a FIX into a row. An
+    investigate-only install has no cost to warn about, and the loader has
+    already clamped the flag to the profile -- so this needs no profile logic
+    of its own."""
+    assert _delivery_unset_warning(config) is None
+
+
+def test_the_warning_is_actually_emitted_at_startup():
+    """A pure helper nobody calls is exactly the shape of the bug it exists to
+    prevent. Read the source rather than boot an agent: what regresses is the
+    CALL being dropped, and that is what this reads."""
+    import inspect
+    from agent.agent import CFOperator as _CFOp
+
+    src = inspect.getsource(_CFOp.__init__)
+    assert '_delivery_unset_warning' in src, (
+        "__init__ no longer checks whether this install said how it deploys")
+
+
+# --- and the same helper through the REAL loader -------------------------
+#
+# PR #232 review. The hand-built cases above pass a dict straight in; every
+# real caller passes load_config() output, i.e. deep_merge(DEFAULT_CONFIG,
+# file). The schema used to fill in `delivery: {"mode": "none"}`, which erased
+# the difference between "chose silence" and "said nothing" before the helper
+# ever saw it -- so the warning returned None for the exact production shape
+# it was written for, while every test above stayed green. Testing the merge
+# is the only way this stays fixed.
+
+
+def _prod_fixture_path():
+    import os
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "tests", "fixtures", "production_shaped_config.yaml")
+
+
+def test_schema_supplies_no_delivery_mode():
+    """The regression, guarded at its source. A default here is not a harmless
+    convenience: it is indistinguishable downstream from an operator's answer,
+    and `repo`/`tool` are already absent for the same reason."""
+    from cfshared.config import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["remediation"]["delivery"] == {}
+
+
+def test_omitted_delivery_warns_after_merge():
+    """The merge is where this broke. A config that never mentions delivery
+    must still look unset after the schema has been merged over it."""
+    from cfshared.config import DEFAULT_CONFIG, deep_merge
+    cfg = deep_merge(DEFAULT_CONFIG, {"remediation": {"queue_feed": True}})
+    assert _delivery_unset_warning(cfg)
+
+
+def test_omitted_delivery_warns_through_load_config():
+    """The live shape, not a reconstruction of it. production_shaped_config is
+    the redacted clone of the deployed ConfigMap: queue_feed on, no delivery
+    block -- the twelve hours in which CFOP-148 rendered nothing."""
+    from cfshared.config import load_config
+    cfg = load_config(_prod_fixture_path())
+    assert cfg["remediation"]["queue_feed"] is True
+    assert _delivery_unset_warning(cfg), (
+        "the config that produced row #97 did not warn")
+
+
+def test_explicit_none_in_the_file_still_silences_after_merge(tmp_path):
+    """The other half. Removing the default must not turn a deliberate
+    `mode: none` into a warning the operator cannot switch off."""
+    import yaml
+    from cfshared.config import load_config
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.safe_dump(
+        {"remediation": {"queue_feed": True, "delivery": {"mode": "none"}}}))
+    assert _delivery_unset_warning(load_config(str(p))) is None
+
+
+@pytest.mark.parametrize("delivery", [None, {}, {"mode": "none"}])
+def test_removing_the_default_did_not_start_prompting(delivery):
+    """Behaviour that must NOT change. Dropping the schema default is a
+    warning-only change: the prompt still says nothing about delivery unless
+    an installation chose gitops or direct."""
+    from cfshared.config import DEFAULT_CONFIG, deep_merge
+    rem = {"queue_feed": True}
+    if delivery is not None:
+        rem["delivery"] = delivery
+    cfg = deep_merge(DEFAULT_CONFIG, {"remediation": rem})
+    assert _delivery_guidance(cfg, _DELIVERY_REGISTRY) == ""

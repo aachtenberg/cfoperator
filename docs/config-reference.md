@@ -237,12 +237,17 @@ ooda:
   #   - skip the deep investigation entirely (early-exit to 'monitoring'), and
   #   - downgrade any needs_action that recovered during investigation.
   # Flapping and still-broken pods still investigate. Each class has its own
-  # flapping guard: restarts leave a trace in restartCount, while a probe
-  # restarts nothing, so the probe class asks how long the pod has held Ready.
+  # flapping guard: restarts leave lastState.terminated.finishedAt *and*
+  # startTime (age of last restart, plus lifetime rate = restartCount / pod
+  # age), while a probe restarts nothing, so the probe class asks how long
+  # the pod has held Ready. Lifetime restartCount alone is not the
+  # restart-class signal — it only goes up, so a pod that crashed months ago
+  # would never clear a count gate.
   noise:
     enabled: true
-    recovered_restart_threshold: 3       # restart class: > this many restarts = flapping
-    recovered_ready_stable_seconds: 600  # probe class: Ready must have held this long
+    recovered_restart_stable_seconds: 600  # restart class: last restart must be this old
+    recovered_restart_max_per_day: 6       # restart class: lifetime restarts / pod age
+    recovered_ready_stable_seconds: 600    # probe class: Ready must have held this long
 
   # Proactive mode: deep sweep every N seconds (1800 = 30 minutes)
   sweep_interval: 1800
@@ -410,6 +415,18 @@ remediation:
   # Omit the block, or leave `mode: none`, and the investigator is told nothing
   # about delivery at all. That is the default on purpose: an installation that
   # has not said how it deploys gets no guess about its own cluster.
+  #
+  # Omitting and `none` are the same to the PROMPT and different to the LOG.
+  # Nothing is added to the prompt either way. But omitting it is not free and
+  # the silence is easy to miss -- this installation ran the feature for twelve
+  # hours with the block absent and only found out from a parked remediation
+  # row (CFOP-154) -- so when `queue_feed` is on and no mode is set, the agent
+  # logs one warning at startup naming this key. Writing `mode: none` is how
+  # you say you meant it, and it silences that warning.
+  #
+  # This is also why `mode` has no value in the default schema: a default gets
+  # merged into your config before anything downstream can tell it apart from
+  # something you wrote, which is precisely the distinction the warning needs.
   delivery:
     # gitops   manifests live in a git repo; the executor opens a PR and a
     #          syncer reconciles it. `gitops-manifest` becomes the preferred
