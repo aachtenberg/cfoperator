@@ -5,7 +5,13 @@ from unittest.mock import MagicMock
 import pytest
 
 import tools as tools_module
-from tools import ToolRegistry
+from tools import ToolPolicy, ToolRegistry
+from tools.github import GitHubTools
+
+#: queue_gitops_patch is human_only: it runs only for a named admin on a turn
+#: that may change things. Every call below therefore carries a policy, the
+#: way the console route builds one.
+ADMIN = ToolPolicy(actor_role="admin")
 
 
 def _registry():
@@ -498,12 +504,12 @@ class TestQueueGitopsPatch:
 
     def test_the_queue_has_an_entry_point_from_chat(self):
         _, reg = _registry()
-        names = {s["function"]["name"] for s in reg.get_schemas()}
+        names = {s["function"]["name"] for s in reg.get_schemas(policy=ADMIN)}
         assert "queue_gitops_patch" in names
 
     def test_it_queues_a_gitops_patch_the_executor_can_read(self):
         op, reg = self._happy()
-        out = reg.execute("queue_gitops_patch", {
+        out = reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "In the plane-ce Helm values, raise the plane-api "
                               "readinessProbe timeoutSeconds from 1 to 5.",
             "target": {"namespace": "plane", "kind": "Deployment", "name": "plane-api-wl"},
@@ -524,7 +530,7 @@ class TestQueueGitopsPatch:
         clear it — rather than approving afterwards — would hollow that out for
         every caller of the queue, not just this tool."""
         op, reg = self._happy()
-        reg.execute("queue_gitops_patch", {
+        reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
         assert op.kb.queue_remediation.call_args.kwargs["confidence"] is None
 
@@ -533,7 +539,7 @@ class TestQueueGitopsPatch:
         Approve on it. The transition is the console's own, conflicts and all —
         not a second way to reach 'queued'."""
         op, reg = self._happy()
-        out = reg.execute("queue_gitops_patch", {
+        out = reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
         assert out["approved"] is True
         op.kb.remediation_approve_conflict.assert_called_once()
@@ -542,7 +548,7 @@ class TestQueueGitopsPatch:
     def test_a_row_the_approve_policy_refuses_is_reported_not_lost(self):
         op, reg = self._happy()
         op.kb.remediation_approve_conflict.return_value = "a PR is already open for this row"
-        out = reg.execute("queue_gitops_patch", {
+        out = reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
         assert out["success"] is True and out["approved"] is False
         assert "#7" in out["message"] and "awaiting a human" in out["message"]
@@ -553,7 +559,7 @@ class TestQueueGitopsPatch:
         inject it — a caller passing only the kwarg gets a key that silently
         never matches anything, so every repeat opens another PR."""
         op, reg = self._happy()
-        reg.execute("queue_gitops_patch", {
+        reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
         kw = op.kb.queue_remediation.call_args.kwargs
         assert kw["dedupe_key"]
@@ -564,7 +570,7 @@ class TestQueueGitopsPatch:
         op.kb.queue_remediation.return_value = None      # deduped
         op.kb.find_open_remediation_by_dedupe_key.return_value = {
             "id": 7, "status": "queued", "payload": {}}
-        out = reg.execute("queue_gitops_patch", {
+        out = reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
         assert out["duplicate"] is True and out["success"] is False
         assert "#7" in out["message"]
@@ -574,28 +580,57 @@ class TestQueueGitopsPatch:
         """The executor picks the file from the identifiers in this text. 'fix
         it' spends two LLM passes to produce a wrong diff."""
         op, reg = self._happy()
-        out = reg.execute("queue_gitops_patch", {"recommendation": "fix it"})
+        out = reg.execute("queue_gitops_patch", policy=ADMIN, arguments={"recommendation": "fix it"})
         assert "too vague" in out["error"]
         op.kb.queue_remediation.assert_not_called()
 
-    def test_an_unknown_repo_is_refused_rather_than_queued_against(self):
+    def _with_linked_repos(self, reg):
+        """A REAL GitHubTools, resolving the way production resolves.
+
+        The first cut of these tests left github_tools as None, so the
+        refusal they exercised was "no repos are configured" — not the
+        interesting path. _resolve_slug hands back any syntactically valid
+        owner/repo unchanged, so a test that never reaches it cannot see an
+        unlinked repo being accepted (caught in review).
+        """
+        gh = GitHubTools.__new__(GitHubTools)
+        gh.repos = {"homelab-infra": {"github": "aachtenberg/homelab-infra"},
+                    "cfoperator": {"github": "aachtenberg/cfoperator"}}
+        reg.github_tools = gh
+        return gh
+
+    def test_an_unlinked_slug_is_refused_even_though_it_resolves(self):
+        """The hole this closes: payload['repo'] overrides the deployment's
+        own git_repo, so an accepted string is a PR opened wherever the
+        sentence said. _resolve_slug validates syntax, not membership."""
         op, reg = self._happy()
-        out = reg.execute("queue_gitops_patch", {
+        gh = self._with_linked_repos(reg)
+        assert gh._resolve_slug("someone-elses/repo") == "someone-elses/repo", (
+            "the premise of this test: resolution alone accepts it")
+        out = reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
             "repo": "someone-elses/repo"})
         assert "Unknown repo" in out["error"]
         op.kb.queue_remediation.assert_not_called()
 
-    def test_a_linked_repo_is_resolved_to_the_slug_the_executor_wants(self):
-        """CFOP_GIT_REPO is an owner/repo slug; the operator says
-        'homelab-infra'."""
+    def test_an_unknown_name_is_refused(self):
         op, reg = self._happy()
-        reg.github_tools = MagicMock()
-        reg.github_tools.repos = {"homelab-infra": {"github": "aachtenberg/homelab-infra"}}
-        reg.github_tools._resolve_slug.return_value = "aachtenberg/homelab-infra"
-        reg.execute("queue_gitops_patch", {
+        self._with_linked_repos(reg)
+        out = reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
-            "repo": "homelab-infra"})
+            "repo": "not-a-repo"})
+        assert "Unknown repo" in out["error"]
+        op.kb.queue_remediation.assert_not_called()
+
+    @pytest.mark.parametrize("said", ["homelab-infra", "aachtenberg/homelab-infra"])
+    def test_a_linked_repo_is_resolved_to_the_slug_the_executor_wants(self, said):
+        """CFOP_GIT_REPO is an owner/repo slug; the operator says
+        'homelab-infra'. Either spelling of a linked repo is accepted."""
+        op, reg = self._happy()
+        self._with_linked_repos(reg)
+        reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
+            "repo": said})
         assert (op.kb.queue_remediation.call_args.kwargs["payload"]["repo"]
                 == "aachtenberg/homelab-infra")
 
@@ -603,9 +638,22 @@ class TestQueueGitopsPatch:
         """Omitting it is not the same as choosing one: the drainer falls back
         to executor.git_repo, which is where a cluster fix belongs."""
         op, reg = self._happy()
-        reg.execute("queue_gitops_patch", {
+        reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
         assert "repo" not in op.kb.queue_remediation.call_args.kwargs["payload"]
+
+    def test_an_autonomous_run_cannot_queue_itself_work(self):
+        """A sweep or investigation runs with no policy at all and is
+        otherwise offered every mutating tool. This one treats its caller's
+        request as the approval that hands work to the executor, so reaching
+        it without a person is a way past the auto-execute gate."""
+        op, reg = self._happy()
+        assert "queue_gitops_patch" not in {
+            s["function"]["name"] for s in reg.get_schemas(policy=None)}
+        out = reg.execute("queue_gitops_patch", policy=None, arguments={
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
+        assert out.get("refused") is True
+        op.kb.queue_remediation.assert_not_called()
 
     def test_the_payload_keys_are_the_ones_the_executor_reads(self):
         """A cross-artifact contract: the executor is a separate image, and a
@@ -616,7 +664,7 @@ class TestQueueGitopsPatch:
         src = (pathlib.Path(__file__).resolve().parent.parent
                / "executor" / "entrypoint.py").read_text()
         op, reg = self._happy()
-        reg.execute("queue_gitops_patch", {
+        reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
             "target": {"namespace": "plane"}})
         payload = op.kb.queue_remediation.call_args.kwargs["payload"]

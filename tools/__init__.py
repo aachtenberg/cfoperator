@@ -53,6 +53,21 @@ logger = logging.getLogger("cfoperator.tools")
 # The ROLE gate is separate and stricter: a member never gets these at all.
 _VERIFY_COMMAND_GATED = {'ssh_execute': 'command'}
 
+# Schema keys that are policy for THIS process, not part of the function
+# contract sent to a model. Stripped on the way out: a stray key is a 400 on
+# the stricter providers.
+#
+#   mutating   — changes the system, or what the system will act on.
+#   human_only — additionally needs a named admin behind the turn. A mutating
+#                tool is still offered to internal callers (policy=None:
+#                sweep, investigation, morning summary), which is correct for
+#                every one that existed before — they are trusted to restart a
+#                service. It is wrong for a tool whose semantics are "a person
+#                asked for this", because the row it writes is then treated as
+#                approved. Without this an investigation could queue itself a
+#                remediation past the auto-execute gate (CFOP-160, review).
+_SCHEMA_MARKERS = ('mutating', 'human_only')
+
 
 @dataclass(frozen=True)
 class ToolPolicy:
@@ -75,6 +90,17 @@ class ToolPolicy:
     def role_allows_mutation(self) -> bool:
         """Whether the ASKER may change things at all, ignoring the turn's mode."""
         return self.actor_role is None or self.actor_role == ROLE_ADMIN
+
+    def is_named_admin(self) -> bool:
+        """A specific admin is asking, on a turn that may change things.
+
+        Deliberately not ``allows_mutation()``: that reads ``actor_role is
+        None`` as unrestricted, which is right for the internal callers it was
+        written for — a sweep is trusted. A ``human_only`` tool wants the
+        opposite reading, because what it needs is not trust but a *person*,
+        and an internal caller has none behind it (CFOP-160, caught in review).
+        """
+        return self.actor_role == ROLE_ADMIN and not self.verify_only
 
     def allows_mutation(self) -> bool:
         return self.role_allows_mutation() and not self.verify_only
@@ -867,6 +893,13 @@ class ToolRegistry:
             'schema': {
                 'name': 'queue_gitops_patch',
                 'mutating': True,
+                # Not merely admin-gated: it needs an admin to have ASKED.
+                # An investigation or sweep runs with no policy at all and is
+                # otherwise offered every mutating tool, and this one records
+                # its caller's request as the approval that hands work to the
+                # executor — so an autonomous run could queue itself past the
+                # auto-execute gate. Caught in review on the PR that added it.
+                'human_only': True,
                 'description': (
                     'Queue a GitOps configuration change for the executor, which writes the diff '
                     'and opens a pull request against the infrastructure repo. Use this when an '
@@ -968,16 +1001,37 @@ class ToolRegistry:
         is_mutating and leave a write tool open, which is the whole defect
         this issue is about, so it stops the process rather than shipping.
         """
-        misplaced = sorted(name for name, entry in self.tools.items() if 'mutating' in entry)
+        misplaced = sorted(f"{name}.{marker}" for name, entry in self.tools.items()
+                           for marker in _SCHEMA_MARKERS if marker in entry)
         if misplaced:
             raise ValueError(
-                "'mutating' belongs inside the tool's schema, not on the registry entry: "
+                "policy markers belong inside the tool's schema, not on the registry entry: "
                 + ', '.join(misplaced))
 
     def is_mutating(self, tool_name: str) -> bool:
         """True if the tool changes the system, or what the system will act on."""
         entry = self.tools.get(tool_name)
         return bool(entry and (entry.get('schema') or {}).get('mutating'))
+
+    def is_human_only(self, tool_name: str) -> bool:
+        """True if the tool additionally requires a named admin behind the turn."""
+        entry = self.tools.get(tool_name)
+        return bool(entry and (entry.get('schema') or {}).get('human_only'))
+
+    @staticmethod
+    def _a_human_asked(policy: Optional[ToolPolicy]) -> bool:
+        """Whether this turn has a person behind it. ``None`` means it does not
+        — that is exactly what an unrestricted internal caller is."""
+        return policy is not None and policy.is_named_admin()
+
+    def _offers(self, name: str, schema: Dict[str, Any],
+                policy: Optional[ToolPolicy]) -> bool:
+        """Whether this turn may be offered the tool at all."""
+        if schema.get('human_only') and not self._a_human_asked(policy):
+            return False
+        if policy is None:
+            return True
+        return policy.allows_tool(name, bool(schema.get('mutating')))
 
     def execute(self, tool_name: str, arguments: Dict[str, Any],
                 policy: Optional[ToolPolicy] = None) -> Dict[str, Any]:
@@ -994,6 +1048,15 @@ class ToolRegistry:
         """
         if tool_name not in self.tools:
             return {'error': f'Tool {tool_name} not found'}
+        # Checked before the mutating gate, and without requiring a policy to
+        # exist: the absence of one is the condition this refuses on.
+        if self.is_human_only(tool_name) and not self._a_human_asked(policy):
+            logger.warning("Tool %s refused: no admin behind the turn (%s)", tool_name,
+                           policy.describe() if policy else 'internal caller, no policy')
+            return {'error': f'{tool_name} runs only when an admin asks for it directly. '
+                             'An automated run cannot use it — put the recommendation in '
+                             'your findings and let the queue classify it.',
+                    'refused': True, 'tool': tool_name}
         if policy is not None and self.is_mutating(tool_name):
             if not policy.allows_tool(tool_name, True):
                 # Defence in depth: get_schemas(policy) already withheld this
@@ -1040,15 +1103,17 @@ class ToolRegistry:
         Returns:
             List of tool schemas in OpenAI function calling format
         """
-        # The marker lives in the schema (one home), so it is stripped here on
-        # the way to the model: a stray key is a 400 on the stricter providers.
+        # The markers live in the schema (one home), so they are stripped here
+        # on the way to the model: a stray key is a 400 on the stricter
+        # providers.
         return [
             {
                 'type': 'function',
-                'function': {k: v for k, v in tool['schema'].items() if k != 'mutating'}
+                'function': {k: v for k, v in tool['schema'].items()
+                             if k not in _SCHEMA_MARKERS}
             }
             for name, tool in self.tools.items()
-            if policy is None or policy.allows_tool(name, bool(tool['schema'].get('mutating')))
+            if self._offers(name, tool['schema'], policy)
         ]
 
     # Tool implementations
@@ -1506,17 +1571,25 @@ class ToolRegistry:
         if not getattr(self.operator, 'kb', None):
             return {'error': 'The remediation queue is unavailable (no knowledge base).'}
 
-        # A repo must resolve against the LINKED repos, never be taken on the
-        # model's word. An unresolvable name is refused rather than passed
-        # through: payload['repo'] overrides the deployment's own git_repo, so
-        # an accepted string is a PR opened wherever the sentence said.
+        # A repo must be one of the LINKED repos, never taken on the model's
+        # word: payload['repo'] overrides the deployment's own git_repo, so an
+        # accepted string is a PR opened wherever the sentence said.
+        #
+        # Resolving is not enough on its own. GitHubTools._resolve_slug hands
+        # back any syntactically valid ``owner/repo`` unchanged — that is what
+        # its callers want, since the model may legitimately name a slug it
+        # read in a diff — so the resolved slug is checked against the
+        # configured set as well (caught in review on this PR).
         slug = ''
         raw_repo = (repo or '').strip()
         if raw_repo:
             gh = getattr(self, 'github_tools', None)
+            linked = {str(cfg.get('github')).strip()
+                      for cfg in (getattr(gh, 'repos', None) or {}).values()
+                      if cfg.get('github')} if gh else set()
             slug = (gh._resolve_slug(raw_repo) or '') if gh else ''
-            if not slug:
-                known = ', '.join(sorted(gh.repos)) if gh and getattr(gh, 'repos', None) else 'none'
+            if not slug or slug not in linked:
+                known = ', '.join(sorted(linked)) if linked else 'none'
                 return {'error': f'Unknown repo {raw_repo!r}. Linked repos: {known}. Omit repo '
                                  "to use this deployment's default GitOps repo."}
 
