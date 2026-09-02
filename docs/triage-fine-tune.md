@@ -4,7 +4,7 @@
 alert. On 2026-08-20 we fine-tuned Mistral's `Ministral-3-14B-Instruct-2512` on
 451 real homelab investigations, using QLoRA under [unsloth](https://unsloth.ai)
 on a Windows RTX 5080, and got a model that matches gemma4's perfect eval score
-at **~0.62s — roughly 9x faster** — while being small enough to sit in VRAM
+at **~0.71s on the same suite — roughly 8x faster** — while being small enough to sit in VRAM
 *next to* gemma4 so nothing swaps. It has served production triage since that
 day as `cfop-triage-ministral3:v1-q4`. This page is the model card: what it is,
 how it was made, how to rebuild it, and how to turn it off.
@@ -67,7 +67,7 @@ This is the section to read when something is lost.
    adapter next time.
 2. Nothing in `homelab-infra` provisions this model. A rebuilt `ubuntu-llm-01`
    comes back **without** it, and triage silently falls back to the standard
-   chain at ~9x the latency. There is no alert for this. See
+   chain at ~8x the latency. There is no alert for this. See
    [Rebuilding from the NAS](#rebuilding-from-the-nas), and consider an ansible
    task for it.
 3. The NAS copy is the only backup. It is not in git (the GGUFs are 8–14GB and
@@ -267,12 +267,17 @@ All numbers below come from the committed raw JSON in `benchmarks/`, produced by
 held-out test: `build_triage_dataset.py` excludes anything resembling a
 `triage_eval.py` case by construction.
 
-| Model | 14-case ×3 | hard cases ×12 | soak ×50 | JSON valid | Latency mean |
-|---|---|---|---|---|---|
-| `gemma4:26b` (incumbent) | 42/42 | 12/12 + 12/12 | — | 100% | 5.53s |
-| `ministral-3:14b` (base) | 37/42 (88.1%) | 4/12 + 4/12 | — | 100% | 0.93s |
-| `cfop-triage-ministral3:v1` (Q8_0) | 42/42 | 24/24 | 100/100 | 100% | 0.80s |
-| **`:v1-q4` (Q4_K_M, deployed)** | **42/42** | **24/24** | **100/100** | **100%** | **0.62s** |
+| Model | 14-case ×3 | hard cases ×12 | soak ×50 | JSON valid | Latency, 14-case | Latency, soak |
+|---|---|---|---|---|---|---|
+| `gemma4:26b` (incumbent) | 42/42 | 12/12 + 12/12 | — | 100% | 5.53s | — |
+| `ministral-3:14b` (base) | 37/42 (88.1%) | 4/12 + 4/12 | — | 100% | 0.93s | — |
+| `cfop-triage-ministral3:v1` (Q8_0) | 42/42 | 24/24 | 100/100 | 100% | 1.06s | 0.80s |
+| **`:v1-q4` (Q4_K_M, deployed)** | **42/42** | **24/24** | **100/100** | **100%** | **0.71s** | **0.62s** |
+
+Two latency columns because the suites differ in prompt size and the numbers are
+not interchangeable. The like-for-like comparison against the incumbent is the
+14-case column: **5.53s → 0.71s, ~7.8x.** The soak column is the steady-state
+figure on the two hard cases and is what production most resembles.
 
 The base model's two failure classes were both the **notify shortcut**, taken
 ~2/3 of the time on each trap: reading precedent *presence* as precedent
@@ -284,7 +289,7 @@ shortcut about 63% of the time. At ×50, such a fault escapes with probability
 ~1.5%. Both hard cases passed 50/50 on both quantizations.
 
 **Q4 vs Q8.** Q4_K_M lost nothing measurable and is faster (0.62s vs 0.80s mean;
-its max latency is also far tighter, 0.72s vs 3.77s). At ~8GB it **co-resides in
+its max latency is also far tighter on the soak, 0.72s vs 3.77s). At ~8GB it **co-resides in
 24GiB VRAM with gemma4:26b**, so triage and investigation never swap models —
 that co-residency, not the raw latency, is the main reason Q4 is the deployment
 artifact. Q8_0 is kept purely as the archival reference.
