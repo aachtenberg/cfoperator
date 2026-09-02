@@ -63,9 +63,17 @@ narrows or reinterprets what the issue asked for belongs here explicitly.
 
 See below. Run at least the suites your change touches, plus the new ones.
 
-If you add a root-level `test_*.py`, **register it in
-`.github/workflows/tests.yml`** — the root-level suite is an explicit list, not a
-glob, so an unregistered test file silently never runs in CI.
+Suites that are not part of a package live in **`tests/`**, and CI collects that
+directory as a unit — so a new file there runs in CI with no registration step.
+Do not add `test_*.py` at the repo root; `tests/test_workflows.py` fails if you
+do, because `pytest tests` would never collect it.
+
+Inside `tests/`, take the repository root from `from repo_paths import
+REPO_ROOT`, never `Path(__file__).parent` — that now resolves to `tests/`. It
+matters more than it looks: many of these suites work by globbing a tree
+(`ui/*.html`, `charts/`, `.github/workflows/`), and a wrong root makes the glob
+empty, the loop body unreachable and the assertion vacuous. `repo_paths` checks
+the root against sentinel files and raises rather than hand back a bad one.
 
 Prefer a test that guards the *class* of regression over one that pins the
 current output. `test_console_nav.py` exists to catch a future page skipping the

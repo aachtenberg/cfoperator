@@ -518,15 +518,14 @@ done
 # docker.py / tokens.py don't shadow real packages
 PYTHONPATH="$PWD" python -m pytest observability auth
 
-# hermetic root-level suites
-PYTHONPATH="$PWD" python -m pytest \
-  test_web_auth.py test_web_auth_db.py test_auth_integration.py \
-  test_dockerfile_image.py test_http_investigate.py test_k8s_probe_filter.py \
-  test_triage_engine.py test_github_integration.py test_event_runtime.py
+# everything else — collected as one directory, nothing to register
+PYTHONPATH="$PWD" python -m pytest tests
 ```
 
-`test_tool_calling.py` is deliberately excluded from CI — it needs a live LLM and
-fails at fixture setup without one.
+`benchmarks/tool_calling_bench.py` is a live-LLM benchmark, not a suite — run it
+directly. It used to sit at the root as `test_tool_calling.py` and had to be
+excluded from CI by hand, because pytest read its `def test_model(host, url,
+model)` parameters as fixtures and died at setup.
 
 ## Documentation
 

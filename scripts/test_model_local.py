@@ -2,8 +2,9 @@
 """
 Run CFOperator's own tool-calling tests against a single local Ollama model.
 
-Reuses the T1/T2/T3 definitions from test_tool_calling.py (no duplication),
-but targets one model on a single Ollama URL instead of sweeping remote hosts.
+Reuses the T1/T2/T3 definitions from benchmarks/tool_calling_bench.py (no
+duplication), but targets one model on a single Ollama URL instead of sweeping
+remote hosts.
 
 Usage:
     python scripts/test_model_local.py qwen3.6:27b [http://localhost:11434]
@@ -11,9 +12,10 @@ Usage:
 import sys
 import os
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "benchmarks"))
 
-import test_tool_calling as t  # noqa: E402
+import tool_calling_bench as t  # noqa: E402
 
 
 def main():

@@ -25,8 +25,8 @@ done
 # real `docker` package, and auth/tokens.py shadow anything of that name.
 PYTHONPATH="$PWD" pytest observability auth -q
 
-# Root-level suites are an explicit list, not a glob
-PYTHONPATH="$PWD" pytest test_*.py -q
+# Everything else lives in tests/ and collects as one directory
+PYTHONPATH="$PWD" pytest tests -q
 ```
 
 `.github/workflows/tests.yml` is the authoritative version of the above. If it
@@ -39,9 +39,16 @@ A missing `prometheus-client` makes `event_runtime.telemetry` drop
 import and looks exactly like a regression you caused. If something fails in a
 way unrelated to your change, check the dependency before chasing it.
 
-If you add a root-level `test_*.py`, **register it in
-`.github/workflows/tests.yml`** — that list is explicit, so an unregistered
-file silently never runs in CI.
+**New suites go in `tests/`, not at the repo root.** CI collects that directory
+as a unit, so there is nothing to register — which is the point: the root-level
+list it replaced was an explicit one, and a file nobody added to it passed
+locally and silently never ran in CI. `tests/test_workflows.py` now fails both
+on a `test_*.py` at the root and on CI going back to naming files.
+
+Inside `tests/`, get the repo root from `from repo_paths import REPO_ROOT`
+rather than `Path(__file__).parent`, which now points at `tests/`. Several of
+these suites assert by globbing a tree, and a wrong root makes them iterate
+nothing and pass having checked nothing.
 
 ## What makes a good PR here
 
