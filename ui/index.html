@@ -1459,19 +1459,62 @@
             setChatInFlight(null);
         }
 
-        function pollChatEvents(chatId, cursor) {
+        // Consecutive transport failures to ride out before giving up. Five at
+        // 2s covers a rolling restart; past that the process that held this
+        // turn is gone and polling only keeps the spinner spinning.
+        const POLL_MAX_RETRIES = 5;
+
+        // The turn is not coming back (CFOP-159). Say so, once, and give the
+        // composer back — the failure mode this replaces was a console that
+        // looked busy forever.
+        function chatSessionLost(chatId, why) {
+            if (chatId !== inFlightChatId) return;   // already stopped; nothing to announce
+            console.warn(`chat ${chatId} ended without an answer: ${why}`);
+            document.getElementById('thinking').classList.remove('active');
+            currentToolLog = null; currentToolCard = null; toolCallCount = 0;
+            addMessage('agent', 'The agent restarted before it answered, so this turn was lost. '
+                              + 'Your message is saved in the transcript — ask again to retry.',
+                       'error', 'none');
+            setChatInFlight(null);
+        }
+
+        function pollChatEvents(chatId, cursor, retries) {
             fetch(`/api/chat/events/${chatId}?cursor=${cursor}`)
-            .then(r => r.json())
+            .then(r => {
+                // A chat_id the server no longer knows is the end of the road,
+                // not a reason to keep asking. The agent is replaced on every
+                // merge to main (strategy: Recreate), which drops the turn in
+                // flight and 404s this endpoint from then on; the same 404
+                // arrives on the ordinary five-minute cleanup of a finished
+                // chat. fetch does not reject on 404 and the body is still
+                // JSON, so reading it straight left `done` undefined and this
+                // function re-polling a dead id every second, forever.
+                if (!r.ok) { chatSessionLost(chatId, `HTTP ${r.status}`); return null; }
+                return r.json();
+            })
             .then(data => {
+                if (data === null) return;
+                // `done` absent means this is not an events payload at all —
+                // an error body, or a proxy's idea of a response. Treat it the
+                // same way rather than reading `undefined` as "keep going".
+                if (typeof data.done === 'undefined') { chatSessionLost(chatId, 'malformed response'); return; }
                 // Only render while this chat is still the active one. After a
                 // Stop the worker may emit a few more events before it notices;
                 // we keep polling (so the session is cleaned up) but drop them.
                 if (chatId === inFlightChatId) {
                     for (const evt of (data.events || [])) handleChatEvent(evt);
                 }
-                if (!data.done) setTimeout(() => pollChatEvents(chatId, data.cursor), 1000);
+                const next = (typeof data.cursor === 'number') ? data.cursor : cursor;
+                if (!data.done) setTimeout(() => pollChatEvents(chatId, next, 0), 1000);
             })
-            .catch(() => setTimeout(() => pollChatEvents(chatId, cursor), 2000));
+            .catch(() => {
+                // A genuine transport failure — the pod is mid-restart, the LAN
+                // blinked. Worth retrying, but bounded: an unbounded retry is
+                // the same silent spinner by another route.
+                const n = (retries || 0) + 1;
+                if (n > POLL_MAX_RETRIES) { chatSessionLost(chatId, 'agent unreachable'); return; }
+                setTimeout(() => pollChatEvents(chatId, cursor, n), 2000);
+            });
         }
 
         function handleChatEvent(evt) {
