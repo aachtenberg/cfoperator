@@ -319,3 +319,30 @@ def test_resolved_precedent_wins_even_when_outranked_by_a_monitoring_one():
     assert basis == "resolved-precedent"
     # and it must cite the resolved one, not the closer monitoring one
     assert "0.88" in reason and "fixed last week" in reason, reason
+
+
+def test_slash_anchored_namespace_survives_an_unusable_pod_name():
+    """PR #240 review. The namespace extraction was nested under `if pod`, so
+    a pod name that fails the prose shape test took the namespace down with
+    it -- discarding a slash-anchored fact because of an unrelated one, and
+    contradicting the contract _plausible_k8s_name documents."""
+    assert btd.derive_labels("Pod apps/prometheus is unavailable") == {"namespace": "apps"}
+
+
+@pytest.mark.parametrize("trigger", [
+    "Certificate expiration approaching",
+    "Disk usage high on storage volume",
+    "Backup did not complete",
+])
+def test_alerts_naming_no_object_still_get_a_grounded_subject(trigger):
+    """PR #240 review. Falling back to "this alert" made 20% of v2 reasons
+    generic; they satisfied a token-overlap check only via the similarity
+    number, which is grounding in the letter and not the spirit. Plenty of
+    real alerts name no pod, node or namespace, and their own words are
+    always on-topic."""
+    labels = btd.derive_labels(trigger)
+    subject = btd._alert_subject(trigger, labels)
+    assert subject != "this alert"
+    assert subject.split()[0].lower() in trigger.lower()
+    reason = btd.derive_label(trigger, "monitoring", [], labels)[2]
+    assert "this alert" not in reason, reason

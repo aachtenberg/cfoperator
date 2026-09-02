@@ -230,10 +230,14 @@ def derive_labels(trigger: str) -> dict:
         pod = _plausible_k8s_name(m.group(2), from_prose=True)
         if pod:
             labels["pod"] = pod
-            # Anchored by the slash, so plain names like "apps" are fine.
-            ns = _plausible_k8s_name(m.group(1)) if m.group(1) else None
-            if ns:
-                labels["namespace"] = ns
+        # Independently of the pod. Review on PR #240: nesting this under
+        # `if pod` meant "Pod apps/prometheus is unavailable" dropped the
+        # namespace too, because `prometheus` fails the prose shape test --
+        # discarding a slash-anchored fact on account of an unrelated one,
+        # and contradicting the contract stated above.
+        ns = _plausible_k8s_name(m.group(1)) if m.group(1) else None
+        if ns:
+            labels["namespace"] = ns
     if "namespace" not in labels:
         m = _NS_RE.search(trigger)
         if m:
@@ -265,7 +269,13 @@ def _alert_subject(trigger: str, labels: dict) -> str:
     for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9.-]{3,}", trigger or ""):
         if re.search(r"[-0-9]", tok) and tok.lower() not in _LABEL_STOPWORDS:
             return tok
-    return "this alert"
+    # Plenty of real alerts name no object at all ("Certificate expiration
+    # approaching"). Falling back to "this alert" made 20% of v2 reasons
+    # generic -- they passed a token-overlap grounding check only via the
+    # similarity number, which is grounding in the letter and not the spirit.
+    # The alert's own words are always available and always on-topic.
+    clause = _clause(trigger, limit=60)
+    return clause or "this alert"
 
 
 def _clause(text: str, limit: int = 90) -> str:
