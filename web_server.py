@@ -35,11 +35,11 @@ from auth.models import (
 # calling" is how the two answers start disagreeing.
 from auth.routes import _actor, _caller_user_id, _effective_role, build_auth_blueprint
 from auth.store import AuthError
-from cockpit_spawn import (
+from cockpit.spawn import (
     TIER_POD, CockpitSpawnError, CockpitSpawner, build_cockpit_config, clamp_ttl)
 # Tiers 2/3 of the same ladder: most of this fleet is not in the cluster, and
 # the cockpit contract has to hold on a bare Pi exactly as it does in a pod.
-from cockpit_ladder import (
+from cockpit.ladder import (
     TIER_AUTO, HostCockpitSpawner, build_ladder_config, choose_tier, resolve_target_host)
 # The handoff line the console drawer offers for copying (CFOP-73). Imported
 # rather than restated: notifications.py is the one definition of that command,
@@ -2140,8 +2140,8 @@ class WebServer:
     def _bridge_config(self):
         """The bridge's own reading of the ``cockpit:`` block, so the console
         refuses on exactly the facts the listener would. Imported here rather
-        than at module load: cockpit_bridge is optional in the image."""
-        from cockpit_bridge import build_bridge_config
+        than at module load: cockpit.bridge is optional in the image."""
+        from cockpit.bridge import build_bridge_config
         return build_bridge_config(getattr(self.operator, 'config', None))
 
     @staticmethod
@@ -2154,7 +2154,7 @@ class WebServer:
         operator reads "add http://x:8083 to bridge_origins" from the console,
         instead of a 4403 from a websocket that never says which origin it saw.
         """
-        from cockpit_bridge import normalize_origin
+        from cockpit.bridge import normalize_origin
         return normalize_origin(request.headers.get('Origin')
                                 or f"{request.scheme}://{request.host}")
 

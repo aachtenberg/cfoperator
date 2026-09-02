@@ -28,8 +28,8 @@ from sqlalchemy import create_engine
 
 from auth.models import ROLE_ADMIN, ROLE_MEMBER
 from auth.store import AuthStore
-from cockpit_ladder import TIER_HOST, session_name
-from cockpit_spawn import CockpitConfig, CockpitSpawner
+from cockpit.ladder import TIER_HOST, session_name
+from cockpit.spawn import CockpitConfig, CockpitSpawner
 from test_cockpit_ladder import HOSTS, FakeSSH, probe_reply, spawner
 from web_server import (
     BRIDGE_TICKET_TTL_SECONDS, COCKPIT_BRIDGE_TICKET_LABEL, COCKPIT_SESSION_TOKEN_LABEL,
@@ -581,7 +581,7 @@ def test_close_still_cleans_the_host_when_the_cluster_api_is_down(store):
 def test_close_still_deletes_the_job_when_the_host_side_fails(store):
     """The symmetric case: a host removal that errors (ssh gone mid-incident)
     must not keep the Job running, and must not hide that it failed."""
-    from cockpit_spawn import CockpitSpawnError
+    from cockpit.spawn import CockpitSpawnError
     job = (f"cfop-cockpit-{INV}-abc", INV)
     client, server = _client(host_ssh(), store=store, cockpit=bridge_on(),
                              node_names=("raspberrypi5",), pod_jobs=(job,))

@@ -218,7 +218,7 @@ def test_the_cockpit_terminal_is_the_operators_own_binary():
         "string through a shell would make a confused agent a local-execution "
         "primitive on the operator's machine")
 
-    spawner = (REPO_ROOT / "cockpit_spawn.py").read_text()
+    spawner = (REPO_ROOT / "cockpit" / "spawn.py").read_text()
     assert '"kubectl", "attach", "-it"' in spawner, (
         "tier 1's attach argv is gone from the server that now answers with it")
 
@@ -295,7 +295,7 @@ def test_the_spawn_client_cannot_be_bent_into_another_call():
 # without anyone opening the doc. So the doc is a contract too.
 
 COCKPIT_DOC = REPO_ROOT / "docs" / "cockpit.md"
-LADDER = REPO_ROOT / "cockpit_ladder.py"
+LADDER = REPO_ROOT / "cockpit" / "ladder.py"
 
 
 def test_the_docs_label_selectors_are_the_labels_the_code_writes():
@@ -307,7 +307,7 @@ def test_the_docs_label_selectors_are_the_labels_the_code_writes():
     import sys
 
     sys.path.insert(0, str(REPO_ROOT))
-    from cockpit_spawn import JOB_ROLE_LABEL, JOB_ROLE_VALUE
+    from cockpit.spawn import JOB_ROLE_LABEL, JOB_ROLE_VALUE
 
     doc = COCKPIT_DOC.read_text(encoding="utf-8")
     selector = f"{JOB_ROLE_LABEL}={JOB_ROLE_VALUE}"
@@ -321,7 +321,7 @@ def test_the_docs_session_naming_is_the_naming_the_code_uses():
     import sys
 
     sys.path.insert(0, str(REPO_ROOT))
-    from cockpit_ladder import session_name
+    from cockpit.ladder import session_name
 
     doc = COCKPIT_DOC.read_text(encoding="utf-8")
     assert session_name(1889) == "cfop-cockpit-1889"
@@ -335,16 +335,16 @@ def test_the_troubleshooting_table_quotes_errors_the_code_can_produce():
     when someone is searching for it."""
     doc = COCKPIT_DOC.read_text(encoding="utf-8")
     ladder = LADDER.read_text(encoding="utf-8")
-    spawn = (REPO_ROOT / "cockpit_spawn.py").read_text(encoding="utf-8")
+    spawn = (REPO_ROOT / "cockpit" / "spawn.py").read_text(encoding="utf-8")
     go_spawn = GO_SPAWN_CLIENT.read_text(encoding="utf-8")
 
     for fragment, source, where in [
-        ("is not in infrastructure.hosts", ladder, "cockpit_ladder"),
-        ("the affected host could not be probed", ladder, "cockpit_ladder"),
-        ("was requested but is not available", ladder, "cockpit_ladder"),
-        ("neither docker nor podman is installed", ladder, "cockpit_ladder"),
-        ("is the release tagged?", ladder, "cockpit_ladder"),
-        ("cockpit concurrency cap reached", spawn, "cockpit_spawn"),
+        ("is not in infrastructure.hosts", ladder, "cockpit.ladder"),
+        ("the affected host could not be probed", ladder, "cockpit.ladder"),
+        ("was requested but is not available", ladder, "cockpit.ladder"),
+        ("neither docker nor podman is installed", ladder, "cockpit.ladder"),
+        ("is the release tagged?", ladder, "cockpit.ladder"),
+        ("cockpit concurrency cap reached", spawn, "cockpit.spawn"),
         ("spawning a cockpit is admin-only", go_spawn, "the Go spawn client"),
     ]:
         assert fragment in doc, f"docs/cockpit.md no longer documents {fragment!r}"
@@ -367,7 +367,7 @@ def test_the_documented_tier_names_are_the_ones_the_flag_accepts():
     import sys
 
     sys.path.insert(0, str(REPO_ROOT))
-    from cockpit_ladder import VALID_TIERS
+    from cockpit.ladder import VALID_TIERS
 
     doc = COCKPIT_DOC.read_text(encoding="utf-8")
     assert "--tier pod|container|host|ssh" in doc

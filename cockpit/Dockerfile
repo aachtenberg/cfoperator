@@ -23,7 +23,7 @@
 # commit as the agent it talks to, which a floating release tag cannot promise.
 #
 # Consequence: this binary reports the tree's Version, which is NOT the same
-# artifact as the release of that number. Tiers 3/3b (cockpit_ladder.py) DO
+# artifact as the release of that number. Tiers 3/3b (cockpit/ladder.py) DO
 # fetch the release, so those two must be kept in step — bump
 # internal/config/config.go and DEFAULT_CFASSIST_VERSION together, then tag.
 

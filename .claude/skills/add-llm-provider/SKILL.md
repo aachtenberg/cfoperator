@@ -53,7 +53,7 @@ would silently omit the provider):
 | `.env.example` | commented `<NAME>_API_KEY=` + the wizard provider list comment |
 | `docker-compose.yml` | `<NAME>_API_KEY: ${<NAME>_API_KEY:-}` |
 | `charts/cfoperator/values.yaml` / `templates/secrets.yaml` / `templates/_helpers.tpl` | `<name>ApiKey`, secret key, `$cred` dict (the dict is the `llm.backend` allowlist) |
-| `setup_wizard.py` `_PROVIDERS` | wizard's accepted names |
+| `scripts/setup_wizard.py` `_PROVIDERS` | wizard's accepted names |
 | `config.yaml.example` | "Shipped providers" comment |
 | `docs/config-reference.md` | `llm.fallback` example entry + the escalation-chain note |
 | `docs/mcp-server.md`, `docs/slack-bridge.md`, `mcp_server/client.py`, `mcp_server/tools/chat.py` | `ask_sre` backend union — `test_ask_sre_backend_docs_name_every_registered_provider` enforces all four |
@@ -84,7 +84,7 @@ Tests: `agent/test_xai_provider.py`, `test_console_provider_registry.py`,
   `TestDefaultConfigStubsRemoteProvidersCommentedOut` and to the name list
   in `TestDefaultConfigStubsDoNotNameRetiredModels`.
 - Bump together: `Version` in `config.go`, `DEFAULT_CFASSIST_VERSION` in
-  `cockpit_ladder.py`, `cfassist_version` example in `docs/config-reference.md`
+  `cockpit/ladder.py`, `cfassist_version` example in `docs/config-reference.md`
   (`test_cockpit_ladder.py` pins all three). After the squash merge, tag
   `cfassist-vX.Y.Z` on it immediately — the Ansible pin downloads that tag.
 - `cd cfassist-go && go test ./...`

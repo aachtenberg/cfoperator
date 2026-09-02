@@ -3270,7 +3270,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         convenience port is taken would be a worse trade.
         """
         try:
-            from cockpit_bridge import CockpitBridge, build_bridge_config
+            from cockpit.bridge import CockpitBridge, build_bridge_config
 
             config = build_bridge_config(self.config)
             bridge = CockpitBridge(
@@ -3279,7 +3279,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 token_verifier=self.web_server.verify_bridge_token,
                 audit=self.web_server.record_bridge_event,
             )
-            self.cockpit_bridge = bridge
+            self.cockpit.bridge = bridge
             if bridge.start():
                 logger.info("Cockpit PTY bridge listening on :%s", config.port)
         except Exception as e:

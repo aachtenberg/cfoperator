@@ -20,7 +20,7 @@ import termios
 
 import pytest
 
-from cockpit_bridge import (
+from cockpit.bridge import (
     AUTH_TIMEOUT_SECONDS, BIND_TIMEOUT_SECONDS, CLOSE_BUSY, CLOSE_FORBIDDEN,
     CLOSE_NO_SESSION, CLOSE_TIER_UNSUPPORTED, CLOSE_UNAUTHENTICATED,
     DEFAULT_BRIDGE_PORT, REQUIRED_SCOPE, BridgeConfig, CockpitBridge,
@@ -442,7 +442,7 @@ def test_start_gives_up_if_the_listener_never_answers():
     bridge = CockpitBridge(config(), resolver=lambda _i: None,
                            token_verifier=lambda _t: None)
     bridge._run = lambda: time.sleep(BIND_TIMEOUT_SECONDS + 5)
-    import cockpit_bridge as mod
+    import cockpit.bridge as mod
     original, mod.BIND_TIMEOUT_SECONDS = mod.BIND_TIMEOUT_SECONDS, 0.2
     try:
         assert bridge.start() is False

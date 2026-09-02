@@ -189,7 +189,7 @@ side effect of an unrelated change.
 
 ## What the image contains
 
-The Dockerfile COPYs named paths, not the tree: `cfshared/`, `agent/`, `tools/`, `skills/`, `ui/`, `observability/`, `event_runtime/`, `mcp_server/`, `bridge/`, `auth/`, `scripts/`, `web_server.py`, `web_auth.py`, `cockpit_spawn.py`, `cockpit_ladder.py`.
+The Dockerfile COPYs named paths, not the tree: `cfshared/`, `agent/`, `tools/`, `skills/`, `ui/`, `observability/`, `event_runtime/`, `mcp_server/`, `bridge/`, `auth/`, `scripts/`, `cockpit/`, `web_server.py`, `web_auth.py`.
 
 Most are imported at module load, so a missing COPY crash-loops a pod rather than degrading it — `cfshared/` (agent + event-runtime), `auth/` (agent + MCP), `web_auth.py`, `cockpit_*.py`. `scripts/create_admin.py` is the lockout recovery path ([auth.md](auth.md#locked-out--no-usable-admin)).
 

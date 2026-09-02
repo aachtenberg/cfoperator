@@ -32,16 +32,25 @@ COPY web_auth.py ./
 # auth.bootstrap at module load. Leaving it out crash-looped the agent and the
 # MCP pod on the deploy that introduced them, with :8083 refusing connections.
 COPY auth/ ./auth/
-# The cockpit Job launcher behind POST /api/cockpit/spawn — imported by
-# web_server.py at module load, so the same rule applies again. cockpit_ladder
-# is tiers 2/3 of the same endpoint (CFOP-36) and is imported beside it.
-COPY cockpit_spawn.py ./
-COPY cockpit_ladder.py ./
-# The browser PTY bridge (CFOP-75). Imported lazily, inside
-# agent.py:_start_cockpit_bridge rather than at module load, so leaving it out
-# would not crash-loop the pod — it would silently log a failure to start and
-# leave the port closed, which is the harder version of this bug to notice.
-COPY cockpit_bridge.py ./
+# The cockpit feature, as a package rather than three loose modules.
+#
+#   cockpit.spawn  — the Job launcher behind POST /api/cockpit/spawn, imported
+#                    by web_server.py at module load, so the auth/ rule above
+#                    applies again: leaving it out refuses connections on :8083.
+#   cockpit.ladder — tiers 2/3 of the same endpoint (CFOP-36), imported beside it.
+#   cockpit.bridge — the browser PTY bridge (CFOP-75). Imported lazily, inside
+#                    agent.py:_start_cockpit_bridge rather than at module load,
+#                    so leaving it out would NOT crash-loop the pod; it would
+#                    silently log a failure to start and leave the port closed,
+#                    which is the harder version of this bug to notice.
+#
+# The directory must be copied as a directory, not file-by-file: `from
+# cockpit.spawn import ...` needs the package, and flattening the modules into
+# /app would resolve them as top-level names again. It also carries this
+# directory's Dockerfile and entrypoint.sh (the cockpit Job image's own build
+# context) into the agent image — two small files, and the cost of keeping the
+# whole feature in one place.
+COPY cockpit/ ./cockpit/
 # docs/auth.md's lockout runbook is `kubectl exec ... python
 # scripts/create_admin.py`, which is the recovery path for having no usable
 # admin — it has to exist in the image to be worth documenting.
