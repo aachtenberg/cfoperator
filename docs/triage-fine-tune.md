@@ -58,20 +58,42 @@ This is the section to read when something is lost.
 | ollama blobs | `ubuntu-llm-01:~/.ollama/models/blobs/` | Q4 layer `sha256-49ef257d…`, Q8 layer `sha256-3a249212…` |
 | Modelfile | `benchmarks/Modelfile.cfop-triage` (this repo) | Reconstructed from `ollama show --modelfile` |
 | Eval results | `benchmarks/triage_eval_cfop_triage_ministral3_v1*.json` | Committed |
-| LoRA adapter / checkpoints | **Gone.** Existed only on the Windows box under `C:\Users\<user>\.unsloth\studio\outputs\` | Final was `checkpoint-114` |
+| **Training run** (adapter, checkpoints, args) | NAS `/mnt/nas-backup/cfoperator-finetune/training-run-1787248524/` | 668MB. Archived 2026-09-02 off the training box |
+
+### The training run archive
+
+`training-run-1787248524/` is the complete unsloth output directory for the
+successful run, recovered from the training box and copied to the NAS on
+2026-09-02 (adapter md5 `48a4850efe5bae67914e08421cce12ab`, verified against
+source). It contains:
+
+| File | What it gives you |
+|---|---|
+| `adapter_model.safetensors` (78.7MB) | The LoRA itself. A v2 can resume from this instead of retraining from base |
+| `adapter_config.json` | Authoritative r / alpha / dropout / target-module regex |
+| `checkpoint-{30,60,90,114}/` | Per-checkpoint adapter + `trainer_state.json` + `training_args.bin` |
+| `checkpoint-114/trainer_state.json` | The full loss curve reproduced below |
+| `training_args.bin` | Every `TrainingArguments` value (a torch-pickled zip) |
+| `chat_template.jinja`, `tokenizer.json`, `tokenizer_config.json` | The exact template and tokenizer trained against |
+
+The twelve sibling directories on the training box named
+`..._project-cfoperator-training_*` are the **failed attempts** and are all
+empty; only `_1787248524` has weights. Nothing else needed archiving.
 
 **Known single points of failure:**
 
-1. The **LoRA adapter was never archived** — only the merged GGUFs survive. A v2
-   cannot resume from v1's adapter; it must retrain from base. Archive the
-   adapter next time.
-2. Nothing in `homelab-infra` provisions this model. A rebuilt `ubuntu-llm-01`
+1. Nothing in `homelab-infra` provisions this model. A rebuilt `ubuntu-llm-01`
    comes back **without** it, and triage silently falls back to the standard
    chain at ~8x the latency. There is no alert for this. See
    [Rebuilding from the NAS](#rebuilding-from-the-nas), and consider an ansible
    task for it.
-3. The NAS copy is the only backup. It is not in git (the GGUFs are 8–14GB and
-   this repo is public).
+2. The NAS is the only backup of both the GGUFs and the training run, and the NAS
+   itself is a single USB disk on `headless-gpu`. Whether the
+   `cfoperator-finetune/` directory is included in the NAS→iDrive cloud leg is
+   worth confirming; at 23GB it is not free to replicate, but the 668MB training
+   run alone is, and it is the part that cannot be regenerated.
+3. Neither the GGUFs nor the adapter are in git (too large, and this repo is
+   public).
 
 ---
 
@@ -132,63 +154,99 @@ taken from the studio run log of the successful run (2026-08-20T17:26:49Z),
 not from memory.
 
 ```
-base model            unsloth/Ministral-3-14B-Instruct-2512-unsloth-bnb-4bit
-method                QLoRA (4-bit base, LoRA adapters)
-lora_r                16
-lora_alpha            16
-target modules        requested: q_proj, k_proj, v_proj, o_proj,
-                                 gate_proj, up_proj, down_proj
-                      EFFECTIVE: q_proj, k_proj, v_proj, o_proj  (see note)
-trainable params      19.7M
-max_seq_length        1024
-epochs                2
-total optimizer steps 114
-effective batch size  8
-learning_rate         1e-4
-lr warmup_steps       10
-optimizer             AdamW 8-bit
-gradient checkpointing True
-sequence packing      disabled
-padding-free          auto-enabled by unsloth
-loss masking          train-on-responses-only (chat-template auto-detection)
-eval_steps            0.1 of total steps (~every 11 steps), 50-row val set
-checkpoints           every 30 steps; final = checkpoint-114
-seed                  3407 (unsloth default; runs were bit-reproducible)
+base model                     unsloth/Ministral-3-14B-Instruct-2512-unsloth-bnb-4bit
+method                         QLoRA (4-bit base, LoRA adapters)  [unsloth_training_method: qlora]
+peft_version                   0.18.1
+
+r                              16
+lora_alpha                     16
+lora_dropout                   0.0
+bias                           none
+use_rslora                     false
+use_dora                       false
+target modules                 q_proj, k_proj, v_proj, o_proj  (attention-only; see note)
+trainable params               19.7M  (adapter_model.safetensors is 78.7MB)
+
+max_seq_length                 1024
+num_train_epochs               2
+max_steps                      -1  (epoch-driven; resolved to 114 optimizer steps)
+per_device_train_batch_size    1
+gradient_accumulation_steps    8      -> effective batch 8
+learning_rate                  1e-4
+lr_scheduler_type              linear
+warmup_steps                   10
+weight_decay                   0.001
+max_grad_norm                  1.0
+optim                          adamw_8bit
+adam_beta1 / beta2 / epsilon   0.9 / 0.999 / 1e-8
+bf16                           true   (fp16 false)
+gradient_checkpointing         true
+packing                        false
+padding-free                   auto-enabled by unsloth
+loss masking                   train-on-responses-only (chat-template auto-detection)
+eval_strategy / eval_steps     steps / 0.1 of total (every 12 steps), 50-row val set
+save_steps                     30   -> checkpoint-30/60/90/114; final = 114
+logging_steps                  1
+seed / data_seed               3407 / 3407  (runs were bit-reproducible)
 ```
+
+Every value above is read back from the archived run itself —
+`adapter_config.json` and the `training_args.bin` in `checkpoint-114` — not from
+notes. See [Artifact inventory](#artifact-inventory--where-every-piece-actually-lives)
+for where that lives.
 
 **The target-modules note matters.** The studio Configure tab listed all seven
 projections, but unsloth logged:
 
 > `Explicit target_modules are constrained by the finetune_(vision|language|attention|mlp) filters; adapters attach only where both select.`
 
-The attention filter was active, so adapters attached to **q/k/v/o only** — which
-is what "attention-only r16" means everywhere else in the docs, and is confirmed
-by the 19.7M trainable-parameter count. This was deliberate: narrowing to
-attention-only was the fix for a VRAM-driven speed stall (below). If you want
-all seven modules in a v2, you must also clear the attention filter.
+The attention filter was active, so adapters attached to **q/k/v/o only**. The
+archived `adapter_config.json` settles it — the persisted `target_modules` is a
+compiled regex whose only alternation is `q_proj|k_proj|v_proj|o_proj`, with no
+MLP projection reachable. This was deliberate: narrowing to attention-only was
+the fix for a VRAM-driven speed stall (below). If you want all seven modules in
+a v2, you must also clear the attention filter — setting the seven in the UI is
+not sufficient, as this run proves.
 
-**Two values could not be recovered:**
+**`lora_dropout` was 0.0, not 0.05.** 0.05 was recommended during the run as
+insurance against memorizing a 451-example set; the archived adapter config shows
+it was never applied. The eval curve says it did not matter here (loss fell
+monotonically to epoch 2 with no divergence), but a v2 on a similarly small set
+should still set it deliberately rather than inherit the default.
 
-- `lora_dropout` — 0.05 was recommended over the 0.00 default as insurance
-  against memorizing a 451-example set, but the studio log does not record what
-  was actually applied. Set it explicitly next time.
-- The `per_device_train_batch_size` × `gradient_accumulation_steps` split. It was
-  changed mid-session from 2×4 to 1×8 to cut peak VRAM; both give an effective
-  batch of 8, and the final run's logged 114 steps is consistent with either.
-  Only the effective batch is certain.
-
-**For v2: save the studio YAML.** It was recommended during the v1 run and not
-done, which is the direct cause of both gaps above.
+**For v2: save the studio YAML anyway.** Everything above was recoverable only
+because the output directory survived on the training box for twelve days. That
+was luck, not process.
 
 ### The loss curve
 
 Train loss started at 0.995 (step 1) and 1.029 (step 2), then fell fast — the
-JSON output format is learned within the first dozen steps. By step ~32 train
-loss was ~0.028 and eval loss ~0.02, and **eval loss stayed flat through epoch 2
-with no upward divergence**, which is the signal that the model learned the
-notify/investigate boundary rather than memorizing 451 triggers. Because eval
-loss never climbed, the final checkpoint (114) was the right pick over the
-epoch-1 checkpoint.
+JSON output format is learned within the first dozen steps. The full eval series,
+from `checkpoint-114/trainer_state.json`:
+
+| Step | Epoch | Eval loss |
+|---:|---:|---:|
+| 12 | 0.21 | 0.1986 |
+| 24 | 0.43 | 0.0351 |
+| 36 | 0.64 | 0.0082 |
+| 48 | 0.85 | 0.0110 |
+| 60 | 1.05 | 0.0051 |
+| 72 | 1.27 | 0.0048 |
+| 84 | 1.48 | 0.0044 |
+| 96 | 1.69 | 0.0044 |
+| 108 | 1.90 | 0.0035 |
+| **114** | **2.00** | **0.0034** |
+
+**Eval loss fell monotonically into epoch 2** (the one uptick, step 36 → 48, is
+noise at the third decimal) and never diverged upward, which is the signal that
+the model learned the notify/investigate boundary rather than memorizing 451
+triggers. Because it never climbed, the final checkpoint (114) was the right pick
+over the epoch-1 checkpoint. Totals: 497,274 input tokens seen, 3.97e16 FLOPs.
+
+A caution on reading those numbers: loss is masked to the assistant turn only,
+and the assistant turn is one short JSON verdict. Absolute values in the
+thousandths reflect how constrained the output space is, not a 99.7%-accurate
+classifier. `triage_eval.py` remains the only gate that means anything.
 
 Throughput on the healthy run: **~7.5s/step, 220W, 62°C, ~17 minutes total.**
 
@@ -380,9 +438,18 @@ Carried over from the v1 session; none are blocking:
   chart does not expose it.
 - **Ansible provisioning** of the ollama tag on `ubuntu-llm-01`, so a node
   rebuild does not silently drop triage back to the slow chain.
-- **Archive the LoRA adapter** for any future run — v1's is gone.
+- **A triage-model health check.** The failure mode with no signal today is
+  `llm.triage_model` set but the tag absent: cfoperator falls back silently and
+  triage just gets slower. Triage responses already carry the serving `model`
+  field, so alerting on "triage served by something other than the configured
+  model" is cheap.
+- **Confirm `cfoperator-finetune/` is in the NAS→iDrive backup set**, at minimum
+  the 668MB `training-run-1787248524/`.
+- **Archive the run directory on every future training run**, off the training
+  box, before anything else. v1's survived by luck.
 - **v2 retrain** once `triage_conflicts.json` accumulates enough rows to be worth
   it, ideally with a less lopsided class balance for `escalate` and `log_only`.
+  It can resume from the archived adapter rather than retraining from base.
 - **Tool calling stays out of scope** until ollama ships a working ministral
   tool-call parser (ollama/ollama#16934, #17550). No historical tool transcripts
   exist to train on anyway — `investigation_events` were never written.
