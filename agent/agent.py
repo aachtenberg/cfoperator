@@ -1099,12 +1099,15 @@ def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
 # Tier-1 noise filter (early-exit + needs_action downgrade). See
 # docs/noise-reduction.md.
 #
-# Kept as two classes because they need different flapping guards. The restart
-# class leaves a trace in restartCount, so `recovered_restart_threshold` can
-# tell a settled pod from a flapping one. The probe class leaves none — a
-# readiness probe restarts nothing, so restartCount is structurally 0 however
-# badly the probe is flapping. _PROBE_TRIGGER routes that class to its own
-# guard (how long the pod has held Ready); see _recovered_and_healthy.
+# Kept as two classes because they need different flapping traces. The restart
+# class leaves lastState.terminated.finishedAt, so
+# `recovered_restart_stable_seconds` can tell a settled pod from one that
+# restarted this window. Lifetime restartCount cannot: it only goes up, so a
+# pod that crashed months ago and has been Ready ever since still looks like
+# a flap (CFOP-150). The probe class leaves no restart trace — a readiness
+# probe restarts nothing, so restartCount / lastState are structurally empty
+# however badly the probe is flapping. _PROBE_TRIGGER routes that class to
+# its own guard (how long the pod has held Ready); see _recovered_and_healthy.
 #
 # The probe class names the three kubelet probe types explicitly rather than
 # matching bare "probe"/"unhealthy". Those wider words reach findings that are
@@ -2414,18 +2417,18 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
             alert_info = context.get('alert', {})
 
             # Tier-1 noise filter (1b): if the alert is about a recoverable
-            # runtime condition and the pod is healthy now with only a few
-            # restarts, don't spend a full investigation on it — record a
-            # 'monitoring' result and return. Flapping (high restart count) and
-            # still-broken pods fall through to a real investigation.
-            # _recovered_and_healthy applies the probe class's own flapping
-            # guard internally, since restart_thresh cannot see that class.
+            # runtime condition and the pod is healthy now with a settled
+            # flapping guard, don't spend a full investigation on it — record
+            # a 'monitoring' result and return. Recent restarts / a Ready
+            # condition that just flapped, and still-broken pods, fall through
+            # to a real investigation. Both class guards live inside
+            # _recovered_and_healthy (restart: last-restart age; probe: Ready
+            # hold time); a true recovered flag is enough.
             noise_cfg = self._noise_config()
             noise_on = noise_cfg.get('enabled', True)
-            restart_thresh = int(noise_cfg.get('recovered_restart_threshold', 3))
             if noise_on:
-                pre_recovered, pre_note, pre_restarts = self._recovered_and_healthy(alert_info, trigger)
-                if pre_recovered and pre_restarts <= restart_thresh:
+                pre_recovered, pre_note, _pre_restarts = self._recovered_and_healthy(alert_info, trigger)
+                if pre_recovered:
                     return self._early_exit_monitoring(inv_id, trigger, start_time, pre_note)
 
             system_prompt = f"""You are CFOperator investigating an infrastructure alert.
@@ -2496,11 +2499,12 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
             # Tier-1 noise filter (1a): if the investigation lands on needs_action
             # but the alerted runtime condition has recovered (pod healthy now,
-            # few restarts) — including pods that recovered *during* the
-            # investigation — downgrade to monitoring so it doesn't page red.
+            # last restart / Ready-hold aged out) — including pods that
+            # recovered *during* the investigation — downgrade to monitoring
+            # so it doesn't page red.
             if noise_on and outcome == 'needs_action':
-                post_recovered, post_note, post_restarts = self._recovered_and_healthy(alert_info, trigger)
-                if post_recovered and post_restarts <= restart_thresh:
+                post_recovered, post_note, _post_restarts = self._recovered_and_healthy(alert_info, trigger)
+                if post_recovered:
                     outcome = 'monitoring'
                     verify_note = ((verify_note + '; ') if verify_note else '') + f"recovered — {post_note}"
                     logger.info(f"Noise filter: needs_action -> monitoring ({post_note})")
@@ -2848,6 +2852,23 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         return (namespace, pods[0])
 
     @staticmethod
+    def _k8s_age_seconds(raw) -> Optional[float]:
+        """Seconds since a Kubernetes RFC3339 timestamp, or None if missing
+        or unparseable.
+
+        None means "can't tell". Noise-filter callers treat that as not-stable
+        — an unknown answer must not license silencing an alert.
+        """
+        if not raw:
+            return None
+        try:
+            when = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
+        except (TypeError, ValueError):
+            return None
+        now = datetime.now(timezone.utc) if when.tzinfo else datetime.now()
+        return max(0.0, (now - when).total_seconds())
+
+    @staticmethod
     def _ready_stable_seconds(status: Dict[str, Any]) -> Optional[float]:
         """Seconds the pod has continuously held Ready=True, or None when the
         transition time is missing or unparseable.
@@ -2858,16 +2879,46 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         for cond in status.get('conditions', []):
             if cond.get('type') != 'Ready' or cond.get('status') != 'True':
                 continue
-            raw = cond.get('lastTransitionTime')
-            if not raw:
-                return None
-            try:
-                when = datetime.fromisoformat(str(raw).replace('Z', '+00:00'))
-            except (TypeError, ValueError):
-                return None
-            now = datetime.now(timezone.utc) if when.tzinfo else datetime.now()
-            return max(0.0, (now - when).total_seconds())
+            return CFOperator._k8s_age_seconds(cond.get('lastTransitionTime'))
         return None
+
+    @staticmethod
+    def _last_restart_age_seconds(status: Dict[str, Any]) -> Optional[float]:
+        """Seconds since the most recent container restart, or None when unknown.
+
+        Reads ``lastState.terminated.finishedAt`` across ``containerStatuses``.
+        A container with ``restartCount > 0`` but no parseable finishedAt is
+        unknown for the whole pod — the filter must not silence on a guess.
+        Every container at ``restartCount == 0`` means there has never been a
+        restart; that is older than any threshold (returns +inf).
+        """
+        statuses = status.get('containerStatuses') or []
+        if not statuses:
+            return None
+        ages: List[float] = []
+        for c in statuses:
+            count = int(c.get('restartCount') or 0)
+            finished = ((c.get('lastState') or {}).get('terminated') or {}).get('finishedAt')
+            age = CFOperator._k8s_age_seconds(finished)
+            if count > 0 and age is None:
+                return None
+            if age is not None:
+                ages.append(age)
+        if not ages:
+            return float('inf')
+        return min(ages)
+
+    @staticmethod
+    def _fmt_last_restart_age(seconds: float) -> str:
+        """Short operator-facing hold time for the recovered-restart note."""
+        if seconds == float('inf'):
+            return "never restarted"
+        minutes = int(seconds // 60)
+        if minutes >= 1440:
+            return f"last restart {minutes // 1440}d"
+        if minutes >= 60:
+            return f"last restart {minutes // 60}h"
+        return f"last restart {minutes}m"
 
     def _recovered_and_healthy(self, alert_info: Dict[str, Any], trigger: str) -> tuple:
         """Tier-1 noise filter: is the alert about a recoverable runtime
@@ -2894,11 +2945,12 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             return (False, None, 0)
         if not status.get('success') or not self._pod_is_healthy(status):
             return (False, None, 0)
-        # Probe-class triggers carry no restart signal, so the caller's restart
-        # threshold cannot tell a settled pod from one whose readiness is
-        # flapping. Ask how long it has held Ready instead: a flapping probe
-        # transitions the condition, one failing below failureThreshold never
-        # does.
+        # Each class has its own flapping trace. Probe-class triggers carry
+        # no restart signal, so last-restart age cannot tell a settled pod
+        # from one whose readiness is flapping — ask how long it has held
+        # Ready instead. Restart-class triggers leave finishedAt; lifetime
+        # restartCount cannot distinguish a pod that crashed months ago from
+        # one that restarted four times this hour (CFOP-150).
         stable_note = ""
         if _PROBE_TRIGGER.search(trigger or ""):
             stable = self._ready_stable_seconds(status)
@@ -2906,6 +2958,12 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             if stable is None or stable < min_stable:
                 return (False, None, 0)
             stable_note = f"Ready {int(stable // 60)}m, "
+        else:
+            age = self._last_restart_age_seconds(status)
+            min_stable = int(self._noise_config().get('recovered_restart_stable_seconds', 600))
+            if age is None or age < min_stable:
+                return (False, None, 0)
+            stable_note = f"{self._fmt_last_restart_age(age)}, "
         restarts = max((c.get('restartCount', 0) for c in status.get('containerStatuses', [])),
                        default=0)
         return (True,
@@ -2930,13 +2988,17 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 names.add(normalize_service_name(pod_name))
         return names
 
-    def _restart_finding_is_noise(self, finding_text: str, threshold: int) -> Optional[str]:
+    def _restart_finding_is_noise(self, finding_text: str) -> Optional[str]:
         """Reason if a 'container restarted N times' sweep finding is recovered
-        noise — the pod is healthy now with <= threshold restarts. None otherwise.
+        noise — the pod is healthy now and its last restart has aged out.
+        None otherwise.
 
         Mirrors the Tier-1 alert-path filter for the *sweep* path, which
         generates these findings independently (e.g. faster-whisper: healthy
-        21h, restartCount 1, re-flagged every sweep)."""
+        21h, last restart a day ago, re-flagged every sweep). Lifetime
+        restartCount is not the flapping signal: a pod that crashed months
+        ago still carries a high count (CFOP-150).
+        """
         text = (finding_text or "").lower()
         if 'restart' not in text:
             return None
@@ -2956,18 +3018,21 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                    if (p.get('metadata') or {}).get('name', '').startswith(name)]
         if not matched:
             return None
-        worst = 0
+        min_stable = int(self._noise_config().get('recovered_restart_stable_seconds', 600))
+        newest: Optional[float] = None
         for p in matched:
             st = p.get('status', {})
             if not self._pod_is_healthy({'phase': st.get('phase'),
                                          'conditions': st.get('conditions', [])}):
                 return None  # something still unhealthy — keep the finding
-            worst = max(worst, max((c.get('restartCount', 0)
-                                    for c in st.get('containerStatuses', [])), default=0))
-        if worst > threshold:
-            return None  # flapping — keep the finding
-        return (f"container '{name}' in {ns} is healthy now with <= {threshold} "
-                f"restart(s) — recovered transient, not actionable")
+            age = self._last_restart_age_seconds(st)
+            if age is None:
+                return None  # can't tell when it last restarted — keep
+            newest = age if newest is None else min(newest, age)
+        if newest is None or newest < min_stable:
+            return None  # recent (or no containers) — keep the finding
+        return (f"container '{name}' in {ns} is healthy now "
+                f"({self._fmt_last_restart_age(newest)}) — recovered transient, not actionable")
 
     def _early_exit_monitoring(self, inv_id: int, trigger: str, start_time: float,
                                note: str) -> Dict[str, Any]:
@@ -7130,11 +7195,13 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                         )
 
         # Pattern 6: a "container restarted N times" finding where the pod is
-        # healthy now with few restarts is recovered noise, not a real finding.
-        # (The sweep-path analogue of the Tier-1 alert filter.)
+        # healthy now and the last restart has aged out is recovered noise,
+        # not a real finding. (The sweep-path analogue of the Tier-1 alert
+        # filter.) Lifetime restartCount is not the signal — a settled pod
+        # can still carry a high count from months ago (CFOP-150).
         noise_cfg = (self.config.get('ooda', {}) or {}).get('noise', {}) if isinstance(self.config, dict) else {}
         if noise_cfg.get('enabled', True):
-            reason = self._restart_finding_is_noise(text, int(noise_cfg.get('recovered_restart_threshold', 3)))
+            reason = self._restart_finding_is_noise(text)
             if reason:
                 return reason
 

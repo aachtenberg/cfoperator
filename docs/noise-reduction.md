@@ -25,10 +25,11 @@ mis-configured (a non-runtime concern) still gets `needs_action`.
   `needs_action → monitoring` when the condition has recovered. (B1 already does
   the opposite: `resolved → needs_action` when still broken.)
 - **1b — early-exit / don't investigate healthy things.** *Before* the LLM loop,
-  if the pod is healthy-now + recovered + restartCount ≤ threshold (default 3),
+  if the pod is healthy-now + recovered + last restart (restart class) or Ready
+  hold (probe class) older than the class threshold (default 600s),
   short-circuit to `monitoring` with a logged reason and a lightweight
   investigation record. Skips the expensive investigation (227s/882s) and never
-  generates a `needs_action`. High restart counts (flapping) still investigate —
+  generates a `needs_action`. A restart in the last window still investigates —
   1a is the safety net for those.
 
 ### Tier 2 — match channel to severity (stops the *red*, not the signal)
@@ -47,11 +48,13 @@ here — power-outage aftermath, SD flakiness).
 
 ## Status
 - **Tier 1 (1a + 1b): implemented, default-on** (`ooda.noise.enabled: true`,
-  `recovered_restart_threshold: 3`). `_recovered_and_healthy()` +
+  `recovered_restart_stable_seconds: 600`). `_recovered_and_healthy()` +
   `_early_exit_monitoring()` in `agent/agent.py`; tests in
   `agent/test_noise_filter.py`. faster-whisper-class alerts now early-exit to
-  `monitoring`; flapping (restarts > threshold) and still-broken pods still
-  investigate.
+  `monitoring`; a last restart inside the window, and still-broken pods, still
+  investigate. Lifetime `restartCount` is not the flapping signal (CFOP-150):
+  a pod that crashed months ago and has been Ready ever since (camera-api:
+  count 13, last termination 87 days ago) now clears the filter.
 - **Tier-1 extended to the probe class + sweep-authored prose (CFOP-21).**
   Tier-1 was dead for everything the *sweep* wrote, because two independent
   gates both missed: the trigger vocabulary carried no probe/readiness wording,
@@ -70,8 +73,8 @@ here — power-outage aftermath, SD flakiness).
     filter; `_identify_pod` stays narrow because B1 and the Phase-B remediation
     proposer share it.
   - New guard, because widening into the probe class removes the old one: a
-    readiness probe restarts nothing, so `recovered_restart_threshold` cannot
-    tell a settled pod from a flapping one. The probe class instead requires
+    readiness probe restarts nothing, so last-restart age cannot tell a
+    settled pod from a flapping one. The probe class instead requires
     the `Ready` condition to have held for `recovered_ready_stable_seconds`
     (default 600) — a real flap transitions that condition, a probe failing
     below `failureThreshold` never does. Unknown transition time ⇒ don't filter.
@@ -79,8 +82,8 @@ here — power-outage aftermath, SD flakiness).
   observation exposed): the noise filter only covered the alert/investigation
   path, so the *sweep* kept re-flagging recovered restarts (faster-whisper) and
   *previously-persisted* false correlations kept generating insights.
-  - Sweep findings: ground-truth suppressor drops "container restarted ≤
-    threshold + pod healthy now" findings (`_restart_finding_is_noise`).
+  - Sweep findings: ground-truth suppressor drops "last restart aged out +
+    pod healthy now" findings (`_restart_finding_is_noise`).
   - Correlations: purge previously-persisted false rows for ephemeral CronJob
     services + guard against recording new ones
     (`purge_correlations_for_services`, runs each sweep).
@@ -127,8 +130,10 @@ here — power-outage aftermath, SD flakiness).
 - 1b doubles as the long-wanted **early-exit guard** for over-investigation.
 - Deterministic on purpose — no new LLM unpredictability in the noise filter.
 - Config: `ooda.noise` (thresholds) — default-on, conservative thresholds.
-  `enabled` (true), `recovered_restart_threshold` (3, restart class),
-  `recovered_ready_stable_seconds` (600, probe class).
+  `enabled` (true), `recovered_restart_stable_seconds` (600, restart class),
+  `recovered_ready_stable_seconds` (600, probe class). The retired
+  `recovered_restart_threshold` (lifetime count) is ignored if still present
+  in a live config.
 - The filter's bias is asymmetric on purpose: when it cannot pin exactly one
   pod, or cannot tell how long that pod has been Ready, it does **not** fire. A
   missed filter costs one redundant investigation; a wrong one silences a real
