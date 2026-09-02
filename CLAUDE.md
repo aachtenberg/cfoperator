@@ -7,16 +7,41 @@ that otherwise cost half an hour each time.
 ## Issue tracking: Plane
 
 Work is tracked in Plane, not GitHub Issues. Reached over the `plane` MCP
-server.
+server — upstream's Python one, `uvx plane-mcp-server@<pinned> stdio`, needing
+`uv` on PATH. The old npm `@makeplane/plane-mcp-server` is a dead generation
+(its `get_issue_comments` 500s and never got fixed); if you find a document
+describing `get_issue_using_readable_identifier`, `list_states` or
+`add_issue_comment`, it predates CFOP-157 and none of those tools exist now.
 
 - Workspace project: **cfoperator**, identifier **CFOP** (so issues read `CFOP-12`)
 - States: Backlog → Todo → In Progress → Done (plus Cancelled)
 
-**There is no project-wide "list issues" tool.** `get_projects` and
-`list_states` work, but to read issues you go one at a time via
-`get_issue_using_readable_identifier` with `project_identifier: "CFOP"` and a
-sequence number. To find what is in a given state, walk `CFOP-1`, `CFOP-2`, …
-until it 404s. Worth knowing before concluding the server is broken.
+Tools are one per *resource*, each taking an `action`: `workitem`,
+`workitem_comment`, `cycle`, `module`, `state`, `label`, `project`, plus
+attachments, links, activity, pages, work logs and relations. So reading an
+issue is `workitem` with `action: "retrieve_by_identifier"`, and commenting is
+`workitem_comment` with `action: "create"`.
+
+**Four things about this server will waste your time once each.** All four were
+found by driving it against the live instance, not read from release notes.
+
+- **Never pass `pql`.** This Plane is Community Edition, and CE ignores PQL
+  filters *silently* — `state = "In Progress"` returns the unfiltered set with
+  HTTP 200 and no warning (measured: 100 rows back, 97 of them not In Progress).
+  It does not fail, it lies. `action: "list"` and filter client-side. Same for
+  `pql` on `cycle` and `module`. Upstream #192.
+- **`retrieve_by_identifier` takes `CFOP-157`, and refuses `project_id`.**
+  Passing the project is an error, and the whole identifier is wanted — not the
+  bare number.
+- **`add_ids` / `remove_ids` are a single id string, not an array.** Putting an
+  array there is a validation error, so cycle and module assignment fails.
+- **Errors come back as text with `isError: false`.** A failed call looks like a
+  successful one whose content begins `Error:`. Read the content; do not trust
+  the flag. The upside is that the message lists the parameters the action does
+  accept, which is the fastest way to find the right shape.
+
+There *is* a project-wide list now (`workitem` / `action: "list"`), so nothing
+needs the old `CFOP-1`, `CFOP-2`, … walk until a 404.
 
 ## The loop
 
