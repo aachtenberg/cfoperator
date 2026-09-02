@@ -117,9 +117,10 @@ def test_production_shaped_config_keeps_remediation_armed():
 # behaviour of the live deployment changes silently on the next deploy —
 # which is exactly what this whole merge is meant to make impossible.
 PRODUCTION_OMITTED_DEFAULTS = [
-    # agent.py _deep_system_sweep / _restart_finding_is_noise
+    # agent.py _deep_system_sweep / _restart_finding_is_noise / _recovered_and_healthy
     (("ooda", "noise", "enabled"), True),
-    (("ooda", "noise", "recovered_restart_threshold"), 3),
+    (("ooda", "noise", "recovered_restart_stable_seconds"), 600),
+    (("ooda", "noise", "recovered_restart_max_per_day"), 6),
     # agent.py _get_sweep_max_iterations -> `return 12`
     (("ooda", "sweep", "max_iterations"), 12),
     # agent.py _get_max_tool_iterations -> `.get('max_tool_iterations', 10)`
