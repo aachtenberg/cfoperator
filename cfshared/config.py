@@ -203,6 +203,7 @@ DEFAULT_CONFIG: dict = {
         "noise": {
             "enabled": True,
             "recovered_restart_stable_seconds": 600,
+            "recovered_restart_max_per_day": 6,
             "recovered_ready_stable_seconds": 600,
         },
         "morning_summary": {"enabled": True, "hour_start": 7, "hour_end": 9},

@@ -237,13 +237,16 @@ ooda:
   #   - skip the deep investigation entirely (early-exit to 'monitoring'), and
   #   - downgrade any needs_action that recovered during investigation.
   # Flapping and still-broken pods still investigate. Each class has its own
-  # flapping guard: restarts leave lastState.terminated.finishedAt, while a
-  # probe restarts nothing, so the probe class asks how long the pod has held
-  # Ready. Lifetime restartCount is not the restart-class signal — it only
-  # goes up, so a pod that crashed months ago would never clear a count gate.
+  # flapping guard: restarts leave lastState.terminated.finishedAt *and*
+  # startTime (age of last restart, plus lifetime rate = restartCount / pod
+  # age), while a probe restarts nothing, so the probe class asks how long
+  # the pod has held Ready. Lifetime restartCount alone is not the
+  # restart-class signal — it only goes up, so a pod that crashed months ago
+  # would never clear a count gate.
   noise:
     enabled: true
     recovered_restart_stable_seconds: 600  # restart class: last restart must be this old
+    recovered_restart_max_per_day: 6       # restart class: lifetime restarts / pod age
     recovered_ready_stable_seconds: 600    # probe class: Ready must have held this long
 
   # Proactive mode: deep sweep every N seconds (1800 = 30 minutes)

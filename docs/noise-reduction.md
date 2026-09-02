@@ -25,12 +25,12 @@ mis-configured (a non-runtime concern) still gets `needs_action`.
   `needs_action → monitoring` when the condition has recovered. (B1 already does
   the opposite: `resolved → needs_action` when still broken.)
 - **1b — early-exit / don't investigate healthy things.** *Before* the LLM loop,
-  if the pod is healthy-now + recovered + last restart (restart class) or Ready
-  hold (probe class) older than the class threshold (default 600s),
+  if the pod is healthy-now + recovered + (restart class: last restart older
+  than 600s *and* lifetime rate ≤ 6/day; probe class: Ready held 600s),
   short-circuit to `monitoring` with a logged reason and a lightweight
   investigation record. Skips the expensive investigation (227s/882s) and never
-  generates a `needs_action`. A restart in the last window still investigates —
-  1a is the safety net for those.
+  generates a `needs_action`. A restart in the last window, or a slow crash
+  cycle, still investigates — 1a is the safety net for those.
 
 ### Tier 2 — match channel to severity (stops the *red*, not the signal)
 - **2c — severity→channel mapping.** Real-time red only for `escalate` /
@@ -48,13 +48,18 @@ here — power-outage aftermath, SD flakiness).
 
 ## Status
 - **Tier 1 (1a + 1b): implemented, default-on** (`ooda.noise.enabled: true`,
-  `recovered_restart_stable_seconds: 600`). `_recovered_and_healthy()` +
-  `_early_exit_monitoring()` in `agent/agent.py`; tests in
-  `agent/test_noise_filter.py`. faster-whisper-class alerts now early-exit to
-  `monitoring`; a last restart inside the window, and still-broken pods, still
-  investigate. Lifetime `restartCount` is not the flapping signal (CFOP-150):
-  a pod that crashed months ago and has been Ready ever since (camera-api:
-  count 13, last termination 87 days ago) now clears the filter.
+  `recovered_restart_stable_seconds: 600`, `recovered_restart_max_per_day: 6`).
+  `_recovered_and_healthy()` + `_early_exit_monitoring()` in `agent/agent.py`;
+  tests in `agent/test_noise_filter.py`. faster-whisper-class alerts now
+  early-exit to `monitoring`. Restart-class flapping is two signals, both of
+  which must say settled: last-restart age (`lastState.terminated.finishedAt`)
+  catches a flap inside the 600s window, and lifetime rate (`restartCount /
+  pod age` via `status.startTime`) catches a cycle longer than the window
+  (periodic OOM, a leak that takes ~20 minutes). CrashLoop backoff caps at 5
+  minutes, so it cannot outrun the age window; the rate gate is for the slower
+  cycle. Lifetime `restartCount` alone is not the signal (CFOP-150): camera-api
+  (count 13, last termination 87 days ago, ~0.15/day) clears both gates; a
+  20-minute crash cycle (~72/day) does not.
 - **Tier-1 extended to the probe class + sweep-authored prose (CFOP-21).**
   Tier-1 was dead for everything the *sweep* wrote, because two independent
   gates both missed: the trigger vocabulary carried no probe/readiness wording,
@@ -131,13 +136,17 @@ here — power-outage aftermath, SD flakiness).
 - Deterministic on purpose — no new LLM unpredictability in the noise filter.
 - Config: `ooda.noise` (thresholds) — default-on, conservative thresholds.
   `enabled` (true), `recovered_restart_stable_seconds` (600, restart class),
+  `recovered_restart_max_per_day` (6, restart class),
   `recovered_ready_stable_seconds` (600, probe class). The retired
   `recovered_restart_threshold` (lifetime count) is ignored if still present
   in a live config.
 - The filter's bias is asymmetric on purpose: when it cannot pin exactly one
-  pod, or cannot tell how long that pod has been Ready, it does **not** fire. A
-  missed filter costs one redundant investigation; a wrong one silences a real
-  alert.
+  pod, or cannot tell how long that pod has been Ready, or cannot tell when
+  it last restarted / how old the pod is, it does **not** fire. A missed
+  filter costs one redundant investigation; a wrong one silences a real
+  alert. The restart-class rate gate is the same bias in the other direction
+  from age-alone: a cycle slower than 600s but faster than six restarts per
+  day of pod life still investigates.
 
 ## Known data gap: stored outcomes before 2026-08-09 (CFOP-20)
 

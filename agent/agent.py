@@ -1100,14 +1100,16 @@ def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
 # docs/noise-reduction.md.
 #
 # Kept as two classes because they need different flapping traces. The restart
-# class leaves lastState.terminated.finishedAt, so
-# `recovered_restart_stable_seconds` can tell a settled pod from one that
-# restarted this window. Lifetime restartCount cannot: it only goes up, so a
+# class leaves lastState.terminated.finishedAt *and* startTime, so age of last
+# restart plus lifetime rate (restartCount / pod age) can tell a settled pod
+# from one still cycling. Lifetime restartCount cannot: it only goes up, so a
 # pod that crashed months ago and has been Ready ever since still looks like
-# a flap (CFOP-150). The probe class leaves no restart trace — a readiness
-# probe restarts nothing, so restartCount / lastState are structurally empty
-# however badly the probe is flapping. _PROBE_TRIGGER routes that class to
-# its own guard (how long the pod has held Ready); see _recovered_and_healthy.
+# a flap (CFOP-150). Age alone misses a cycle longer than the window
+# (periodic OOM); rate is that cycle. The probe class leaves no restart
+# trace — a readiness probe restarts nothing, so restartCount / lastState
+# are structurally empty however badly the probe is flapping. _PROBE_TRIGGER
+# routes that class to its own guard (how long the pod has held Ready); see
+# _recovered_and_healthy.
 #
 # The probe class names the three kubelet probe types explicitly rather than
 # matching bare "probe"/"unhealthy". Those wider words reach findings that are
@@ -2909,10 +2911,53 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         return min(ages)
 
     @staticmethod
+    def _restart_rate_per_day(status: Dict[str, Any]) -> Optional[float]:
+        """Lifetime restarts per day of pod age, or None when age is unknown.
+
+        ``restartCount`` over ``status.startTime`` is the window the API
+        actually has — no Prometheus needed. 0 restarts is 0.0 regardless
+        of age. Missing or unparseable startTime, or a zero-length age, is
+        unknown and must not license silencing.
+        """
+        restarts = max((int(c.get('restartCount') or 0)
+                        for c in status.get('containerStatuses') or []),
+                       default=0)
+        if restarts == 0:
+            return 0.0
+        age = CFOperator._k8s_age_seconds(status.get('startTime'))
+        if age is None or age <= 0:
+            return None
+        return restarts / (age / 86400.0)
+
+    def _restart_class_settled(self, status: Dict[str, Any]) -> tuple:
+        """Restart-class flapping guards: last-restart age AND lifetime rate.
+
+        Returns (settled: bool, last_restart_age: float|None). Both signals
+        must say settled; unknown either way is not settled. Age alone
+        misses a pod whose restart *interval* is longer than the age
+        window (periodic OOM, a leak that takes ~20 minutes) — CrashLoop
+        backoff caps at 5 minutes so it cannot outrun 600s, but a slower
+        cycle can. Rate (restartCount / pod age) is that cycle, using
+        startTime already on the status dict.
+        """
+        age = self._last_restart_age_seconds(status)
+        min_stable = int(self._noise_config().get('recovered_restart_stable_seconds', 600))
+        if age is None or age < min_stable:
+            return (False, age)
+        rate = self._restart_rate_per_day(status)
+        max_per_day = float(self._noise_config().get('recovered_restart_max_per_day', 6))
+        if rate is None or rate > max_per_day:
+            return (False, age)
+        return (True, age)
+
+    @staticmethod
     def _fmt_last_restart_age(seconds: float) -> str:
         """Short operator-facing hold time for the recovered-restart note."""
         if seconds == float('inf'):
-            return "never restarted"
+            # The current pod, not the finding: a replacement with
+            # restartCount 0 can suppress "restarted 13 times" about the
+            # previous replica. Say so without contradicting the finding.
+            return "no restarts on the current pod"
         minutes = int(seconds // 60)
         if minutes >= 1440:
             return f"last restart {minutes // 1440}d"
@@ -2948,9 +2993,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         # Each class has its own flapping trace. Probe-class triggers carry
         # no restart signal, so last-restart age cannot tell a settled pod
         # from one whose readiness is flapping — ask how long it has held
-        # Ready instead. Restart-class triggers leave finishedAt; lifetime
-        # restartCount cannot distinguish a pod that crashed months ago from
-        # one that restarted four times this hour (CFOP-150).
+        # Ready instead. Restart-class triggers leave finishedAt *and*
+        # startTime: last-restart age catches a flap inside the window,
+        # lifetime rate (restartCount / pod age) catches a cycle longer
+        # than the window. Lifetime count alone cannot distinguish camera-api
+        # (13 restarts, last death 87 days ago) from a slow crasher.
         stable_note = ""
         if _PROBE_TRIGGER.search(trigger or ""):
             stable = self._ready_stable_seconds(status)
@@ -2959,9 +3006,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 return (False, None, 0)
             stable_note = f"Ready {int(stable // 60)}m, "
         else:
-            age = self._last_restart_age_seconds(status)
-            min_stable = int(self._noise_config().get('recovered_restart_stable_seconds', 600))
-            if age is None or age < min_stable:
+            settled, age = self._restart_class_settled(status)
+            if not settled:
                 return (False, None, 0)
             stable_note = f"{self._fmt_last_restart_age(age)}, "
         restarts = max((c.get('restartCount', 0) for c in status.get('containerStatuses', [])),
@@ -2990,14 +3036,15 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
     def _restart_finding_is_noise(self, finding_text: str) -> Optional[str]:
         """Reason if a 'container restarted N times' sweep finding is recovered
-        noise — the pod is healthy now and its last restart has aged out.
-        None otherwise.
+        noise — the pod is healthy now, its last restart has aged out, and
+        its lifetime restart rate is below the cap. None otherwise.
 
         Mirrors the Tier-1 alert-path filter for the *sweep* path, which
         generates these findings independently (e.g. faster-whisper: healthy
         21h, last restart a day ago, re-flagged every sweep). Lifetime
         restartCount is not the flapping signal: a pod that crashed months
-        ago still carries a high count (CFOP-150).
+        ago still carries a high count (CFOP-150). Rate (count / pod age)
+        is, so a slow crash cycle still keeps the finding.
         """
         text = (finding_text or "").lower()
         if 'restart' not in text:
@@ -3018,19 +3065,16 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                    if (p.get('metadata') or {}).get('name', '').startswith(name)]
         if not matched:
             return None
-        min_stable = int(self._noise_config().get('recovered_restart_stable_seconds', 600))
         newest: Optional[float] = None
         for p in matched:
             st = p.get('status', {})
             if not self._pod_is_healthy({'phase': st.get('phase'),
                                          'conditions': st.get('conditions', [])}):
                 return None  # something still unhealthy — keep the finding
-            age = self._last_restart_age_seconds(st)
-            if age is None:
-                return None  # can't tell when it last restarted — keep
+            settled, age = self._restart_class_settled(st)
+            if not settled:
+                return None  # recent, high-rate, or unknown — keep
             newest = age if newest is None else min(newest, age)
-        if newest is None or newest < min_stable:
-            return None  # recent (or no containers) — keep the finding
         return (f"container '{name}' in {ns} is healthy now "
                 f"({self._fmt_last_restart_age(newest)}) — recovered transient, not actionable")
 

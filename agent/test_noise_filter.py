@@ -18,14 +18,24 @@ def _iso_ago(seconds):
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _healthy(restarts=1, last_restart_s=86400):
-    """A Running+Ready pod. last_restart_s=None omits lastState (unknown)."""
+def _healthy(restarts=1, last_restart_s=86400, start_time_s="auto"):
+    """A Running+Ready pod as `get_pod_status` returns it.
+
+    last_restart_s=None omits lastState (unknown). start_time_s=None omits
+    startTime (unknown rate). start_time_s="auto" uses last_restart_s, or
+    1 day when that is also unset.
+    """
     cs = {"restartCount": restarts}
     if last_restart_s is not None and restarts > 0:
         cs["lastState"] = {"terminated": {"finishedAt": _iso_ago(last_restart_s)}}
-    return {"success": True, "phase": "Running",
-            "conditions": [{"type": "Ready", "status": "True"}],
-            "containerStatuses": [cs]}
+    status = {"success": True, "phase": "Running",
+              "conditions": [{"type": "Ready", "status": "True"}],
+              "containerStatuses": [cs]}
+    if start_time_s == "auto":
+        start_time_s = last_restart_s if last_restart_s is not None else 86400
+    if start_time_s is not None:
+        status["startTime"] = _iso_ago(start_time_s)
+    return status
 
 
 def _pending():
@@ -134,7 +144,26 @@ def test_never_restarted_is_recovered():
     op = _op(_healthy(restarts=0, last_restart_s=None))
     recovered, note, restarts = op._recovered_and_healthy({"namespace": "ai", "resource_name": "x"}, FW_TRIGGER)
     assert recovered is True and restarts == 0
-    assert "never restarted" in note
+    assert "no restarts on the current pod" in note
+
+
+def test_slow_cycle_crasher_still_investigated():
+    """Age-alone false negative: last restart 12m ago (outside the 600s
+    window) but 200 restarts over 2 days (~100/day). CrashLoop backoff
+    cannot do this — it caps at 5 minutes — but a periodic OOM can.
+    Rate must refuse even though age would pass."""
+    op = _op(_healthy(restarts=200, last_restart_s=12 * 60, start_time_s=2 * 86400))
+    recovered, _, _ = op._recovered_and_healthy({"namespace": "ai", "resource_name": "x"}, FW_TRIGGER)
+    assert recovered is False
+
+
+def test_unknown_pod_start_time_is_not_filtered():
+    """High lifetime count, old last restart, but no startTime: cannot
+    compute rate, so the filter must not silence."""
+    op = _op(_healthy(restarts=13, last_restart_s=87 * 86400, start_time_s=None))
+    recovered, _, _ = op._recovered_and_healthy(
+        {"namespace": "apps", "resource_name": "camera-api-x"}, FW_TRIGGER)
+    assert recovered is False
 
 
 # --- Gap 1: sweep-finding restart suppression --------------------------------
@@ -146,14 +175,19 @@ class _K8sPods:
         return {"pods": self._pods}
 
 
-def _pod(name, phase="Running", ready=True, restarts=1, last_restart_s=86400):
+def _pod(name, phase="Running", ready=True, restarts=1, last_restart_s=86400,
+         start_time_s="auto"):
     cs = {"restartCount": restarts}
     if last_restart_s is not None and restarts > 0:
         cs["lastState"] = {"terminated": {"finishedAt": _iso_ago(last_restart_s)}}
-    return {"metadata": {"name": name, "namespace": "ai"},
-            "status": {"phase": phase,
-                       "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
-                       "containerStatuses": [cs]}}
+    status = {"phase": phase,
+              "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+              "containerStatuses": [cs]}
+    if start_time_s == "auto":
+        start_time_s = last_restart_s if last_restart_s is not None else 86400
+    if start_time_s is not None:
+        status["startTime"] = _iso_ago(start_time_s)
+    return {"metadata": {"name": name, "namespace": "ai"}, "status": status}
 
 
 def _op_with_pods(pods):
@@ -184,6 +218,14 @@ def test_restart_finding_kept_when_last_restart_recent():
     op = _op_with_pods([_pod("faster-whisper-fcf845fbb-g47bq",
                              restarts=1, last_restart_s=120)])
     assert op._restart_finding_is_noise(FW_FINDING.lower()) is None
+
+
+def test_restart_finding_kept_when_rate_is_high():
+    op = _op_with_pods([_pod("faster-whisper-fcf845fbb-g47bq",
+                             restarts=200, last_restart_s=12 * 60,
+                             start_time_s=2 * 86400)])
+    assert op._restart_finding_is_noise(
+        "container 'faster-whisper' in namespace 'ai' has restarted 200 times") is None
 
 
 def test_restart_finding_kept_when_last_restart_unknown():
@@ -231,7 +273,7 @@ PLANE_API_POD = "plane-api-wl-79589b67b5-gthmp"
 
 def _cluster_pod(name, namespace, ready_since_s=86400, restarts=0,
                  phase="Running", ready=True, ready_transition=True,
-                 last_restart_s=None):
+                 last_restart_s=None, start_time_s="auto"):
     """A pod as `kubectl get pods -A -o json` returns it."""
     cond = {"type": "Ready", "status": "True" if ready else "False"}
     if ready_transition:
@@ -244,9 +286,14 @@ def _cluster_pod(name, namespace, ready_since_s=86400, restarts=0,
                      # care about Ready-hold don't fail the age guard
     if age is not None and restarts > 0:
         cs["lastState"] = {"terminated": {"finishedAt": _iso_ago(age)}}
+    status = {"phase": phase, "conditions": [cond],
+              "containerStatuses": [cs]}
+    if start_time_s == "auto":
+        start_time_s = age if age is not None else ready_since_s
+    if start_time_s is not None:
+        status["startTime"] = _iso_ago(start_time_s)
     return {"metadata": {"name": name, "namespace": namespace},
-            "status": {"phase": phase, "conditions": [cond],
-                       "containerStatuses": [cs]}}
+            "status": status}
 
 
 class _K8sCluster:
