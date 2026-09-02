@@ -312,6 +312,13 @@ def test_every_handoff_is_a_verification_pass():
     const = re.search(r"const VERIFY_ONLY = (.*?);\n", h, re.S)
     assert const, "index.html has no VERIFY_ONLY clause"
     assert "do not restart" in const.group(1)
+    # ...and it says which message it covers (CFOP-160). mode: 'verify' rides
+    # on the hand-off turn only, but this sentence stays in the history for
+    # the whole session; written as an unqualified rule the model keeps
+    # obeying it turns after the policy stopped applying.
+    assert "this message only" in const.group(1), (
+        "the verify-only clause reads as a standing order — it outlives the turn "
+        "it applies to, in the chat history the model is re-sent every turn")
     for builder in ("remediationQuestion", "investigationQuestion", "findingQuestion"):
         src = function_source(h, builder)
         assert "VERIFY_ONLY" in src, f"{builder}() does not carry the verify-only clause"

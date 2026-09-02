@@ -461,3 +461,167 @@ class TestTriageInvestigation:
         _, reg = _registry()
         enum = reg.tools["triage_investigation"]["schema"]["parameters"]["properties"]["action"]["enum"]
         assert tuple(enum) == tuple(found[0])
+
+
+class TestQueueGitopsPatch:
+    """CFOP-160: the queue's one entry point from chat.
+
+    Before this the console agent could diagnose a fix, be told to make it,
+    and have nowhere to put it — github_create_pr needs a branch that already
+    exists and nothing else in the registry writes. It offered to ssh
+    somewhere and run git instead (session 35).
+
+    What these hold down is the shape of the row, because the row is a
+    contract with a separate image: the executor reads
+    payload['recommendation'] / ['target'] / ['repo'] and generates the diff
+    from them, and it never sees this conversation.
+    """
+
+    def _queued(self, op, **over):
+        """The row queue_remediation would have written, as get_remediation
+        returns it to the approve step."""
+        row = {"id": 7, "status": "needs-human", "remediation_class": "gitops-patch",
+               "risk": "low", "claimed_at": None, "completed_at": None,
+               "pr_url": None, "payload": {}}
+        row.update(over)
+        return row
+
+    def _happy(self):
+        op, reg = _registry()
+        op.kb.queue_remediation.return_value = 7
+        # MagicMock returns a truthy Mock for anything unset, which reads as a
+        # conflict; the real policy returns None for a fresh gitops row.
+        op.kb.remediation_approve_conflict.return_value = None
+        op.kb.get_remediation.return_value = self._queued(op)
+        op.kb.update_remediation_status.return_value = True
+        return op, reg
+
+    def test_the_queue_has_an_entry_point_from_chat(self):
+        _, reg = _registry()
+        names = {s["function"]["name"] for s in reg.get_schemas()}
+        assert "queue_gitops_patch" in names
+
+    def test_it_queues_a_gitops_patch_the_executor_can_read(self):
+        op, reg = self._happy()
+        out = reg.execute("queue_gitops_patch", {
+            "recommendation": "In the plane-ce Helm values, raise the plane-api "
+                              "readinessProbe timeoutSeconds from 1 to 5.",
+            "target": {"namespace": "plane", "kind": "Deployment", "name": "plane-api-wl"},
+            "investigation_id": 2348,
+        })
+        assert out["success"] is True and out["remediation_id"] == 7
+        kw = op.kb.queue_remediation.call_args.kwargs
+        assert kw["remediation_class"] == "gitops-patch"
+        assert kw["investigation_id"] == 2348
+        payload = kw["payload"]
+        assert "timeoutSeconds from 1 to 5" in payload["recommendation"]
+        assert payload["target"]["name"] == "plane-api-wl"
+        assert payload["rendered_context"], "the executor renders this into its prompt"
+
+    def test_the_model_cannot_hand_itself_a_confidence(self):
+        """remediation_is_auto_eligible exists so a model cannot decide its own
+        work is safe to run unattended. Passing a confidence high enough to
+        clear it — rather than approving afterwards — would hollow that out for
+        every caller of the queue, not just this tool."""
+        op, reg = self._happy()
+        reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
+        assert op.kb.queue_remediation.call_args.kwargs["confidence"] is None
+
+    def test_the_ask_is_the_approval_and_it_goes_through_the_console_path(self):
+        """An admin who asked for the fix should not then have to go and click
+        Approve on it. The transition is the console's own, conflicts and all —
+        not a second way to reach 'queued'."""
+        op, reg = self._happy()
+        out = reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
+        assert out["approved"] is True
+        op.kb.remediation_approve_conflict.assert_called_once()
+        op.kb.update_remediation_status.assert_called_once_with(7, "queued")
+
+    def test_a_row_the_approve_policy_refuses_is_reported_not_lost(self):
+        op, reg = self._happy()
+        op.kb.remediation_approve_conflict.return_value = "a PR is already open for this row"
+        out = reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
+        assert out["success"] is True and out["approved"] is False
+        assert "#7" in out["message"] and "awaiting a human" in out["message"]
+        op.kb.update_remediation_status.assert_not_called()
+
+    def test_the_dedupe_key_is_in_the_payload_as_well_as_the_kwarg(self):
+        """queue_remediation matches on payload['dedupe_key'] and does NOT
+        inject it — a caller passing only the kwarg gets a key that silently
+        never matches anything, so every repeat opens another PR."""
+        op, reg = self._happy()
+        reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
+        kw = op.kb.queue_remediation.call_args.kwargs
+        assert kw["dedupe_key"]
+        assert kw["payload"]["dedupe_key"] == kw["dedupe_key"]
+
+    def test_the_same_ask_twice_reports_the_open_row(self):
+        op, reg = _registry()
+        op.kb.queue_remediation.return_value = None      # deduped
+        op.kb.find_open_remediation_by_dedupe_key.return_value = {
+            "id": 7, "status": "queued", "payload": {}}
+        out = reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
+        assert out["duplicate"] is True and out["success"] is False
+        assert "#7" in out["message"]
+        op.kb.update_remediation_status.assert_not_called()
+
+    def test_a_recommendation_too_thin_to_patch_from_is_refused(self):
+        """The executor picks the file from the identifiers in this text. 'fix
+        it' spends two LLM passes to produce a wrong diff."""
+        op, reg = self._happy()
+        out = reg.execute("queue_gitops_patch", {"recommendation": "fix it"})
+        assert "too vague" in out["error"]
+        op.kb.queue_remediation.assert_not_called()
+
+    def test_an_unknown_repo_is_refused_rather_than_queued_against(self):
+        op, reg = self._happy()
+        out = reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
+            "repo": "someone-elses/repo"})
+        assert "Unknown repo" in out["error"]
+        op.kb.queue_remediation.assert_not_called()
+
+    def test_a_linked_repo_is_resolved_to_the_slug_the_executor_wants(self):
+        """CFOP_GIT_REPO is an owner/repo slug; the operator says
+        'homelab-infra'."""
+        op, reg = self._happy()
+        reg.github_tools = MagicMock()
+        reg.github_tools.repos = {"homelab-infra": {"github": "aachtenberg/homelab-infra"}}
+        reg.github_tools._resolve_slug.return_value = "aachtenberg/homelab-infra"
+        reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
+            "repo": "homelab-infra"})
+        assert (op.kb.queue_remediation.call_args.kwargs["payload"]["repo"]
+                == "aachtenberg/homelab-infra")
+
+    def test_no_repo_leaves_the_default_to_the_deployment(self):
+        """Omitting it is not the same as choosing one: the drainer falls back
+        to executor.git_repo, which is where a cluster fix belongs."""
+        op, reg = self._happy()
+        reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
+        assert "repo" not in op.kb.queue_remediation.call_args.kwargs["payload"]
+
+    def test_the_payload_keys_are_the_ones_the_executor_reads(self):
+        """A cross-artifact contract: the executor is a separate image, and a
+        key renamed on one side is a work order the other reads as empty. Read
+        from its source rather than importing it — executor/ is not on this
+        suite's path."""
+        import pathlib
+        src = (pathlib.Path(__file__).resolve().parent.parent
+               / "executor" / "entrypoint.py").read_text()
+        op, reg = self._happy()
+        reg.execute("queue_gitops_patch", {
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
+            "target": {"namespace": "plane"}})
+        payload = op.kb.queue_remediation.call_args.kwargs["payload"]
+        for key in ("recommendation", "target", "rendered_context"):
+            assert key in payload
+            assert f'payload.get("{key}"' in src, (
+                f"the executor no longer reads payload[{key!r}] — this tool is "
+                "writing a work order nothing reads")
