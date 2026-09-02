@@ -51,9 +51,19 @@ jobs:
         # routes.py / models.py shadow anything of those names. Both run with
         # the repo root only.
         #
-        # Root-level test_*.py are integration-style; only the hermetic ones run
-        # here. Deliberately excluded:
-        #   - test_tool_calling.py            -> needs a live LLM (fails at fixture setup)
+        # tests/ holds the integration-style suites that used to sit in the repo
+        # root. It is collected as a DIRECTORY, not an explicit file list
+        # (CFOP-155). The old list was a standing trap -- a new file that nobody
+        # added to it passed locally and never ran here (CFOP-139 added a guard
+        # for exactly that). Globbing removes the failure mode instead of
+        # policing it, and tests/test_workflows.py now asserts both that the
+        # root stays free of test files and that this stays a directory run.
+        #
+        # Nothing is excluded any more. The one file that had to be
+        # (test_tool_calling.py, a live-LLM CLI benchmark whose
+        # `def test_model(host, url, model)` made pytest treat its parameters as
+        # fixtures and die at setup) was never a test: it now lives at
+        # benchmarks/tool_calling_bench.py.
         run: |
           set -u
           root="$PWD"
@@ -72,27 +82,7 @@ jobs:
           run "observability" "${root}" observability
           run "auth" "${root}" auth
 
-          run "root-level" "${root}" \
-            test_web_auth.py test_web_auth_db.py test_auth_integration.py \
-            test_console_nav.py test_console_brand.py test_console_llm_switcher.py \
-            test_console_provider_registry.py \
-            test_console_drawer.py test_console_change_record.py test_console_vendor.py test_console_cockpit.py test_console_repos.py \
-            test_console_websocket.py \
-            test_console_version.py \
-            test_console_skills.py \
-            test_console_a11y.py test_console_common.py \
-            test_dockerfile_image.py test_config_merge.py \
-            test_http_investigate.py test_k8s_probe_filter.py \
-            test_triage_engine.py test_github_integration.py test_event_runtime.py \
-            test_build_triage_dataset.py test_remediation_taxonomy.py \
-            test_investigation_triage.py \
-            test_compose_trial.py test_cockpit_attach_contract.py \
-            test_install_cfassist.py test_skills_bundle.py \
-            test_cockpit_spawn.py test_cockpit_ladder.py test_cockpit_writeback.py test_cockpit_open.py \
-            test_cockpit_bridge.py \
-            test_demo_alert.py test_demo_kind.py test_helm_chart.py \
-            test_setup_wizard.py test_docs_fix_contract.py test_docs_metrics_coverage.py \
-            test_workflows.py test_plane_mcp_wrapper.py
+          run "tests" "${root}" tests
 
           exit "${fail}"
 
