@@ -27,6 +27,57 @@ this runbook touches production until step 9.
 
 ---
 
+## 0.5 Choose the base model — screen it, do not assume it
+
+**Do this before any retrain that is not a straight repeat.** It costs minutes
+per candidate and no GPU-hours, and it uses the same gate that will judge the
+fine-tune.
+
+The 14B was sized when the training target was four canned strings. The v2
+target is mostly *copy the right span out of the prompt*, which small models do
+well — so the size that made sense for v1 is not automatically right now. Two
+constraints push the same way:
+
+- **Training** must fit 16 GB alongside the Windows compositor. The 14B at
+  4-bit is ~10.4 GB of weights and spent an evening fighting for headroom
+  (§5). An 8B is roughly half that.
+- **Serving** co-resides with `gemma4:26b` (18 GB) on a 24 GB card, so the
+  triage model's ~8.2 GB is the thing squeezing it.
+
+`triage_eval.py` scores base models directly — the model card records
+`ministral-3:14b` (base) at **37/42, hard cases 4/12 + 4/12, 0.93s**. That row
+is the number to beat.
+
+```bash
+ollama pull <candidate>
+PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
+  --model <candidate> --runs 36 --output /tmp/base-<name>.json
+```
+
+**Pick on the traps, not the headline.** Base ministral's two failures were
+both the *notify shortcut* — reading precedent **presence** as precedent
+**outcome** (`precedent-monitoring`), and severity without breadth
+(`critical-narrow`) — taken about two thirds of the time. The fine-tune
+eliminated both.
+
+That is the right way to read a screen: **fine-tuning reliably fixes rubric
+traps and less reliably installs comprehension.** A candidate at 35/42 that
+does *not* take the shortcut is a better substrate than one at 40/42 that
+does.
+
+**Prefer the same family first.** A same-family model keeps the chat template,
+the `PARSER ministral` line and the ollama tool-call caveat identical, so
+nothing downstream changes. A different family means re-verifying the Modelfile
+against the base model's exact template — the model card is emphatic that a
+paraphrased template will not transfer, and that is a silent failure, not a
+loud one.
+
+Record the screen next to the fine-tune's numbers so the choice is auditable
+later. If no candidate beats the incumbent on the traps, staying on the 14B is
+a result, not a non-decision.
+
+---
+
 ## 1. Build the dataset
 
 ```bash
