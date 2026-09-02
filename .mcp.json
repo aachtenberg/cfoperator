@@ -2,10 +2,9 @@
   "mcpServers": {
     "plane": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@makeplane/plane-mcp-server@0.1.4"],
+      "command": "uvx",
+      "args": ["plane-mcp-server@0.3.1", "stdio"],
       "env": {
-        "PLANE_API_HOST_URL": "https://plane.xgrunt.com",
         "PLANE_BASE_URL": "https://plane.xgrunt.com",
         "PLANE_API_KEY": "${PLANE_API_KEY}",
         "PLANE_WORKSPACE_SLUG": "cfoperator"
@@ -13,4 +12,3 @@
     }
   }
 }
-
