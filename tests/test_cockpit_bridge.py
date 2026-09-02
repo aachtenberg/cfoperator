@@ -11,8 +11,10 @@ unit-testable without a network, and a contributor who adds a fifth way in has
 to add it where the tests already look.
 """
 
+import logging
 import os
 import struct
+import sys
 import time
 import fcntl
 import pty
@@ -20,6 +22,7 @@ import termios
 
 import pytest
 
+from repo_paths import REPO_ROOT
 from cockpit.bridge import (
     AUTH_TIMEOUT_SECONDS, BIND_TIMEOUT_SECONDS, CLOSE_BUSY, CLOSE_FORBIDDEN,
     CLOSE_NO_SESSION, CLOSE_TIER_UNSUPPORTED, CLOSE_UNAUTHENTICATED,
@@ -618,3 +621,109 @@ def test_build_bridge_config_reads_the_pod_tier_flag():
 def test_env_overrides_the_pod_tier_flag(monkeypatch):
     monkeypatch.setenv("CFOP_COCKPIT_BRIDGE_POD_TIER", "1")
     assert build_bridge_config({"cockpit": {"bridge_pod_tier": False}}).pod_tier is True
+
+
+# ---------------------------------------------------------------------------
+# The agent actually starting the thing (CFOP-158)
+# ---------------------------------------------------------------------------
+#
+# Everything above tests the bridge's own refusals, which is where the risk
+# is -- and that is exactly why nothing noticed when the agent stopped
+# calling start() at all. #236's mechanical `cockpit_` -> `cockpit.` rename
+# turned `self.cockpit_bridge = bridge` into `self.cockpit.bridge = bridge`,
+# an attribute that does not exist, and since _start_cockpit_bridge swallows
+# its own failures by design the port simply never opened. Prod ran with
+# CFOP_COCKPIT_BRIDGE_ENABLED=true and a closed 8084 until someone read the
+# boot log.
+#
+# So this asserts the one thing the unit tests above cannot: that the wiring
+# reaches start(). It deliberately does NOT assert where the reference is
+# stashed -- that attribute name is what broke, and pinning it would just
+# re-encode today's spelling instead of the behaviour that matters.
+
+
+class _BridgeSpy:
+    """Stands in for CockpitBridge; records that the agent got as far as start()."""
+
+    def __init__(self, config, resolver=None, token_verifier=None, audit=None):
+        self.config = config
+        self.resolver = resolver
+        self.token_verifier = token_verifier
+        self.audit = audit
+        self.started = False
+
+    def start(self):
+        self.started = True
+        return True
+
+
+class _WebServerStub:
+    def resolve_cockpit_session(self, investigation_id):  # pragma: no cover - identity
+        return None
+
+    def verify_bridge_token(self, token):  # pragma: no cover - identity
+        return None
+
+    def record_bridge_event(self, **kwargs):  # pragma: no cover - identity
+        return None
+
+
+def _operator_with_bridge_spy(monkeypatch, spies):
+    """A bare CFOperator carrying only what _start_cockpit_bridge touches.
+
+    __new__ rather than a constructed agent: building one reaches a database,
+    a tool registry and seven SSH hosts, none of which this behaviour depends
+    on, and a test that needs all that to prove a method was called is a test
+    nobody will keep running.
+    """
+    # agent/agent.py imports its siblings by bare name, so it needs its own
+    # directory on the path -- root first, so `agent` still resolves to the
+    # package and not to agent/agent.py. Same two lines as
+    # tests/test_remediation_taxonomy.py, and done here rather than at module
+    # import so the rest of this file keeps loading on a machine where the
+    # agent's dependencies are missing.
+    sys.path.insert(0, str(REPO_ROOT / "agent"))
+    sys.path.insert(0, str(REPO_ROOT))
+
+    import cockpit.bridge as bridge_mod
+    import agent.agent as agent_mod
+
+    def factory(*args, **kwargs):
+        spy = _BridgeSpy(*args, **kwargs)
+        spies.append(spy)
+        return spy
+
+    monkeypatch.setattr(bridge_mod, "CockpitBridge", factory)
+
+    operator = agent_mod.CFOperator.__new__(agent_mod.CFOperator)
+    operator.config = {"cockpit": {"bridge_enabled": True,
+                                   "bridge_origins": CONSOLE}}
+    operator.web_server = _WebServerStub()
+    return operator
+
+
+def test_the_agent_starts_the_bridge_it_built(monkeypatch, caplog):
+    spies = []
+    operator = _operator_with_bridge_spy(monkeypatch, spies)
+
+    with caplog.at_level(logging.ERROR):
+        operator._start_cockpit_bridge()
+
+    assert spies, "the agent never constructed a bridge"
+    assert spies[0].started, "the agent built a bridge and never called start()"
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR], \
+        "starting the bridge logged an error: " + \
+        "; ".join(r.getMessage() for r in caplog.records)
+
+
+def test_the_agent_hands_the_bridge_the_consoles_own_callbacks(monkeypatch):
+    """A bridge that starts with the wrong resolver authorizes nothing."""
+    spies = []
+    operator = _operator_with_bridge_spy(monkeypatch, spies)
+    operator._start_cockpit_bridge()
+
+    spy = spies[0]
+    assert spy.resolver == operator.web_server.resolve_cockpit_session
+    assert spy.token_verifier == operator.web_server.verify_bridge_token
+    assert spy.audit == operator.web_server.record_bridge_event
+    assert spy.config.enabled is True
