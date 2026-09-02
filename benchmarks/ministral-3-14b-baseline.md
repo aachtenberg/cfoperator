@@ -1,5 +1,10 @@
 # ministral-3:14b — base-model baseline and fine-tune result
 
+> This page is the **benchmark record**: what the numbers were before and after.
+> For the model card — training recipe, dataset shape, artifact locations,
+> rebuild-from-NAS procedure and rollback — see
+> [docs/triage-fine-tune.md](../docs/triage-fine-tune.md).
+
 ## Fine-tune result (2026-08-20, same day)
 
 `cfop-triage-ministral3:v1` — QLoRA (attention-only r16, LR 1e-4, 2 epochs,

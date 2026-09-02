@@ -203,6 +203,10 @@ llm:
   # unset, triage uses the primary chain unchanged. Investigations are
   # unaffected. The console Admin -> LLM tab can override this live (DB over
   # config; 'off' there disables despite this key). (CFOP-57/58)
+  # The shipped value below is a local fine-tune; see docs/triage-fine-tune.md
+  # for what it is, how it was trained, and how to rebuild it.
+  # NOTE: a config-only deploy commit syncs the ConfigMap but restarts nothing —
+  # changing this key needs `kubectl rollout restart deploy/cfoperator`.
   # triage_model: cfop-triage-ministral3:v1-q4
 
   # Embeddings (for semantic search)

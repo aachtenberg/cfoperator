@@ -55,6 +55,8 @@ The console on `:8083` authenticates against database-backed accounts with `admi
 
 When an alert arrives, `event_runtime` asks the agent's LLM to **triage** it into `log_only` / `notify` / `investigate` / `escalate`. Only `investigate` and `escalate` trigger a full LLM investigation: the runtime POSTs the alert to the agent's `/v1/investigate`, the agent enqueues, runs the LLM investigation with tools, and POSTs the completed `ActionResult` back to `event_runtime` at `/v1/investigations/{alert_id}/complete`, which fires the single Slack notification with the real outcome (tagged with the LLM that triaged it, e.g. `triaged by ollama/qwen3-coder:latest`). See [docs/event-runtime-quickstart.md](docs/event-runtime-quickstart.md) for the full flow + env vars (`CFOP_AGENT_URL`, `CFOP_COMPLETION_SHARED_SECRET`).
 
+Triage can optionally run on a **dedicated local fine-tune** rather than the general model chain. Ours (`cfop-triage-ministral3:v1-q4`, a QLoRA of Ministral-3-14B trained on real investigation history) matches the incumbent's perfect eval score at ~9x lower latency and co-resides in VRAM with the investigation model. It is one config key (`llm.triage_model`) and falls back to the normal chain on any failure. See [docs/triage-fine-tune.md](docs/triage-fine-tune.md) for the model card, training recipe and rebuild procedure.
+
 ```mermaid
 flowchart LR
     AM[Alertmanager] --> ER[event_runtime]
