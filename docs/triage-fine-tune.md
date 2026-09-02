@@ -525,13 +525,19 @@ data the next run should use.
 | | v1 (2026-08-20) | v2 |
 |---|---:|---:|
 | train rows | 451 | 522 |
-| distinct `reason` strings | **4** | **467** |
+| distinct `reason` strings | **4** | **383** |
 | distinct `confidence` values | **4** | **39** |
 | rows using a v1 canned reason | 451 | **0** |
 | reasons falling back to the generic "this alert" | n/a | **0** |
 
 Fingerprint for checking you have the right file before training: **522 train
-rows, 467 distinct reasons, 39 distinct confidences, 0 generic subjects.**
+rows, 383 distinct reasons, 39 distinct confidences, 0 generic subjects.**
+
+383 rather than the 467 an earlier build produced, and the drop is deliberate:
+the similarity float was removed from the investigate near-miss frame, and it
+had been supplying uniqueness to 352 rows. A cosine in every sentence teaches
+"a good reason contains a float" — citable-looking, trivially faked. Uniqueness
+now comes from the subject, which is the part that is actually grounded.
 
 A "100% of reasons contain a token from the alert" figure appeared in an
 earlier draft of this table and is deliberately not repeated. Review showed it

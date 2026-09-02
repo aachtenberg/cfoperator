@@ -288,6 +288,15 @@ def derive_labels(trigger: str) -> dict:
     return labels
 
 
+# Words that show the alert itself claims breadth. Used only to decide
+# whether an escalate reason may assert blast radius; absence means the
+# reason stays silent about it rather than inventing it.
+_BREADTH_RE = re.compile(
+    r"\b(quorum|cluster[- ]?wide|multiple|several|all nodes|all pods|"
+    r"across \w+|fleet|outage|every |both nodes|control plane)\b",
+    re.IGNORECASE)
+
+
 def _alert_subject(trigger: str, labels: dict) -> str:
     """The most specific thing this alert is about, for use in a reason.
 
@@ -307,8 +316,14 @@ def _alert_subject(trigger: str, labels: dict) -> str:
     # generic -- they passed a token-overlap grounding check only via the
     # similarity number, which is grounding in the letter and not the spirit.
     # The alert's own words are always available and always on-topic.
+    #
+    # QUOTED, because it is a fragment being slotted into a frame. Unquoted it
+    # produced mad-libs -- "Backup did not complete repeats an earlier
+    # investigation", "no earlier investigation resembles Certificate
+    # expiration approaching". Quoting is what makes a clause behave like a
+    # noun in every frame below, without needing a second set of templates.
     clause = _clause(trigger, limit=60)
-    return clause or "this alert"
+    return f'"{clause}"' if clause else "this alert"
 
 
 def _clause(text: str, limit: int = 90) -> str:
@@ -408,22 +423,36 @@ def derive_label(trigger: str, outcome: str, similar_past: list,
         if outcome in ("needs_action", "escalate", "escalated"):
             return None  # noise-shaped trigger that turned out real
         token = m.group(0).strip()
-        if token.lower() in subject.lower():
-            reason = (f"{subject} is known-noise traffic (test/watchdog), "
-                      f"not a real workload")
-        else:
-            reason = (f"{subject} matches the known-noise pattern "
-                      f"'{token}' — test/watchdog traffic, not a real workload")
+        # Cite the token that actually matched. "(test/watchdog)" was a fixed
+        # pair on every row, so a tmp- pod was described as watchdog traffic.
+        # The other branch already had the token; both use it now.
+        reason = (f"{subject} matches the known-noise pattern "
+                  f"'{token}' — not a real workload")
         return ("log_only", "noise-pattern", reason, 0.9)
 
     if outcome in ("escalate", "escalated"):
         clause = _clause(trigger)
         # Don't say "raspberrypi3: Node raspberrypi3 NotReady..." -- the
         # clause usually already names the subject.
-        head = clause if subject.lower() in clause.lower() else f"{subject}: {clause}"
-        return ("escalate", "outcome-escalate",
-                f"{head} — severity and blast radius both present, "
-                f"page an operator now", 0.88)
+        # A quoted-clause subject IS this trigger, so prefixing it repeats the
+        # sentence -- and _clause truncates with "...", so a naive containment
+        # test misses that and duplicates anyway.
+        bare = subject.strip('"').rstrip(".").strip()
+        head = clause if bare.lower() in clause.lower() else f"{subject}: {clause}"
+        # The escalate LABEL is hindsight -- the investigation ended escalate
+        # -- but the reason is a triage-time claim. Asserting "severity and
+        # blast radius both present" on every escalate row taught exactly the
+        # escalate reflex the eval's critical-narrow and warning-correlated
+        # traps exist to catch: on a single-pod page it is simply false, and a
+        # canned suffix on the highest-consequence action is the worst place
+        # to put an unearned claim. Only say it when the trigger shows it.
+        breadth = _BREADTH_RE.search(trigger)
+        if breadth:
+            tail = (f"— severity and blast radius both present "
+                    f"({breadth.group(0).strip().lower()}), page an operator now")
+        else:
+            tail = "— page an operator now"
+        return ("escalate", "outcome-escalate", f"{head} {tail}", 0.88)
 
     # The notify rule is ANY resolved precedent at >=0.85, not "the closest
     # precedent happens to be a resolved one". Those differ whenever a
@@ -459,9 +488,12 @@ def derive_label(trigger: str, outcome: str, similar_past: list,
     else:
         # A near miss is genuinely more ambiguous than no precedent at all:
         # something similar happened and did NOT resolve cheaply.
+        # No cosine here. On notify the number IS the reason you did not
+        # investigate, so it earns its place; here the sentence already says
+        # the useful thing, and a float in every frame teaches "a good reason
+        # contains a float" -- citable-looking and trivially faked.
         reason = (f"closest earlier match to {subject} ended "
-                  f"{best['outcome']} at {best['similarity']:.2f} — "
-                  f"no resolved precedent to lean on")
+                  f"{best['outcome']} — no resolved precedent to lean on")
         conf = round(max(0.45, 0.58 - (best["similarity"] - 0.70) * 0.6), 2)
     return ("investigate", basis, reason, conf)
 

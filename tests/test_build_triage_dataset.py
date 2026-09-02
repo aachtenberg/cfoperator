@@ -343,7 +343,9 @@ def test_alerts_naming_no_object_still_get_a_grounded_subject(trigger):
     labels = btd.derive_labels(trigger)
     subject = btd._alert_subject(trigger, labels)
     assert subject != "this alert"
-    assert subject.split()[0].lower() in trigger.lower()
+    # Clause subjects are quoted (see the grammar test below), so compare the
+    # unquoted form against the alert.
+    assert subject.strip('"').split()[0].lower() in trigger.lower()
     reason = btd.derive_label(trigger, "monitoring", [], labels)[2]
     assert "this alert" not in reason, reason
 
@@ -377,3 +379,74 @@ def test_real_hyphenated_names_without_digits_survive(name):
     entirely English-looking but real. Guarding the trade-off, not just the
     fix -- a future tightening should have to fail this deliberately."""
     assert btd.derive_labels(f"Pod {name} is unavailable").get("pod") == name
+
+
+# ── PR #240 review round 3: what the frames teach ───────────────────────────
+#
+# These are targets a 14b model will imitate wholesale, including the parts
+# not worth imitating. Each of these pins one such part.
+
+def test_escalate_does_not_assert_blast_radius_it_cannot_see():
+    """The dangerous canned suffix.
+
+    The escalate LABEL comes from hindsight (the investigation ended
+    escalate), but the reason is a triage-time claim. Asserting "severity and
+    blast radius both present" on every escalate row is false on a single-pod
+    page, and it trains the escalate reflex that the eval's critical-narrow
+    and warning-correlated traps exist to catch -- on the highest-consequence
+    action, which is the worst place for an unearned claim.
+    """
+    narrow = btd.derive_label("Pod camera-api-9x exited 255 repeatedly", "escalate", [],
+                              btd.derive_labels("Pod camera-api-9x exited 255 repeatedly"))
+    assert "blast radius" not in narrow[2], narrow[2]
+    assert "page an operator" in narrow[2]
+
+    broad_t = "Node raspberrypi3 NotReady, etcd quorum at risk"
+    broad = btd.derive_label(broad_t, "escalate", [], btd.derive_labels(broad_t))
+    assert "blast radius" in broad[2], broad[2]
+    assert "quorum" in broad[2].lower()
+
+
+@pytest.mark.parametrize("trigger,token", [
+    ("Pod smoke-test-runner-7d9 crash-looping", "smoke-test-"),
+    ("Pod tmp-runner-4d is stuck", "tmp-"),
+])
+def test_log_only_cites_the_token_that_matched(trigger, token):
+    """"(test/watchdog)" was a fixed pair on every noise row, so a tmp- pod
+    was described as watchdog traffic. The matched token is right there."""
+    reason = btd.derive_label(trigger, "resolved", [], btd.derive_labels(trigger))[2]
+    assert token in reason, reason
+    assert "test/watchdog" not in reason, reason
+
+
+@pytest.mark.parametrize("trigger", [
+    "Backup did not complete",
+    "Certificate expiration approaching",
+])
+def test_clause_subjects_are_quoted_so_the_frames_stay_grammatical(trigger):
+    """Unquoted, a clause slotted into a noun-shaped frame is mad-libs:
+    "Backup did not complete repeats an earlier investigation". Quoting makes
+    one set of frames work for both object names and clauses."""
+    subject = btd._alert_subject(trigger, btd.derive_labels(trigger))
+    assert subject.startswith('"') and subject.endswith('"'), subject
+    reason = btd.derive_label(trigger, "monitoring", [], btd.derive_labels(trigger))[2]
+    assert f'"{trigger}"' in reason, reason
+
+
+def test_the_cosine_appears_only_where_it_is_the_reason():
+    """On notify the similarity IS why you did not investigate, so it earns
+    its place. On the investigate near-miss the sentence already says the
+    useful thing, and a float in every frame teaches "a good reason contains
+    a float" -- citable-looking and trivially faked."""
+    notify = btd.derive_label(
+        "Pod promtail-2xvvb is dropping log entries", "resolved",
+        [{"outcome": "resolved", "similarity": 0.94, "trigger": "earlier push failure"}],
+        btd.derive_labels("Pod promtail-2xvvb is dropping log entries"))
+    assert "0.94" in notify[2], notify[2]
+
+    near = btd.derive_label(
+        "Pod loki-0 restarting repeatedly", "monitoring",
+        [{"outcome": "monitoring", "similarity": 0.81, "trigger": "ingester pressure"}],
+        btd.derive_labels("Pod loki-0 restarting repeatedly"))
+    assert not re.search(r"\d\.\d\d", near[2]), near[2]
+    assert "no resolved precedent" in near[2]
