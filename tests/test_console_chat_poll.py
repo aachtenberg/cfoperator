@@ -79,6 +79,7 @@ function fakeSetTimeout(fn, ms){
 function eventsResponse(){
   if (mode==='gone')       return {ok:false, status:404, body:{error:'Unknown chat_id'}};
   if (mode==='malformed')  return {ok:true,  status:200, body:{error:'nope'}};
+  if (mode==='nullbody')   return {ok:true,  status:200, body:null};
   if (mode==='unreachable')return null;                     // fetch rejects
   if (mode==='stream')     return out.polls===1
       ? {ok:true, status:200, body:{events:[], cursor:0, done:false}}
@@ -176,6 +177,11 @@ def unreachable(tmp_path_factory):
     return run(tmp_path_factory, "unreachable")
 
 
+@pytest.fixture(scope="module")
+def nullbody(tmp_path_factory):
+    return run(tmp_path_factory, "nullbody")
+
+
 # --------------------------------------------------------------------------
 # the poll ends
 # --------------------------------------------------------------------------
@@ -202,6 +208,16 @@ def test_a_body_that_is_not_an_events_payload_ends_it_too(malformed):
     assert not malformed["capped"]
 
 
+def test_a_200_carrying_a_null_body_ends_it_too(nullbody):
+    """Caught in review. The first cut returned `null` from the status check
+    to mean "already handled", which a 200 whose body is literally `null`
+    then impersonated: the loop stopped without ever telling the operator,
+    so the spinner stayed up forever. Any sentinel is a value the server can
+    also send, so there is no sentinel now."""
+    assert nullbody["polls"] == 1
+    assert not nullbody["capped"]
+
+
 def test_a_transport_failure_retries_but_gives_up(unreachable):
     """A rolling restart is worth riding out; a dead agent is not worth
     polling for the rest of the session."""
@@ -214,7 +230,7 @@ def test_a_transport_failure_retries_but_gives_up(unreachable):
 # ...and the operator gets the console back
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("case", ["gone", "malformed", "unreachable"])
+@pytest.mark.parametrize("case", ["gone", "malformed", "unreachable", "nullbody"])
 def test_the_composer_is_returned_when_the_turn_is_lost(case, request):
     """The visible symptom: a console that looks busy forever. Whatever the
     reason the turn ended, the operator must be able to type again."""
@@ -227,7 +243,7 @@ def test_the_composer_is_returned_when_the_turn_is_lost(case, request):
     assert not data["thinkingActive"], "the thinking indicator is still up"
 
 
-@pytest.mark.parametrize("case", ["gone", "malformed", "unreachable"])
+@pytest.mark.parametrize("case", ["gone", "malformed", "unreachable", "nullbody"])
 def test_the_lost_turn_is_announced_rather_than_swallowed(case, request):
     """Silence here reads as 'the agent is thinking', which is the state this
     replaces. It has to say something."""
