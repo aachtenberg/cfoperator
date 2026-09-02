@@ -217,12 +217,29 @@ NAS beside the v1 artifacts; do not overwrite them.
 ## 7. Import on `ubuntu-llm-01`
 
 ```bash
-ollama create cfop-triage-ministral3:v2-q4 -f benchmarks/Modelfile.cfop-triage
+ollama create cfop-triage-ministral3:v2-q4 -f benchmarks/Modelfile.cfop-triage-v2
 ```
 
-Point the Modelfile's `FROM` at the new GGUF. It must keep the **base model's
-exact chat template** — the fine-tune was trained against it and a paraphrase
-will not transfer.
+**Write a NEW Modelfile per generation; do not repoint the old one.**
+`Modelfile.cfop-triage` is the documented NAS recovery path for v1 ("if
+ubuntu-llm-01 is rebuilt... no retraining required"), so changing its `FROM`
+breaks that silently and leaves the rollback target unbuildable at exactly the
+moment it is wanted. Copy it and change only `FROM`.
+
+Keep the `TEMPLATE` block **byte-identical** — same base model, and a
+paraphrased template does not transfer and fails silently rather than loudly.
+Verify rather than eyeball it:
+
+```bash
+.venv/bin/python - <<'EOF'
+def block(p):
+    s = open(p).read()
+    return s[s.index('TEMPLATE'):]
+a = block("benchmarks/Modelfile.cfop-triage")
+b = block("benchmarks/Modelfile.cfop-triage-v2")
+print("identical:", a == b)
+EOF
+```
 
 Use a **new tag**. Do not reuse `:v1-q4`: the incumbent must stay intact and
 servable for rollback.
