@@ -2043,6 +2043,12 @@ class CFOperator:
             context = self._orient(context)
             return self._act(context)
 
+    # The rubric's known-noise list, as a pattern: these keep their model path
+    # even at severity=info (see the short-circuit in run_triage). Mirrors
+    # NOISE_RE in scripts/build_triage_dataset.py on purpose -- the dataset
+    # and the runtime should agree on what "noise" means.
+    _TRIAGE_NOISE_RE = re.compile(r"(?i:smoke-test-|tmp-)|\bWatchdog\b")
+
     def run_triage(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """Classify an alert without running a full investigation.
 
@@ -2082,6 +2088,26 @@ class CFOperator:
                 'action': 'notify',
                 'reason': 'finding cleared since previous sweep',
                 'confidence': 1.0,
+                'backend': None,
+                'model': None,
+            }
+
+        # CFOP-161: severity=info that is not known noise never needs the
+        # model. The rubric below decides it by severity alone ("notify ...
+        # when severity=info"), and it is the one shape the fine-tune cannot
+        # be trained on from real data -- info alerts are notified or logged
+        # and never investigated, so none is in the history -- which is where
+        # every triage model so far (v2, v3, v4) invented a precedent to
+        # justify the notify it was going to give anyway. Deciding it here
+        # keeps the model off that shape and skips the embedding call too.
+        # Noise (smoke-test-*, tmp-*, Watchdog) stays on the model path: the
+        # Watchdog arrives as info (Alertmanager "none" maps to it at intake),
+        # and sending it to notify would put a heartbeat in Slack every cycle.
+        if severity == 'info' and not self._TRIAGE_NOISE_RE.search(str(trigger)):
+            return {
+                'action': 'notify',
+                'reason': 'severity=info — informational, no investigation needed',
+                'confidence': 0.9,
                 'backend': None,
                 'model': None,
             }
