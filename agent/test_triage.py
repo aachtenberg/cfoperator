@@ -405,3 +405,87 @@ def test_run_triage_rubric_guards_novel_pod_failures():
     rubric = captured["system_context"]
     assert "do NOT use notify for pod failures" in rubric
     assert "novel by definition" in rubric
+
+
+# ---- severity=info short-circuit (CFOP-161) ------------------------------
+#
+# The rubric decides severity=info by severity alone, and it is the one shape
+# the fine-tune cannot learn from real data (no info alert is ever
+# investigated) -- every triage model so far invented a precedent there. So
+# non-noise info alerts never reach a model; noise keeps its model path so the
+# Watchdog (which arrives as info) stays log_only instead of a Slack heartbeat.
+
+
+def _no_llm_operator():
+    op = _operator()
+    op._chat_with_tools = MagicMock(side_effect=AssertionError("model must not be called"))
+    op._chat_with_tools_with_fallback = MagicMock(side_effect=AssertionError("model must not be called"))
+    return op
+
+
+def test_info_alert_that_is_not_noise_is_notify_without_any_model_call():
+    op = _no_llm_operator()
+    result = op.run_triage(_alert(severity="info",
+                                  summary="Certificate for immich.ai renews in 25 days"))
+    assert result["action"] == "notify"
+    assert "severity=info" in result["reason"]
+    assert "precedent" not in result["reason"] and "earlier" not in result["reason"]
+    assert result["confidence"] > 0
+    assert result["backend"] is None and result["model"] is None
+    op._chat_with_tools.assert_not_called()
+    op._chat_with_tools_with_fallback.assert_not_called()
+    op.embeddings.is_available.assert_not_called()   # skipped the lookup too
+
+
+# The real Watchdog summary never says "Watchdog"; the name lives in the
+# labels (Alertmanager shape) or details["alertname"] / resource_name (the
+# runtime's Alert.to_dict shape). Every shape must keep its model path.
+_WATCHDOG_SUMMARY = "This is an alert meant to ensure that the entire alerting pipeline is functional."
+
+
+def _runtime_alert(summary, **fields):
+    """The event runtime's Alert.to_dict() shape: no labels, identity in details."""
+    a = {"severity": "info", "summary": summary, "details": {}, "labels": {}, "alert_id": "rt-1"}
+    a.update(fields)
+    return a
+
+
+@pytest.mark.parametrize("alert", [
+    _alert(severity="info", summary="Watchdog: " + _WATCHDOG_SUMMARY),
+    _alert(severity="info", summary=_WATCHDOG_SUMMARY, alertname="Watchdog"),
+    _runtime_alert(_WATCHDOG_SUMMARY, details={"alertname": "Watchdog"}),
+    _alert(severity="info", summary="Pod smoke-test-runner-2xk4f in namespace ci is crash-looping"),
+    _runtime_alert("Pod is crash-looping", resource_name="smoke-test-runner-2xk4f"),
+    _alert(severity="info", summary="Pod tmp-restore-verify-9x2kd in namespace default exited non-zero"),
+    _runtime_alert("Pod exited non-zero", details={"alertname": "KubePodFailed", "pod": "tmp-restore-verify-9x2kd"}),
+], ids=["watchdog-in-summary", "watchdog-in-labels", "watchdog-in-details",
+        "smoke-test-in-summary", "smoke-test-in-resource_name", "tmp-in-summary", "tmp-in-details"])
+def test_info_noise_still_goes_to_the_model(alert):
+    op = _operator()
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": '{"action": "log_only", "reason": "known noise", "confidence": 0.95}',
+        "tool_calls": 0, "backend": "ollama", "model": "m",
+    })
+    result = op.run_triage(alert)
+    assert result["action"] == "log_only"
+    op._chat_with_tools_with_fallback.assert_called_once()
+
+
+def test_warning_alerts_are_untouched_by_the_info_short_circuit():
+    op = _operator()
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": '{"action": "investigate", "reason": "novel", "confidence": 0.6}',
+        "tool_calls": 0, "backend": "ollama", "model": "m",
+    })
+    result = op.run_triage(_alert(severity="warning", summary="Certificate for immich.ai renews in 25 days"))
+    assert result["action"] == "investigate"
+    op._chat_with_tools_with_fallback.assert_called_once()
+
+
+def test_resolution_short_circuit_still_wins_for_info_alerts():
+    op = _no_llm_operator()
+    alert = _alert(severity="info", summary="Resolved: Pod foo not ready")
+    alert["details"] = {"resolution": True}
+    result = op.run_triage(alert)
+    assert result["action"] == "notify"
+    assert result["reason"] == "finding cleared since previous sweep"
