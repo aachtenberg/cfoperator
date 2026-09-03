@@ -708,6 +708,61 @@ def build_examples(investigations: list, system_prompt: str,
     return examples, skipped, conflicts
 
 
+_FRAME_NUM_RE = re.compile(r"\d+\.\d+")
+_FRAME_NAME_RE = re.compile(r"\b[a-z0-9]+(?:[-/][a-z0-9]+)+\b|\b\w*\d\w*\b")
+
+
+def _frame_of(reason: str) -> str:
+    """The reason with its slots blanked, i.e. the template it came from."""
+    return _FRAME_NAME_RE.sub("<NAME>", _FRAME_NUM_RE.sub("<NUM>", reason))
+
+
+def cap_per_frame(examples, max_per_frame):
+    """Cap rows that share a reason frame, to stop one sentence dominating.
+
+    The v2 fine-tune under-escalated `correlated-outage` because the label mix
+    was 441 investigate to 18 escalate: a multi-service alert resembles nothing
+    in that tiny class, so it fell back to the overwhelming prior. 148 of those
+    investigate rows were the SAME sentence with a different pod name in it --
+    near-duplicates that cost a retrain's worth of gradient steps and taught
+    nothing the first eight already had.
+
+    Capping per FRAME rather than per action is what keeps this safe to apply
+    uniformly: thin classes do not have big frames, so at the default cap the
+    escalate and log_only rows all survive while investigate loses 60% of its
+    bulk. Lowering the cap further does NOT help -- escalate's largest frame is
+    8 rows, so a smaller cap starts deleting the class this exists to protect,
+    and the ratio gets worse, not better (measured: 9.7:1 at 8, 10.6:1 at 5).
+
+    Retention is evenly spaced across the group, never the first N. The
+    train/val split is temporal, so keeping the oldest rows of every frame
+    would empty the validation slice of exactly the frames being capped.
+    """
+    if not max_per_frame or max_per_frame < 1:
+        return examples, 0
+    groups = {}
+    for i, e in enumerate(examples):
+        try:
+            d = json.loads(e["messages"][2]["content"])
+            key = (d.get("action"), _frame_of(d.get("reason", "")))
+        except Exception:
+            key = ("?", f"row{i}")   # never group unparseable rows together
+        groups.setdefault(key, []).append(i)
+
+    keep = set()
+    for idxs in groups.values():
+        n = len(idxs)
+        if n <= max_per_frame:
+            keep.update(idxs)
+            continue
+        c = max_per_frame
+        picks = {idxs[round(j * (n - 1) / (c - 1))] for j in range(c)} \
+            if c > 1 else {idxs[n // 2]}
+        keep.update(picks)
+    kept = [e for i, e in enumerate(examples) if i in keep]
+    return kept, len(examples) - len(kept)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     src = ap.add_mutually_exclusive_group()
@@ -720,6 +775,11 @@ def main():
                     help="max investigations to fetch (default: %(default)s)")
     ap.add_argument("--max-per-trigger", type=int, default=3,
                     help="cap examples per distinct trigger (default: %(default)s)")
+    ap.add_argument("--max-per-frame", type=int, default=8,
+                    help="cap rows sharing one reason frame; keeps a single "
+                         "sentence from swamping the thin classes. 8 is the "
+                         "measured optimum — lower starts deleting escalate "
+                         "(default: %(default)s, 0 disables)")
     ap.add_argument("--eval-frac", type=float, default=0.1,
                     help="newest fraction reserved for validation (default: %(default)s)")
     ap.add_argument("--out-dir", default=os.path.join("benchmarks", "datasets"))
@@ -763,6 +823,12 @@ def main():
         max_per_trigger=args.max_per_trigger,
         include_meta=not args.no_meta,
         similar_by_index=similar_by_index)
+
+    before = len(examples)
+    examples, dropped = cap_per_frame(examples, args.max_per_frame)
+    if dropped:
+        print(f"capped near-duplicate frames at {args.max_per_frame}: "
+              f"{before} -> {len(examples)} rows ({dropped} dropped)")
 
     # Temporal split: newest slice is validation, so evaluation always looks
     # forward in time relative to training — the deployment condition.

@@ -12,6 +12,8 @@ module's docstrings promise (PR #144 review):
 """
 
 from repo_paths import REPO_ROOT
+import collections
+import json
 import importlib.util
 import os
 import re
@@ -531,3 +533,66 @@ def test_no_similarity_cue_word_is_followed_by_a_name(trigger, similar):
         assert not slots, (
             f"cue {slots[0][0]!r} is followed by {slots[0][1]!r}, which "
             f"reads as a citable object name: {got[2]!r}")
+
+
+def _row(action, reason, idx=0):
+    return {"messages": [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": f"alert {idx}"},
+        {"role": "assistant", "content": json.dumps(
+            {"action": action, "reason": reason, "confidence": 0.6})},
+    ]}
+
+
+def test_cap_leaves_thin_classes_alone():
+    """The cap exists to shrink the majority class, so it must not shrink the
+    class it is protecting. Capping per FRAME rather than per action is what
+    makes that automatic: escalate's largest frame is smaller than the cap."""
+    rows = ([_row("investigate", f"pod-{i} has no precedent", i) for i in range(50)]
+            + [_row("escalate", f"Node node-{i} not ready — page now", i)
+               for i in range(6)]
+            + [_row("log_only", "smoke-test-x matches the pattern", 0)])
+    kept, dropped = btd.cap_per_frame(rows, 8)
+    got = collections.Counter(
+        json.loads(r["messages"][2]["content"])["action"] for r in kept)
+    assert got["investigate"] == 8, got
+    assert got["escalate"] == 6, got      # under the cap, untouched
+    assert got["log_only"] == 1, got
+    assert dropped == 42
+
+
+def test_cap_keeps_rows_spread_over_time_not_the_oldest():
+    """The train/val split is temporal — newest slice is validation. Keeping
+    the first N of every capped frame would leave validation with none of the
+    frames that were capped, which is exactly the ones worth validating."""
+    rows = [_row("investigate", f"pod-{i} has no precedent", i) for i in range(40)]
+    kept, _ = btd.cap_per_frame(rows, 4)
+    idxs = [int(r["messages"][1]["content"].split()[1]) for r in kept]
+    assert idxs[0] == 0 and idxs[-1] == 39, idxs   # spans the whole range
+    assert max(idxs) - min(idxs) == 39, idxs
+    assert idxs != list(range(4)), "kept the oldest four, not a spread"
+
+
+def test_cap_is_a_no_op_when_disabled():
+    rows = [_row("investigate", "same frame here", i) for i in range(30)]
+    kept, dropped = btd.cap_per_frame(rows, 0)
+    assert len(kept) == 30 and dropped == 0
+
+
+def test_cap_targets_repetition_not_class_size():
+    """Per FRAME, not per action. A class with many rows is fine if they are
+    genuinely different sentences; what wastes a retrain is the same sentence
+    with a different name substituted. Capping per action would punish a
+    varied class as hard as a repetitive one, and would shrink escalate for
+    the crime of existing."""
+    varied = [_row("notify", f"pod-{i} repeats an earlier investigation "
+                             f"that resolved: distinct precedent {w}", i)
+              for i, w in enumerate("alpha bravo charlie delta echo foxtrot "
+                                    "golf hotel india juliet kilo lima".split())]
+    repetitive = [_row("investigate", f"pod-{i} has no precedent", 100 + i)
+                  for i in range(12)]
+    kept, _ = btd.cap_per_frame(varied + repetitive, 8)
+    got = collections.Counter(
+        json.loads(r["messages"][2]["content"])["action"] for r in kept)
+    assert got["notify"] == 12, f"varied rows were capped: {got}"
+    assert got["investigate"] == 8, f"repetitive rows were not capped: {got}"
