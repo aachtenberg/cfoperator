@@ -121,14 +121,23 @@ print("distinct reasons    ", len({o["reason"] for o in outs}))
 print("distinct confidences", len({o["confidence"] for o in outs}))
 print("generic subjects    ", sum(1 for o in outs if "this alert" in o["reason"]))
 print("label mix           ", dict(collections.Counter(o["action"] for o in outs)))
+# The gate's own grader, run over the TRAINING TARGETS. This is what found
+# the v2 fabrication and, on v3, two label bugs -- if the builder itself
+# cites something absent from its prompt, the model will learn to.
+import sys; sys.path.insert(0, "benchmarks"); import triage_eval as te
+fab = [o["reason"] for r, o in zip(rows, outs)
+       if te.grade_reason(o["reason"], r["messages"][1]["content"])[1]]
+print("fabricated citations", len(fab), "  <- must be 0", fab[:2])
 PY
 ```
 
 Compare against the fingerprint recorded in the model card's
-[v2 dataset](triage-fine-tune.md#v2-dataset-cfop-153) table. A mismatch means
-you are about to train on a different build than the one that was reviewed —
-stop and find out why. This step exists because the first version of that table
-carried a stale number and would have sent someone chasing a phantom.
+[v2 and v3 datasets](triage-fine-tune.md#v2-and-v3-datasets-cfop-153) table.
+A mismatch means you are about to train on a different build than the one that
+was reviewed — stop and find out why. This step exists because the first
+version of that table carried a stale number and would have sent someone
+chasing a phantom. **`fabricated citations` must be 0**: v2 shipped with 176
+and the model reproduced them.
 
 ## 3. Copy to the training box
 
@@ -148,9 +157,35 @@ the archived run, not from notes. Change only what the data change argues for.
 batch 8), `adamw_8bit`, `bf16`, `gradient_checkpointing`, `max_seq_length=1024`,
 **`seed=3407`**. Keeping the seed is what makes v1-vs-v2 a clean comparison.
 
-**`max_seq_length=1024` is verified sufficient** for the v2 set: longest row is
-~745 estimated tokens, nothing truncates. Re-measure if the prompt or the
-reason frames grow.
+**`max_seq_length`: the v2 run executed at 768**, not 1024 — cut for VRAM
+headroom, see `cfop-triage-v2-gguf/AS-EXECUTED.md`. For v3 the longest row is
+**648 tokens through the real tokenizer**, ~663 with the chat template, so 768
+leaves ~100 of headroom. The earlier "~745 estimated" was a chars/3.5 guess
+that overstates by ~18%. Re-measure *exactly* if the prompt or the frames grow
+— no tokenizer install needed, ollama already has it loaded:
+
+```bash
+.venv/bin/python - <<'PY'
+import json, urllib.request
+rows=[json.loads(l) for l in open("benchmarks/datasets/triage_train.jsonl")]
+text="".join(m["content"] for m in max(rows, key=lambda r: sum(len(m["content"]) for m in r["messages"]))["messages"])
+req=urllib.request.Request("http://localhost:11434/api/generate",
+    data=json.dumps({"model":"cfop-triage-ministral3:v2-q4","prompt":text,"raw":True,
+                     "stream":False,"options":{"num_predict":1}}).encode(),
+    headers={"Content-Type":"application/json"})
+print("longest row, exact tokens:", json.load(urllib.request.urlopen(req))["prompt_eval_count"], "(+~15 for the chat template)")
+PY
+```
+
+**For v3: use the v2 settings unchanged.** `cfoperator-v4/cfoperator-v3-recommended.yaml`
+on the NAS is that file with only the header rewritten; its settings diff
+empty against the v2 one. The row count is half of v2's (262 vs 522, from the
+frame cap) — **keep `num_epochs` at 3 and do not compensate.** v2's correct
+escalates used base-model phrasing absent from the training data, so less
+deviation from the base is the goal, not more steps. Note that three settings
+in the YAML never reach the trainer (`batch_size` runs 1, `max_grad_norm` runs
+None, `finetune_vision_layers` runs True); the same YAML reproduces the same
+*executed* config, which is what a clean A/B on the data needs.
 
 **Change, with the reason:**
 
@@ -257,8 +292,8 @@ servable for rollback.
 
 ```bash
 PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v2-q4 --runs 36 \
-  --output /tmp/v2-eval.json
+  --model cfop-triage-ministral3:v3-q4 --runs 36 \
+  --output benchmarks/triage_eval_cfop_triage_ministral3_v3_q4.json
 ```
 
 `--runs 36` rather than 3: 3 runs detect an 8%-rate fault only 22% of the time,
@@ -269,16 +304,34 @@ Minimum bar, matching what v1 cleared: **42/42 on the 14-case screen, 24/24 on
 the hard cases, 100/100 soak, 100% JSON valid**, and Q4/Q8 agreeing on every
 case.
 
-**The gate scores `action` only.** It will *not* tell you whether the reasons
-improved — which is the entire point of the v2 dataset. Check that by hand:
+**The gate now grades the reason too.** Two lines were added after v2 passed
+it at 98.4% while fabricating:
 
-```bash
-PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v2-q4 --runs 1 --only known-sdcard
+```
+Reason grounded  504/504 (100.0%)
+Fabricated cites   0/504 (0.0%)
 ```
 
-and read the reason next to gemma4's on the same case. Looking for: does it name
-the alert, or recite a frame? A canned string is the v1 regression returning.
+**`Fabricated cites` must be 0, regardless of action accuracy.** On v2 it read
+41.7% — `novel-oom` scored 36/36 on the action while every reason cited a pod
+that does not exist. Note the first line passed v2 too: a reason can name the
+real pod *and* invent a precedent. Grounding is not the absence of fabrication.
+Every fabricating run is also printed inline as it happens (`FABRICATED <name>`),
+even when the action was right. Reasons are persisted in the JSON now, so an
+audit can be retroactive.
+
+Then read a few reasons with your own eyes — the checks are narrow by design:
+
+```bash
+PYTHONPATH=agent:. .venv/bin/python benchmarks/reason_compare.py \
+  --case novel-oom --runs 4 --models cfop-triage-ministral3:v3-q4 cfop-triage-ministral3:v2-q4
+```
+
+`novel-oom` and `correlated-outage` have no precedents, so any "nearest was…"
+is an invention. `known-sdcard` has one, so the reason should quote it. And
+`correlated-outage` is the v2 regression: 28/36; **≥ 34/36** says the rebalance
+worked, *unchanged* says the imbalance was not the cause and the escalate class
+needs real new examples rather than a better ratio.
 
 ## 9. Deploy
 
