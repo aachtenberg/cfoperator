@@ -98,3 +98,22 @@ def test_every_run_persists_its_reason():
     src = inspect.getsource(te.main)
     for key in ('"reason": reason', '"reason_fabricated"', '"reason_grounded"'):
         assert key in src, f"{key} missing from the persisted result row"
+
+
+def test_an_invented_ip_is_a_fabrication():
+    """Node addresses are object identifiers here and carry no letters, so the
+    alphanumeric rule alone would skip them and an invented IP would pass."""
+    prompt = "Alert summary: Node at 192.168.0.210 stopped posting status"
+    _, fabricated = te.grade_reason(
+        "192.168.0.210 is unlike anything in history (best match 0.69)", prompt)
+    assert fabricated == [], fabricated
+    _, fabricated = te.grade_reason(
+        "closest earlier match was 192.168.0.99 which resolved", prompt)
+    assert fabricated == ["192.168.0.99"], fabricated
+
+
+def test_a_cosine_is_still_not_an_ip():
+    _, fabricated = te.grade_reason(
+        "repeats an earlier investigation (0.94 similarity)",
+        "Alert summary: Pod foo-1 restarting")
+    assert fabricated == [], fabricated

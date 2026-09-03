@@ -452,6 +452,12 @@ def _citation_tokens(text: str) -> set:
         tok = raw.strip(".").strip("'\"")
         if len(tok) < 4:
             continue
+        # Dotted-quad IPs are object identifiers here (node addresses) and
+        # carry no letters, so the alphanumeric rule below would skip them --
+        # leaving an invented IP invisible to the gate.
+        if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", tok):
+            out.add(tok.lower())
+            continue
         if any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok):
             out.add(tok.lower())
     return out

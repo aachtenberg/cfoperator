@@ -596,3 +596,38 @@ def test_cap_targets_repetition_not_class_size():
         json.loads(r["messages"][2]["content"])["action"] for r in kept)
     assert got["notify"] == 12, f"varied rows were capped: {got}"
     assert got["investigate"] == 8, f"repetitive rows were not capped: {got}"
+
+
+@pytest.mark.parametrize("trigger,expect", [
+    # The word before "namespace" is the namespace at least as often as the
+    # word after it. Missing this labelled kube-system as "experiencing".
+    ("Traefik pod in kube-system namespace experiencing I/O timeouts",
+     "kube-system"),
+    ("Deployment in the monitoring namespace is degraded", "monitoring"),
+    # ...and the trailing form still wins when the leading capture is only a
+    # preposition, which the stopword list rejects.
+    ("Pod foo-1 in namespace apps is stuck in Pending", "apps"),
+])
+def test_namespace_is_found_on_either_side_of_the_word(trigger, expect):
+    assert btd.derive_labels(trigger).get("namespace") == expect
+
+
+@pytest.mark.parametrize("trigger", [
+    # "api" contains "pi". As a bare substring the marker also accepts
+    # "rapid" and "capital"; a hostname in prose is not a node.
+    "LLM provider is failing with HTTP 403 Forbidden on api.x.ai",
+    "backup stalled on rapid-sync stage",
+])
+def test_a_word_merely_containing_a_node_marker_is_not_a_node(trigger):
+    assert "node" not in btd.derive_labels(trigger), btd.derive_labels(trigger)
+
+
+@pytest.mark.parametrize("trigger,expect", [
+    ("Node raspberrypi3 NotReady for 10m", "raspberrypi3"),
+    ("Node raspberrypi unreachable", "raspberrypi"),
+    ("Per-host backup failed on ubuntu-cm5-01", "ubuntu-cm5-01"),
+    ("Pod x on headless-gpu was OOMKilled", "headless-gpu"),
+    ("agent restarted on ubuntu-llm-01", "ubuntu-llm-01"),
+])
+def test_real_node_names_still_extract(trigger, expect):
+    assert btd.derive_labels(trigger).get("node") == expect

@@ -165,7 +165,21 @@ _SEVERITY_PATTERNS = [
 _POD_RE = re.compile(
     r"\bPod (?:([a-z0-9-]+)/)?([a-z0-9][a-z0-9.-]*)", re.IGNORECASE)
 _NS_RE = re.compile(r"\bnamespace ([a-z0-9-]+)", re.IGNORECASE)
-_NODE_RE = re.compile(r"\b(?:Node|on|host) ([a-z][a-z0-9-]*(?:pi|cm5|llm|gpu)[a-z0-9-]*)", re.IGNORECASE)
+# English puts the namespace on either side of the word: "in namespace apps"
+# but also "in kube-system namespace". Only the first was handled, so
+# "Traefik pod in kube-system namespace experiencing I/O timeouts" labelled
+# the namespace "experiencing" -- discarding the correct value that was
+# sitting right there, and feeding the reason frame a subject of
+# "experiencing:". The shape test cannot catch that: real namespaces here
+# (apps, plane, argocd) have neither a digit nor a hyphen, so the stopword
+# list is the only guard, and no stopword list covers every participle.
+_NS_BEFORE_RE = re.compile(r"\b([a-z0-9][a-z0-9-]*) namespace\b", re.IGNORECASE)
+# The marker must start the name or follow a hyphen. Written as a bare
+# substring, "pi" matched the "api" in "...403 Forbidden on api.x.ai" and
+# labelled the node "api" -- and would equally accept "rapid" or "capital".
+_NODE_RE = re.compile(
+    r"\b(?:Node|on|host) ((?:[a-z0-9-]*-)?"
+    r"(?:raspberrypi|pi\d|cm5|llm|gpu)[a-z0-9-]*)", re.IGNORECASE)
 
 
 def derive_severity(trigger: str):
@@ -272,13 +286,18 @@ def derive_labels(trigger: str) -> dict:
         if ns:
             labels["namespace"] = ns
     if "namespace" not in labels:
-        m = _NS_RE.search(trigger)
-        if m:
-            # From prose, but namespaces are plain words, so the stopword
-            # list is the only guard available here.
+        # "<ns> namespace" first: the word before the noun is the namespace
+        # far more reliably than the word after it, and when the phrasing is
+        # "in namespace apps" this capture is the preposition, which the
+        # stopword list rejects -- so a miss here falls through cleanly.
+        for rx in (_NS_BEFORE_RE, _NS_RE):
+            m = rx.search(trigger)
+            if not m:
+                continue
             ns = _plausible_k8s_name(m.group(1))
             if ns:
                 labels["namespace"] = ns
+                break
     m = _NODE_RE.search(trigger)
     if m:
         # _NODE_RE already requires pi/cm5/llm/gpu in the name.
