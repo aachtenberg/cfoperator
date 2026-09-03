@@ -463,6 +463,16 @@ def _citation_tokens(text: str) -> set:
     return out
 
 
+# Phrases that assert a precedent exists. Kept to the builder's own frame
+# vocabulary plus the paraphrases the 8B produced; "no precedent" / "unlike
+# anything" are the no-precedent frames and must NOT match.
+_PRECEDENT_CLAIM_RE = re.compile(
+    r"\b(closest earlier|nearest (?:was|match)|repeats an earlier|"
+    r"earlier investigation (?:I found|that|which)|ended (?:monitoring|resolved|needs_action)|"
+    r"similar past investigation|matches an earlier|precedent (?:that|which) (?:ended|resolved))\b",
+    re.IGNORECASE)
+
+
 def grade_reason(reason: str, prompt: str):
     """(grounded, fabricated) for one reason against the prompt it answered.
 
@@ -476,6 +486,13 @@ def grade_reason(reason: str, prompt: str):
     hay = (prompt or "").lower()
     cited = _citation_tokens(reason)
     fabricated = sorted(t for t in cited if t not in hay)
+    # An UNNAMED precedent is still an invention when the prompt offered none.
+    # The 8B v3 said "the closest earlier investigation I found ended
+    # monitoring" on cases whose prompt has no similar-past block at all; no
+    # pod name, so the token check above cannot see it. Same defect as v2,
+    # one rung down.
+    if "similar past investigations" not in hay and _PRECEDENT_CLAIM_RE.search(reason):
+        fabricated.append("<unnamed precedent>")
     grounded = any(t in hay for t in cited) or any(
         w in hay for w in re.findall(r"[a-z]{5,}", reason.lower()))
     return grounded, fabricated

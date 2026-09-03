@@ -43,10 +43,12 @@ V2_CORRECT_OUTAGE = (
 def test_the_v2_fabrications_are_caught():
     grounded, fabricated = te.grade_reason(V2_FABRICATED_OOM,
                                            _prompt("novel-oom"))
-    assert fabricated == ["paperless-ngx-7ccf888b4-85484"], fabricated
+    # Both a named invention AND an unnamed precedent claim; the second check
+    # was added after the 8B v3 made the claim without naming anything.
+    assert "paperless-ngx-7ccf888b4-85484" in fabricated, fabricated
     grounded2, fabricated2 = te.grade_reason(V2_FABRICATED_OUTAGE,
                                              _prompt("correlated-outage"))
-    assert fabricated2 == ["ingress-nginx-645cc7f7f8-2xjvx"], fabricated2
+    assert "ingress-nginx-645cc7f7f8-2xjvx" in fabricated2, fabricated2
 
 
 def test_a_reason_can_be_grounded_and_fabricating_at_once():
@@ -109,11 +111,43 @@ def test_an_invented_ip_is_a_fabrication():
     assert fabricated == [], fabricated
     _, fabricated = te.grade_reason(
         "closest earlier match was 192.168.0.99 which resolved", prompt)
-    assert fabricated == ["192.168.0.99"], fabricated
+    assert "192.168.0.99" in fabricated, fabricated
 
 
 def test_a_cosine_is_still_not_an_ip():
+    # known-sdcard carries a real precedent, so the claim itself is fine and
+    # the only question is whether "0.94" reads as an address. It must not.
     _, fabricated = te.grade_reason(
-        "repeats an earlier investigation (0.94 similarity)",
-        "Alert summary: Pod foo-1 restarting")
+        "raspberrypi3 repeats an earlier investigation (0.94 similarity)",
+        _prompt("known-sdcard"))
+    assert fabricated == [], fabricated
+
+
+# Verbatim from the 8B v3 Q4 run, benchmarks/reason_compare.py, 2026-09-03.
+V3_8B_UNNAMED = ("tmp-restore-verify-9x2kd: the closest earlier investigation "
+                 "I found ended monitoring — no resolved precedent to lean on")
+V3_8B_HONEST = ('"paperless-ngx-7d9c4b8f5-nq2wm" is unlike anything in history '
+                "— needs a first look")
+
+
+def test_an_unnamed_precedent_on_a_prompt_with_none_is_a_fabrication():
+    """No pod name, so the token check cannot see it; the prompt has no
+    similar-past block, so the precedent it describes does not exist."""
+    _, fabricated = te.grade_reason(V3_8B_UNNAMED, _prompt("tmp-pod-critical"))
+    assert fabricated == ["<unnamed precedent>"], fabricated
+
+
+def test_the_no_precedent_frames_are_not_precedent_claims():
+    for reason in (V3_8B_HONEST,
+                   "paperless-ngx-7d9c4b8f5-nq2wm has no precedent in the "
+                   "investigation history — needs a first look"):
+        _, fabricated = te.grade_reason(reason, _prompt("novel-oom"))
+        assert fabricated == [], (reason, fabricated)
+
+
+def test_a_precedent_claim_is_fine_when_the_prompt_offers_one():
+    """known-sdcard carries a real precedent; citing it is the point."""
+    _, fabricated = te.grade_reason(
+        "raspberrypi3 repeats an earlier investigation that resolved (0.94 similarity): "
+        "raspberrypi3 SD card I/O errors after power loss", _prompt("known-sdcard"))
     assert fabricated == [], fabricated
