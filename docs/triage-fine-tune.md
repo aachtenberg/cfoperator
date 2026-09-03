@@ -547,7 +547,9 @@ default of 1000 truncates silently and the builder now warns when it does).
 post-mortem in `docs/triage-retrain-runbook.md` and PR #240. **v3 was trained
 twice (14B and 8B) and rejected** — action-perfect on the 14B, but both
 fabricate on prompts without a precedent block, a shape v3 never contained;
-see *v3 results* below. **v4 is the data the next run should use.**
+see *v3 results* below. **v4 was trained twice as well**: the block-less repair
+worked on every case it targeted, and the one fabrication left is a shape the
+history cannot supply — see *v4 results*.
 
 | | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) | v4 (2026-09-03) |
 |---|---:|---:|---:|---:|
@@ -693,6 +695,69 @@ rows, so nothing already trained changed; it is what the twins carry, and a
 test pins that the eval's unnamed-precedent rule does not flag it.
 
 **The pre-flight counts block-less rows**, and the builder warns at zero.
+
+#### v4 results (2026-09-03): the repair worked; one shape the history cannot teach
+
+Same YAML, same boxes (14B on the 5060, 8B on the 5080), 117 steps each, final
+loss 0.0369 (14B) and 0.0409 (8B). Gated at 14 cases × 36 runs on a quiet card
+(`benchmarks/triage_eval_cfop_triage_ministral3_v4_q4.json` and
+`…_8b_v4_q4.json`):
+
+| | v3 14B | v4 8B | v4 14B |
+|---|---:|---:|---:|
+| action | 504/504 | 465/504 | **504/504** |
+| JSON valid | 504/504 | 501/504 | 504/504 |
+| latency, mean | 1.08 s | 0.76 s | 1.05 s |
+| `novel-oom` fabricating runs | 36 | 0 | **0** |
+| `critical-narrow` / `warning-correlated` / `novel-imagepull` fabricating | 36 / 27 / 5 | 1 / 0 / 1 | **0 / 0 / 0** |
+| `tmp-pod-critical` | 36/36 | **0/36** | 36/36 |
+| `info-novel-cert` fabricating runs | 36 | 36 | 36 |
+| fabricated cites, total | 140/504 | 38/504 | 36/504 |
+
+The block-less cases now answer with the twin frame, verbatim:
+
+```
+paperless-ngx-7d9c4b8f5-nq2wm: nothing similar listed — needs a first look
+warning: three services (immich, paperless-ngx, nextcloud) — nothing similar listed
+tmp-restore-verify-9x2kd: the prefix tmp- matches the log_only rule (known noise)
+```
+
+The 8B still loses `tmp-pod-critical` outright (severity=critical beats the
+noise rule at that size), returned three empty responses, and is not a
+candidate. The 14B is a candidate on everything except one case.
+
+**The residual is `info-novel-cert`, 36/36 on both sizes, and it is a
+different kind of gap.** The alert is severity=info with no precedent; the
+rubric allows `notify` on the severity alone; and the only notify frame in the
+data is "repeats an earlier investigation that resolved (…)", because the
+builder's notify rule *is* a resolved precedent. So the model says notify, and
+invents the precedent that frame needs:
+
+```
+grafana.ai repeats an earlier investigation that resolved (21 days ago): …
+```
+
+No real row can fix this. The investigation history holds **zero severity=info
+alerts** — checked against all 1,886 rows, not only the training set — because
+info alerts are notified or logged and never investigated, so they never enter
+the table the builder reads. The twins could not cover it either: a twin keeps
+its row's label, and no row is labelled notify without a precedent.
+(`info-severity`, the info alert *with* a precedent, is 36/36 and clean.)
+
+Options, in the order worth taking them:
+
+1. **A small synthetic set for v5.** Severity=info alerts drawn from this
+   homelab's real alert names (certificate renewal notices, backup-completed
+   notices), no precedent block, labelled notify with a frame that cites the
+   severity ("severity=info — informational, no action needed"), and marked
+   `meta.synthetic` so they can be filtered. It would be the first
+   non-historical data in the set and should be labelled as such.
+2. **Keep severity=info away from the fine-tune in production.** The rubric
+   already decides those by severity alone, so `run_triage` can short-circuit
+   them before the model call. That is a triage behaviour change and its own
+   issue, but it takes the model off the one shape it cannot be trained on.
+3. Ship the 14B v4 as it is. Not on the table: a confident false citation on
+   info alerts is the CFOP-153 defect in miniature.
 
 ---
 

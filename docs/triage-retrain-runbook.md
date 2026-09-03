@@ -271,14 +271,20 @@ It is a divergence check, not a quality measure. `triage_eval.py` is the gate.
 Studio's API does this without the UI; the box does not need a screen. Tokens
 are in `repos/cfoperator/.env` (`UNSLOTH_5080_TRAINING_TOKEN`,
 `UNSLOTH_5060_TRAINING_TOKEN`); pull them inline so they never land in a
-transcript. `<box>` is `192.168.0.110` (5080) or `192.168.0.232` (5060).
+transcript. `<box>` is whatever DHCP gave the box today — the 5080 was
+`.110` in the morning and `.112` by the afternoon; the 5060 has stayed on
+`.232`. **Studio's "LAN access" toggle is off again after every relaunch**, so
+if 8888 is closed on a box the operator can otherwise reach, that is the first
+thing to ask for; a ping sweep plus a 445/3389 probe finds a moved box, and a
+host that answers ARP but drops every port is Windows on a "Public" network
+profile after a new lease (set it to Private).
 
 ```bash
 T=$(grep '^UNSLOTH_5080_TRAINING_TOKEN=' .env | cut -d= -f2- | tr -d '\r"')
 H="Authorization: Bearer $T"; B=http://192.168.0.110:8888
 
 # 1. the run's output_dir, then its final checkpoint
-curl -s -H "$H" $B/api/train/runs | jq -r '.[0] | .id, .status, .output_dir'
+curl -s -H "$H" $B/api/train/runs | jq -r '.runs[0] | .id, .status, .output_dir'   # {"runs":[...]}, newest first
 curl -s -G -H "$H" --data-urlencode "outputs_dir=<output_dir>" $B/api/models/checkpoints \
   | jq -r '.models[].checkpoints[].path' | grep checkpoint-99
 
@@ -332,6 +338,13 @@ saying so — the 8B Q8_0 was kicked off unannounced and it surprised them.
 ---
 
 ## 7. Import on `ubuntu-llm-01`
+
+**Wait for the copy to close, not for the size.** A Windows/SMB copy onto the
+backup disk preallocates the file to its final size at the start; the 14B v4
+Q4 sat at its full 8,239,067,360 bytes for nine minutes while still being
+written. The end of the copy is the mtime snapping back to the export's own
+timestamp — poll `stat -c %Y` until it is older than a couple of minutes
+before `ollama create`, or the import hashes a half-written file.
 
 ```bash
 ollama create cfop-triage-ministral3:v2-q4 -f benchmarks/Modelfile.cfop-triage-v2
@@ -403,6 +416,20 @@ fabricated on exactly the five of those whose frame has a slot to fill —
 block was supplied. If the pre-flight's `without a block` count was 0, that is
 the cause; retrain on data that has the shape before reading anything else
 into the numbers.
+
+**Run the gate on a quiet card.** `gemma4:26b` (17 GB) and the 14B (13 GB at
+its 32k context) do not fit on the 24 GB card together, so a production
+investigation or console chat running during the gate makes ollama evict the
+candidate on every call — runs went from 1 s to 20–45 s and the latency line
+became meaningless. Check `ollama ps` first; a detached loop that starts the
+eval only after three quiet minutes is what worked. The eval takes ~10 min for
+the 14B, which is also past a Claude Code background command's cap, so run it
+detached (`setsid nohup … &`) and watch the log.
+
+**Fabrication on `info-novel-cert` alone is the severity=info gap**, not a
+regression: the history has no info-level alerts (they are never
+investigated), so no real row teaches notify-without-a-precedent. See the model
+card's *v4 results* for the options.
 
 Then read a few reasons with your own eyes — the checks are narrow by design:
 
