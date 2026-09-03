@@ -263,6 +263,23 @@ consumer-GPU training run.
    `UNSLOTH_CE_LOSS_TARGET_GB=1` and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
    **in the shell that launches studio**. `setx` alone does not reach an
    already-running app.
+
+   **These are a LAUNCH REQUIREMENT, not a one-time fix, and a reboot silently
+   removes them (CFOP-153, 2026-09-02).** Studio started from a shortcut,
+   service or auto-start after a reboot has neither variable, and the symptom
+   is *not* the CE-loss crash filed above — it is a **10x slowdown that looks
+   like a hardware limit**: 70–90 s/step, 99% GPU utilisation at 71–93 W of a
+   360 W board, VRAM pegged near total, with runs dying at random steps. With
+   both variables set the same config ran at **6.7 s/step at 279 W** — faster
+   than v1. Power draw is the tell: high utilisation at low watts is PCIe
+   waiting, not compute.
+
+   Counterintuitively a *clean reboot makes this worse*, because rebooting is
+   what unsets them. Several hours were spent on VRAM arithmetic, sequence
+   length and `gradient_checkpointing` before this was the answer.
+
+   `gradient_checkpointing` was **not** implicated — it was `'unsloth'` on
+   every run. Do not re-check it.
 2. **179s/step at 79W with VRAM pegged at 15.4/15.9GB and "99% utilization".**
    Power that low with utilization that high means the GPU is waiting on PCIe,
    not computing. The cause was **WDDM silently paging VRAM to system RAM**. Fix:
@@ -276,7 +293,9 @@ consumer-GPU training run.
    apps.
 
 Also: unsloth studio's API is token-authed and was reachable over the LAN
-(`http://192.168.0.115:8888`, token in `/tmp/unsloth.token`), which is how the
+(**`http://192.168.0.110:8888`** as of 2026-09-02 — this document previously
+said `.115`; verify before trusting it, the box is DHCP. Token in
+`/tmp/unsloth.token` **on the cfoperator host**, not the training box), which is how the
 exports were driven remotely. `/api/train/progress` is a long-poll that never
 returned data remotely; `/api/train/runs` gives status only. The studio host is
 a workstation, not always on — treat LAN access as opportunistic.
@@ -289,30 +308,33 @@ CUDA card available.
 
 ## Export and import
 
-Export was driven over the studio LAN API, once per quantization (the base is
-cached after the first, so no re-download):
-
-```bash
-TOKEN=$(head -1 /tmp/unsloth.token)
-curl -s --max-time 30 -X POST \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"save_directory": "C:\\Users\\<user>\\.unsloth\\studio\\outputs\\cfop-triage-gguf",
-       "quantization_method": "Q4_K_M"}' \
-  "http://192.168.0.115:8888/api/export/export/gguf"
-```
+Export is driven over the studio API, once per quantization. The full,
+current sequence — checkpoint lookup, `load-checkpoint`, `export/gguf`,
+status/logs — lives in the runbook's
+[§6 Export](triage-retrain-runbook.md#6-export); this section only records
+what the export *is*, since that was misdescribed here for a while.
 
 Export is **merged**, not adapter-only — the LoRA is folded into the base
-weights. It de-quantizes the 14B to 16-bit on the fly, so it is the heaviest
-step of the pipeline on the training box (several minutes of heavy CPU/RAM).
-`Q8_0` was exported first as the archival reference; `Q4_K_M` followed as the
-deployment candidate and had to clear the same eval gate before it could ship.
+weights. To do that it needs the **fp16 base, which is not the bnb-4bit model
+training used**: the first export on a box downloads it (16.6 GB for the 8B,
+26 GB for the 14B) into the HF cache, and that download, not the merge, is
+most of the wall-clock. Later exports on the same box skip it. Tokens are the
+per-card `UNSLOTH_<card>_TRAINING_TOKEN` entries in `repos/cfoperator/.env`;
+the v1-era `/tmp/unsloth.token` and `192.168.0.115` are gone.
 
-The resulting GGUF is copied to the NAS and imported on `ubuntu-llm-01` with
-[`benchmarks/Modelfile.cfop-triage`](../benchmarks/Modelfile.cfop-triage):
+`Q8_0` is the archival reference and `Q4_K_M` the deployment candidate; both
+clear the same gate before either ships. The export folder is copied by hand
+to `/mnt/nas-backup/unsloth/cfoperator-v<N>/` — a local exFAT disk on the dev
+box, not a NAS — beside the dataset and YAML that produced it, and imported
+with that generation's Modelfile (`benchmarks/Modelfile.cfop-triage-<gen>`):
 
 ```bash
-ollama create cfop-triage-ministral3:v1-q4 -f benchmarks/Modelfile.cfop-triage
+ollama create cfop-triage-ministral3:8b-v3-q4 -f benchmarks/Modelfile.cfop-triage-8b-v3
 ```
+
+`ollama create` reads the whole file off the exFAT disk at ~30 MB/s and
+hashes it, so budget 5–10 minutes and run it detached from anything with a
+timeout.
 
 The Modelfile reuses the **base model's exact chat template** — the fine-tune
 was trained against it, and a paraphrased template would not transfer. It also
@@ -506,15 +528,262 @@ PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
 
 ### What a v2 should change
 
-1. Generate varied, alert-grounded `reason` text instead of four templates —
-   otherwise you are training a classifier and shipping it as an explainer.
-2. Fix the `Labels` stopword-extraction bug.
+1. ~~Generate varied, alert-grounded `reason` text instead of four templates~~ —
+   **done (CFOP-153).** See [v2 dataset](#v2-dataset-cfop-153) below.
+2. ~~Fix the `Labels` stopword-extraction bug.~~ — **done (CFOP-153).**
 3. Vary the similar-past block 0–3 and carry real severity, so training shape
    matches serving shape.
 4. Oversample `log_only` and `escalate`, or accept that those two labels are the
    base model's behavior and say so.
 5. Build a val split that is distributionally comparable to train, or stop
    quoting val loss as evidence.
+
+
+### v2, v3 and v4 datasets (CFOP-153)
+
+Both rebuilt from the full 1,882-investigation history (`--limit 5000`; the
+default of 1000 truncates silently and the builder now warns when it does).
+**v2 was trained and rejected** — it fabricated precedents, see the retrain
+post-mortem in `docs/triage-retrain-runbook.md` and PR #240. **v3 was trained
+twice (14B and 8B) and rejected** — action-perfect on the 14B, but both
+fabricate on prompts without a precedent block, a shape v3 never contained;
+see *v3 results* below. **v4 was trained twice as well**: the block-less repair
+worked on every case it targeted, and the one fabrication left is a shape the
+history cannot supply — see *v4 results*.
+
+| | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) | v4 (2026-09-03) | v5 (2026-09-03) |
+|---|---:|---:|---:|---:|---:|
+| train rows | 451 | 522 | **262** | 310 | 324 |
+| distinct `reason` strings | **4** | 383 | 246 | 275 | 289 |
+| distinct `confidence` values | **4** | 39 | 38 | 39 | 39 |
+| rows using a v1 canned reason | 451 | 0 | 0 | 0 | 0 |
+| reasons falling back to the generic "this alert" | n/a | 0 | 0 | 0 | 0 |
+| rows citing an object absent from their prompt | 0 | **176** | **0** | 0 | 0 |
+| rows with no precedent block (train / val) | 0 | 0 | **0 / 0** | **48 / 5** | 62 / 5 |
+| synthetic rows (train / val) | 0 | 0 | 0 | 0 | **14 / 0** |
+| `escalate` rows (train / val) | 16 / — | 16 / 2 | 16 / 2 | 32 / 4 | 32 / 4 |
+| investigate : escalate | 21:1 | 25:1 | **9.8:1** | 5.8:1 | 5.8:1 |
+
+Fingerprint for checking you have the right file before training: **262 train
+rows, 246 distinct reasons, 38 distinct confidences, 0 fabricated citations,
+escalate 16/2.** Train is `sha256 f5533195a23c53cb…`, val `60aef4afdacbbbb3…`. v4: **310
+train rows, 275 distinct reasons, 39 distinct confidences, 0 fabricated
+citations, escalate 32/4, 48 train rows without a block.** Train is
+`sha256 5f6968f27e6b5e3a…`, val `ec7441d1f08596eb…`; staged at
+`/mnt/nas-backup/unsloth/cfoperator-v5/` (folder numbering runs one ahead of
+the data generation throughout). v5: **324 train rows, 289 distinct reasons,
+39 distinct confidences, 0 fabricated, 62 train rows without a block, 14
+synthetic**; train `sha256 5e44b0ae1746dfa7…`, val unchanged from v4
+(`ec7441d1f08596eb…`); staged at `/mnt/nas-backup/unsloth/cfoperator-v6/`.
+
+Three things changed between v2 and v3, all in the builder:
+
+- **The investigate frames no longer put the alert's own subject after a
+  similarity cue word.** "closest earlier match to {subject}" taught the model
+  `closest → <pod>`, and it reproduced that adjacency on alerts with no
+  precedent by inventing one. Subject leads now; only a cosine may follow a
+  cue. That reverses the cosine removal below — the objection still holds for
+  the no-precedent frame, which keeps neither cue word nor number.
+- **Near-duplicate frames are capped at 8 rows** (`--max-per-frame`, on by
+  default). 148 investigate rows were one sentence with the pod name swapped.
+  Capping per frame rather than per action is what leaves `escalate` and
+  `log_only` untouched: thin classes have no big frames. Lower than 8 starts
+  deleting `escalate` and the ratio gets worse, not better.
+- **Two label bugs**: `api.x.ai` was read as `node=api` ("api" contains "pi"),
+  and "in kube-system namespace" as `namespace=experiencing`. Both corrupted the
+  trained input.
+
+The row count is well below v1's 451. Keep 3 epochs rather than compensating:
+v2's correct escalates used base-model phrasing absent from the training data,
+so the fine-tune's demonstrated value is latency and JSON validity, not
+classification — less deviation from the base is the point.
+
+383 rather than the 467 an earlier build produced, and the drop is deliberate:
+the similarity float was removed from the investigate near-miss frame, and it
+had been supplying uniqueness to 352 rows. A cosine in every sentence teaches
+"a good reason contains a float" — citable-looking, trivially faked. Uniqueness
+now comes from the subject, which is the part that is actually grounded.
+
+A "100% of reasons contain a token from the alert" figure appeared in an
+earlier draft of this table and is deliberately not repeated. Review showed it
+was close to vacuous: 106 rows (20.3%) said only "this alert" and satisfied the
+token-overlap test via the similarity *number* shared between prompt and
+reason. The generic-subject count is the number that actually moved, so that is
+the one recorded.
+
+Confidence now varies *within* an action instead of renaming it —
+`investigate` spans 0.45–0.60 (a near-miss precedent that did not resolve is
+less certain than a genuinely novel alert), `notify` spans 0.70–0.93 with the
+cited precedent's similarity. `escalate` and `log_only` remain single-valued;
+neither has enough examples for a spread to mean anything.
+
+Label mix is essentially unchanged, which is the point — this was a
+reason/confidence change, not a relabelling: `investigate` 338→402,
+`notify` 96→103, `escalate` 16→16, `log_only` 1→1.
+
+**The `Labels` trade is worth stating.** Empty-label rows went *up*, 53%→69%,
+because the shape test now rejects what it used to invent. v1 had ~19% of its
+populated labels as English stopwords (`{"pod": "with"}`); v2 has none. Fewer
+labels, none of them lies. A bare single-word name like `prometheus` is dropped
+too — deliberately conservative, same posture as `derive_severity`.
+
+**Still open, and now more visible:** `log_only` has two examples (one alert,
+with and without its block) and `escalate` thirty-two (sixteen alerts, twice).
+Items 3–5 above are untouched. Real new `escalate` and `log_only` alerts are
+still the largest remaining data defect; the twins change which shapes the
+model has seen, not how many distinct situations.
+
+#### v3 results (2026-09-03): action-perfect, fabricates on the shape it never saw
+
+Two v3 models were trained on the same data and YAML — 14B on the RTX 5060
+box, 8B on the 5080 — and gated at 14 cases × 36 runs
+(`benchmarks/triage_eval_cfop_triage_ministral3_v3_q4.json` and
+`…_8b_v3_q4.json`):
+
+| | v2 14B | v3 8B | v3 14B |
+|---|---:|---:|---:|
+| action | 496/504 | 468/504 | **504/504** |
+| JSON valid | 504/504 | 504/504 | 504/504 |
+| latency, mean | 1.05 s | 0.76 s | 1.08 s |
+| `correlated-outage` | 28/36 | 36/36 | 36/36 |
+| `tmp-pod-critical` | 36/36 | **0/36** | 36/36 |
+| fabricated cites, named | 36/504 | 0/504 | 27/504 |
+| fabricated cites incl. unnamed precedent | — | 179/504 | 140/504 |
+| final training loss | 0.0134 | 0.0415 | 0.0302 |
+
+The 14B v3 is the best model so far on action: the v2 regression is gone (the
+rebalance was the cause) and it holds the noise trap the 8B fails. Neither
+ships, because both fabricate — and every fabricating run is on a prompt with
+**no "Similar past investigations" block**: `novel-oom`, `critical-narrow`,
+`warning-correlated`, `info-novel-cert`, `novel-imagepull` (the 8B adds
+`tmp-pod-critical`). The 14B forces the near-miss frame and fills the cosine
+slot with an invented sibling pod:
+
+```
+paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation
+(paperless-ngx-76f85f4c9-2x87x) ended monitoring — no resolved precedent to lean on
+```
+
+**0 of the 262 v3 rows lack that block.** The retrospective search has a whole
+history to draw on, its floor is 0.5, and the weakest best-match in the history
+is 0.55, so every row got a block — while production sends none when retrieval
+returns nothing (empty history, embedding call failed) and the eval sends none
+on 10 of 14 cases. Probe on the 14B, `novel-oom`, six runs each: no block →
+invented pod 6/6; the same alert with a synthetic block at 0.61 → quotes 0.61,
+6/6; at 0.78 → quotes 0.78, 6/6. The model is not wrong about precedents; it
+has never been shown a prompt without them.
+
+Why it fabricates rather than saying so: SFT teaches a form conditioned on the
+input, and the only investigate form it learned opens a parenthesis that has to
+be filled. With a number in the prompt it copies the number; with none, the
+most probable pod-name-shaped string wins. It signals doubt in the one channel
+it has — confidence 0.45, the floor of the range — but has no sentence for
+"nothing listed", because no training row ever said it.
+
+#### What v4 changes
+
+**Context-free twins.** Each row whose label does not depend on the block also
+yields a block-less copy of the same alert: escalate and log_only (their
+reasons never cite the block) and investigate rows whose best match sat below
+the 0.70 near-miss floor. Not notify (the label *is* the precedent) and not
+near-miss investigate (the bulk of the class; twinning it would rebuild the
+pile the frame cap removes and tilt the block-less shape to "investigate").
+Twins are emitted after the cap, so a capped row takes its twin with it.
++53 rows: 48 train, 5 val. escalate doubles to 32 as a side effect — the same
+16 alerts seen twice, which teaches the shape, not new escalate patterns.
+
+**The no-precedent reason describes the prompt, not the history.** "nothing
+similar listed — needs a first look", the rubric's own wording, in place of
+v3's "has no precedent in the investigation history". It fired on zero v3
+rows, so nothing already trained changed; it is what the twins carry, and a
+test pins that the eval's unnamed-precedent rule does not flag it.
+
+**The pre-flight counts block-less rows**, and the builder warns at zero.
+
+#### v4 results (2026-09-03): the repair worked; one shape the history cannot teach
+
+Same YAML, same boxes (14B on the 5060, 8B on the 5080), 117 steps each, final
+loss 0.0369 (14B) and 0.0409 (8B). Gated at 14 cases × 36 runs on a quiet card
+(`benchmarks/triage_eval_cfop_triage_ministral3_v4_q4.json` and
+`…_8b_v4_q4.json`):
+
+| | v3 14B | v4 8B | v4 14B |
+|---|---:|---:|---:|
+| action | 504/504 | 465/504 | **504/504** |
+| JSON valid | 504/504 | 501/504 | 504/504 |
+| latency, mean | 1.08 s | 0.76 s | 1.05 s |
+| `novel-oom` fabricating runs | 36 | 0 | **0** |
+| `critical-narrow` / `warning-correlated` / `novel-imagepull` fabricating | 36 / 27 / 5 | 1 / 0 / 1 | **0 / 0 / 0** |
+| `tmp-pod-critical` | 36/36 | **0/36** | 36/36 |
+| `info-novel-cert` fabricating runs | 36 | 36 | 36 |
+| fabricated cites, total | 140/504 | 38/504 | 36/504 |
+
+The block-less cases now answer with the twin frame, verbatim:
+
+```
+paperless-ngx-7d9c4b8f5-nq2wm: nothing similar listed — needs a first look
+warning: three services (immich, paperless-ngx, nextcloud) — nothing similar listed
+tmp-restore-verify-9x2kd: the prefix tmp- matches the log_only rule (known noise)
+```
+
+The 8B still loses `tmp-pod-critical` outright (severity=critical beats the
+noise rule at that size), returned three empty responses, and is not a
+candidate. The 14B is a candidate on everything except one case.
+
+**The residual is `info-novel-cert`, 36/36 on both sizes, and it is a
+different kind of gap.** The alert is severity=info with no precedent; the
+rubric allows `notify` on the severity alone; and the only notify frame in the
+data is "repeats an earlier investigation that resolved (…)", because the
+builder's notify rule *is* a resolved precedent. So the model says notify, and
+invents the precedent that frame needs:
+
+```
+grafana.ai repeats an earlier investigation that resolved (21 days ago): …
+```
+
+No real row can fix this. The investigation history holds **zero severity=info
+alerts** — checked against all 1,886 rows, not only the training set — because
+info alerts are notified or logged and never investigated, so they never enter
+the table the builder reads. The twins could not cover it either: a twin keeps
+its row's label, and no row is labelled notify without a precedent.
+(`info-severity`, the info alert *with* a precedent, is 36/36 and clean.)
+
+Options, in the order worth taking them:
+
+1. **A small synthetic set for v5.** Severity=info alerts drawn from this
+   homelab's real alert names (certificate renewal notices, backup-completed
+   notices), no precedent block, labelled notify with a frame that cites the
+   severity ("severity=info — informational, no action needed"), and marked
+   `meta.synthetic` so they can be filtered. It would be the first
+   non-historical data in the set and should be labelled as such.
+2. **Keep severity=info away from the fine-tune in production.** The rubric
+   already decides those by severity alone, so `run_triage` can short-circuit
+   them before the model call. That is a triage behaviour change and its own
+   issue, but it takes the model off the one shape it cannot be trained on.
+3. Ship the 14B v4 as it is. Not on the table: a confident false citation on
+   info alerts is the CFOP-153 defect in miniature.
+
+#### What v5 changes
+
+**Fourteen synthetic severity=info rows, train only.** Option 1 above, taken.
+Five alert families this fleet would emit at info — certificate renewals,
+backup completions, ArgoCD syncs, cron successes, unattended upgrades — with
+real object names, no precedent block, labelled notify with a frame that cites
+the severity and nothing else: `immich.ai: severity=info — informational, no
+investigation needed`. They are the first non-historical rows in the set:
+every one carries `meta.synthetic: true`, validation never gets one (its file
+is byte-identical to v4's), the builder runs them through the same eval
+exclusion as real rows, and tests pin all of that plus that the gate's
+unnamed-precedent rule does not flag the frame. `--no-synthetic-info` for an
+A/B.
+
+**How much of production this touches, checked rather than assumed:** this
+homelab defines no info-level Prometheus rule (13 critical, 40 warning). What
+reaches triage at `info` today is the Alertmanager Watchdog — its
+`severity: none` maps to info at intake — and resolution alerts, which
+`run_triage` already short-circuits. So the shape is the rubric's ("notify …
+when severity=info"), not yet the fleet's. Option 2 (short-circuit non-noise
+info alerts in `run_triage`) is tracked as its own issue.
 
 ---
 
@@ -625,6 +894,10 @@ Carried over from the v1 session plus the 2026-09-02 review; none are blocking:
   exist to train on anyway — `investigation_events` were never written.
 
 ## See also
+
+- [`docs/triage-retrain-runbook.md`](triage-retrain-runbook.md) — the ordered
+  procedure for producing a new tag. This page is the record of what v1 *is*;
+  that one is what you follow with the training box in front of you.
 
 - [`benchmarks/ministral-3-14b-baseline.md`](../benchmarks/ministral-3-14b-baseline.md) — the before/after benchmark write-up
 - [`scripts/build_triage_dataset.py`](../scripts/build_triage_dataset.py) — dataset builder, and the authority on label derivation

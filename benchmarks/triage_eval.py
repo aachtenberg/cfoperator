@@ -422,6 +422,84 @@ def ollama_version(url: str) -> str:
         return "unknown"
 
 
+# --- Tier 3: grade the reason, not just the action -------------------------
+#
+# The v2 fine-tune scored 36/36 on novel-oom while every reason it produced
+# cited a precedent that does not exist ("nearest was
+# paperless-ngx-7ccf888b4-85484", a different invented pod each sample, on a
+# case with no precedents at all). This harness graded the action, so it passed.
+#
+# Note that BOTH reason checks docs/triage-eval-v2-plan.md specifies would also
+# have passed it: the reason is not a v1 canned string, and it does contain a
+# token from the alert -- it names the real pod first, then appends a fictional
+# one. Grounding is not the absence of fabrication. The check below is the
+# converse and it is the one that fails v2: every object-name-shaped token in
+# the reason must actually appear in the prompt.
+
+def _citation_tokens(text: str) -> set:
+    """Tokens in `text` that read as a Kubernetes object name.
+
+    Deliberately narrow: a digit plus a letter and at least four characters.
+    That covers pod names (always carrying a hash), node names like
+    raspberrypi3, and namespaced refs, while sparing durations ("30m"),
+    exit codes ("137"), cosines ("0.94") and hyphenated English the frames
+    legitimately use ("known-noise"). A fabricated name with no digit in it
+    would slip through; that is the accepted trade for a gate that does not
+    cry wolf.
+    """
+    out = set()
+    # Curly quotes too: the 8B v4 wrote “the “2xk4f” suffix” and the quoted
+    # token, kept with its quotes, read as an invented object.
+    for raw in re.split(r"[\s,;:()\[\]{}\"'\u201c\u201d\u2018\u2019]+", text or ""):
+        tok = raw.strip(".").strip("'\"\u201c\u201d\u2018\u2019")
+        if len(tok) < 4:
+            continue
+        # Dotted-quad IPs are object identifiers here (node addresses) and
+        # carry no letters, so the alphanumeric rule below would skip them --
+        # leaving an invented IP invisible to the gate.
+        if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", tok):
+            out.add(tok.lower())
+            continue
+        if any(c.isdigit() for c in tok) and any(c.isalpha() for c in tok):
+            out.add(tok.lower())
+    return out
+
+
+# Phrases that assert a precedent exists. Kept to the builder's own frame
+# vocabulary plus the paraphrases the 8B produced; "no precedent" / "unlike
+# anything" are the no-precedent frames and must NOT match.
+_PRECEDENT_CLAIM_RE = re.compile(
+    r"\b(closest earlier|nearest (?:was|match)|repeats an earlier|"
+    r"earlier investigation (?:I found|that|which)|ended (?:monitoring|resolved|needs_action)|"
+    r"similar past investigation|matches an earlier|precedent (?:that|which) (?:ended|resolved))\b",
+    re.IGNORECASE)
+
+
+def grade_reason(reason: str, prompt: str):
+    """(grounded, fabricated) for one reason against the prompt it answered.
+
+    `grounded` is the planned Tier 3 check -- the reason names something from
+    the alert. `fabricated` is the list of object names it cites that appear
+    nowhere in the prompt, which is the check that catches an invented
+    precedent. A reason can be grounded and fabricating at the same time.
+    """
+    if not reason:
+        return False, []
+    hay = (prompt or "").lower()
+    cited = _citation_tokens(reason)
+    fabricated = sorted(t for t in cited if t not in hay)
+    # An UNNAMED precedent is still an invention when the prompt offered none.
+    # The 8B v3 said "the closest earlier investigation I found ended
+    # monitoring" on cases whose prompt has no similar-past block at all; no
+    # pod name, so the token check above cannot see it. Same defect as v2,
+    # one rung down.
+    if "similar past investigations" not in hay and _PRECEDENT_CLAIM_RE.search(reason):
+        fabricated.append("<unnamed precedent>")
+    grounded = any(t in hay for t in cited) or any(
+        w in hay for w in re.findall(r"[a-z]{5,}", reason.lower()))
+    return grounded, fabricated
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", required=True)
@@ -469,6 +547,8 @@ def main():
             decision = CFOperator._parse_triage_response(text) if text else None
             action = decision["action"] if decision else None
             correct = action in case["expected"] if action else False
+            reason = decision.get("reason") if decision else None
+            grounded, fabricated = grade_reason(reason, user_msg)
             results.append({
                 "case": case["name"],
                 "run": run,
@@ -478,6 +558,12 @@ def main():
                 "correct": correct,
                 "latency_s": latency,
                 "confidence": decision["confidence"] if decision else None,
+                # Persisted so a reason audit can be retroactive. Without this
+                # the v2 fabrication had to be re-queried live against a model
+                # that might since have been deleted.
+                "reason": reason,
+                "reason_grounded": grounded,
+                "reason_fabricated": fabricated,
                 "error": err,
                 "raw": (text[:500] if (args.keep_raw and decision is None)
                         else None),
@@ -491,6 +577,11 @@ def main():
             if not correct and decision:
                 print(f"         expected {'|'.join(case['expected'])} — "
                       f"trap: {case['trap']}")
+            # A fabricated citation is worth surfacing even on a run whose
+            # action was right: that is exactly how v2 passed this harness.
+            if fabricated:
+                print(f"         FABRICATED {', '.join(fabricated)} — "
+                      f"cited but absent from the prompt")
 
     latencies = [r["latency_s"] for r in results if r["error"] is None]
     valid = sum(1 for r in results if r["valid"])
@@ -505,6 +596,12 @@ def main():
         "latency_mean_s": round(statistics.mean(latencies), 2) if latencies else None,
         "latency_max_s": round(max(latencies), 2) if latencies else None,
         "errors": sum(1 for r in results if r["error"]),
+        "reason_grounded_rate": (
+            round(sum(1 for r in results if r["reason_grounded"]) / len(results), 4)
+            if results else 0),
+        "reason_fabrication_rate": (
+            round(sum(1 for r in results if r["reason_fabricated"]) / len(results), 4)
+            if results else 0),
     }
 
     per_case = {}
@@ -515,6 +612,7 @@ def main():
             "correct": sum(1 for r in runs if r["correct"]),
             "of": len(runs),
             "actions": sorted({str(r["action"]) for r in runs}),
+            "fabricating_runs": sum(1 for r in runs if r["reason_fabricated"]),
         }
 
     print(f"\n{'='*60}")
@@ -525,6 +623,12 @@ def main():
           f"({summary['action_accuracy']*100:.1f}%)")
     print(f"Latency          mean {summary['latency_mean_s']}s  "
           f"max {summary['latency_max_s']}s")
+    fab = sum(1 for r in results if r["reason_fabricated"])
+    print(f"Reason grounded  {sum(1 for r in results if r['reason_grounded'])}"
+          f"/{len(results)} ({summary['reason_grounded_rate']*100:.1f}%)")
+    print(f"Fabricated cites {fab}/{len(results)} "
+          f"({summary['reason_fabrication_rate']*100:.1f}%)"
+          + ("  <- FAIL: reasons cite objects absent from the prompt" if fab else ""))
     if summary["errors"]:
         print(f"Errors           {summary['errors']}")
     # A perfect score at low run-count is the suite's most misleading output:

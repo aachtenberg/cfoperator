@@ -33,6 +33,12 @@ event_runtime and never stored). So:
     time of writing — and their hybrid combined-score sits on a different
     scale than the eval suite's synthetic similarities. Cosine over the
     production embedding model is the consistent reconstruction.)
+  - Production sends NO similar-investigations block when retrieval returns
+    nothing (empty history, embedding call failed). The retrospective search
+    never returns nothing, so every reconstructed row has a block; rows whose
+    label does not depend on it get a block-less twin as well (see
+    build_examples) so the model has seen the shape. v3 had not, and
+    fabricated a precedent on exactly that shape.
   - severity/labels are re-derived from the trigger text where a conservative
     pattern allows it, else left "unknown"/sparse. meta.severity_source
     records which. This is the one known fidelity gap.
@@ -54,6 +60,11 @@ Derivation rules (rubric clause in parentheses):
                investigation.
   investigate  everything else, including resolved-without-precedent (it was
                novel; investigating was correct and it worked).
+  notify       SYNTHETIC (v5): severity=info with nothing listed ("...when
+               severity=info"). The history cannot supply this shape -- info
+               alerts are notified or logged and never investigated, so none
+               is in the table -- and both v4 models invented a precedent on
+               it. A small fixed set, train-only, marked meta.synthetic.
 
 Usage:
     # From the console API (port-forward or in-cluster; Bearer token for
@@ -165,7 +176,21 @@ _SEVERITY_PATTERNS = [
 _POD_RE = re.compile(
     r"\bPod (?:([a-z0-9-]+)/)?([a-z0-9][a-z0-9.-]*)", re.IGNORECASE)
 _NS_RE = re.compile(r"\bnamespace ([a-z0-9-]+)", re.IGNORECASE)
-_NODE_RE = re.compile(r"\b(?:Node|on|host) ([a-z][a-z0-9-]*(?:pi|cm5|llm|gpu)[a-z0-9-]*)", re.IGNORECASE)
+# English puts the namespace on either side of the word: "in namespace apps"
+# but also "in kube-system namespace". Only the first was handled, so
+# "Traefik pod in kube-system namespace experiencing I/O timeouts" labelled
+# the namespace "experiencing" -- discarding the correct value that was
+# sitting right there, and feeding the reason frame a subject of
+# "experiencing:". The shape test cannot catch that: real namespaces here
+# (apps, plane, argocd) have neither a digit nor a hyphen, so the stopword
+# list is the only guard, and no stopword list covers every participle.
+_NS_BEFORE_RE = re.compile(r"\b([a-z0-9][a-z0-9-]*) namespace\b", re.IGNORECASE)
+# The marker must start the name or follow a hyphen. Written as a bare
+# substring, "pi" matched the "api" in "...403 Forbidden on api.x.ai" and
+# labelled the node "api" -- and would equally accept "rapid" or "capital".
+_NODE_RE = re.compile(
+    r"\b(?:Node|on|host) ((?:[a-z0-9-]*-)?"
+    r"(?:raspberrypi|pi\d|cm5|llm|gpu)[a-z0-9-]*)", re.IGNORECASE)
 
 
 def derive_severity(trigger: str):
@@ -175,24 +200,211 @@ def derive_severity(trigger: str):
     return "unknown", "unknown"
 
 
+# CFOP-153. The regexes above take whatever word follows "pod"/"namespace",
+# which in prose is usually an English word: "Pod with high memory" yielded
+# {"pod": "with"} and "namespace has been" yielded {"namespace": "has"}. That
+# was ~19% of populated Labels in the v1 training set, so the model was
+# effectively trained on the summary line alone.
+#
+# The shape test is the fix. Every pod/namespace/node name in this fleet
+# carries a digit or a hyphen (promtail-2xvvb, loki-0, raspberrypi3), and no
+# English stopword does. Deliberately conservative in the same direction as
+# derive_severity: a bare single-word name like "prometheus" is dropped rather
+# than guessed at. A missing label is a known gap; a wrong one is training
+# noise that looks like signal.
+_LABEL_STOPWORDS = frozenset("""
+a an and are as at be been by during for from had has have in is it its no not
+of on or that the this to was were when where which while with without after
+before above below over under
+""".split())
+
+
+# Words that appear in alert prose but never as a whole segment of an object
+# name here. Only used to spot compounds like "crash-looping" / "not-ready";
+# a name is rejected only when EVERY segment is one of these, so
+# node-exporter-zgzxm and kube-state-metrics survive.
+_PROSE_SEGMENTS = _LABEL_STOPWORDS | frozenset("""
+crash crashing looping loop ready unready memory cpu disk usage high low full
+restart restarting restarted pending failed failing error errors down up out
+killed unavailable unhealthy timeout timed slow stuck stalled missing lost
+degraded oom evicted terminating unreachable
+""".split())
+
+
+def _is_english_compound(tok: str) -> bool:
+    """True when every hyphen-separated segment is an ordinary word."""
+    segs = [x for x in tok.split("-") if x]
+    return len(segs) > 1 and all(x in _PROSE_SEGMENTS for x in segs)
+
+
+def _plausible_k8s_name(token, *, from_prose: bool = False) -> str | None:
+    """A token that could be a real object name here, else None.
+
+    ``from_prose`` is the important distinction. Where the token has no
+    structural anchor -- the bare word after "Pod" -- prose supplies things
+    like "restarting" that no stopword list will ever fully cover, so the
+    name is additionally required to LOOK like a Kubernetes object: a digit
+    or a hyphen, which every pod name in this fleet carries (promtail-2xvvb,
+    loki-0).
+
+    "and no English word does" was the overstatement, caught in review on
+    PR #240: single words do not, but COMPOUNDS do, so "Pod crash-looping"
+    still produced {"pod": "crash-looping"} -- and the regression test used
+    the unhyphenated "crashlooping", so it did not catch it. Hence the
+    second test: a token whose hyphen-separated segments are ALL ordinary
+    words is prose, whatever its punctuation.
+
+    Rejecting hyphens outright, or demanding a digit, was measured against
+    the corpus first and costs four real names (node-exporter-zgzxm,
+    kube-state-metrics, promtail-fdppw, node-exporter-nvtfv) whose random
+    suffix happens to be all letters. The segment test costs none of them.
+
+    Where the token IS anchored, that extra test would do damage rather than
+    good: the namespace in "Pod apps/camera-api-5f" is fixed by the slash,
+    and _NODE_RE already constrains its capture to names containing
+    pi/cm5/llm/gpu. Namespaces (`apps`, `argocd`, `monitoring`) and the node
+    literally named `raspberrypi` carry neither a digit nor a hyphen, so
+    requiring one there silently drops correct labels -- which is the same
+    class of error as the bug being fixed, pointed the other way.
+    """
+    tok = str(token or "").strip().lower().rstrip(".,;:)!?'\"")
+    if len(tok) < 3 or tok in _LABEL_STOPWORDS:
+        return None
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]*", tok):
+        return None
+    if from_prose:
+        if not re.search(r"[-0-9]", tok):
+            return None
+        if _is_english_compound(tok):
+            return None
+    return tok
+
+
 def derive_labels(trigger: str) -> dict:
     labels = {}
     m = _POD_RE.search(trigger)
     if m:
-        labels["pod"] = m.group(2)
-        if m.group(1):
-            labels["namespace"] = m.group(1)
+        # The pod name is the one capture with no structural anchor.
+        pod = _plausible_k8s_name(m.group(2), from_prose=True)
+        if pod:
+            labels["pod"] = pod
+        # Independently of the pod. Review on PR #240: nesting this under
+        # `if pod` meant "Pod apps/prometheus is unavailable" dropped the
+        # namespace too, because `prometheus` fails the prose shape test --
+        # discarding a slash-anchored fact on account of an unrelated one,
+        # and contradicting the contract stated above.
+        ns = _plausible_k8s_name(m.group(1)) if m.group(1) else None
+        if ns:
+            labels["namespace"] = ns
     if "namespace" not in labels:
-        m = _NS_RE.search(trigger)
-        if m:
-            labels["namespace"] = m.group(1)
+        # "<ns> namespace" first: the word before the noun is the namespace
+        # far more reliably than the word after it, and when the phrasing is
+        # "in namespace apps" this capture is the preposition, which the
+        # stopword list rejects -- so a miss here falls through cleanly.
+        for rx in (_NS_BEFORE_RE, _NS_RE):
+            m = rx.search(trigger)
+            if not m:
+                continue
+            ns = _plausible_k8s_name(m.group(1))
+            if ns:
+                labels["namespace"] = ns
+                break
     m = _NODE_RE.search(trigger)
     if m:
-        labels["node"] = m.group(1)
+        # _NODE_RE already requires pi/cm5/llm/gpu in the name.
+        node = _plausible_k8s_name(m.group(1))
+        if node:
+            labels["node"] = node
     return labels
 
 
-def derive_label(trigger: str, outcome: str, similar_past: list):
+# Words that show the alert itself claims breadth. Used only to decide
+# whether an escalate reason may assert blast radius; absence means the
+# reason stays silent about it rather than inventing it.
+_BREADTH_RE = re.compile(
+    r"\b(quorum|cluster[- ]?wide|multiple|several|all nodes|all pods|"
+    r"across \w+|fleet|outage|every |both nodes|control plane)\b",
+    re.IGNORECASE)
+
+
+def _alert_subject(trigger: str, labels: dict) -> str:
+    """The most specific thing this alert is about, for use in a reason.
+
+    Prefers a real object name (labels are shape-checked upstream), then any
+    distinctive token in the trigger, and only then a generic fallback. A
+    reason that says "this alert" is not grounded, so the fallback is a last
+    resort and shows up in the grounding test as such.
+    """
+    for key in ("pod", "node", "namespace"):
+        if labels.get(key):
+            return str(labels[key])
+    for tok in re.findall(r"[A-Za-z0-9][A-Za-z0-9.-]{3,}", trigger or ""):
+        if re.search(r"[-0-9]", tok) and tok.lower() not in _LABEL_STOPWORDS:
+            return tok
+    # Plenty of real alerts name no object at all ("Certificate expiration
+    # approaching"). Falling back to "this alert" made 20% of v2 reasons
+    # generic -- they passed a token-overlap grounding check only via the
+    # similarity number, which is grounding in the letter and not the spirit.
+    # The alert's own words are always available and always on-topic.
+    #
+    # QUOTED, because it is a fragment being slotted into a frame. Unquoted it
+    # produced mad-libs -- "Backup did not complete repeats an earlier
+    # investigation", "no earlier investigation resembles Certificate
+    # expiration approaching". Quoting is what makes a clause behave like a
+    # noun in every frame below, without needing a second set of templates.
+    clause = _clause(trigger, limit=60)
+    return f'"{clause}"' if clause else "this alert"
+
+
+def _clause(text: str, limit: int = 90) -> str:
+    """First clause of a trigger, trimmed on a word boundary."""
+    flat = " ".join(str(text or "").split())
+    if len(flat) <= limit:
+        return flat
+    return flat[:limit].rsplit(" ", 1)[0] + "..."
+
+
+# Below this cosine the best match is "unlike anything": the block is nearly
+# uninformative, and the row is eligible for a context-free twin (see
+# build_examples). At or above it the investigate reason quotes the number.
+NEAR_MISS_FLOOR = 0.70
+
+
+def _best_resolved_precedent(similar_past: list):
+    """Highest-similarity RESOLVED precedent at or above the notify threshold.
+
+    Separate from _best_precedent on purpose: this one decides the label, so
+    it must keep the original rule's semantics exactly (any resolved hit at
+    >=0.85), while _best_precedent only supplies wording for the branches
+    where no such hit exists.
+    """
+    best = None
+    for s in similar_past or []:
+        if str(s.get("outcome") or "") != "resolved":
+            continue
+        sim = float(s.get("similarity") or 0)
+        if sim < 0.85:
+            continue
+        if best is None or sim > best["similarity"]:
+            best = {"similarity": sim, "outcome": "resolved",
+                    "trigger": str(s.get("trigger") or "")}
+    return best
+
+
+def _best_precedent(similar_past: list):
+    """Highest-similarity precedent as a plain dict, or None."""
+    best = None
+    for s in similar_past or []:
+        sim = float(s.get("similarity") or 0)
+        if best is None or sim > best["similarity"]:
+            best = {"similarity": sim,
+                    "outcome": str(s.get("outcome") or "?"),
+                    "trigger": str(s.get("trigger") or "")}
+    return best
+
+
+def derive_label(trigger: str, outcome: str, similar_past: list,
+                 labels: dict | None = None):
     """Rubric-correct action from the context VISIBLE AT TRIAGE TIME.
 
     Returns (action, basis, reason, confidence), or None when the visible
@@ -216,35 +428,131 @@ def derive_label(trigger: str, outcome: str, similar_past: list):
     eval's critical-narrow and warning-correlated traps measure, so a bad
     reflex is caught at the gate rather than silently deployed.
 
-    Reasons are short and rubric-flavoured — training targets for the style
-    of reason run_triage's parser accepts, not incident ground truth.
+    REASONS ARE GROUNDED IN THE ALERT (CFOP-153). v1 emitted one of four fixed
+    strings, one per action, so `reason` and `confidence` carried no
+    information beyond `action` and the fine-tune learned exactly that
+    four-way lookup: it shipped as an explainer that cannot explain. Every
+    reason here names something from the alert it is describing — the pod,
+    node or namespace, the noise token that matched, the precedent it is
+    leaning on and how close it was. That is also the property
+    docs/triage-eval-v2-plan.md Tier 3 grades ("must contain at least one
+    token from the alert"), so the data is built to satisfy the test that
+    will judge it.
+
+    Deterministic templating, not an LLM. The goal is grounding, not fluency:
+    a generated reason would need its own review pass, and an ungrounded
+    fluent sentence is exactly the failure being fixed.
+
+    CONFIDENCE TRACKS EVIDENCE, not the action. It scales with how good the
+    precedent actually is, so it varies within an action class instead of
+    being a rename of it. Note the floor: nothing here drops below ~0.45, so
+    the deep-tier reroute (`0 < confidence < 0.4`) stays unreachable. Making
+    it reachable is a live behaviour change for host-shaped alerts and is a
+    separate decision, not a side effect of fixing the alias.
     """
-    if NOISE_RE.search(trigger):
+    labels = labels or {}
+    subject = _alert_subject(trigger, labels)
+    best = _best_precedent(similar_past)
+
+    m = NOISE_RE.search(trigger)
+    if m:
         if outcome in ("needs_action", "escalate", "escalated"):
             return None  # noise-shaped trigger that turned out real
-        return ("log_only", "noise-pattern",
-                "known noise pattern (test pod or watchdog heartbeat)", 0.95)
+        token = m.group(0).strip()
+        # Cite the token that actually matched. "(test/watchdog)" was a fixed
+        # pair on every row, so a tmp- pod was described as watchdog traffic.
+        # The other branch already had the token; both use it now.
+        reason = (f"{subject} matches the known-noise pattern "
+                  f"'{token}' — not a real workload")
+        return ("log_only", "noise-pattern", reason, 0.9)
+
     if outcome in ("escalate", "escalated"):
-        return ("escalate", "outcome-escalate",
-                "critical with broad impact, operator should page in", 0.9)
-    resolved_precedent = any(
-        (s.get("outcome") == "resolved"
-         and float(s.get("similarity") or 0) >= 0.85)
-        for s in similar_past
-    )
-    if resolved_precedent:
+        clause = _clause(trigger)
+        # Don't say "raspberrypi3: Node raspberrypi3 NotReady..." -- the
+        # clause usually already names the subject.
+        # A quoted-clause subject IS this trigger, so prefixing it repeats the
+        # sentence -- and _clause truncates with "...", so a naive containment
+        # test misses that and duplicates anyway.
+        bare = subject.strip('"').rstrip(".").strip()
+        head = clause if bare.lower() in clause.lower() else f"{subject}: {clause}"
+        # The escalate LABEL is hindsight -- the investigation ended escalate
+        # -- but the reason is a triage-time claim. Asserting "severity and
+        # blast radius both present" on every escalate row taught exactly the
+        # escalate reflex the eval's critical-narrow and warning-correlated
+        # traps exist to catch: on a single-pod page it is simply false, and a
+        # canned suffix on the highest-consequence action is the worst place
+        # to put an unearned claim. Only say it when the trigger shows it.
+        breadth = _BREADTH_RE.search(trigger)
+        if breadth:
+            tail = (f"— severity and blast radius both present "
+                    f"({breadth.group(0).strip().lower()}), page an operator now")
+        else:
+            tail = "— page an operator now"
+        return ("escalate", "outcome-escalate", f"{head} {tail}", 0.88)
+
+    # The notify rule is ANY resolved precedent at >=0.85, not "the closest
+    # precedent happens to be a resolved one". Those differ whenever a
+    # monitoring precedent outranks a resolved one -- and picking the wrong
+    # side of that moves the LABEL, not just the wording. Getting this wrong
+    # in development cost 35 notify examples (96 -> 61) and would have
+    # retrained the class imbalance harder while looking like a reason-only
+    # change.
+    cited = _best_resolved_precedent(similar_past)
+    if cited:
         if outcome in ("resolved", "monitoring"):
+            conf = round(min(0.93, 0.70 + (cited["similarity"] - 0.85) * 1.5), 2)
             return ("notify", "resolved-precedent",
-                    "similar past investigation resolved with little effort",
-                    0.85)
+                    f"{subject} repeats an earlier investigation that resolved "
+                    f"({cited['similarity']:.2f} similarity): "
+                    f"{_clause(cited['trigger'])}", conf)
         return None  # rubric said notify, reality needed action — conflict
+
     basis = {
         "needs_action": "outcome-needs-action",
         "monitoring": "outcome-monitoring",
         "resolved": "novel-but-resolved",
     }.get(outcome, "default")
-    return ("investigate", basis,
-            "no resolved precedent for this pattern", 0.8)
+
+    # NEVER PUT A NAME AFTER A SIMILARITY CUE WORD (CFOP-153, v2 post-mortem).
+    # The v2 frames read "closest earlier match to {subject}" -- grammatically
+    # the subject is what the match is measured AGAINST, but on the surface it
+    # is just a pod name sitting after "closest". 439 of 451 investigate rows
+    # taught that adjacency, and the fine-tune reproduced it at inference as
+    # "(nearest was <pod>)" -- fabricating a precedent on alerts that had none,
+    # a different invented pod each sample. A confident false citation is worse
+    # than v1's uninformative boilerplate: it sends an operator looking for an
+    # investigation that never happened.
+    #
+    # So: the subject leads, and the only thing that may follow a cue word is
+    # the cosine. That restores the number this frame previously dropped. The
+    # objection to the cosine was that a float in *every* frame teaches "a good
+    # reason contains a float"; that still holds, which is why the no-precedent
+    # frame below has neither a cue word nor a number. Where a cue word does
+    # appear the float is what fixes the slot type -- without it the only
+    # fillable slot was a name, and a name is what got invented.
+    if not best:
+        # No cue word and no number: nothing here for a citation to attach to.
+        # And it describes the PROMPT, not the history: "nothing listed" is
+        # what the model can actually see, and it is the rubric's own wording
+        # ("no similar past investigation listed is novel by definition").
+        # v3 phrased this as a claim about the world ("has no precedent in
+        # the investigation history"); it never mattered because the frame
+        # fired on zero rows -- see build_examples for why, and for the twins
+        # that now carry it.
+        reason = f"{subject}: nothing similar listed — needs a first look"
+        conf = 0.62
+    elif best["similarity"] < NEAR_MISS_FLOOR:
+        reason = (f"{subject} is unlike anything in history "
+                  f"(best match {best['similarity']:.2f}) — needs a first look")
+        conf = 0.60
+    else:
+        # A near miss is genuinely more ambiguous than no precedent at all:
+        # something similar happened and did NOT resolve cheaply.
+        reason = (f"{subject}: the closest earlier investigation "
+                  f"({best['similarity']:.2f}) ended {best['outcome']} "
+                  f"— no resolved precedent to lean on")
+        conf = round(max(0.45, 0.58 - (best["similarity"] - NEAR_MISS_FLOOR) * 0.6), 2)
+    return ("investigate", basis, reason, conf)
 
 
 def build_user_message(severity: str, trigger: str, labels: dict,
@@ -394,7 +702,7 @@ def build_examples(investigations: list, system_prompt: str,
         similar_past = similar_by_index.get(idx, [])
         severity, severity_source = derive_severity(trigger)
         labels = derive_labels(trigger)
-        derived = derive_label(trigger, outcome, similar_past)
+        derived = derive_label(trigger, outcome, similar_past, labels)
         if derived is None:
             skipped["conflict"] += 1
             conflicts.append({"investigation_id": inv.get("id"),
@@ -439,7 +747,221 @@ def build_examples(investigations: list, system_prompt: str,
             }
         examples.append(example)
 
+        # Context-free twin (v4). Production sends NO "Similar past
+        # investigations" block when retrieval returns nothing -- an empty
+        # history (fresh install, the kind demo) or the embedding call
+        # failing (best-effort in run_triage). The eval sends that shape on
+        # 10 of its 14 cases. The v3 set contained it on 0 of 262 rows: the
+        # retrospective search has a whole history to draw on, so every row
+        # got a block, and the 14B v3 answered block-less prompts by forcing
+        # the "closest earlier investigation (...)" frame and filling the
+        # cosine slot with an invented pod name (36/36 on novel-oom; 12/12
+        # correct the moment a real block was supplied). So each row whose
+        # label does not depend on the block also yields a block-less copy
+        # of the same alert carrying the no-precedent reason. Eligible:
+        # escalate and log_only (their reasons never cite the block), and
+        # investigate rows whose best match sat below NEAR_MISS_FLOOR (the
+        # block was nearly uninformative anyway). Not notify -- the label IS
+        # the precedent -- and not near-miss investigate: those are the bulk
+        # of the class, and twinning them all would rebuild the one-sentence-
+        # with-the-pod-swapped pile the frame cap exists to remove, and tilt
+        # the block-less shape towards "investigate" regardless of content.
+        # The twin rides along as a hidden field and is emitted after the
+        # cap (add_context_free_twins), so a capped row takes its twin with it.
+        if similar_past:
+            bare = derive_label(trigger, outcome, [], labels)
+            eligible = (
+                bare is not None and bare[0] == action
+                and (action != "investigate"
+                     or _best_precedent(similar_past)["similarity"]
+                     < NEAR_MISS_FLOOR))
+            if eligible:
+                twin = {"messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": build_user_message(
+                        severity, trigger, labels, [])},
+                    {"role": "assistant", "content": json.dumps({
+                        "action": bare[0],
+                        "reason": bare[2],
+                        "confidence": bare[3],
+                    }, indent=2)},
+                ]}
+                if include_meta:
+                    twin["meta"] = dict(example["meta"], label_basis=bare[1],
+                                        context_free_twin=True)
+                example["_twin"] = twin
+
     return examples, skipped, conflicts
+
+
+def add_context_free_twins(examples, enabled=True):
+    """Emit each surviving row's block-less twin right after it.
+
+    Runs AFTER cap_per_frame on purpose: the twin is attached to its row in
+    build_examples, so a row the cap drops takes its twin with it, and the
+    block-less rows are exactly the eligible survivors -- never a second,
+    separately-capped population. Adjacent placement keeps the temporal
+    order the train/val split relies on. With enabled=False the twins are
+    discarded (the --no-context-free-twins A/B switch); the hidden field is
+    removed either way so it never reaches the JSONL.
+    """
+    out, added = [], 0
+    for e in examples:
+        twin = e.pop("_twin", None)
+        out.append(e)
+        if twin is not None and enabled:
+            out.append(twin)
+            added += 1
+    return out, added
+
+
+# ── Synthetic severity=info rows (v5) ────────────────────────────────────────
+#
+# The one shape neither the history nor the twins can supply. The rubric says
+# notify "when severity=info", but the builder's notify rule IS a resolved
+# precedent, so the only notify frame the model ever saw needs one -- and on
+# info-novel-cert both v4 models said notify and invented the precedent the
+# frame needs. There is no real row to learn from: across all 1,886
+# investigations there is not one severity=info alert, because info alerts are
+# notified or logged and never investigated. (Nor does this homelab define an
+# info-level Prometheus rule yet; what reaches triage at "info" today is the
+# Alertmanager Watchdog, whose severity "none" maps to info, and the
+# resolution alerts run_triage already short-circuits.)
+#
+# So: a small fixed set, in the alert families this fleet would emit at info
+# (certificate renewals, backup completions, ArgoCD syncs, cron successes,
+# unattended upgrades), with the real object names and NO precedent block,
+# labelled notify with a frame that cites the severity and nothing else. They
+# go to TRAIN only -- validation stays real -- and every row carries
+# meta.synthetic so it can be counted, filtered or dropped without touching a
+# historical row. They are the first non-historical rows in the set, and the
+# pre-flight prints their count so nobody has to discover that later.
+_INFO_REASON = "{subject}: severity=info — informational, no investigation needed"
+_INFO_CONFIDENCE = 0.85
+
+SYNTHETIC_INFO_ALERTS = [
+    {"alertname": "CertRenewalScheduled", "subject": "immich.ai", "labels": {"host": "immich.ai"},
+     "summary": "Certificate for immich.ai is due for renewal in 25 days (cert-manager will renew it automatically)."},
+    {"alertname": "CertRenewalScheduled", "subject": "paperless.ai", "labels": {"host": "paperless.ai"},
+     "summary": "Certificate for paperless.ai is due for renewal in 18 days (cert-manager will renew it automatically)."},
+    {"alertname": "CertRenewalScheduled", "subject": "nextcloud.ai", "labels": {"host": "nextcloud.ai"},
+     "summary": "Certificate for nextcloud.ai is due for renewal in 29 days (cert-manager will renew it automatically)."},
+    {"alertname": "BackupJobCompleted", "subject": "immich-library", "labels": {"pv": "immich-library", "namespace": "apps"},
+     "summary": "Nightly restic backup of immich-library completed successfully (12.4 GB, 0 errors)."},
+    {"alertname": "BackupJobCompleted", "subject": "nextcloud-data", "labels": {"pv": "nextcloud-data", "namespace": "apps"},
+     "summary": "Nightly restic backup of nextcloud-data completed successfully (38.1 GB, 0 errors)."},
+    {"alertname": "BackupJobCompleted", "subject": "paperless-media", "labels": {"pv": "paperless-media", "namespace": "apps"},
+     "summary": "Nightly restic backup of paperless-media completed successfully (2.7 GB, 0 errors)."},
+    {"alertname": "ArgoSyncCompleted", "subject": "freshet", "labels": {"app": "freshet"},
+     "summary": "ArgoCD synced application freshet to revision 4f2a9c1 (healthy, no drift)."},
+    {"alertname": "ArgoSyncCompleted", "subject": "squadmaps", "labels": {"app": "squadmaps"},
+     "summary": "ArgoCD synced application squadmaps to revision b81e77d (healthy, no drift)."},
+    {"alertname": "ArgoSyncCompleted", "subject": "plane", "labels": {"app": "plane"},
+     "summary": "ArgoCD synced application plane to revision 0c3d5e2 (healthy, no drift)."},
+    {"alertname": "CronJobSucceeded", "subject": "nas-backup-verify", "labels": {"cronjob": "nas-backup-verify", "namespace": "backup"},
+     "summary": "CronJob nas-backup-verify in namespace backup completed (exit 0, 41s)."},
+    {"alertname": "CronJobSucceeded", "subject": "sevens-nightly", "labels": {"cronjob": "sevens-nightly", "namespace": "apps"},
+     "summary": "CronJob sevens-nightly in namespace apps completed (exit 0, 3m12s)."},
+    {"alertname": "CronJobSucceeded", "subject": "db-vacuum", "labels": {"cronjob": "db-vacuum", "namespace": "data"},
+     "summary": "CronJob db-vacuum in namespace data completed (exit 0, 58s)."},
+    {"alertname": "UnattendedUpgradeApplied", "subject": "raspberrypi5", "labels": {"host": "raspberrypi5"},
+     "summary": "Unattended-upgrades on raspberrypi5 installed 7 security updates; no reboot required."},
+    {"alertname": "UnattendedUpgradeApplied", "subject": "ubuntu-cm5-01", "labels": {"host": "ubuntu-cm5-01"},
+     "summary": "Unattended-upgrades on ubuntu-cm5-01 installed 12 security updates; no reboot required."},
+]
+
+
+def synthetic_info_examples(system_prompt: str, include_meta: bool = True):
+    """The severity=info rows the history cannot supply. See SYNTHETIC_INFO_ALERTS."""
+    case_token_sets = [_tokens(c["summary"]) for c in triage_eval.CASES]
+    out = []
+    for a in SYNTHETIC_INFO_ALERTS:
+        # Same exclusion as real rows: nothing resembling an eval case trains.
+        if overlaps_benchmark(a["summary"], case_token_sets):
+            continue
+        labels = {"alertname": a["alertname"], "severity": "info", **a["labels"]}
+        example = {"messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": build_user_message("info", a["summary"], labels, [])},
+            {"role": "assistant", "content": json.dumps({
+                "action": "notify",
+                "reason": _INFO_REASON.format(subject=a["subject"]),
+                "confidence": _INFO_CONFIDENCE,
+            }, indent=2)},
+        ]}
+        if include_meta:
+            example["meta"] = {
+                "investigation_id": None, "started_at": None, "outcome": None,
+                "deep": False, "label": "notify", "label_basis": "synthetic-info",
+                "severity_source": "synthetic", "tool_calls_count": 0,
+                "synthetic": True,
+            }
+        out.append(example)
+    return out
+
+
+def split_train_val(examples, eval_frac: float, synthetic=()):
+    """Temporal split -- newest slice is validation -- with synthetic rows
+    appended to TRAIN only, after the split, so validation stays real."""
+    n_val = int(len(examples) * eval_frac)
+    train = examples[:len(examples) - n_val] if n_val else list(examples)
+    val = examples[len(examples) - n_val:] if n_val else []
+    return train + list(synthetic), val
+
+
+_FRAME_NUM_RE = re.compile(r"\d+\.\d+")
+_FRAME_NAME_RE = re.compile(r"\b[a-z0-9]+(?:[-/][a-z0-9]+)+\b|\b\w*\d\w*\b")
+
+
+def _frame_of(reason: str) -> str:
+    """The reason with its slots blanked, i.e. the template it came from."""
+    return _FRAME_NAME_RE.sub("<NAME>", _FRAME_NUM_RE.sub("<NUM>", reason))
+
+
+def cap_per_frame(examples, max_per_frame):
+    """Cap rows that share a reason frame, to stop one sentence dominating.
+
+    The v2 fine-tune under-escalated `correlated-outage` because the label mix
+    was 441 investigate to 18 escalate: a multi-service alert resembles nothing
+    in that tiny class, so it fell back to the overwhelming prior. 148 of those
+    investigate rows were the SAME sentence with a different pod name in it --
+    near-duplicates that cost a retrain's worth of gradient steps and taught
+    nothing the first eight already had.
+
+    Capping per FRAME rather than per action is what keeps this safe to apply
+    uniformly: thin classes do not have big frames, so at the default cap the
+    escalate and log_only rows all survive while investigate loses 60% of its
+    bulk. Lowering the cap further does NOT help -- escalate's largest frame is
+    8 rows, so a smaller cap starts deleting the class this exists to protect,
+    and the ratio gets worse, not better (measured: 9.7:1 at 8, 10.6:1 at 5).
+
+    Retention is evenly spaced across the group, never the first N. The
+    train/val split is temporal, so keeping the oldest rows of every frame
+    would empty the validation slice of exactly the frames being capped.
+    """
+    if not max_per_frame or max_per_frame < 1:
+        return examples, 0
+    groups = {}
+    for i, e in enumerate(examples):
+        try:
+            d = json.loads(e["messages"][2]["content"])
+            key = (d.get("action"), _frame_of(d.get("reason", "")))
+        except Exception:
+            key = ("?", f"row{i}")   # never group unparseable rows together
+        groups.setdefault(key, []).append(i)
+
+    keep = set()
+    for idxs in groups.values():
+        n = len(idxs)
+        if n <= max_per_frame:
+            keep.update(idxs)
+            continue
+        c = max_per_frame
+        picks = {idxs[round(j * (n - 1) / (c - 1))] for j in range(c)} \
+            if c > 1 else {idxs[n // 2]}
+        keep.update(picks)
+    kept = [e for i, e in enumerate(examples) if i in keep]
+    return kept, len(examples) - len(kept)
 
 
 def main():
@@ -454,6 +976,19 @@ def main():
                     help="max investigations to fetch (default: %(default)s)")
     ap.add_argument("--max-per-trigger", type=int, default=3,
                     help="cap examples per distinct trigger (default: %(default)s)")
+    ap.add_argument("--max-per-frame", type=int, default=8,
+                    help="cap rows sharing one reason frame; keeps a single "
+                         "sentence from swamping the thin classes. 8 is the "
+                         "measured optimum — lower starts deleting escalate "
+                         "(default: %(default)s, 0 disables)")
+    ap.add_argument("--no-context-free-twins", action="store_true",
+                    help="do not add block-less twins of rows whose label "
+                         "does not depend on the precedent block (added by "
+                         "default since v4; see build_examples)")
+    ap.add_argument("--no-synthetic-info", action="store_true",
+                    help="do not append the synthetic severity=info rows to "
+                         "train (added by default since v5; see "
+                         "SYNTHETIC_INFO_ALERTS)")
     ap.add_argument("--eval-frac", type=float, default=0.1,
                     help="newest fraction reserved for validation (default: %(default)s)")
     ap.add_argument("--out-dir", default=os.path.join("benchmarks", "datasets"))
@@ -480,6 +1015,14 @@ def main():
         investigations = fetch_investigations(args.base_url, token, args.limit)
 
     print(f"fetched {len(investigations)} investigations")
+    # Exactly --limit back means the listing was truncated and there is older
+    # history we never saw. Silent truncation is the worst shape for this:
+    # the build succeeds, the row counts look plausible, and the classes that
+    # suffer are the rare ones (escalate, log_only) that need every example.
+    if not args.from_file and len(investigations) >= args.limit:
+        print(f"WARNING: hit --limit ({args.limit}) exactly — the history is "
+              f"probably truncated. Re-run with a higher --limit; the rare "
+              f"classes are the ones that lose examples.", file=sys.stderr)
     # Temporal order is load-bearing: retrospective retrieval may only cite
     # strictly earlier rows, and the train/val split is by time.
     investigations = sorted(
@@ -498,11 +1041,31 @@ def main():
         include_meta=not args.no_meta,
         similar_by_index=similar_by_index)
 
+    before = len(examples)
+    examples, dropped = cap_per_frame(examples, args.max_per_frame)
+    if dropped:
+        print(f"capped near-duplicate frames at {args.max_per_frame}: "
+              f"{before} -> {len(examples)} rows ({dropped} dropped)")
+
+    examples, twins = add_context_free_twins(
+        examples, enabled=not args.no_context_free_twins)
+    blockless = sum("Similar past investigations"
+                    not in e["messages"][1]["content"] for e in examples)
+    print(f"context-free twins: +{twins} rows; {blockless} of {len(examples)} "
+          f"rows carry no precedent block")
+    if not blockless:
+        print("WARNING: every row has a precedent block -- the model will "
+              "never have seen the shape production sends when retrieval "
+              "returns nothing, and v3 fabricated on exactly that shape")
+
     # Temporal split: newest slice is validation, so evaluation always looks
-    # forward in time relative to training — the deployment condition.
-    n_val = int(len(examples) * args.eval_frac)
-    train = examples[:len(examples) - n_val] if n_val else examples
-    val = examples[len(examples) - n_val:] if n_val else []
+    # forward in time relative to training — the deployment condition. The
+    # synthetic severity=info rows go to train only, after the split.
+    synthetic = ([] if args.no_synthetic_info
+                 else synthetic_info_examples(system_prompt, include_meta=not args.no_meta))
+    train, val = split_train_val(examples, args.eval_frac, synthetic)
+    print(f"synthetic severity=info rows: +{len(synthetic)} (train only, meta.synthetic)")
+    examples = train + val
 
     os.makedirs(args.out_dir, exist_ok=True)
     for name, rows in (("triage_train.jsonl", train), ("triage_val.jsonl", val)):
