@@ -362,8 +362,36 @@ held-out test: `build_triage_dataset.py` excludes anything resembling a
 |---|---|---|---|---|---|---|
 | `gemma4:26b` (incumbent) | 42/42 | 12/12 + 12/12 | — | 100% | 5.53s | — |
 | `ministral-3:14b` (base) | 37/42 (88.1%) | 4/12 + 4/12 | — | 100% | 0.93s | — |
+| `gemma3:12b` (base screen, ×36) | 408/504 (81.0%) | `precedent-monitoring` 0/36, `critical-narrow` 36/36, `warning-correlated` 18/36, `tmp-pod-critical` 0/36, `smoke-test-pod` 30/36; the other nine 36/36 | — | 100% | 1.2s | — |
+| `llama3.1:8b` (base screen, ×36) | 315/504 (62.5%) | never investigates: 0/36 on all five investigate cases | — | 100% | 0.45s | — |
 | `cfop-triage-ministral3:v1` (Q8_0) | 42/42 | 24/24 | 100/100 | 100% | 1.06s | 0.80s |
-| **`:v1-q4` (Q4_K_M, deployed)** | **42/42** | **24/24** | **100/100** | **100%** | **0.71s** | **0.62s** |
+| `:v1-q4` (Q4_K_M, deployed 2026-08-20 → 2026-09-03) | 42/42 | 24/24 | 100/100 | 100% | 0.71s | 0.62s |
+| **`cfop-triage-ministral3:v5-q4` (Q4_K_M, gated 2026-09-03, ships via cfoperator-deploy)** | **504/504 (×36), 0 fabricated** | **36/36 every case** | **100/100** | **100%** | **1.04s** | **1.15s** |
+| `:v5-q8` (Q8_0, archive) | 504/504 (×36), 0 fabricated | 36/36 every case | — | 100% | 1.53s (contended) | — |
+
+**Base screens, 2026-09-03** (runbook §0.5; raw JSON in
+`benchmarks/triage_eval_base_*.json`, 14 cases × 36 untuned). Screened after the
+8B Ministral fine-tunes failed `tmp-pod-critical` at every data version, to see
+whether a small non-Ministral base would do better. `gemma3:12b` is the only
+viable substrate, and only just. Nine cases are 36/36, including the three
+novel investigate cases (`novel-oom`, `novel-imagepull`, `critical-narrow` —
+the last being one of the two traps the Ministral base failed) and both
+escalates; reasons are grounded, 2 fabrications in 504 untuned, 1.2 s. It
+misses four: the precedent-presence shortcut (`precedent-monitoring` 0/36, the
+other Ministral-base failure, which fine-tuning fixed from the same rows),
+severity beating the `tmp-` rule (`tmp-pod-critical` 0/36, which the Ministral
+14B base already held and the 8B fine-tunes never learned from two `log_only`
+rows), breadth without severity read as notify (`warning-correlated` 18/36),
+and `smoke-test-pod` 30/36. The first three are rubric traps of the kind
+fine-tuning fixes when the data carries them; `tmp-pod-critical` is the one
+the data does not yet carry at 12B scale, so a gemma3 run needs synthetic
+noise-at-critical rows first, the same move as the info rows. `llama3.1:8b` is
+out: it never chooses
+investigate and invents unnamed precedents in 18 runs. Two other candidates
+never trained: `gemma-3n-E4B` breaks QLoRA on its per-layer-embedding
+projection (2048 → 8960, the `1×9175040` packed weight in the error), and
+`Phi-4-mini` needs an older transformers than studio ships. Staying on the
+Ministral 14B is the result.
 
 Two latency columns because the suites differ in prompt size and the numbers are
 not interchangeable. The like-for-like comparison against the incumbent is the
@@ -549,7 +577,8 @@ twice (14B and 8B) and rejected** — action-perfect on the 14B, but both
 fabricate on prompts without a precedent block, a shape v3 never contained;
 see *v3 results* below. **v4 was trained twice as well**: the block-less repair
 worked on every case it targeted, and the one fabrication left is a shape the
-history cannot supply — see *v4 results*.
+history cannot supply — see *v4 results*. **v5 clears the whole bar** — see
+*v5 results*.
 
 | | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) | v4 (2026-09-03) | v5 (2026-09-03) |
 |---|---:|---:|---:|---:|---:|
@@ -785,6 +814,38 @@ reaches triage at `info` today is the Alertmanager Watchdog — its
 when severity=info"), not yet the fleet's. Option 2 (short-circuit non-noise
 info alerts in `run_triage`) is tracked as its own issue.
 
+#### v5 results (2026-09-03): clears the whole bar
+
+Same YAML, RTX 5060, 123 steps, final loss 0.0199 (the synthetic rows are easy
+ones). Gated on a quiet card
+(`benchmarks/triage_eval_cfop_triage_ministral3_v5_q4.json`, `…_v5_q8.json`,
+`…_v5_q4_soak.json`):
+
+| | v4 14B | v5 14B Q4_K_M | v5 14B Q8_0 |
+|---|---:|---:|---:|
+| action, 14 cases × 36 | 504/504 | **504/504** | 504/504 |
+| JSON valid | 504/504 | 504/504 | 504/504 |
+| fabricated cites | 36/504 | **0/504** | 0/504 |
+| `info-novel-cert` | 36 fabricating | 36/36, "grafana.ai: severity=info — informational, no investigation needed" | same |
+| hard-case soak ×50 (`precedent-monitoring`, `critical-narrow`) | — | **100/100**, 0 fabricated | — |
+| latency, mean | 1.05 s | 1.04 s | 1.53 s\* |
+
+\* The Q8 gate overlapped a burst of production investigations (14 evictions in
+ollama's log); six `precedent-resolved-oom` runs spent 14–20 s reloading the
+14 GB quant. Actions were unaffected; the Q4 gate and the soak ran on a quiet
+card.
+
+Every case is 36/36 on both quants, so Q4 and Q8 agree, and the reasons are the
+frames verbatim — `paperless-ngx-7d9c4b8f5-nq2wm: nothing similar listed — needs
+a first look`, `tmp-restore-verify-9x2kd: the prefix tmp- matches the log_only
+rule`, `raspberrypi3 repeats an earlier investigation that resolved (0.94
+similarity): …`. `correlated-outage` keeps base-model phrasing ("severity=critical
+AND impact is broad (ingress-nginx, apps, auth) — page an operator now"), which
+is grounded and fine. **This is the first candidate to clear the fabrication
+rule**, and it clears the rest of the bar with it: 504/504, 100/100 soak, JSON
+100%, Q4/Q8 agreement. It ships as `cfop-triage-ministral3:v5-q4` through
+`cfoperator-deploy`; `v1-q4` stays registered as the rollback.
+
 ---
 
 ## Deployment, rollback, and the restart gotcha
@@ -808,16 +869,16 @@ Semantics:
 - **Rollback is deleting the line.** The key is inert on any image without the
   wiring, so config and image can be deployed in either order.
 
-**The gotcha that will bite you — on the homelab's raw-manifest path.** In
-`cfoperator-deploy` the ConfigMap is a plain manifest, so a config-only commit
-syncs it and **restarts nothing**. You need:
-
-```bash
-kubectl rollout restart deploy/cfoperator
-```
-
-Image-tag bumps restart on their own because they touch the pod spec; config-only
-changes do not.
+**The restart gotcha is history since CFOP-151** (`cfoperator-deploy` #25). The
+key now lives in `files/config.yaml`, which feeds a `configMapGenerator` named
+`cfoperator-config` in `kustomization.yml`; the generated ConfigMap's name
+carries a content hash, so a config commit changes the pod template and ArgoCD
+rolls **both** `cfoperator` and `cfoperator-event-runtime` (they mount the same
+file by `subPath`). No manual restart — and hand-restarting `deploy/cfoperator`
+alone, as this section used to instruct, was only ever half the workloads.
+Before #25 the ConfigMap was a plain manifest and a config-only commit really
+did restart nothing; if the hashed name (`cfoperator-config-<hash>`) is missing
+from `kubectl get cm -n apps`, you are looking at that older layout.
 
 **This does not apply to the Helm chart.** `charts/cfoperator/templates/agent.yaml`
 and `event-runtime.yaml` both annotate the pod with `checksum/config` (a sha256
@@ -843,17 +904,21 @@ recovery. No retraining required.
 
 ```bash
 # On ubuntu-llm-01, with /mnt/nas-backup mounted:
+ollama create cfop-triage-ministral3:v5-q4 \
+  -f /path/to/cfoperator/benchmarks/Modelfile.cfop-triage-v5      # the deployed model
 ollama create cfop-triage-ministral3:v1-q4 \
-  -f /path/to/cfoperator/benchmarks/Modelfile.cfop-triage
+  -f /path/to/cfoperator/benchmarks/Modelfile.cfop-triage         # the rollback target
 
 # Confirm it answers, then re-run the gate:
 PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v1-q4 --runs 3 --output /tmp/verify.json
+  --model cfop-triage-ministral3:v5-q4 --runs 3 --output /tmp/verify.json
 ```
 
-The Modelfile's `FROM` points at the NAS path, so the only prerequisite is the
-NAS mount. To restore the archival Q8_0 instead, change `FROM` to the `Q8_0.gguf`
-file and tag it `:v1`.
+Each Modelfile's `FROM` points at its generation's NAS folder
+(`unsloth/cfoperator-v6/cfop-triage-v5-gguf/` for v5, `mistral-trained-01/` for
+v1), so the only prerequisite is the NAS mount. Every generation's Q8_0 sits
+beside its Q4 with a `-q8` Modelfile (`Modelfile.cfop-triage-v5-q8`); for v1,
+change `FROM` to the `Q8_0.gguf` file and tag it `:v1`.
 
 ---
 
