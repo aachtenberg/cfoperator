@@ -825,6 +825,14 @@ def main():
         investigations = fetch_investigations(args.base_url, token, args.limit)
 
     print(f"fetched {len(investigations)} investigations")
+    # Exactly --limit back means the listing was truncated and there is older
+    # history we never saw. Silent truncation is the worst shape for this:
+    # the build succeeds, the row counts look plausible, and the classes that
+    # suffer are the rare ones (escalate, log_only) that need every example.
+    if not args.from_file and len(investigations) >= args.limit:
+        print(f"WARNING: hit --limit ({args.limit}) exactly — the history is "
+              f"probably truncated. Re-run with a higher --limit; the rare "
+              f"classes are the ones that lose examples.", file=sys.stderr)
     # Temporal order is load-bearing: retrospective retrieval may only cite
     # strictly earlier rows, and the train/val split is by time.
     investigations = sorted(

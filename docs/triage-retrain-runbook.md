@@ -81,9 +81,16 @@ a result, not a non-decision.
 ## 1. Build the dataset
 
 ```bash
-PYTHONPATH=agent:. .venv/bin/python scripts/build_triage_dataset.py \
-  --base-url http://localhost:8083 --out-dir benchmarks/datasets
+CFOP_TOKEN=... PYTHONPATH=agent:. .venv/bin/python scripts/build_triage_dataset.py \
+  --base-url http://localhost:8083 --out-dir benchmarks/datasets --limit 5000
 ```
+
+**Pass `--limit` explicitly.** It defaults to 1000, and the v3 build hit that
+exactly — "fetched 1000 investigations" is not a count, it is a ceiling. The
+build still succeeds and the row counts still look plausible, so the truncation
+is invisible unless you compare the number against the limit. The builder now
+warns when the two match. The classes that lose examples first are `escalate`
+and `log_only`, which are already the thinnest.
 
 Offline variant, if you already have an investigation dump:
 
