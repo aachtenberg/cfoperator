@@ -9,7 +9,8 @@
   "latency_max_s": 3.47,
   "errors": 0,
   "reason_grounded_rate": 1.0,
-  "reason_fabrication_rate": 0.0
+  "reason_fabrication_rate": 0.3552,
+  "regraded": "2026-09-03 offline with the <unnamed precedent> rule (30938d5); actions/latencies untouched"
  },
  "per_case": {
   "watchdog": {
@@ -66,7 +67,7 @@
    "actions": [
     "investigate"
    ],
-   "fabricating_runs": 0
+   "fabricating_runs": 30
   },
   "novel-imagepull": {
    "expected": [
@@ -77,7 +78,7 @@
    "actions": [
     "investigate"
    ],
-   "fabricating_runs": 0
+   "fabricating_runs": 17
   },
   "controlplane-down": {
    "expected": [
@@ -132,7 +133,7 @@
    "actions": [
     "investigate"
    ],
-   "fabricating_runs": 0
+   "fabricating_runs": 34
   },
   "warning-correlated": {
    "expected": [
@@ -143,7 +144,7 @@
    "actions": [
     "investigate"
    ],
-   "fabricating_runs": 0
+   "fabricating_runs": 36
   },
   "tmp-pod-critical": {
    "expected": [
@@ -155,7 +156,7 @@
     "escalate",
     "investigate"
    ],
-   "fabricating_runs": 0
+   "fabricating_runs": 26
   },
   "info-novel-cert": {
    "expected": [
@@ -167,7 +168,7 @@
    "actions": [
     "notify"
    ],
-   "fabricating_runs": 0
+   "fabricating_runs": 36
   }
  },
  "results": [
@@ -2668,7 +2669,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2685,7 +2688,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2702,7 +2707,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2719,7 +2726,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2753,7 +2762,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2770,7 +2781,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2787,7 +2800,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2838,7 +2853,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2872,7 +2889,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2906,7 +2925,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2923,7 +2944,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2940,7 +2963,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2957,7 +2982,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2974,7 +3001,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -2991,7 +3020,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3008,7 +3039,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3025,7 +3058,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3042,7 +3077,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3059,7 +3096,9 @@
    "confidence": 0.6,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3076,7 +3115,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3093,7 +3134,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3127,7 +3170,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3144,7 +3189,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3161,7 +3208,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3178,7 +3227,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3195,7 +3246,9 @@
    "confidence": 0.4,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3212,7 +3265,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3229,7 +3284,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3246,7 +3303,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3263,7 +3322,9 @@
    "confidence": 0.55,
    "reason": "paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3280,7 +3341,9 @@
    "confidence": 0.55,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3297,7 +3360,9 @@
    "confidence": 0.4,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3314,7 +3379,9 @@
    "confidence": 0.4,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3331,7 +3398,9 @@
    "confidence": 0.4,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3433,7 +3502,9 @@
    "confidence": 0.55,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3450,7 +3521,9 @@
    "confidence": 0.6,
    "reason": "\"ghcr.io/aachten/changerecord:v0.3.1\" is unlike anything in history (best match 0.30 \u2014 55% similar \u2014 ended monitoring) \u2014 needs a first look",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3535,7 +3608,9 @@
    "confidence": 0.5,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3586,7 +3661,9 @@
    "confidence": 0.4,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3654,7 +3731,9 @@
    "confidence": 0.4,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3688,7 +3767,9 @@
    "confidence": 0.4,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3705,7 +3786,9 @@
    "confidence": 0.5,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3739,7 +3822,9 @@
    "confidence": 0.55,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3773,7 +3858,9 @@
    "confidence": 0.55,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3790,7 +3877,9 @@
    "confidence": 0.6,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3824,7 +3913,9 @@
    "confidence": 0.6,
    "reason": "\"ghcr.io/aachten/changerecord:v0.3.1\" is unlike anything in history (best match 0.30 \u2014 55% similar \u2014 ended monitoring) \u2014 needs a first look",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3858,7 +3949,9 @@
    "confidence": 0.55,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -3875,7 +3968,9 @@
    "confidence": 0.55,
    "reason": "changerecord-5f7b9d6c4-hk8pq: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6340,7 +6435,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6357,7 +6454,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6374,7 +6473,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6391,7 +6492,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6408,7 +6511,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6425,7 +6530,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6442,7 +6549,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6459,7 +6568,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6476,7 +6587,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6493,7 +6606,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6510,7 +6625,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6544,7 +6661,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6561,7 +6680,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6578,7 +6699,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6595,7 +6718,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6612,7 +6737,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6629,7 +6756,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6646,7 +6775,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6663,7 +6794,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6680,7 +6813,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6697,7 +6832,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6714,7 +6851,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6731,7 +6870,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6748,7 +6889,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6765,7 +6908,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6782,7 +6927,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6799,7 +6946,9 @@
    "confidence": 0.45,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6816,7 +6965,9 @@
    "confidence": 0.45,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6833,7 +6984,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I can see ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6867,7 +7020,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6884,7 +7039,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6901,7 +7058,9 @@
    "confidence": 0.45,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6918,7 +7077,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6935,7 +7096,9 @@
    "confidence": 0.4,
    "reason": "wallabag-7f6c5d4b3-mq8wz: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6952,7 +7115,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6969,7 +7134,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -6986,7 +7153,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7003,7 +7172,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7020,7 +7191,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7037,7 +7210,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7054,7 +7229,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7071,7 +7248,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7088,7 +7267,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7105,7 +7286,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7122,7 +7305,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7139,7 +7324,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7156,7 +7343,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7173,7 +7362,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7190,7 +7381,9 @@
    "confidence": 0.6,
    "reason": "three services: the closest earlier investigation I can see is immich (0.7) \u2014 needs a repeat to compare",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7207,7 +7400,9 @@
    "confidence": 0.5,
    "reason": "three services: the closest earlier investigation I can see is paperless-ngx (1.0 \u2014 resolved) \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7224,7 +7419,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7241,7 +7438,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7258,7 +7457,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7275,7 +7476,9 @@
    "confidence": 0.45,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7292,7 +7495,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7309,7 +7514,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7326,7 +7533,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7343,7 +7552,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7360,7 +7571,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7377,7 +7590,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7394,7 +7609,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7411,7 +7628,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7428,7 +7647,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7445,7 +7666,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see is paperless-ngx (1.0 \u2014 resolved) \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7462,7 +7685,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7479,7 +7704,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see is paperless-ngx (1.0 \u2014 resolved) \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7496,7 +7723,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7513,7 +7742,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7530,7 +7761,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7547,7 +7780,9 @@
    "confidence": 0.55,
    "reason": "three services: the closest earlier investigation I can see ends monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7564,7 +7799,9 @@
    "confidence": 0.55,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7615,7 +7852,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7632,7 +7871,9 @@
    "confidence": 0.55,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7649,7 +7890,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7666,7 +7909,9 @@
    "confidence": 0.54,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7700,7 +7945,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7717,7 +7964,9 @@
    "confidence": 0.55,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7751,7 +8000,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7768,7 +8019,9 @@
    "confidence": 0.55,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7802,7 +8055,9 @@
    "confidence": 0.4,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7819,7 +8074,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7836,7 +8093,9 @@
    "confidence": 0.55,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7853,7 +8112,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7904,7 +8165,9 @@
    "confidence": 0.4,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7938,7 +8201,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7955,7 +8220,9 @@
    "confidence": 0.55,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7972,7 +8239,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -7989,7 +8258,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8023,7 +8294,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8040,7 +8313,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8057,7 +8332,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8091,7 +8368,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8108,7 +8387,9 @@
    "confidence": 0.55,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8125,7 +8406,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8142,7 +8425,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8159,7 +8444,9 @@
    "confidence": 0.6,
    "reason": "tmp-restore-verify-9x2kd: the closest earlier investigation I found ended monitoring \u2014 no resolved precedent to lean on",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8177,7 +8464,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: grafana.ai -- renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8195,7 +8484,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8213,7 +8504,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8231,7 +8524,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: TLS certificate for grafana.ai renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8249,7 +8544,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: TLS certificate for grafana.ai renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8267,7 +8564,9 @@
    "confidence": 0.75,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: grafana.ai -- renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8285,7 +8584,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8303,7 +8604,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8321,7 +8624,9 @@
    "confidence": 0.75,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: TLS certificate for grafana.ai renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8339,7 +8644,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: TLS certificate for grafana.ai renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8357,7 +8664,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8375,7 +8684,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 30 days (cert-manager scheduled renewal notice)",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8393,7 +8704,9 @@
    "confidence": 0.76,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: grafana.ai -- renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8411,7 +8724,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8429,7 +8744,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: TLS certificate for grafana.ai renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8447,7 +8764,9 @@
    "confidence": 0.78,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: grafana.ai -- renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8465,7 +8784,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: grafana.ai -- renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8483,7 +8804,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: grafana.ai -- renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8501,7 +8824,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8519,7 +8844,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: TLS certificate for grafana.ai renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8537,7 +8864,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8555,7 +8884,9 @@
    "confidence": 0.78,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: TLS certificate for grafana.ai renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8573,7 +8904,9 @@
    "confidence": 0.76,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8591,7 +8924,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8609,7 +8944,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8627,7 +8964,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8645,7 +8984,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8663,7 +9004,9 @@
    "confidence": 0.78,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: TLS certificate for grafana.ai renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8681,7 +9024,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8699,7 +9044,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8717,7 +9064,9 @@
    "confidence": 0.78,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: grafana.ai -- renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8735,7 +9084,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8753,7 +9104,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8771,7 +9124,9 @@
    "confidence": 0.76,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 confidence): CertExpiryNotice: grafana.ai -- renews in 21 days \u2014 page 1",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8789,7 +9144,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   },
@@ -8807,7 +9164,9 @@
    "confidence": 0.7,
    "reason": "grafana.ai repeats an earlier investigation that resolved (0.8 similarity): TLS certificate for grafana.ai renews in 21 days (cert-manager scheduled renewal notice)...",
    "reason_grounded": true,
-   "reason_fabricated": [],
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
    "error": null,
    "raw": null
   }
