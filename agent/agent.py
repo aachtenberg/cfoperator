@@ -2103,7 +2103,18 @@ class CFOperator:
         # Noise (smoke-test-*, tmp-*, Watchdog) stays on the model path: the
         # Watchdog arrives as info (Alertmanager "none" maps to it at intake),
         # and sending it to notify would put a heartbeat in Slack every cycle.
-        if severity == 'info' and not self._TRIAGE_NOISE_RE.search(str(trigger)):
+        # The noise test looks past the summary: the runtime keeps the stable
+        # identity in details["alertname"] / resource_name and the Watchdog's
+        # own summary ("This is an alert meant to ensure that the entire
+        # alerting pipeline is functional.") never says "Watchdog". Matching
+        # too much only sends an alert to the model, which is the status quo;
+        # matching too little is the heartbeat.
+        noise_haystack = " ".join(
+            str(x) for x in (
+                trigger, alert.get('resource_name'),
+                json.dumps(labels, default=str), json.dumps(details, default=str))
+            if x)
+        if severity == 'info' and not self._TRIAGE_NOISE_RE.search(noise_haystack):
             return {
                 'action': 'notify',
                 'reason': 'severity=info — informational, no investigation needed',
