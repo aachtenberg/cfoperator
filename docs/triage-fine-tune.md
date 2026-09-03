@@ -362,8 +362,29 @@ held-out test: `build_triage_dataset.py` excludes anything resembling a
 |---|---|---|---|---|---|---|
 | `gemma4:26b` (incumbent) | 42/42 | 12/12 + 12/12 | — | 100% | 5.53s | — |
 | `ministral-3:14b` (base) | 37/42 (88.1%) | 4/12 + 4/12 | — | 100% | 0.93s | — |
+| `gemma3:12b` (base screen, ×36) | 408/504 (81.0%) | `precedent-monitoring` 0/36, `critical-narrow` 36/36, `tmp-pod-critical` 0/36 | — | 100% | 1.2s | — |
+| `llama3.1:8b` (base screen, ×36) | 315/504 (62.5%) | never investigates: 0/36 on all five investigate cases | — | 100% | 0.45s | — |
 | `cfop-triage-ministral3:v1` (Q8_0) | 42/42 | 24/24 | 100/100 | 100% | 1.06s | 0.80s |
 | **`:v1-q4` (Q4_K_M, deployed)** | **42/42** | **24/24** | **100/100** | **100%** | **0.71s** | **0.62s** |
+
+**Base screens, 2026-09-03** (runbook §0.5; raw JSON in
+`benchmarks/triage_eval_base_*.json`, 14 cases × 36 untuned). Screened after the
+8B Ministral fine-tunes failed `tmp-pod-critical` at every data version, to see
+whether a small non-Ministral base would do better. `gemma3:12b` is the only
+viable substrate: clean on every investigate case and on the two traps the
+Ministral base failed (`critical-narrow` 36/36, `correlated-outage` 36/36),
+reasons grounded with 2 fabrications in 504 untuned, 1.2 s. It fails the two
+traps the data cannot yet teach at that size — the precedent-presence shortcut
+(`precedent-monitoring` 0/36, which fine-tuning fixed for Ministral from the
+same rows) and severity beating the `tmp-` rule (`tmp-pod-critical` 0/36, which
+the Ministral 14B base already held and the 8B fine-tunes never learned from two
+`log_only` rows). A gemma3 run therefore needs synthetic noise-at-critical rows
+first, the same move as the info rows. `llama3.1:8b` is out: it never chooses
+investigate and invents unnamed precedents in 18 runs. Two other candidates
+never trained: `gemma-3n-E4B` breaks QLoRA on its per-layer-embedding
+projection (2048 → 8960, the `1×9175040` packed weight in the error), and
+`Phi-4-mini` needs an older transformers than studio ships. Staying on the
+Ministral 14B is the result.
 
 Two latency columns because the suites differ in prompt size and the numbers are
 not interchangeable. The like-for-like comparison against the incumbent is the

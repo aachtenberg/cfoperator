@@ -1,0 +1,8860 @@
+{
+ "summary": {
+  "model": "llama3.1:8b",
+  "ollama_version": "0.32.13",
+  "runs": 504,
+  "json_valid_rate": 1.0,
+  "action_accuracy": 0.625,
+  "latency_mean_s": 0.45,
+  "latency_max_s": 2.23,
+  "errors": 0,
+  "reason_grounded_rate": 0.8175,
+  "reason_fabrication_rate": 0.0357
+ },
+ "per_case": {
+  "watchdog": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 36,
+   "of": 36,
+   "actions": [
+    "log_only"
+   ],
+   "fabricating_runs": 0
+  },
+  "smoke-test-pod": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 33,
+   "of": 36,
+   "actions": [
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 1
+  },
+  "known-sdcard": {
+   "expected": [
+    "notify"
+   ],
+   "correct": 36,
+   "of": 36,
+   "actions": [
+    "notify"
+   ],
+   "fabricating_runs": 0
+  },
+  "info-severity": {
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": 36,
+   "of": 36,
+   "actions": [
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 0
+  },
+  "novel-oom": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 0,
+   "of": 36,
+   "actions": [
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 3
+  },
+  "novel-imagepull": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 0,
+   "of": 36,
+   "actions": [
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 5
+  },
+  "controlplane-down": {
+   "expected": [
+    "escalate"
+   ],
+   "correct": 36,
+   "of": 36,
+   "actions": [
+    "escalate"
+   ],
+   "fabricating_runs": 0
+  },
+  "correlated-outage": {
+   "expected": [
+    "escalate"
+   ],
+   "correct": 36,
+   "of": 36,
+   "actions": [
+    "escalate"
+   ],
+   "fabricating_runs": 0
+  },
+  "precedent-monitoring": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 0,
+   "of": 36,
+   "actions": [
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 0
+  },
+  "precedent-resolved-oom": {
+   "expected": [
+    "notify"
+   ],
+   "correct": 36,
+   "of": 36,
+   "actions": [
+    "notify"
+   ],
+   "fabricating_runs": 0
+  },
+  "critical-narrow": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 2,
+   "of": 36,
+   "actions": [
+    "investigate",
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 0
+  },
+  "warning-correlated": {
+   "expected": [
+    "investigate"
+   ],
+   "correct": 0,
+   "of": 36,
+   "actions": [
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 6
+  },
+  "tmp-pod-critical": {
+   "expected": [
+    "log_only"
+   ],
+   "correct": 28,
+   "of": 36,
+   "actions": [
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 3
+  },
+  "info-novel-cert": {
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": 36,
+   "of": 36,
+   "actions": [
+    "log_only",
+    "notify"
+   ],
+   "fabricating_runs": 0
+  }
+ },
+ "results": [
+  {
+   "case": "watchdog",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 2.23,
+   "confidence": 1.0,
+   "reason": "Known noise, alerting pipeline test.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise, Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known noise, watchdog alert for alerting pipeline functionality",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise, Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 4,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Known noise, this is an alert meant to test the alerting pipeline.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 5,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise from alerting pipeline test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise from Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 7,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known noise, part of alerting pipeline test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 8,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known noise, alerting pipeline smoke test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "This is a test and known noise.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 10,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise from Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known noise, test alert in monitoring namespace",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 12,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known test alert from Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 13,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known test pod, part of alerting pipeline test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 14,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known noise, part of the alerting pipeline test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 15,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Watchdog alert, expected behavior",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 16,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Test pods, Alertmanager Watchdog is known noise",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 17,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "This is a known noise alert, part of the monitoring pipeline",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 18,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise, alerting pipeline test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 19,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known noise, part of alerting pipeline test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 20,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known test alert from Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 21,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known noise, Watchdog is a test alert",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 22,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise, Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 23,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "This is a test alert, part of the alerting pipeline.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 24,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise, Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 25,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Watchdog alert, expected noise",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 26,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known test alert for alerting pipeline health",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 27,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Known alerting pipeline noise.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 28,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known noise, part of alerting pipeline test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 29,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Known test alert in monitoring namespace",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 30,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known test of alerting pipeline",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 31,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Known noise, Watchdog alert",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 32,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.4,
+   "confidence": 1.0,
+   "reason": "Known alert pipeline test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 33,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Test pod, expected to always trigger",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 34,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Known test pod in monitoring namespace",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "watchdog",
+   "run": 35,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known noise from Alertmanager Watchdog",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Known crash-looping pattern in a test pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Test pod known to crash-loop due to its nature.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known noise, pod is a smoke-test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Known test pod crash-looping behavior, no action needed",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 4,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise: pod is smoke-testing",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 5,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known pattern: Test pod crashing",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Test pod crash-looping is expected behavior",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 7,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Known noise, smoke-test pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 8,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Known noise from test pod",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known noise, pod is a smoke-test",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 10,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known pod failure pattern for smoke-test-*",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known crash-looping pattern in test pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 12,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise, smoke test pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 13,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known noise, a test pod is crash-looping.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 14,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Known noise from test pod",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 15,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "This is a known test pod failure",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 16,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known test pod pattern, no need for operator intervention",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 17,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Known pattern, likely test pod failure",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 18,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "This is a known test pod crash-looping.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 19,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Known pattern of a crash-looping pod, operator should see this",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 20,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Test pod known to cause false positives.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 21,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Test pod crash-looping, expected behavior",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 22,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Known noise from test pod",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 23,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.4,
+   "confidence": 1.0,
+   "reason": "Known pattern with clear precedent",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 24,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 0.9,
+   "reason": "Crash-looping pod is a known noise, likely a test pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 25,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Test pod crash-looping as expected",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 26,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.9,
+   "reason": "Test pod, known behavior",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Known pattern, similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 28,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.99,
+   "reason": "Test pod known to loop on startup, no intervention needed.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 29,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known noise from test pod with crash-looping pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 30,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Known pod failure pattern, smoke-test pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 31,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known test pod crash-looping",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 32,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Test pod crash-looping is expected, a known pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 33,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Known noise from smoke-test pods.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 34,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Smoke-test pod, known noise",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "smoke-test-pod",
+   "run": 35,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Known noise: smoke-test-* pods are expected to restart",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.5,
+   "confidence": 0.92,
+   "reason": "Known failing SD card on raspberrypi3",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Clear precedent: similar past investigations with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Known pattern, resolved precedent, and past investigations listed",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with resolution indicate this is likely a known issue",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Known pattern with a clear precedent.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.98,
+   "reason": "Known pattern with a similar past investigation",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.93,
+   "reason": "Similar past investigations with precedent and clear resolution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.52,
+   "confidence": 0.9,
+   "reason": "Similar past investigations with precedents for read-only errors on raspberrypi3 SD cards.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Similar past investigation with a high similarity of 0.94.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.92,
+   "reason": "Similar past investigations resolve quickly with known solution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.98,
+   "reason": "Similar resolved precedent for raspberrypi3 SD card issues.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 12,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigations have resolved this pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 13,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Similar past investigations indicate known issue with SD card.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 14,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.4,
+   "confidence": 0.95,
+   "reason": "Known pattern with clear precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 15,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Clear precedent for similar past investigations, severity=warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 16,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.92,
+   "reason": "Clear precedent for similar past investigations with read-only errors",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 17,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.52,
+   "confidence": 0.94,
+   "reason": "Similar past investigation (raspberrypi3 SD card I/O errors) resolved with little effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 18,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Similar past investigations have resolved with minimal effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 19,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Similar past investigations resolve with little effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 20,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.93,
+   "reason": "Precedent exists for similar past investigations.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 21,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.94,
+   "reason": "Similar past investigation with known cause and resolution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 22,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.94,
+   "reason": "Clear precedent of known failing SD card",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 23,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with clear resolution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 24,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigations resolve with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 25,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Clear precedent for similar past investigation with resolution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 26,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.4,
+   "confidence": 0.95,
+   "reason": "Known pattern with clear precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.93,
+   "reason": "Clear precedent of similar resolved cases, severity warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 28,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.92,
+   "reason": "Similar past investigations with precedent, severity is warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 29,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.98,
+   "reason": "Known pattern with past precedent and resolution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 30,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.5,
+   "confidence": 0.94,
+   "reason": "Known pattern with clear precedent: raspberrypi3 SD card I/O errors",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 31,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with known resolutions",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 32,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigations resolve with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 33,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.94,
+   "reason": "Similar past investigation with replacement scheduled",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 34,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.92,
+   "reason": "Similar past investigations found, this is a known pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "known-sdcard",
+   "run": 35,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Similar past investigation with high similarity (0.94)",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Known, expected behavior based on past precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Known pattern with clear precedent: prometheus-data excluded by policy",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Similar past investigation with high similarity (0.92)",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Similar past investigation with high similarity (0.92)",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Known pattern, similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Similar past investigation with high similarity (0.92) and resolved status",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 7,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 0.99,
+   "reason": "Precedent for skipped prometheus-data volume, expected behavior",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigation resolved with little effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Clear precedent for nightly backup skipped prometheus-data",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Known precedent for skipped volume",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 12,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 13,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Expected, similar past investigation with same reason.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 14,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known info severity, similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 15,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 16,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Expected, excluded by policy",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 17,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Known precedent for nightly backup skipping prometheus-data volume",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 18,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Similar past investigation with high similarity (0.92)",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 19,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Similar past investigation resolved with little effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 20,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.92,
+   "reason": "Similar past investigation with high confidence",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 21,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Similar past investigation resolved with little effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 22,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.92,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 23,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Known precedent for prometheus-data volume exclusion.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 24,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Expected PV backup exclusion by policy",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 25,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Similar past investigation resolved with low effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 26,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Similar past investigation resolved with low effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Known severity=info and precedent for skipped prometheus-data volume",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 28,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Similar past investigation resolved with little effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 29,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Expected volume excluded by policy",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 30,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.39,
+   "confidence": 0.99,
+   "reason": "Expected, past precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 31,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Clear precedent: similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 32,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 33,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Precedent of similar resolved investigations exists",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 34,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.92,
+   "reason": "Expected, similar past investigation with high confidence.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-severity",
+   "run": 35,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Known precedent with high similarity",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.9,
+   "reason": "Known pattern for pod failures, often resolves quickly",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Past investigation likely resolved with little effort due to warning severity",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.8,
+   "reason": "Previous investigations on OOMKilled with little effort, severity is warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.8,
+   "reason": "Similar past investigation has resolved this with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Known pattern for OOMKilled, operator should see this",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.7,
+   "reason": "Similar past investigations have resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Warning severity, known pattern for OOMKilled pod restarts",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.8,
+   "reason": "Previous investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Precedent for OOMKilled alerts exists",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.53,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort, OOMKilled in the apps namespace is a known pattern.",
+   "reason_grounded": true,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.8,
+   "reason": "Previous OOMKilled incidents in this namespace were resolved quickly.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Known OOMKilled pattern in namespace apps.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 12,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Warning severity, similar past investigations likely exist",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 13,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Warning severity, similar past investigation likely resolved with little effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 14,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.53,
+   "confidence": 0.95,
+   "reason": "Known warning pattern, OOMKilled with 3 restarts, no indication of critical failure.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 15,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 16,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Past investigations have resolved this with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 17,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Known severity=warning pattern for pod failures",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 18,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Known pattern, similar past investigations have resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 19,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.5,
+   "confidence": 0.9,
+   "reason": "OOMKilled is a known, often resolved issue in K8s pods.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 20,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "OOMKilled is a common event, with clear operator precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 21,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Known pattern for pod failures with OOMKilled",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 22,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.8,
+   "reason": "Known pattern with similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 23,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.9,
+   "reason": "Known pattern for KubePodOOMKilled, typically a transient issue.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 24,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "OOMKilled pattern with a similar past precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 25,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Known OOMKilled pattern in a production pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 26,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.8,
+   "reason": "Previous investigations of similar pod failures resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Severity=warning, with a known precedent for pod failures",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 28,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.5,
+   "reason": "OOMKilled alert with no precedent; defaulting to log-only",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 29,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Known pattern for warning severity, similar to past investigations",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 30,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 31,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Similar past investigations have resolved this OOMKilled with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 32,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.8,
+   "reason": "Known pattern for OOMKilled pods, but no precedent listed in context",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 33,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Warning severity, similar past investigations likely exist",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 34,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.5,
+   "confidence": 0.8,
+   "reason": "Past investigations have shown that similar OOMKilled events were resolved with little effort.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-oom",
+   "run": 35,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.8,
+   "reason": "OOMKilled is a common pattern and severity is warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.7,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Pattern matches a known precedent: ImagePullBackOff",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Known pattern for ImagePullBackOff",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Similar past investigations have resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.8,
+   "reason": "Previous investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Known warning pattern, pod failure with precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.7,
+   "reason": "Similar past investigations resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 8,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Known pattern, pod failures are common",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Known pattern with a clear precedent: ImagePullBackOff in apps namespace.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 12,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Known pattern for pod failures with ImagePullBackOff",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 13,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Similar past investigations have resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 14,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 15,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Previous investigations classified this as a known pattern",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 16,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Known pattern for image pullbackoff, operator can handle",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 17,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 18,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Precedent for ImagePullBackOff, severity=warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 19,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Known pod failure pattern, often resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 20,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.9,
+   "reason": "Known pod failure pattern, operator should be aware of image pullbackoffs",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 21,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigations resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 22,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 23,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Similar past investigations have resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 24,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 25,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 26,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Known pattern for ImagePullBackOff; operator should see this",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 28,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Known severity and pattern, but no precedent in context",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 29,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.9,
+   "reason": "Known pattern of ImagePullBackOff on a pod with a specific image",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 30,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 31,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 32,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.8,
+   "reason": "Previous investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 33,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Similar past investigation likely resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 34,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Known pattern with precedent for KubePodImagePullBackOff",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "novel-imagepull",
+   "run": 35,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Clear precedent for ImagePullBackOff in apps namespace",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 0,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Critical severity with broad impact on control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 1,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and Node is control-plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 2,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity=critical AND broad impact on control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 3,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and node is a control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 4,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Severity=critical and NodeNotReady on a control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 5,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "NodeNotReady on control plane with severity critical",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 6,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.49,
+   "confidence": 1.0,
+   "reason": "Severity critical and impact is broad, NodeNotReady on a control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 7,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Critical alert on control plane node with broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 8,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "NodeNotReady on control plane with critical severity",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 9,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Severity=critical and broad impact (NodeNotReady on control plane)",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 10,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.51,
+   "confidence": 1.0,
+   "reason": "Severity is critical and impact is broad due to a control plane node being NotReady",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 11,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and Node is control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 12,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and node is control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 13,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Severity is critical and node is control plane with NotReady condition",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 14,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Severity is critical and Node is control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 15,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Severity=critical, control plane node is NotReady",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 16,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Critical severity and broad impact on control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 17,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and node is control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 18,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Severity critical and NodeNotReady on control plane with multiple failure signals",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 19,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity=critical, broad impact on control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 20,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Severity=critical and control plane node is NotReady",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 21,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.63,
+   "confidence": 0.9,
+   "reason": "Node ubuntu-cm5-01 is a control plane node and has been NotReady for 8 minutes, indicating a potential data-loss or broad impact.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 22,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "NodeNotReady on control plane with critical severity",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 23,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.5,
+   "confidence": 1.0,
+   "reason": "Severity is critical and node is a control plane with kubelet not posting status",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 24,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Severity is critical and NodeNotReady on a control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 25,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.49,
+   "confidence": 1.0,
+   "reason": "Control plane node has been NotReady for 8 minutes; severity is critical.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 26,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "NodeNotReady on a control plane with severity=critical",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 27,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "NodeNotReady on control plane with critical severity",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 28,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.49,
+   "confidence": 1.0,
+   "reason": "Severity is critical and impact is broad, NodeNotReady on control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 29,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Critical severity and broad impact on control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 30,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.51,
+   "confidence": 1.0,
+   "reason": "Severity is critical and the node is a control plane with kubelet not posting status",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 31,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Severity=critical and NodeNotReady on a control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 32,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "NodeNotReady on a control plane with critical severity",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 33,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Control plane node down, critical severity",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 34,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Severity=critical AND impact is broad: control plane NodeNotReady",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "controlplane-down",
+   "run": 35,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Severity=critical, broad impact on control plane",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 0,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Multiple services unreachable with severity=critical",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 1,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.49,
+   "confidence": 1.0,
+   "reason": "Multiple services unreachable due to broad impact across control plane and data-plane services.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 2,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Severity is critical and multiple services are down, indicating broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 3,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Multiple services are down with severity=critical indicating broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 4,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple correlated services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 5,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Multiple critical services unreachable; broad impact.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 6,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.49,
+   "confidence": 0.95,
+   "reason": "Critical severity and multiple correlated services down, potentially indicating a significant infrastructure issue.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 7,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.99,
+   "reason": "Multiple services unreachable with severity=critical",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 8,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Critical severity and broad impact: multiple services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 9,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Severity=critical, impact is broad with multiple services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 10,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Multiple critical services unreachable, broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 11,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple services are down, indicating a broad impact.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 12,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Severity is critical and impact is broad: multiple correlated services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 13,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Critical severity and multiple correlated services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 14,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple services are unreachable",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 15,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Multiple services unreachable with severity=critical and broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 16,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Multiple critical severity alerts across different namespaces and services",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 17,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Critical alert with broad impact across multiple services.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 18,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Multiple critical services unreachable, severity=critical and impact is broad",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 19,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Severity critical, multiple correlated services down, broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 20,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple services are unreachable.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 21,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple services are down across different namespaces",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 22,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple services are down, indicating a broad impact.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 23,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Multiple services unreachable with critical severity",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 24,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple correlated services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 25,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Severity=critical and impact is broad due to multiple correlated services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 26,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple services are down, which suggests broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 27,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Severity=critical and broad impact: multiple services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 28,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple services are unreachable",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 29,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Multiple critical services down, broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 30,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Severity critical and multiple services down, indicating broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 31,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Severity is critical and multiple correlated services are down.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 32,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Multiple critical services unreachable, broad impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 33,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Severity is critical and multiple services are unreachable",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 34,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Severity is critical and impact is broad with multiple correlated services down.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "correlated-outage",
+   "run": 35,
+   "valid": true,
+   "action": "escalate",
+   "expected": [
+    "escalate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Severity=critical and impact is broad with multiple correlated services down",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.85,
+   "reason": "Similar past investigations with similar restart patterns",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Similar past investigations with restarts, but no clear precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.95,
+   "reason": "Clear precedent: similar past investigations for immich-machine-learning pod restarts",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Similar past investigations classified as 'monitoring' with high similarity.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.95,
+   "reason": "Similar past investigations for immich-machine-learning pod crashes with similar patterns",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.95,
+   "reason": "Known pattern of immich-machine-learning pod restarts, previously classified as monitoring",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Similar past investigations with restart loops, severity is warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Similar past investigations indicate monitoring is in place",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 8,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.5,
+   "confidence": 0.95,
+   "reason": "Similar past investigations classified as 'monitoring' for immich-machine-learning pods.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Similar past investigations classified as monitoring",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Similar past investigations have been monitoring this pod's restarts",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Similar past investigations with similar patterns, severity is warning.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 12,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.95,
+   "reason": "Warning severity, past investigations already classified as 'monitoring'",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 13,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.9,
+   "reason": "Past investigations classified as 'monitoring' and similar restart patterns exist",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 14,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Pattern has a precedent in similar past investigations with 88% similarity.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 15,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.9,
+   "reason": "Similar past investigations classified as monitoring",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 16,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Similar past investigations for immich-machine-learning pod restarts",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 17,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Similar past investigations exist, all marked as monitoring",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 18,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.91,
+   "reason": "Similar past investigations classified as 'monitoring' indicate operator understanding.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 19,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with monitoring context, severity is warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 20,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Similar past investigations for monitoring, no need for investigation",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 21,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Past investigations of similar pod restarts were labeled as 'monitoring'",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 22,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Similar past investigations classified as monitoring",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 23,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Similar past investigations indicate this is likely a known monitoring pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 24,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.88,
+   "reason": "Similar past investigations with similar restart patterns",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 25,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Similar past investigations with warning severity and no fix applied",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 26,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Similar past investigations classify the pattern as monitoring.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Similar past investigations with similar restart patterns, severity is warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 28,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.98,
+   "reason": "Clear precedent for similar past investigation",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 29,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Pattern of restarts has been monitored before, but not resolved",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 30,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Previous similar past investigations classified as monitoring",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 31,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.9,
+   "reason": "Similar past investigations classified as monitoring",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 32,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Past investigations classified this pattern as 'monitoring'",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 33,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.92,
+   "reason": "Similar past investigations for immich-machine-learning pod restarts",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 34,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-monitoring",
+   "run": 35,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.93,
+   "reason": "Similar past investigations with intermittent restarts indicate this is a known pattern.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with raised memory limits",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Past investigations resolved with memory limit bump",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with similar resolution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.5,
+   "confidence": 0.95,
+   "reason": "Known pattern with clear precedent: raising memory limit fixed similar OOMKilled incidents.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 5,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Similar past investigations resolved with memory limit bump.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.975,
+   "reason": "Similar past investigation resolved with memory limit bump",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.98,
+   "reason": "Similar past investigations have been resolved by raising memory limits",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Clear precedent with a similar past investigation",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.49,
+   "confidence": 0.9,
+   "reason": "Similar past investigations have raised memory limits for jellyfin OOMKilled events.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.52,
+   "confidence": 0.9,
+   "reason": "Similar past investigations show a clear precedent for raising memory limits to resolve OOMKilled issues.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Similar past investigations resolved with memory limit increase",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 12,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Similar past investigations resolved with a memory limit bump.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 13,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Similar past investigation with high similarity found",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 14,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Clear precedent for similar past investigation",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 15,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Similar past investigation with a high similarity score.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 16,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Similar past investigation resolved with a memory limit bump.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 17,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.49,
+   "confidence": 0.95,
+   "reason": "Similar past investigation with 95% similarity, memory limit has been raised before",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 18,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Similar past investigation for OOMKilled during library scan",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 19,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with raised memory limit resolved the issue",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 20,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Similar past investigation resolved with memory limit bump",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 21,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.98,
+   "reason": "Similar past investigation with raised memory limit resolved the issue",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 22,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Warning severity and clear precedent from past investigations",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 23,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.4,
+   "confidence": 0.9,
+   "reason": "Similar past investigation with resolution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 24,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Similar past investigations with memory limit raised as solution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 25,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.4,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with resolution",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 26,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Similar past investigations found with same pod pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.95,
+   "reason": "Past investigation resolved similar issue with a memory limit bump",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 28,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.98,
+   "reason": "Similar past investigations have resolved this with a memory limit bump.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 29,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.92,
+   "reason": "Warning severity, similar past investigations resolved with memory limit bump",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 30,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Similar past investigation resolved with a memory limit raise",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 31,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Similar past investigations resolved with a memory limit bump",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 32,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with similar resolutions",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 33,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.92,
+   "reason": "Similar past investigation for OOMKilled during library scan",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 34,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 0.95,
+   "reason": "Similar past investigations have resolved the issue with a memory limit bump",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "precedent-resolved-oom",
+   "run": 35,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Similar past investigations with memory limit bump applied",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.52,
+   "confidence": 0.8,
+   "reason": "Known pattern for a single pod failure in a non-critical namespace",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Single-replica pod with no other workload dependency",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Single-replica pod with no critical dependencies, known pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Single-replica pod, no other workload dependencies",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 4,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.95,
+   "reason": "Single-replica pod with no other dependent workloads, known behavior.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 5,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 0.8,
+   "reason": "Unavailability of a single replica pod with no dependent workloads",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.8,
+   "reason": "No other workload depends on it, so impact is low.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 7,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.8,
+   "reason": "Single replica service with no other dependencies, critical but impact is low",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 8,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.51,
+   "confidence": 0.8,
+   "reason": "Single-replica service with no other dependencies, not critical enough to page in.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.9,
+   "reason": "Single-replica pod with no dependent workloads, known behavior.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.8,
+   "reason": "Single-pod service, no other workload depends on it, low impact",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Severity is critical but no other workload depends on this pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 12,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.53,
+   "confidence": 0.9,
+   "reason": "Single-replica service, no other workload depends on it, and it's a known pattern.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 13,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Severity is critical, but no other workload depends on this pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 14,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.8,
+   "reason": "Single replica pod, no dependent workloads",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 15,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Single-replica service, no other workloads impacted",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 16,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.5,
+   "confidence": 0.9,
+   "reason": "Single-replica pod in namespace apps, no impact on other workloads.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 17,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.9,
+   "reason": "Precedent for a single-replica service with no dependent workloads",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 18,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.7,
+   "reason": "Severity=critical but no other workloads depend on it.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 19,
+   "valid": true,
+   "action": "investigate",
+   "expected": [
+    "investigate"
+   ],
+   "correct": true,
+   "latency_s": 0.49,
+   "confidence": 0.8,
+   "reason": "Single-replica pod with no dependent workloads, novel alert pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 20,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Known pattern for a single replica pod with no dependencies",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 21,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.95,
+   "reason": "Known pattern for a single-replica pod in namespace apps.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 22,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Single-replica service with no dependent workloads.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 23,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.9,
+   "reason": "Single-replica service, no other workloads depend on it.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 24,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.8,
+   "reason": "Known pod failure precedent with severity=critical and no dependent workloads.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 25,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "No other workload depends on this single replica pod.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 26,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Known pattern, no other workloads depend on this pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 27,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Known pattern, no other services depend on this pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 28,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.8,
+   "reason": "Severity is critical, but single-replica service has no other dependencies.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 29,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.54,
+   "confidence": 0.8,
+   "reason": "Single-replica pod with no dependent workloads; operator should be aware but no immediate action required",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 30,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.9,
+   "reason": "Known pattern of a single-replica pod with no dependent workloads",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 31,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Known pattern, no other workloads depend on this pod",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 32,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Pod failure with no other dependent workloads, single replica.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 33,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.8,
+   "reason": "No other workload depends on this critical pod, no precedent for immediate action",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 34,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.54,
+   "confidence": 0.9,
+   "reason": "Unavailability of a single-replica pod with no other workload dependencies is expected and tolerable.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "critical-narrow",
+   "run": 35,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.9,
+   "reason": "Single-replica pod, no impact on other workloads.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 0,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.5,
+   "confidence": 0.9,
+   "reason": "Pattern is known from past investigations, operator should be aware",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 1,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Similar past investigations have resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 3,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.7,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 4,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Pattern is known (similar past investigations resolved with little effort)",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 5,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.8,
+   "reason": "Pattern of three services simultaneously reporting warning latency; precedent exists in past investigations",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 6,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Similar past precedent of known high latency on these services",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Similar past investigations have resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Pattern similar to past incidents with little effort to resolve",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 9,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past precedent resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 10,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Similar past investigations have resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 11,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.8,
+   "reason": "Similar past investigations have resolved with little effort, and severity is warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 12,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations for this pattern exist",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 13,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Clear precedent for similar past investigations resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 14,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Similar past investigations have resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 15,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.8,
+   "reason": "Past investigations resolved similar warnings with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 16,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.8,
+   "reason": "Similar past precedent for individual service latency, operator likely understands the pattern",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 17,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Known pattern of elevated latency, previously monitored",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 18,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.48,
+   "confidence": 0.8,
+   "reason": "Warning latency on three services, precedent of monitoring patterns with similar past investigations.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 19,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 20,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 21,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Pattern is a known warning with no errors logged.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 22,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.9,
+   "reason": "Known warning pattern with precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 23,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.41,
+   "confidence": 0.95,
+   "reason": "Clear precedent for service latency warnings",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 24,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 25,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.8,
+   "reason": "Past investigations indicate operator already understands pattern of services having high latency",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 26,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Known pattern: high latency on multiple services with no errors logged",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 28,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Known pattern of high latency on multiple services.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 29,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 30,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Pattern of high latency across multiple services has been seen before",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 31,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Known pattern, previously investigated and resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 32,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 33,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Pattern is known from past investigations and severity is warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 34,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigations resolved with little effort.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "warning-correlated",
+   "run": 35,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "investigate"
+   ],
+   "correct": false,
+   "latency_s": 0.44,
+   "confidence": 0.9,
+   "reason": "Pattern matches known precedent, services at warning severity.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.5,
+   "confidence": 0.9,
+   "reason": "Known non-urgent critical severity on tmp-* pods",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.54,
+   "confidence": 0.95,
+   "reason": "Test pod failure: tmp-restore-verify-9x2kd in namespace default exited non-zero",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 2,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.9,
+   "reason": "Known failure pattern in a tmp-* pod",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.8,
+   "reason": "Known failing pod with 'tmp-' prefix.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 4,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Known failure of test pod with no impact on the cluster",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 5,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Known noise, tmp-restore-verify-* pods are test pods",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Known noise from a test pod",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 7,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.49,
+   "confidence": 0.9,
+   "reason": "Precedent exists for tmp-* pods, severity=critical indicates urgent action",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 8,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 0.8,
+   "reason": "Likely a known noise test pod with a specific exit code.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.9,
+   "reason": "Known noise, tmp-* pods are test pods",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 10,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.95,
+   "reason": "Known noise, tmp-* pods are test pods",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 0.95,
+   "reason": "Known test pod failure, tmp-* pods are expected to fail occasionally.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 12,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Known test pod failure.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 13,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Known non-production pod failure in a namespace with tmp- prefix",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 14,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Known noise from a test pod.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 15,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 1.0,
+   "reason": "Known noise, tmp-* pods are intentionally-failing canaries",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 16,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "Known test pod failure, tmp-* pods are expected to fail",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 17,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.52,
+   "confidence": 0.99,
+   "reason": "This is a test pod with a known exit code 1, indicating successful job completion.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 18,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 0.9,
+   "reason": "Known test pod failure, tmp-* pods are expected to fail.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 19,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.9,
+   "reason": "Previous similar investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 20,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.43,
+   "confidence": 0.95,
+   "reason": "Known pod failure pattern in tmp-* namespace",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 21,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.4,
+   "confidence": 1.0,
+   "reason": "Known test pod failure",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 22,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.42,
+   "confidence": 0.8,
+   "reason": "Similar past investigation resolved with little effort",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 23,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.51,
+   "confidence": 1.0,
+   "reason": "Test pod tmp-restore-verify-9x2kd failed, expected behavior.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 24,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.52,
+   "confidence": 0.9,
+   "reason": "Test pod tmp-restore-verify-9x2kd has failed, likely intentionally.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 25,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.52,
+   "confidence": 0.95,
+   "reason": "Known noise. tmp-* pods are test pods and can exit with non-zero exit codes.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 26,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Known noise from a test pod.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 27,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.48,
+   "confidence": 0.95,
+   "reason": "Known test pod, restore drill container failed with exit code 1",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 28,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.8,
+   "reason": "Known temporary pod, exit code 1 not critical",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 29,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.7,
+   "reason": "Critical severity, but a similar past investigation resolved with little effort",
+   "reason_grounded": true,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 30,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.41,
+   "confidence": 1.0,
+   "reason": "Known noisy test pod failure",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 31,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Test pod failed, expected behavior.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 32,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.53,
+   "confidence": 0.8,
+   "reason": "Test pod tmp-restore-verify-9x2kd is known to fail intermittently.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 33,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.45,
+   "confidence": 0.8,
+   "reason": "Previous investigation resolved with little effort for similar past investigation.",
+   "reason_grounded": false,
+   "reason_fabricated": [
+    "<unnamed precedent>"
+   ],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 34,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only"
+   ],
+   "correct": false,
+   "latency_s": 0.46,
+   "confidence": 0.9,
+   "reason": "Known failure pattern for test pods, no need for full investigation",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "tmp-pod-critical",
+   "run": 35,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.99,
+   "reason": "Known smoke-test pod failure, expected behavior.",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 0,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "Known routine notification from cert-manager",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 1,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known, scheduled renewal notice.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 2,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known info-level renewal notice with a clear precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 3,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known renewal notice, operator can handle manually",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 4,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 0.95,
+   "reason": "Known info severity, scheduled renewal notice with clear precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 5,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known renewal notice with a 21 day warning",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 6,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known certificate renewal notice, operator can monitor",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 7,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known noise: scheduled renewal notice from cert-manager",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 8,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Clear precedent of a scheduled renewal notice from cert-manager",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 9,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known renewal notice, no immediate action required",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 10,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.95,
+   "reason": "Known info-level renewal notice with a clear precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 11,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Known renewal notice from cert-manager",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 12,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known pattern for CertExpiryNotice with precedent.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 13,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known renewal schedule, no action required.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 14,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known renewal notice from cert-manager",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 15,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known renewal notice from cert-manager",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 16,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.46,
+   "confidence": 1.0,
+   "reason": "This is a scheduled renewal notice with a clear precedent.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 17,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known noise, scheduled renewal notice",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 18,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.47,
+   "confidence": 1.0,
+   "reason": "This is a known info-level alert with a clear precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 19,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known renewal notice, no action needed.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 20,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known renewal notice from cert-manager",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 21,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 0.95,
+   "reason": "Known noise, scheduled renewal notice",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 22,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Clear precedent for info severity and scheduled renewal notice.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 23,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known renewal notice, no action needed.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 24,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known info-level alert for TLS certificate renewal notice",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 25,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 0.95,
+   "reason": "Known noise, previously seen cert-manager renewal notices",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 26,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 0.95,
+   "reason": "Known renewal notice, no operator action required",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 27,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known pattern for cert-manager renewal notice",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 28,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known info-level renewal notice with clear precedent",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 29,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known noise, scheduled renewal notice from cert-manager.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 30,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known info-level notice, no action required",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 31,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known info-level renewal notice for TLS cert",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 32,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.44,
+   "confidence": 1.0,
+   "reason": "Known scheduling event, no urgent action required",
+   "reason_grounded": false,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 33,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.43,
+   "confidence": 1.0,
+   "reason": "Known renewal notice, no action required.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 34,
+   "valid": true,
+   "action": "log_only",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.45,
+   "confidence": 1.0,
+   "reason": "Known info-level renewal notice, no action required",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  },
+  {
+   "case": "info-novel-cert",
+   "run": 35,
+   "valid": true,
+   "action": "notify",
+   "expected": [
+    "log_only",
+    "notify"
+   ],
+   "correct": true,
+   "latency_s": 0.42,
+   "confidence": 1.0,
+   "reason": "Known precedent for cert-manager renewals.",
+   "reason_grounded": true,
+   "reason_fabricated": [],
+   "error": null,
+   "raw": null
+  }
+ ]
+}
