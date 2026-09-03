@@ -551,17 +551,18 @@ see *v3 results* below. **v4 was trained twice as well**: the block-less repair
 worked on every case it targeted, and the one fabrication left is a shape the
 history cannot supply — see *v4 results*.
 
-| | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) | v4 (2026-09-03) |
-|---|---:|---:|---:|---:|
-| train rows | 451 | 522 | **262** | 310 |
-| distinct `reason` strings | **4** | 383 | 246 | 275 |
-| distinct `confidence` values | **4** | 39 | 38 | 39 |
-| rows using a v1 canned reason | 451 | 0 | 0 | 0 |
-| reasons falling back to the generic "this alert" | n/a | 0 | 0 | 0 |
-| rows citing an object absent from their prompt | 0 | **176** | **0** | 0 |
-| rows with no precedent block (train / val) | 0 | 0 | **0 / 0** | **48 / 5** |
-| `escalate` rows (train / val) | 16 / — | 16 / 2 | 16 / 2 | 32 / 4 |
-| investigate : escalate | 21:1 | 25:1 | **9.8:1** | 5.8:1 |
+| | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) | v4 (2026-09-03) | v5 (2026-09-03) |
+|---|---:|---:|---:|---:|---:|
+| train rows | 451 | 522 | **262** | 310 | 324 |
+| distinct `reason` strings | **4** | 383 | 246 | 275 | 289 |
+| distinct `confidence` values | **4** | 39 | 38 | 39 | 39 |
+| rows using a v1 canned reason | 451 | 0 | 0 | 0 | 0 |
+| reasons falling back to the generic "this alert" | n/a | 0 | 0 | 0 | 0 |
+| rows citing an object absent from their prompt | 0 | **176** | **0** | 0 | 0 |
+| rows with no precedent block (train / val) | 0 | 0 | **0 / 0** | **48 / 5** | 62 / 5 |
+| synthetic rows (train / val) | 0 | 0 | 0 | 0 | **14 / 0** |
+| `escalate` rows (train / val) | 16 / — | 16 / 2 | 16 / 2 | 32 / 4 | 32 / 4 |
+| investigate : escalate | 21:1 | 25:1 | **9.8:1** | 5.8:1 | 5.8:1 |
 
 Fingerprint for checking you have the right file before training: **262 train
 rows, 246 distinct reasons, 38 distinct confidences, 0 fabricated citations,
@@ -570,7 +571,10 @@ train rows, 275 distinct reasons, 39 distinct confidences, 0 fabricated
 citations, escalate 32/4, 48 train rows without a block.** Train is
 `sha256 5f6968f27e6b5e3a…`, val `ec7441d1f08596eb…`; staged at
 `/mnt/nas-backup/unsloth/cfoperator-v5/` (folder numbering runs one ahead of
-the data generation throughout).
+the data generation throughout). v5: **324 train rows, 289 distinct reasons,
+39 distinct confidences, 0 fabricated, 62 train rows without a block, 14
+synthetic**; train `sha256 5e44b0ae1746dfa7…`, val unchanged from v4
+(`ec7441d1f08596eb…`); staged at `/mnt/nas-backup/unsloth/cfoperator-v6/`.
 
 Three things changed between v2 and v3, all in the builder:
 
@@ -758,6 +762,28 @@ Options, in the order worth taking them:
    issue, but it takes the model off the one shape it cannot be trained on.
 3. Ship the 14B v4 as it is. Not on the table: a confident false citation on
    info alerts is the CFOP-153 defect in miniature.
+
+#### What v5 changes
+
+**Fourteen synthetic severity=info rows, train only.** Option 1 above, taken.
+Five alert families this fleet would emit at info — certificate renewals,
+backup completions, ArgoCD syncs, cron successes, unattended upgrades — with
+real object names, no precedent block, labelled notify with a frame that cites
+the severity and nothing else: `immich.ai: severity=info — informational, no
+investigation needed`. They are the first non-historical rows in the set:
+every one carries `meta.synthetic: true`, validation never gets one (its file
+is byte-identical to v4's), the builder runs them through the same eval
+exclusion as real rows, and tests pin all of that plus that the gate's
+unnamed-precedent rule does not flag the frame. `--no-synthetic-info` for an
+A/B.
+
+**How much of production this touches, checked rather than assumed:** this
+homelab defines no info-level Prometheus rule (13 critical, 40 warning). What
+reaches triage at `info` today is the Alertmanager Watchdog — its
+`severity: none` maps to info at intake — and resolution alerts, which
+`run_triage` already short-circuits. So the shape is the rubric's ("notify …
+when severity=info"), not yet the fleet's. Option 2 (short-circuit non-noise
+info alerts in `run_triage`) is tracked as its own issue.
 
 ---
 

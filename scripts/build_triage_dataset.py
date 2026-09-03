@@ -60,6 +60,11 @@ Derivation rules (rubric clause in parentheses):
                investigation.
   investigate  everything else, including resolved-without-precedent (it was
                novel; investigating was correct and it worked).
+  notify       SYNTHETIC (v5): severity=info with nothing listed ("...when
+               severity=info"). The history cannot supply this shape -- info
+               alerts are notified or logged and never investigated, so none
+               is in the table -- and both v4 models invented a precedent on
+               it. A small fixed set, train-only, marked meta.synthetic.
 
 Usage:
     # From the console API (port-forward or in-cluster; Bearer token for
@@ -810,6 +815,100 @@ def add_context_free_twins(examples, enabled=True):
     return out, added
 
 
+# ── Synthetic severity=info rows (v5) ────────────────────────────────────────
+#
+# The one shape neither the history nor the twins can supply. The rubric says
+# notify "when severity=info", but the builder's notify rule IS a resolved
+# precedent, so the only notify frame the model ever saw needs one -- and on
+# info-novel-cert both v4 models said notify and invented the precedent the
+# frame needs. There is no real row to learn from: across all 1,886
+# investigations there is not one severity=info alert, because info alerts are
+# notified or logged and never investigated. (Nor does this homelab define an
+# info-level Prometheus rule yet; what reaches triage at "info" today is the
+# Alertmanager Watchdog, whose severity "none" maps to info, and the
+# resolution alerts run_triage already short-circuits.)
+#
+# So: a small fixed set, in the alert families this fleet would emit at info
+# (certificate renewals, backup completions, ArgoCD syncs, cron successes,
+# unattended upgrades), with the real object names and NO precedent block,
+# labelled notify with a frame that cites the severity and nothing else. They
+# go to TRAIN only -- validation stays real -- and every row carries
+# meta.synthetic so it can be counted, filtered or dropped without touching a
+# historical row. They are the first non-historical rows in the set, and the
+# pre-flight prints their count so nobody has to discover that later.
+_INFO_REASON = "{subject}: severity=info — informational, no investigation needed"
+_INFO_CONFIDENCE = 0.85
+
+SYNTHETIC_INFO_ALERTS = [
+    {"alertname": "CertRenewalScheduled", "subject": "immich.ai", "labels": {"host": "immich.ai"},
+     "summary": "Certificate for immich.ai is due for renewal in 25 days (cert-manager will renew it automatically)."},
+    {"alertname": "CertRenewalScheduled", "subject": "paperless.ai", "labels": {"host": "paperless.ai"},
+     "summary": "Certificate for paperless.ai is due for renewal in 18 days (cert-manager will renew it automatically)."},
+    {"alertname": "CertRenewalScheduled", "subject": "nextcloud.ai", "labels": {"host": "nextcloud.ai"},
+     "summary": "Certificate for nextcloud.ai is due for renewal in 29 days (cert-manager will renew it automatically)."},
+    {"alertname": "BackupJobCompleted", "subject": "immich-library", "labels": {"pv": "immich-library", "namespace": "apps"},
+     "summary": "Nightly restic backup of immich-library completed successfully (12.4 GB, 0 errors)."},
+    {"alertname": "BackupJobCompleted", "subject": "nextcloud-data", "labels": {"pv": "nextcloud-data", "namespace": "apps"},
+     "summary": "Nightly restic backup of nextcloud-data completed successfully (38.1 GB, 0 errors)."},
+    {"alertname": "BackupJobCompleted", "subject": "paperless-media", "labels": {"pv": "paperless-media", "namespace": "apps"},
+     "summary": "Nightly restic backup of paperless-media completed successfully (2.7 GB, 0 errors)."},
+    {"alertname": "ArgoSyncCompleted", "subject": "freshet", "labels": {"app": "freshet"},
+     "summary": "ArgoCD synced application freshet to revision 4f2a9c1 (healthy, no drift)."},
+    {"alertname": "ArgoSyncCompleted", "subject": "squadmaps", "labels": {"app": "squadmaps"},
+     "summary": "ArgoCD synced application squadmaps to revision b81e77d (healthy, no drift)."},
+    {"alertname": "ArgoSyncCompleted", "subject": "plane", "labels": {"app": "plane"},
+     "summary": "ArgoCD synced application plane to revision 0c3d5e2 (healthy, no drift)."},
+    {"alertname": "CronJobSucceeded", "subject": "nas-backup-verify", "labels": {"cronjob": "nas-backup-verify", "namespace": "backup"},
+     "summary": "CronJob nas-backup-verify in namespace backup completed (exit 0, 41s)."},
+    {"alertname": "CronJobSucceeded", "subject": "sevens-nightly", "labels": {"cronjob": "sevens-nightly", "namespace": "apps"},
+     "summary": "CronJob sevens-nightly in namespace apps completed (exit 0, 3m12s)."},
+    {"alertname": "CronJobSucceeded", "subject": "db-vacuum", "labels": {"cronjob": "db-vacuum", "namespace": "data"},
+     "summary": "CronJob db-vacuum in namespace data completed (exit 0, 58s)."},
+    {"alertname": "UnattendedUpgradeApplied", "subject": "raspberrypi5", "labels": {"host": "raspberrypi5"},
+     "summary": "Unattended-upgrades on raspberrypi5 installed 7 security updates; no reboot required."},
+    {"alertname": "UnattendedUpgradeApplied", "subject": "ubuntu-cm5-01", "labels": {"host": "ubuntu-cm5-01"},
+     "summary": "Unattended-upgrades on ubuntu-cm5-01 installed 12 security updates; no reboot required."},
+]
+
+
+def synthetic_info_examples(system_prompt: str, include_meta: bool = True):
+    """The severity=info rows the history cannot supply. See SYNTHETIC_INFO_ALERTS."""
+    case_token_sets = [_tokens(c["summary"]) for c in triage_eval.CASES]
+    out = []
+    for a in SYNTHETIC_INFO_ALERTS:
+        # Same exclusion as real rows: nothing resembling an eval case trains.
+        if overlaps_benchmark(a["summary"], case_token_sets):
+            continue
+        labels = {"alertname": a["alertname"], "severity": "info", **a["labels"]}
+        example = {"messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": build_user_message("info", a["summary"], labels, [])},
+            {"role": "assistant", "content": json.dumps({
+                "action": "notify",
+                "reason": _INFO_REASON.format(subject=a["subject"]),
+                "confidence": _INFO_CONFIDENCE,
+            }, indent=2)},
+        ]}
+        if include_meta:
+            example["meta"] = {
+                "investigation_id": None, "started_at": None, "outcome": None,
+                "deep": False, "label": "notify", "label_basis": "synthetic-info",
+                "severity_source": "synthetic", "tool_calls_count": 0,
+                "synthetic": True,
+            }
+        out.append(example)
+    return out
+
+
+def split_train_val(examples, eval_frac: float, synthetic=()):
+    """Temporal split -- newest slice is validation -- with synthetic rows
+    appended to TRAIN only, after the split, so validation stays real."""
+    n_val = int(len(examples) * eval_frac)
+    train = examples[:len(examples) - n_val] if n_val else list(examples)
+    val = examples[len(examples) - n_val:] if n_val else []
+    return train + list(synthetic), val
+
+
 _FRAME_NUM_RE = re.compile(r"\d+\.\d+")
 _FRAME_NAME_RE = re.compile(r"\b[a-z0-9]+(?:[-/][a-z0-9]+)+\b|\b\w*\d\w*\b")
 
@@ -886,6 +985,10 @@ def main():
                     help="do not add block-less twins of rows whose label "
                          "does not depend on the precedent block (added by "
                          "default since v4; see build_examples)")
+    ap.add_argument("--no-synthetic-info", action="store_true",
+                    help="do not append the synthetic severity=info rows to "
+                         "train (added by default since v5; see "
+                         "SYNTHETIC_INFO_ALERTS)")
     ap.add_argument("--eval-frac", type=float, default=0.1,
                     help="newest fraction reserved for validation (default: %(default)s)")
     ap.add_argument("--out-dir", default=os.path.join("benchmarks", "datasets"))
@@ -956,10 +1059,13 @@ def main():
               "returns nothing, and v3 fabricated on exactly that shape")
 
     # Temporal split: newest slice is validation, so evaluation always looks
-    # forward in time relative to training — the deployment condition.
-    n_val = int(len(examples) * args.eval_frac)
-    train = examples[:len(examples) - n_val] if n_val else examples
-    val = examples[len(examples) - n_val:] if n_val else []
+    # forward in time relative to training — the deployment condition. The
+    # synthetic severity=info rows go to train only, after the split.
+    synthetic = ([] if args.no_synthetic_info
+                 else synthetic_info_examples(system_prompt, include_meta=not args.no_meta))
+    train, val = split_train_val(examples, args.eval_frac, synthetic)
+    print(f"synthetic severity=info rows: +{len(synthetic)} (train only, meta.synthetic)")
+    examples = train + val
 
     os.makedirs(args.out_dir, exist_ok=True)
     for name, rows in (("triage_train.jsonl", train), ("triage_val.jsonl", val)):

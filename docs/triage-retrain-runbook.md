@@ -103,6 +103,16 @@ near-miss floor), carrying a reason that says what the prompt shows ("nothing
 similar listed") rather than anything about the history. `build_examples`
 records the eligibility reasoning.
 
+**Fourteen synthetic severity=info rows are appended to train** (v5;
+`--no-synthetic-info` to leave them out). They are the first non-historical
+rows in the set, and the only way to cover the one eval shape the history
+cannot contain: an info alert with nothing listed. Info alerts are notified or
+logged and never investigated, so none of the 1,886 investigations is one, and
+both v4 models invented a precedent there because the only notify frame they
+had seen needs one. Every synthetic row carries `meta.synthetic: true`,
+validation never gets one, and `SYNTHETIC_INFO_ALERTS` in the builder says
+which alert families they mirror and why.
+
 Offline variant, if you already have an investigation dump:
 
 ```bash
@@ -133,6 +143,7 @@ print("distinct confidences", len({o["confidence"] for o in outs}))
 print("generic subjects    ", sum(1 for o in outs if "this alert" in o["reason"]))
 print("label mix           ", dict(collections.Counter(o["action"] for o in outs)))
 print("without a block     ", sum("Similar past investigations" not in r["messages"][1]["content"] for r in rows), "  <- must be > 0")
+print("synthetic rows      ", sum(1 for r in rows if r.get("meta", {}).get("synthetic")), "  <- 14 in train, never in val")
 # The gate's own grader, run over the TRAINING TARGETS. This is what found
 # the v2 fabrication and, on v3, two label bugs -- if the builder itself
 # cites something absent from its prompt, the model will learn to.
@@ -426,10 +437,14 @@ eval only after three quiet minutes is what worked. The eval takes ~10 min for
 the 14B, which is also past a Claude Code background command's cap, so run it
 detached (`setsid nohup … &`) and watch the log.
 
-**Fabrication on `info-novel-cert` alone is the severity=info gap**, not a
-regression: the history has no info-level alerts (they are never
-investigated), so no real row teaches notify-without-a-precedent. See the model
-card's *v4 results* for the options.
+**Fabrication on `info-novel-cert` alone was the severity=info gap** (v4): the
+history has no info-level alerts (they are never investigated), so no real row
+taught notify-without-a-precedent. v5 covers it with synthetic rows (§1). For
+perspective on how much of production this touches: this homelab defines no
+info-level Prometheus rule yet, and what reaches triage at `info` today is the
+Alertmanager Watchdog (its `severity: none` maps to info) and the resolution
+alerts `run_triage` already short-circuits — so the shape is the rubric's, not
+yet the fleet's.
 
 Then read a few reasons with your own eyes — the checks are narrow by design:
 

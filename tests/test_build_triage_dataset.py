@@ -730,3 +730,49 @@ def test_the_no_precedent_reason_is_not_a_precedent_claim_to_the_gate():
     grounded, fabricated = triage_eval.grade_reason(reason, prompt)
     assert grounded and not fabricated, (reason, fabricated)
     assert not triage_eval._PRECEDENT_CLAIM_RE.search(reason), reason
+
+
+# ── Synthetic severity=info rows (v5) ─────────────────────────────────────────
+#
+# Both v4 models fabricated a precedent on info-novel-cert, the one eval case
+# whose shape the history cannot contain (no info alert is ever investigated).
+# These pin the synthetic rows that cover it: block-less, severity=info,
+# notify, a reason that cites the severity and nothing the gate could call a
+# precedent, never in validation, and never resembling an eval case.
+
+def _synthetic():
+    return btd.synthetic_info_examples("sys", include_meta=True)
+
+
+def test_synthetic_info_rows_are_block_less_info_notify_and_marked():
+    import triage_eval
+    rows = _synthetic()
+    assert len(rows) == len(btd.SYNTHETIC_INFO_ALERTS) >= 10
+    for e in rows:
+        user = e["messages"][1]["content"]; a = json.loads(e["messages"][2]["content"])
+        assert user.startswith("Alert severity: info\n"), user[:40]
+        assert "Similar past investigations" not in user
+        assert a["action"] == "notify"
+        assert e["meta"]["synthetic"] is True and e["meta"]["label_basis"] == "synthetic-info"
+        assert "severity=info" in a["reason"]
+        grounded, fabricated = triage_eval.grade_reason(a["reason"], user)
+        assert grounded and not fabricated, (a["reason"], fabricated)
+        assert not triage_eval._PRECEDENT_CLAIM_RE.search(a["reason"]), a["reason"]
+
+
+def test_synthetic_info_rows_do_not_resemble_an_eval_case():
+    import triage_eval
+    case_tokens = [btd._tokens(c["summary"]) for c in triage_eval.CASES]
+    for a in btd.SYNTHETIC_INFO_ALERTS:
+        assert not btd.overlaps_benchmark(a["summary"], case_tokens), a["summary"]
+
+
+def test_synthetic_rows_go_to_train_only_after_the_split():
+    real = [_row("investigate", f"pod-{i} something", i) for i in range(20)]
+    for i, e in enumerate(real):
+        e["meta"] = {"synthetic": False, "started_at": i}
+    train, val = btd.split_train_val(real, 0.1, _synthetic())
+    assert len(val) == 2 and not any(e["meta"].get("synthetic") for e in val)
+    assert [e["meta"]["started_at"] for e in val] == [18, 19], "val is still the newest real slice"
+    assert sum(e["meta"].get("synthetic") is True for e in train) == len(btd.SYNTHETIC_INFO_ALERTS)
+    assert train[:18] == real[:18], "synthetic rows are appended, real order untouched"
