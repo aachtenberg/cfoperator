@@ -25,7 +25,7 @@
 # unchanged -- and note both the production path and triage_eval.py send
 # temperature 0.7 explicitly, which overrides the 0.15.
 
-FROM /mnt/nas-backup/cfoperator-finetune/cfop-triage-v3-gguf/ministral-3-14b-instruct-2512.Q4_K_M.gguf
+FROM /mnt/nas-backup/unsloth/cfoperator-v4/cfop-triage-v3-gguf/ministral-3-14b-instruct-2512.Q4_K_M.gguf
 
 TEMPLATE """{{- $lastUserIndex := -1 }}
 {{- $hasSystemPrompt := false }}
