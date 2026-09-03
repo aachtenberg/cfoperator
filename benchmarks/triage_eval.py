@@ -448,8 +448,10 @@ def _citation_tokens(text: str) -> set:
     cry wolf.
     """
     out = set()
-    for raw in re.split(r"[\s,;:()\[\]{}\"']+", text or ""):
-        tok = raw.strip(".").strip("'\"")
+    # Curly quotes too: the 8B v4 wrote “the “2xk4f” suffix” and the quoted
+    # token, kept with its quotes, read as an invented object.
+    for raw in re.split(r"[\s,;:()\[\]{}\"'\u201c\u201d\u2018\u2019]+", text or ""):
+        tok = raw.strip(".").strip("'\"\u201c\u201d\u2018\u2019")
         if len(tok) < 4:
             continue
         # Dotted-quad IPs are object identifiers here (node addresses) and

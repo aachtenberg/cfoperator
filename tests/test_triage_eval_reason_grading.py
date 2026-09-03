@@ -151,3 +151,16 @@ def test_a_precedent_claim_is_fine_when_the_prompt_offers_one():
         "raspberrypi3 repeats an earlier investigation that resolved (0.94 similarity): "
         "raspberrypi3 SD card I/O errors after power loss", _prompt("known-sdcard"))
     assert fabricated == [], fabricated
+
+
+# 8B v4 (2026-09-03), smoke-test-pod, verbatim. The pod suffix is quoted with
+# curly quotes; the token must be read as 2xk4f (in the prompt), not “2xk4f”.
+V4_8B_CURLY = ("smoke-test-runner-2xk4f ends in -2xk4f: the “2xk4f” suffix marks it "
+               "as a test pod (smoke-test-…) — page nothing")
+
+
+def test_curly_quoted_token_from_the_prompt_is_not_a_fabrication():
+    prompt = ("Alert severity: warning\nAlert summary: Pod smoke-test-runner-2xk4f "
+              "in namespace ci is crash-looping\nLabels: {}\n\nClassify.")
+    grounded, fabricated = te.grade_reason(V4_8B_CURLY, prompt)
+    assert grounded and fabricated == [], fabricated
