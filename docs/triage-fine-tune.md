@@ -829,16 +829,16 @@ Semantics:
 - **Rollback is deleting the line.** The key is inert on any image without the
   wiring, so config and image can be deployed in either order.
 
-**The gotcha that will bite you — on the homelab's raw-manifest path.** In
-`cfoperator-deploy` the ConfigMap is a plain manifest, so a config-only commit
-syncs it and **restarts nothing**. You need:
-
-```bash
-kubectl rollout restart deploy/cfoperator
-```
-
-Image-tag bumps restart on their own because they touch the pod spec; config-only
-changes do not.
+**The restart gotcha is history since CFOP-151** (`cfoperator-deploy` #25). The
+key now lives in `files/config.yaml`, which feeds a `configMapGenerator` named
+`cfoperator-config` in `kustomization.yml`; the generated ConfigMap's name
+carries a content hash, so a config commit changes the pod template and ArgoCD
+rolls **both** `cfoperator` and `cfoperator-event-runtime` (they mount the same
+file by `subPath`). No manual restart — and hand-restarting `deploy/cfoperator`
+alone, as this section used to instruct, was only ever half the workloads.
+Before #25 the ConfigMap was a plain manifest and a config-only commit really
+did restart nothing; if the hashed name (`cfoperator-config-<hash>`) is missing
+from `kubectl get cm -n apps`, you are looking at that older layout.
 
 **This does not apply to the Helm chart.** `charts/cfoperator/templates/agent.yaml`
 and `event-runtime.yaml` both annotate the pod with `checksum/config` (a sha256
@@ -864,17 +864,21 @@ recovery. No retraining required.
 
 ```bash
 # On ubuntu-llm-01, with /mnt/nas-backup mounted:
+ollama create cfop-triage-ministral3:v5-q4 \
+  -f /path/to/cfoperator/benchmarks/Modelfile.cfop-triage-v5      # the deployed model
 ollama create cfop-triage-ministral3:v1-q4 \
-  -f /path/to/cfoperator/benchmarks/Modelfile.cfop-triage
+  -f /path/to/cfoperator/benchmarks/Modelfile.cfop-triage         # the rollback target
 
 # Confirm it answers, then re-run the gate:
 PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v1-q4 --runs 3 --output /tmp/verify.json
+  --model cfop-triage-ministral3:v5-q4 --runs 3 --output /tmp/verify.json
 ```
 
-The Modelfile's `FROM` points at the NAS path, so the only prerequisite is the
-NAS mount. To restore the archival Q8_0 instead, change `FROM` to the `Q8_0.gguf`
-file and tag it `:v1`.
+Each Modelfile's `FROM` points at its generation's NAS folder
+(`unsloth/cfoperator-v6/cfop-triage-v5-gguf/` for v5, `mistral-trained-01/` for
+v1), so the only prerequisite is the NAS mount. Every generation's Q8_0 sits
+beside its Q4 with a `-q8` Modelfile (`Modelfile.cfop-triage-v5-q8`); for v1,
+change `FROM` to the `Q8_0.gguf` file and tag it `:v1`.
 
 ---
 
