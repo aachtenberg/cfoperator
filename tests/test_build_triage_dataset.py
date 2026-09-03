@@ -434,19 +434,100 @@ def test_clause_subjects_are_quoted_so_the_frames_stay_grammatical(trigger):
 
 
 def test_the_cosine_appears_only_where_it_is_the_reason():
-    """On notify the similarity IS why you did not investigate, so it earns
-    its place. On the investigate near-miss the sentence already says the
-    useful thing, and a float in every frame teaches "a good reason contains
-    a float" -- citable-looking and trivially faked."""
+    """On notify the similarity IS why you did not investigate. On the
+    no-precedent frame there is nothing to be similar to, so no number --
+    a float in *every* frame would teach "a good reason contains a float".
+    The near-miss frame does carry it; see the adjacency test below for why
+    that reversed."""
     notify = btd.derive_label(
         "Pod promtail-2xvvb is dropping log entries", "resolved",
         [{"outcome": "resolved", "similarity": 0.94, "trigger": "earlier push failure"}],
         btd.derive_labels("Pod promtail-2xvvb is dropping log entries"))
     assert "0.94" in notify[2], notify[2]
 
-    near = btd.derive_label(
-        "Pod loki-0 restarting repeatedly", "monitoring",
-        [{"outcome": "monitoring", "similarity": 0.81, "trigger": "ingester pressure"}],
+    none = btd.derive_label(
+        "Pod loki-0 restarting repeatedly", "monitoring", [],
         btd.derive_labels("Pod loki-0 restarting repeatedly"))
-    assert not re.search(r"\d\.\d\d", near[2]), near[2]
-    assert "no resolved precedent" in near[2]
+    assert not re.search(r"\d\.\d\d", none[2]), none[2]
+    assert "no precedent" in none[2]
+
+
+# Words that announce a similarity relationship. A name appearing just after
+# one of these reads as "the thing we matched against" -- i.e. a citation.
+# Deliberately not "match": the log_only frame's "matches the known-noise
+# pattern 'x-'" is a regex match, not a precedent citation, and its grounding
+# is covered by test_log_only_cites_the_token_that_matched. Every real
+# citation phrasing carries clos*/near* anyway ("closest match", "nearest").
+_CUE_RE = re.compile(
+    r"\b(clos\w*|near\w*|similar\w*|resembl\w*|repeat\w*|"
+    r"unlike|precedent\w*)\b", re.IGNORECASE)
+
+# Object-name shaped, by the same test the builder uses to accept a name:
+# an ordinary English word carries neither a digit nor a hyphen.
+_NAME_SHAPED = re.compile(r"(?=.*[\d\-/])[A-Za-z0-9][A-Za-z0-9._/\-]*")
+
+# How far after a cue word a name still reads as its object.
+_WINDOW = 4
+
+
+def _tokens(text):
+    return {t.strip("(),;:.'\"") for t in str(text).split()}
+
+
+def _citation_slots(reason, similar):
+    """Yield (cue, name) for every ungrounded name close after a cue word.
+
+    A name here is grounded only if it came from a *precedent* -- quoting the
+    precedent you leaned on is the whole point of the notify frame. A name
+    that came from the alert's own subject is NOT grounded in this position:
+    it reads as "the thing we matched against" while actually being the thing
+    being matched, which is the adjacency that taught v2 to invent one.
+    """
+    allowed = set()
+    for s_ in similar or []:
+        allowed |= _tokens(s_.get("trigger", ""))
+    for m in _CUE_RE.finditer(reason):
+        for tok in reason[m.end():].split()[:_WINDOW]:
+            bare = tok.strip("(),;:").rstrip(".")
+            if re.fullmatch(r"\d\.\d+", bare):
+                break            # a cosine closes the slot: it IS the filler
+            if _NAME_SHAPED.fullmatch(bare) and bare not in allowed:
+                yield m.group(0), bare
+
+
+@pytest.mark.parametrize("similar", [
+    [],
+    [{"outcome": "monitoring", "similarity": 0.62, "trigger": "earlier blip"}],
+    [{"outcome": "monitoring", "similarity": 0.81, "trigger": "ingester pressure"}],
+    [{"outcome": "needs_action", "similarity": 0.88, "trigger": "disk filled up"}],
+    [{"outcome": "resolved", "similarity": 0.94,
+      "trigger": "Pod loki-0 in monitoring restarted earlier"}],
+])
+@pytest.mark.parametrize("trigger", [
+    "Pod loki-0 in namespace monitoring restarting repeatedly",
+    "Node raspberrypi3 NotReady for 10m",
+    "Pod apps/paperless-ngx-7d9c4b8f5-nq2wm was OOMKilled",
+    "Multiple services unreachable: ingress-nginx, postgres and authentik",
+    "Per-host backup failed on ubuntu-itx-01",
+])
+def test_no_similarity_cue_word_is_followed_by_a_name(trigger, similar):
+    """A cue word may only be followed by a cosine, never by an object name.
+
+    This is the defect that shipped in v2. The frame read "closest earlier
+    match to {subject}" -- the subject is what the match is measured
+    against, but on the surface it is a pod name sitting right after
+    "closest", and 439 of 451 investigate rows taught that adjacency. The
+    fine-tune reproduced it as "(nearest was <pod>)" on alerts with no
+    precedent at all, inventing a different pod each sample. The action was
+    still graded correct, so the eval passed a model that fabricates
+    citations. Guard the adjacency, not the wording.
+    """
+    for outcome in ("monitoring", "needs_action", "resolved"):
+        got = btd.derive_label(trigger, outcome, similar,
+                               btd.derive_labels(trigger))
+        if got is None:
+            continue
+        slots = list(_citation_slots(got[2], similar))
+        assert not slots, (
+            f"cue {slots[0][0]!r} is followed by {slots[0][1]!r}, which "
+            f"reads as a citable object name: {got[2]!r}")

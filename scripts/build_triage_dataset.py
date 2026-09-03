@@ -477,23 +477,38 @@ def derive_label(trigger: str, outcome: str, similar_past: list,
         "resolved": "novel-but-resolved",
     }.get(outcome, "default")
 
+    # NEVER PUT A NAME AFTER A SIMILARITY CUE WORD (CFOP-153, v2 post-mortem).
+    # The v2 frames read "closest earlier match to {subject}" -- grammatically
+    # the subject is what the match is measured AGAINST, but on the surface it
+    # is just a pod name sitting after "closest". 439 of 451 investigate rows
+    # taught that adjacency, and the fine-tune reproduced it at inference as
+    # "(nearest was <pod>)" -- fabricating a precedent on alerts that had none,
+    # a different invented pod each sample. A confident false citation is worse
+    # than v1's uninformative boilerplate: it sends an operator looking for an
+    # investigation that never happened.
+    #
+    # So: the subject leads, and the only thing that may follow a cue word is
+    # the cosine. That restores the number this frame previously dropped. The
+    # objection to the cosine was that a float in *every* frame teaches "a good
+    # reason contains a float"; that still holds, which is why the no-precedent
+    # frame below has neither a cue word nor a number. Where a cue word does
+    # appear the float is what fixes the slot type -- without it the only
+    # fillable slot was a name, and a name is what got invented.
     if not best:
-        reason = (f"no earlier investigation resembles {subject}; "
-                  f"nothing to lean on, needs a first look")
+        # No cue word and no number: nothing here for a citation to attach to.
+        reason = (f"{subject} has no precedent in the investigation history "
+                  f"— needs a first look")
         conf = 0.62
     elif best["similarity"] < 0.70:
-        reason = (f"nothing close to {subject} in history "
-                  f"(nearest {best['similarity']:.2f}); needs a first look")
+        reason = (f"{subject} is unlike anything in history "
+                  f"(best match {best['similarity']:.2f}) — needs a first look")
         conf = 0.60
     else:
         # A near miss is genuinely more ambiguous than no precedent at all:
         # something similar happened and did NOT resolve cheaply.
-        # No cosine here. On notify the number IS the reason you did not
-        # investigate, so it earns its place; here the sentence already says
-        # the useful thing, and a float in every frame teaches "a good reason
-        # contains a float" -- citable-looking and trivially faked.
-        reason = (f"closest earlier match to {subject} ended "
-                  f"{best['outcome']} — no resolved precedent to lean on")
+        reason = (f"{subject}: the closest earlier investigation "
+                  f"({best['similarity']:.2f}) ended {best['outcome']} "
+                  f"— no resolved precedent to lean on")
         conf = round(max(0.45, 0.58 - (best["similarity"] - 0.70) * 0.6), 2)
     return ("investigate", basis, reason, conf)
 
