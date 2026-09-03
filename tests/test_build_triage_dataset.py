@@ -451,7 +451,7 @@ def test_the_cosine_appears_only_where_it_is_the_reason():
         "Pod loki-0 restarting repeatedly", "monitoring", [],
         btd.derive_labels("Pod loki-0 restarting repeatedly"))
     assert not re.search(r"\d\.\d\d", none[2]), none[2]
-    assert "no precedent" in none[2]
+    assert "nothing similar listed" in none[2]
 
 
 # Words that announce a similarity relationship. A name appearing just after
@@ -631,3 +631,102 @@ def test_a_word_merely_containing_a_node_marker_is_not_a_node(trigger):
 ])
 def test_real_node_names_still_extract(trigger, expect):
     assert btd.derive_labels(trigger).get("node") == expect
+
+
+# ── Context-free twins (v4) ───────────────────────────────────────────────────
+#
+# The v3 fine-tune fabricated on exactly the prompts that carry no "Similar
+# past investigations" block (36/36 on novel-oom, an invented pod in the
+# cosine slot) and was correct the moment a real block was supplied. Every
+# one of its 262 training rows had a block. These pin the repair: a block-less
+# twin for each row whose label survives losing the block, and only those.
+
+def _inv(trigger, outcome, ts):
+    return {"id": ts, "trigger": trigger, "outcome": outcome,
+            "started_at": f"2026-01-01T00:00:{ts:02d}", "tool_calls_count": 0}
+
+
+def _hit(outcome, sim):
+    return {"outcome": outcome, "similarity": sim, "id": 0,
+            "trigger": "an earlier thing that happened"}
+
+
+def _build(invs, similar, cap=None, twins=True):
+    ex, _, _ = btd.build_examples(invs, "sys", 3, True, similar)
+    if cap:
+        ex, _ = btd.cap_per_frame(ex, cap)
+    return btd.add_context_free_twins(ex, enabled=twins)[0]
+
+
+def _has_block(e):
+    return "Similar past investigations" in e["messages"][1]["content"]
+
+
+def test_context_free_twins_only_where_the_label_survives_without_the_block():
+    invs = [
+        _inv("Node raspberrypi3 NotReady, etcd quorum at risk", "escalate", 1),
+        _inv("Pod tmp-db-restore-4k2j9 in namespace backup failed", "resolved", 2),
+        _inv("Pod promtail-2xvvb is dropping log entries", "resolved", 3),
+        _inv("Pod camera-api-5f in namespace apps exited 255", "monitoring", 4),
+        _inv("Pod loki-0 restarting repeatedly", "monitoring", 5),
+    ]
+    similar = {0: [_hit("monitoring", 0.80)], 1: [_hit("monitoring", 0.75)],
+               2: [_hit("resolved", 0.92)], 3: [_hit("monitoring", 0.60)],
+               4: [_hit("monitoring", 0.82)]}
+    rows = _build(invs, similar)
+    by_id = collections.defaultdict(list)
+    for e in rows:
+        by_id[e["meta"]["investigation_id"]].append(e)
+    assert set(by_id) == {1, 2, 3, 4, 5}, sorted(by_id)
+    twins = {k: [e for e in v if not _has_block(e)] for k, v in by_id.items()}
+    assert len(twins[1]) == 1, "escalate: the reason never cites the block"
+    assert len(twins[2]) == 1, "log_only: the reason never cites the block"
+    assert len(twins[3]) == 0, "notify: the label IS the precedent"
+    assert len(twins[4]) == 1, "investigate below the near-miss floor"
+    assert len(twins[5]) == 0, "near-miss investigate: the block is the reason"
+    for k, tw in twins.items():
+        orig = next(e for e in by_id[k] if _has_block(e))
+        a_o = json.loads(orig["messages"][2]["content"])
+        for t in tw:
+            a_t = json.loads(t["messages"][2]["content"])
+            assert a_t["action"] == a_o["action"]
+            assert t["meta"]["context_free_twin"] is True
+            assert "_twin" not in t and "_twin" not in orig
+            assert not re.search(r"\d\.\d\d", a_t["reason"]), a_t["reason"]
+
+
+def test_a_capped_row_takes_its_twin_with_it():
+    """Twins come from the survivors of the frame cap, never from the rows
+    it dropped: block-less rows are exactly the eligible survivors."""
+    invs = [_inv(f"Pod worker-{i:02d}-abc in namespace batch exited 137",
+                 "monitoring", i) for i in range(20)]
+    similar = {i: [_hit("monitoring", 0.60)] for i in range(20)}
+    rows = _build(invs, similar, cap=8)
+    with_block = [e for e in rows if _has_block(e)]
+    without = [e for e in rows if not _has_block(e)]
+    assert (len(with_block), len(without)) == (8, 8)
+    assert ({e["meta"]["investigation_id"] for e in without}
+            == {e["meta"]["investigation_id"] for e in with_block})
+
+
+def test_twins_can_be_switched_off_for_an_ab():
+    rows = _build([_inv("Node raspberrypi3 NotReady, etcd quorum at risk",
+                        "escalate", 1)],
+                  {0: [_hit("monitoring", 0.80)]}, twins=False)
+    assert rows and all(_has_block(e) for e in rows)
+    assert not any("_twin" in e for e in rows)
+
+
+def test_the_no_precedent_reason_is_not_a_precedent_claim_to_the_gate():
+    """The twin's reason must describe the prompt ("nothing listed"), not the
+    history, and must not trip the eval's unnamed-precedent rule -- or the
+    repair would be graded as the defect it repairs."""
+    import triage_eval
+    trigger = "Pod camera-api-5f in namespace apps exited 255"
+    labels = btd.derive_labels(trigger)
+    action, _, reason, _ = btd.derive_label(trigger, "monitoring", [], labels)
+    prompt = btd.build_user_message("warning", trigger, labels, [])
+    assert action == "investigate"
+    grounded, fabricated = triage_eval.grade_reason(reason, prompt)
+    assert grounded and not fabricated, (reason, fabricated)
+    assert not triage_eval._PRECEDENT_CLAIM_RE.search(reason), reason

@@ -33,6 +33,12 @@ event_runtime and never stored). So:
     time of writing — and their hybrid combined-score sits on a different
     scale than the eval suite's synthetic similarities. Cosine over the
     production embedding model is the consistent reconstruction.)
+  - Production sends NO similar-investigations block when retrieval returns
+    nothing (empty history, embedding call failed). The retrospective search
+    never returns nothing, so every reconstructed row has a block; rows whose
+    label does not depend on it get a block-less twin as well (see
+    build_examples) so the model has seen the shape. v3 had not, and
+    fabricated a precedent on exactly that shape.
   - severity/labels are re-derived from the trigger text where a conservative
     pattern allows it, else left "unknown"/sparse. meta.severity_source
     records which. This is the one known fidelity gap.
@@ -353,6 +359,12 @@ def _clause(text: str, limit: int = 90) -> str:
     return flat[:limit].rsplit(" ", 1)[0] + "..."
 
 
+# Below this cosine the best match is "unlike anything": the block is nearly
+# uninformative, and the row is eligible for a context-free twin (see
+# build_examples). At or above it the investigate reason quotes the number.
+NEAR_MISS_FLOOR = 0.70
+
+
 def _best_resolved_precedent(similar_past: list):
     """Highest-similarity RESOLVED precedent at or above the notify threshold.
 
@@ -515,10 +527,16 @@ def derive_label(trigger: str, outcome: str, similar_past: list,
     # fillable slot was a name, and a name is what got invented.
     if not best:
         # No cue word and no number: nothing here for a citation to attach to.
-        reason = (f"{subject} has no precedent in the investigation history "
-                  f"— needs a first look")
+        # And it describes the PROMPT, not the history: "nothing listed" is
+        # what the model can actually see, and it is the rubric's own wording
+        # ("no similar past investigation listed is novel by definition").
+        # v3 phrased this as a claim about the world ("has no precedent in
+        # the investigation history"); it never mattered because the frame
+        # fired on zero rows -- see build_examples for why, and for the twins
+        # that now carry it.
+        reason = f"{subject}: nothing similar listed — needs a first look"
         conf = 0.62
-    elif best["similarity"] < 0.70:
+    elif best["similarity"] < NEAR_MISS_FLOOR:
         reason = (f"{subject} is unlike anything in history "
                   f"(best match {best['similarity']:.2f}) — needs a first look")
         conf = 0.60
@@ -528,7 +546,7 @@ def derive_label(trigger: str, outcome: str, similar_past: list,
         reason = (f"{subject}: the closest earlier investigation "
                   f"({best['similarity']:.2f}) ended {best['outcome']} "
                   f"— no resolved precedent to lean on")
-        conf = round(max(0.45, 0.58 - (best["similarity"] - 0.70) * 0.6), 2)
+        conf = round(max(0.45, 0.58 - (best["similarity"] - NEAR_MISS_FLOOR) * 0.6), 2)
     return ("investigate", basis, reason, conf)
 
 
@@ -724,7 +742,72 @@ def build_examples(investigations: list, system_prompt: str,
             }
         examples.append(example)
 
+        # Context-free twin (v4). Production sends NO "Similar past
+        # investigations" block when retrieval returns nothing -- an empty
+        # history (fresh install, the kind demo) or the embedding call
+        # failing (best-effort in run_triage). The eval sends that shape on
+        # 10 of its 14 cases. The v3 set contained it on 0 of 262 rows: the
+        # retrospective search has a whole history to draw on, so every row
+        # got a block, and the 14B v3 answered block-less prompts by forcing
+        # the "closest earlier investigation (...)" frame and filling the
+        # cosine slot with an invented pod name (36/36 on novel-oom; 12/12
+        # correct the moment a real block was supplied). So each row whose
+        # label does not depend on the block also yields a block-less copy
+        # of the same alert carrying the no-precedent reason. Eligible:
+        # escalate and log_only (their reasons never cite the block), and
+        # investigate rows whose best match sat below NEAR_MISS_FLOOR (the
+        # block was nearly uninformative anyway). Not notify -- the label IS
+        # the precedent -- and not near-miss investigate: those are the bulk
+        # of the class, and twinning them all would rebuild the one-sentence-
+        # with-the-pod-swapped pile the frame cap exists to remove, and tilt
+        # the block-less shape towards "investigate" regardless of content.
+        # The twin rides along as a hidden field and is emitted after the
+        # cap (add_context_free_twins), so a capped row takes its twin with it.
+        if similar_past:
+            bare = derive_label(trigger, outcome, [], labels)
+            eligible = (
+                bare is not None and bare[0] == action
+                and (action != "investigate"
+                     or _best_precedent(similar_past)["similarity"]
+                     < NEAR_MISS_FLOOR))
+            if eligible:
+                twin = {"messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": build_user_message(
+                        severity, trigger, labels, [])},
+                    {"role": "assistant", "content": json.dumps({
+                        "action": bare[0],
+                        "reason": bare[2],
+                        "confidence": bare[3],
+                    }, indent=2)},
+                ]}
+                if include_meta:
+                    twin["meta"] = dict(example["meta"], label_basis=bare[1],
+                                        context_free_twin=True)
+                example["_twin"] = twin
+
     return examples, skipped, conflicts
+
+
+def add_context_free_twins(examples, enabled=True):
+    """Emit each surviving row's block-less twin right after it.
+
+    Runs AFTER cap_per_frame on purpose: the twin is attached to its row in
+    build_examples, so a row the cap drops takes its twin with it, and the
+    block-less rows are exactly the eligible survivors -- never a second,
+    separately-capped population. Adjacent placement keeps the temporal
+    order the train/val split relies on. With enabled=False the twins are
+    discarded (the --no-context-free-twins A/B switch); the hidden field is
+    removed either way so it never reaches the JSONL.
+    """
+    out, added = [], 0
+    for e in examples:
+        twin = e.pop("_twin", None)
+        out.append(e)
+        if twin is not None and enabled:
+            out.append(twin)
+            added += 1
+    return out, added
 
 
 _FRAME_NUM_RE = re.compile(r"\d+\.\d+")
@@ -799,6 +882,10 @@ def main():
                          "sentence from swamping the thin classes. 8 is the "
                          "measured optimum — lower starts deleting escalate "
                          "(default: %(default)s, 0 disables)")
+    ap.add_argument("--no-context-free-twins", action="store_true",
+                    help="do not add block-less twins of rows whose label "
+                         "does not depend on the precedent block (added by "
+                         "default since v4; see build_examples)")
     ap.add_argument("--eval-frac", type=float, default=0.1,
                     help="newest fraction reserved for validation (default: %(default)s)")
     ap.add_argument("--out-dir", default=os.path.join("benchmarks", "datasets"))
@@ -856,6 +943,17 @@ def main():
     if dropped:
         print(f"capped near-duplicate frames at {args.max_per_frame}: "
               f"{before} -> {len(examples)} rows ({dropped} dropped)")
+
+    examples, twins = add_context_free_twins(
+        examples, enabled=not args.no_context_free_twins)
+    blockless = sum("Similar past investigations"
+                    not in e["messages"][1]["content"] for e in examples)
+    print(f"context-free twins: +{twins} rows; {blockless} of {len(examples)} "
+          f"rows carry no precedent block")
+    if not blockless:
+        print("WARNING: every row has a precedent block -- the model will "
+              "never have seen the shape production sends when retrieval "
+              "returns nothing, and v3 fabricated on exactly that shape")
 
     # Temporal split: newest slice is validation, so evaluation always looks
     # forward in time relative to training — the deployment condition.
