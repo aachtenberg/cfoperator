@@ -141,8 +141,17 @@ and the model reproduced them.
 
 ## 3. Copy to the training box
 
-`triage_train.jsonl` and `triage_val.jsonl`. Keep the previous generation
-alongside (`*.v1.jsonl`) so a comparison run is possible without a rebuild.
+`triage_train.jsonl` and `triage_val.jsonl`. One folder per generation on the
+backup disk — `/mnt/nas-backup/unsloth/cfoperator-v<N>/` holding the data, the
+YAML that trained on it, and later the exports — so the artifact can always be
+traced to exactly what produced it. Keep the previous generation's folder
+intact; do not reuse it (`cfoperator-v3/` holds the *v2* run's data, which is
+the confusion this rule exists to prevent).
+
+`/mnt/nas-backup` is a local exFAT disk on the dev box, not a NAS: the Windows
+training boxes cannot write to it, so every transfer in either direction is a
+manual copy. Copies preserve source mtimes, which gives a clean completion
+signal in §6.
 
 ---
 
@@ -245,14 +254,55 @@ It is a divergence check, not a quality measure. `triage_eval.py` is the gate.
 
 ## 6. Export
 
-Per-quantization, over the studio LAN API — the exact calls are in the model
-card's [Export and import](triage-fine-tune.md#export-and-import). Export is
-**merged**, not adapter-only, and de-quantizes the 14B on the fly, so it is the
-heaviest step on the box.
+Studio's API does this without the UI; the box does not need a screen. Tokens
+are in `repos/cfoperator/.env` (`UNSLOTH_5080_TRAINING_TOKEN`,
+`UNSLOTH_5060_TRAINING_TOKEN`); pull them inline so they never land in a
+transcript. `<box>` is `192.168.0.110` (5080) or `192.168.0.232` (5060).
 
-Do `Q8_0` first as the archival reference, then `Q4_K_M` as the deployment
-candidate. **Both clear the gate before either ships.** Copy the GGUFs to the
-NAS beside the v1 artifacts; do not overwrite them.
+```bash
+T=$(grep '^UNSLOTH_5080_TRAINING_TOKEN=' .env | cut -d= -f2- | tr -d '\r"')
+H="Authorization: Bearer $T"; B=http://192.168.0.110:8888
+
+# 1. the run's output_dir, then its final checkpoint
+curl -s -H "$H" $B/api/train/runs | jq -r '.[0] | .id, .status, .output_dir'
+curl -s -G -H "$H" --data-urlencode "outputs_dir=<output_dir>" $B/api/models/checkpoints \
+  | jq -r '.models[].checkpoints[].path' | grep checkpoint-99
+
+# 2. load it into the export worker (synchronous, ~1 min)
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' $B/api/export/load-checkpoint \
+  -d '{"checkpoint_path":"<...>\\checkpoint-99","max_seq_length":768,"load_in_4bit":true}'
+
+# 3. export (blocks until done; a second call re-uses the loaded checkpoint)
+curl -s -X POST -H "$H" -H 'Content-Type: application/json' $B/api/export/export/gguf \
+  -d '{"save_directory":"C:\\Users\\<u>\\.unsloth\\studio\\exports\\cfop-triage-v<N>-gguf","quantization_method":"Q4_K_M","push_to_hub":false,"imatrix":false}'
+
+# 4. progress / result
+curl -s -H "$H" $B/api/export/status | jq .
+curl -s -H "$H" $B/api/export/logs | jq -r '.entries[-5:][].line'
+```
+
+**The first export on a box downloads the full fp16 base** — the merge needs
+it, and it is not the bnb-4bit model training used. 16.6 GB for the 8B, 26 GB
+for the 14B, and that download is most of the wall-clock: the 8B Q4 on the
+5080 took 422 s of which ~4 min was the fetch. On the 5060 box the same fetch
+ran at ~7 MB/s (514 s per file), an hour on its own. Later exports on that box
+skip it. Then `Q8_0` in the same session re-uses the loaded checkpoint (~8 min
+for the 8B). Studio names the files itself:
+`ministral-3-<size>-instruct-2512.<QUANT>.gguf`, plus a `.BF16-mmproj.gguf`
+side file you can ignore (`finetune_vision_layers` ran True).
+
+`save_directory` must be inside studio's browse allowlist; the per-user
+`studio\exports\` folder is. `browse-folders` *suggests* NAS UNC paths, but
+writing there needs `POST /api/models/scan-folders` first — untested.
+
+**Both quants clear the gate before either ships** (§8: Q4/Q8 agreement on
+every case). No API route serves the file, so copy the export folder to
+`/mnt/nas-backup/unsloth/cfoperator-v<N>/` by hand. A copied file whose mtime
+keeps advancing is still being written; when the mtime snaps back to the
+export's own timestamp (older than its folder), the copy is closed.
+
+Do not start a second export on a box the operator is watching without
+saying so — the 8B Q8_0 was kicked off unannounced and it surprised them.
 
 ---
 

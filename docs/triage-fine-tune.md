@@ -308,30 +308,33 @@ CUDA card available.
 
 ## Export and import
 
-Export was driven over the studio LAN API, once per quantization (the base is
-cached after the first, so no re-download):
-
-```bash
-TOKEN=$(head -1 /tmp/unsloth.token)
-curl -s --max-time 30 -X POST \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"save_directory": "C:\\Users\\<user>\\.unsloth\\studio\\outputs\\cfop-triage-gguf",
-       "quantization_method": "Q4_K_M"}' \
-  "http://192.168.0.115:8888/api/export/export/gguf"
-```
+Export is driven over the studio API, once per quantization. The full,
+current sequence — checkpoint lookup, `load-checkpoint`, `export/gguf`,
+status/logs — lives in the runbook's
+[§6 Export](triage-retrain-runbook.md#6-export); this section only records
+what the export *is*, since that was misdescribed here for a while.
 
 Export is **merged**, not adapter-only — the LoRA is folded into the base
-weights. It de-quantizes the 14B to 16-bit on the fly, so it is the heaviest
-step of the pipeline on the training box (several minutes of heavy CPU/RAM).
-`Q8_0` was exported first as the archival reference; `Q4_K_M` followed as the
-deployment candidate and had to clear the same eval gate before it could ship.
+weights. To do that it needs the **fp16 base, which is not the bnb-4bit model
+training used**: the first export on a box downloads it (16.6 GB for the 8B,
+26 GB for the 14B) into the HF cache, and that download, not the merge, is
+most of the wall-clock. Later exports on the same box skip it. Tokens are the
+per-card `UNSLOTH_<card>_TRAINING_TOKEN` entries in `repos/cfoperator/.env`;
+the v1-era `/tmp/unsloth.token` and `192.168.0.115` are gone.
 
-The resulting GGUF is copied to the NAS and imported on `ubuntu-llm-01` with
-[`benchmarks/Modelfile.cfop-triage`](../benchmarks/Modelfile.cfop-triage):
+`Q8_0` is the archival reference and `Q4_K_M` the deployment candidate; both
+clear the same gate before either ships. The export folder is copied by hand
+to `/mnt/nas-backup/unsloth/cfoperator-v<N>/` — a local exFAT disk on the dev
+box, not a NAS — beside the dataset and YAML that produced it, and imported
+with that generation's Modelfile (`benchmarks/Modelfile.cfop-triage-<gen>`):
 
 ```bash
-ollama create cfop-triage-ministral3:v1-q4 -f benchmarks/Modelfile.cfop-triage
+ollama create cfop-triage-ministral3:8b-v3-q4 -f benchmarks/Modelfile.cfop-triage-8b-v3
 ```
+
+`ollama create` reads the whole file off the exFAT disk at ~30 MB/s and
+hashes it, so budget 5–10 minutes and run it detached from anything with a
+timeout.
 
 The Modelfile reuses the **base model's exact chat template** — the fine-tune
 was trained against it, and a paraphrased template would not transfer. It also
