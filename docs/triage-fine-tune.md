@@ -536,21 +536,50 @@ PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
    quoting val loss as evidence.
 
 
-### v2 dataset (CFOP-153)
+### v2 and v3 datasets (CFOP-153)
 
-Rebuilt 2026-09-02 from 1,882 investigations. **Not yet trained** — this is the
-data the next run should use.
+Both rebuilt from the full 1,882-investigation history (`--limit 5000`; the
+default of 1000 truncates silently and the builder now warns when it does).
+**v2 was trained and rejected** — it fabricated precedents, see the retrain
+post-mortem in `docs/triage-retrain-runbook.md` and PR #240. **v3 is the data
+the next run should use.**
 
-| | v1 (2026-08-20) | v2 |
-|---|---:|---:|
-| train rows | 451 | 522 |
-| distinct `reason` strings | **4** | **383** |
-| distinct `confidence` values | **4** | **39** |
-| rows using a v1 canned reason | 451 | **0** |
-| reasons falling back to the generic "this alert" | n/a | **0** |
+| | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) |
+|---|---:|---:|---:|
+| train rows | 451 | 522 | **262** |
+| distinct `reason` strings | **4** | 383 | 246 |
+| distinct `confidence` values | **4** | 39 | 38 |
+| rows using a v1 canned reason | 451 | 0 | 0 |
+| reasons falling back to the generic "this alert" | n/a | 0 | 0 |
+| rows citing an object absent from their prompt | 0 | **176** | **0** |
+| `escalate` rows (train / val) | 16 / — | 16 / 2 | 16 / 2 |
+| investigate : escalate | 21:1 | 25:1 | **9.8:1** |
 
-Fingerprint for checking you have the right file before training: **522 train
-rows, 383 distinct reasons, 39 distinct confidences, 0 generic subjects.**
+Fingerprint for checking you have the right file before training: **262 train
+rows, 246 distinct reasons, 38 distinct confidences, 0 fabricated citations,
+escalate 16/2.** Train is `sha256 f5533195a23c53cb…`, val `60aef4afdacbbbb3…`.
+
+Three things changed between v2 and v3, all in the builder:
+
+- **The investigate frames no longer put the alert's own subject after a
+  similarity cue word.** "closest earlier match to {subject}" taught the model
+  `closest → <pod>`, and it reproduced that adjacency on alerts with no
+  precedent by inventing one. Subject leads now; only a cosine may follow a
+  cue. That reverses the cosine removal below — the objection still holds for
+  the no-precedent frame, which keeps neither cue word nor number.
+- **Near-duplicate frames are capped at 8 rows** (`--max-per-frame`, on by
+  default). 148 investigate rows were one sentence with the pod name swapped.
+  Capping per frame rather than per action is what leaves `escalate` and
+  `log_only` untouched: thin classes have no big frames. Lower than 8 starts
+  deleting `escalate` and the ratio gets worse, not better.
+- **Two label bugs**: `api.x.ai` was read as `node=api` ("api" contains "pi"),
+  and "in kube-system namespace" as `namespace=experiencing`. Both corrupted the
+  trained input.
+
+The row count is well below v1's 451. Keep 3 epochs rather than compensating:
+v2's correct escalates used base-model phrasing absent from the training data,
+so the fine-tune's demonstrated value is latency and JSON validity, not
+classification — less deviation from the base is the point.
 
 383 rather than the 467 an earlier build produced, and the drop is deliberate:
 the similarity float was removed from the investigate near-miss frame, and it
