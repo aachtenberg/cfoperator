@@ -539,28 +539,36 @@ PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
    quoting val loss as evidence.
 
 
-### v2 and v3 datasets (CFOP-153)
+### v2, v3 and v4 datasets (CFOP-153)
 
 Both rebuilt from the full 1,882-investigation history (`--limit 5000`; the
 default of 1000 truncates silently and the builder now warns when it does).
 **v2 was trained and rejected** — it fabricated precedents, see the retrain
-post-mortem in `docs/triage-retrain-runbook.md` and PR #240. **v3 is the data
-the next run should use.**
+post-mortem in `docs/triage-retrain-runbook.md` and PR #240. **v3 was trained
+twice (14B and 8B) and rejected** — action-perfect on the 14B, but both
+fabricate on prompts without a precedent block, a shape v3 never contained;
+see *v3 results* below. **v4 is the data the next run should use.**
 
-| | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) |
-|---|---:|---:|---:|
-| train rows | 451 | 522 | **262** |
-| distinct `reason` strings | **4** | 383 | 246 |
-| distinct `confidence` values | **4** | 39 | 38 |
-| rows using a v1 canned reason | 451 | 0 | 0 |
-| reasons falling back to the generic "this alert" | n/a | 0 | 0 |
-| rows citing an object absent from their prompt | 0 | **176** | **0** |
-| `escalate` rows (train / val) | 16 / — | 16 / 2 | 16 / 2 |
-| investigate : escalate | 21:1 | 25:1 | **9.8:1** |
+| | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) | v4 (2026-09-03) |
+|---|---:|---:|---:|---:|
+| train rows | 451 | 522 | **262** | 310 |
+| distinct `reason` strings | **4** | 383 | 246 | 275 |
+| distinct `confidence` values | **4** | 39 | 38 | 39 |
+| rows using a v1 canned reason | 451 | 0 | 0 | 0 |
+| reasons falling back to the generic "this alert" | n/a | 0 | 0 | 0 |
+| rows citing an object absent from their prompt | 0 | **176** | **0** | 0 |
+| rows with no precedent block (train / val) | 0 | 0 | **0 / 0** | **48 / 5** |
+| `escalate` rows (train / val) | 16 / — | 16 / 2 | 16 / 2 | 32 / 4 |
+| investigate : escalate | 21:1 | 25:1 | **9.8:1** | 5.8:1 |
 
 Fingerprint for checking you have the right file before training: **262 train
 rows, 246 distinct reasons, 38 distinct confidences, 0 fabricated citations,
-escalate 16/2.** Train is `sha256 f5533195a23c53cb…`, val `60aef4afdacbbbb3…`.
+escalate 16/2.** Train is `sha256 f5533195a23c53cb…`, val `60aef4afdacbbbb3…`. v4: **310
+train rows, 275 distinct reasons, 39 distinct confidences, 0 fabricated
+citations, escalate 32/4, 48 train rows without a block.** Train is
+`sha256 5f6968f27e6b5e3a…`, val `ec7441d1f08596eb…`; staged at
+`/mnt/nas-backup/unsloth/cfoperator-v5/` (folder numbering runs one ahead of
+the data generation throughout).
 
 Three things changed between v2 and v3, all in the builder:
 
@@ -613,9 +621,78 @@ populated labels as English stopwords (`{"pod": "with"}`); v2 has none. Fewer
 labels, none of them lies. A bare single-word name like `prometheus` is dropped
 too — deliberately conservative, same posture as `derive_severity`.
 
-**Still open, and now more visible:** `log_only` still has exactly one example
-and `escalate` sixteen. Items 3–5 above are untouched. The class imbalance is
-the largest remaining data defect, and no amount of better reason text fixes it.
+**Still open, and now more visible:** `log_only` has two examples (one alert,
+with and without its block) and `escalate` thirty-two (sixteen alerts, twice).
+Items 3–5 above are untouched. Real new `escalate` and `log_only` alerts are
+still the largest remaining data defect; the twins change which shapes the
+model has seen, not how many distinct situations.
+
+#### v3 results (2026-09-03): action-perfect, fabricates on the shape it never saw
+
+Two v3 models were trained on the same data and YAML — 14B on the RTX 5060
+box, 8B on the 5080 — and gated at 14 cases × 36 runs
+(`benchmarks/triage_eval_cfop_triage_ministral3_v3_q4.json` and
+`…_8b_v3_q4.json`):
+
+| | v2 14B | v3 8B | v3 14B |
+|---|---:|---:|---:|
+| action | 496/504 | 468/504 | **504/504** |
+| JSON valid | 504/504 | 504/504 | 504/504 |
+| latency, mean | 1.05 s | 0.76 s | 1.08 s |
+| `correlated-outage` | 28/36 | 36/36 | 36/36 |
+| `tmp-pod-critical` | 36/36 | **0/36** | 36/36 |
+| fabricated cites, named | 36/504 | 0/504 | 27/504 |
+| fabricated cites incl. unnamed precedent | — | 179/504 | 140/504 |
+| final training loss | 0.0134 | 0.0415 | 0.0302 |
+
+The 14B v3 is the best model so far on action: the v2 regression is gone (the
+rebalance was the cause) and it holds the noise trap the 8B fails. Neither
+ships, because both fabricate — and every fabricating run is on a prompt with
+**no "Similar past investigations" block**: `novel-oom`, `critical-narrow`,
+`warning-correlated`, `info-novel-cert`, `novel-imagepull` (the 8B adds
+`tmp-pod-critical`). The 14B forces the near-miss frame and fills the cosine
+slot with an invented sibling pod:
+
+```
+paperless-ngx-7d9c4b8f5-nq2wm: the closest earlier investigation
+(paperless-ngx-76f85f4c9-2x87x) ended monitoring — no resolved precedent to lean on
+```
+
+**0 of the 262 v3 rows lack that block.** The retrospective search has a whole
+history to draw on, its floor is 0.5, and the weakest best-match in the history
+is 0.55, so every row got a block — while production sends none when retrieval
+returns nothing (empty history, embedding call failed) and the eval sends none
+on 10 of 14 cases. Probe on the 14B, `novel-oom`, six runs each: no block →
+invented pod 6/6; the same alert with a synthetic block at 0.61 → quotes 0.61,
+6/6; at 0.78 → quotes 0.78, 6/6. The model is not wrong about precedents; it
+has never been shown a prompt without them.
+
+Why it fabricates rather than saying so: SFT teaches a form conditioned on the
+input, and the only investigate form it learned opens a parenthesis that has to
+be filled. With a number in the prompt it copies the number; with none, the
+most probable pod-name-shaped string wins. It signals doubt in the one channel
+it has — confidence 0.45, the floor of the range — but has no sentence for
+"nothing listed", because no training row ever said it.
+
+#### What v4 changes
+
+**Context-free twins.** Each row whose label does not depend on the block also
+yields a block-less copy of the same alert: escalate and log_only (their
+reasons never cite the block) and investigate rows whose best match sat below
+the 0.70 near-miss floor. Not notify (the label *is* the precedent) and not
+near-miss investigate (the bulk of the class; twinning it would rebuild the
+pile the frame cap removes and tilt the block-less shape to "investigate").
+Twins are emitted after the cap, so a capped row takes its twin with it.
++53 rows: 48 train, 5 val. escalate doubles to 32 as a side effect — the same
+16 alerts seen twice, which teaches the shape, not new escalate patterns.
+
+**The no-precedent reason describes the prompt, not the history.** "nothing
+similar listed — needs a first look", the rubric's own wording, in place of
+v3's "has no precedent in the investigation history". It fired on zero v3
+rows, so nothing already trained changed; it is what the twins carry, and a
+test pins that the eval's unnamed-precedent rule does not flag it.
+
+**The pre-flight counts block-less rows**, and the builder warns at zero.
 
 ---
 

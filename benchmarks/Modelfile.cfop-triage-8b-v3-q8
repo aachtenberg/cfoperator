@@ -1,29 +1,38 @@
-# Modelfile for the cfoperator triage fine-tune -- v2 (CFOP-153).
+# Modelfile for the cfoperator triage fine-tune -- 8B v3 candidate, Q8_0 (CFOP-153).
 #
-#   ollama create cfop-triage-ministral3:v2-q4 -f benchmarks/Modelfile.cfop-triage-v2
+#   ollama create cfop-triage-ministral3:8b-v3-q8 -f benchmarks/Modelfile.cfop-triage-8b-v3-q8
 #
 # SEPARATE FILE ON PURPOSE. Modelfile.cfop-triage still points at v1 and is the
 # documented NAS recovery path ("if ubuntu-llm-01 is rebuilt... no retraining
 # required", docs/triage-fine-tune.md). Repointing its FROM would break that
 # silently, and v1-q4 has to stay servable as the rollback target.
 #
-# v2 trained 2026-09-02 from checkpoint-198 (3 epochs, 522 rows, final loss
-# 0.0134). The dataset is the CFOP-153 rebuild: reasons grounded in the alert
-# rather than four canned strings. Fingerprint: 522 rows / 383 distinct
-# reasons / 39 distinct confidences / 0 generic subjects.
+# Trained 2026-09-03 on the RTX 5080 box from
+# unsloth/Ministral-3-8B-Instruct-2512 (bnb-4bit) with the v3 dataset and the
+# 14B's YAML unchanged: 262 rows, 3 epochs, final checkpoint step 99, final
+# loss 0.0415. Dataset fingerprint: 262 rows / 246 distinct reasons / 38
+# distinct confidences / 0 fabricated citations / escalate 16 train + 2 val.
+# It is the size-class A/B against the 14B v3, not a production candidate on
+# its own.
 #
-# NOT YET GATED. Before this replaces v1 in production it needs
-# benchmarks/triage_eval.py (42/42, hard cases 24/24, soak 100/100) AND the
-# by-hand reason check -- the eval scores `action` only and will pass a model
-# whose reasons are canned, which is the exact regression v2 exists to fix.
-# See docs/triage-retrain-runbook.md section 8.
+# Q8_0 of the same export, kept for parity with v1/v2 (which ship Q4 and
+# archive Q8). NOT gated: the Q4 verdict below is about the model, not the
+# quant, and a Q8 number would not change it.
 #
-# The TEMPLATE below is copied BYTE-FOR-BYTE from the v1 Modelfile, which
-# reproduces the BASE model's chat template exactly. Same base model, so it
-# must not diverge; a paraphrased template would not transfer and fails
-# silently rather than loudly. PARSER ministral and temperature 0.15 likewise
-# unchanged -- and note both the production path and triage_eval.py send
-# temperature 0.7 explicitly, which overrides the 0.15.
+# GATED 2026-09-03 -- DOES NOT SHIP. Result file
+# benchmarks/triage_eval_cfop_triage_ministral3_8b_v3_q4.json: 468/504 on
+# action, JSON 504/504, 0.76 s mean, named fabrication 0/504 -- the v2 defect
+# is gone. But tmp-pod-critical scored 0/36 (severity=critical beats the noise
+# rule; log_only has one training row) and 179/504 reasons (35.5%) claim an
+# unnamed precedent on prompts that offered none. See docs/triage-fine-tune.md.
+#
+# The TEMPLATE below is copied BYTE-FOR-BYTE from the v1 (14B) Modelfile. The
+# 8B base's own template in ollama differs from it only in the model name
+# inside the fallback system prompt, a branch that fires only when no system
+# message is sent. Otherwise it must not diverge; a paraphrased template would
+# not transfer and fails silently rather than loudly. PARSER ministral and
+# temperature 0.15 likewise unchanged -- and note both the production path and
+# triage_eval.py send temperature 0.7 explicitly, which overrides the 0.15.
 
 FROM /mnt/nas-backup/unsloth/cfoperator-v4/cfop-triage-8b-v3-gguf/ministral-3-8b-instruct-2512.Q8_0.gguf
 

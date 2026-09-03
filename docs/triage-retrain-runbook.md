@@ -92,6 +92,17 @@ is invisible unless you compare the number against the limit. The builder now
 warns when the two match. The classes that lose examples first are `escalate`
 and `log_only`, which are already the thinnest.
 
+**Context-free twins are on by default** (`--no-context-free-twins` for an
+A/B). Every reconstructed row has a "Similar past investigations" block,
+because a full history always has *something* within cosine 0.5 — but
+production sends no block when retrieval returns nothing, and the eval sends
+none on 10 of its 14 cases. v3 never saw that shape and fabricated a precedent
+on it. The builder now emits a block-less copy of each row whose label does not
+depend on the block (escalate, log_only, and investigate below the 0.70
+near-miss floor), carrying a reason that says what the prompt shows ("nothing
+similar listed") rather than anything about the history. `build_examples`
+records the eligibility reasoning.
+
 Offline variant, if you already have an investigation dump:
 
 ```bash
@@ -121,6 +132,7 @@ print("distinct reasons    ", len({o["reason"] for o in outs}))
 print("distinct confidences", len({o["confidence"] for o in outs}))
 print("generic subjects    ", sum(1 for o in outs if "this alert" in o["reason"]))
 print("label mix           ", dict(collections.Counter(o["action"] for o in outs)))
+print("without a block     ", sum("Similar past investigations" not in r["messages"][1]["content"] for r in rows), "  <- must be > 0")
 # The gate's own grader, run over the TRAINING TARGETS. This is what found
 # the v2 fabrication and, on v3, two label bugs -- if the builder itself
 # cites something absent from its prompt, the model will learn to.
@@ -132,12 +144,14 @@ PY
 ```
 
 Compare against the fingerprint recorded in the model card's
-[v2 and v3 datasets](triage-fine-tune.md#v2-and-v3-datasets-cfop-153) table.
+[v2, v3 and v4 datasets](triage-fine-tune.md#v2-v3-and-v4-datasets-cfop-153) table.
 A mismatch means you are about to train on a different build than the one that
 was reviewed — stop and find out why. This step exists because the first
 version of that table carried a stale number and would have sent someone
 chasing a phantom. **`fabricated citations` must be 0**: v2 shipped with 176
-and the model reproduced them.
+and the model reproduced them. **`without a block` must be > 0**: v3 had none,
+and both v3 models fabricated a precedent on exactly the prompts that lack one
+— the shape production sends when retrieval returns nothing.
 
 ## 3. Copy to the training box
 
@@ -291,6 +305,17 @@ for the 8B). Studio names the files itself:
 `ministral-3-<size>-instruct-2512.<QUANT>.gguf`, plus a `.BF16-mmproj.gguf`
 side file you can ignore (`finetune_vision_layers` ran True).
 
+**Leave room on C:.** The fp16 base lands in the Hugging Face cache on the
+system drive, a merged 16-bit copy is written to disk for llama.cpp's
+converter, and then the GGUF itself — for the 14B that is roughly 26 GB +
+28 GB + 8 GB on top of whatever the training run left in `outputs\`. The 14B
+v3 export died mid-fetch with C: nearly full; studio had to be restarted and
+the disk cleared before it would run again. Check free space before step 3.
+A studio relaunched and driven from its UI with defaults exports to its own
+folder name, `exports\unsloth_<base>_<run id>-GGUF\` — point the Modelfile at
+what actually landed rather than renaming the folder (the 14B v3 Modelfile
+does).
+
 `save_directory` must be inside studio's browse allowlist; the per-user
 `studio\exports\` folder is. `browse-folders` *suggests* NAS UNC paths, but
 writing there needs `POST /api/models/scan-folders` first — untested.
@@ -370,6 +395,15 @@ Every fabricating run is also printed inline as it happens (`FABRICATED <name>`)
 even when the action was right. Reasons are persisted in the JSON now, so an
 audit can be retroactive.
 
+**Fabrication that lands only on block-less cases is a data-shape gap, not a
+model fault.** 10 of the 14 cases send no precedent block. v3 (both sizes)
+fabricated on exactly the five of those whose frame has a slot to fill —
+`novel-oom`, `critical-narrow`, `warning-correlated`, `info-novel-cert`,
+`novel-imagepull` — and answered `novel-oom` correctly 12/12 the moment a real
+block was supplied. If the pre-flight's `without a block` count was 0, that is
+the cause; retrain on data that has the shape before reading anything else
+into the numbers.
+
 Then read a few reasons with your own eyes — the checks are narrow by design:
 
 ```bash
@@ -378,10 +412,11 @@ PYTHONPATH=agent:. .venv/bin/python benchmarks/reason_compare.py \
 ```
 
 `novel-oom` and `correlated-outage` have no precedents, so any "nearest was…"
-is an invention. `known-sdcard` has one, so the reason should quote it. And
-`correlated-outage` is the v2 regression: 28/36; **≥ 34/36** says the rebalance
-worked, *unchanged* says the imbalance was not the cause and the escalate class
-needs real new examples rather than a better ratio.
+or "closest earlier investigation (…)" is an invention. `known-sdcard` has one,
+so the reason should quote it. `correlated-outage` was the v2 regression
+(28/36); the v3 rebalance took it to 36/36 on the 14B, so the imbalance was the
+cause. `tmp-pod-critical` is where the 8B v3 fell over (0/36 — severity
+`critical` beat the noise rule); the 14B held 36/36.
 
 ## 9. Deploy
 

@@ -1,22 +1,31 @@
-# Modelfile for the cfoperator triage fine-tune -- v2 (CFOP-153).
+# Modelfile for the cfoperator triage fine-tune -- 14B v3 candidate, Q4_K_M (CFOP-153).
 #
-#   ollama create cfop-triage-ministral3:v2-q4 -f benchmarks/Modelfile.cfop-triage-v2
+#   ollama create cfop-triage-ministral3:v3-q4 -f benchmarks/Modelfile.cfop-triage-v3
 #
 # SEPARATE FILE ON PURPOSE. Modelfile.cfop-triage still points at v1 and is the
 # documented NAS recovery path ("if ubuntu-llm-01 is rebuilt... no retraining
 # required", docs/triage-fine-tune.md). Repointing its FROM would break that
 # silently, and v1-q4 has to stay servable as the rollback target.
 #
-# v2 trained 2026-09-02 from checkpoint-198 (3 epochs, 522 rows, final loss
-# 0.0134). The dataset is the CFOP-153 rebuild: reasons grounded in the alert
-# rather than four canned strings. Fingerprint: 522 rows / 383 distinct
-# reasons / 39 distinct confidences / 0 generic subjects.
+# Trained 2026-09-03 on the RTX 5060 box (studio run 1788402625) from
+# unsloth/Ministral-3-14B-Instruct-2512 (bnb-4bit) with the v3 dataset and
+# v2's YAML unchanged: 262 rows, 3 epochs, final checkpoint step 99, final
+# loss 0.0302. Dataset fingerprint: 262 rows / 246 distinct reasons / 38
+# distinct confidences / 0 fabricated citations / escalate 16 train + 2 val.
+# The FROM path is studio's default export folder name: the export had to be
+# re-run from the UI after C: filled up, and the folder is left as it landed.
 #
-# NOT YET GATED. Before this replaces v1 in production it needs
-# benchmarks/triage_eval.py (42/42, hard cases 24/24, soak 100/100) AND the
-# by-hand reason check -- the eval scores `action` only and will pass a model
-# whose reasons are canned, which is the exact regression v2 exists to fix.
-# See docs/triage-retrain-runbook.md section 8.
+# GATED 2026-09-03 -- DOES NOT SHIP, though it is the best model so far on
+# action. benchmarks/triage_eval_cfop_triage_ministral3_v3_q4.json: 504/504
+# on action (v2's correlated-outage 28/36 and the 8B's tmp-pod-critical 0/36
+# are both 36/36 here), JSON 504/504, 1.08 s mean. Fabricated cites 140/504
+# (27.8%), every one on a prompt with NO "Similar past investigations" block:
+# novel-oom invents a paperless-ngx pod in the cosine slot 27/36, the rest
+# claim an unnamed precedent. Cause: 0 of the 262 training rows lack that
+# block, so the shape is out of distribution -- handed a real block at 0.61
+# or 0.78 the same alert is answered correctly 12/12. Repaired in the v4
+# data (context-free twins, scripts/build_triage_dataset.py); see
+# docs/triage-fine-tune.md.
 #
 # The TEMPLATE below is copied BYTE-FOR-BYTE from the v1 Modelfile, which
 # reproduces the BASE model's chat template exactly. Same base model, so it
@@ -25,7 +34,7 @@
 # unchanged -- and note both the production path and triage_eval.py send
 # temperature 0.7 explicitly, which overrides the 0.15.
 
-FROM /mnt/nas-backup/unsloth/cfoperator-v4/cfop-triage-v3-gguf/ministral-3-14b-instruct-2512.Q4_K_M.gguf
+FROM /mnt/nas-backup/unsloth/cfoperator-v4/unsloth_Ministral-3-14B-Instruct-2512-unsloth-bnb-4bit_1788402625-GGUF/ministral-3-14b-instruct-2512.Q4_K_M.gguf
 
 TEMPLATE """{{- $lastUserIndex := -1 }}
 {{- $hasSystemPrompt := false }}
