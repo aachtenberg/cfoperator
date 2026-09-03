@@ -365,7 +365,9 @@ held-out test: `build_triage_dataset.py` excludes anything resembling a
 | `gemma3:12b` (base screen, ×36) | 408/504 (81.0%) | `precedent-monitoring` 0/36, `critical-narrow` 36/36, `tmp-pod-critical` 0/36 | — | 100% | 1.2s | — |
 | `llama3.1:8b` (base screen, ×36) | 315/504 (62.5%) | never investigates: 0/36 on all five investigate cases | — | 100% | 0.45s | — |
 | `cfop-triage-ministral3:v1` (Q8_0) | 42/42 | 24/24 | 100/100 | 100% | 1.06s | 0.80s |
-| **`:v1-q4` (Q4_K_M, deployed)** | **42/42** | **24/24** | **100/100** | **100%** | **0.71s** | **0.62s** |
+| `:v1-q4` (Q4_K_M, deployed 2026-08-20 → 2026-09-03) | 42/42 | 24/24 | 100/100 | 100% | 0.71s | 0.62s |
+| **`cfop-triage-ministral3:v5-q4` (Q4_K_M, gated 2026-09-03, ships via cfoperator-deploy)** | **504/504 (×36), 0 fabricated** | **36/36 every case** | **100/100** | **100%** | **1.04s** | **1.15s** |
+| `:v5-q8` (Q8_0, archive) | 504/504 (×36), 0 fabricated | 36/36 every case | — | 100% | 1.53s (contended) | — |
 
 **Base screens, 2026-09-03** (runbook §0.5; raw JSON in
 `benchmarks/triage_eval_base_*.json`, 14 cases × 36 untuned). Screened after the
@@ -570,7 +572,8 @@ twice (14B and 8B) and rejected** — action-perfect on the 14B, but both
 fabricate on prompts without a precedent block, a shape v3 never contained;
 see *v3 results* below. **v4 was trained twice as well**: the block-less repair
 worked on every case it targeted, and the one fabrication left is a shape the
-history cannot supply — see *v4 results*.
+history cannot supply — see *v4 results*. **v5 clears the whole bar** — see
+*v5 results*.
 
 | | v1 (2026-08-20) | v2 (2026-09-02) | v3 (2026-09-03) | v4 (2026-09-03) | v5 (2026-09-03) |
 |---|---:|---:|---:|---:|---:|
@@ -805,6 +808,38 @@ reaches triage at `info` today is the Alertmanager Watchdog — its
 `run_triage` already short-circuits. So the shape is the rubric's ("notify …
 when severity=info"), not yet the fleet's. Option 2 (short-circuit non-noise
 info alerts in `run_triage`) is tracked as its own issue.
+
+#### v5 results (2026-09-03): clears the whole bar
+
+Same YAML, RTX 5060, 123 steps, final loss 0.0199 (the synthetic rows are easy
+ones). Gated on a quiet card
+(`benchmarks/triage_eval_cfop_triage_ministral3_v5_q4.json`, `…_v5_q8.json`,
+`…_v5_q4_soak.json`):
+
+| | v4 14B | v5 14B Q4_K_M | v5 14B Q8_0 |
+|---|---:|---:|---:|
+| action, 14 cases × 36 | 504/504 | **504/504** | 504/504 |
+| JSON valid | 504/504 | 504/504 | 504/504 |
+| fabricated cites | 36/504 | **0/504** | 0/504 |
+| `info-novel-cert` | 36 fabricating | 36/36, "grafana.ai: severity=info — informational, no investigation needed" | same |
+| hard-case soak ×50 (`precedent-monitoring`, `critical-narrow`) | — | **100/100**, 0 fabricated | — |
+| latency, mean | 1.05 s | 1.04 s | 1.53 s\* |
+
+\* The Q8 gate overlapped a burst of production investigations (14 evictions in
+ollama's log); six `precedent-resolved-oom` runs spent 14–20 s reloading the
+14 GB quant. Actions were unaffected; the Q4 gate and the soak ran on a quiet
+card.
+
+Every case is 36/36 on both quants, so Q4 and Q8 agree, and the reasons are the
+frames verbatim — `paperless-ngx-7d9c4b8f5-nq2wm: nothing similar listed — needs
+a first look`, `tmp-restore-verify-9x2kd: the prefix tmp- matches the log_only
+rule`, `raspberrypi3 repeats an earlier investigation that resolved (0.94
+similarity): …`. `correlated-outage` keeps base-model phrasing ("severity=critical
+AND impact is broad (ingress-nginx, apps, auth) — page an operator now"), which
+is grounded and fine. **This is the first candidate to clear the fabrication
+rule**, and it clears the rest of the bar with it: 504/504, 100/100 soak, JSON
+100%, Q4/Q8 agreement. It ships as `cfop-triage-ministral3:v5-q4` through
+`cfoperator-deploy`; `v1-q4` stays registered as the rollback.
 
 ---
 
