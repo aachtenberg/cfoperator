@@ -36,7 +36,7 @@ Alertmanager → event_runtime → (triage via agent LLM) →
 - `skills/` - Investigation skills (`skills/<name>/SKILL.md`: YAML frontmatter + markdown playbook; each is also auto-registered as an MCP prompt)
 - `tools/` - Infrastructure interaction tools (SSH, k8s, git, GitHub, TimescaleDB, prometheus, loki, ...)
 - `observability/` - Pluggable backends (Prometheus, Loki, Kubernetes, Docker, Slack, Discord)
-- `grafana/` - Source-of-truth dashboard JSON (canonical copy lives at `homelab-infra/k3s/base/monitoring/files/grafana-dashboards/`)
+- `grafana/` - Dashboard JSON, a byte-identical mirror of the copies provisioned from `homelab-infra/k3s/base/monitoring/files/grafana-dashboards/` (edit there, copy here; no upload script)
 - `llm-gateway/` - Standalone sibling artifact (LiteLLM proxy); NOT in the agent's runtime path
 - `docs/` - Documentation (see `docs/DEPLOYMENT.md` for the deploy story)
 

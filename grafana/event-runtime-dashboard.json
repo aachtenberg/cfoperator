@@ -20,31 +20,19 @@
         "name": "datasource",
         "type": "datasource",
         "query": "prometheus",
-        "current": {
-          "selected": true,
-          "text": "prometheus",
-          "value": "prometheus"
-        }
+        "current": {}
       },
       {
         "name": "loki",
         "type": "datasource",
         "query": "loki",
-        "current": {
-          "selected": true,
-          "text": "Loki",
-          "value": "Loki"
-        }
+        "current": {}
       },
       {
         "name": "postgres",
         "type": "datasource",
         "query": "grafana-postgresql-datasource",
-        "current": {
-          "selected": true,
-          "text": "SRE PostgreSQL",
-          "value": "sre-postgres"
-        }
+        "current": {}
       }
     ]
   },

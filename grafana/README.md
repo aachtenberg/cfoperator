@@ -2,7 +2,7 @@
 
 Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure intelligence.
 
-An additional dashboard for the modular event runtime lives in [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, runtime error paths, scheduled follow-up visibility, and (new) the completion endpoint that receives ActionResult post-backs from the agent.
+An additional dashboard for the modular event runtime lives in [event-runtime-dashboard.json](event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, runtime error paths, scheduled follow-up visibility, and (new) the completion endpoint that receives ActionResult post-backs from the agent.
 
 ## Dashboard Features
 
@@ -52,14 +52,8 @@ Surfaces the path from event_runtime → agent for alert-driven investigations. 
 - **Sweep Findings Table** - Detailed table of all sweep findings with severity, remediation
 - **Findings Over Time** - Trend of findings by severity (critical/warning/info)
 
-### Ollama Pool & Parallel Sweeps
-- **Pool Instance Health** - Status of each Ollama pool instance
-- **Pool Checkouts** - Total checkout count across all instances
-- **Instances In Use** - Currently active instances
-- **Sweep Duration** - Parallel vs sequential sweep timing (p50/p95)
-- **Per-Phase Duration** - Metrics, Logs, Containers sweep phase timing by instance
-- **Checkout/Checkin Rate** - Pool operation rate per instance
-- **Pool Logs** - Filtered logs for pool and parallel sweep activity
+- **Sweep Duration (p50 / p95)** - Wall time of the sweep, by mode
+- **Sweep Logs** - Filtered logs for sweep activity (parallel sweeps, sweep_graph, fan-out)
 
 ### Embedding & Log Metrics
 - **Embedding Request Rate** - Rate of embedding generation requests (success/error)
@@ -147,54 +141,30 @@ Surfaces the path from event_runtime → agent for alert-driven investigations. 
 
 ## Installation
 
-### Option 1: Upload to Grafana (Recommended)
+In the homelab these boards are **provisioned from homelab-infra**
+(`k3s/base/monitoring/files/grafana-dashboards/`, folder *Homelab*), and the
+files in this directory are byte-identical mirrors of those copies so the
+product ships the dashboards it is instrumented for. Edit there, copy here in
+the same round; the old `upload-dashboard.sh` path is gone because provisioning
+replaced it and its hand-created folder and datasources were the leftovers
+HOMELAB-18 cleaned up.
+
+Elsewhere, import the JSON directly:
+
+1. Go to **Dashboards** → **Import**, upload `cfoperator-dashboard.json`
+   (or `event-runtime-dashboard.json`), pick the Prometheus / Loki / PostgreSQL
+   datasources when prompted, click **Import**.
+2. Or via the API:
 
 ```bash
-cd grafana
-./upload-dashboard.sh
-./upload-dashboard.sh CFOperator event-runtime-dashboard.json
-```
-
-This will:
-- Create a "CFOperator" folder in Grafana
-- Upload the dashboard with all panels configured
-- Return a direct URL to the dashboard
-
-The upload helper supports both:
-
-- Grafana Cloud via `GRAFANA_CLOUD_URL` and `GRAFANA_CLOUD_API_KEY`
-- Local k3s Grafana via `GRAFANA_ADMIN_PASSWORD` **and** `GRAFANA_URL`
-
-`GRAFANA_URL` is required for local mode — there is no default. It used to
-fall back to one site's LAN address, which was wrong for everyone else.
-
-```bash
-GRAFANA_URL=http://grafana.example:30091 \
-GRAFANA_ADMIN_PASSWORD=... \
-  ./upload-dashboard.sh
-```
-
-### Option 2: Import via Grafana UI
-
-1. Log into Grafana: `http://<grafana-host>:3000` (or Grafana Cloud)
-2. Go to **Dashboards** → **Import**
-3. Click **Upload JSON file**
-4. Select `cfoperator-dashboard.json`
-5. Click **Import**
-
-For the event runtime dashboard, select `event-runtime-dashboard.json` instead.
-
-### Option 3: Import via API
-
-```bash
-# Local Grafana
 curl -X POST http://<grafana-host>:3000/api/dashboards/db \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
-  -d @cfoperator-dashboard.json
-
-# Grafana Cloud (use upload-dashboard.sh instead)
+  -d "{\"dashboard\": $(cat cfoperator-dashboard.json), \"overwrite\": true}"
 ```
+
+Prometheus and Loki are selected through the `datasource` / `loki` dashboard
+variables; the PostgreSQL panels expect a datasource with uid `sre-postgres`.
 
 ## Required Data Sources
 
@@ -241,15 +211,8 @@ LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'componen
 EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding requests', ['result'])
 EMBEDDING_CACHE_HITS = Counter('cfoperator_embedding_cache_hits_total', 'Embedding cache hits', ['result'])
 
-# Ollama Pool metrics
-POOL_INSTANCES = Gauge('cfoperator_pool_instances', 'Pool instance status', ['instance', 'status'])
-POOL_CHECKOUTS = Counter('cfoperator_pool_checkouts_total', 'Pool checkouts', ['instance', 'result'])
-POOL_CHECKINS = Counter('cfoperator_pool_checkins_total', 'Pool checkins', ['instance'])
-POOL_HEALTH_CHECKS = Counter('cfoperator_pool_health_checks_total', 'Pool health checks', ['instance', 'result'])
-
 # Sweep duration metrics
 SWEEP_DURATION = Histogram('cfoperator_sweep_duration_seconds', 'Sweep duration', ['mode'])
-SWEEP_PHASE_DURATION = Histogram('cfoperator_sweep_phase_duration_seconds', 'Phase duration', ['phase', 'instance'])
 ```
 
 ### PostgreSQL Tables Used by Dashboard
@@ -373,7 +336,7 @@ Feel free to customize this dashboard:
 
 ## Event Runtime — Alert Triage
 
-New section in [event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json) that surfaces the LLM-driven triage classifier (closes [#15](https://github.com/aachtenberg/cfoperator/issues/15)). With triage enabled (`CFOP_AGENT_URL` set, `HTTPTriageDecisionEngine` registered), every alert flows through `POST /v1/triage` on the agent before any investigation runs. The classifier returns one of four actions; this section is the operational view of that decision stream.
+New section in [event-runtime-dashboard.json](event-runtime-dashboard.json) that surfaces the LLM-driven triage classifier (closes [#15](https://github.com/aachtenberg/cfoperator/issues/15)). With triage enabled (`CFOP_AGENT_URL` set, `HTTPTriageDecisionEngine` registered), every alert flows through `POST /v1/triage` on the agent before any investigation runs. The classifier returns one of four actions; this section is the operational view of that decision stream.
 
 Powered by the existing labeled counter:
 ```promql
@@ -395,7 +358,7 @@ Operational signals:
 
 ## Event Runtime — Completion Endpoint
 
-New section in [event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json) that surfaces health of `POST /v1/investigations/{alert_id}/complete` — the endpoint event_runtime exposes for the agent to post completed ActionResults back through.
+New section in [event-runtime-dashboard.json](event-runtime-dashboard.json) that surfaces health of `POST /v1/investigations/{alert_id}/complete` — the endpoint event_runtime exposes for the agent to post completed ActionResults back through.
 
 Powered by a single labeled counter:
 ```promql
@@ -411,10 +374,9 @@ Panels:
 
 ## Related Dashboards
 
-Consider also importing:
-- Node Exporter Full (for detailed host metrics)
-- Loki Overview (for log infrastructure health)
-- Docker Container Overview (for container details)
+In the homelab, *Node Exporter Full*, *Nodes — Health & Pressure* and *k3s Cluster
+Overview* are provisioned alongside these (homelab-infra, HOMELAB-18). Elsewhere,
+import Node Exporter Full (grafana.com 1860) for host detail.
 
 ## Support
 

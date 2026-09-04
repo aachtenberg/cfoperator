@@ -495,7 +495,7 @@ make all            # all platforms
 | `observability/` | Pluggable backends (Prometheus, Loki, Kubernetes, Docker, Slack, Discord) |
 | `llm-gateway/` | Go proxy with health-based routing + fallback |
 | `benchmarks/` | Inference latency benchmarks (TTFT, tokens/sec) |
-| `grafana/` | Dashboard JSON + upload script |
+| `grafana/` | Dashboard JSON, a mirror of the copies provisioned from homelab-infra |
 
 ## Tests & CI
 

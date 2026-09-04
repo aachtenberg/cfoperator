@@ -138,7 +138,7 @@ time() - max by (provider) (cfoperator_event_runtime_host_discovery_timestamp_se
 
 ### Suggested Alert Rules
 
-Import or adapt [observability/event-runtime-alert-rules.yml](/home/aachten/repos/cfoperator/observability/event-runtime-alert-rules.yml) for the portable runtime. It includes alerts for:
+Import or adapt [observability/event-runtime-alert-rules.yml](../observability/event-runtime-alert-rules.yml) for the portable runtime. It includes alerts for:
 
 - runtime down
 - queue rejection rate
@@ -616,9 +616,9 @@ scrape_configs:
     scrape_timeout: 10s
 ```
 
-Repository sample: [observability/prometheus-event-runtime-scrape.yml](/home/aachten/repos/cfoperator/observability/prometheus-event-runtime-scrape.yml)
+Repository sample: [observability/prometheus-event-runtime-scrape.yml](../observability/prometheus-event-runtime-scrape.yml)
 
-Load the alert rules from [observability/event-runtime-alert-rules.yml](/home/aachten/repos/cfoperator/observability/event-runtime-alert-rules.yml) into Prometheus or your PrometheusRule flow.
+Load the alert rules from [observability/event-runtime-alert-rules.yml](../observability/event-runtime-alert-rules.yml) into Prometheus or your PrometheusRule flow.
 
 ## Verifying Metrics
 
@@ -653,7 +653,7 @@ Metrics are updated throughout the OODA loop and tool execution.
 
 ## Next Steps
 
-1. **Import Grafana dashboard** - See [grafana/README.md](grafana/README.md)
+1. **Import Grafana dashboard** - See [grafana/README.md](../grafana/README.md)
 2. **Configure Prometheus scraping** - Add CFOperator to Prometheus targets
 3. **Set up alerting rules** - Use examples above
 4. **Monitor LLM usage** - Track costs and performance

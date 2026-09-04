@@ -406,11 +406,11 @@ Key metric families include:
 - `cfoperator_event_runtime_host_observation_runs_total`
 - `cfoperator_event_runtime_completion_requests_total{outcome}` — outcome label: `recorded`, `auth_missing`, `auth_invalid`, `bad_request`, `error`. Inbound to `POST /v1/investigations/{alert_id}/complete`. Auth-related labels surfacing > 0 indicates someone is trying to hit the endpoint without (or with the wrong) `X-CFOP-Token`.
 
-Import [grafana/event-runtime-dashboard.json](/home/aachten/repos/cfoperator/grafana/event-runtime-dashboard.json) into Grafana to observe alert throughput, queue health, replay behavior, scheduled follow-up tasks, and end-to-end latency.
+Import [grafana/event-runtime-dashboard.json](../grafana/event-runtime-dashboard.json) into Grafana to observe alert throughput, queue health, replay behavior, scheduled follow-up tasks, and end-to-end latency.
 
-Prometheus alert rules for runtime health, queue stalls, replay failures, and bare-metal host observability failures are provided in [observability/event-runtime-alert-rules.yml](/home/aachten/repos/cfoperator/observability/event-runtime-alert-rules.yml).
+Prometheus alert rules for runtime health, queue stalls, replay failures, and bare-metal host observability failures are provided in [observability/event-runtime-alert-rules.yml](../observability/event-runtime-alert-rules.yml).
 
-Prometheus scrape configuration for the runtime is provided in [observability/prometheus-event-runtime-scrape.yml](/home/aachten/repos/cfoperator/observability/prometheus-event-runtime-scrape.yml).
+Prometheus scrape configuration for the runtime is provided in [observability/prometheus-event-runtime-scrape.yml](../observability/prometheus-event-runtime-scrape.yml).
 
 ## Duplicate Suppression
 
@@ -443,7 +443,7 @@ User=cfoperator
 WantedBy=multi-user.target
 ```
 
-You can also start from the repository unit template at [deploy/systemd/cfoperator-event-runtime.service](/home/aachten/repos/cfoperator/deploy/systemd/cfoperator-event-runtime.service).
+You can also start from the repository unit template at [deploy/systemd/cfoperator-event-runtime.service](../deploy/systemd/cfoperator-event-runtime.service).
 
 ## Notes
 
