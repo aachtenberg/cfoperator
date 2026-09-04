@@ -278,3 +278,22 @@ def test_store_deep_investigation_routes_diff_through_gates():
     assert out["pr_result"]["status"] == "opened"
     assert out["pr_result"]["branch"].startswith("cfop/remediate-deep-")
     assert gh.created_pull["title"].startswith("cfoperator deep-investigation fix")
+
+
+def test_store_deep_investigation_counts_the_outcome_and_observes_the_duration():
+    """The deep worker's result is a terminal outcome: it must move the same
+    started/outcome/duration metrics as an in-process investigation, or the
+    three stop reconciling for every alert the deep tier handled (review of
+    CFOP-163)."""
+    import sys as _sys
+    M = _sys.modules[CFOperator.__module__]
+    started = M.INVESTIGATIONS_STARTED._value.get()
+    outcome = M.INVESTIGATIONS.labels(outcome="needs_action")._value.get()
+    dur = M.INVESTIGATION_DURATION.labels(outcome="needs_action")
+    dur_n = sum(b.get() for b in dur._buckets); dur_sum = dur._sum.get()
+    op = _operator()
+    op.store_deep_investigation(_ALERT, _result(duration_s=42.5))
+    assert M.INVESTIGATIONS_STARTED._value.get() == started + 1
+    assert M.INVESTIGATIONS.labels(outcome="needs_action")._value.get() == outcome + 1
+    assert sum(b.get() for b in dur._buckets) == dur_n + 1
+    assert dur._sum.get() == dur_sum + 42.5

@@ -91,6 +91,10 @@ cfoperator_event_runtime_decisions_total{action="investigate"}
 cfoperator_event_runtime_notifications_sent_total{result="success"}
 cfoperator_event_runtime_scheduled_tasks_total{result="success"}
 cfoperator_event_runtime_completion_requests_total{outcome="recorded"}
+
+# Triage decisions the deep-investigation tier rewrote to deep_investigate,
+# by the action they replaced (CFOP-163; before this the reroute was a log line)
+cfoperator_event_runtime_deep_reroutes_total{from_action="escalate"}
 ```
 
 `completion_requests_total` counts `POST /v1/investigations/{alert_id}/complete`
@@ -202,6 +206,11 @@ result's label, not the stub.
 cfoperator_investigations_total{outcome="resolved"}
 cfoperator_investigations_total{outcome="escalated"}
 
+# Started, and wall time by terminal outcome (CFOP-163). Before this the
+# duration went to Postgres only; p95 investigation time had no PromQL.
+cfoperator_investigations_started_total
+histogram_quantile(0.95, sum by (le, outcome) (rate(cfoperator_investigation_duration_seconds_bucket[1h])))
+
 # Pending HTTP-driven investigations (POST /v1/investigate, called by event_runtime).
 # Gauge; rising values mean the agent's single worker thread is falling behind
 # the LLM throughput it can sustain.
@@ -218,6 +227,19 @@ cfoperator_investigation_postback_total{status="ok"}
 cfoperator_investigation_postback_total{status="http_401"}
 cfoperator_investigation_postback_total{status="transport_error"}
 ```
+
+### Morning Summary
+```promql
+# Generations by result, and the last success as a labelled timestamp
+cfoperator_morning_summary_runs_total{result="ok"}
+cfoperator_morning_summary_runs_total{result="error"}
+time() - max(cfoperator_morning_summary_last_success_timestamp_seconds) > 30 * 3600   # alert on AGE
+```
+
+The timestamp is labelled (`host_id`) on purpose: an unlabelled Gauge exports
+0.0 from registration, and an age query against it fires on every deploy.
+`tests/test_metrics_conventions.py` enforces this for every `*_timestamp_seconds`
+gauge in the tree.
 
 ### Error Tracking
 ```promql
@@ -254,10 +276,15 @@ cfoperator_llm_requests_total{provider="groq", model="llama-3.3-70b", result="er
 
 ### Token Usage
 ```promql
-# Tokens by provider, model, and type (prompt/completion)
-cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="prompt"}
-cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="completion"}
+# Tokens by provider, model, and type (input/output)
+cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="input"}
+cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="output"}
 ```
+
+The `type` values are `input` and `output` — what the code emits and what the
+live series carry. Earlier revisions of this page (and of
+`llm-observability.md`) said `prompt`/`completion`; every query written from
+them returned nothing.
 
 ### LLM Latency
 ```promql
@@ -278,6 +305,11 @@ cfoperator_llm_errors_total{provider="groq", error_type="RateLimitError"}
 cfoperator_llm_fallbacks_total{from_provider="ollama", to_provider="groq"}
 ```
 
+Observed at the provider rotation in `_chat_with_tools_with_fallback` since
+CFOP-163. Before that the counter was declared and never incremented, and the
+`ExcessiveFallbacks` alert below could not fire; `tests/test_metrics_conventions.py`
+now fails on any metric that is declared and never observed.
+
 ### Empty Final Responses
 ```promql
 # Tool-loop turns that ended with an empty final message (no tool calls, no
@@ -294,6 +326,30 @@ cfoperator_llm_empty_final_responses_total{provider="ollama", model="gemma4:26b"
 | `exhausted` | Second empty. `EmptyLLMResponseError` raised, provider chain rotates. | The model failing the task. Costs a whole extra provider attempt. |
 
 See `docs/llm-observability.md` for the per-model rate queries.
+
+### Triage Decisions
+```promql
+# Every run_triage return, by what produced it (CFOP-163)
+cfoperator_triage_decisions_total{action="notify", served_by="triage_model", model="cfop-triage-ministral3:v5-q4"}
+
+# Share of decisions NOT served by the dedicated model over 30m -- the
+# silent-degrade signal: the fine-tune falls into the standard chain on any
+# failure or unparseable reply, and nothing else shows it
+1 - sum(rate(cfoperator_triage_decisions_total{served_by="triage_model"}[30m]))
+  / sum(rate(cfoperator_triage_decisions_total{served_by=~"triage_model|chain"}[30m]))
+
+# Why the dedicated model was skipped
+cfoperator_triage_model_fallbacks_total{reason="unparseable"}
+cfoperator_triage_model_fallbacks_total{reason="exception"}
+
+# Whole-call wall time, short-circuits included
+histogram_quantile(0.95, sum by (le, served_by) (rate(cfoperator_triage_latency_seconds_bucket[15m])))
+```
+
+`served_by` is the closed set `triage_model`, `chain`, `short_circuit_resolution`,
+`short_circuit_info`, `unparseable_default`, `llm_unavailable`. The two
+short-circuits never call a model (`model="none"`); the two defaults are the
+"never lose an alert" paths and are worth an alert of their own.
 
 ### Embedding Operations
 ```promql
@@ -329,6 +385,9 @@ cfoperator_remediation_judge_total{verdict="confirm"}
 cfoperator_remediation_executor_spawned_total{result="ok"}
 cfoperator_remediation_reaped_total
 cfoperator_remediation_outcome_total{outcome="resolved"}
+
+# The human gate: approve/reject from the console (CFOP-163)
+cfoperator_remediation_human_decisions_total{decision="approve"}
 ```
 
 `judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
@@ -360,7 +419,13 @@ shipped several examples that could never match.
 | `cfoperator_event_runtime_completion_requests_total` | `outcome` | `recorded`, `auth_missing`, `auth_invalid`, `bad_request`, `error` |
 | `cfoperator_tool_calls_total` | `result` | `success`, `error` |
 | `cfoperator_llm_requests_total` | `result` | `success`, `error` |
-| `cfoperator_llm_tokens_total` | `type` | `prompt`, `completion`, `input`, `output` |
+| `cfoperator_llm_tokens_total` | `type` | `input`, `output` |
+| `cfoperator_triage_decisions_total` | `served_by` | `triage_model`, `chain`, `short_circuit_resolution`, `short_circuit_info`, `unparseable_default`, `llm_unavailable` |
+| `cfoperator_triage_model_fallbacks_total` | `reason` | `unparseable`, `exception` |
+| `cfoperator_investigation_duration_seconds` | `outcome` | as `cfoperator_investigations_total` |
+| `cfoperator_morning_summary_runs_total` | `result` | `ok`, `error` |
+| `cfoperator_remediation_human_decisions_total` | `decision` | `approve`, `reject` |
+| `cfoperator_event_runtime_deep_reroutes_total` | `from_action` | `escalate`, `investigate` |
 | `cfoperator_llm_empty_final_responses_total` | `disposition` | `nudged`, `exhausted` |
 
 Labels not listed here carry open-ended values — an instance name, a sink, a

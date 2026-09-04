@@ -1207,6 +1207,9 @@ class WebServer:
                                     'remediation_class': row.get('remediation_class'),
                                     'action': action}), 409
                 ok = self.operator.kb.update_remediation_status(remediation_id, 'queued')
+                if ok:
+                    from agent.agent import REMEDIATION_HUMAN_DECISIONS
+                    REMEDIATION_HUMAN_DECISIONS.labels(decision='approve').inc()
                 if not ok:
                     return jsonify({'error': 'not found'}), 404
                 return jsonify(self.operator.kb.get_remediation(remediation_id))
@@ -1220,6 +1223,9 @@ class WebServer:
             try:
                 note = json_object().get('note')
                 ok = self.operator.kb.update_remediation_status(remediation_id, 'rejected', last_error=note)
+                if ok:
+                    from agent.agent import REMEDIATION_HUMAN_DECISIONS
+                    REMEDIATION_HUMAN_DECISIONS.labels(decision='reject').inc()
                 if not ok:
                     return jsonify({'error': 'not found'}), 404
                 return jsonify(self.operator.kb.get_remediation(remediation_id))

@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision, utc_now
+from .telemetry import observe_deep_reroute
 from .plugins import ActionHandler, DecisionEngine
 
 logger = logging.getLogger(__name__)
@@ -310,6 +311,7 @@ class EscalationRoutingDecisionEngine(DecisionEngine):
             "Routing alert %s to deep investigation (action=%s confidence=%.2f)",
             envelope.alert.alert_id, decision.action, decision.confidence,
         )
+        observe_deep_reroute(decision.action)
         return replace(
             decision,
             action=DEEP_INVESTIGATE_ACTION,

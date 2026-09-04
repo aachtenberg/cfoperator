@@ -41,6 +41,11 @@ spec:
         app.kubernetes.io/component: agent
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        # The console serves /metrics unauthenticated on the container port;
+        # annotation-based pod discovery is how this stack's Prometheus finds
+        # application targets (no Prometheus Operator, no ServiceMonitor).
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8083"
     spec:
       serviceAccountName: {{ include "cfoperator.fullname" . }}
       initContainers:

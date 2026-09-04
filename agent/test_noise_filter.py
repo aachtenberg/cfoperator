@@ -468,3 +468,20 @@ def test_probe_trigger_not_filtered_when_pod_unhealthy_now():
     op = _plane_cluster(phase="CrashLoopBackOff", ready=False)
     recovered, _, _ = op._recovered_and_healthy({}, PLANE_TRIGGERS[3])
     assert recovered is False
+
+
+def test_recovered_alert_early_exit_observes_the_duration_histogram():
+    """The early exit is a terminal path: it must land in the duration
+    histogram as well as the outcome counter, or started/outcome/duration
+    stop reconciling (review of CFOP-163)."""
+    import sys as _sys, time as _time
+    from unittest.mock import MagicMock
+    M = _sys.modules[CFOperator.__module__]
+    op = CFOperator.__new__(CFOperator)
+    op.kb = MagicMock(); op.config = {}
+    op._build_action_result = lambda **kw: kw
+    op._action_message = lambda *a, **k: "recovered"
+    child = M.INVESTIGATION_DURATION.labels(outcome="monitoring")
+    before = sum(b.get() for b in child._buckets)
+    op._early_exit_monitoring(99, "Pod x recovered", _time.time() - 3.0, "healthy now")
+    assert sum(b.get() for b in child._buckets) == before + 1
