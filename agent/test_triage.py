@@ -489,3 +489,78 @@ def test_resolution_short_circuit_still_wins_for_info_alerts():
     result = op.run_triage(alert)
     assert result["action"] == "notify"
     assert result["reason"] == "finding cleared since previous sweep"
+
+
+# ---- metrics (CFOP-163) --------------------------------------------------
+#
+# run_triage had no metric at all: the served model was computed for Slack
+# and discarded, and the short-circuits and fallbacks were log lines. Every
+# return path now goes through one recorder; these pin that each path lands
+# in the right served_by bucket with the model it was served by.
+import sys as _sys
+_M = _sys.modules[CFOperator.__module__]
+
+
+def _decisions(**labels):
+    return _M.TRIAGE_DECISIONS.labels(**labels)._value.get()
+
+
+def _latency_count(served_by):
+    # prometheus_client keeps per-bucket counts non-cumulatively; the total
+    # number of observations is the sum over all buckets.
+    return sum(b.get() for b in _M.TRIAGE_LATENCY.labels(served_by=served_by)._buckets)
+
+
+def _chain_ok(op, action="notify", model="gemma4:26b"):
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": '{"action": "%s", "reason": "x", "confidence": 0.8}' % action,
+        "tool_calls": 0, "backend": "ollama", "model": model})
+
+
+def _with_triage_model(op, response):
+    op.config = {"llm": {"triage_model": "cfop-triage:test", "primary": {"url": "http://ollama:11434"}}}
+    if isinstance(response, Exception):
+        op._chat_with_tools = MagicMock(side_effect=response)
+    else:
+        op._chat_with_tools = MagicMock(return_value={"response": response, "tool_calls": 0})
+
+
+@pytest.mark.parametrize("name, setup, alert, expect", [
+    ("chain", lambda op: _chain_ok(op), _alert(),
+     dict(action="notify", served_by="chain", model="gemma4:26b")),
+    ("triage model", lambda op: _with_triage_model(op, '{"action": "log_only", "reason": "noise", "confidence": 0.9}'), _alert(),
+     dict(action="log_only", served_by="triage_model", model="cfop-triage:test")),
+    ("unparseable default", lambda op: setattr(op, "_chat_with_tools_with_fallback", MagicMock(return_value={"response": "prose only", "tool_calls": 0})), _alert(),
+     dict(action="investigate", served_by="unparseable_default", model="none")),
+    ("llm unavailable", lambda op: setattr(op, "_chat_with_tools_with_fallback", MagicMock(side_effect=RuntimeError("exhausted"))), _alert(),
+     dict(action="investigate", served_by="llm_unavailable", model="none")),
+    ("resolution short-circuit", lambda op: None, {**_alert(), "details": {"resolution": True}},
+     dict(action="notify", served_by="short_circuit_resolution", model="none")),
+    ("info short-circuit", lambda op: None, _alert(severity="info", summary="Certificate for immich.ai renews in 25 days"),
+     dict(action="notify", served_by="short_circuit_info", model="none")),
+])
+def test_every_triage_return_path_is_counted_by_how_it_was_served(name, setup, alert, expect):
+    op = _operator()
+    setup(op)
+    before = _decisions(**expect); lat_before = _latency_count(expect["served_by"])
+    result = op.run_triage(alert)
+    assert result["action"] == expect["action"], name
+    assert _decisions(**expect) == before + 1, name
+    assert _latency_count(expect["served_by"]) == lat_before + 1, name
+
+
+@pytest.mark.parametrize("failure, reason", [
+    ("prose, not JSON", "unparseable"),
+    (TimeoutError("ollama read timeout"), "exception"),
+])
+def test_triage_model_fallbacks_are_counted_by_reason_and_the_chain_answer_is_attributed_to_the_chain(failure, reason):
+    op = _operator()
+    _with_triage_model(op, failure)
+    _chain_ok(op, action="investigate", model="gemma4:26b")
+    fb_before = _M.TRIAGE_MODEL_FALLBACKS.labels(reason=reason)._value.get()
+    chain_before = _decisions(action="investigate", served_by="chain", model="gemma4:26b")
+    tm_before = _decisions(action="investigate", served_by="triage_model", model="cfop-triage:test")
+    op.run_triage(_alert())
+    assert _M.TRIAGE_MODEL_FALLBACKS.labels(reason=reason)._value.get() == fb_before + 1
+    assert _decisions(action="investigate", served_by="chain", model="gemma4:26b") == chain_before + 1
+    assert _decisions(action="investigate", served_by="triage_model", model="cfop-triage:test") == tm_before

@@ -42,8 +42,12 @@ read or a button you'd click → console.** Neither tries to be the other.
 - Datasources: Prometheus `cf6z7j8gxto1sc`, Loki `cfawbn0oyoqv4f`. Provisioned via
   `k3s/base/monitoring/kustomization.yml`; Grafana sidecar reloads on ConfigMap change.
 
-**Not built (deferred, low value):** a separate top-level Overview board and the
-Investigations/LLM/Triage drilldowns carved out of the fleet board.
+**Built 2026-09-04 (CFOP-163 / HOMELAB-17):** the LLM & Triage drilldown
+(`CFOperator — LLM & Triage`, provisioned from homelab-infra alongside the
+event-runtime board that had been written but never provisioned). The audit
+that produced it found triage entirely uninstrumented and the stack's LLM
+alerts pointed at a metric prefix nothing emits; the metrics it charts were
+added in CFOP-163. A separate top-level Overview board remains unbuilt.
 
 ## In-app console (status: built, `:8083`)
 

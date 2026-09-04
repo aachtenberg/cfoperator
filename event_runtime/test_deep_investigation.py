@@ -508,3 +508,20 @@ def test_handler_refuses_before_spending_budget_when_no_ssh_user(tmp_path):
     assert "CFOP_DEEP_SSH_USER" in (result.message or "")
     assert not any("create" in str(c) for c in kubectl.calls), \
         "no Job may be created without an ssh user"
+
+
+# ---- the reroute counter (CFOP-163) ----------------------------------------
+
+def test_reroute_is_counted_by_the_action_it_replaced():
+    import pytest
+    from event_runtime import telemetry
+    if not telemetry.PROMETHEUS_AVAILABLE:
+        pytest.skip("prometheus_client not installed")
+    child = telemetry.DEEP_REROUTES.labels(from_action="escalate")
+    before = child._value.get()
+    routed = _route(_host_alert(), Decision(action="escalate", confidence=0.9, reasoning="node is gone", params={}))
+    assert routed.action == DEEP_INVESTIGATE_ACTION
+    assert child._value.get() == before + 1
+    # A decision that is NOT rerouted counts nothing.
+    _route(_host_alert(), Decision(action="notify", confidence=0.9, reasoning="fine", params={}))
+    assert child._value.get() == before + 1

@@ -1182,7 +1182,7 @@ ERROR_RATE = Counter('cfoperator_errors_total', 'Total errors')
 
 # LLM Observability metrics
 LLM_REQUESTS = Counter('cfoperator_llm_requests_total', 'Total LLM requests', ['provider', 'model', 'result'])
-LLM_TOKENS = Counter('cfoperator_llm_tokens_total', 'Total tokens used', ['provider', 'model', 'type'])  # type: prompt/completion
+LLM_TOKENS = Counter('cfoperator_llm_tokens_total', 'Total tokens used', ['provider', 'model', 'type'])  # type: input/output
 # Buckets span 1s..600s: LLM chat turns (incl. tool-calling iterations) routinely
 # run tens of seconds and reasoning models reach several minutes. The Histogram
 # default buckets top out at 10s, so every real request landed in +Inf and
@@ -1213,6 +1213,67 @@ LLM_EMPTY_FINALS = Counter('cfoperator_llm_empty_final_responses_total', 'Tool-l
 # alerting on: they mean the knowledge base is holding records it cannot
 # index faithfully.
 EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding generation requests', ['result'])
+
+# Triage (CFOP-163). run_triage had no metric at all: it computed the served
+# backend/model for Slack's "Triaged by" line and threw it away, and its
+# short-circuits and fallbacks were log lines only. With a dedicated
+# fine-tuned model whose failure mode is a SILENT fall into the standard chain,
+# that meant triage degrading to the slow path looked exactly like health.
+#   served_by  triage_model             the dedicated model answered
+#              chain                    the standard provider chain answered
+#              short_circuit_resolution sweep-synthesised "Resolved:" alert
+#              short_circuit_info       severity=info, not noise (CFOP-161)
+#              unparseable_default      a provider answered, nothing parsed
+#              llm_unavailable          every provider failed
+# Every return path in run_triage goes through one helper, so a future
+# return cannot skip the count. Latency is the whole call, short-circuits
+# included, because that is what the alert waited for.
+TRIAGE_DECISIONS = Counter('cfoperator_triage_decisions_total', 'Triage decisions by action and by what produced them', ['action', 'served_by', 'model'])
+TRIAGE_LATENCY = Histogram(
+    'cfoperator_triage_latency_seconds', 'Wall time of run_triage, short-circuits included', ['served_by'],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, float('inf')),
+)
+TRIAGE_MODEL_FALLBACKS = Counter('cfoperator_triage_model_fallbacks_total', 'Dedicated triage-model attempts that fell into the standard chain', ['reason'])
+# Investigations had outcomes but neither a start nor a duration; the wall
+# time went to Postgres only. Both sit next to the existing outcome counter.
+INVESTIGATIONS_STARTED = Counter('cfoperator_investigations_started_total', 'Investigations started')
+INVESTIGATION_DURATION = Histogram(
+    'cfoperator_investigation_duration_seconds', 'Investigation wall time by terminal outcome', ['outcome'],
+    buckets=(5, 10, 20, 30, 60, 120, 180, 300, 600, 900, 1800, float('inf')),
+)
+# Morning summary: runs and the LAST SUCCESS as a labelled timestamp. Labelled
+# on purpose -- an unlabelled Gauge exports 0.0 from registration, and an age
+# query against it fires on every deploy (CFOP-152 / HOMELAB-15).
+MORNING_SUMMARY_RUNS = Counter('cfoperator_morning_summary_runs_total', 'Morning summary generations', ['result'])
+MORNING_SUMMARY_LAST_SUCCESS = Gauge('cfoperator_morning_summary_last_success_timestamp_seconds', 'Unix time of the last successful morning summary', ['host_id'])
+# The console's approve/reject buttons are the human gate of the remediation
+# pipeline; they incremented nothing and only showed up, throttled, as a
+# status transition in the queue gauge.
+REMEDIATION_HUMAN_DECISIONS = Counter('cfoperator_remediation_human_decisions_total', 'Operator approve/reject decisions from the console', ['decision'])
+
+
+def _meter_morning_summary(fn):
+    """Count morning-summary runs and stamp the last success (CFOP-163).
+
+    A decorator rather than a wrapper method so the body keeps its name:
+    the summary ran for weeks with no run count, no failure count and no
+    last-success time, and "did it run this morning?" had no answer in
+    Grafana. functools.wraps keeps inspect.getsource() pointing at the body,
+    which test_structured_fix relies on.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def _metered(self, *args, **kwargs):
+        try:
+            summary = fn(self, *args, **kwargs)
+        except Exception:
+            MORNING_SUMMARY_RUNS.labels(result='error').inc()
+            raise
+        MORNING_SUMMARY_RUNS.labels(result='ok').inc()
+        MORNING_SUMMARY_LAST_SUCCESS.labels(host_id='cfoperator').set(time.time())
+        return summary
+    return _metered
 EMBEDDING_CACHE_HITS = Counter('cfoperator_embedding_cache_hits_total', 'Embedding cache hits vs misses', ['result'])
 
 # OpenAI-compatible cloud LLM providers. They share an identical request /
@@ -2070,6 +2131,19 @@ class CFOperator:
         """
         # Build a one-shot classification prompt. No tools — the LLM should
         # not actually investigate; it should decide whether to.
+        t0 = time.monotonic()
+
+        def _record(decision: Dict[str, Any], served_by: str) -> Dict[str, Any]:
+            # The one exit for run_triage (CFOP-163): count the decision by
+            # how it was produced and observe the whole call's wall time.
+            TRIAGE_DECISIONS.labels(
+                action=str(decision.get('action') or 'unknown'),
+                served_by=served_by,
+                model=str(decision.get('model') or 'none'),
+            ).inc()
+            TRIAGE_LATENCY.labels(served_by=served_by).observe(time.monotonic() - t0)
+            return decision
+
         trigger = (
             alert.get('summary')
             or alert.get('annotations', {}).get('summary')
@@ -2084,13 +2158,13 @@ class CFOperator:
         # ":white_check_mark: Resolved: …" line without spending an LLM call.
         details = alert.get('details') or {}
         if isinstance(details, dict) and details.get('resolution'):
-            return {
+            return _record({
                 'action': 'notify',
                 'reason': 'finding cleared since previous sweep',
                 'confidence': 1.0,
                 'backend': None,
                 'model': None,
-            }
+            }, 'short_circuit_resolution')
 
         # CFOP-161: severity=info that is not known noise never needs the
         # model. The rubric below decides it by severity alone ("notify ...
@@ -2115,13 +2189,13 @@ class CFOperator:
                 json.dumps(labels, default=str), json.dumps(details, default=str))
             if x)
         if severity == 'info' and not self._TRIAGE_NOISE_RE.search(noise_haystack):
-            return {
+            return _record({
                 'action': 'notify',
                 'reason': 'severity=info — informational, no investigation needed',
                 'confidence': 0.9,
                 'backend': None,
                 'model': None,
-            }
+            }, 'short_circuit_info')
 
         similar_context = ""
         try:
@@ -2194,6 +2268,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         # below, so the chain after a triage-model failure is byte-identical
         # to the no-override configuration.
         result = None
+        served_by_triage_model = False
         triage_model = self._triage_model()
         if triage_model:
             primary_cfg = self.config.get('llm', {}).get('primary', {}) or {}
@@ -2218,11 +2293,15 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
                     logger.warning(
                         f"Triage model {triage_model} returned unparseable "
                         "response; using standard provider chain")
+                    TRIAGE_MODEL_FALLBACKS.labels(reason='unparseable').inc()
                     result = None
+                else:
+                    served_by_triage_model = True
             except Exception as e:
                 logger.warning(
                     f"Triage model {triage_model} failed "
                     f"({type(e).__name__}: {e}); using standard provider chain")
+                TRIAGE_MODEL_FALLBACKS.labels(reason='exception').inc()
                 result = None
 
         if result is None:
@@ -2234,13 +2313,13 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
                 )
             except Exception as e:
                 logger.warning(f"Triage LLM unavailable, defaulting to investigate: {e}")
-                return {
+                return _record({
                     'action': 'investigate',
                     'reason': f'triage LLM unavailable ({type(e).__name__})',
                     'confidence': 0.0,
                     'backend': None,
                     'model': None,
-                }
+                }, 'llm_unavailable')
 
         # The fallback chain reports which provider actually served the call,
         # not just the configured primary — surface it so Slack can show
@@ -2257,16 +2336,16 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         decision = self._parse_triage_response(response_text)
         if decision is None:
             logger.warning(f"Triage LLM returned unparseable response, defaulting to investigate: {response_text[:200]}")
-            return {
+            return _record({
                 'action': 'investigate',
                 'reason': 'triage response unparseable',
                 'confidence': 0.0,
                 'backend': served_backend,
                 'model': served_model,
-            }
+            }, 'unparseable_default')
         decision['backend'] = served_backend
         decision['model'] = served_model
-        return decision
+        return _record(decision, 'triage_model' if served_by_triage_model else 'chain')
 
     @staticmethod
     def _parse_triage_response(response_text: str) -> Optional[Dict[str, Any]]:
@@ -2432,6 +2511,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
 
         # Create investigation record
         inv_id = self.kb.start_investigation(trigger=trigger)
+        INVESTIGATIONS_STARTED.inc()
         self.current_investigation = inv_id
         start_time = time.time()
         outcome = 'failed'
@@ -2509,6 +2589,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     duration_seconds=duration
                 )
                 INVESTIGATIONS.labels(outcome='failed').inc()
+                INVESTIGATION_DURATION.labels(outcome='failed').observe(duration)
                 details.update({'duration_s': round(duration, 1), 'error': 'no_llm_provider'})
                 return self._build_action_result(
                     success=False,
@@ -2623,6 +2704,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 tool_calls_count=tool_calls_count
             )
             INVESTIGATIONS.labels(outcome=outcome).inc()
+            INVESTIGATION_DURATION.labels(outcome=outcome).observe(duration)
             logger.info(f"Investigation #{inv_id} completed: {outcome} ({duration:.1f}s, {tool_calls_count} tool calls)")
 
             # Extract learnings from resolved investigations
@@ -2668,6 +2750,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             except Exception as persist_err:
                 logger.warning(f"Could not persist failure record for investigation #{inv_id}: {persist_err}")
             INVESTIGATIONS.labels(outcome='failed').inc()
+            INVESTIGATION_DURATION.labels(outcome='failed').observe(duration)
             details.update({
                 'outcome': 'failed',
                 'duration_s': round(duration, 1),
@@ -4038,6 +4121,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         kb_outcome = 'escalate' if outcome == 'escalated' else outcome
 
         inv_id = self.kb.start_investigation(trigger=trigger)
+
+        INVESTIGATIONS_STARTED.inc()
         provider = f"anthropic/{details.get('model') or 'unknown'}"
         findings = {
             'response': str(details.get('report') or '')[:5000],
@@ -8394,6 +8479,13 @@ Only return the JSON array, no other text."""
         prev_provider = None
         for idx, (provider_type, url, model_name) in enumerate(provider_chain):
             try:
+                if idx > 0 and prev_provider:
+                    # CFOP-163: this counter existed since the metric block was
+                    # written and was never incremented; the docs shipped an
+                    # alert on it that could not fire.
+                    LLM_FALLBACKS.labels(
+                        from_provider=prev_provider.split('/')[0],
+                        to_provider=provider_type).inc()
                 if idx > 0 and event_callback and prev_provider:
                     event_callback('fallback', {
                         'from': prev_provider,
@@ -9503,6 +9595,7 @@ IMPORTANT:
                            f"{_MORNING_SUMMARY_SENT_SETTING} unset so a restart "
                            "retries today's digest")
 
+    @_meter_morning_summary
     def _generate_morning_summary(self) -> Dict[str, Any]:
         """
         Generate morning summary by gathering overnight data from DB

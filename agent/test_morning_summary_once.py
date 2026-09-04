@@ -169,3 +169,23 @@ def test_outside_the_window_nothing_happens():
     op._check_morning_summary()
     assert op.generated == 0
     assert kb.values == {}
+
+
+# ---- metrics wrapper (CFOP-163) --------------------------------------------
+
+def test_summary_decorator_records_runs_and_the_last_success_time():
+    import sys as _sys, pytest, time as _time
+    M = _sys.modules[CFOperator.__module__]
+    ok = M._meter_morning_summary(lambda self: {'text': 'overnight report', 'severity': 'info'})
+    boom = M._meter_morning_summary(lambda self: (_ for _ in ()).throw(RuntimeError("database is offline")))
+    ok_before = M.MORNING_SUMMARY_RUNS.labels(result='ok')._value.get()
+    t0 = _time.time()
+    assert ok(object())['text'] == 'overnight report'
+    assert M.MORNING_SUMMARY_RUNS.labels(result='ok')._value.get() == ok_before + 1
+    assert M.MORNING_SUMMARY_LAST_SUCCESS.labels(host_id='cfoperator')._value.get() >= t0
+    err_before = M.MORNING_SUMMARY_RUNS.labels(result='error')._value.get()
+    with pytest.raises(RuntimeError):
+        boom(object())
+    assert M.MORNING_SUMMARY_RUNS.labels(result='error')._value.get() == err_before + 1
+    # And the real method is decorated, not just the helper.
+    assert getattr(CFOperator._generate_morning_summary, '__wrapped__', None) is not None

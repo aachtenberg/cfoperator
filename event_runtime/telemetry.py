@@ -180,7 +180,15 @@ if PROMETHEUS_AVAILABLE:
         "Requests to POST /v1/investigations/{alert_id}/complete by outcome.",
         ["outcome"],
     )
+    # CFOP-163: the deep-investigation tier rewrote decisions to
+    # deep_investigate and emitted nothing; the only trace was a log line.
+    DEEP_REROUTES = Counter(
+        "cfoperator_event_runtime_deep_reroutes_total",
+        "Triage decisions rewritten to deep_investigate, by the action they replaced.",
+        ["from_action"],
+    )
 else:
+    DEEP_REROUTES = None
     RUNTIME_INFO = None
     RUNTIME_UP = None
     LAST_POLL = None
@@ -240,6 +248,11 @@ def observe_alert_result(status: object, action: object, duration_seconds: float
 def observe_decision(action: object) -> None:
     if PROMETHEUS_AVAILABLE:
         DECISIONS.labels(action=_sanitize_label(action, "unknown")).inc()
+
+
+def observe_deep_reroute(from_action: object) -> None:
+    if PROMETHEUS_AVAILABLE:
+        DEEP_REROUTES.labels(from_action=_sanitize_label(from_action, "unknown")).inc()
 
 
 def observe_scheduled_task(scheduler: object, success: bool) -> None:

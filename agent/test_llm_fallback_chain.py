@@ -346,3 +346,36 @@ def test_widening_skipped_when_column_is_already_text():
     m, log = _manager_with_sessions(column_type="text")
     m._ensure_table()
     assert not any(sql.startswith("ALTER TABLE") for sql in log)
+
+
+# ---- the fallback counter (CFOP-163) ---------------------------------------
+#
+# cfoperator_llm_fallbacks_total was declared with the metric block and never
+# incremented; the docs shipped an alert on it that could not fire. It is now
+# observed at the rotation, keyed by the provider that failed and the one
+# that took over.
+
+def test_fallback_counter_increments_on_rotation():
+    import sys as _sys
+    M = _sys.modules[CFOperator.__module__]
+    child = M.LLM_FALLBACKS.labels(from_provider="ollama", to_provider="groq")
+    before = child._value.get()
+    op = _operator(
+        provider_chain=[("ollama", "http://localhost:11434", "qwen3:14b"), ("groq", None, "llama-3.3-70b")],
+        chat_responses=[TimeoutError("Ollama read timeout"), {"response": "groq says hi", "tool_calls": 1}],
+    )
+    op._chat_with_tools_with_fallback(messages=[{"role": "user", "content": "x"}])
+    assert child._value.get() == before + 1
+
+
+def test_no_fallback_counted_when_the_primary_answers():
+    import sys as _sys
+    M = _sys.modules[CFOperator.__module__]
+    child = M.LLM_FALLBACKS.labels(from_provider="ollama", to_provider="groq")
+    before = child._value.get()
+    op = _operator(
+        provider_chain=[("ollama", "http://localhost:11434", "qwen3:14b"), ("groq", None, "llama-3.3-70b")],
+        chat_responses=[{"response": "ollama says hi", "tool_calls": 0}],
+    )
+    op._chat_with_tools_with_fallback(messages=[{"role": "user", "content": "x"}])
+    assert child._value.get() == before

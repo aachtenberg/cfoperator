@@ -21,16 +21,16 @@ rate(cfoperator_llm_requests_total[5m]) * 60
 ### Token Usage
 
 ```promql
-# Total tokens used by provider, model, and type (prompt/completion)
-cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="prompt"}
-cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="completion"}
+# Total tokens used by provider, model, and type (input/output)
+cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="input"}
+cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="output"}
 
 # Example query: Total tokens per hour
 rate(cfoperator_llm_tokens_total[1h]) * 3600
 
-# Example query: Token efficiency (completion tokens / prompt tokens)
-sum(rate(cfoperator_llm_tokens_total{type="completion"}[5m]))
-/ sum(rate(cfoperator_llm_tokens_total{type="prompt"}[5m]))
+# Example query: Token efficiency (output tokens / input tokens)
+sum(rate(cfoperator_llm_tokens_total{type="output"}[5m]))
+/ sum(rate(cfoperator_llm_tokens_total{type="input"}[5m]))
 ```
 
 ### LLM Latency
