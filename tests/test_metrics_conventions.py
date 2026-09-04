@@ -19,8 +19,11 @@ import re
 from pathlib import Path
 
 _SEARCH_DIRS = ("agent", "event_runtime", "observability", "auth", ".")
+# Leading indentation allowed: event_runtime/telemetry.py declares every
+# metric inside `if PROMETHEUS_AVAILABLE:` (review of CFOP-163 caught the
+# column-zero anchor skipping that whole block).
 _DECL = re.compile(
-    r"^(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*(?P<kind>Counter|Gauge|Histogram|Summary|Info)\s*\(\s*['\"](?P<metric>[a-z][a-z0-9_]+)['\"]",
+    r"^[ \t]*(?P<name>[A-Z][A-Z0-9_]*)\s*=\s*(?P<kind>Counter|Gauge|Histogram|Summary|Info)\s*\(\s*['\"](?P<metric>[a-z][a-z0-9_]+)['\"]",
     re.M)
 _VERBS = ("labels(", "inc(", "observe(", "set(", "info(", "dec(", "set_to_current_time(")
 # Metrics observed through a local alias the source check cannot follow. Each

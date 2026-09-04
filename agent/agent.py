@@ -3212,6 +3212,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         except Exception as e:
             logger.debug(f"early-exit record skipped: {e}")
         INVESTIGATIONS.labels(outcome='monitoring').inc()
+        INVESTIGATION_DURATION.labels(outcome='monitoring').observe(duration)
         logger.info(f"Investigation #{inv_id} early-exit (noise filter): monitoring — {note}")
         return self._build_action_result(
             success=True,
@@ -4138,6 +4139,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             outcome=kb_outcome,
             duration_seconds=float(details.get('duration_s') or 0.0),
         )
+        # The deep worker's result is a terminal outcome too: count it and
+        # observe its duration, or started/outcome/duration stop reconciling
+        # for every investigation the deep tier ran (review of CFOP-163).
+        INVESTIGATIONS.labels(outcome=kb_outcome).inc()
+        INVESTIGATION_DURATION.labels(outcome=kb_outcome).observe(float(details.get('duration_s') or 0.0))
         self._embed_investigation(inv_id, trigger, findings, kb_outcome)
         logger.info(f"Deep investigation #{inv_id} stored: {kb_outcome} (host={details.get('host')})")
 
@@ -8468,6 +8474,11 @@ Only return the JSON array, no other text."""
         if skipped:
             logger.warning(f"[FALLBACK] Selected {skipped[0]} skipped: {skipped[1]}; "
                            f"starting at {provider_chain[0][0]}/{provider_chain[0][2]}")
+            # A configured provider with no key/model is a fallback too, and
+            # the one an operator most needs to see (review of CFOP-163).
+            LLM_FALLBACKS.labels(
+                from_provider=str(skipped[0]).split('/')[0],
+                to_provider=provider_chain[0][0]).inc()
             if event_callback:
                 event_callback('fallback', {
                     'from': skipped[0],

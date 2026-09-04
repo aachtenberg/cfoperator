@@ -209,7 +209,7 @@ cfoperator_investigations_total{outcome="escalated"}
 # Started, and wall time by terminal outcome (CFOP-163). Before this the
 # duration went to Postgres only; p95 investigation time had no PromQL.
 cfoperator_investigations_started_total
-histogram_quantile(0.95, sum by (le) (rate(cfoperator_investigation_duration_seconds_bucket[1h])))
+histogram_quantile(0.95, sum by (le, outcome) (rate(cfoperator_investigation_duration_seconds_bucket[1h])))
 
 # Pending HTTP-driven investigations (POST /v1/investigate, called by event_runtime).
 # Gauge; rising values mean the agent's single worker thread is falling behind
