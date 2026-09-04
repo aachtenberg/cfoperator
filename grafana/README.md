@@ -151,9 +151,9 @@ HOMELAB-18 cleaned up.
 
 Elsewhere, import the JSON directly:
 
-1. Go to **Dashboards** → **Import**, upload `cfoperator-dashboard.json`
-   (or `event-runtime-dashboard.json`), pick the Prometheus / Loki / PostgreSQL
-   datasources when prompted, click **Import**.
+1. Go to **Dashboards** → **Import**, upload the JSON, pick the datasources
+   Grafana prompts for (the Prometheus / Loki variables on both boards; the
+   PostgreSQL variable on Event Runtime only — see below), click **Import**.
 2. Or via the API:
 
 ```bash
@@ -162,9 +162,6 @@ curl -X POST http://<grafana-host>:3000/api/dashboards/db \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d "{\"dashboard\": $(cat cfoperator-dashboard.json), \"overwrite\": true}"
 ```
-
-Prometheus and Loki are selected through the `datasource` / `loki` dashboard
-variables; the PostgreSQL panels expect a datasource with uid `sre-postgres`.
 
 ## Required Data Sources
 
@@ -175,16 +172,37 @@ These dashboards require three data sources configured in Grafana:
 - **URL**: `http://<prometheus-host>:9090`
 - **Access**: Server (default)
 
+Both boards select Prometheus through the `datasource` dashboard variable.
+
 ### 2. Loki
 - **Name**: `loki` (lowercase, no spaces)
 - **URL**: `http://<loki-host>:3100`
 - **Access**: Server (default)
 
+Both boards select Loki through the `loki` dashboard variable.
+
 ### 3. PostgreSQL
-- **UID**: `sre-postgres` on local k3s Grafana, or configure via `SRE_PG_DATASOURCE_UID`
-- **Host**: `<postgres-host>:5434`
+
+The two boards wire PostgreSQL differently, so they are not interchangeable
+at import time.
+
+**Fleet (`cfoperator-dashboard.json`)** — Sweep Findings, Correlation Analysis,
+and Notification History panels hard-code uid `sre-postgres`. That is the uid
+the homelab Grafana is provisioned with (`SRE PostgreSQL` in homelab-infra's
+`grafana-configmap.yml`). A datasource *variable* of type
+`grafana-postgresql-datasource` would also match TimescaleDB, and with an
+empty `current` Grafana picks whichever sorts first — which is why the
+homelab copy keeps this uid explicit. Grafana's import prompt will not offer
+it; on import elsewhere, create a PostgreSQL datasource with uid
+`sre-postgres`, or remap the panels after import.
+
+**Event Runtime (`event-runtime-dashboard.json`)** — the Scheduled Tasks table
+uses the `postgres` dashboard variable (`${postgres}`). Pick the PostgreSQL
+datasource when Grafana prompts on import.
+
+- **Host**: `<postgres-host>:5434` (homelab nodePort; in-cluster
+  `sre-postgres.data.svc.cluster.local:5432`)
 - **Database**: `sre_knowledge`
-- **Used by**: Sweep Findings, Correlation Analysis, Notification History panels, and the event runtime Scheduled Tasks table
 
 ## Metrics Reference
 

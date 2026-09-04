@@ -3096,7 +3096,7 @@
         "type": "loki",
         "uid": "${loki}"
       },
-      "description": "Pool checkout, checkin, health check, and parallel sweep logs",
+      "description": "Parallel sweep, sweep_graph, fan-out, and phase logs",
       "gridPos": {
         "h": 8,
         "w": 12,
