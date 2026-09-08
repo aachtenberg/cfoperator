@@ -566,7 +566,10 @@ cockpit:
   # whose infrastructure.hosts entry does not set one. The directory is a
   # staging point, not ~/.ssh: a secret volume is root-owned and
   # group-readable, which ssh refuses for a private key, so the agent copies
-  # it to ~/.ssh at 0600 on first use.
+  # it to ~/.ssh at 0600 on first use. A cockpit session (CFOP-146) gets a
+  # *copy* of that key in its own credential (the Job Secret, or the host
+  # session directory) so `ssh raspberrypi5` works and the copy dies with the
+  # TTL; the standing secret is not mounted on the cockpit.
   # ssh_secret_dir: /cockpit-ssh
   # ssh_user: sre
   # ssh_key_path: ''          # explicit -i, when the staged default is wrong

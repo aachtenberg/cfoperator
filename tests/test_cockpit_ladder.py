@@ -537,6 +537,23 @@ def test_the_session_token_never_reaches_the_container_argv():
         "the credential must still reach the container, just not through argv"
 
 
+def test_the_container_env_carries_the_fleet_ssh_bundle(tmp_path):
+    """CFOP-146 container half: docker inspect can see the env-file, which is
+    the documented degradation of the session token on this tier. argv must
+    still not carry the key."""
+    from cockpit.ssh import SSH_BUNDLE_ENV, decode_ssh_bundle
+
+    (tmp_path / "id_rsa").write_text("SESSION KEY\n")
+    ssh, _result = container_spawn(ssh_secret_dir=str(tmp_path))
+    env_stdin = [s for s in ssh.stdins if s and b"CFOP_API_TOKEN" in s][0].decode()
+    env = dict(line.split("=", 1) for line in env_stdin.splitlines() if "=" in line)
+    files = decode_ssh_bundle(env[SSH_BUNDLE_ENV])
+    assert files["id_rsa"] == "SESSION KEY\n"
+    assert "Host raspberrypi5" in files["config"]
+    for command in ssh.commands:
+        assert "SESSION KEY" not in command
+
+
 def test_the_container_deadline_is_the_session_ttl():
     """Docker has no activeDeadlineSeconds, so the entrypoint is wrapped."""
     ssh, _result = container_spawn()
@@ -716,6 +733,44 @@ def test_the_credential_lands_in_a_file_never_in_argv():
     assert any(stdin and SECRET in stdin.decode() for stdin in ssh.stdins)
     install = [c for c in ssh.commands if "cat > payload" in c]
     assert install and "chmod 600 env" in install[0]
+
+
+def test_the_host_session_receives_the_ssh_identity(tmp_path):
+    """CFOP-146 host half: the key is untarred into the session directory, never
+    interpolated into the ssh command line."""
+    (tmp_path / "id_rsa").write_text("SESSION KEY\n")
+    ssh, _result = host_spawn(ssh_secret_dir=str(tmp_path))
+    delivered = False
+    for argv, stdin in ssh.calls:
+        remote = argv[-1] if argv else ""
+        if "tar -C" in remote and "-xf" in remote:
+            assert stdin and b"SESSION KEY" in stdin
+            delivered = True
+    assert delivered, f"no ssh identity delivery in {ssh.commands}"
+    for command in ssh.commands:
+        assert "SESSION KEY" not in command
+
+
+def test_the_host_env_does_not_export_the_ssh_bundle(tmp_path):
+    """The identity is already in the session directory. Exporting the bundle
+    would put the private key in cfassist's environment (set -a; . ./env)."""
+    from cockpit.ssh import SSH_BUNDLE_ENV
+
+    (tmp_path / "id_rsa").write_text("SESSION KEY\n")
+    for tier in (TIER_HOST, TIER_SSH):
+        ssh, _result = host_spawn(ssh_secret_dir=str(tmp_path), tier=tier)
+        payload = [s for s in ssh.stdins if s and b"CFOP_API_TOKEN" in s][0].decode()
+        env = payload.split("----\n", 1)[-1]
+        assert SSH_BUNDLE_ENV not in env
+        assert "SESSION KEY" not in env
+
+
+def test_the_host_runner_wraps_ssh_without_touching_the_login_home():
+    s = HostCockpitSpawner(HostLadderConfig())
+    runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 14400, tier=TIER_HOST)
+    assert "ssh -F /tmp/cfop-cockpit-1889/config" in runner
+    assert "mkdir -p ~/.ssh" not in runner
+    assert "cp " not in runner or "./bin/ssh" in runner
 
 
 def test_the_session_directory_is_created_under_a_umask():

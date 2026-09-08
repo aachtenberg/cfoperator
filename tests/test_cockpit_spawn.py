@@ -31,6 +31,7 @@ from cockpit.spawn import (
     JOB_ROLE_LABEL,
     JOB_ROLE_VALUE,
     MAX_TTL_SECONDS,
+    SSH_SECRET_MOUNT,
     TOKEN_ENV,
     CockpitConfig,
     CockpitSpawnError,
@@ -111,11 +112,11 @@ def _minter(recorder=None):
     return mint
 
 
-def _spawner(**kubectl_kwargs):
+def _spawner(config=None, **kubectl_kwargs):
     kubectl = _FakeKubectl(**kubectl_kwargs)
     revoked = []
     spawner = CockpitSpawner(
-        CockpitConfig(namespace="apps"),
+        config or CockpitConfig(namespace="apps"),
         kubectl_runner=kubectl,
         token_minter=_minter(),
         token_revoker=revoked.append,
@@ -213,6 +214,46 @@ def test_the_session_token_is_never_a_value_in_the_manifest():
     # ...and it is in the Secret, or the pod has no credential at all.
     secret = kubectl.created("Secret")
     assert secret["stringData"][TOKEN_ENV] == TOKEN_SECRET
+
+
+def test_the_session_secret_carries_fleet_ssh_when_the_agent_has_a_key(tmp_path):
+    """CFOP-146: the image has ssh; without this the LLM reports it cannot
+    reach a host it is responsible for observing. The key is copied into the
+    session Secret so it dies with the Job, not mounted from the standing
+    forensics Secret."""
+    (tmp_path / "id_rsa").write_text("SESSION KEY\n")
+    cfg = CockpitConfig(
+        namespace="apps",
+        ssh_secret_dir=str(tmp_path),
+        ssh_user="sre",
+        hosts={"raspberrypi5": {"address": "10.0.0.15", "ssh": {"user": "sre"}}},
+    )
+    spawner, kubectl, _ = _spawner(config=cfg, node={"spec": {}})
+    spawner.spawn(1889, host="")
+
+    secret = kubectl.created("Secret")
+    assert secret["stringData"]["id_rsa"] == "SESSION KEY\n"
+    assert "Host raspberrypi5" in secret["stringData"]["config"]
+    assert TOKEN_SECRET in secret["stringData"][TOKEN_ENV]
+
+    job = kubectl.created("Job")
+    spec = job["spec"]["template"]["spec"]
+    mounts = spec["containers"][0]["volumeMounts"]
+    assert any(m["mountPath"] == SSH_SECRET_MOUNT for m in mounts)
+    vol = spec["volumes"][0]["secret"]
+    assert vol["secretName"] == f"{job['metadata']['name']}-token"
+    # The identity must not be in the Job — same reason as the token.
+    assert "SESSION KEY" not in json.dumps(job)
+
+
+def test_a_cockpit_without_a_key_does_not_pretend_ssh_is_mounted():
+    """No identity → no volume. The entrypoint then stays quiet rather than
+    claiming inventory ssh that cannot work."""
+    spawner, kubectl, _ = _spawner(node={"spec": {}})
+    spawner.spawn(1889, host="")
+    spec = kubectl.created("Job")["spec"]["template"]["spec"]
+    assert "volumeMounts" not in spec["containers"][0]
+    assert "volumes" not in spec
 
 
 def test_the_manifest_provides_every_variable_the_pod_entrypoint_reads():
@@ -411,6 +452,16 @@ def test_cockpit_config_inherits_the_agents_model_from_the_loaded_layout():
         "the pod would fall back to cfassist's localhost default instead of the "
         "model the investigation ran on")
     assert env["CFOP_COCKPIT_LLM_MODEL"] == "gemma4:26b"
+
+
+def test_cockpit_config_reads_the_same_inventory_the_ssh_tools_use():
+    cfg = build_cockpit_config({
+        "infrastructure": {"hosts": {"raspberrypi5": {"address": "10.0.0.15"}}},
+        "cockpit": {"ssh_user": "sre", "ssh_secret_dir": "/cockpit-ssh"},
+    })
+    assert cfg.hosts["raspberrypi5"]["address"] == "10.0.0.15"
+    assert cfg.ssh_user == "sre"
+    assert cfg.ssh_secret_dir == "/cockpit-ssh"
 
 
 def test_cockpit_config_still_reads_a_config_that_never_met_the_loader():

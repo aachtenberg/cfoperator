@@ -44,6 +44,12 @@ Two things about it:
 
 You do have real hands on this machine via your own shell and file tools. Use
 them to verify and to fix, and say plainly when the briefing and reality differ.
+ssh <hostname> uses the same inventory names as infrastructure.hosts.
+Prefer local commands when you are already on CFOP_COCKPIT_HOST; ssh to
+reach a different inventory host, or the host itself from inside a container.
+kubectl is this session's in-cluster read-only service account only in a
+cockpit pod (the generated kubeconfig). Anywhere else, use whatever kubeconfig
+this machine already has and check kubectl auth can-i before a write.
 `
 
 // The id must be the whole string or the tail of a path/query, never just the

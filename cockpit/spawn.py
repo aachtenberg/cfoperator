@@ -35,7 +35,7 @@ import os
 import subprocess
 import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -74,6 +74,11 @@ DEFAULT_MAX_CONCURRENT = 2
 # session get the dying token and never a standing one.
 TOKEN_ENV = "CFOP_API_TOKEN"
 
+#: Where the session Secret is mounted so the entrypoint can stage SSH the
+#: same way the worker stages ``/ssh-secret``. The token is already in env
+#: via secretKeyRef; the extra files (identity + generated config) live here.
+SSH_SECRET_MOUNT = "/ssh-secret"
+
 _KubectlRunner = Callable[[Sequence[str], Optional[str]], Tuple[int, str, str]]
 _TokenMinter = Callable[..., Dict[str, Any]]
 _TokenRevoker = Callable[[int], None]
@@ -109,6 +114,12 @@ class CockpitConfig:
     # investigation it is about would be a confusing thing to hand someone.
     llm_url: str = ""
     llm_model: str = ""
+    # CFOP-146: the same inventory and key the SSH tools / host ladder use, so
+    # a pod cockpit can `ssh raspberrypi5` instead of inventing "no SSH access".
+    ssh_secret_dir: str = ""
+    ssh_user: str = "sre"
+    ssh_key_path: str = ""
+    hosts: Dict[str, Any] = field(default_factory=dict)
 
 
 def build_cockpit_config(agent_config: Any = None) -> CockpitConfig:
@@ -134,6 +145,8 @@ def build_cockpit_config(agent_config: Any = None) -> CockpitConfig:
     llm_block = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
     primary = llm_block.get("primary") if isinstance(llm_block.get("primary"), dict) else {}
     llm = {**llm_block, **primary}
+    infra = cfg.get("infrastructure") if isinstance(cfg.get("infrastructure"), dict) else {}
+    hosts = infra.get("hosts") if isinstance(infra.get("hosts"), dict) else {}
 
     def _str(env: str, key: str, default: str) -> str:
         return str(os.getenv(env) or block.get(key) or default).strip()
@@ -162,6 +175,10 @@ def build_cockpit_config(agent_config: Any = None) -> CockpitConfig:
                             DEFAULT_MAX_CONCURRENT),
         llm_url=_str("CFOP_COCKPIT_LLM_URL", "llm_url", str(llm.get("url") or "")),
         llm_model=_str("CFOP_COCKPIT_LLM_MODEL", "llm_model", str(llm.get("model") or "")),
+        ssh_secret_dir=_str("CFOP_COCKPIT_SSH_SECRET_DIR", "ssh_secret_dir", ""),
+        ssh_user=_str("CFOP_COCKPIT_SSH_USER", "ssh_user", "sre"),
+        ssh_key_path=_str("CFOP_COCKPIT_SSH_KEY", "ssh_key_path", ""),
+        hosts=dict(hosts),
     )
 
 
@@ -286,6 +303,7 @@ class CockpitSpawner:
 
         job_name = self._job_name(investigation_id)
         secret_name = f"{job_name}-token"
+        ssh_files = self._session_ssh_files()
         manifest = self._build_cockpit_manifest(
             investigation_id,
             job_name=job_name,
@@ -293,6 +311,7 @@ class CockpitSpawner:
             node=node,
             placement_note=placement_note,
             ttl_seconds=ttl,
+            mount_ssh=bool(ssh_files),
         )
 
         # Job first, Secret second, so the Secret can carry an ownerReference to
@@ -315,7 +334,8 @@ class CockpitSpawner:
                            "token Secret will not be garbage-collected with it", job_name)
 
         secret = self._build_token_secret_manifest(
-            secret_name, job_name=job_name, job_uid=job_uid, token=str(token.get("secret") or ""))
+            secret_name, job_name=job_name, job_uid=job_uid,
+            token=str(token.get("secret") or ""), ssh_files=ssh_files)
         code, _out, stderr = self._kubectl(
             ["create", "-n", cfg.namespace, "-f", "-"], json.dumps(secret))
         if code != 0:
@@ -544,6 +564,7 @@ class CockpitSpawner:
         node: Optional[str],
         placement_note: str,
         ttl_seconds: int,
+        mount_ssh: bool = False,
     ) -> Dict[str, Any]:
         cfg = self._config
         labels = {
@@ -563,6 +584,10 @@ class CockpitSpawner:
             {"name": "CFOP_COCKPIT_HOST", "value": node or ""},
             {"name": "CFOP_COCKPIT_LLM_URL", "value": cfg.llm_url},
             {"name": "CFOP_COCKPIT_LLM_MODEL", "value": cfg.llm_model},
+            # Optional; the pod stages SSH from the Secret volume. Set so the
+            # entrypoint's ${CFOP_COCKPIT_SSH_BUNDLE:-} is a provided variable
+            # (test_the_manifest_provides_every_variable_the_pod_entrypoint_reads).
+            {"name": "CFOP_COCKPIT_SSH_BUNDLE", "value": ""},
             # The credential, by reference. Never {"value": <secret>}: a Job
             # manifest is readable by anything with `get jobs`, which includes
             # the cockpit's own read-only service account.
@@ -596,6 +621,18 @@ class CockpitSpawner:
                 }
             ],
         }
+        if mount_ssh:
+            # Same Secret the token already lives in: the identity dies with
+            # the Job instead of referencing the standing forensics Secret.
+            pod_spec["containers"][0]["volumeMounts"] = [{
+                "name": "session-ssh",
+                "mountPath": SSH_SECRET_MOUNT,
+                "readOnly": True,
+            }]
+            pod_spec["volumes"] = [{
+                "name": "session-ssh",
+                "secret": {"secretName": secret_name, "defaultMode": 0o440},
+            }]
         if node:
             pod_spec["nodeSelector"] = {"kubernetes.io/hostname": node}
         return {
@@ -615,8 +652,19 @@ class CockpitSpawner:
             },
         }
 
+    def _session_ssh_files(self) -> Dict[str, str]:
+        """Identity + inventory ssh config, or empty when the agent has no key."""
+        from cockpit.ssh import session_ssh_files
+        return session_ssh_files(
+            self._config.hosts,
+            self._config.ssh_user,
+            secret_dir=self._config.ssh_secret_dir,
+            extra_key_path=self._config.ssh_key_path,
+        )
+
     def _build_token_secret_manifest(self, secret_name: str, *, job_name: str,
-                                     job_uid: str, token: str) -> Dict[str, Any]:
+                                     job_uid: str, token: str,
+                                     ssh_files: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         cfg = self._config
         meta: Dict[str, Any] = {
             "name": secret_name,
@@ -643,7 +691,7 @@ class CockpitSpawner:
             "kind": "Secret",
             "type": "Opaque",
             "metadata": meta,
-            "stringData": {TOKEN_ENV: token},
+            "stringData": {TOKEN_ENV: token, **(ssh_files or {})},
         }
 
     # ---- helpers ------------------------------------------------------------
