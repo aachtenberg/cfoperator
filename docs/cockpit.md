@@ -261,8 +261,14 @@ Use it and destroy it, keep the memory: the compute is disposable, the state
 stays central.
 
 **Where it lands.** If the investigation is host-level, the pod is pinned to
-that node with a `nodeSelector` — kubectl, ssh and the node's own view are then
-local. The interesting case is the one that made the issue worth writing: the
+that node with a `nodeSelector`. kubectl then talks to the cluster through
+this pod's read-only service account (the entrypoint writes a kubeconfig from
+the in-cluster token — the binary does not auto-detect one). `ssh <hostname>`
+uses the same `infrastructure.hosts` names the agent already knows, with a
+copy of the forensics key that lives in the session Secret and dies with the
+Job.
+
+The interesting placement case is the one that made the issue worth writing: the
 affected node is frequently the *cordoned* one. A cockpit tolerates nothing, so
 any `NoSchedule`/`NoExecute` taint (cordon, NotReady, pressure) means it spawns
 adjacent and says so, rather than sitting `Pending` while you wait.
@@ -287,6 +293,13 @@ manifest — anything that can read Jobs could read it there, including the
 cockpit's own service account — and it is never in the HTTP response either, so
 it stays out of your shell history. The Secret is owned by the Job, so
 Kubernetes' garbage collection removes it with the Job.
+
+When the agent has a forensics SSH key (the same one the deep-investigation
+worker and node-action executor use), a copy of that key plus an OpenSSH
+config for `infrastructure.hosts` rides in the same Secret and is staged into
+`~/.ssh` at 0600. The standing `cfop-forensics-ssh` Secret is not mounted on
+the Job: the copy dies with the session. Without a key, the pod still starts;
+`ssh` then fails honestly instead of inventing a reason.
 
 **Who may spawn.** Admin only: this creates a workload and mints a credential.
 Members keep plain `attach`.
@@ -662,13 +675,16 @@ At tier 2 the token reaches the container through the ssh connection's stdin,
 never through the command line, so it stays out of the host's process table. It
 is still visible to `docker inspect` — that is the honest step down from tier 1,
 where the credential lives in a Kubernetes Secret the manifest only references,
-and it is bounded by the TTL either way.
+and it is bounded by the TTL either way. The fleet SSH identity travels the
+same path (one env-file value), and the entrypoint stages it into `~/.ssh`.
 
 At tiers 3 and 3b **there is no isolation left, and the short-lived token is the
 security model.** The session runs as your ssh user, directly on the host.
 `--spawn` says so on the way in, every time. In exchange you get what a pod on a
 different machine cannot give you: that host's journal, its disks, its ARP
-table, its `dmesg`.
+table, its `dmesg`. The runner wraps `ssh` with the session's inventory config
+so `ssh <hostname>` reaches the rest of the fleet without writing that login's
+`~/.ssh`.
 
 Tier 3 also differs in *when* the session starts. At tiers 1 and 2 something is
 already running and your attach joins it; at tier 3 there is nothing to run it

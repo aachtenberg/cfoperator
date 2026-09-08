@@ -323,7 +323,7 @@ func TestAttachCommandMatchesTheVerb(t *testing.T) {
 }
 
 func TestAttachGuidanceStatesTheTwoTraps(t *testing.T) {
-	for _, want := range []string{"snapshot", "read-only"} {
+	for _, want := range []string{"snapshot", "read-only", "infrastructure.hosts"} {
 		if !strings.Contains(AttachGuidance, want) {
 			t.Errorf("guidance should mention %q", want)
 		}

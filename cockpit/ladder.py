@@ -36,6 +36,7 @@ runner is: the tests must be able to assert the exact argv without a fleet.
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import pathlib
@@ -44,6 +45,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tarfile
 import time
 import urllib.parse
 import urllib.request
@@ -62,6 +64,7 @@ from cockpit.spawn import (
     CockpitSpawnError,
     cockpit_llm_url,
 )
+from cockpit.ssh import SSH_BUNDLE_ENV, encode_ssh_bundle, session_ssh_files
 
 logger = logging.getLogger("cfoperator.cockpit.ladder")
 
@@ -904,6 +907,10 @@ class HostCockpitSpawner:
             raise CockpitSpawnError(
                 f"could not install the cockpit session on {host}: {err.strip()[:400]}", 502)
 
+        ssh_files = self._session_ssh_files(identity_dir=directory)
+        if ssh_files:
+            self._deliver_ssh_files(host, directory, ssh_files)
+
         note = self._arm_self_destruct(host, name, directory, caps, ttl_seconds, tier=tier)
         attach_argv = self._attach_argv(host, [f"{directory}/run"], tty=True)
         return {
@@ -1226,6 +1233,12 @@ class HostCockpitSpawner:
             lines.append(f"CFOP_COCKPIT_LLM_URL={self._config.llm_url}")
         if self._config.llm_model:
             lines.append(f"CFOP_COCKPIT_LLM_MODEL={self._config.llm_model}")
+        ssh_files = self._session_ssh_files()
+        if ssh_files:
+            # Single-line: docker --env-file cannot carry PEM newlines. The
+            # entrypoint decodes this into ~/.ssh. Visible to `docker inspect`,
+            # same documented degradation as the session token on this tier.
+            lines.append(f"{SSH_BUNDLE_ENV}={encode_ssh_bundle(ssh_files)}")
         return ("\n".join(lines) + "\n").encode()
 
     def _runner_script(self, investigation_id: int, directory: str, ttl_seconds: int,
@@ -1293,6 +1306,20 @@ class HostCockpitSpawner:
             'echo "cockpit — investigation #{} — {}"'.format(
                 investigation_id, "no isolation: this session runs directly on the host"),
             'echo "the session token dies with this session, or at its TTL."',
+            # CFOP-146: wrap ssh so the session uses the delivered inventory
+            # config without overwriting the login user's ~/.ssh.
+            "if [ -f ./config ]; then",
+            "  mkdir -p ./bin",
+            "  cat > ./bin/ssh <<'WRAP'",
+            "#!/bin/sh",
+            f"exec /usr/bin/ssh -F {directory}/config \"$@\"",
+            "WRAP",
+            "  chmod 700 ./bin/ssh",
+            f"  PATH={shlex.quote(directory + '/bin')}:$PATH",
+            "  export PATH",
+            '  echo "ssh: inventory hosts from the session config '
+            '(same names as infrastructure.hosts)"',
+            "fi",
             (f"{wrapper} {int(ttl_seconds)} ./cfassist attach {investigation_id} "
              f'--agent-url "$CFOP_AGENT_URL" --no-session-token '
              f'${{CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"}} '
@@ -1303,6 +1330,42 @@ class HostCockpitSpawner:
             # outcome to pass back rather than a failure to swallow.
             "exit ${status:-0}",
         ]) + "\n"
+
+    def _session_ssh_files(self, identity_dir: Optional[str] = None) -> Dict[str, str]:
+        """Identity + inventory ssh config, or empty when the agent has no key."""
+        return session_ssh_files(
+            self._config.hosts,
+            self._config.ssh_user,
+            secret_dir=self._config.ssh_secret_dir,
+            extra_key_path=self._config.ssh_key_path,
+            identity_dir=identity_dir,
+        )
+
+    def _deliver_ssh_files(self, host: str, directory: str, files: Dict[str, str]) -> None:
+        """Untar the session's ssh identity into the session directory.
+
+        One round trip, filenames only (no paths). A delivery failure is a
+        spawn failure: the alternative is a session that invents 'no SSH
+        access' for a host it is supposed to observe.
+        """
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tar:
+            for name, body in files.items():
+                if "/" in name or name.startswith(".") or ".." in name:
+                    continue
+                data = body.encode("utf-8")
+                info = tarfile.TarInfo(name=name)
+                info.size = len(data)
+                info.mode = 0o600
+                tar.addfile(info, io.BytesIO(data))
+        blob = buf.getvalue()
+        if not blob:
+            return
+        cmd = f"umask 077 && tar -C {shlex.quote(directory)} -xf -"
+        code, _out, err = self._ssh_host(host, cmd, stdin=blob)
+        if code != 0:
+            raise CockpitSpawnError(
+                f"could not deliver ssh identity to {host}: {err.strip()[:400]}", 502)
 
     def _attach_argv(self, host: str, remote: Sequence[str], *, tty: bool = True
                      ) -> List[str]:

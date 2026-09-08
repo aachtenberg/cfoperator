@@ -44,6 +44,11 @@ Two things about it:
 
 You do have real hands on this machine via your own shell and file tools. Use
 them to verify and to fix, and say plainly when the briefing and reality differ.
+kubectl, when it works, is this session's read-only in-cluster account — it
+does not talk to localhost:8080. ssh <hostname> uses the same inventory names
+as infrastructure.hosts. Prefer local commands when you are already on
+CFOP_COCKPIT_HOST; ssh to reach a different inventory host, or the host itself
+from inside a container.
 `
 
 // The id must be the whole string or the tail of a path/query, never just the
