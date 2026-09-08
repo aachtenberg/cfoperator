@@ -751,6 +751,20 @@ def test_the_host_session_receives_the_ssh_identity(tmp_path):
         assert "SESSION KEY" not in command
 
 
+def test_the_host_env_does_not_export_the_ssh_bundle(tmp_path):
+    """The identity is already in the session directory. Exporting the bundle
+    would put the private key in cfassist's environment (set -a; . ./env)."""
+    from cockpit.ssh import SSH_BUNDLE_ENV
+
+    (tmp_path / "id_rsa").write_text("SESSION KEY\n")
+    for tier in (TIER_HOST, TIER_SSH):
+        ssh, _result = host_spawn(ssh_secret_dir=str(tmp_path), tier=tier)
+        payload = [s for s in ssh.stdins if s and b"CFOP_API_TOKEN" in s][0].decode()
+        env = payload.split("----\n", 1)[-1]
+        assert SSH_BUNDLE_ENV not in env
+        assert "SESSION KEY" not in env
+
+
 def test_the_host_runner_wraps_ssh_without_touching_the_login_home():
     s = HostCockpitSpawner(HostLadderConfig())
     runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 14400, tier=TIER_HOST)

@@ -1233,12 +1233,16 @@ class HostCockpitSpawner:
             lines.append(f"CFOP_COCKPIT_LLM_URL={self._config.llm_url}")
         if self._config.llm_model:
             lines.append(f"CFOP_COCKPIT_LLM_MODEL={self._config.llm_model}")
-        ssh_files = self._session_ssh_files()
-        if ssh_files:
-            # Single-line: docker --env-file cannot carry PEM newlines. The
-            # entrypoint decodes this into ~/.ssh. Visible to `docker inspect`,
-            # same documented degradation as the session token on this tier.
-            lines.append(f"{SSH_BUNDLE_ENV}={encode_ssh_bundle(ssh_files)}")
+        # Container only. Host/ssh already get the files via tar; putting the
+        # bundle here would export the private key into cfassist's environment
+        # (the runner does `set -a; . ./env`). Docker --env-file cannot carry
+        # PEM newlines, so the entrypoint still decodes this into ~/.ssh.
+        # Visible to `docker inspect`, same documented degradation as the
+        # session token on this tier.
+        if tier == TIER_CONTAINER:
+            ssh_files = self._session_ssh_files()
+            if ssh_files:
+                lines.append(f"{SSH_BUNDLE_ENV}={encode_ssh_bundle(ssh_files)}")
         return ("\n".join(lines) + "\n").encode()
 
     def _runner_script(self, investigation_id: int, directory: str, ttl_seconds: int,

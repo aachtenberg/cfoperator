@@ -39,6 +39,18 @@ def test_fleet_ssh_config_skips_a_host_name_that_would_inject_a_directive():
     assert "10.0.0.1" not in cfg
 
 
+def test_fleet_ssh_config_does_not_reuse_an_invalid_default_user():
+    """MUTATION GUARD. Falling back to default_user after it failed _HOST_NAME
+    re-injects the value that just failed — a newline becomes another Host."""
+    cfg = fleet_ssh_config(
+        {"pi": {"address": "10.0.0.1"}},
+        default_user="sre\nHost evil",
+    )
+    assert "Host evil" not in cfg
+    assert "User sre" in cfg
+    assert "Host pi" in cfg
+
+
 def test_load_identity_files_reads_the_secret_dir_not_the_developer_home(tmp_path, monkeypatch):
     """MUTATION GUARD. Scanning ~/.ssh would leak the developer's keys into a
     test Secret (and, in CI, fail closed because there is no such dir). The
@@ -105,5 +117,7 @@ def test_the_entrypoint_builds_an_in_cluster_kubeconfig_and_stages_ssh():
     text = (REPO_ROOT / "cockpit" / "entrypoint.sh").read_text()
     assert "KUBERNETES_SERVICE_HOST" in text
     assert ".kube/config" in text
+    assert "tokenFile:" in text
+    assert 'token: "%s"' not in text
     assert "/ssh-secret" in text
     assert SSH_BUNDLE_ENV in text

@@ -262,8 +262,9 @@ stays central.
 
 **Where it lands.** If the investigation is host-level, the pod is pinned to
 that node with a `nodeSelector`. kubectl then talks to the cluster through
-this pod's read-only service account (the entrypoint writes a kubeconfig from
-the in-cluster token — the binary does not auto-detect one). `ssh <hostname>`
+this pod's read-only service account (the entrypoint writes a kubeconfig that
+points at the projected in-cluster token file — the binary does not auto-detect
+one). `ssh <hostname>`
 uses the same `infrastructure.hosts` names the agent already knows, with a
 copy of the forensics key that lives in the session Secret and dies with the
 Job.

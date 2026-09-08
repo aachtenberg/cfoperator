@@ -77,9 +77,7 @@ def fleet_ssh_config(
         if not address or "\n" in address or "\r" in address:
             continue
         ssh = cfg.get("ssh") if isinstance(cfg.get("ssh"), dict) else {}
-        user = str(ssh.get("user") or default_user or "sre").strip() or "sre"
-        if not _HOST_NAME.match(user):
-            user = default_user or "sre"
+        user = _ssh_user(ssh.get("user"), default_user)
         lines += ["", f"Host {name}", f"    HostName {address}", f"    User {user}"]
         port = ssh.get("port")
         if port:
@@ -201,6 +199,20 @@ def decode_ssh_bundle(blob: str) -> Dict[str, str]:
         if _SAFE_FILE.match(str(name)) and isinstance(body, str):
             out[str(name)] = body
     return out
+
+
+def _ssh_user(raw: Any, default_user: str) -> str:
+    """A User value safe to write into ssh_config, or the known-safe ``sre``.
+
+    Falling back to ``default_user`` after it failed ``_HOST_NAME`` would
+    re-inject the value that just failed — whitespace or a newline becomes
+    another directive.
+    """
+    for candidate in (raw, default_user, "sre"):
+        user = str(candidate or "").strip()
+        if _HOST_NAME.match(user):
+            return user
+    return "sre"
 
 
 def _default_identity_paths() -> List[str]:

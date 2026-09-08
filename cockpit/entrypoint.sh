@@ -14,6 +14,9 @@ set -euo pipefail
 
 # CFOP-146: plain kubectl does not read a pod's service-account token. Without
 # a kubeconfig it talks to localhost:8080 and the read-only SA is unreachable.
+# Point at the projected files rather than embedding the token: the kubelet
+# rotates it while a Job can last 4–12h, and a snapshot would start failing
+# mid-session.
 sa=/var/run/secrets/kubernetes.io/serviceaccount
 if [ -s "$sa/token" ] && [ -n "${KUBERNETES_SERVICE_HOST:-}" ]; then
   mkdir -p "${HOME}/.kube"
@@ -25,7 +28,7 @@ if [ -s "$sa/token" ] && [ -n "${KUBERNETES_SERVICE_HOST:-}" ]; then
       "${KUBERNETES_SERVICE_HOST}" "${KUBERNETES_SERVICE_PORT:-443}"
     printf '    certificate-authority: %s\n' "$sa/ca.crt"
     printf '%s\n' 'users:' '- name: cockpit' '  user:'
-    printf '    token: "%s"\n' "$(tr -d '\n' < "$sa/token")"
+    printf '    tokenFile: %s\n' "$sa/token"
     printf '%s\n' 'contexts:' '- name: cockpit' '  context:' \
       '    cluster: local' '    user: cockpit' 'current-context: cockpit'
   } > "${HOME}/.kube/config"
