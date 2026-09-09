@@ -2274,9 +2274,11 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         served_by_triage_model = False
         triage_model = self._triage_model()
         if triage_model:
-            primary_cfg = self.config.get('llm', {}).get('primary', {}) or {}
-            triage_url = primary_cfg.get('url', os.getenv('OLLAMA_URL', ''))
             try:
+                # Inside the try on purpose: a malformed llm/primary config
+                # makes _triage_url raise, and the triage-model branch must
+                # degrade to the standard chain, not throw out of run_triage.
+                triage_url = self._triage_url()
                 result = self._chat_with_tools(
                     provider_type='ollama', url=triage_url, model=triage_model,
                     messages=[{'role': 'user', 'content': user_msg}],
@@ -3304,6 +3306,35 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         llm_cfg = self.config.get('llm', {}) if isinstance(self.config, dict) else {}
         cfg_val = str(llm_cfg.get('triage_model') or '').strip()
         return cfg_val or None
+
+    def _triage_url(self) -> str:
+        """Resolve the ollama host for triage: DB setting over config, falling
+        back to ``llm.primary.url`` when unset.
+
+        Lets the triage model run on a *different* ollama host than
+        investigations — e.g. a spare 16 GB GPU box — so the two models do
+        not evict each other on one shared card (CFOP-175, the gemma4/triage
+        VRAM thrash behind investigation #2400). Same DB-over-config,
+        absence-means-primary semantics as ``_triage_model``: an empty/absent
+        value is "use the primary host", so a deployment that sets neither is
+        byte-identical to before this key existed (CFOP-154). Unlike the
+        model there is no 'off' — you disable triage by unsetting the model,
+        not the host. A DB read failure falls back to config, never breaks
+        the triage hot path.
+        """
+        primary = (self.config.get('llm', {}).get('primary', {})
+                   if isinstance(self.config, dict) else {}) or {}
+        default_url = primary.get('url', '') or os.getenv('OLLAMA_URL', '')
+        try:
+            val = self.kb.get_setting('triage_url', '')
+        except Exception as e:
+            logger.debug(f"Could not read triage_url from DB, using config: {e}")
+            val = ''
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+        llm_cfg = self.config.get('llm', {}) if isinstance(self.config, dict) else {}
+        cfg_val = str(llm_cfg.get('triage_url') or '').strip()
+        return cfg_val or default_url
 
     def _remediation_flag(self, name: str) -> bool:
         """Resolve a remediation flag: DB setting overrides config.yaml.

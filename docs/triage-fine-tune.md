@@ -39,8 +39,9 @@ If you ever see cfassist's status bar reading
 `ollama:cfop-triage-ministral3:v1-q4`, that is a misconfiguration — switch it
 back with `/model`.
 
-**It does not go through llm-gateway.** Standing decision: triage calls
-`llm.primary.url` directly.
+**It does not go through llm-gateway.** Standing decision: triage calls an
+ollama host directly — `_triage_url()`, which is `llm.triage_url` when set and
+`llm.primary.url` otherwise (CFOP-175), never the gateway.
 
 ---
 
