@@ -841,9 +841,12 @@ def test_the_host_runner_is_a_shell_not_an_unattended_tui():
         "tier ssh is the unconditional bottom rung and PROBE_SCRIPT never "
         "looks for bash; without a fallback a busybox host exits 127")
     assert "./cfassist attach 1889 --print" in runner
-    assert 'if [ "$sub" = attach ]; then set -- "$@" --no-session-token; fi' in runner, (
+    assert '    if [ $i -eq $idx ]; then set -- "$@" --no-session-token; fi' in runner, (
         "wrapped attach must reuse the session token; a second mint's "
         "revoke-on-exit never runs on an ssh drop")
+    assert "--config|--model|--provider|--url) skip=1 ;;" in runner, (
+        "every value-taking persistent root flag must be skipped, or the flag's "
+        "value is mistaken for the subcommand")
     assert "PATH=/tmp/cfop-cockpit-1889/bin:/tmp/cfop-cockpit-1889:$PATH" in runner
     assert "this is a host shell" in runner
     assert "the model is: cfassist attach $CFOP_INVESTIGATION_ID" in runner
@@ -1374,13 +1377,20 @@ def test_the_runner_actually_removes_the_session_on_exit(tmp_path):
 
 
 @pytest.mark.parametrize("typed, expected", [
-    ("cfassist attach 1889", "argv: attach 1889 --no-session-token"),
-    # --url/--model/--provider are persistent ROOT flags, so the subcommand is
-    # not $1. A wrapper matching on $1 lets these through unflagged.
+    ("cfassist attach 1889", "argv: attach --no-session-token 1889"),
+    # --config/--model/--provider/--url are persistent ROOT flags that take a
+    # value (rootCmd.PersistentFlags(), cfassist-go/cmd/cfassist/main.go), so
+    # the subcommand is neither $1 nor the first non-flag word.
     ("cfassist --model qwen3 attach 1889",
-     "argv: --model qwen3 attach 1889 --no-session-token"),
+     "argv: --model qwen3 attach --no-session-token 1889"),
+    ("cfassist --config custom.yaml attach 1889",
+     "argv: --config custom.yaml attach --no-session-token 1889"),
     ("cfassist --url http://llm --model m attach 1889",
-     "argv: --url http://llm --model m attach 1889 --no-session-token"),
+     "argv: --url http://llm --model m attach --no-session-token 1889"),
+    # attach is `attach <id> [question]`, so a `--` terminator is valid and a
+    # flag appended past it is question text rather than a flag.
+    ("cfassist attach 1889 -- --check",
+     "argv: attach --no-session-token 1889 -- --check"),
 ])
 def test_wrapped_attach_does_not_mint_a_second_token(tmp_path, typed, expected):
     """MUTATION GUARD. The advertised ``cfassist attach $id`` goes through the
@@ -1463,10 +1473,18 @@ def test_ssh_from_the_shell_only_hijacks_inventory_names(tmp_path):
     assert run("sre@ubuntu-llm-01") == f"REAL: {cfg} sre@ubuntu-llm-01"
     assert run("-p", "2222", "raspberrypi5") == f"REAL: {cfg} -p 2222 raspberrypi5"
     assert run("raspberrypi5", "uptime") == f"REAL: {cfg} raspberrypi5 uptime"
+    assert run("-p2222", "raspberrypi5") == f"REAL: {cfg} -p2222 raspberrypi5"
     # everything else keeps the operator's own ssh — the whole point
     assert run("prod-db") == "REAL: prod-db"
     assert run("prod-db", "uptime") == "REAL: prod-db uptime"
     assert run("10.0.0.99") == "REAL: 10.0.0.99"
+    # only the DESTINATION decides. An inventory name appearing in the remote
+    # command, or as an option's value, must not pull in the fleet config.
+    assert run("prod-db", "echo", "raspberrypi5") == "REAL: prod-db echo raspberrypi5"
+    assert run("prod-db", "uptime", "raspberrypi5") == (
+        "REAL: prod-db uptime raspberrypi5")
+    assert run("-o", "Foo=raspberrypi5", "prod-db") == (
+        "REAL: -o Foo=raspberrypi5 prod-db")
     # `Host *` is in that config and must never count as a match
     assert run("*") == "REAL: *"
 
