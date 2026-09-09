@@ -1297,7 +1297,12 @@ class HostCockpitSpawner:
                 "# recursing back into tmux. A host whose tmux went away since the",
                 "# probe falls through to the plain session rather than failing to",
                 "# exec — the janitor and the timer still bound it either way.",
-                'if [ -z "${CFOP_COCKPIT_TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then',
+                "# `tput clear` is the terminal check: tmux refuses a TERM that is",
+                "# unset, dumb, or unknown to the host's terminfo (\"open terminal",
+                "# failed\"), and exec'ing it then ends the session before the shell",
+                "# starts. Plain bash is happy with any of those, so fall through.",
+                'if [ -z "${CFOP_COCKPIT_TMUX:-}" ] && command -v tmux >/dev/null 2>&1 \\',
+                '   && tput clear >/dev/null 2>&1; then',
                 f'  exec tmux new-session -A -s {shlex.quote(name)} '
                 f'env CFOP_COCKPIT_TMUX=1 {shlex.quote(directory + "/run")}',
                 "fi",
