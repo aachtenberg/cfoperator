@@ -699,6 +699,9 @@ function disconnectCockpit(){
   if(ws){ try{ ws.close(1000); }catch(e){} }
   if(COCKPIT.term){ try{ COCKPIT.term.dispose(); }catch(e){} }
   COCKPIT.term=null; COCKPIT.fit=null; stopCountdown();
+  // The observer holds the #term node, which the innerHTML below detaches:
+  // without this every reattach leaves one behind, watching a dead element.
+  if(COCKPIT.observer){ try{ COCKPIT.observer.disconnect(); }catch(e){} COCKPIT.observer=null; }
   window.removeEventListener('resize', refit);
   const d=document.getElementById('detail'); if(d) d.classList.remove('wide');
   const el=document.getElementById('cockpit'); if(el && COCKPIT.id!==null) el.innerHTML='';

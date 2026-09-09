@@ -188,6 +188,11 @@ const tick=()=>new Promise(r=>setImmediate(r));
     await box.killCockpit(2272);
     out.killFetch=out.fetches.filter(f=>f.url.endsWith('/close')).length;
     out.disposedAfterKill=!!out.disposed && box.COCKPIT.term===null;
+    // Two terminals have been mounted by now (open, reattach, kill), so this
+    // also says a reattach does not leave the previous one's observer behind.
+    out.observersMade=observers.length;
+    out.observersLive=observers.filter(o=>!o.disconnected).length;
+    out.observerCleared=box.COCKPIT.observer===null;
     out.toastsAfterKill=box.document.getElementById('toasts');
   }
   if(mode==='refused'){
@@ -268,6 +273,16 @@ def test_the_terminal_refits_when_its_box_changes_size(admin):
     # Coalesced: a transition fires the observer every frame, and fit() is a
     # full re-measure of the terminal.
     assert admin["fitsAfterBoxResize"] == 1, admin["fitsAfterBoxResize"]
+
+
+def test_disconnect_takes_the_observer_with_the_terminal(admin):
+    """The observer holds the #term node, which the drawer's innerHTML then
+    detaches. Left connected, every reattach strands one watching a dead
+    element, and a console left open all day accumulates them."""
+    assert admin["observersMade"] >= 2, "the harness never mounted a second terminal"
+    assert admin["observersLive"] == 0, (
+        f"{admin['observersLive']} of {admin['observersMade']} observers outlived their terminal")
+    assert admin["observerCleared"], "COCKPIT.observer still points at a dead observer"
 
 
 def test_keystrokes_are_binary_and_resize_is_text(admin):

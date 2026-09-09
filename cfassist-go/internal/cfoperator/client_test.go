@@ -645,3 +645,22 @@ func TestATokenlessRungFallsBackRatherThanGoingUnauthenticated(t *testing.T) {
 		t.Fatalf("env url + config token: got %q", token)
 	}
 }
+
+func TestTheDefaultURLKeepsTheConfigToken(t *testing.T) {
+	// Nobody supplied a URL, so there is no provenance to pair with: the
+	// port-forward default must still carry the token the operator wrote in
+	// the config, not a stray export that names no agent.
+	lookup := func(k string) string {
+		if k == EnvAPIToken {
+			return "stray-token"
+		}
+		return ""
+	}
+	url, token, _ := ResolveEndpoint("", "cfg-token", 0, lookup)
+	if url != DefaultAgentURL {
+		t.Fatalf("url = %q, want the default", url)
+	}
+	if token != "cfg-token" {
+		t.Fatalf("token = %q, want the config's", token)
+	}
+}

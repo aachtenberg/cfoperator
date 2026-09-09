@@ -445,9 +445,15 @@ func ResolveEndpoint(cfgURL, cfgToken string, cfgTimeout float64, lookupEnv func
 // URL and knows which rung it came from — today, `attach --agent-url`.
 //
 // **A token belongs to the agent that minted it, so it is read from the same
-// rung the URL came from.** Config-supplied URL: the config's token, then the
-// environment's — unchanged, and the fleet's shape. URL from anywhere else: the
-// environment's token first.
+// rung the URL came from.** A URL that came from --agent-url or from
+// CFOP_AGENT_URL takes the environment's token first. Everything else — the
+// config's own URL, and the built-in default nobody named — keeps the config's
+// token first, unchanged.
+//
+// The default rung stays config-first deliberately: nothing supplied a URL
+// there, so there is no provenance to pair with, and flipping it would send a
+// stray CFOP_API_TOKEN to the port-forward address in place of the token the
+// operator wrote down.
 //
 // That ordering is the whole point (CFOP-166). A cockpit session exports its
 // own short-lived CFOP_API_TOKEN and CFOP_AGENT_URL and passes --agent-url, but
@@ -474,9 +480,9 @@ func ResolveEndpointFrom(urlSource, resolvedURL, cfgToken string, cfgTimeout flo
 
 	fileToken := strings.TrimSpace(cfgToken)
 	envToken := strings.TrimSpace(lookupEnv(EnvAPIToken))
-	first, second := envToken, fileToken
-	if urlSource == URLFromConfig {
-		first, second = fileToken, envToken
+	first, second := fileToken, envToken
+	if urlSource == URLFromEnv || urlSource == URLFromFlag {
+		first, second = envToken, fileToken
 	}
 	token := first
 	if token == "" {
