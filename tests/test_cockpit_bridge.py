@@ -727,3 +727,56 @@ def test_the_agent_hands_the_bridge_the_consoles_own_callbacks(monkeypatch):
     assert spy.token_verifier == operator.web_server.verify_bridge_token
     assert spy.audit == operator.web_server.record_bridge_event
     assert spy.config.enabled is True
+
+
+# --------------------------------------------------------------------------
+# the pod is a terminal-less ssh client (CFOP-166)
+# --------------------------------------------------------------------------
+
+def test_the_child_gets_a_real_term_when_the_pod_has_none():
+    """The pod has no TERM. ssh then sends the host an empty terminal type,
+    bash there defaults to `dumb`, and the runner's tmux refuses it — the
+    console showed "session ended" before the shell ever started."""
+    from cockpit.bridge import BROWSER_TERM, child_env
+    assert child_env({})["TERM"] == BROWSER_TERM
+    assert child_env({"TERM": ""})["TERM"] == BROWSER_TERM
+    assert child_env({"TERM": "dumb"})["TERM"] == BROWSER_TERM
+    # An operator who set one on the deployment keeps it.
+    assert child_env({"TERM": "screen", "HOME": "/root"}) == {"TERM": "screen", "HOME": "/root"}
+
+
+def test_the_pty_child_actually_sees_that_term(monkeypatch):
+    """child_env exists so the fork uses it; pin that it does."""
+    monkeypatch.delenv("TERM", raising=False)
+    term = PtySession(["sh", "-c", "printf '%s' \"$TERM\""])
+    term.start()
+    out = b""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            chunk = os.read(term.fd, 4096)
+        except BlockingIOError:
+            time.sleep(0.02)
+            continue
+        except OSError:
+            break
+        if not chunk:
+            break
+        out += chunk
+    term.close()
+    assert out.strip() == b"xterm-256color", out
+
+
+def test_the_pod_never_writes_known_hosts():
+    """~/.ssh in the pod is a read-only Secret mount, so ssh's attempt to record
+    the host key is noise on every open. The same argv on the operator's own
+    machine is left alone — their known_hosts is theirs."""
+    from cockpit.bridge import pod_argv
+    argv = pod_argv(["ssh", "-t", "sre@10.0.0.15", "/tmp/cfop-cockpit-1889/run"])
+    assert argv[0] == "ssh" and argv[-3:] == ["-t", "sre@10.0.0.15", "/tmp/cfop-cockpit-1889/run"]
+    opts = " ".join(argv)
+    assert "UserKnownHostsFile=/dev/null" in opts and "StrictHostKeyChecking=no" in opts
+    # Not ssh: untouched.
+    k = ["kubectl", "attach", "-it", "-n", "apps", "pod/x"]
+    assert pod_argv(k) == k
+    assert pod_argv([]) == []

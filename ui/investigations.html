@@ -596,7 +596,7 @@ function resizeFrame(cols, rows){ return JSON.stringify({type:'resize', cols:col
 
 // var, not const: the console tests read this state through the page's global
 // scope, and a top-level const is not a property of it.
-var COCKPIT={id:null, ws:null, term:null, fit:null, timer:null, expires:null, lastError:''};
+var COCKPIT={id:null, ws:null, term:null, fit:null, observer:null, refitting:false, timer:null, expires:null, lastError:''};
 
 async function openCockpit(id){
   const btn=document.getElementById('open-cockpit'), note=document.getElementById('cockpit-note');
@@ -662,9 +662,24 @@ function mountCockpit(id, s){
   ws.onerror=()=>{ /* onclose follows with the code; nothing useful to say here */ };
   term.onData(d=>{ if(ws.readyState===1) ws.send(enc.encode(d)); });
   term.onResize(sz=>{ if(ws.readyState===1) ws.send(resizeFrame(sz.cols, sz.rows)); });
+  // Fit to the box, not to the window. The drawer widens over a 150 ms
+  // transition when the terminal mounts (and again on maximize), and the
+  // fit() above ran at the transition's first frame — the pre-wide width,
+  // which is ~80 columns. Nothing refit afterwards unless the window itself
+  // resized, so a 1100px pane ran an 80-column shell (CFOP-166). Observing
+  // #term catches every width change: the transition, maximize, a font load.
   window.addEventListener('resize', refit);
+  if(typeof ResizeObserver!=='undefined'){
+    COCKPIT.observer=new ResizeObserver(()=>refit());
+    COCKPIT.observer.observe(document.getElementById('term'));
+  }
 }
-function refit(){ if(COCKPIT.fit){ try{ COCKPIT.fit.fit(); }catch(e){} } }
+function refit(){
+  if(!COCKPIT.fit || COCKPIT.refitting) return;
+  // One fit per frame: the observer fires for every frame of the transition.
+  COCKPIT.refitting=true;
+  requestAnimationFrame(()=>{ COCKPIT.refitting=false; if(COCKPIT.fit){ try{ COCKPIT.fit.fit(); }catch(e){} } });
+}
 function setStatus(text, isErr){ const s=document.getElementById('cp-status'); if(s){ s.textContent=text; s.className='cp-status'+(isErr?' err':''); } }
 function startCountdown(){
   stopCountdown();
@@ -684,6 +699,9 @@ function disconnectCockpit(){
   if(ws){ try{ ws.close(1000); }catch(e){} }
   if(COCKPIT.term){ try{ COCKPIT.term.dispose(); }catch(e){} }
   COCKPIT.term=null; COCKPIT.fit=null; stopCountdown();
+  // The observer holds the #term node, which the innerHTML below detaches:
+  // without this every reattach leaves one behind, watching a dead element.
+  if(COCKPIT.observer){ try{ COCKPIT.observer.disconnect(); }catch(e){} COCKPIT.observer=null; }
   window.removeEventListener('resize', refit);
   const d=document.getElementById('detail'); if(d) d.classList.remove('wide');
   const el=document.getElementById('cockpit'); if(el && COCKPIT.id!==null) el.innerHTML='';
