@@ -832,9 +832,11 @@ def test_the_host_runner_is_a_shell_not_an_unattended_tui():
     runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 14400, tier=TIER_HOST)
     assert (f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} "
             "14400 $CFOP_SHELL") in runner
-    assert "CFOP_SHELL='bash -li'" in runner, (
-        "-i alone reads ~/.bashrc only: a KUBECONFIG from /etc/profile.d or a "
-        "PATH from ~/.profile is exactly what #2390 was missing")
+    assert "CFOP_SHELL='bash -i'" in runner
+    assert "-li" not in runner, (
+        "a login shell sources stock Debian /etc/profile, which ASSIGNS PATH "
+        "rather than prepending — the session dirs set just above would be "
+        "dropped and the advertised `cfassist attach` would not resolve")
     assert "CFOP_SHELL='sh -i'" in runner, (
         "tier ssh is the unconditional bottom rung and PROBE_SCRIPT never "
         "looks for bash; without a fallback a busybox host exits 127")
@@ -847,7 +849,6 @@ def test_the_host_runner_is_a_shell_not_an_unattended_tui():
     assert "the model is: cfassist attach $CFOP_INVESTIGATION_ID" in runner
     assert 'exec /tmp/cfop-cockpit-1889/cfassist ${CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"}' in runner
     assert "timeout --foreground 14400 ./cfassist attach" not in runner
-    assert "14400 bash -i" not in runner, "the login flag was dropped again"
 
 
 def timer_commands(ssh):
@@ -1366,9 +1367,7 @@ def test_the_runner_actually_removes_the_session_on_exit(tmp_path):
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
     assert "argv: attach 1889 --print" in proc.stdout
-    assert "shell: -li" in proc.stdout, (
-        "a non-login interactive shell never sources /etc/profile.d or "
-        "~/.profile, which is where the #2390 KUBECONFIG lives")
+    assert "shell: -i" in proc.stdout
     assert SECRET in proc.stdout, "the session must inherit the dying credential"
     assert not directory.exists(), (
         f"the session directory survived the session: {proc.stdout}{proc.stderr}")
@@ -1500,9 +1499,7 @@ def test_the_shell_falls_back_when_the_host_has_no_bash(tmp_path):
     stub.mkdir()
     (stub / "bash").write_text("#!/bin/sh\n")
     (stub / "bash").chmod(0o700)
-    assert choose(str(stub)) == "bash -li", (
-        "-i alone reads ~/.bashrc only, so a k3s KUBECONFIG from "
-        "/etc/profile.d — the #2390 shape — never reaches the shell")
+    assert choose(str(stub)) == "bash -i"
     assert choose(str(tmp_path / "empty")) == "sh -i"
 
 

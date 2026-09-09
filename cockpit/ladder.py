@@ -1402,13 +1402,24 @@ class HostCockpitSpawner:
             '  echo "ssh: inventory hosts (infrastructure.hosts names) use the '
             'session config; every other host uses your own ~/.ssh/config"',
             "fi",
-            # -l, not just -i: an interactive non-login bash reads ~/.bashrc
-            # only, so a k3s KUBECONFIG dropped in /etc/profile.d or a
-            # ~/.local/bin PATH added by ~/.profile — the exact #2390 shape this
-            # tier exists for — would still be missing from a shell that
-            # announces itself as this login's.
+            # NOT a login shell, and the reason is PATH. Stock Debian and
+            # Ubuntu /etc/profile assigns PATH outright rather than prepending
+            # to it, so `bash -l` would discard the session directories set
+            # just above — `cfassist attach $CFOP_INVESTIGATION_ID`, the line
+            # the banner advertises, would be command-not-found, and the ssh
+            # wrapper would go with it. Raspberry Pi OS is Debian, so that is
+            # the fleet this rung exists for, not an exotic case.
             #
-            # And bash is not guaranteed. Tier ssh is the unconditional bottom
+            # The cost is real and accepted: /etc/profile.d and ~/.profile are
+            # not sourced, so a k3s KUBECONFIG installed as a profile drop-in
+            # is missing from this shell even though `kubectl` is on the host.
+            # ~/.kube/config works, because HOME is already the login's. Fixing
+            # the drop-in case means the runner sourcing the profile itself and
+            # setting PATH afterwards so the session still wins — deliberately
+            # not done here: it runs on every host spawn, and sourcing
+            # arbitrary profile scripts from the /bin/sh runner is its own risk.
+            #
+            # bash is also not guaranteed. Tier ssh is the unconditional bottom
             # rung (choose_tier falls to it whenever systemd-run is absent), so
             # it lands on busybox/Alpine inventory hosts too; PROBE_SCRIPT does
             # not look for bash, and a missing one here would be exit 127, the
@@ -1416,7 +1427,7 @@ class HostCockpitSpawner:
             # `sh -i` is a worse cockpit than `bash -li` and still a shell on
             # the host, which is the whole point of the rung.
             "if command -v bash >/dev/null 2>&1; then",
-            "  CFOP_SHELL='bash -li'",
+            "  CFOP_SHELL='bash -i'",
             "else",
             "  CFOP_SHELL='sh -i'",
             "fi",

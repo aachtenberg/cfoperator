@@ -490,11 +490,16 @@ away; it is not sitting in front of the prompt.
 Three details of "as this login" are worth stating, because each one is a place
 a shell can quietly differ from the one you would get by ssh-ing in yourself:
 
-- **It is a login shell** (`bash -li`), so `/etc/profile`, `/etc/profile.d/*`
-  and `~/.profile` are sourced. That is not a detail: a k3s `KUBECONFIG` and a
-  `~/.local/bin` on `PATH` both arrive that way, and an interactive-only shell
-  reading `~/.bashrc` alone would leave `kubectl` broken in exactly the way
-  this tier exists to fix.
+- **It is an interactive shell, not a bash login shell** (`bash -i`). "Login
+  shell" in CFOP-166 means *a shell on the machine as this login* — your user,
+  your `HOME`, your `~/.kube`, your `~/.bashrc` — not bash's `-l` mode. `-l` is
+  deliberately not used: stock Debian and Ubuntu `/etc/profile` **assigns**
+  `PATH` rather than prepending to it, so a login shell would discard the
+  session directories and `cfassist attach 1889` — the line the banner
+  advertises — would not resolve. Raspberry Pi OS is Debian, so that is this
+  rung's own fleet. The cost: environment installed as a `/etc/profile.d`
+  drop-in is not picked up, so on a k3s node whose `KUBECONFIG` arrives that
+  way you may need `sudo k3s kubectl` or an explicit `KUBECONFIG=`.
 - **A host without `bash` gets `sh -i`.** Tier `ssh` is the bottom rung and
   lands on busybox userlands too; a worse shell is a better answer than an
   instant disconnect.
