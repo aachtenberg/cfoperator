@@ -792,7 +792,11 @@ def test_the_host_env_does_not_export_the_ssh_bundle(tmp_path):
 def test_the_host_runner_wraps_ssh_without_touching_the_login_home():
     s = HostCockpitSpawner(HostLadderConfig())
     runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 14400, tier=TIER_HOST)
-    assert "ssh -F /tmp/cfop-cockpit-1889/config" in runner
+    assert 'CFG=/tmp/cfop-cockpit-1889/config' in runner
+    assert 'exec /usr/bin/ssh -F "$CFG" "$@"' in runner
+    # ...but only for names the session config actually knows; see
+    # test_ssh_from_the_shell_only_hijacks_inventory_names.
+    assert 'exec /usr/bin/ssh "$@"' in runner
     assert "mkdir -p ~/.ssh" not in runner
     assert "cp " not in runner or "./bin/ssh" in runner
 
@@ -827,9 +831,15 @@ def test_the_host_runner_is_a_shell_not_an_unattended_tui():
     s = HostCockpitSpawner(HostLadderConfig())
     runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 14400, tier=TIER_HOST)
     assert (f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} "
-            "14400 bash -i") in runner
+            "14400 $CFOP_SHELL") in runner
+    assert "CFOP_SHELL='bash -li'" in runner, (
+        "-i alone reads ~/.bashrc only: a KUBECONFIG from /etc/profile.d or a "
+        "PATH from ~/.profile is exactly what #2390 was missing")
+    assert "CFOP_SHELL='sh -i'" in runner, (
+        "tier ssh is the unconditional bottom rung and PROBE_SCRIPT never "
+        "looks for bash; without a fallback a busybox host exits 127")
     assert "./cfassist attach 1889 --print" in runner
-    assert 'attach --no-session-token "$@"' in runner, (
+    assert 'if [ "$sub" = attach ]; then set -- "$@" --no-session-token; fi' in runner, (
         "wrapped attach must reuse the session token; a second mint's "
         "revoke-on-exit never runs on an ssh drop")
     assert "PATH=/tmp/cfop-cockpit-1889/bin:/tmp/cfop-cockpit-1889:$PATH" in runner
@@ -837,6 +847,7 @@ def test_the_host_runner_is_a_shell_not_an_unattended_tui():
     assert "the model is: cfassist attach $CFOP_INVESTIGATION_ID" in runner
     assert 'exec /tmp/cfop-cockpit-1889/cfassist ${CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"}' in runner
     assert "timeout --foreground 14400 ./cfassist attach" not in runner
+    assert "14400 bash -i" not in runner, "the login flag was dropped again"
 
 
 def timer_commands(ssh):
@@ -1355,25 +1366,144 @@ def test_the_runner_actually_removes_the_session_on_exit(tmp_path):
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
     assert "argv: attach 1889 --print" in proc.stdout
-    assert "shell: -i" in proc.stdout
+    assert "shell: -li" in proc.stdout, (
+        "a non-login interactive shell never sources /etc/profile.d or "
+        "~/.profile, which is where the #2390 KUBECONFIG lives")
     assert SECRET in proc.stdout, "the session must inherit the dying credential"
     assert not directory.exists(), (
         f"the session directory survived the session: {proc.stdout}{proc.stderr}")
 
 
-def test_wrapped_attach_does_not_mint_a_second_token(tmp_path):
+@pytest.mark.parametrize("typed, expected", [
+    ("cfassist attach 1889", "argv: attach 1889 --no-session-token"),
+    # --url/--model/--provider are persistent ROOT flags, so the subcommand is
+    # not $1. A wrapper matching on $1 lets these through unflagged.
+    ("cfassist --model qwen3 attach 1889",
+     "argv: --model qwen3 attach 1889 --no-session-token"),
+    ("cfassist --url http://llm --model m attach 1889",
+     "argv: --url http://llm --model m attach 1889 --no-session-token"),
+])
+def test_wrapped_attach_does_not_mint_a_second_token(tmp_path, typed, expected):
     """MUTATION GUARD. The advertised ``cfassist attach $id`` goes through the
     wrapper. Without ``--no-session-token`` it mints a child credential whose
-    revoke-on-exit never runs on an ssh drop."""
+    revoke-on-exit never runs on an ssh drop — and a root flag before the
+    subcommand must not be a way past that."""
     import subprocess
 
     directory = _materialise_session(tmp_path)
-    (directory / "bash").write_text("#!/bin/sh\ncfassist attach 1889\nexit 0\n")
+    (directory / "bash").write_text(f"#!/bin/sh\n{typed}\nexit 0\n")
     (directory / "bash").chmod(0o700)
     proc = subprocess.run(["/bin/sh", str(directory / "run")],
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
-    assert "argv: attach --no-session-token 1889" in proc.stdout
+    assert expected in proc.stdout
+
+
+def test_a_subcommand_that_merely_mentions_attach_is_not_flagged(tmp_path):
+    """The scan stops at the first non-flag word. ``--no-session-token`` is an
+    ``attach`` flag, so appending it to another subcommand is an unknown-flag
+    error rather than a harmless duplicate."""
+    import subprocess
+
+    directory = _materialise_session(tmp_path)
+    (directory / "bash").write_text(
+        '#!/bin/sh\ncfassist ask "how do I attach a disk"\nexit 0\n')
+    (directory / "bash").chmod(0o700)
+    proc = subprocess.run(["/bin/sh", str(directory / "run")],
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    assert "argv: ask how do I attach a disk" in proc.stdout
+    assert "--no-session-token" not in proc.stdout.split("argv: ask")[1]
+
+
+def _heredoc(runner, marker):
+    """The body of a ``cat > <marker> <<'WRAP'`` block in the generated runner.
+
+    The wrappers are shell written by Python into a shell script, so the thing
+    worth testing is the text that actually lands on the host — not the Python
+    that emitted it.
+    """
+    start = runner.index(f"cat > {marker} <<'WRAP'")
+    body = runner[runner.index("\n", start) + 1:]
+    return body[:body.index("\nWRAP\n") + 1]
+
+
+def test_ssh_from_the_shell_only_hijacks_inventory_names(tmp_path):
+    """MUTATION GUARD (CFOP-146 under CFOP-166). ``-F`` REPLACES the login's
+    ~/.ssh/config rather than layering on it, and the session config's
+    ``Host *`` sets StrictHostKeyChecking no, UserKnownHostsFile /dev/null and
+    IdentitiesOnly yes. Routing every ssh through it — fine while the session
+    was a TUI — means a human's ``ssh prod-db`` loses their own IdentityFile
+    and skips host-key verification. Inventory names in, everything else out.
+    """
+    import subprocess
+    from cockpit.ssh import fleet_ssh_config
+
+    s = HostCockpitSpawner(HostLadderConfig())
+    runner = s._runner_script(1889, str(tmp_path), 14400, tier=TIER_HOST)
+
+    real = tmp_path / "real-ssh"
+    real.write_text('#!/bin/sh\necho "REAL: $*"\n')
+    real.chmod(0o700)
+    (tmp_path / "config").write_text(fleet_ssh_config(
+        {"raspberrypi5": {"address": "10.0.0.15", "ssh": {"user": "sre"}},
+         "ubuntu-llm-01": {"address": "10.0.0.20"}}))
+    wrapper = tmp_path / "ssh"
+    wrapper.write_text(_heredoc(runner, "./bin/ssh").replace("/usr/bin/ssh", str(real)))
+    wrapper.chmod(0o700)
+
+    def run(*argv):
+        out = subprocess.run([str(wrapper), *argv], capture_output=True,
+                             text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        return out.stdout.strip()
+
+    cfg = f"-F {tmp_path}/config"
+    # inventory names — bare, user@, and behind a flag that takes a value
+    assert run("raspberrypi5") == f"REAL: {cfg} raspberrypi5"
+    assert run("sre@ubuntu-llm-01") == f"REAL: {cfg} sre@ubuntu-llm-01"
+    assert run("-p", "2222", "raspberrypi5") == f"REAL: {cfg} -p 2222 raspberrypi5"
+    assert run("raspberrypi5", "uptime") == f"REAL: {cfg} raspberrypi5 uptime"
+    # everything else keeps the operator's own ssh — the whole point
+    assert run("prod-db") == "REAL: prod-db"
+    assert run("prod-db", "uptime") == "REAL: prod-db uptime"
+    assert run("10.0.0.99") == "REAL: 10.0.0.99"
+    # `Host *` is in that config and must never count as a match
+    assert run("*") == "REAL: *"
+
+
+def test_the_shell_falls_back_when_the_host_has_no_bash(tmp_path):
+    """MUTATION GUARD. Tier ssh is the unconditional bottom rung — choose_tier
+    returns it whenever systemd-run is missing, and PROBE_SCRIPT never looks
+    for bash — so it lands on busybox/Alpine inventory hosts. Without the
+    fallback the runner exits 127, the EXIT trap wipes the session, and the
+    operator gets an instant disconnect after a 201.
+
+    The selection block is executed with a PATH that has no bash rather than
+    pattern-matched: deleting the ``else`` arm has to fail this.
+    """
+    import subprocess
+
+    s = HostCockpitSpawner(HostLadderConfig())
+    runner = s._runner_script(1889, str(tmp_path), 14400, tier=TIER_HOST)
+    start = runner.index("if command -v bash")
+    block = runner[start:runner.index("\nfi\n", start) + 4]
+
+    def choose(path):
+        out = subprocess.run(["/bin/sh", "-c", f'{block}\necho "$CFOP_SHELL"'],
+                             capture_output=True, text=True, timeout=30,
+                             env={"PATH": path})
+        assert out.returncode == 0, out.stderr
+        return out.stdout.strip()
+
+    stub = tmp_path / "withbash"
+    stub.mkdir()
+    (stub / "bash").write_text("#!/bin/sh\n")
+    (stub / "bash").chmod(0o700)
+    assert choose(str(stub)) == "bash -li", (
+        "-i alone reads ~/.bashrc only, so a k3s KUBECONFIG from "
+        "/etc/profile.d — the #2390 shape — never reaches the shell")
+    assert choose(str(tmp_path / "empty")) == "sh -i"
 
 
 def test_the_runner_reports_a_timed_out_session_rather_than_swallowing_it(tmp_path):
@@ -1812,7 +1942,7 @@ def test_the_deadline_is_still_enforced():
     s = HostCockpitSpawner(HostLadderConfig())
     runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 900, tier=TIER_HOST)
     assert (f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} "
-            "900 bash -i") in runner
+            "900 $CFOP_SHELL") in runner
 
 
 # --------------------------------------------------------------------------
@@ -1834,7 +1964,7 @@ def test_the_runner_wraps_the_session_in_tmux_when_the_host_has_it():
     assert "command -v tmux" in runner, "a host that lost tmux since the probe should fall through"
     # The session still runs under the deadline, inside tmux.
     assert (f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} "
-            "14400 bash -i") in runner
+            "14400 $CFOP_SHELL") in runner
     assert "attach 1889 --print" in runner
 
 

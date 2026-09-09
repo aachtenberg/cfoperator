@@ -477,6 +477,8 @@ the session token dies with this session, or at its TTL.
 
 [briefing printed: what CFOperator observed, concluded, and queued]
 
+ssh: inventory hosts (infrastructure.hosts names) use the session config; every other host uses your own ~/.ssh/config
+
 sre@raspberrypi5:/tmp/cfop-cockpit-1889$ kubectl get pods -A
 sre@raspberrypi5:/tmp/cfop-cockpit-1889$ cfassist attach 1889
 ```
@@ -485,10 +487,38 @@ You are now on the Pi, as this login, with the investigation briefing already
 printed. Ordinary shell commands work against the host. The model is a command
 away; it is not sitting in front of the prompt.
 
+Three details of "as this login" are worth stating, because each one is a place
+a shell can quietly differ from the one you would get by ssh-ing in yourself:
+
+- **It is a login shell** (`bash -li`), so `/etc/profile`, `/etc/profile.d/*`
+  and `~/.profile` are sourced. That is not a detail: a k3s `KUBECONFIG` and a
+  `~/.local/bin` on `PATH` both arrive that way, and an interactive-only shell
+  reading `~/.bashrc` alone would leave `kubectl` broken in exactly the way
+  this tier exists to fix.
+- **A host without `bash` gets `sh -i`.** Tier `ssh` is the bottom rung and
+  lands on busybox userlands too; a worse shell is a better answer than an
+  instant disconnect.
+- **`ssh` is yours, except for inventory names.** The session stages a config
+  for `infrastructure.hosts` (CFOP-146), and typing one of those names uses it.
+  Every other destination — anything in your own `~/.ssh/config`, an IP, a
+  bastion — goes through plain `ssh` with your config and your host keys. The
+  session config sets `StrictHostKeyChecking no` and `IdentitiesOnly yes`,
+  which is right for the fleet it holds a key for and wrong for everything
+  else, so it is not applied to everything else.
+
 When you are finished, `exit`. The session ends, and the credential and the
 binary it used are deleted on the way out. If you close the laptop instead, the
 TTL does it four hours later; if something goes wrong with the TTL, the janitor
-does it within fifteen minutes. **You do not have to clean up after yourself.**
+does it within fifteen minutes. **You do not have to clean up after yourself**
+— with one exception worth knowing, new since the session became a shell
+(CFOP-166). All of that reaps the *session*: the shell, the credential, the
+binary, the directory. Nothing reaps a process you put in the **background**
+and left. `timeout` signals the shell only, a shell killed at the deadline runs
+no exit trap and hangs up no jobs, and the janitor is `tmux kill-session` plus
+`rm -rf` — it has never killed a process. So a `tcpdump -w` or a `journalctl -f`
+backgrounded here is reparented to init and outlives both the TTL and the sweep
+that reports the cockpit reaped. Foreground work needs no thought; if you
+background something long-running, kill it before you `exit`.
 A host with `tmux` keeps the shell across a dropped connection; without it
 (cm5 today) the shell lives only while you are attached.
 
@@ -827,8 +857,18 @@ so they gain it at different moments:
 | Session | Gets cfassist from | Has write-back |
 |---|---|---|
 | tier `pod`, tier `container` | the cockpit image, built from the tree | as soon as the image rolls |
-| tier `host`, tier `ssh` | the pinned `cfassist-v<version>` release | once that release carries it |
+| tier `host`, tier `ssh` | the pinned `cfassist-v<version>` release | once that release carries it — **and only for a `cfassist attach` you start** |
 | a plain `attach` on your machine | whatever binary is on your PATH | once you upgrade it |
+
+On the two shell tiers there is a second condition, and it is the one that
+bites: since CFOP-166 the session is a login shell rather than a running
+cfassist, so **write-back is opt-in there**. The briefing is printed by a
+one-shot `--print` that holds no conversation, and a session spent entirely at
+the shell prompt — `kubectl`, `journalctl`, `exit` — has no exchanges to distil
+and records nothing. What gets written back is whatever you say inside a
+`cfassist attach $CFOP_INVESTIGATION_ID` you started yourself. Tier `pod` and an
+explicit `--tier container` are unchanged: the TUI is the session, so everything
+in it is a candidate.
 
 This is the same property `cockpit.cfassist_version` already documents, seen
 from the other side: a host tier runs a *released* binary on purpose, so that

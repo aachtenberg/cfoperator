@@ -1278,9 +1278,19 @@ class HostCockpitSpawner:
         #
         # The cost is that timeout can then only signal its direct child rather
         # than a whole group. Interactive bash ignores SIGTERM, so --kill-after
-        # is load-bearing: without it the shell outlives the TTL. A cfassist
-        # the operator started from the shell may still outlive both; the
-        # janitor is the backstop for that.
+        # is load-bearing: without it the shell outlives the TTL.
+        #
+        # What nothing here reaps is a process the operator BACKGROUNDED out of
+        # this shell. timeout signals the shell only; a SIGKILLed shell runs no
+        # EXIT trap and HUPs no jobs; and the janitor is `tmux kill-session`
+        # plus `rm -rf` (see _remove_session_dir) — it has never killed a
+        # process. So a `tcpdump &` left here is reparented to init and outlives
+        # both the TTL and the sweep that reports the cockpit reaped. Before
+        # CFOP-166 timeout's child was a binary that forks nothing and the gap
+        # was theoretical; a shell is a process launcher, so it is not any more.
+        # Recorded in docs/cockpit.md rather than papered over: closing it needs
+        # the shell in a process group the janitor can signal, which is its own
+        # change.
         wrapper = (
             f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS}"
             if tier in (TIER_HOST, TIER_SSH) else "")
@@ -1323,13 +1333,25 @@ class HostCockpitSpawner:
             # skip attach's revoke-on-exit.
             "cat > ./bin/cfassist <<'WRAP'",
             "#!/bin/sh",
-            'if [ "$1" = "attach" ]; then',
-            "  shift",
-            f"  exec {shlex.quote(directory + '/cfassist')} "
-            '${CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"} '
-            '${CFOP_COCKPIT_LLM_MODEL:+--model "$CFOP_COCKPIT_LLM_MODEL"} '
-            'attach --no-session-token "$@"',
-            "fi",
+            "# --url/--model/--provider are persistent ROOT flags, so the",
+            "# subcommand is not always $1: `cfassist --model qwen3 attach 1889`",
+            "# is valid and is what an operator reaches for after the banner.",
+            "# Matching on $1 alone let that through without --no-session-token,",
+            "# minting a second cockpit token whose revoke-on-exit never runs on",
+            "# an ssh drop — the one thing this wrapper exists to prevent.",
+            "sub=''",
+            "skip=''",
+            'for a in "$@"; do',
+            '  if [ -n "$skip" ]; then skip=\'\'; continue; fi',
+            '  case "$a" in',
+            "    --url|--model|--provider) skip=1 ;;",
+            "    -*) ;;",
+            '    *) sub="$a"; break ;;',
+            "  esac",
+            "done",
+            "# Appended rather than inserted after the subcommand: cobra takes",
+            "# flags after it, and one placed before it parses as a root flag.",
+            'if [ "$sub" = attach ]; then set -- "$@" --no-session-token; fi',
             f"exec {shlex.quote(directory + '/cfassist')} "
             '${CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"} '
             '${CFOP_COCKPIT_LLM_MODEL:+--model "$CFOP_COCKPIT_LLM_MODEL"} '
@@ -1353,13 +1375,53 @@ class HostCockpitSpawner:
             "if [ -f ./config ]; then",
             "  cat > ./bin/ssh <<'WRAP'",
             "#!/bin/sh",
-            f"exec /usr/bin/ssh -F {directory}/config \"$@\"",
+            "# Inventory names go through the session config; every other",
+            "# destination keeps the login's own ~/.ssh. `-F` REPLACES the",
+            "# user's config rather than layering on it, and this one's `Host *`",
+            "# sets StrictHostKeyChecking no, UserKnownHostsFile /dev/null and",
+            "# IdentitiesOnly yes. That is right for the fleet hosts the session",
+            "# holds a key for and wrong for `ssh prod-db`, which would lose the",
+            "# operator's own IdentityFile/User/ProxyJump and skip host-key",
+            "# verification. It did not matter while the session was a TUI whose",
+            "# ssh calls were all inventory-targeted; CFOP-166 puts a human at",
+            "# this prompt, so an unrecognised name falls through to plain ssh.",
+            f"CFG={shlex.quote(directory + '/config')}",
+            'for a in "$@"; do',
+            '  case "$a" in -*) continue ;; esac',
+            # Host names come out of the delivered config rather than being
+            # baked in here, so the two cannot drift. `Host *` never matches:
+            # a bare `*` is not a destination anyone types.
+            '  if awk -v n="${a##*@}" \'$1=="Host"{for(i=2;i<=NF;i++)'
+            ' if($i==n && $i!="*") f=1} END{exit !f}\' "$CFG"; then',
+            '    exec /usr/bin/ssh -F "$CFG" "$@"',
+            "  fi",
+            "done",
+            'exec /usr/bin/ssh "$@"',
             "WRAP",
             "  chmod 700 ./bin/ssh",
-            '  echo "ssh: inventory hosts from the session config '
-            '(same names as infrastructure.hosts)"',
+            '  echo "ssh: inventory hosts (infrastructure.hosts names) use the '
+            'session config; every other host uses your own ~/.ssh/config"',
             "fi",
-            (f"{wrapper} {int(ttl_seconds)} bash -i || status=$?"),
+            # -l, not just -i: an interactive non-login bash reads ~/.bashrc
+            # only, so a k3s KUBECONFIG dropped in /etc/profile.d or a
+            # ~/.local/bin PATH added by ~/.profile — the exact #2390 shape this
+            # tier exists for — would still be missing from a shell that
+            # announces itself as this login's.
+            #
+            # And bash is not guaranteed. Tier ssh is the unconditional bottom
+            # rung (choose_tier falls to it whenever systemd-run is absent), so
+            # it lands on busybox/Alpine inventory hosts too; PROBE_SCRIPT does
+            # not look for bash, and a missing one here would be exit 127, the
+            # trap wiping the directory, and an instant disconnect after a 201.
+            # `sh -i` is a worse cockpit than `bash -li` and still a shell on
+            # the host, which is the whole point of the rung.
+            "if command -v bash >/dev/null 2>&1; then",
+            "  CFOP_SHELL='bash -li'",
+            "else",
+            "  CFOP_SHELL='sh -i'",
+            "fi",
+            # Unquoted on purpose: the split into command and flag is wanted.
+            (f"{wrapper} {int(ttl_seconds)} $CFOP_SHELL || status=$?"),
             # `set -e` would take the exit before the trap could report it, and
             # a session that ends non-zero (timeout fires: 124) is a normal
             # outcome to pass back rather than a failure to swallow.
