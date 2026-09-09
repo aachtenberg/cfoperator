@@ -91,6 +91,14 @@ class FakeTerminal{
   onData(cb){ this._data=cb; } onResize(cb){ this._resize=cb; }
 }
 class FakeFit{ fit(){ out.fitted=(out.fitted||0)+1; } }
+// The box the terminal lives in changes width after mount (the drawer's
+// .wide transition, maximize); record what the page watches and let the
+// test fire it.
+const observers=[];
+class FakeResizeObserver{
+  constructor(cb){ this.cb=cb; this.nodes=[]; observers.push(this); }
+  observe(node){ this.nodes.push(node); } disconnect(){ this.disconnected=true; }
+}
 
 const openResponse = mode==='refused'
   ? {ok:false,status:409,body:{error:'the cockpit bridge is not enabled on this agent (cockpit.bridge_enabled)',code:'bridge_disabled',attach_command:'cfassist attach 2272'}}
@@ -99,6 +107,7 @@ const openResponse = mode==='refused'
 
 const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,Uint8Array,
   setTimeout,clearTimeout, setInterval:()=>0, clearInterval:()=>{},
+  requestAnimationFrame:cb=>setTimeout(cb,0), ResizeObserver:FakeResizeObserver,
   location:loc, history:hist,
   TextEncoder:class{ encode(s){ return Uint8Array.from(Buffer.from(s,'utf8')); } },
   WebSocket:FakeWS, Terminal:FakeTerminal, FitAddon:{FitAddon:FakeFit},
@@ -157,6 +166,12 @@ const tick=()=>new Promise(r=>setImmediate(r));
     out.framesAfterOpen=out.frames.slice();
     out.status=box.document.getElementById('cp-status').textContent;
     out.wide=true; // class toggles are no-ops in the stub; the call is what is asserted below
+    // the drawer finishes widening: the box the terminal lives in changes size
+    out.observesTerm=observers.length>0 && observers[observers.length-1].nodes.includes(box.document.getElementById('term'));
+    const fittedBefore=out.fitted||0;
+    for(const o of observers){ o.cb([]); o.cb([]); o.cb([]); }   // three frames of a transition
+    await new Promise(r=>setTimeout(r,5));
+    out.fitsAfterBoxResize=(out.fitted||0)-fittedBefore;
     // the bridge sends bytes, then an error frame, then closes
     const ws=sockets[0], term=box.COCKPIT.term;
     ws.onmessage({data:Uint8Array.from([104,105]).buffer});
@@ -241,6 +256,18 @@ def test_the_auth_frame_is_first_and_text_then_resize(admin):
     assert frames[1]["kind"] == "text" and json.loads(frames[1]["data"])["type"] == "resize"
     assert admin["wsUrl"] == "ws://cfop:8084/cockpit/2272"
     assert admin["wsBinaryType"] == "arraybuffer"
+
+
+def test_the_terminal_refits_when_its_box_changes_size(admin):
+    """The drawer widens over a 150 ms transition when the terminal mounts,
+    and the mount-time fit ran at that transition's first frame: an 1100px pane
+    ran an 80-column shell, and only a *window* resize ever refit it. The page
+    has to watch the box the terminal is in, not the window (CFOP-166)."""
+    assert admin["observesTerm"], "nothing observes #term's size"
+    assert admin["fitsAfterBoxResize"] >= 1, "a box resize did not refit the terminal"
+    # Coalesced: a transition fires the observer every frame, and fit() is a
+    # full re-measure of the terminal.
+    assert admin["fitsAfterBoxResize"] == 1, admin["fitsAfterBoxResize"]
 
 
 def test_keystrokes_are_binary_and_resize_is_text(admin):
