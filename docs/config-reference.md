@@ -168,6 +168,19 @@ llm:
     url: http://localhost:11434
     model: qwen3:14b/no_think  # /no_think disables deliberative mode
     timeout: 180  # seconds; generous default for cold model loads
+    # Context window to request on every Ollama chat call (options.num_ctx).
+    # Optional, and absent by default ON PURPOSE. Ollama reloads a model
+    # whenever a request's num_ctx differs from the loaded runner's, and the
+    # runner's window is whatever the last client asked for — so a value
+    # here that the host's other clients (cfassist, ad-hoc curl) do not send
+    # reloads the model on every hand-over. Set it together with
+    # OLLAMA_CONTEXT_LENGTH=<same number> on the Ollama host, host first.
+    # Floor 2048, no ceiling. Independent of this key, the agent already
+    # keeps the tool-loop history it re-sends each iteration under 75% of
+    # this window (16384 when unset), collapsing the oldest tool results
+    # first — that bound is what stops a long investigation from filling
+    # the window and being clipped by the runner. (CFOP-168)
+    # num_ctx: 16384
 
   # Fallback chain (on error/timeout)
   fallback:

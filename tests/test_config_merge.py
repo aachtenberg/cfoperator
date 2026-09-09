@@ -896,3 +896,26 @@ def test_database_section_is_always_present(tmp_path):
     merged = cfg.load_config(_write(tmp_path, GETTING_STARTED))
     for key in ("host", "port", "database", "user", "password"):
         assert key in merged["database"]
+
+
+def test_flat_num_ctx_folds_into_llm_primary(tmp_path):
+    """The Ollama window is a primary-LLM key like url and model (CFOP-168)."""
+    path = _write(tmp_path, """
+        llm:
+          backend: ollama
+          num_ctx: 16384
+    """)
+    merged = cfg.load_config(path)
+    assert merged["llm"]["primary"]["num_ctx"] == 16384
+    assert "num_ctx" not in merged["llm"]
+
+
+def test_num_ctx_has_no_schema_default(tmp_path):
+    """Absent means "send no options.num_ctx, keep the runner's window" — a
+    merged default would erase that (CFOP-154's rule, CFOP-168's reason)."""
+    path = _write(tmp_path, """
+        llm:
+          backend: ollama
+    """)
+    assert "num_ctx" not in cfg.load_config(path)["llm"]["primary"]
+    assert "num_ctx" not in cfg.default_config()["llm"]["primary"]
