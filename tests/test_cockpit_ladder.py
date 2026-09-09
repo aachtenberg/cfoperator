@@ -30,6 +30,7 @@ from cockpit.ladder import (
     TIER_HOST,
     TIER_POD,
     TIER_SSH,
+    TIMEOUT_KILL_AFTER_SECONDS,
     HostCapabilities,
     HostCockpitSpawner,
     HostLadderConfig,
@@ -813,7 +814,7 @@ def test_the_runner_reads_the_token_from_the_file_and_mints_nothing():
         "the session already holds a credential that dies with it; minting a "
         "second would create one whose revoke-on-exit never runs")
     assert "attach 1889" in runner
-    assert "timeout --foreground 14400" in runner, (
+    assert f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} 14400" in runner, (
         "the deadline wrapper lost --foreground; see the interactive guard below")
     assert "trap 'rm -rf /tmp/cfop-cockpit-1889' EXIT" in runner
 
@@ -825,9 +826,12 @@ def test_the_host_runner_is_a_shell_not_an_unattended_tui():
     unreachable on #2390."""
     s = HostCockpitSpawner(HostLadderConfig())
     runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 14400, tier=TIER_HOST)
-    assert "timeout --foreground 14400 bash -i" in runner
+    assert (f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} "
+            "14400 bash -i") in runner
     assert "./cfassist attach 1889 --print" in runner
-    assert "--no-session-token" in runner
+    assert 'attach --no-session-token "$@"' in runner, (
+        "wrapped attach must reuse the session token; a second mint's "
+        "revoke-on-exit never runs on an ssh drop")
     assert "PATH=/tmp/cfop-cockpit-1889/bin:/tmp/cfop-cockpit-1889:$PATH" in runner
     assert "this is a host shell" in runner
     assert "the model is: cfassist attach $CFOP_INVESTIGATION_ID" in runner
@@ -1357,22 +1361,58 @@ def test_the_runner_actually_removes_the_session_on_exit(tmp_path):
         f"the session directory survived the session: {proc.stdout}{proc.stderr}")
 
 
-def test_the_runner_reports_a_timed_out_session_rather_than_swallowing_it(tmp_path):
-    """`timeout` firing is exit 124, and a session that hit its TTL is a normal
-    outcome to pass back — but it must still clean up on the way out.
-
-    Timeout's child is bash (the host shell). A stub in the session directory
-    sleeps so the deadline can fire; --print still runs the cfassist stub and
-    is not the thing being timed."""
+def test_wrapped_attach_does_not_mint_a_second_token(tmp_path):
+    """MUTATION GUARD. The advertised ``cfassist attach $id`` goes through the
+    wrapper. Without ``--no-session-token`` it mints a child credential whose
+    revoke-on-exit never runs on an ssh drop."""
     import subprocess
 
-    directory = _materialise_session(tmp_path, ttl=1)
-    (directory / "bash").write_text('#!/bin/sh\nexec sleep 30\n')
+    directory = _materialise_session(tmp_path)
+    (directory / "bash").write_text("#!/bin/sh\ncfassist attach 1889\nexit 0\n")
     (directory / "bash").chmod(0o700)
     proc = subprocess.run(["/bin/sh", str(directory / "run")],
                           capture_output=True, text=True, timeout=30)
-    assert proc.returncode == 124
+    assert proc.returncode == 0, proc.stderr
+    assert "argv: attach --no-session-token 1889" in proc.stdout
+
+
+def test_the_runner_reports_a_timed_out_session_rather_than_swallowing_it(tmp_path):
+    """`timeout` firing is a non-zero exit, and a session that hit its TTL is
+    a normal outcome to pass back — but it must still clean up on the way out.
+
+    Timeout's child is bash. A stub in the session directory sleeps so the
+    deadline can fire; --print still runs the cfassist stub and is not the
+    thing being timed. Interactive bash's SIGTERM-ignore is guarded separately
+    — shadowing ``bash`` via PATH inside this runner fights shebang lookup."""
+    import subprocess
+
+    directory = _materialise_session(tmp_path, ttl=1)
+    (directory / "bash").write_text("#!/bin/sh\nexec sleep 30\n")
+    (directory / "bash").chmod(0o700)
+    proc = subprocess.run(["/bin/sh", str(directory / "run")],
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode in (124, 137), proc.returncode
     assert not directory.exists()
+
+
+def test_timeout_kill_after_reaches_a_bash_that_ignores_sigterm():
+    """MUTATION GUARD. Interactive bash ignores SIGTERM; timeout's default is
+    TERM-only. Drop ``--kill-after`` and this hangs until pytest's timeout
+    instead of returning in about ttl + kill-after."""
+    import subprocess
+    import time
+
+    t0 = time.time()
+    proc = subprocess.run(
+        ["timeout", "--foreground",
+         f"--kill-after={TIMEOUT_KILL_AFTER_SECONDS}", "1",
+         "bash", "-c", 'trap "" TERM; sleep 30'],
+        timeout=TIMEOUT_KILL_AFTER_SECONDS + 5,
+    )
+    elapsed = time.time() - t0
+    assert proc.returncode in (124, 137), proc.returncode
+    assert elapsed < TIMEOUT_KILL_AFTER_SECONDS + 3, (
+        f"SIGKILL did not bound the wait ({elapsed:.1f}s)")
 
 
 def test_the_runner_is_posix_sh_not_bash(tmp_path):
@@ -1771,7 +1811,8 @@ def test_the_deadline_is_still_enforced():
     process group."""
     s = HostCockpitSpawner(HostLadderConfig())
     runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 900, tier=TIER_HOST)
-    assert "timeout --foreground 900 " in runner
+    assert (f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} "
+            "900 bash -i") in runner
 
 
 # --------------------------------------------------------------------------
@@ -1792,7 +1833,8 @@ def test_the_runner_wraps_the_session_in_tmux_when_the_host_has_it():
     assert "CFOP_COCKPIT_TMUX=1" in runner, "nothing stops the created session recursing into tmux"
     assert "command -v tmux" in runner, "a host that lost tmux since the probe should fall through"
     # The session still runs under the deadline, inside tmux.
-    assert "timeout --foreground 14400 bash -i" in runner
+    assert (f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} "
+            "14400 bash -i") in runner
     assert "attach 1889 --print" in runner
 
 

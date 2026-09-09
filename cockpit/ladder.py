@@ -111,6 +111,13 @@ DEFAULT_SSH_CONNECT_TIMEOUT = 5
 DEFAULT_SSH_COMMAND_TIMEOUT = 30
 DEFAULT_JANITOR_INTERVAL_SECONDS = 15 * 60
 
+#: Interactive bash ignores SIGTERM. ``timeout``'s default is TERM-only, so
+#: without a kill-after the host shell outlives its TTL; the transient timer
+#: then removes the files under a still-running session. Five seconds is
+#: enough for a clean exit; SIGKILL is the bound. Children the operator
+#: started from the shell are still the janitor's job.
+TIMEOUT_KILL_AFTER_SECONDS = 5
+
 #: The release whose ``cfassist-linux-<arch>`` asset tiers 3/3b deliver. Pinned
 #: rather than "latest" so a session is reproducible, and asserted against
 #: ``cfassist-go/internal/config/config.go`` by the tests: bumping the CLI's
@@ -243,9 +250,10 @@ def choose_tier(
 ) -> Tuple[str, str]:
     """Pick the runtime tier, or explain why the requested one is impossible.
 
-    Returns ``(tier, note)``. The note is operator-facing and always says which
-    rung was chosen *and what was missing above it* — "host shell, docker
-    present but skipped" is a different incident from "bare host, no systemd".
+    Returns ``(tier, note)``. The note is operator-facing: host names the
+    login shell and who owns the transient unit; ssh names the systemd gaps
+    that kept it off host. Auto does not mention docker — container is skipped
+    on purpose (CFOP-166), not because it is missing.
 
     **Tier 1 is always attemptable.** The cluster is the one runtime that needs
     no host to be resolved first, so an investigation that names no machine
@@ -1269,11 +1277,13 @@ class HostCockpitSpawner:
         # COMMAND to read from the TTY and get TTY signals".
         #
         # The cost is that timeout can then only signal its direct child rather
-        # than a whole group. The child is bash; a cfassist the operator
-        # started from it may outlive the deadline. The janitor is the
-        # backstop for that, as it is for everything else this tier cannot
-        # guarantee.
-        wrapper = "timeout --foreground" if tier in (TIER_HOST, TIER_SSH) else ""
+        # than a whole group. Interactive bash ignores SIGTERM, so --kill-after
+        # is load-bearing: without it the shell outlives the TTL. A cfassist
+        # the operator started from the shell may still outlive both; the
+        # janitor is the backstop for that.
+        wrapper = (
+            f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS}"
+            if tier in (TIER_HOST, TIER_SSH) else "")
         name = session_name(investigation_id)
         head = [
             "#!/bin/sh",
@@ -1307,10 +1317,19 @@ class HostCockpitSpawner:
             f"trap 'rm -rf {shlex.quote(directory)}' EXIT INT TERM",
             "mkdir -p ./bin",
             # Wrapper so `cfassist attach` from the shell still uses the fleet
-            # LLM the TUI used to pass as --url/--model. The delivered binary
-            # does not read CFOP_COCKPIT_LLM_*.
+            # LLM the TUI used to pass as --url/--model (the binary does not
+            # read CFOP_COCKPIT_LLM_*), and does not mint a second token: the
+            # session already exported CFOP_API_TOKEN, and an ssh drop would
+            # skip attach's revoke-on-exit.
             "cat > ./bin/cfassist <<'WRAP'",
             "#!/bin/sh",
+            'if [ "$1" = "attach" ]; then',
+            "  shift",
+            f"  exec {shlex.quote(directory + '/cfassist')} "
+            '${CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"} '
+            '${CFOP_COCKPIT_LLM_MODEL:+--model "$CFOP_COCKPIT_LLM_MODEL"} '
+            'attach --no-session-token "$@"',
+            "fi",
             f"exec {shlex.quote(directory + '/cfassist')} "
             '${CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"} '
             '${CFOP_COCKPIT_LLM_MODEL:+--model "$CFOP_COCKPIT_LLM_MODEL"} '
