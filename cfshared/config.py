@@ -410,6 +410,9 @@ _LLM_ALIASES = {
     "model": "model",
     "timeout": "timeout",
     "api_key": "api_key",
+    # Optional, and deliberately without a schema default: absent means "send
+    # no options.num_ctx, keep the runner's window" (CFOP-168).
+    "num_ctx": "num_ctx",
 }
 
 

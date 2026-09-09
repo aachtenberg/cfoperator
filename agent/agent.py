@@ -6189,13 +6189,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
 
         try:
             if provider_type == 'ollama':
-                payload = {
-                    'model': model,
-                    'messages': messages,
-                    'stream': False,
-                    'temperature': 0.3,
-                    'format': 'json'
-                }
+                payload = self._ollama_chat_payload(model, messages, 0.3, format='json')
                 resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
                 text = resp.json().get('message', {}).get('content', '')
             elif provider_type in OPENAI_COMPAT_PROVIDERS:
@@ -6960,13 +6954,7 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
             ]
 
             if provider_type == 'ollama':
-                payload = {
-                    'model': model,
-                    'messages': messages,
-                    'stream': False,
-                    'temperature': 0.3,
-                    'format': 'json'
-                }
+                payload = self._ollama_chat_payload(model, messages, 0.3, format='json')
                 resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
                 data = resp.json()
                 text = data.get('message', {}).get('content', '')
@@ -7957,6 +7945,180 @@ Only return the JSON array, no other text."""
             logger.debug(f"Invalid chat.max_tool_result_chars config, using default: {e}")
         return 6000
 
+    # --- Ollama context window (CFOP-168) ------------------------------------
+    #
+    # Ollama loads a model with whatever window it picks (32768 for gemma4:26b
+    # on a 24 GB card) and the tool loop re-sends the whole history every
+    # iteration, so a long investigation fills the window, the runner clips
+    # the prompt (`n_tokens = 32767, truncated = 1`) and one turn of
+    # cfoperator_llm_latency_seconds runs into minutes (investigation #2400).
+    # Two levers, deliberately separate:
+    #   * the history bound below, always on — this is the fix;
+    #   * options.num_ctx, opt-in — a smaller KV cache, but only worth it when
+    #     every client of the model agrees on the number (see _ollama_num_ctx).
+
+    _OLLAMA_NUM_CTX_FLOOR = 2048
+    #: The window the history is budgeted against when no num_ctx is
+    #: configured. 16384 is the operator's number for gemma4:26b (remediation
+    #: #111): a healthy investigation turn is ~11k prompt tokens, so 8192 —
+    #: the first proposal — would truncate real work.
+    _OLLAMA_DEFAULT_WINDOW = 16384
+    _OLLAMA_HISTORY_FRACTION = 0.75
+    #: Most recent tool results of EARLIER turns never collapsed (the turn
+    #: just requested is kept whole regardless — see _bound_tool_history).
+    #: Four, not six: the tool schemas alone are ~4.6k tokens of every turn,
+    #: and six untouched 6000-char results (~9k tokens) would not fit a 16k
+    #: window beside them.
+    _OLLAMA_KEEP_RECENT_TOOL_RESULTS = 4
+    _COLLAPSED_TOOL_RESULT = json.dumps({
+        'collapsed': True,
+        'note': ("Earlier tool result dropped to fit the model's context window. "
+                 "Call the tool again if you still need it."),
+    })
+
+    def _ollama_num_ctx(self) -> Optional[int]:
+        """``options.num_ctx`` for Ollama chat calls, or None to send none.
+
+        Read from ``llm.primary.num_ctx`` (the flat ``llm.num_ctx`` alias folds
+        into it). None when the operator said nothing — and None means the
+        payload carries no ``options`` at all, so the runner keeps the window
+        Ollama chose. That is an absence with a meaning, not a missing
+        default: Ollama reloads a model whenever a request's num_ctx differs
+        from the loaded runner's (server/sched.go needsReload compares the
+        runner options for equality; only two "auto" sides are exempt), and
+        every other client of the same model — cfassist on every host —
+        sends none. A value here pays off only when the host's
+        OLLAMA_CONTEXT_LENGTH matches it; docs/config-reference.md says so.
+        Floored at 2048; no ceiling — the operator's card, the operator's number.
+        """
+        try:
+            val = self.config.get('llm', {}).get('primary', {}).get('num_ctx')
+        except AttributeError:
+            return None
+        if val in (None, ''):
+            return None
+        try:
+            num_ctx = int(val)
+        except (TypeError, ValueError):
+            logger.warning(f"Ignoring llm.primary.num_ctx={val!r}: not an integer")
+            return None
+        if num_ctx < self._OLLAMA_NUM_CTX_FLOOR:
+            logger.warning(f"llm.primary.num_ctx={num_ctx} raised to the "
+                           f"{self._OLLAMA_NUM_CTX_FLOOR} floor")
+            return self._OLLAMA_NUM_CTX_FLOOR
+        return num_ctx
+
+    def _ollama_history_budget(self) -> int:
+        """Estimated tokens the tool-loop history is kept under per turn.
+
+        A fraction of the configured num_ctx, or of the default window when
+        none is configured — so the bound applies today against a 32k runner
+        exactly as it will once num_ctx is set.
+        """
+        window = self._ollama_num_ctx() or self._OLLAMA_DEFAULT_WINDOW
+        return int(window * self._OLLAMA_HISTORY_FRACTION)
+
+    def _ollama_chat_payload(self, model: str, messages: list, temperature: float,
+                             format: Optional[str] = None,
+                             tools: Optional[list] = None) -> Dict[str, Any]:
+        """The one place an Ollama ``/api/chat`` body is assembled.
+
+        Four call sites used to build this dict by hand, and none of them
+        set ``options`` — which is how num_ctx went unsent for a year.
+        """
+        payload: Dict[str, Any] = {
+            'model': model,
+            'messages': messages,
+            'stream': False,
+            'temperature': temperature,
+        }
+        if format:
+            payload['format'] = format
+        if tools:
+            payload['tools'] = tools
+        num_ctx = self._ollama_num_ctx()
+        if num_ctx is not None:
+            # Ollama reads sampling parameters from `options` and nowhere
+            # else (api.ChatRequest has no top-level `temperature`), so the
+            # 0.3/0.7 the four sites always sent never applied. Carried here
+            # on the opt-in path only: the default path stays byte-identical
+            # to what shipped before this key existed. (Temperature is a
+            # sampling option, not a runner option, so it cannot cause a
+            # reload by itself — this is about not changing two things at
+            # once, not about the scheduler.)
+            payload['options'] = {'num_ctx': num_ctx, 'temperature': temperature}
+        return payload
+
+    @staticmethod
+    def _estimate_tokens(obj: Any) -> int:
+        """Cheap token estimate: chars/4 over the JSON form.
+
+        Measured against ollama's prompt_eval_count on gemma4:26b, chars/3.5
+        overstated by ~18%, so chars/4 lands within a few percent — good
+        enough for a bound whose purpose is to stop runaway growth, and it
+        never needs the model.
+        """
+        if obj is None:
+            return 0
+        text = obj if isinstance(obj, str) else json.dumps(obj, default=str)
+        return len(text) // 4
+
+    @classmethod
+    def _bound_tool_history(cls, full_messages: list, budget_tokens: int,
+                            fixed_tokens: int = 0,
+                            keep_recent: Optional[int] = None) -> int:
+        """Collapse the oldest tool results until the history fits the budget.
+
+        Mutates ``full_messages`` in place and returns how many results were
+        collapsed (0 = untouched). ``fixed_tokens`` is what the request
+        carries besides the messages — the tool schemas — so the budget is
+        the whole prompt, not just the history.
+
+        Never touched: the system message, every user turn, the assistant
+        tool-call messages (small, and the record of what was asked), every
+        result of the turn just requested — everything after the last
+        assistant message, because one message can carry several tool_calls
+        and the loop answers all of them before the next POST, so the model
+        must see what it just asked for — and the ``keep_recent`` most recent
+        results of earlier turns. Collapsing walks oldest-first and stops as
+        soon as the estimate fits; when even the untouchable parts exceed the
+        budget it collapses what it may and returns — the per-result cap
+        (chat.max_tool_result_chars) and the iteration cap still bound that
+        case.
+        """
+        if keep_recent is None:
+            keep_recent = cls._OLLAMA_KEEP_RECENT_TOOL_RESULTS
+        estimate = fixed_tokens + sum(cls._estimate_tokens(m) for m in full_messages)
+        if estimate <= budget_tokens:
+            return 0
+        before = estimate
+        last_assistant = max((i for i, m in enumerate(full_messages)
+                              if m.get('role') == 'assistant'), default=-1)
+        earlier = [i for i, m in enumerate(full_messages)
+                   if m.get('role') == 'tool' and i < last_assistant]
+        collapsible = earlier[:-keep_recent] if keep_recent > 0 else earlier
+        collapsed = 0
+        for i in collapsible:
+            msg = full_messages[i]
+            if msg.get('content') == cls._COLLAPSED_TOOL_RESULT:
+                continue
+            stub = dict(msg)
+            stub['content'] = cls._COLLAPSED_TOOL_RESULT
+            stub.pop('tool_results', None)
+            estimate += cls._estimate_tokens(stub) - cls._estimate_tokens(msg)
+            full_messages[i] = stub
+            collapsed += 1
+            if estimate <= budget_tokens:
+                break
+        if collapsed:
+            still = (" — still over; the turn just requested and the last "
+                     f"{keep_recent} earlier results are kept whole"
+                     if estimate > budget_tokens else "")
+            logger.info(f"[CHAT] collapsed {collapsed} older tool result(s) to fit the "
+                        f"context window: ~{before} -> ~{estimate} tokens "
+                        f"(budget {budget_tokens}){still}")
+        return collapsed
+
     @staticmethod
     def _serialize_tool_result(result: Any, max_chars: int) -> str:
         """JSON-serialize a tool result, truncating to max_chars.
@@ -8659,14 +8821,15 @@ Only return the JSON array, no other text."""
                     logger.info("[CHAT] final iteration — forcing an answer")
                 # Build payload for Ollama (OpenAI-compatible format)
                 if provider_type == 'ollama':
-                    payload = {
-                        'model': model,
-                        'messages': full_messages,
-                        'stream': False,
-                        'temperature': 0.7
-                    }
-                    if offered_tools:
-                        payload['tools'] = offered_tools
+                    # Everything below is re-sent on every iteration, and the
+                    # schemas ride along with it; keep the whole prompt inside
+                    # the window instead of letting the runner clip it
+                    # (CFOP-168).
+                    self._bound_tool_history(
+                        full_messages, self._ollama_history_budget(),
+                        fixed_tokens=self._estimate_tokens(offered_tools))
+                    payload = self._ollama_chat_payload(
+                        model, full_messages, 0.7, tools=offered_tools or None)
                     headers = {'Content-Type': 'application/json'}
                     logger.debug(f"[CHAT] POST to {url}/api/chat, roles={[m.get('role') for m in full_messages]}")
                     response = requests.post(
@@ -8952,12 +9115,7 @@ Only return the JSON array, no other text."""
             ]
 
             if provider_type == 'ollama':
-                payload = {
-                    'model': model,
-                    'messages': summary_messages,
-                    'stream': False,
-                    'temperature': 0.7
-                }
+                payload = self._ollama_chat_payload(model, summary_messages, 0.7)
                 response = requests.post(
                     f"{url}/api/chat",
                     json=payload,
