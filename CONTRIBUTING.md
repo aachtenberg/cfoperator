@@ -16,7 +16,7 @@ Each directory is its own invocation:
 pip install -r requirements.txt pytest
 
 # Per-directory suites: the directory itself, then the repo root
-for d in agent tools event_runtime executor changerecord worker mcp_server/tests bridge/tests; do
+for d in agent tools event_runtime executor changerecord tracker discovery worker mcp_server/tests bridge/tests; do
     PYTHONPATH="$d:$PWD" pytest "$d" -q || break
 done
 
@@ -84,4 +84,8 @@ The shipped backend list is short on purpose. Before writing one, open an
 **integration request** issue — partly so the work isn't duplicated, mostly
 because that issue is the demand signal that decides what gets built. The
 adapter walkthrough is in
-[docs/infrastructure-config.md](docs/infrastructure-config.md).
+[docs/infrastructure-config.md](docs/infrastructure-config.md). Issue-tracker
+backends are different: they live in the standalone `tracker/` service and
+register in `tracker/backends.py:BACKENDS`; a new one needs a fake-transport
+test beside the others and a live run before the capability matrix may call it
+shipped (see [docs/REMEDIATION.md](docs/REMEDIATION.md#tracker-hand-off-issue-trackers)).

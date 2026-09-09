@@ -23,7 +23,7 @@ Scopes form a hierarchy: `remediate` ⊃ `investigate` ⊃ `read`.
 |------|-------|-------|
 | `list_investigations(limit=20)` | read | Recent investigation summaries, newest first |
 | `get_investigation(investigation_id)` | read | Full findings + conclusion |
-| `list_remediations(status=None, limit=50)` | read | Queue rows; statuses: queued, claimed, executing, pr-open, verifying, resolved, failed, needs-human, rejected |
+| `list_remediations(status=None, limit=50)` | read | Queue rows; statuses: queued, claimed, executing, pr-open, verifying, resolved, failed, needs-human, filed (handed to the issue tracker), rejected |
 | `get_remediation(remediation_id)` | read | Full row: payload, result, PR URL |
 | `search_knowledge(query, limit=5)` | read | Hybrid vector+FTS over investigation learnings (FTS-only fallback; response `mode` says which) |
 | `triage_alert(summary, description?, severity?, labels?, alert_id?)` | investigate | One-shot LLM triage; returns the decision, enqueues nothing |

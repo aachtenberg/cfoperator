@@ -494,6 +494,16 @@ remediation:
   queue_drain: false
   queue_reap: false
   queue_verify: false
+  # CFOP-170: hand needs-human rows to an issue tracker (Plane / GitHub Issues /
+  # Jira) through the cfop-tracker service. A parked row with no PR is filed and
+  # moves to `filed` — out of the active list, groomed or discarded in the
+  # tracker, and the row follows (done → resolved, cancelled → rejected). Rows
+  # with a PR get an issue too, at high priority, and keep their status.
+  queue_tracker: false
+  max_tracker_per_tick: 10      # creates / comments / polls per tick
+  tracker:
+    url: ""                     # http://cfop-tracker.<ns>.svc.cluster.local:8092 (or CFOP_TRACKER_URL)
+    console_url: ""             # public console address for links in items (or CFOP_CONSOLE_URL); never guessed
   # The mutation judge (CFOP-70). Before a remediation that would auto-execute
   # is enqueued, a FRONTIER model is asked whether the change should be made
   # unattended at all — a different question from the one the classifier

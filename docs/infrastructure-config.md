@@ -28,6 +28,7 @@ ever disagree, the code is right and this table is a bug.
 | Containers | `kubernetes`, `docker`, `prometheus` (bare-metal discovery) | — | Nomad, ECS |
 | Alerts (ingest) | `alertmanager` | — | PagerDuty, Opsgenie |
 | Notifications (out) | `slack`, `discord`, `ntfy` | — | PagerDuty, Opsgenie, email |
+| Issue trackers (out) | `plane`, `github` (Issues) | `jira` (adapter shipped, **not live-tested**) | Linear, ServiceNow |
 
 **Why so short?** The design bet is that Prometheus + Loki + Alertmanager covers
 the target user — a self-hosted shop that will not send its logs to a SaaS. The

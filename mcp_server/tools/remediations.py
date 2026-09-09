@@ -10,7 +10,8 @@ def register(mcp, client, settings):
         """List remediation queue rows, optionally filtered by status.
 
         Statuses: queued, claimed, executing, pr-open, verifying, resolved,
-        failed, needs-human, rejected.
+        failed, needs-human, filed, rejected. ``filed`` = handed off to the
+        issue tracker (CFOP-170); the row's item key and URL are in its detail.
         Requires scope: read.
         """
         return await guarded(

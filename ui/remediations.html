@@ -144,6 +144,18 @@
 </table>
 <div id="empty" class="empty" hidden>No open remediations.</div>
 
+<!-- Handed off to the issue tracker (CFOP-170): noted, not a line item. -->
+<div id="filed-section" hidden>
+  <div class="divider">Filed to tracker <span id="filed-count" class="muted"></span></div>
+  <table>
+    <thead><tr>
+      <th>ID</th><th>Status</th><th>Class</th><th>Risk</th><th>Conf</th>
+      <th>Host</th><th>LLM</th><th>Recommendation</th><th>Age</th><th>PR</th>
+    </tr></thead>
+    <tbody id="rows-filed"></tbody>
+  </table>
+</div>
+
 <div id="done-section" hidden>
   <div class="divider">Closed <span id="done-count" class="muted"></span></div>
   <table>
@@ -164,9 +176,12 @@
      the script below calls them at top level. -->
 <script src="/common.js"></script>
 <script>
-const STATUS = ['queued','claimed','executing','pr-open','verifying','resolved','failed','needs-human','rejected'];
+const STATUS = ['queued','claimed','executing','pr-open','verifying','resolved','failed','needs-human','filed','rejected'];
 const SC = {queued:'--cyan',claimed:'--orange',executing:'--orange','pr-open':'--purple',
-  verifying:'--cyan',resolved:'--accent',failed:'--red','needs-human':'--orange',rejected:'--text-muted'};
+  verifying:'--cyan',resolved:'--accent',failed:'--red','needs-human':'--orange',rejected:'--text-muted',
+  // filed (CFOP-170): handed to the issue tracker. Quiet on purpose — it is
+  // noted, not asking for attention; the orange of needs-human is what it left.
+  filed:'--text-secondary'};
 const RC = {low:'--accent',med:'--orange',high:'--red'};
 let filter = '';
 
@@ -195,6 +210,9 @@ function signature(){
     // unrelated to the record happens to the row.
     return [r.id,r.status,r.remediation_class,r.risk,r.confidence,r.host_id,p.provider,
       String(p.recommendation||p.title||'').slice(0,160),r.pr_url,r.named_pr_url,
+      // The tracker item lands on a row by a background tick, often as the
+      // ONLY change on a poll -- same trap as the change record above.
+      r.tracker_url,r.tracker_state,
       ((r.result||{}).change_record||{}).url].join('\u0001'); }).join('\n');
 }
 async function load(){
@@ -209,7 +227,7 @@ function paint(){ tiles(ALL); render(filter ? ALL.filter(r=>r.status===filter) :
 
 function tiles(rows){
   const c = {}; STATUS.forEach(s=>c[s]=0); rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);
-  const show = ['queued','needs-human','pr-open','resolved','rejected','failed'];
+  const show = ['queued','needs-human','filed','pr-open','resolved','rejected','failed'];
   document.getElementById('tiles').innerHTML = show.map(s=>
     `<div class="tile"><div class="n" style="color:${color(SC[s])}">${c[s]||0}</div><div class="l">${s}</div></div>`).join('');
   document.getElementById('filters').innerHTML =
@@ -255,6 +273,12 @@ function rowHtml(r){
     : ' title="named in the recommendation; not tracked by this row"';
   const prLabel = (!safeUrl(r.pr_url) && crHref) ? 'record ↗' : 'PR ↗';
   const pr = prHref ? `<a href="${esc(prHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"${prTitle}>${prLabel}</a>` : '—';
+  // The issue this row was handed to (CFOP-170). Its own link beside the PR
+  // cell's precedence chain, not inside it: a filed row has no PR at all, and
+  // a PR-open row has both and the operator wants both.
+  const trHref = safeUrl(r.tracker_url);
+  const tr = trHref ? `<a href="${esc(trHref)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="the issue-tracker item this row was handed to">${esc(r.tracker_key||'issue')} ↗</a>` : '';
+  const prCell = tr ? (pr==='—' ? tr : `${pr} · ${tr}`) : pr;
   return `<tr id="row-${r.id}" tabindex="0" onclick="detail(${r.id})" onkeydown="rowKey(event,${r.id})">
     <td class="mono">#${r.id}</td>
     <td>${badge(r.status, SC[r.status]||'--text-muted')}</td>
@@ -265,14 +289,23 @@ function rowHtml(r){
     <td>${llm}</td>
     <td class="rec">${esc(String(rec).slice(0,160))}</td>
     <td class="muted" data-age="${esc(r.created_at||'')}">${age(r.created_at)}</td>
-    <td>${pr}</td></tr>`;
+    <td>${prCell}</td></tr>`;
 }
+// Three buckets (CFOP-170): active, filed, closed. A filed row was handed to
+// the issue tracker — it is noted here with its key, and it is not a line item
+// asking someone to open it and iterate with the LLM again. The tracker's
+// backlog is where it gets groomed or discarded, and the row follows.
+const FILED = 'filed';
 function render(rows){
-  const active = rows.filter(r=>!TERMINAL.has(r.status));
+  const active = rows.filter(r=>!TERMINAL.has(r.status) && r.status!==FILED);
+  const filed = rows.filter(r=>r.status===FILED);
   const done = rows.filter(r=>TERMINAL.has(r.status));
   const focused = focusedRow();
   document.getElementById('rows').innerHTML = active.map(rowHtml).join('');
   document.getElementById('empty').hidden = active.length>0;
+  document.getElementById('rows-filed').innerHTML = filed.map(rowHtml).join('');
+  document.getElementById('filed-section').hidden = filed.length===0;
+  document.getElementById('filed-count').textContent = filed.length ? `(${filed.length})` : '';
   document.getElementById('rows-done').innerHTML = done.map(rowHtml).join('');
   document.getElementById('done-section').hidden = done.length===0;
   document.getElementById('done-count').textContent = done.length ? `(${done.length})` : '';
@@ -333,6 +366,7 @@ async function detail(id){
         : `<button class="chip" onclick="approve(${r.id})">✓ Approve → queue</button>`}
       ${!awaitingRecordMerge(r)?changeRecordChip(r):''}
       ${!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)?`<a class="chip" href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">↗ Named PR</a>`:''}
+      ${trackerChip(r)}
       <button class="chip" onclick="showResolve(${r.id})">✔ Resolve</button>
       <button class="chip" onclick="showReject(${r.id})">✕ Reject</button>
       ${r.remediation_class==='manual'?'':`<button class="chip" onclick="showReclassify(${r.id})">⟳ Reclassify</button>`}
@@ -340,6 +374,7 @@ async function detail(id){
       <a class="chip" href="/?remediation=${Number(r.id)}" title="open the console chat on this row">💬 Ask console</a>
     </div>
     ${r.remediation_class==='manual'?`<div class="muted" style="margin:0 0 8px">manual = human-only work: the executor has nothing to run. Reclassify it (gitops-patch / k8s-action / node-action) for the executor, or do it by hand and ✔ Resolve.</div>`:''}
+    ${r.status===FILED?`<div class="muted" style="margin:0 0 8px">${trackerCopy(r)}</div>`:''}
     ${r.remediation_class!=='manual'&&safeUrl(r.pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">a PR is open for this row: merge it and the reconciler resolves the row; close it and the row is rejected. Approve is off — the executor would open a second PR.</div>`:''}
     ${r.remediation_class!=='manual'&&!safeUrl(r.pr_url)&&safeUrl(r.named_pr_url)&&!TERMINAL.has(r.status)?`<div class="muted" style="margin:0 0 8px">the recommendation names a PR in this repo that no row tracks. If that PR is the fix, merge it and ✔ Resolve; Approve would have the executor open another.</div>`:''}
     <div id="actionform"></div>
@@ -355,6 +390,7 @@ async function detail(id){
     ${safeUrl(r.pr_url)?`<div class="kv"><b>PR</b> <a href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.pr_url)}</a></div>`
       :safeUrl(r.named_pr_url)?`<div class="kv"><b>PR named</b> <a href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.named_pr_url)}</a> <span class="muted">not tracked by this row</span></div>`:''}
     ${prAttemptHtml(p.pr_attempt)}
+    ${trackerHtml(r)}
     ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
     ${changeRecordHtml(r)}
     ${resolutionHtml(r)}
@@ -458,6 +494,30 @@ function changeRecordHtml(r){
     (waiting&&href?`<div class="muted" style="margin:0 0 8px">this row is waiting on a human, not stuck: merging the record PR authorises exactly the commands above and the executor then runs them. Closing it without merging fails the row instead.</div>`:'');
 }
 
+// The issue-tracker item this row was handed to (CFOP-170). Read from the
+// fields the API derives from result.tracker — never from pr_url: a filed row
+// has no PR, and the "a PR is already open" copy above must not fire for an
+// issue link. The drawer shows the key, what the item was last told, and the
+// last error if the tick could not reach the tracker.
+function trackerInfo(r){ const t=(r.result||{}).tracker; return (t&&typeof t==='object')?t:null; }
+function trackerChip(r){
+  const href=safeUrl(r.tracker_url);
+  return href?`<a class="chip" href="${esc(href)}" target="_blank" rel="noopener noreferrer" title="the issue this row was handed to">↗ ${esc(r.tracker_key||'Issue')}</a>`:'';
+}
+function trackerCopy(r){
+  return `handed off to the issue tracker as ${esc(r.tracker_key||'an issue')}: groom or discard it there and this row follows (done → resolved, cancelled → rejected). ✔ Resolve here closes the issue; Approve hands the row to the executor and the issue is told.`;
+}
+function trackerHtml(r){
+  const t=trackerInfo(r); if(!t) return '';
+  const href=safeUrl(r.tracker_url||t.url);
+  const key=r.tracker_key||t.key||'';
+  return `<div class="kv"><b>tracker</b> `+
+    (href?`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(key||href)}</a>`:esc(key||'—'))+
+    (t.synced_status?` <span class="muted">· synced ${esc(t.synced_status)}${t.synced_at?' at '+esc(t.synced_at):''}</span>`:'')+
+    (t.error?`<br><span style="color:var(--orange)">last tracker error: ${esc(t.error)}${t.error_count?' ('+Number(t.error_count)+'×)':''}</span>`:'')+
+    `</div>`;
+}
+
 // Every resolved row gets a close line (so completed_at is always visible),
 // whichever path closed it. Closed-by-hand rows also carry the why in
 // result.resolution_note — last_error is for failures only. Attribution is
@@ -476,7 +536,7 @@ function resolutionHtml(r){
 function setFilter(s){ filter=s; paint(); }
 
 // ---- pipeline flags + run-feed ----
-const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify'};
+const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify',queue_tracker:'tracker'};
 async function loadFlags(){
   let f; try{ f = await (await fetch('/api/remediation/flags')).json(); }catch(e){ return; }
   document.getElementById('flags').innerHTML = Object.keys(FLAG_LABEL).map(k=>
@@ -484,7 +544,16 @@ async function loadFlags(){
 }
 function toggleFlag(name,value){
   if(name==='queue_drain' && value){ confirmDrain(); return; }  // inline confirm, no popup
+  if(name==='queue_tracker' && value){ confirmTracker(); return; }
   setFlag(name,value);
+}
+// Turning the tracker on files EVERY parked row without a PR over the next few
+// ticks (bounded per tick). Worth a sentence before it happens.
+function confirmTracker(){
+  document.getElementById('feedmsg').innerHTML =
+    `<span style="color:var(--orange)">Enable tracker — every needs-human row without a PR is filed to the issue tracker and moves to "filed"; rows with a PR get an issue too.</span> ` +
+    `<button class="chip" onclick="setFlag('queue_tracker',true);clearMsg()">Yes, enable</button> ` +
+    `<button class="chip" onclick="clearMsg()">Cancel</button>`;
 }
 function confirmDrain(){
   document.getElementById('feedmsg').innerHTML =

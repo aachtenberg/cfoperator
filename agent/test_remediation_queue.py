@@ -3630,3 +3630,31 @@ def test_unset_is_still_the_path_back_to_the_ceiling():
     # console must restore the full ceiling, which is what '' means.
     env = _manifest_env(_allowlist_op(selected_b="", selected_v=""))
     assert env["CFOP_NODE_ACTION_ALLOW_BINARIES"] == "chmod,chown,systemctl"
+
+
+# --- filed (CFOP-170): handed to the issue tracker ---------------------------
+
+def test_filed_is_a_known_status_and_still_paperwork():
+    """'filed' must be in the CHECK vocabulary (or the first hand-off dies on
+    the constraint inside the worker tick), non-terminal for dedupe, and
+    closable by a recovered node like the other pure-paperwork rows."""
+    from knowledge_base import (REMEDIATION_STATUS_CHECK_SQL, _REMEDIATION_STATUSES,
+                                node_incident_is_auto_resolvable)
+    assert "filed" in _REMEDIATION_STATUSES
+    assert "'filed'" in REMEDIATION_STATUS_CHECK_SQL
+    assert node_incident_is_auto_resolvable("filed") is True
+    assert node_incident_is_auto_resolvable("pr-open") is False
+
+
+def test_status_constraint_widening_is_vocabulary_aware():
+    """The startup widen fires for a database made before 'filed' existed and
+    stays quiet for one that already admits it — the same
+    constraint_admits_outcomes contract the class widen relies on."""
+    from knowledge_base import _REMEDIATION_STATUSES, constraint_admits_outcomes
+    old_nine = ("CHECK (((status)::text = ANY ((ARRAY['queued'::character varying, "
+                "'claimed'::character varying, 'executing'::character varying, "
+                "'pr-open'::character varying, 'verifying'::character varying, "
+                "'resolved'::character varying, 'failed'::character varying, "
+                "'needs-human'::character varying, 'rejected'::character varying])::text[])))")
+    assert constraint_admits_outcomes(old_nine, set(_REMEDIATION_STATUSES)) is False
+    assert constraint_admits_outcomes(old_nine + " 'filed'", set(_REMEDIATION_STATUSES)) is True

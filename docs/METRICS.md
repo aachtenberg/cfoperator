@@ -388,6 +388,10 @@ cfoperator_remediation_outcome_total{outcome="resolved"}
 
 # The human gate: approve/reject from the console (CFOP-163)
 cfoperator_remediation_human_decisions_total{decision="approve"}
+
+# The issue-tracker hand-off (CFOP-170): rows filed, and the tracker closing them
+cfoperator_remediation_tracker_total{action="create",outcome="ok"}
+cfoperator_remediation_queue{status="filed"}
 ```
 
 `judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
@@ -407,12 +411,14 @@ shipped several examples that could never match.
 | `cfoperator_pool_health_checks_total` | `result` | `healthy`, `unreachable` |
 | `cfoperator_sweep_duration_seconds` | `mode` | `parallel`, `sequential` |
 | `cfoperator_sweeps_total` | `mode` | `proactive`, `reactive` |
-| `cfoperator_remediation_queue` | `status` | the nine queue states — `queued`, `claimed`, `executing`, `pr-open`, `verifying`, `resolved`, `failed`, `needs-human`, `rejected` |
+| `cfoperator_remediation_queue` | `status` | the ten queue states — `queued`, `claimed`, `executing`, `pr-open`, `verifying`, `resolved`, `failed`, `needs-human`, `filed`, `rejected` |
 | `cfoperator_remediation_classifier_total` | `result` | `ok`, `nudged`, `escalated`, `degraded` |
 | `cfoperator_remediation_folded_total` | `reason` | `repeat`, `fork_committed`, `fork_stuck`, `investigate_followup` |
 | `cfoperator_remediation_judge_total` | `verdict` | `confirm`, `downgrade`, `reject`, `unavailable`, `unparseable`, `self-review-skipped` |
 | `cfoperator_remediation_executor_spawned_total` | `result` | `ok`, `capped`, `failed` |
 | `cfoperator_remediation_outcome_total` | `outcome` | `resolved`, `rejected` |
+| `cfoperator_remediation_tracker_total` | `action` | `create`, `repark`, `comment`, `transition`, `reconcile` |
+| `cfoperator_remediation_tracker_total` | `outcome` | `ok`, `error` |
 | `cfoperator_remediation_enqueued_total` | `eligible` | `true`, `false` (`str(bool).lower()`) |
 | `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate` |
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |
