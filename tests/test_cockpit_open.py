@@ -479,6 +479,38 @@ def test_open_refuses_a_hostless_investigation_with_the_host_flag_as_the_fix(sto
 # a node that is also a host (CFOP-98)
 # --------------------------------------------------------------------------
 
+def test_open_on_a_docker_host_is_still_a_host_shell(store):
+    """CFOP-166 / #2390: docker on the box is not a reason to put the session
+    in a namespace that cannot see ~/.kube or the host journal."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes", systemd_run="yes",
+                                            user_systemd="yes"), ""),))
+    client, _ = _client(ssh, store=store, cockpit=bridge_on())
+    resp = client.post(f"/api/cockpit/{INV}/open", json={})
+    assert resp.status_code == 201, resp.get_json()
+    body = resp.get_json()
+    assert body["tier"] == TIER_HOST and body["host"] == "raspberrypi5"
+    assert "login shell" in body["tier_note"]
+    assert "container" not in body["tier_note"]
+    assert not any("docker run" in c for c in ssh.commands)
+
+
+def test_open_on_a_cluster_node_with_docker_is_still_the_host_shell(store):
+    """The #2390 shape: Phase B off, the node is also inventory, and docker
+    is installed. Auto must still be a host shell, not a container."""
+    ssh = FakeSSH(("uname", (0, probe_reply(docker="yes", systemd_run="yes",
+                                            user_systemd="yes"), ""),))
+    client, server = _client(ssh, store=store, cockpit=bridge_on(),
+                             node_names=("raspberrypi5",))
+    resp = client.post(f"/api/cockpit/{INV}/open", json={})
+    assert resp.status_code == 201, resp.get_json()
+    body = resp.get_json()
+    assert body["tier"] == TIER_HOST
+    assert "login shell" in body["tier_note"]
+    assert "cluster node too" in body["tier_note"]
+    assert not any(c[0] == "create" for c in server._kubectl_calls)
+    assert not any("docker run" in c for c in ssh.commands)
+
+
 def test_open_takes_the_host_tier_on_a_node_that_is_also_an_inventory_host(store):
     """raspberrypi5 is a schedulable node *and* an infrastructure.hosts entry —
     the shape of every Pi in a homelab. The terminal's auto says pod; the

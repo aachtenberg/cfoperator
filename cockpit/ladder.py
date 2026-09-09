@@ -77,7 +77,8 @@ TIER_HOST = "host"
 TIER_SSH = "ssh"
 TIER_AUTO = "auto"
 
-#: Highest-first. ``choose_tier`` walks this, so the order *is* the ladder.
+#: Highest-first. Used to list what is available and to validate ``--tier``.
+#: Auto no longer walks container (CFOP-166): a host cockpit is a login shell.
 TIER_ORDER = (TIER_POD, TIER_CONTAINER, TIER_HOST, TIER_SSH)
 VALID_TIERS = frozenset(TIER_ORDER) | {TIER_AUTO}
 
@@ -243,8 +244,8 @@ def choose_tier(
     """Pick the runtime tier, or explain why the requested one is impossible.
 
     Returns ``(tier, note)``. The note is operator-facing and always says which
-    rung was chosen *and what was missing above it* — "docker host, no cluster
-    membership" is a different incident from "bare host, docker gone".
+    rung was chosen *and what was missing above it* — "host shell, docker
+    present but skipped" is a different incident from "bare host, no systemd".
 
     **Tier 1 is always attemptable.** The cluster is the one runtime that needs
     no host to be resolved first, so an investigation that names no machine
@@ -289,7 +290,11 @@ def choose_tier(
         return TIER_POD, (f"tier pod — the affected host could not be probed "
                           f"({caps.error}); spawned in the cluster instead")
 
-    for tier in (TIER_CONTAINER, TIER_HOST, TIER_SSH):
+    # Auto skips container (CFOP-166): a docker namespace has neither the
+    # login kubeconfig nor the host journal, which is why a cockpit on a
+    # k8s node was unable to kubectl. Explicit --tier container still
+    # selects it — that request is the isolation wall.
+    for tier in (TIER_HOST, TIER_SSH):
         if tier in available:
             return tier, _auto_note(tier, caps)
     return TIER_POD, "tier pod — nothing else is available on the affected host"
@@ -323,12 +328,8 @@ def _auto_note(tier: str, caps: Optional[HostCapabilities]) -> str:
         return f"tier container — {caps.container_runtime} on {caps.arch}"
     if tier == TIER_HOST:
         owner = "user systemd" if caps and caps.user_systemd else "sudo systemd"
-        return f"tier host — no container runtime; transient unit via {owner}"
+        return f"tier host — login shell on the machine; transient unit via {owner}"
     missing = []
-    if caps and not caps.container_runtime:
-        missing.append("no container runtime")
-    elif caps and caps.arch not in CONTAINER_ARCHES:
-        missing.append(f"no cockpit image for {caps.arch or 'this arch'}")
     if caps and not caps.systemd_run:
         missing.append("no systemd-run")
     elif caps and not caps.user_systemd:
@@ -1255,7 +1256,7 @@ class HostCockpitSpawner:
         create-or-attach a tmux session named for the investigation, so a
         dropped connection does not end the session: a second ``ssh … run`` —
         from the console drawer or a laptop's ``cfassist attach`` — rejoins the
-        *same* TUI. The bridge's attach argv does not change; the decision
+        *same* shell. The bridge's attach argv does not change; the decision
         lives in the script it runs. Everything below the front-door is the
         session, and it runs inside tmux, so the deadline still bounds it.
         """
@@ -1263,18 +1264,15 @@ class HostCockpitSpawner:
         # Plain `timeout` calls setpgid, putting the command in its OWN process
         # group — which is then a BACKGROUND group with respect to the
         # terminal. A background process reading the tty gets SIGTTIN, and
-        # ctrl-c's SIGINT goes to the foreground group (the shell) instead. The
-        # session therefore renders its briefing, echoes every keystroke, and
-        # responds to none of them, with no way out but killing the ssh.
-        # timeout(1) documents this exactly: "--foreground: allow COMMAND to
-        # read from the TTY and get TTY signals".
+        # ctrl-c's SIGINT goes to the foreground group (the wrapping shell)
+        # instead. timeout(1) documents this exactly: "--foreground: allow
+        # COMMAND to read from the TTY and get TTY signals".
         #
         # The cost is that timeout can then only signal its direct child rather
-        # than a whole group. That is fine here — cfassist is the direct child,
-        # and it is a binary rather than a shell wrapping one — but it does mean
-        # a child cfassist spawned and abandoned would outlive the deadline. The
-        # janitor is the backstop for that, as it is for everything else this
-        # tier cannot guarantee.
+        # than a whole group. The child is bash; a cfassist the operator
+        # started from it may outlive the deadline. The janitor is the
+        # backstop for that, as it is for everything else this tier cannot
+        # guarantee.
         wrapper = "timeout --foreground" if tier in (TIER_HOST, TIER_SSH) else ""
         name = session_name(investigation_id)
         head = [
@@ -1307,28 +1305,42 @@ class HostCockpitSpawner:
             # the thing "leaves nothing behind" promises they do not. One extra
             # shell process is the price of the cleanup actually happening.
             f"trap 'rm -rf {shlex.quote(directory)}' EXIT INT TERM",
+            "mkdir -p ./bin",
+            # Wrapper so `cfassist attach` from the shell still uses the fleet
+            # LLM the TUI used to pass as --url/--model. The delivered binary
+            # does not read CFOP_COCKPIT_LLM_*.
+            "cat > ./bin/cfassist <<'WRAP'",
+            "#!/bin/sh",
+            f"exec {shlex.quote(directory + '/cfassist')} "
+            '${CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"} '
+            '${CFOP_COCKPIT_LLM_MODEL:+--model "$CFOP_COCKPIT_LLM_MODEL"} '
+            '"$@"',
+            "WRAP",
+            "chmod 700 ./bin/cfassist",
+            # bin first so `cfassist` is the wrapper, then the session dir.
+            f"PATH={shlex.quote(directory + '/bin')}:{shlex.quote(directory)}:$PATH",
+            "export PATH",
             'echo "cockpit — investigation #{} — {}"'.format(
                 investigation_id, "no isolation: this session runs directly on the host"),
+            'echo "this is a host shell. kubectl and journalctl are this login\'s."',
+            'echo "the model is: cfassist attach $CFOP_INVESTIGATION_ID"',
             'echo "the session token dies with this session, or at its TTL."',
+            # Best-effort: a recycled host may not reach the agent yet, and
+            # the shell is still the point of being here (CFOP-166).
+            f'./cfassist attach {investigation_id} --print '
+            '--agent-url "$CFOP_AGENT_URL" --no-session-token || true',
             # CFOP-146: wrap ssh so the session uses the delivered inventory
             # config without overwriting the login user's ~/.ssh.
             "if [ -f ./config ]; then",
-            "  mkdir -p ./bin",
             "  cat > ./bin/ssh <<'WRAP'",
             "#!/bin/sh",
             f"exec /usr/bin/ssh -F {directory}/config \"$@\"",
             "WRAP",
             "  chmod 700 ./bin/ssh",
-            f"  PATH={shlex.quote(directory + '/bin')}:$PATH",
-            "  export PATH",
             '  echo "ssh: inventory hosts from the session config '
             '(same names as infrastructure.hosts)"',
             "fi",
-            (f"{wrapper} {int(ttl_seconds)} ./cfassist attach {investigation_id} "
-             f'--agent-url "$CFOP_AGENT_URL" --no-session-token '
-             f'${{CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"}} '
-             f'${{CFOP_COCKPIT_LLM_MODEL:+--model "$CFOP_COCKPIT_LLM_MODEL"}} '
-             "|| status=$?"),
+            (f"{wrapper} {int(ttl_seconds)} bash -i || status=$?"),
             # `set -e` would take the exit before the trap could report it, and
             # a session that ends non-zero (timeout fires: 124) is a normal
             # outcome to pass back rather than a failure to swallow.

@@ -231,15 +231,37 @@ def test_an_unreachable_host_degrades_to_a_pod_and_names_the_reason():
     assert "could not be probed" in note and "publickey" in note
 
 
-def test_docker_on_a_supported_arch_is_tier_two():
+def test_auto_on_a_docker_host_is_a_host_shell_not_a_container():
+    """MUTATION GUARD (CFOP-166 / #2390). Docker is present; auto still lands
+    on the host so kubectl and journalctl are this login's. Walking container
+    first again fails this."""
+    caps = parse_probe(probe_reply(arch="aarch64", docker="yes",
+                                   systemd_run="yes", user_systemd="yes"))
+    tier, note = choose_tier(caps, has_host=True)
+    assert tier == TIER_HOST
+    assert "login shell" in note
+    assert "container" not in note
+
+
+def test_docker_without_systemd_skips_container_and_lands_on_ssh():
     caps = parse_probe(probe_reply(arch="aarch64", docker="yes"))
     tier, note = choose_tier(caps, has_host=True)
-    assert tier == TIER_CONTAINER and "docker" in note
+    assert tier == TIER_SSH
+    assert "no systemd-run" in note
+    assert "no container runtime" not in note
 
 
-def test_podman_counts_as_a_container_runtime():
+def test_podman_still_makes_container_available_when_asked_for():
+    """Auto skips container; ``--tier container`` is the isolation wall."""
     caps = parse_probe(probe_reply(podman="yes"))
-    assert choose_tier(caps, has_host=True)[0] == TIER_CONTAINER
+    assert choose_tier(caps, has_host=True)[0] == TIER_SSH
+    assert choose_tier(caps, requested=TIER_CONTAINER, has_host=True)[0] == TIER_CONTAINER
+
+
+def test_explicit_container_still_selects_the_isolation_wall():
+    caps = parse_probe(probe_reply(docker="yes", systemd_run="yes", user_systemd="yes"))
+    tier, note = choose_tier(caps, requested=TIER_CONTAINER, has_host=True)
+    assert tier == TIER_CONTAINER and "requested" in note
 
 
 def test_a_32bit_host_degrades_past_the_container_tier():
@@ -271,7 +293,8 @@ def test_the_bottom_rung_says_what_it_is_missing():
     caps = parse_probe(probe_reply())
     tier, note = choose_tier(caps, has_host=True)
     assert tier == TIER_SSH
-    assert "no container runtime" in note and "no systemd-run" in note
+    assert "no systemd-run" in note
+    assert "no container runtime" not in note
 
 
 def test_a_forced_tier_that_is_unavailable_is_an_error_not_a_downgrade():
@@ -795,6 +818,23 @@ def test_the_runner_reads_the_token_from_the_file_and_mints_nothing():
     assert "trap 'rm -rf /tmp/cfop-cockpit-1889' EXIT" in runner
 
 
+def test_the_host_runner_is_a_shell_not_an_unattended_tui():
+    """MUTATION GUARD (CFOP-166). The session is a login shell; cfassist is a
+    command in it. Putting ``cfassist attach`` back as timeout's child without
+    ``--print`` fails this — that is the TUI-as-PID-1 shape that left kubectl
+    unreachable on #2390."""
+    s = HostCockpitSpawner(HostLadderConfig())
+    runner = s._runner_script(1889, "/tmp/cfop-cockpit-1889", 14400, tier=TIER_HOST)
+    assert "timeout --foreground 14400 bash -i" in runner
+    assert "./cfassist attach 1889 --print" in runner
+    assert "--no-session-token" in runner
+    assert "PATH=/tmp/cfop-cockpit-1889/bin:/tmp/cfop-cockpit-1889:$PATH" in runner
+    assert "this is a host shell" in runner
+    assert "the model is: cfassist attach $CFOP_INVESTIGATION_ID" in runner
+    assert 'exec /tmp/cfop-cockpit-1889/cfassist ${CFOP_COCKPIT_LLM_URL:+--url "$CFOP_COCKPIT_LLM_URL"}' in runner
+    assert "timeout --foreground 14400 ./cfassist attach" not in runner
+
+
 def timer_commands(ssh):
     """The self-destruct invocations only. The probe script mentions
     systemd-run too — it is looking for it — so a bare-word match would find
@@ -1297,14 +1337,21 @@ def test_the_runner_actually_removes_the_session_on_exit(tmp_path):
     which replaces the shell — and a replaced shell runs no traps, so the
     credential and the binary survived every ordinary exit. "Leaves nothing
     behind" is the promise the whole tier rests on, and pattern-matching the
-    script would not have caught it. So: run it, and look."""
+    script would not have caught it. So: run it, and look.
+
+    A stub ``bash`` in the session directory wins PATH so this does not wait
+    on a real interactive prompt; timeout's child is still a process named
+    bash, which is the production shape (CFOP-166)."""
     import subprocess
 
     directory = _materialise_session(tmp_path)
+    (directory / "bash").write_text('#!/bin/sh\necho "shell: $*"\nexit 0\n')
+    (directory / "bash").chmod(0o700)
     proc = subprocess.run(["/bin/sh", str(directory / "run")],
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
-    assert "argv: attach 1889" in proc.stdout
+    assert "argv: attach 1889 --print" in proc.stdout
+    assert "shell: -i" in proc.stdout
     assert SECRET in proc.stdout, "the session must inherit the dying credential"
     assert not directory.exists(), (
         f"the session directory survived the session: {proc.stdout}{proc.stderr}")
@@ -1312,16 +1359,16 @@ def test_the_runner_actually_removes_the_session_on_exit(tmp_path):
 
 def test_the_runner_reports_a_timed_out_session_rather_than_swallowing_it(tmp_path):
     """`timeout` firing is exit 124, and a session that hit its TTL is a normal
-    outcome to pass back — but it must still clean up on the way out."""
+    outcome to pass back — but it must still clean up on the way out.
+
+    Timeout's child is bash (the host shell). A stub in the session directory
+    sleeps so the deadline can fire; --print still runs the cfassist stub and
+    is not the thing being timed."""
     import subprocess
 
     directory = _materialise_session(tmp_path, ttl=1)
-    # `exec`, so the thing being timed out IS timeout's direct child — which is
-    # the real shape: cfassist is a binary, not a shell wrapping one. It matters
-    # because --foreground (see the guards below) trades whole-group kills for a
-    # usable terminal, so timeout signals the direct child only.
-    (directory / "cfassist").write_text('#!/bin/sh\nexec sleep 30\n')
-    (directory / "cfassist").chmod(0o700)
+    (directory / "bash").write_text('#!/bin/sh\nexec sleep 30\n')
+    (directory / "bash").chmod(0o700)
     proc = subprocess.run(["/bin/sh", str(directory / "run")],
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 124
@@ -1695,9 +1742,8 @@ def test_the_deadline_wrapper_leaves_the_session_in_the_foreground():
 
     Plain `timeout` calls setpgid, putting the command in its own process
     group — which is a BACKGROUND group with respect to the terminal. The
-    session then renders its briefing, echoes every keystroke, and responds to
-    none of them: reads from the tty raise SIGTTIN, and ctrl-c's SIGINT goes to
-    the shell instead. The only way out is killing the ssh.
+    session then cannot read the tty (SIGTTIN), and ctrl-c's SIGINT goes to
+    the wrapping shell instead. The only way out is killing the ssh.
 
     Verified on the box: without the flag `PGID != TPGID`, with it they match.
     """
@@ -1735,7 +1781,7 @@ def test_the_deadline_is_still_enforced():
 def test_the_runner_wraps_the_session_in_tmux_when_the_host_has_it():
     """A dropped connection must not end the session: the runner's first act is
     to create-or-attach a tmux session named for the investigation, so a second
-    ssh rejoins the same TUI."""
+    ssh rejoins the same shell."""
     ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes",
                                             tmux="yes"), "")))
     _ssh, _result = host_spawn(ssh=ssh)
@@ -1746,8 +1792,8 @@ def test_the_runner_wraps_the_session_in_tmux_when_the_host_has_it():
     assert "CFOP_COCKPIT_TMUX=1" in runner, "nothing stops the created session recursing into tmux"
     assert "command -v tmux" in runner, "a host that lost tmux since the probe should fall through"
     # The session still runs under the deadline, inside tmux.
-    assert "timeout --foreground 14400" in runner
-    assert "attach 1889" in runner
+    assert "timeout --foreground 14400 bash -i" in runner
+    assert "attach 1889 --print" in runner
 
 
 def test_the_runner_has_no_tmux_when_the_host_lacks_it():

@@ -344,21 +344,28 @@ cfassist attach 1889 --spawn
 
 CFOperator works out which machine the incident is about, asks that machine what
 it can run, and puts the session there. If it is a cluster node you get the pod
-from §4. If it is a Pi with docker you get a container. If it is a Pi with
-nothing you get a process. You type the same thing either way.
+from §4 (a briefed TUI). If it is an inventory host you get a **login shell on
+that machine** — `kubectl` and `journalctl` are this login's, and `cfassist` is
+a command you run from the shell, not the session itself. You type the same
+`--spawn` either way; `--tier container` is the isolation wall if you want it.
 
 ### The ladder at a glance
 
-| If the host has… | you get tier | isolation | what cleans it up |
-|---|---|---|---|
-| membership in the cluster | `pod` | a pod, read-only service account | Kubernetes (`activeDeadlineSeconds` + GC) |
-| docker or podman, on amd64/arm64 | `container` | a container | a `timeout` wrapper, then the janitor |
-| `systemd-run` and a systemd manager | `host` | **none** | a transient timer, then the janitor |
-| none of the above | `ssh` | **none** | the janitor only |
+| If the host has… | you get tier | what it is | isolation | what cleans it up |
+|---|---|---|---|---|
+| membership in the cluster | `pod` | briefed TUI | a pod, read-only service account | Kubernetes (`activeDeadlineSeconds` + GC) |
+| `systemd-run` and a systemd manager | `host` | **login shell**; `cfassist` is a command | **none** | a transient timer, then the janitor |
+| none of the above | `ssh` | **login shell**; `cfassist` is a command | **none** | the janitor only |
+| docker or podman, on amd64/arm64, **and** `--tier container` | `container` | briefed TUI | a container | a `timeout` wrapper, then the janitor |
 
-Reading down that table, only two things change: how well the session is walled
-off from the host, and what removes it afterwards. Everything else is identical
-— same briefing, same model, same commands, same TTL, same dying credential.
+Auto skips container (CFOP-166). A docker namespace cannot see this login's
+`~/.kube` or the host journal, which is why a cockpit on a Kubernetes node that
+is also inventory was unable to `kubectl`. `--tier container` still selects it
+when you want the wall.
+
+TTL and the dying session credential are the same on every rung. The host/ssh
+session is a shell: the model is opt-in (`cfassist attach $CFOP_INVESTIGATION_ID`).
+A pod or an explicit container is still the briefed TUI.
 
 ```mermaid
 flowchart TD
@@ -367,11 +374,10 @@ flowchart TD
     B -->|"a name"| C{"Is it a cluster node?"}
     C -->|yes| P2["tier pod<br/><i>pinned to that node</i>"]
     C -->|"no, and not in<br/>infrastructure.hosts"| P3["tier pod<br/><i>nowhere to ssh — said out loud</i>"]
-    C -->|"no, but we can ssh to it"| D["one ssh round trip:<br/>arch? docker? systemd?"]
+    C -->|"no, but we can ssh to it"| D["one ssh round trip:<br/>systemd?"]
     D -->|"unreachable"| P4["tier pod<br/><i>reason reported</i>"]
-    D -->|"docker/podman<br/>+ amd64/arm64"| T2["tier container"]
-    D -->|"systemd-run<br/>+ a manager to own the unit"| T3["tier host"]
-    D -->|"neither"| T4["tier ssh<br/><i>best-effort</i>"]
+    D -->|"systemd-run<br/>+ a manager to own the unit"| T3["tier host<br/><i>login shell</i>"]
+    D -->|"neither"| T4["tier ssh<br/><i>login shell, best-effort</i>"]
 ```
 
 ### Setting it up
@@ -465,21 +471,26 @@ session token cfop_9f2a… — session and token expire in 4h0m0s
 attaching (ssh -t sre@10.0.0.15 /tmp/cfop-cockpit-1889/run) — exit ends the cockpit; the TTL ends it either way
 
 cockpit — investigation #1889 — no isolation: this session runs directly on the host
+this is a host shell. kubectl and journalctl are this login's.
+the model is: cfassist attach 1889
 the session token dies with this session, or at its TTL.
 
-[briefing loads: what CFOperator observed, concluded, and queued]
+[briefing printed: what CFOperator observed, concluded, and queued]
 
-> the NIC is down again isn't it — check dmesg and ip neigh
+sre@raspberrypi5:/tmp/cfop-cockpit-1889$ kubectl get pods -A
+sre@raspberrypi5:/tmp/cfop-cockpit-1889$ cfassist attach 1889
 ```
 
-You are now on the Pi, in a session that already knows what happened, with the
-model reading the same investigation you are. Ordinary shell commands work; so
-does asking the model to run them.
+You are now on the Pi, as this login, with the investigation briefing already
+printed. Ordinary shell commands work against the host. The model is a command
+away; it is not sitting in front of the prompt.
 
 When you are finished, `exit`. The session ends, and the credential and the
 binary it used are deleted on the way out. If you close the laptop instead, the
 TTL does it four hours later; if something goes wrong with the TTL, the janitor
 does it within fifteen minutes. **You do not have to clean up after yourself.**
+A host with `tmux` keeps the shell across a dropped connection; without it
+(cm5 today) the shell lives only while you are attached.
 
 And you can run the same command again straight away. A second `--spawn` for an
 investigation whose session is still alive puts you back in *that* session
@@ -488,9 +499,9 @@ are cleared before the new one starts — a stopped container still holds its
 name, and a still-armed self-destruct timer would otherwise fire on the new
 session.
 
-The same thing on a docker host reads almost identically — the difference is one
-word in the first line (`docker container on ubuntu-llm-01`), no isolation
-warning, and `ctrl-p ctrl-q` detaches without ending the session.
+`--tier container` is the other shape: a briefed TUI inside docker, `ctrl-p
+ctrl-q` detaches without ending the session, and the host's kubeconfig and
+journal are not in that namespace. That is the isolation wall, not the default.
 
 ### Reading the output
 
@@ -541,6 +552,7 @@ If that tier is not available you get an error naming what is missing and what
 is available instead — **never a quiet downgrade to something weaker.** If you
 asked for a container because you wanted the container boundary, silently
 handing you a bare process on the host would be the worst possible answer.
+Auto never picks container: `--tier container` is how you ask for that wall.
 
 Two overrides worth knowing, pointing in opposite directions:
 
@@ -976,10 +988,10 @@ how long you have:
   under five minutes, red at zero: the session ends at the deadline whether
   or not you were typing.
 - **reattach** is another open — a fresh ticket, the same session. Where the
-  host has `tmux`, the session kept running through the drop and you rejoin
+  host has `tmux`, the shell kept running through the drop and you rejoin
   exactly where you left it; without `tmux`, tier `host`/`ssh` starts a fresh
-  session with the same briefing. `container` sessions survive a drop either
-  way.
+  shell (the briefing is printed again). `container` sessions survive a drop
+  either way.
 - **kill** (`POST /api/cockpit/<id>/close`) removes the session from the
   host now — the container, the directory, both reap units — and revokes
   every token minted for it. It also deletes any cockpit Job for the
@@ -1023,10 +1035,11 @@ tiers only by default, and most of a homelab fleet is both a Kubernetes node
 and an `infrastructure.hosts` entry. The terminal's `auto` sends those to a
 pod (a node is tier 1; `--tier host` asks for the box). The drawer has no
 `--tier`, and a pod is something it cannot serve at all with Phase B off — so
-for it, `auto` probes such a host and opens a `container`/`host`/`ssh` cockpit
-*on* it, exactly what `--tier host` would have asked for. The tier note says
-so. Before this (CFOP-98) the button refused nearly every investigation on
-this fleet with "this investigation is in the cluster", which for a Pi was
+for it, `auto` probes such a host and opens a `host`/`ssh` login shell
+*on* it, exactly what `--tier host` would have asked for (CFOP-166: auto skips
+container). The tier note says so. Before CFOP-98 the button refused nearly
+every investigation on this fleet with "this investigation is in the cluster",
+which for a Pi was
 true and useless: the incident that prompted it was a kernel sysinfo warning
 on raspberrypi2, which a pod scheduled onto raspberrypi2 cannot look at.
 What still gets the attach line instead: an investigation that resolves to no
@@ -1070,8 +1083,8 @@ ticket, the TTL, kill, and the audit line are the same as the host tiers.
 ## What the cockpit deliberately is not, yet
 
 - **Browser terminal: host tiers by default, pods behind two switches.** The
-  console drawer opens a terminal on a `container`, `host` or `ssh` cockpit
-  out of the box (CFOP-59 Phase A). Tier `pod` (CFOP-59 Phase B) is served only
+  console drawer opens a terminal on a `host` or `ssh` login shell
+  out of the box (CFOP-59 Phase A; CFOP-166: auto skips `container`). Tier `pod` (CFOP-59 Phase B) is served only
   when you turn on both `cockpit.bridge_pod_tier` (runtime) and the chart's
   `cockpit.bridgePodAttach` (which grants the agent `create` on pods/attach in
   the release namespace) — see
@@ -1086,8 +1099,8 @@ ticket, the TTL, kill, and the audit line are the same as the host tiers.
   `host`/`ssh`, the runner wraps the session in a tmux session named for the
   investigation when the host has `tmux`, so a dropped connection leaves it
   running and the next open — from the drawer or a laptop's `cfassist attach` —
-  rejoins the *same* TUI. A host without `tmux` ends the session on a drop, and
-  the drawer's reattach starts a fresh one with the same briefing.
+  rejoins the *same* shell. A host without `tmux` ends the session on a drop, and
+  the drawer's reattach starts a fresh one (briefing printed again).
 - **No deep links from a notification.** Copy-paste is the interface between
   Slack and your terminal, because only plain text survives three sinks
   identically. Inside the console the drawer is linkable and offers the line for
