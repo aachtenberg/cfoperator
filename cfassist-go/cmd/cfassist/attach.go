@@ -147,8 +147,10 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		urlFrom = cfoperator.URLFromFlag
 	}
 
-	url, token, timeout := cfoperator.ResolveEndpoint(
-		agentURL, cfg.CFOperator.Token, cfg.CFOperator.Timeout, os.Getenv,
+	// urlFrom, not the config alone: the token has to come from the same rung
+	// the URL did (see ResolveEndpointFrom).
+	url, token, timeout := cfoperator.ResolveEndpointFrom(
+		urlFrom, agentURL, cfg.CFOperator.Token, cfg.CFOperator.Timeout, os.Getenv,
 	)
 
 	// --spawn takes over before any of the local work below: the pod fetches

@@ -576,3 +576,72 @@ func TestWithContextDoesNotMutateTheOriginal(t *testing.T) {
 		t.Error("WithContext bound the receiver instead of a copy")
 	}
 }
+
+// A token belongs to the agent that minted it (CFOP-166).
+
+func TestConfigTokenIsNotSentToAnOverriddenAgent(t *testing.T) {
+	// A cockpit session exports its own short-lived credential and passes
+	// --agent-url; every fleet host also carries a standing token in
+	// ~/.cfassist/config.yaml. That one won and was presented to an agent that
+	// never issued it, so `cfassist attach` in a cockpit 401'd and printed no
+	// briefing.
+	lookup := func(k string) string {
+		switch k {
+		case EnvAgentURL:
+			return "http://session-agent:8083"
+		case EnvAPIToken:
+			return "session-token"
+		}
+		return ""
+	}
+	url, token, _ := ResolveEndpointFrom(URLFromFlag, "http://session-agent:8083",
+		"fleet-standing-token", 0, lookup)
+	if url != "http://session-agent:8083" {
+		t.Fatalf("url = %q", url)
+	}
+	if token != "session-token" {
+		t.Fatalf("token = %q, want the session's own", token)
+	}
+}
+
+func TestConfigTokenStillWinsForAConfigURL(t *testing.T) {
+	// The fleet's own shape, unchanged: url and token both from the file, and a
+	// stale export must not override the pair.
+	lookup := func(k string) string {
+		switch k {
+		case EnvAgentURL:
+			return "http://stale:8083"
+		case EnvAPIToken:
+			return "stale-token"
+		}
+		return ""
+	}
+	url, token, _ := ResolveEndpoint("http://fleet-agent:8083", "fleet-token", 0, lookup)
+	if url != "http://fleet-agent:8083" || token != "fleet-token" {
+		t.Fatalf("got %q / %q", url, token)
+	}
+}
+
+func TestATokenlessRungFallsBackRatherThanGoingUnauthenticated(t *testing.T) {
+	// config url + env token (an MCP-style workstation), and the mirror case:
+	// env url + config token. Neither rung is complete on its own, and an
+	// empty Authorization header is worse than trying the other one.
+	envToken := func(k string) string {
+		if k == EnvAPIToken {
+			return "env-token"
+		}
+		return ""
+	}
+	if _, token, _ := ResolveEndpoint("http://fleet-agent:8083", "", 0, envToken); token != "env-token" {
+		t.Fatalf("config url + env token: got %q", token)
+	}
+	envURL := func(k string) string {
+		if k == EnvAgentURL {
+			return "http://env-agent:8083"
+		}
+		return ""
+	}
+	if _, token, _ := ResolveEndpoint("", "cfg-token", 0, envURL); token != "cfg-token" {
+		t.Fatalf("env url + config token: got %q", token)
+	}
+}
