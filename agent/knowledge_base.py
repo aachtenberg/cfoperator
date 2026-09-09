@@ -469,6 +469,18 @@ REMEDIATION_CLASS_CHECK_SQL = "remediation_class IN ({})".format(
     ", ".join(f"'{c}'" for c in sorted(_REMEDIATION_CLASSES))
 )
 
+# Queue statuses. 'filed' (CFOP-170) is the hand-off: the row's item lives in
+# an issue tracker, the row leaves the console's active list, and the tracker
+# tick closes it when the item is done or cancelled. Non-terminal on purpose —
+# a recurrence must fold into it, not file a second item.
+_REMEDIATION_STATUSES = (
+    'queued', 'claimed', 'executing', 'pr-open', 'verifying',
+    'resolved', 'failed', 'needs-human', 'rejected', 'filed',
+)
+REMEDIATION_STATUS_CHECK_SQL = "status IN ({})".format(
+    ", ".join(f"'{c}'" for c in _REMEDIATION_STATUSES)
+)
+
 
 def normalize_remediation_fields(remediation_class: str, risk: str):
     """Coerce class/risk to valid values, defaulting conservatively.
@@ -510,8 +522,12 @@ def node_incident_is_auto_resolvable(status: str) -> bool:
         would orphan the PR from its reconciler.
       - failed: an attempt genuinely failed. The node coming back does not
         mean the fix worked, and 'resolved' is what dashboards key off.
+
+    'filed' (CFOP-170) is still pure paperwork — the row was handed to an
+    issue tracker, nothing ran — so a recovered node closes it too, and the
+    tracker tick then closes the item.
     """
-    return status in ('queued', 'needs-human')
+    return status in ('queued', 'needs-human', 'filed')
 
 
 def remediation_approve_conflict(row) -> Optional[str]:
@@ -611,6 +627,15 @@ def _pr_url_named_by_row(payload) -> Optional[str]:
     return None
 
 
+def _tracker_field(result, name: str) -> Optional[str]:
+    """``result.tracker.<name>`` as a string, tolerating any shape of result."""
+    tr = result.get('tracker') if isinstance(result, dict) else None
+    if not isinstance(tr, dict):
+        return None
+    val = tr.get(name)
+    return str(val) if val not in (None, '') else None
+
+
 def remediation_row_dict(r) -> Dict[str, Any]:
     """Serialize a RemediationQueue row for the read API / operator console."""
     return {
@@ -627,6 +652,11 @@ def remediation_row_dict(r) -> Dict[str, Any]:
         # A link the row does not track (CFOP-116); None once the column is set.
         "named_pr_url": None if r.pr_url else _pr_url_named_by_row(r.payload),
         "last_error": r.last_error,
+        # The issue-tracker item this row was handed to (CFOP-170); None until
+        # the tick files it. Read from result.tracker so there is no column.
+        "tracker_url": _tracker_field(r.result, 'url'),
+        "tracker_key": _tracker_field(r.result, 'key'),
+        "tracker_state": _tracker_field(r.result, 'synced_status'),
         "result": r.result,
         "created_at": r.created_at.isoformat() if r.created_at else None,
         "claimed_at": r.claimed_at.isoformat() if r.claimed_at else None,
@@ -682,10 +712,7 @@ class RemediationQueue(Base):
             REMEDIATION_CLASS_CHECK_SQL,
             name='valid_remediation_class'),
         CheckConstraint("risk IN ('low', 'med', 'high')", name='valid_remediation_risk'),
-        CheckConstraint(
-            "status IN ('queued', 'claimed', 'executing', 'pr-open', 'verifying', "
-            "'resolved', 'failed', 'needs-human', 'rejected')",
-            name='valid_remediation_status'),
+        CheckConstraint(REMEDIATION_STATUS_CHECK_SQL, name='valid_remediation_status'),
         Index('idx_remediation_status', 'status'),
         Index('idx_remediation_lease', 'status', 'claimed_at'),
         Index('idx_remediation_investigation', 'investigation_id'),
@@ -1290,13 +1317,14 @@ class KnowledgeBase:
         # Same problem, same shape, different table: remediation_queue's class
         # CHECK was written when there were four classes (CFOP-61 added a fifth).
         class_ok = self._ensure_remediation_class_constraint()
+        status_ok = self._ensure_remediation_status_constraint()
         # Third table, same shape: investigation_events' type CHECK was written
         # with four types (CFOP-37 added cockpit_session for session write-back).
         event_ok = self._ensure_event_type_constraint()
         _log("info", "Knowledge base schema initialized",
              outcome_constraint_ok=outcome_ok, remediation_class_constraint_ok=class_ok,
-             event_type_constraint_ok=event_ok)
-        return outcome_ok and class_ok and event_ok
+             remediation_status_constraint_ok=status_ok, event_type_constraint_ok=event_ok)
+        return outcome_ok and class_ok and status_ok and event_ok
 
     def _ensure_outcome_constraint(self) -> bool:
         """Rebuild investigations.valid_outcome to match VALID_OUTCOMES.
@@ -1359,6 +1387,56 @@ class KnowledgeBase:
             return True
         except Exception as e:
             _log("error", "Could not ensure investigations.valid_outcome constraint", error=str(e))
+            return False
+
+    def _ensure_remediation_status_constraint(self) -> bool:
+        """Rebuild remediation_queue.valid_remediation_status to match
+        _REMEDIATION_STATUSES (CFOP-170 added 'filed').
+
+        Same shape as _ensure_remediation_class_constraint, for the same
+        reason: create_all never alters, so a database made before a status
+        joined the vocabulary keeps the narrower CHECK and the first
+        hand-off would die on it inside the worker tick.
+        """
+        wanted = set(_REMEDIATION_STATUSES)
+        try:
+            with self.session_scope() as session:
+                current = session.execute(text("""
+                    SELECT pg_get_constraintdef(c.oid)
+                    FROM pg_constraint c
+                    WHERE c.conname = 'valid_remediation_status'
+                      AND c.conrelid = to_regclass('remediation_queue')
+                """)).scalar()
+                if constraint_admits_outcomes(current, wanted):
+                    return True
+                _log("info", "Widening remediation_queue.valid_remediation_status CHECK",
+                     existing=current, statuses=list(_REMEDIATION_STATUSES))
+                session.execute(text(
+                    "ALTER TABLE remediation_queue "
+                    "DROP CONSTRAINT IF EXISTS valid_remediation_status"
+                ))
+                session.execute(text(
+                    "ALTER TABLE remediation_queue ADD CONSTRAINT "
+                    f"valid_remediation_status CHECK ({REMEDIATION_STATUS_CHECK_SQL})"
+                ))
+            with self.session_scope() as session:
+                after = session.execute(text("""
+                    SELECT pg_get_constraintdef(c.oid)
+                    FROM pg_constraint c
+                    WHERE c.conname = 'valid_remediation_status'
+                      AND c.conrelid = to_regclass('remediation_queue')
+                """)).scalar()
+            if not constraint_admits_outcomes(after, wanted):
+                present = set(_SQL_STRING_LITERAL.findall(after or ""))
+                _log("error", "remediation_queue.valid_remediation_status still rejects "
+                              "known statuses; the tracker hand-off will fail to persist",
+                     missing=sorted(wanted - present), constraint=after)
+                return False
+            _log("info", "remediation_queue.valid_remediation_status up to date", constraint=after)
+            return True
+        except Exception as e:
+            _log("error", "Could not ensure remediation_queue.valid_remediation_status constraint",
+                 error=str(e))
             return False
 
     def _ensure_remediation_class_constraint(self) -> bool:
@@ -4056,6 +4134,26 @@ class KnowledgeBase:
                 item.pr_url = pr_url
             return True
 
+    def merge_remediation_result(self, remediation_id: int, patch: Dict[str, Any]) -> bool:
+        """Merge keys into a remediation's result JSONB without touching status.
+
+        The tracker tick's bookkeeping write (CFOP-170): ``result.tracker`` —
+        ref, key, synced_status, last error. update_remediation_status would
+        re-stamp completed_at and log a status change that did not happen, and
+        release_remediation_claim forces 'queued'; neither is a carrier for a
+        result-only patch. Returns False for an unknown id or an empty patch.
+        """
+        if not isinstance(patch, dict) or not patch:
+            return False
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return False
+            existing = dict(item.result or {}) if isinstance(item.result, dict) else {}
+            existing.update(patch)
+            item.result = existing
+            return True
+
     def update_remediation_status(
         self,
         remediation_id: int,
@@ -4188,6 +4286,46 @@ class KnowledgeBase:
                 RemediationQueue.status.notin_(('resolved', 'rejected'))
             ).order_by(RemediationQueue.created_at.desc()).limit(limit).all()
             return [{"id": r.id, "payload": r.payload} for r in rows]
+
+    #: Statuses the tracker tick may have to act on (CFOP-170). Everything the
+    #: lifecycle table in tracker_sync.decide names, and nothing else, so an
+    #: executing row with a ref is never listed and never commented on mid-run.
+    _TRACKER_ACTIONABLE_STATUSES = ('needs-human', 'pr-open', 'queued', 'resolved', 'rejected', 'filed')
+    _TRACKER_ERROR_CAP = 5
+
+    def list_remediations_for_tracker(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Rows whose tracker item is behind their status, oldest-touched first.
+
+        Three shapes, all read off ``result.tracker`` so there is no column:
+
+          - no ref yet, and the row is parked (needs-human) or PR-open → create;
+          - a ref and status 'filed' → poll the item (rotated by checked_at);
+          - a ref and any other actionable status the item has not been told
+            about (synced_status distinct from status) → comment / transition.
+
+        Rows whose tracker calls failed ``_TRACKER_ERROR_CAP`` times are left
+        out: the error is on the row for the operator, and a dead backend must
+        not be hammered forever by every tick.
+        """
+        from sqlalchemy import Integer, and_
+        tr = RemediationQueue.result['tracker']
+        ref = tr['ref'].astext
+        synced = tr['synced_status'].astext
+        errors = func.coalesce(cast(tr['error_count'].astext, Integer), 0)
+        touched = func.coalesce(tr['checked_at'].astext, tr['synced_at'].astext)
+        with self.session_scope() as session:
+            rows = session.query(RemediationQueue).filter(
+                RemediationQueue.status.in_(self._TRACKER_ACTIONABLE_STATUSES),
+                errors < self._TRACKER_ERROR_CAP,
+                or_(
+                    and_(ref.is_(None), RemediationQueue.status.in_(('needs-human', 'pr-open'))),
+                    and_(ref.isnot(None), RemediationQueue.status == 'filed'),
+                    and_(ref.isnot(None), RemediationQueue.status != 'filed',
+                         or_(synced.is_(None), synced != RemediationQueue.status)),
+                ),
+            ).order_by(touched.asc().nulls_first(), RemediationQueue.created_at.asc()
+            ).limit(max(1, int(limit))).all()
+            return [remediation_row_dict(r) for r in rows]
 
     def list_remediations_by_status(self, status: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Return remediation rows in a given status (oldest first).

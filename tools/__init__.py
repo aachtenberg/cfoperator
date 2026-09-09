@@ -789,13 +789,13 @@ class ToolRegistry:
             'function': self._list_remediations,
             'schema': {
                 'name': 'list_remediations',
-                'description': 'List remediation queue rows (newest first). Optionally filter by status (queued, needs-human, pr-open, resolved, …). Use this to answer questions about the remediation queue.',
+                'description': 'List remediation queue rows (newest first). Optionally filter by status (queued, needs-human, filed, pr-open, resolved, …). filed = handed off to the issue tracker; its key/URL are on the row. Use this to answer questions about the remediation queue.',
                 'parameters': {
                     'type': 'object',
                     'properties': {
                         'status': {
                             'type': 'string',
-                            'description': 'Optional status filter (e.g. needs-human, queued, pr-open)'
+                            'description': 'Optional status filter (e.g. needs-human, filed, queued, pr-open)'
                         },
                         'limit': {
                             'type': 'integer',

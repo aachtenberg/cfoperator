@@ -11,13 +11,14 @@ Production is k3s + ArgoCD GitOps. **`git push` is the deploy path** — no rsyn
 | `cfoperator-mcp` | cfoperator-deploy | same image, `-m mcp_server` | `8090` |
 | `cfoperator-bridge` (Slack) | cfoperator-deploy | same image, `-m bridge`, `Recreate` | — (outbound) |
 | `cfoperator-changerecord` | cfoperator-deploy | `cfoperator-changerecord` | ClusterIP |
+| `cfop-tracker` (issue-tracker hand-off) | cfoperator-deploy | `cfoperator-tracker` | ClusterIP `8092` |
 | `cfoperator-executor` | cfoperator-deploy | `cfoperator-executor` — one Job per remediation | — |
 | `cfoperator-worker` | cfoperator-deploy | `cfoperator-worker` — deep investigation | — |
 | `cfoperator-cockpit` | none (agent builds the Job at spawn) | `cfoperator-cockpit` — one Job per `attach --spawn` | — |
 
 All manifests live in the private **cfoperator-deploy** repo, which ArgoCD's standalone `cfoperator` Application syncs; the public repo holds no topology. All images are `ghcr.io/aachtenberg/…`. Namespace `apps`; both agent pods on `headless-gpu` = `ubuntu-llm-01` = 192.168.0.150 (hostNetwork, so that is also the console's address). Control plane runs `kubectl` locally.
 
-`build-cfoperator-main.yml` builds all five images per run, each pushed as floating `:main` and immutable `:main-<sha7>`. **Only the agent tag auto-bumps**; worker/executor/changerecord/cockpit track `:main`, so wait for the build job — there is nothing to merge for them either. The cockpit build `needs:` worker — it derives from it.
+`build-cfoperator-main.yml` builds all six images per run, each pushed as floating `:main` and immutable `:main-<sha7>`. **Only the agent tag auto-bumps**; worker/executor/changerecord/tracker/cockpit track `:main`, so wait for the build job — there is nothing to merge for them either. The cockpit build `needs:` worker — it derives from it.
 
 Per-workload config: [mcp-server.md](mcp-server.md), [slack-bridge.md](slack-bridge.md), [REMEDIATION.md](REMEDIATION.md).
 
@@ -193,7 +194,7 @@ The Dockerfile COPYs named paths, not the tree: `cfshared/`, `agent/`, `tools/`,
 
 Most are imported at module load, so a missing COPY crash-loops a pod rather than degrading it — `cfshared/` (agent + event-runtime), `auth/` (agent + MCP), `web_auth.py`, `cockpit_*.py`. `scripts/create_admin.py` is the lockout recovery path ([auth.md](auth.md#locked-out--no-usable-admin)).
 
-`test_dockerfile_image.py` enforces this. **Add a `COPY` for any new top-level package.**
+`test_dockerfile_image.py` enforces this. **Add a `COPY` for any new top-level package.** (`tracker/`, like `changerecord/`, is its own image and is deliberately not COPYd; the agent's side of it is `agent/tracker_*.py`.)
 
 ## How a Code Change Reaches Production
 

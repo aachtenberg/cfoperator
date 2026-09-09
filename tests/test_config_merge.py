@@ -693,6 +693,7 @@ REMEDIATION_ON = textwrap.dedent("""
       queue_drain: true
       queue_reap: true
       queue_verify: true
+      queue_tracker: true
       executor:
         node_action:
           enabled: true
@@ -710,7 +711,7 @@ def test_investigate_profile_zeroes_remediation_flags(tmp_path):
     merged = cfg.load_config(path)
     remediation = merged["remediation"]
     for flag in ("enabled", "open_prs", "deep_open_prs",
-                 "queue_feed", "queue_drain", "queue_reap", "queue_verify"):
+                 "queue_feed", "queue_drain", "queue_reap", "queue_verify", "queue_tracker"):
         assert remediation[flag] is False, f"{flag} survived the investigate profile"
     assert remediation["executor"]["node_action"]["enabled"] is False
 

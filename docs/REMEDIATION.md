@@ -17,6 +17,10 @@ human merges, which ArgoCD then syncs.
 
 Principle the design enforces: **don't punt to a human what the agent can
 investigate or mechanize itself.** `needs-human` is the exception, not the dumping ground.
+And when a row *is* for a human, it should not sit in the console inviting
+another round with the LLM: with `queue_tracker` on, a parked row with no PR is
+**filed to an issue tracker** and moves to `filed` — groomed or discarded over
+there, and the row follows (CFOP-170).
 
 ## Architecture
 
@@ -272,6 +276,10 @@ stateDiagram-v2
   failed --> queued: retry < cap
   failed --> needs_human: retry cap
   claimed --> queued: lease expired (reaper)
+  needs_human --> filed: no PR, queue_tracker on (item filed)
+  filed --> resolved: item done in the tracker
+  filed --> rejected: item cancelled or deleted in the tracker
+  filed --> queued: Approve
   resolved --> [*]
   rejected --> [*]
   needs_human --> [*]
@@ -303,8 +311,12 @@ Approve gate read the column only.
     only genuinely human-shaped recs enqueue directly as `manual`, and classifier
     degrade/failure falls back to that manual path rather than dropping a finding
   - manual operator-authored: `POST /api/remediations`
-- **Worker thread** (`_remediation_worker_loop`) — reaper · drainer · verify, off
-  the OODA loop so a long sweep can't starve them.
+- **Worker thread** (`_remediation_worker_loop`) — reaper · drainer · verify ·
+  tracker, off the OODA loop so a long sweep can't starve them.
+- **Tracker service** (`tracker/`) — stdlib sibling behind the `cfop-tracker`
+  Service; one image, `CFOP_TRACKER_BACKEND` = plane | github | jira. The agent's
+  `tracker_sync` tick hands parked rows to it and mirrors the outcome back. See
+  [Tracker hand-off](#tracker-hand-off-issue-trackers).
 - **Executor Job** (`executor/`) — portable, stdlib-only, model-swappable
   (`CFOP_EXEC_LLM_BACKEND` = anthropic | openai-compat | claude-cli). **File-aware
   two-pass**: list repo manifests → LLM picks the file → fetch real content → LLM
@@ -324,6 +336,7 @@ they toggle live (no redeploy) from the console pipeline bar.
 | `queue_drain` | claim queued items + spawn executors (opens PRs) |
 | `queue_reap` | recover dead executor leases |
 | `queue_verify` | advance `pr-open` rows by PR merge/close |
+| `queue_tracker` | file parked rows to the issue tracker (`needs-human` without a PR → `filed`), mirror PR-open rows, close rows the tracker closed |
 
 Auto-execute gate (enqueue → `queued` vs `needs-human`): class ∈
 {`gitops-patch`,`k8s-action`} **and** `risk == low` **and** `confidence ≥ 0.8`.
@@ -385,6 +398,65 @@ protection on `main` — either allow the recorder bot to push to base, or treat
 close as best-effort and rely on the PR conversation / agent result for
 evidence until a follow-up lands a PR-based close path.
 
+### Tracker hand-off (issue trackers)
+
+The problem this solves (CFOP-170): a `needs-human` row with no PR produced no
+outbound signal and sat in the console's active list, where a human opened it
+and iterated with the LLM again — tokens spent on work the pipeline had already
+given up on. Now the row is **handed off**.
+
+| row | tracker item | row after |
+|---|---|---|
+| `needs-human`, no PR | created, **priority low** | `filed` — out of the active list, into the console's *Filed to tracker* section with its key |
+| `needs-human` with a PR, or `pr-open` | created, **priority high**, linked to the PR | unchanged; the PR reconciler still owns it |
+| `filed`, item marked done in the tracker | — | `resolved` (`result.resolved_by = tracker`) |
+| `filed`, item cancelled or deleted | — | `rejected` |
+| `filed`, Approve in the console | told "handed to the executor" | `queued` (the usual path; a decline re-parks and re-files) |
+| `resolved` / `rejected` in the console | transitioned, with the note | unchanged |
+
+Priority follows the PR, not the risk: a PR is something a human can merge
+now; everything else is backlog. `filed` is **non-terminal** on purpose — a
+recurrence folds into the filed row (dedupe) instead of filing a second item,
+and a recovered node closes a filed row like any other paperwork row.
+
+**Shape.** Same as the change recorder: a stdlib sibling service, one
+ClusterIP Service (`cfop-tracker`, port 8092), a small HTTP contract, the
+tracker's credential only in that pod, `X-CFOP-Token` when
+`CFOP_TRACKER_SHARED_SECRET` is set. Unlike the change recorder it is **not a
+gate**: nothing in the agent waits on it, an unset `CFOP_TRACKER_URL` makes the
+tick a logged no-op, and a failed call leaves the row where it was with the
+error on `result.tracker`. Rows that fail five times stop being retried until
+an operator acts on them.
+
+One image, the backend by env — a deliberate deviation from the recorder's
+image-per-backend model: three ~100-line REST adapters do not earn three
+Dockerfiles and CI jobs, and the contract stays backend-free so an image swap
+remains possible.
+
+| route | body | returns |
+|---|---|---|
+| `POST /items` | `{remediation_id, title, body_markdown, priority, labels[], links{console_url, pr_url}, …}` | `201 {ref, url, key, backend}` |
+| `POST /items/{ref}/comment` | `{body_markdown}` | `200` |
+| `POST /items/{ref}/transition` | `{state: resolved \| rejected, note}` | `200`; `400` when the backend does not offer that state |
+| `GET /items/{ref}` | — | `{state: open \| resolved \| rejected, url, key, updated_at}` |
+
+| backend | env | how states map |
+|---|---|---|
+| `plane` | `PLANE_BASE_URL`, `PLANE_API_KEY`, `PLANE_WORKSPACE_SLUG`, `PLANE_PROJECT_ID` | by state **group** (`completed` / `cancelled`) unless `CFOP_TRACKER_RESOLVED_STATE` / `_REJECTED_STATE` name a state; never lists issues (Plane CE ignores PQL silently) |
+| `github` | `GITHUB_TOKEN`, `CFOP_TRACKER_GITHUB_REPO` | `state_reason` completed / not_planned; priority becomes a `priority:<x>` label. Use a **private** repo — the item body is operator-visible data |
+| `jira` | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY` | transitions looked up by name (`Done` / `Won't Do` by default). **Shape only — not live-tested**; the capability matrix says so until a trial runs it |
+
+`CFOP_TRACKER_LABELS` (comma list) is added to every item. What goes out is
+built agent-side (`agent/tracker_item.py`): title, why it parked, the
+recommendation, steps, links, a footer with the dedupe key. `rendered_context`
+— raw tool output — never does, and everything else passes a credential scrub.
+
+Agent side: `remediation.tracker.url` / `CFOP_TRACKER_URL`,
+`remediation.tracker.console_url` / `CFOP_CONSOLE_URL` (the public console
+address for links; never guessed, omitted when unset), `max_tracker_per_tick`,
+`ooda.remediation_tracker_interval_seconds` (60). The tick is
+`agent/tracker_sync.py`; its decision table is `decide()`.
+
 ## Safety model
 
 Single-file diffs only (multi-file → `needs-human`), exact-context apply (drift →
@@ -396,14 +468,18 @@ Node-actions additionally require change-record approval when
 ## Deploy
 
 CI (`build-cfoperator-main.yml`) builds `cfoperator`, `cfoperator-worker`,
-`cfoperator-executor`, and `cfoperator-changerecord` (from `changerecord/`,
-floating `:main` tag like the worker/executor). RBAC + config live in the private
+`cfoperator-executor`, `cfoperator-changerecord` (from `changerecord/`) and
+`cfoperator-tracker` (from `tracker/`), the last two on a floating `:main` tag
+like the worker/executor. RBAC + config live in the private
 `cfoperator-deploy` repo: `cfoperator-executor` read-only SA, the
 `remediation:` config block, and `cfoperator-secrets` (`GITHUB_TOKEN`,
 `ANTHROPIC_API_KEY`, `CFOP_COMPLETION_SHARED_SECRET`, and optionally
 `CFOP_CHANGERECORD_SHARED_SECRET`). Wire `CFOP_EXEC_CHANGE_URL` and the
 changerecord shared secret into the **agent** Deployment (not only Job env)
-when using change records. After an executor code change, wait for the
+when using change records. For the tracker: a `cfop-tracker` Deployment +
+Service with the backend env above and its own secret, and `CFOP_TRACKER_URL`,
+`CFOP_CONSOLE_URL` and `CFOP_TRACKER_SHARED_SECRET` on the agent Deployment —
+secret PR first, manifest PR second. After an executor code change, wait for the
 `build-executor` job before re-queuing (else the Job pulls the prior `:main`).
 
 ## Operate

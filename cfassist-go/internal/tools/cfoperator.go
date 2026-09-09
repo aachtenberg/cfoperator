@@ -85,7 +85,7 @@ func (r *Registry) AddCFOperator(api *cfoperator.Client) {
 						"status": map[string]any{
 							"type": "string",
 							"description": "Filter the queue by status (list_remediations): queued, claimed, " +
-								"executing, pr-open, verifying, resolved, failed, needs-human, rejected",
+								"executing, pr-open, verifying, resolved, failed, needs-human, filed, rejected",
 						},
 						"limit": map[string]any{
 							"type": "integer",

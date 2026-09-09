@@ -192,3 +192,32 @@ def test_ci_collects_the_tests_directory_rather_than_a_file_list():
         "tests.yml no longer runs the tests/ directory as a unit. If the "
         "root-level invocation went back to an explicit file list, an "
         "unregistered suite silently never runs in CI (CFOP-139).")
+
+
+def test_every_test_directory_runs_in_ci():
+    """A directory that ships tests beside its code must be in tests.yml's loop.
+
+    The suite cannot run as one flat ``pytest`` (same-named top-level modules),
+    so each directory is its own invocation in a hand-maintained list — and a
+    new service (``tracker/``, CFOP-170) whose tests are green locally and
+    never run in CI looks exactly like one that is guarded. ``tests/``,
+    ``observability`` and ``auth`` are collected by their own lines.
+    """
+    wf = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text()
+    m = re.search(r"for d in ([^;]+); do", wf)
+    assert m, "tests.yml no longer loops over directories; update this guard"
+    listed = set(m.group(1).split())
+    # scripts/test_model_local.py is a hand-run model harness that collects no
+    # tests (PR #231 moved the real suites into tests/); it is not a suite.
+    separately = {"tests", "observability", "auth", "scripts"}
+    checked = 0
+    for d in sorted(p for p in REPO_ROOT.iterdir() if p.is_dir()):
+        if d.name.startswith(".") or d.name in separately:
+            continue
+        has_tests = any(d.glob("test_*.py"))
+        has_code = any(f for f in d.glob("*.py") if not f.name.startswith("test_"))
+        if not (has_tests and has_code):
+            continue
+        checked += 1
+        assert d.name in listed, f"{d.name}/ has test_*.py but tests.yml never runs them"
+    assert checked >= 5, "the glob found almost nothing; is REPO_ROOT right?"

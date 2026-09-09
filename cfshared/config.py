@@ -121,6 +121,7 @@ REMEDIATION_FLAGS = (
     "queue_drain",
     "queue_reap",
     "queue_verify",
+    "queue_tracker",
 )
 
 
@@ -210,6 +211,7 @@ DEFAULT_CONFIG: dict = {
         "remediation_reap_interval_seconds": 300,
         "remediation_drain_interval_seconds": 60,
         "remediation_verify_interval_seconds": 300,
+        "remediation_tracker_interval_seconds": 60,
     },
 
     "chat": {
@@ -252,6 +254,11 @@ DEFAULT_CONFIG: dict = {
         "queue_drain": False,
         "queue_reap": False,
         "queue_verify": False,
+        # CFOP-170: hand needs-human rows to an issue tracker. Shape only —
+        # `url: ""` is the disabled state, and `console_url` is never guessed.
+        "queue_tracker": False,
+        "max_tracker_per_tick": 10,
+        "tracker": {"url": "", "console_url": ""},
         "max_open_prs": 3,
         "max_drain_per_tick": 3,
         # CFOP-148: how cluster changes reach this site. Shape only -- `mode`

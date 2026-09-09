@@ -186,14 +186,14 @@ class TestResolveRemediation:
         import pathlib, re
         kb = (pathlib.Path(__file__).resolve().parent.parent
               / "agent" / "knowledge_base.py").read_text()
-        # Anchor on the constraint NAME: several tables declare a
-        # "status IN (...)" check, and the first one is not this table's.
-        anchor = kb.find("name='valid_remediation_status'")
-        assert anchor != -1, "valid_remediation_status constraint not found"
-        window = kb[max(0, anchor - 400):anchor]
-        start = window.rfind("status IN (")
-        assert start != -1, "remediation status CHECK constraint not found"
-        valid = set(re.findall(r"'([a-z-]+)'", window[start:]))
+        # The constraint is rendered from _REMEDIATION_STATUSES (CFOP-170
+        # moved the literal list into that tuple so the startup widen and
+        # the CHECK cannot drift); parse the tuple, and confirm the CHECK
+        # still names it.
+        assert "CheckConstraint(REMEDIATION_STATUS_CHECK_SQL, name='valid_remediation_status')" in kb
+        m = re.search(r"_REMEDIATION_STATUSES = \((.*?)\)", kb, re.S)
+        assert m, "_REMEDIATION_STATUSES not found in knowledge_base.py"
+        valid = set(re.findall(r"'([a-z-]+)'", m.group(1)))
         assert "queued" in valid and "pr-open" in valid, valid
         assert set(tools_module._REMEDIATION_INFLIGHT) <= valid
 

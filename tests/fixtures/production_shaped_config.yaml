@@ -202,6 +202,7 @@ remediation:
   queue_drain: false
   queue_reap: true
   queue_verify: false
+  queue_tracker: false
   max_drain_per_tick: 2
   executor:
     image: ghcr.io/example-org/cfoperator-executor:main

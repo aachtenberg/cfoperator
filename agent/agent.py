@@ -63,6 +63,7 @@ from change_record_client import (
     get_approval as change_record_approval,
     open_record as change_record_open,
 )
+from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
 from node_action_plan import (
     allowlist_from_config as _na_allowlist_from_config,
     build_command_prompt as _na_build_command_prompt,
@@ -1546,6 +1547,8 @@ class CFOperator:
         self.last_node_recovery = 0  # node-incident auto-resolve tick (CFOP-71)
         self.last_metrics = 0  # remediation gauge refresh tick
         self.last_cockpit_reap = 0  # cockpit janitor tick (CFOP-36)
+        self.last_tracker_sync = 0  # issue-tracker hand-off tick (CFOP-170)
+        self._tracker_url_warned = False
         self.start_time = time.time()
         # Initialized to start_time so the first heartbeat fires after the
         # configured interval rather than immediately after the bootstrap
@@ -3271,7 +3274,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             logger.debug(f"Remediation proposal skipped: {e}")
             return None
 
-    _REMEDIATION_FLAGS = ('queue_feed', 'queue_drain', 'queue_reap', 'queue_verify')
+    _REMEDIATION_FLAGS = ('queue_feed', 'queue_drain', 'queue_reap', 'queue_verify',
+                          'queue_tracker')
 
     def _triage_model(self) -> Optional[str]:
         """Resolve the dedicated triage model: DB setting overrides config.
@@ -3362,6 +3366,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     self._reconcile_remediation_prs(); self.last_verify = now
                 if now - self.last_cockpit_reap > self._get_cockpit_reap_interval():
                     self._reap_cockpits(); self.last_cockpit_reap = now
+                if now - self.last_tracker_sync > self._get_tracker_interval():
+                    self._sync_tracker(); self.last_tracker_sync = now
             except Exception:
                 logger.exception("Remediation worker tick failed")
             time.sleep(10)
@@ -3612,6 +3618,40 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         na = na if isinstance(na, dict) else {}
         cr = na.get('change_record') if isinstance(na.get('change_record'), dict) else {}
         return str(cr.get('url') or '').strip().rstrip('/')
+
+    def _tracker_url(self) -> str:
+        """Base URL of the cfop-tracker Service, or '' when unset (CFOP-170).
+
+        Env first (wired into the agent Deployment), then
+        ``remediation.tracker.url``. Unlike ``_change_record_url`` an unset
+        value gates nothing: the tick is a no-op and says so once.
+        """
+        env_url = (os.getenv('CFOP_TRACKER_URL') or '').strip()
+        if env_url:
+            return env_url.rstrip('/')
+        return str(self._tracker_config().get('url') or '').strip().rstrip('/')
+
+    def _console_base_url(self) -> str:
+        """Public console URL for links in tracker items, or '' (no link).
+
+        The agent has no idea what address a browser reaches it on — the
+        homelab console is a hostNetwork IP, a chart install is whatever the
+        operator exposed — so this is only ever configured, never guessed. A
+        wrong link in someone's backlog is worse than none.
+        """
+        env_url = (os.getenv('CFOP_CONSOLE_URL') or '').strip()
+        if env_url:
+            return env_url.rstrip('/')
+        return str(self._tracker_config().get('console_url') or '').strip().rstrip('/')
+
+    def _tracker_config(self) -> Dict[str, Any]:
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        tcfg = rcfg.get('tracker') if isinstance(rcfg, dict) else None
+        return tcfg if isinstance(tcfg, dict) else {}
+
+    def _sync_tracker(self) -> int:
+        """The issue-tracker hand-off tick (CFOP-170); see tracker_sync.py."""
+        return sync_tracker(self)
 
     def _complete_node_action_plan(self, prompt: str) -> str:
         """LLM completion for a node-action plan (same model floor as the Job)."""
@@ -4052,7 +4092,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         return advanced
 
     _REMEDIATION_STATUSES = ('queued', 'claimed', 'executing', 'pr-open', 'verifying',
-                             'resolved', 'failed', 'needs-human', 'rejected')
+                             'resolved', 'failed', 'needs-human', 'rejected', 'filed')
 
     def _update_remediation_metrics(self) -> None:
         """Refresh the cfoperator_remediation_queue gauge (throttled to ~30s).
@@ -7778,6 +7818,16 @@ Only return the JSON array, no other text."""
         except Exception as e:
             logger.debug(f"Invalid remediation_verify_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('remediation_verify_interval_seconds', 300)
+
+    def _get_tracker_interval(self) -> int:
+        """Tracker hand-off interval: DB setting → config.yaml → default 60."""
+        try:
+            val = self.kb.get_setting('remediation_tracker_interval', '')
+            if val:
+                return max(30, min(3600, int(val)))
+        except Exception as e:
+            logger.debug(f"Invalid remediation_tracker_interval setting, using default: {e}")
+        return self.config.get('ooda', {}).get('remediation_tracker_interval_seconds', 60)
 
     def _format_heartbeat(self) -> str:
         """Build a one-line OODA heartbeat summary for periodic log emission.
