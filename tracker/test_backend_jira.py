@@ -60,12 +60,27 @@ def test_transition_looks_up_the_named_transition_and_fails_when_not_offered():
     be, http = _backend()
     meta = {"backend": "jira", "key": "OPS-9"}
     be.transition(meta, "rejected", "not needed")
-    assert http.calls[-1] == ("POST", "/rest/api/3/issue/OPS-9/transitions", {"transition": {"id": "41"}})
-    assert http.calls[-2][1] == "/rest/api/3/issue/OPS-9/comment"
+    # transition first (idempotent on retry), note second
+    assert http.calls[-2] == ("POST", "/rest/api/3/issue/OPS-9/transitions", {"transition": {"id": "41"}})
+    assert http.calls[-1][1] == "/rest/api/3/issue/OPS-9/comment"
     be2, _ = _backend(resolved_transition="Closed")
     with pytest.raises(backends.TrackerError) as e:
         be2.transition(meta, "resolved", "")
     assert "Closed" in str(e.value) and "Done" in str(e.value)
+
+
+def test_transition_already_reached_is_success_not_a_missing_transition():
+    """A retry after the transition happened (the note failed last time) finds
+    it no longer offered; the issue is already there, so post the note and stop."""
+    http = FakeHttp({
+        ("GET", "/rest/api/3/issue/OPS-9/transitions"): {"success": True, "status": 200, "data": {"transitions": []}},
+        ("GET", "/rest/api/3/issue/OPS-9"): {"success": True, "status": 200, "data": {"fields": {
+            "status": {"name": "Done", "statusCategory": {"key": "done"}}, "updated": "t"}}},
+    })
+    be, _ = _backend(http)
+    be.transition({"backend": "jira", "key": "OPS-9"}, "resolved", "closing note")
+    assert http.calls[-1][1] == "/rest/api/3/issue/OPS-9/comment"
+    assert not any(c[:2] == ("POST", "/rest/api/3/issue/OPS-9/transitions") for c in http.calls)
 
 
 @pytest.mark.parametrize("status, want", [

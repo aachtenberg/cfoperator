@@ -55,15 +55,14 @@ def test_create_truncates_oversized_body_with_a_marker():
     assert len(body) <= BODY_MAX and body.endswith("characters)")
 
 
-def test_transition_closes_with_state_reason_after_the_note():
+def test_transition_closes_with_state_reason_then_posts_the_note():
     be, http = _backend()
     meta = {"backend": "github", "number": 17}
     be.transition(meta, "resolved", "merged")
-    assert http.calls[-2][1] == "/repos/o/r/issues/17/comments"
-    assert http.calls[-1][2] == {"state": "closed", "state_reason": "completed"}
+    assert http.calls[-2][2] == {"state": "closed", "state_reason": "completed"}
+    assert http.calls[-1][1] == "/repos/o/r/issues/17/comments"
     be.transition(meta, "rejected", "")
-    assert http.calls[-1][2] == {"state": "closed", "state_reason": "not_planned"}
-    assert http.calls[-2][1] != "/repos/o/r/issues/17/comments"
+    assert http.calls[-1][2] == {"state": "closed", "state_reason": "not_planned"}  # no empty comment
 
 
 @pytest.mark.parametrize("data, want", [
@@ -71,6 +70,7 @@ def test_transition_closes_with_state_reason_after_the_note():
     ({"state": "closed", "state_reason": "completed"}, "resolved"),
     ({"state": "closed", "state_reason": None}, "resolved"),
     ({"state": "closed", "state_reason": "not_planned"}, "rejected"),
+    ({"state": "closed", "state_reason": "duplicate"}, "rejected"),   # a duplicate close is not "done"
 ])
 def test_get_maps_state_and_reason(data, want):
     http = FakeHttp({("GET", "/repos/o/r/issues/17"): {"success": True, "status": 200, "data": data}})

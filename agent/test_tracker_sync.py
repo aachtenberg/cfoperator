@@ -67,7 +67,8 @@ def _tracker_written(kb_method):
     (_row(status="rejected"), None),
     (_row(status="failed"), None),
     (_with_ref("filed"), "reconcile"),
-    (_with_ref("needs-human", synced="filed"), "repark"),
+    (_with_ref("needs-human", synced="queued"), "repark"),
+    (_with_ref("needs-human", synced="filed"), "refile"),      # note already posted: write only
     (_with_ref("needs-human", synced="filed", pr_url="https://x/pull/1"), "comment"),
     (_with_ref("needs-human", synced="needs-human", pr_url="https://x/pull/1"), None),
     (_with_ref("pr-open", synced="filed", pr_url="https://x/pull/1"), "comment"),
@@ -137,6 +138,19 @@ def test_repark_tells_the_item_why_and_refiles():
         assert ts.sync_tracker_row(op, row, "http://t") == 1
     assert comment.call_args.args[:2] == ("http://t", "R1")
     assert "multi-file diff" in comment.call_args.args[2]
+    args, kwargs = op.kb.update_remediation_status.call_args
+    assert args == (42, "filed") and kwargs["result"]["tracker"]["synced_status"] == "filed"
+
+
+def test_refile_writes_the_status_without_repeating_the_note():
+    """A repark whose comment landed but whose status write failed must not post
+    "Parked again…" on every tick until the backoff bites: synced says filed, so
+    only the write is owed."""
+    op = _op()
+    row = _with_ref("needs-human", synced="filed")
+    with patch.object(ts, "tracker_comment") as comment:
+        assert ts.sync_tracker_row(op, row, "http://t") == 1
+    comment.assert_not_called()
     args, kwargs = op.kb.update_remediation_status.call_args
     assert args == (42, "filed") and kwargs["result"]["tracker"]["synced_status"] == "filed"
 

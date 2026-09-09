@@ -16,7 +16,7 @@ Each directory is its own invocation:
 pip install -r requirements.txt pytest
 
 # Per-directory suites: the directory itself, then the repo root
-for d in agent tools event_runtime executor changerecord worker mcp_server/tests bridge/tests; do
+for d in agent tools event_runtime executor changerecord tracker discovery worker mcp_server/tests bridge/tests; do
     PYTHONPATH="$d:$PWD" pytest "$d" -q || break
 done
 

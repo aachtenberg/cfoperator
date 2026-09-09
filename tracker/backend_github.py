@@ -66,14 +66,15 @@ class GitHubIssuesBackend:
 
     def transition(self, meta: Dict[str, Any], state: str, note: str) -> None:
         number = _number(meta)
-        if note:
-            self.comment(meta, note)
         reason = "completed" if state == "resolved" else "not_planned"
+        # Close first (idempotent on retry), then the note (not idempotent).
         r = self.http.request("PATCH", self._path(number), body={"state": "closed", "state_reason": reason})
         if r.get("status") == 404:
             raise TrackerNotFound(f"github: issue #{number} not found")
         if not r.get("success"):
             raise TrackerError(f"github: transition failed ({error_text(r)})")
+        if note:
+            self.comment(meta, note)
 
     def get(self, meta: Dict[str, Any]) -> ItemState:
         number = _number(meta)
@@ -84,7 +85,9 @@ class GitHubIssuesBackend:
             raise TrackerError(f"github: get failed ({error_text(r)})")
         data = r.get("data") or {}
         if data.get("state") == "closed":
-            state = "rejected" if data.get("state_reason") == "not_planned" else "resolved"
+            # not_planned and duplicate are both "we are not doing this";
+            # completed (and the legacy null reason) is done.
+            state = "rejected" if data.get("state_reason") in ("not_planned", "duplicate") else "resolved"
         else:
             state = "open"
         return ItemState(state=state, url=data.get("html_url"), key=f"#{number}",

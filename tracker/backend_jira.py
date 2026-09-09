@@ -86,14 +86,21 @@ class JiraBackend:
         offered = (r.get("data") or {}).get("transitions") or []
         match = next((t for t in offered if str(t.get("name") or "").lower() == want.lower()), None)
         if match is None:
+            # A retry after the transition already happened (the note failed
+            # last time) finds it no longer offered; that is success, not a
+            # workflow gap — check where the issue actually is.
+            if self.get(meta).state == state:
+                if note:
+                    self.comment(meta, note)
+                return
             names = ", ".join(str(t.get("name")) for t in offered) or "none"
             raise TrackerError(f"jira: transition {want!r} not offered for {key} (offered: {names})")
-        if note:
-            self.comment(meta, note)
         r = self.http.request("POST", f"/rest/api/3/issue/{key}/transitions",
                               body={"transition": {"id": str(match.get("id"))}})
         if not r.get("success"):
             raise TrackerError(f"jira: transition failed ({error_text(r)})")
+        if note:
+            self.comment(meta, note)
 
     def get(self, meta: Dict[str, Any]) -> ItemState:
         key = _key(meta)

@@ -34,6 +34,8 @@ class FakeHttp:
         if key == ("GET", f"{P}/labels/"):
             return {"success": True, "status": 200,
                     "data": {"results": [{"id": "l-1", "name": "cfoperator"}]}}
+        if key == ("POST", f"{P}/labels/"):
+            return {"success": True, "status": 201, "data": {"id": "l-" + body["name"]}}
         if key == ("POST", f"{P}/issues/"):
             return {"success": True, "status": 201, "data": {"id": "iss-1", "sequence_id": 170}}
         if key == ("POST", f"{P}/issues/iss-1/comments/"):
@@ -53,10 +55,36 @@ def _backend(http=None, **kw):
 
 
 def test_warm_resolves_identifier_states_by_group_and_labels():
-    be, http = _backend(label_names=["cfoperator", "missing-label"])
+    be, http = _backend(label_names=["cfoperator", "new-label"])
     assert be.identifier == "CFOP"
     assert be.resolved_state_id == "s-done" and be.rejected_state_id == "s-cancel"
-    assert be.label_ids == ["l-1"]
+    # known label resolved, unknown one created (GitHub does this implicitly)
+    assert be.label_ids == ["l-1", "l-new-label"]
+    assert ("POST", f"{P}/labels/", {"name": "new-label"}) in http.calls
+
+
+def test_warm_fails_when_labels_cannot_be_listed():
+    """A permissions/API failure must not read as "label not found" for every name."""
+    http = FakeHttp({("GET", f"{P}/labels/"): {"success": False, "status": 403, "data": {"error": "forbidden"}}})
+    with pytest.raises(TrackerError) as e:
+        _backend(http)
+    assert "labels" in str(e.value) and "403" in str(e.value)
+
+
+def test_create_attaches_the_agents_labels_not_only_the_env_list():
+    """The contract's labels[] (cfoperator, needs-human, class, risk:…) must land on
+    Plane as they do on GitHub and Jira; a label the project lacks is created."""
+    be, http = _backend(label_names=["cfoperator"])
+    be.create(Item(remediation_id=1, title="t", body_markdown="b",
+                   labels=["cfoperator", "needs-human", "risk:low"]))
+    created = [c[2]["name"] for c in http.calls if c[:2] == ("POST", f"{P}/labels/")]
+    assert created == ["needs-human", "risk:low"]
+    assert http.calls[-1][2]["labels"] == ["l-1", "l-needs-human", "l-risk:low"]
+    # a label that cannot be created is skipped, the item still files
+    http2 = FakeHttp({("POST", f"{P}/labels/"): {"success": False, "status": 400, "data": {"error": "nope"}}})
+    be2, _ = _backend(http2)
+    ref = be2.create(Item(remediation_id=2, title="t", body_markdown="b", labels=["x"]))
+    assert ref.key == "CFOP-170" and "labels" not in http2.calls[-1][2]
 
 
 def test_warm_honours_state_name_override_and_fails_on_unknown_name():
@@ -90,18 +118,18 @@ def test_create_failure_carries_the_backend_message():
     assert "HTTP 400" in str(e.value) and "name too long" in str(e.value)
 
 
-def test_comment_and_transition_are_by_id_and_transition_comments_first():
+def test_comment_and_transition_are_by_id_and_state_changes_before_the_note():
     be, http = _backend()
     meta = {"backend": "plane", "id": "iss-1"}
     be.comment(meta, "PR opened")
     assert http.calls[-1][1] == f"{P}/issues/iss-1/comments/"
     assert http.calls[-1][2] == {"comment_html": "<p>PR opened</p>"}
     be.transition(meta, "resolved", "fixed by hand")
-    assert [c[1] for c in http.calls[-2:]] == [f"{P}/issues/iss-1/comments/", f"{P}/issues/iss-1/"]
-    assert http.calls[-1][0] == "PATCH" and http.calls[-1][2] == {"state": "s-done"}
+    # state first (idempotent on retry), note second (at-least-once)
+    assert [c[1] for c in http.calls[-2:]] == [f"{P}/issues/iss-1/", f"{P}/issues/iss-1/comments/"]
+    assert http.calls[-2][0] == "PATCH" and http.calls[-2][2] == {"state": "s-done"}
     be.transition(meta, "rejected", "")
-    assert http.calls[-1][2] == {"state": "s-cancel"}
-    assert http.calls[-2][1] != f"{P}/issues/iss-1/comments/"  # no empty comment
+    assert http.calls[-1][0] == "PATCH" and http.calls[-1][2] == {"state": "s-cancel"}  # no empty comment
 
 
 def test_get_maps_state_group_to_contract_state():

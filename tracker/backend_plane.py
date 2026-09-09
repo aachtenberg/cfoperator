@@ -44,6 +44,7 @@ class PlaneBackend:
         self.resolved_state_id = ""
         self.rejected_state_id = ""
         self.label_ids: List[str] = []
+        self._labels_by_name: Dict[str, str] = {}  # lower(name) -> id, grown on demand
 
     # -- startup ------------------------------------------------------------
 
@@ -67,20 +68,44 @@ class PlaneBackend:
         self.resolved_state_id = self._pick_state(self._resolved_name, "completed", "resolved")
         self.rejected_state_id = self._pick_state(self._rejected_name, "cancelled", "rejected")
 
-        if self._label_names:
-            labels = self.http.request("GET", f"{self._p}/labels/")
-            by_name = {str(l.get("name") or "").lower(): str(l.get("id"))
-                       for l in _results(labels)} if labels.get("success") else {}
-            for want in self._label_names:
-                lid = by_name.get(want.lower())
-                if lid:
-                    self.label_ids.append(lid)
-                else:
-                    logger.warning("plane: label %r not found in project; dropped", want)
+        # Always fetched: the agent sends labels on every item (cfoperator,
+        # needs-human / pr-open, the class, risk), not only the env list. A
+        # failed fetch fails warm like project/states do — otherwise a
+        # permissions error would read as "label not found" for every name.
+        labels = self.http.request("GET", f"{self._p}/labels/")
+        if not labels.get("success"):
+            raise TrackerError(f"plane: could not list labels ({error_text(labels)})")
+        self._labels_by_name = {str(l.get("name") or "").lower(): str(l.get("id"))
+                                for l in _results(labels) if l.get("id")}
+        self.label_ids = self._label_ids(self._label_names)
         logger.info("plane backend ready: %s, resolved=%s rejected=%s labels=%d",
                     self.identifier, self.states[self.resolved_state_id][0],
                     self.states[self.rejected_state_id][0], len(self.label_ids))
         return self
+
+    def _label_ids(self, names: Iterable[str]) -> List[str]:
+        """Ids for label names, creating a project label for any name it lacks.
+
+        GitHub creates unknown labels on the fly; Plane wants an id, so this
+        does the same explicitly. A create that fails is logged and that one
+        label skipped — the item still files, the others still land.
+        """
+        out: List[str] = []
+        for name in names:
+            name = str(name or "").strip()
+            if not name:
+                continue
+            lid = self._labels_by_name.get(name.lower())
+            if not lid:
+                r = self.http.request("POST", f"{self._p}/labels/", body={"name": name})
+                lid = str((r.get("data") or {}).get("id") or "") if r.get("success") else ""
+                if not lid:
+                    logger.warning("plane: could not create label %r (%s); skipped", name, error_text(r))
+                    continue
+                self._labels_by_name[name.lower()] = lid
+            if lid not in out:
+                out.append(lid)
+        return out
 
     def _pick_state(self, name: str, group: str, what: str) -> str:
         if name:
@@ -105,8 +130,12 @@ class PlaneBackend:
             "description_html": md_to_html_lite(item.body_markdown),
             "priority": item.priority,
         }
-        if self.label_ids:
-            body["labels"] = list(self.label_ids)
+        labels = list(self.label_ids)
+        for lid in self._label_ids(item.labels):
+            if lid not in labels:
+                labels.append(lid)
+        if labels:
+            body["labels"] = labels
         r = self.http.request("POST", f"{self._p}/issues/", body=body)
         if not r.get("success"):
             raise TrackerError(f"plane: create failed ({error_text(r)})")
@@ -131,13 +160,16 @@ class PlaneBackend:
     def transition(self, meta: Dict[str, Any], state: str, note: str) -> None:
         issue_id = _id(meta)
         target = self.resolved_state_id if state == "resolved" else self.rejected_state_id
-        if note:
-            self.comment(meta, note)
+        # State first, note second: the state change is idempotent on retry,
+        # a comment is not. A note lost to a failure after the close is the
+        # cheaper miss (the contract says notes are at-least-once).
         r = self.http.request("PATCH", f"{self._p}/issues/{issue_id}/", body={"state": target})
         if r.get("status") == 404:
             raise TrackerNotFound(f"plane: issue {issue_id} not found")
         if not r.get("success"):
             raise TrackerError(f"plane: transition failed ({error_text(r)})")
+        if note:
+            self.comment(meta, note)
 
     def get(self, meta: Dict[str, Any]) -> ItemState:
         issue_id = _id(meta)

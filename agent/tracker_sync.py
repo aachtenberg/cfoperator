@@ -43,18 +43,13 @@ from tracker_item import (
 
 logger = logging.getLogger(__name__)
 
-# action: create | repark | comment | transition | reconcile; outcome: ok | error.
-# ``reconcile`` counts only polls that changed the row (issue done/cancelled);
-# a poll that found the item still open is not an action.
+# action: create | repark | refile | comment | transition | reconcile; outcome:
+# ok | error. ``reconcile`` counts only polls that changed the row (issue
+# done/cancelled); a poll that found the item still open is not an action.
 REMEDIATION_TRACKER = Counter(
     'cfoperator_remediation_tracker_total',
     'Issue-tracker hand-off actions on remediation rows (CFOP-170)',
     ['action', 'outcome'])
-
-#: A row whose tracker calls keep failing stops being retried at this count;
-#: the error stays visible on the row and the operator clears it by acting.
-TRACKER_ERROR_CAP = 5
-STATUSES_WITH_A_PR = ('pr-open',)
 
 
 def _now() -> str:
@@ -90,8 +85,13 @@ def decide(row: Dict[str, Any]) -> Optional[str]:
     if status == 'needs-human':
         # A filed row that was approved and parked again, or a PR-open row
         # whose executor pass declined. Either way the item learns why, and a
-        # row without a PR goes back to being handed off.
-        return 'repark' if not _has_pr(row) else ('comment' if synced != status else None)
+        # row without a PR goes back to being handed off. ``refile`` is the
+        # second half alone: the note already landed (synced says filed) but
+        # the status write did not, so only the write is owed — the same
+        # note must not be posted again on every tick.
+        if _has_pr(row):
+            return 'comment' if synced != status else None
+        return 'refile' if synced == 'filed' else 'repark'
     if status in ('pr-open', 'queued'):
         return 'comment' if synced != status else None
     if status in ('resolved', 'rejected'):
@@ -164,6 +164,9 @@ def sync_tracker_row(op, row: Dict[str, Any], base: str) -> int:
         elif action == 'repark':
             tracker_comment(base, ref, build_reparked_comment(row))
             tr.update(synced_status='filed', synced_at=now, error=None, error_count=0)
+            op.kb.update_remediation_status(rid, 'filed', result={'tracker': tr})
+        elif action == 'refile':
+            tr.update(synced_at=now, error=None, error_count=0)
             op.kb.update_remediation_status(rid, 'filed', result={'tracker': tr})
         elif action == 'comment':
             text = build_queued_comment(row) if status == 'queued' else build_pr_comment(row)

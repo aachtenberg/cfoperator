@@ -4291,7 +4291,12 @@ class KnowledgeBase:
     #: lifecycle table in tracker_sync.decide names, and nothing else, so an
     #: executing row with a ref is never listed and never commented on mid-run.
     _TRACKER_ACTIONABLE_STATUSES = ('needs-human', 'pr-open', 'queued', 'resolved', 'rejected', 'filed')
-    _TRACKER_ERROR_CAP = 5
+    #: After a failed tracker call a row waits 60s × 2^error_count (capped at
+    #: this exponent, ~64 min) before it is listed again. Backoff, not a cap:
+    #: a row must never be dropped for good — a create after an outage and a
+    #: transition after a console Resolve both have to happen eventually, and
+    #: every success resets the count.
+    _TRACKER_BACKOFF_MAX_EXPONENT = 6
 
     def list_remediations_for_tracker(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Rows whose tracker item is behind their status, oldest-touched first.
@@ -4303,20 +4308,29 @@ class KnowledgeBase:
           - a ref and any other actionable status the item has not been told
             about (synced_status distinct from status) → comment / transition.
 
-        Rows whose tracker calls failed ``_TRACKER_ERROR_CAP`` times are left
-        out: the error is on the row for the operator, and a dead backend must
-        not be hammered forever by every tick.
+        A row whose last tracker call failed is held back for an exponential
+        backoff (see ``_TRACKER_BACKOFF_MAX_EXPONENT``) rather than dropped:
+        the error stays visible on the row, a dead backend is not hammered by
+        every tick, and nothing is ever given up on for good.
         """
         from sqlalchemy import Integer, and_
         tr = RemediationQueue.result['tracker']
         ref = tr['ref'].astext
         synced = tr['synced_status'].astext
         errors = func.coalesce(cast(tr['error_count'].astext, Integer), 0)
+        error_at = tr['error_at'].astext
         touched = func.coalesce(tr['checked_at'].astext, tr['synced_at'].astext)
+        backoff_over = or_(
+            errors == 0,
+            error_at.is_(None),
+            cast(error_at, TIMESTAMP(timezone=True)) < func.now() - func.make_interval(
+                0, 0, 0, 0, 0, 0,
+                60 * func.power(2, func.least(errors, self._TRACKER_BACKOFF_MAX_EXPONENT))),
+        )
         with self.session_scope() as session:
             rows = session.query(RemediationQueue).filter(
                 RemediationQueue.status.in_(self._TRACKER_ACTIONABLE_STATUSES),
-                errors < self._TRACKER_ERROR_CAP,
+                backoff_over,
                 or_(
                     and_(ref.is_(None), RemediationQueue.status.in_(('needs-human', 'pr-open'))),
                     and_(ref.isnot(None), RemediationQueue.status == 'filed'),

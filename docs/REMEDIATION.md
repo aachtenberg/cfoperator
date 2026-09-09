@@ -425,8 +425,11 @@ tracker's credential only in that pod, `X-CFOP-Token` when
 `CFOP_TRACKER_SHARED_SECRET` is set. Unlike the change recorder it is **not a
 gate**: nothing in the agent waits on it, an unset `CFOP_TRACKER_URL` makes the
 tick a logged no-op, and a failed call leaves the row where it was with the
-error on `result.tracker`. Rows that fail five times stop being retried until
-an operator acts on them.
+error on `result.tracker`. A failed row backs off (60 s × 2^failures, about an
+hour at most) and is never dropped for good: a create after an outage and a
+transition after a console Resolve both happen once the backoff passes.
+Transitions change state first and post the note second, so a retry can repeat
+a note but never skip a close.
 
 One image, the backend by env — a deliberate deviation from the recorder's
 image-per-backend model: three ~100-line REST adapters do not earn three

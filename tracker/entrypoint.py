@@ -18,6 +18,10 @@ requires ``X-CFOP-Token`` (same idiom as changerecord and completion auth).
 
 Unlike changerecord this is not a gate: nothing in the agent blocks on it. A
 row whose item cannot be filed keeps its status and records the error.
+
+Transition semantics: the state change happens first and is idempotent on
+retry; the note is posted after it and is at-least-once — a retry after a
+failure between the two may post the note again, never skip the close.
 Stdlib only.
 """
 
