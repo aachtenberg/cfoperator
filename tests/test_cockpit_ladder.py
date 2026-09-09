@@ -1977,6 +1977,9 @@ def test_the_runner_wraps_the_session_in_tmux_when_the_host_has_it():
         "the runner does not create-or-attach a named tmux session")
     assert "CFOP_COCKPIT_TMUX=1" in runner, "nothing stops the created session recursing into tmux"
     assert "command -v tmux" in runner, "a host that lost tmux since the probe should fall through"
+    assert "tput clear >/dev/null 2>&1; then" in runner, (
+        "tmux must not be exec'd on a TERM it will refuse (unset, dumb, unknown "
+        "terminfo): that ended the session before the shell started (CFOP-166)")
     # The session still runs under the deadline, inside tmux.
     assert (f"timeout --foreground --kill-after={TIMEOUT_KILL_AFTER_SECONDS} "
             "14400 $CFOP_SHELL") in runner

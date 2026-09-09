@@ -348,6 +348,44 @@ async def write_all(loop, fd: int, data: bytes) -> None:  # pragma: no cover
         view = view[written:]
 
 
+#: What the browser terminal is. The agent runs in a pod with no terminal, so
+#: TERM is unset there; ssh then sends the host an empty terminal type, bash
+#: on the host defaults it to ``dumb``, and the runner's tmux refuses that
+#: ("open terminal failed: terminal does not support clear") and exits — which
+#: the console showed as "session ended" before the shell ever started. The
+#: console's terminal is xterm.js, so this is also simply true.
+BROWSER_TERM = "xterm-256color"
+
+#: ssh options the bridge adds when it is the ssh client. The pod's ``~/.ssh``
+#: is a read-only Secret mount, so ssh's attempt to record the host key
+#: ("hostfile_replace_entries: mkstemp: Read-only file system") is noise on
+#: every open; the ladder's own ssh and ``tools.ssh`` already run this way.
+#: Only the pod path: the same argv handed to ``cfassist attach`` runs on the
+#: operator's machine, whose known_hosts is theirs.
+_POD_SSH_OPTIONS = ("-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "LogLevel=ERROR")
+
+
+def child_env(base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """The terminal child's environment: the pod's, with a real TERM."""
+    env = dict(os.environ if base is None else base)
+    if not env.get("TERM") or env["TERM"] == "dumb":
+        env["TERM"] = BROWSER_TERM
+    return env
+
+
+def pod_argv(argv: Sequence[str]) -> list:
+    """``attach_argv`` as the pod should run it (see ``_POD_SSH_OPTIONS``).
+
+    Anything that is not ssh (``kubectl attach``) passes through untouched.
+    """
+    argv = list(argv)
+    if argv and os.path.basename(argv[0]) == "ssh":
+        return [argv[0], *_POD_SSH_OPTIONS, *argv[1:]]
+    return argv
+
+
 class PtySession:
     """A child process on the far end of a pseudo-terminal.
 
@@ -381,7 +419,7 @@ class PtySession:
         pid, fd = pty.fork()
         if pid == 0:  # pragma: no cover - the child never returns
             try:
-                os.execvp(self.argv[0], self.argv)
+                os.execvpe(self.argv[0], self.argv, child_env())
             except Exception:
                 os._exit(126)
         self.pid, self.fd = pid, fd
@@ -599,7 +637,7 @@ class CockpitBridge:
 
     async def _pump(self, websocket, session: Dict[str, Any], actor: str) -> None:  # pragma: no cover
         """Bytes in both directions until one end stops."""
-        argv = list(session.get("attach_argv") or [])
+        argv = pod_argv(session.get("attach_argv") or [])
         term = self.pty_factory(argv)
         term.start()
         self._record(session, actor, "opened")
