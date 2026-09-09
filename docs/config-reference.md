@@ -211,7 +211,8 @@ llm:
   # list: it pins its own floor model per provider in code. (CFOP-104)
 
   # Optional dedicated triage classifier (an ollama model tag, served from
-  # llm.primary.url). When set, alert triage tries this model first and falls
+  # the triage host — llm.triage_url below, which defaults to llm.primary.url).
+  # When set, alert triage tries this model first and falls
   # back to the normal chain on any failure or unparseable response; when
   # unset, triage uses the primary chain unchanged. Investigations are
   # unaffected. The console Admin -> LLM tab can override this live (DB over
@@ -223,6 +224,23 @@ llm:
   # The Helm chart annotates both Deployments with checksum/config and rolls
   # them on `helm upgrade` by itself — chart users need no manual restart.
   # triage_model: cfop-triage-ministral3:v1-q4
+
+  # Ollama host for triage, when it should NOT be llm.primary.url. Optional;
+  # absent means "use the primary host". Lets the triage model run on a
+  # different ollama box than investigations — e.g. a spare 16GB GPU — so the
+  # two models do not evict each other on one shared card (CFOP-175). The
+  # named host must actually serve llm.triage_model. The DB key `triage_url`
+  # overrides this if written, but the console does NOT expose a field for it
+  # yet (unlike triage_model) — cutover is YAML-only for now. Same CFOP-154
+  # posture as "absence means primary". Investigations and embeddings are
+  # unaffected; each already carries its own url.
+  #
+  # Footgun until the console field ships: Admin -> LLM's triage-model picker
+  # lists /api/models/ollama, which is the PRIMARY host's tags. Once triage_url
+  # points elsewhere, changing the triage MODEL from Admin offers the wrong
+  # host's models — set the model in YAML alongside triage_url, or pull the
+  # same tags on both hosts.
+  # triage_url: http://192.168.0.232:11434
 
   # Embeddings (for semantic search)
   embeddings:

@@ -833,9 +833,11 @@ async function loadProvidersAndSettings(){
 }
 async function loadTriageModel(){
   // Options: "(use config)" = clear the DB override, "off" = disable despite
-  // config, plus whatever ollama has pulled. The triage model is an ollama
-  // tag by contract (served from llm.primary.url), so the ollama list is the
-  // right source regardless of the selected chat backend.
+  // config, plus whatever ollama has pulled. NOTE: /api/models/ollama lists the
+  // PRIMARY host's tags. If llm.triage_url points at a different box (CFOP-175),
+  // this list is the wrong host's models — a known gap until a triage-host-aware
+  // picker ships. The list is still the right source when triage shares the
+  // primary host, which is the default.
   const sel = document.getElementById('triage-model');
   const [tm, models] = await Promise.all([
     api('/api/settings/triage_model'),
