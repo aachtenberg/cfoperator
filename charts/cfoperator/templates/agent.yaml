@@ -122,6 +122,10 @@ spec:
             - name: CFOP_COCKPIT_HOST_AGENT_URL
               value: {{ .Values.cockpit.hostAgentUrl | quote }}
 {{- end }}
+{{- if .Values.cockpit.fallbackHost }}
+            - name: CFOP_COCKPIT_FALLBACK_HOST
+              value: {{ .Values.cockpit.fallbackHost | quote }}
+{{- end }}
           envFrom:
             - secretRef:
                 name: {{ include "cfoperator.fullname" . }}-llm

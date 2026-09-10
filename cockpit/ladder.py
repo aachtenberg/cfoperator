@@ -550,6 +550,16 @@ class HostLadderConfig:
     cfassist_version: str = DEFAULT_CFASSIST_VERSION
     release_base: str = DEFAULT_RELEASE_BASE
     hosts: Dict[str, Any] = field(default_factory=dict)
+    #: The machine a browser cockpit lands on when the affected one cannot have
+    #: a session and a pod cannot be served (CFOP-177). An inventory name — a
+    #: control node is the useful choice, because a host cockpit is a login
+    #: shell and a control node's login has a working kubeconfig.
+    #:
+    #: **No default, deliberately.** A cockpit puts a shell on a real machine,
+    #: and "the operator chose this box" must stay distinguishable from "the
+    #: code picked one" (CFOP-154). Unset means the browser refuses as before,
+    #: which is the honest answer when nobody has said where to go.
+    fallback_host: str = ""
 
 
 def build_ladder_config(agent_config: Any, cockpit: CockpitConfig) -> HostLadderConfig:
@@ -606,6 +616,7 @@ def build_ladder_config(agent_config: Any, cockpit: CockpitConfig) -> HostLadder
         cfassist_version=_str("CFOP_COCKPIT_CFASSIST_VERSION", "cfassist_version",
                               DEFAULT_CFASSIST_VERSION),
         release_base=_str("CFOP_COCKPIT_RELEASE_BASE", "release_base", DEFAULT_RELEASE_BASE),
+        fallback_host=_str("CFOP_COCKPIT_FALLBACK_HOST", "fallback_host", ""),
         hosts=dict(hosts),
     )
 

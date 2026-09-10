@@ -514,7 +514,10 @@ def _server(*, investigation=None, tier="host", live=None, store=None):
         {"id": 1889, "trigger": "mount hung"} if investigation is None else investigation)
     server.auth_store = store
     server._resolve_cockpit_host = lambda _id, _inv, _req: ("raspberrypi5", "trigger text")
-    server._choose_cockpit_tier = lambda host, requested, **_kw: (tier, "note", None)
+    # Returns the host as well as the tier (CFOP-177): the decision may move
+    # the session to cockpit.fallback_host, and the resolver has to follow it
+    # or the bridge looks for the session on the wrong machine.
+    server._choose_cockpit_tier = lambda host, requested, **_kw: (tier, "note", None, host)
     ladder = MagicMock()
     ladder.live_session.return_value = live
     server._cockpit_ladder = lambda: ladder

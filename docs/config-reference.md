@@ -668,6 +668,17 @@ cockpit:
   # edit. The host tiers (ssh/systemd/container) need neither.
   # bridge_pod_tier: false
   #
+  # Where the BROWSER drawer lands when the affected machine cannot have a
+  # session — no host resolved from the investigation, a name with no
+  # infrastructure.hosts entry, or a probe that failed — and tier pod is not
+  # served. An infrastructure.hosts name; a control node is the useful one,
+  # because a host cockpit is a login shell and a control node's login has a
+  # working kubeconfig. Unset means those investigations are refused with the
+  # attach line, as before: a cockpit puts a shell on a real machine, so this
+  # has no default and is never derived from `role:`. An explicit `--tier` or
+  # `--host`, and the terminal `cfassist attach --spawn` path, are unaffected.
+  # fallback_host: raspberrypi
+  #
   # The console gets its token from `POST /api/cockpit/<id>/open` (admin):
   # that spawns the session if there is none, and mints a *ticket* — an
   # `investigate` token labelled `cockpit-bridge-<id>` that lives 120 seconds
