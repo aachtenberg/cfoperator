@@ -614,6 +614,12 @@ async function openCockpit(id){
     if(note) note.textContent=msg; toast(msg,'err'); return;
   }
   if(OPEN!==id) return;
+  // The session may not be on the machine this investigation is about
+  // (cockpit.fallback_host, CFOP-177). What the operator otherwise reads on
+  // success is `tier@host` and nothing else, so an unexpected host would
+  // arrive with no explanation — and the drawer's own host line still names
+  // the affected one. Same span the refusals use; it survives mountCockpit.
+  if(note && body.placement_note) note.textContent=body.placement_note;
   mountCockpit(id, body);
 }
 

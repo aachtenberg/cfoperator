@@ -1110,10 +1110,25 @@ something to infer.
 
 It applies to the browser drawer only, under `auto`, and only when the tier
 would otherwise be a pod the bridge cannot serve. An explicit `--tier` or
-`--host` is answered on its own terms, never redirected. The tier note names
-the fallback and says the shell is beside the incident rather than on it, and
-the drawer's provenance line says the same — a session on another machine must
-never read like one on the affected box.
+`--host` is answered on its own terms, never redirected.
+
+A session on another machine must never read like one on the affected box, so
+when it moves the drawer says so beside the button — *session placed on
+raspberrypi (cockpit.fallback_host) — beside the incident, not on it;
+raspberrypi5 could not take one* — in the same span a refusal would use. The
+chip above the terminal shows `host@raspberrypi`, and the `tier_note` in the
+API response carries the longer version, including the probe error that ruled
+the affected machine out.
+
+**Kill and reattach look on the control host too.** The tier decision agrees
+with itself given the same probe, not with the session that was created — and
+the probe is what changes underneath it, because the machine that was down at
+open is often back by the time anyone hits kill. So `close` sweeps the
+configured fallback whatever tier it derives (the way it deletes the Job
+whatever tier it derives), and the bridge's session lookup asks the fallback
+when the derived host has none. Without that, a recovered Pi meant a shell
+left running on the control node until its TTL and a terminal that closed with
+4404.
 
 **Pod cockpits (Phase B).** To open a terminal *into a cockpit pod* from the
 browser, turn on two switches, deliberately and together:

@@ -1502,13 +1502,20 @@ class WebServer:
                 tier, tier_note, node, target = self._choose_cockpit_tier(
                     host, str(body.get('tier') or TIER_AUTO), pod_serves=bridge.pod_tier,
                     requested_host=str(body.get('host') or ''))
+                placement = ''
                 if target != host:
-                    # The session is not on the machine the investigation named,
-                    # and the drawer says so where it says where it came from —
-                    # a host line with an unrelated provenance is how an
-                    # operator comes to believe they are on the affected box.
-                    provenance = (f"{provenance}; session placed on {target} "
-                                  f"(cockpit.fallback_host)")
+                    # The session is not on the machine the investigation named.
+                    # `host_provenance` records that for the API; `placement`
+                    # is the sentence the drawer puts beside the button, because
+                    # what an operator actually reads on success is `tier@host`
+                    # — and a host they did not expect, with nothing saying why,
+                    # is how someone comes to believe they are on the affected
+                    # box.
+                    placement = (f"session placed on {target} (cockpit.fallback_host) — "
+                                 f"beside the incident, not on it"
+                                 + (f"; {host} could not take one" if host
+                                    else "; this investigation names no host"))
+                    provenance = f"{provenance}; {placement}"
                     host = target
                 logger.info("cockpit open for #%s: host=%r (%s) -> %s",
                             investigation_id, host, provenance, tier_note)
@@ -1535,6 +1542,10 @@ class WebServer:
 
             result['host_provenance'] = provenance
             result['tier_note'] = tier_note
+            if placement:
+                # Present only when the session moved: an always-there key that
+                # is usually empty is a key the page learns to ignore.
+                result['placement_note'] = placement
             result['bridge'] = {
                 'url': self._bridge_url(bridge, investigation_id),
                 'origin': origin,
@@ -1595,6 +1606,21 @@ class WebServer:
             if tier != TIER_POD:
                 removals.append(('host', lambda: self._cockpit_ladder().destroy(
                     investigation_id, host=host)))
+            # And the fallback, whatever the derived tier says — for the same
+            # reason the Job goes whatever it says. The tier decision agrees
+            # with itself given the same probe, not with the session that was
+            # opened, and the probe is exactly what changes underneath it: the
+            # Pi was down when the drawer landed the shell on the control node,
+            # and by the time anyone hits kill the Pi is often back. Then close
+            # would ssh the Pi, find nothing, and leave a login shell running
+            # until its TTL — the leak this whole route exists to prevent
+            # (CFOP-177).
+            ladder = self._cockpit_ladder()
+            fallback = (ladder.config.fallback_host or '').strip()
+            if (fallback and fallback != host and fallback in ladder.config.hosts
+                    and not self._pod_serves_browser()):
+                removals.append(('fallback', lambda: ladder.destroy(
+                    investigation_id, host=fallback)))
             removed, errors = [], []
             for side, remove in removals:
                 try:
@@ -2213,6 +2239,13 @@ class WebServer:
         carrying only the tier, which the bridge refuses by name — and "this one
         is a pod, turn on the flag" is a more useful thing to read than "no
         session".
+
+        Re-deriving agrees with the *decision* open made, not with the session
+        it created, and those part company the moment the probe underneath them
+        changes: a shell landed on ``cockpit.fallback_host`` because the Pi was
+        down, and once the Pi answers again this would look for it there and
+        close the operator's terminal with 4404. So when the derived host has
+        no session, the fallback is asked too (CFOP-177).
         """
         inv = self.operator.kb.get_investigation(investigation_id)
         if not inv:
@@ -2226,7 +2259,17 @@ class WebServer:
                 return {'tier': TIER_POD, 'host': host,
                         'investigation_id': investigation_id}
             return self._cockpit_spawner().live_session(investigation_id)
-        return self._cockpit_ladder().live_session(investigation_id, host=host)
+        ladder = self._cockpit_ladder()
+        live = ladder.live_session(investigation_id, host=host)
+        fallback = (ladder.config.fallback_host or '').strip()
+        if live is None and fallback and fallback != host and fallback in ladder.config.hosts:
+            # Nothing on the derived host is not "no cockpit": it is also what
+            # a recovered Pi looks like when the shell is on the control node.
+            # An unreachable derived host still raises from the call above, and
+            # deliberately — that case cannot have gone to the fallback, since
+            # the tier decision would have sent it there itself.
+            live = ladder.live_session(investigation_id, host=fallback)
+        return live
 
     def verify_bridge_token(self, presented: str):
         """The same token check every other caller gets, or None with no store.

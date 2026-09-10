@@ -141,15 +141,31 @@ def test_a_node_with_no_inventory_entry_falls_back(store):
     assert "raspberrypi9" in body["tier_note"], "why the real target was not used"
 
 
-def test_the_drawer_is_told_the_session_moved(store):
-    """A host line with an unrelated provenance is how an operator comes to
-    believe they are on the affected box."""
+def test_the_response_carries_a_line_the_drawer_can_render(store):
+    """`host_provenance` and `tier_note` are API detail the page does not draw:
+    on success an operator reads `tier@host` and nothing else. So the move gets
+    its own short sentence, and `test_console_cockpit.py` holds the page to
+    putting it beside the button."""
     client, _ = _client(reachable_fallback(), store=store, remediations=(),
                         investigation=NOWHERE, **opens_on_fallback())
 
     body = client.post(f"/api/cockpit/{INV}/open", json={}).get_json()
-    assert "no affected host could be resolved" in body["host_provenance"]
-    assert f"session placed on {FALLBACK}" in body["host_provenance"]
+    note = body["placement_note"]
+    assert f"session placed on {FALLBACK}" in note and "cockpit.fallback_host" in note
+    assert "beside the incident, not on it" in note
+    assert "names no host" in note, "why the affected machine was not used"
+    assert note in body["host_provenance"]
+
+
+def test_a_session_that_did_not_move_carries_no_placement_note(store):
+    """An always-present key that is usually empty is a key the page learns to
+    ignore."""
+    ssh = PerHostSSH({TARGET_ADDRESS: [("uname", usable())],
+                      FALLBACK_ADDRESS: [("uname", usable())]})
+    client, _ = _client(ssh, store=store, **opens_on_fallback())
+
+    body = client.post(f"/api/cockpit/{INV}/open", json={}).get_json()
+    assert "placement_note" not in body
 
 
 # --------------------------------------------------------------------------
@@ -284,6 +300,65 @@ def test_close_removes_the_session_from_the_fallback_host(store):
                 if f"/tmp/{session_name(INV)}" in argv[-1] and "rm -rf" in argv[-1]]
     assert removals, "the session directory was never removed"
     assert all(argv[-2].endswith(FALLBACK_ADDRESS) for argv in removals)
+
+
+# --------------------------------------------------------------------------
+# ... including after the affected host comes back
+# --------------------------------------------------------------------------
+
+def recovering(*rules):
+    """The Pi is down at open and answers by the time anyone hits kill.
+
+    The ordinary incident shape, and the one the tier decision cannot see: a
+    failed probe is cached for about a connect timeout, so re-deriving later
+    lands on a *different* answer than the one the session was created under.
+    """
+    return PerHostSSH({FALLBACK_ADDRESS: [("uname", usable()), *rules],
+                       TARGET_ADDRESS: [("uname", UNREACHABLE)]})
+
+
+def recovers(ssh, server, *rules):
+    ssh.by_address[TARGET_ADDRESS] = [("uname", usable()), *rules]
+    # What the cache expiring does, without the wait: a failed probe is kept
+    # only about a connect timeout (`_cache_ttl`).
+    server._ladder.invalidate("raspberrypi5")
+
+
+def test_close_still_reaches_the_fallback_after_the_affected_host_recovers(store):
+    ssh = recovering(("for d in /tmp/", live_listing()))
+    client, server = _client(ssh, store=store, **opens_on_fallback())
+    assert client.post(f"/api/cockpit/{INV}/open", json={}).get_json()["host"] == FALLBACK
+
+    recovers(ssh, server)
+    resp = client.post(f"/api/cockpit/{INV}/close", json={})
+    assert resp.status_code == 200, resp.get_json()
+    removals = [argv for argv, _ in ssh.calls
+                if f"/tmp/{session_name(INV)}" in argv[-1] and "rm -rf" in argv[-1]]
+    assert any(argv[-2].endswith(FALLBACK_ADDRESS) for argv in removals), (
+        "the shell on the control node was left running until its TTL")
+
+
+def test_the_bridge_still_finds_the_fallback_session_after_the_host_recovers(store):
+    """Otherwise the terminal the operator is typing into closes with 4404 the
+    moment the affected box answers a ping again."""
+    ssh = recovering(("for d in /tmp/", live_listing()))
+    _client_, server = _client(ssh, store=store, **opens_on_fallback())
+
+    recovers(ssh, server)   # raspberrypi5 is up, and has no session on it
+    live = server.resolve_cockpit_session(INV)
+    assert live and live["host"] == FALLBACK and live["tier"] == TIER_HOST
+
+
+def test_a_host_that_is_down_at_resolve_time_never_reaches_the_lookup(store):
+    """The mirror of the test above, and why the lookup needs no rescue for it:
+    an unreachable derived host is exactly the case the tier decision sends to
+    the fallback itself, so `live_session` is asked about the control node in
+    the first place."""
+    ssh = reachable_fallback(("for d in /tmp/", live_listing()))
+    _client_, server = _client(ssh, store=store, **opens_on_fallback())
+
+    live = server.resolve_cockpit_session(INV)
+    assert live and live["host"] == FALLBACK
 
 
 # --------------------------------------------------------------------------
