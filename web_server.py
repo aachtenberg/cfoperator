@@ -1421,8 +1421,9 @@ class WebServer:
             try:
                 host, provenance = self._resolve_cockpit_host(investigation_id, inv,
                                                               str(body.get('host') or ''))
-                tier, tier_note, node = self._choose_cockpit_tier(
-                    host, str(body.get('tier') or TIER_AUTO))
+                tier, tier_note, node, host = self._choose_cockpit_tier(
+                    host, str(body.get('tier') or TIER_AUTO),
+                    requested_host=str(body.get('host') or ''))
                 logger.info("cockpit for #%s: host=%r (%s) -> %s",
                             investigation_id, host, provenance, tier_note)
 
@@ -1498,14 +1499,31 @@ class WebServer:
                 # tier here, in the resolver, and in close — one rule, three
                 # callers, so the session the drawer opened is the one the
                 # bridge finds and the one kill removes (CFOP-98).
-                tier, tier_note, node = self._choose_cockpit_tier(
-                    host, str(body.get('tier') or TIER_AUTO), pod_serves=bridge.pod_tier)
+                tier, tier_note, node, target = self._choose_cockpit_tier(
+                    host, str(body.get('tier') or TIER_AUTO), pod_serves=bridge.pod_tier,
+                    requested_host=str(body.get('host') or ''))
+                placement = ''
+                if target != host:
+                    # The session is not on the machine the investigation named.
+                    # `host_provenance` records that for the API; `placement`
+                    # is the sentence the drawer puts beside the button, because
+                    # what an operator actually reads on success is `tier@host`
+                    # — and a host they did not expect, with nothing saying why,
+                    # is how someone comes to believe they are on the affected
+                    # box.
+                    placement = (f"session placed on {target} (cockpit.fallback_host) — "
+                                 f"beside the incident, not on it"
+                                 + (f"; {host} could not take one" if host
+                                    else "; this investigation names no host"))
+                    provenance = f"{provenance}; {placement}"
+                    host = target
                 logger.info("cockpit open for #%s: host=%r (%s) -> %s",
                             investigation_id, host, provenance, tier_note)
                 if tier == TIER_POD:
                     if not bridge.pod_tier:
                         reason = self._browser_pod_refusal(
-                            host, node, tier_note, requested=str(body.get('tier') or ''))
+                            host, node, tier_note, requested=str(body.get('tier') or ''),
+                            requested_host=str(body.get('host') or ''))
                         logger.warning(f"cockpit open refused for #{investigation_id}: {reason}")
                         return refuse('tier', reason)
                     result = self._cockpit_spawner().spawn(
@@ -1524,6 +1542,10 @@ class WebServer:
 
             result['host_provenance'] = provenance
             result['tier_note'] = tier_note
+            if placement:
+                # Present only when the session moved: an always-there key that
+                # is usually empty is a key the page learns to ignore.
+                result['placement_note'] = placement
             result['bridge'] = {
                 'url': self._bridge_url(bridge, investigation_id),
                 'origin': origin,
@@ -1552,8 +1574,9 @@ class WebServer:
             try:
                 host, _provenance = self._resolve_cockpit_host(
                     investigation_id, inv, str(body.get('host') or ''))
-                tier, _note, _node = self._choose_cockpit_tier(
-                    host, TIER_AUTO, pod_serves=self._pod_serves_browser())
+                tier, _note, _node, host = self._choose_cockpit_tier(
+                    host, TIER_AUTO, pod_serves=self._pod_serves_browser(),
+                    requested_host=str(body.get('host') or ''))
             except CockpitSpawnError as e:
                 logger.warning(f"cockpit close refused for #{investigation_id}: {e}")
                 return jsonify({'error': str(e)}), e.status
@@ -1583,6 +1606,21 @@ class WebServer:
             if tier != TIER_POD:
                 removals.append(('host', lambda: self._cockpit_ladder().destroy(
                     investigation_id, host=host)))
+            # And the fallback, whatever the derived tier says — for the same
+            # reason the Job goes whatever it says. The tier decision agrees
+            # with itself given the same probe, not with the session that was
+            # opened, and the probe is exactly what changes underneath it: the
+            # Pi was down when the drawer landed the shell on the control node,
+            # and by the time anyone hits kill the Pi is often back. Then close
+            # would ssh the Pi, find nothing, and leave a login shell running
+            # until its TTL — the leak this whole route exists to prevent
+            # (CFOP-177).
+            ladder = self._cockpit_ladder()
+            fallback = (ladder.config.fallback_host or '').strip()
+            if (fallback and fallback != host and fallback in ladder.config.hosts
+                    and not self._pod_serves_browser()):
+                removals.append(('fallback', lambda: ladder.destroy(
+                    investigation_id, host=fallback)))
             removed, errors = [], []
             for side, remove in removals:
                 try:
@@ -1985,10 +2023,15 @@ class WebServer:
         )
 
     def _choose_cockpit_tier(self, host: str, requested: str, *,
-                             pod_serves: bool = True) -> tuple:
-        """Ladder decision. Returns ``(tier, note, node)`` — the node lookup
-        comes back with it so the tier-1 spawn can reuse it instead of asking
-        the cluster the same question a second time.
+                             pod_serves: bool = True,
+                             requested_host: str = "") -> tuple:
+        """Ladder decision. Returns ``(tier, note, node, host)`` — the node
+        lookup comes back with it so the tier-1 spawn can reuse it instead of
+        asking the cluster the same question a second time, and the host
+        because the decision may *move* it (see the fallback below): the
+        session's target and its tier are one answer, and callers that derived
+        the host separately would otherwise spawn on one machine and look for
+        the session on another.
 
         ``pod_serves=False`` is the browser cockpit's reading (CFOP-98): with
         Phase B off the bridge cannot open a terminal into a pod, so for it a
@@ -2019,6 +2062,11 @@ class WebServer:
         Auto is deliberately unchanged: a cluster node still resolves to tier 1
         without an ssh round trip. The operator asks for the host when they
         want the host.
+
+        Last rung, for the browser only: when all of that still lands on a pod
+        the bridge cannot serve, ``cockpit.fallback_host`` moves the session to
+        a control host rather than refusing (CFOP-177). See
+        ``_cockpit_fallback``.
         """
         ladder = self._cockpit_ladder()
         node = self._cockpit_spawner().get_node(host) if host else None
@@ -2040,7 +2088,68 @@ class WebServer:
         if node_as_host and tier != TIER_POD:
             note += (" — a cluster node too, taken as a host because the browser "
                      "cockpit cannot serve a pod (cockpit.bridge_pod_tier is off)")
-        return tier, note, node
+        if tier == TIER_POD and not pod_serves:
+            fallback = self._cockpit_fallback(host, note, requested=wants,
+                                              requested_host=requested_host)
+            if fallback is not None:
+                return fallback
+        return tier, note, node, host
+
+    def _cockpit_fallback(self, host: str, pod_note: str, *, requested: str,
+                          requested_host: str):
+        """Where a browser cockpit goes when the affected machine cannot have
+        one — ``(tier, note, None, fallback_host)`` — or None to keep the
+        refusal. CFOP-177.
+
+        Every path into here ends, without it, in a drawer with no terminal:
+        no host resolved (the live case — #2397/#2398/#2399 all read
+        ``host=''``), a name with no inventory entry, or a probe that failed.
+        A pod would be no nearer the incident than a control host in any of
+        them — with no host resolved tier 1 is literally "somewhere in the
+        cluster" — and it is the weaker session: no host journal, no ssh
+        onward, and a read-only service account. So one rule covers all three
+        rather than a special case per reason.
+
+        Two things it must not do:
+
+        * **Answer a different question than the one asked.** An explicit
+          ``tier`` or ``host`` in the request is honoured or refused on its own
+          terms; someone who typed ``--tier pod`` is not handed a shell on
+          another machine.
+        * **Look like a session on the affected box.** The note names the
+          fallback, says it is beside the incident rather than on it, and
+          carries the pod note that explains why the real target was not used.
+
+        No default host and no guess from ``role: primary|master``: the
+        machine a shell lands on is not something to infer (CFOP-154), and a
+        role-derived one would move when someone edited a role for an
+        unrelated reason.
+        """
+        if requested not in ("", TIER_AUTO) or (requested_host or "").strip():
+            return None
+        ladder = self._cockpit_ladder()
+        fallback = (ladder.config.fallback_host or "").strip()
+        if not fallback or fallback == host or fallback not in ladder.config.hosts:
+            return None
+        # is_cluster_node=False on purpose: the fallback is wanted *as a host*,
+        # and it is a control node in every install that sets one — asking the
+        # cluster would send it straight back to the pod this exists to avoid.
+        tier, note = choose_tier(ladder.probe(fallback), requested=TIER_AUTO,
+                                 is_cluster_node=False, has_host=True,
+                                 allow_sudo=ladder.config.allow_sudo)
+        if tier == TIER_POD:
+            # The fallback itself cannot hold a session. Refusing with the
+            # original note beats landing somewhere nobody named.
+            return None
+        # The pod note explains the *rung*, never the machine ("the affected
+        # host is a schedulable cluster node"), so the host goes in here: which
+        # box was refused is the first thing an operator reading a session on a
+        # different one wants to know.
+        where = f"for {host}, " if host else ""
+        note += (f" — on {fallback} (cockpit.fallback_host), beside the incident rather "
+                 f"than on it: {where}{pod_note}, and the browser cockpit cannot serve "
+                 f"a pod (cockpit.bridge_pod_tier is off)")
+        return tier, note, None, fallback
 
     def _pod_serves_browser(self) -> bool:
         """Whether a pod cockpit is something the browser could be handed.
@@ -2058,7 +2167,7 @@ class WebServer:
         return (not bridge.enabled) or bool(bridge.pod_tier)
 
     def _browser_pod_refusal(self, host: str, node, tier_note: str, *,
-                             requested: str = "") -> str:
+                             requested: str = "", requested_host: str = "") -> str:
         """Why the drawer cannot open this one, and what to do — the reason
         names the actual gap (no host, no inventory entry, a failed probe, or
         a pod asked for by name) rather than "in the cluster", which for a Pi
@@ -2071,17 +2180,49 @@ class WebServer:
             return (f"tier pod was requested{where}, and cockpit.bridge_pod_tier is off"
                     + tail + " — drop the tier to get a host cockpit, or use "
                     "cfassist attach --spawn --tier pod from a terminal")
+        # Everything below is a case the fallback was offered and declined, so
+        # each one says why there was no control host to go to instead. Without
+        # that the operator reads "turn on the pod flag" as the only way out,
+        # which is the expensive one (a chart grant and a restart) and the
+        # weaker terminal.
         if not host:
             return ("no affected host could be resolved from this investigation, so "
                     "its cockpit would be a pod somewhere in the cluster" + tail +
-                    " — use cfassist attach --spawn --host <name> from a terminal")
+                    self._fallback_hint(requested_host) +
+                    " — or use cfassist attach --spawn --host <name> from a terminal")
         if host not in self._cockpit_ladder().config.hosts:
             what = "a cluster node" if node is not None else "a name"
             return (f"{host} is {what} with no infrastructure.hosts entry, so the only "
-                    f"cockpit for it is a pod" + tail +
-                    f" — add {host} to infrastructure.hosts, or use cfassist attach --spawn")
+                    f"cockpit for it is a pod" + tail + self._fallback_hint(requested_host) +
+                    f" — or add {host} to infrastructure.hosts, or use "
+                    f"cfassist attach --spawn")
         return (f"{host} could not be given a host-tier cockpit ({tier_note})" + tail +
-                " — use cfassist attach --spawn --tier pod from a terminal")
+                self._fallback_hint(requested_host) +
+                " — or use cfassist attach --spawn --tier pod from a terminal")
+
+    def _fallback_hint(self, requested_host: str = "") -> str:
+        """Why ``cockpit.fallback_host`` did not rescue this one (CFOP-177).
+
+        Four states, because they need four different next actions: nobody
+        named a control host, the caller named a host so the fallback was never
+        consulted, the one named is not in the inventory, or it is and could
+        not take a session either. The order matters — only the last of those
+        may probe, and it reads an answer this same request has already cached.
+        """
+        ladder = self._cockpit_ladder()
+        name = (ladder.config.fallback_host or "").strip()
+        if not name:
+            return ("; naming a control host in cockpit.fallback_host would put the "
+                    "shell there instead of refusing")
+        if (requested_host or "").strip():
+            return (f"; cockpit.fallback_host ({name}) was not used because this request "
+                    f"named a host — drop it to let the drawer fall back")
+        if name not in ladder.config.hosts:
+            return (f"; cockpit.fallback_host is {name}, which has no "
+                    f"infrastructure.hosts entry, so there was nowhere to fall back to")
+        # Warm from the fallback attempt earlier in this same request.
+        why = ladder.probe(name).error or "no host tier is available on it"
+        return f"; cockpit.fallback_host ({name}) could not take the session either ({why})"
 
     # ---- the browser bridge's server-side half (CFOP-75) -----------------
 
@@ -2098,19 +2239,37 @@ class WebServer:
         carrying only the tier, which the bridge refuses by name — and "this one
         is a pod, turn on the flag" is a more useful thing to read than "no
         session".
+
+        Re-deriving agrees with the *decision* open made, not with the session
+        it created, and those part company the moment the probe underneath them
+        changes: a shell landed on ``cockpit.fallback_host`` because the Pi was
+        down, and once the Pi answers again this would look for it there and
+        close the operator's terminal with 4404. So when the derived host has
+        no session, the fallback is asked too (CFOP-177).
         """
         inv = self.operator.kb.get_investigation(investigation_id)
         if not inv:
             return None
         host, _provenance = self._resolve_cockpit_host(investigation_id, inv, '')
         pod_serves = self._bridge_config().pod_tier
-        tier, _note, _node = self._choose_cockpit_tier(host, TIER_AUTO, pod_serves=pod_serves)
+        tier, _note, _node, host = self._choose_cockpit_tier(host, TIER_AUTO,
+                                                             pod_serves=pod_serves)
         if tier == TIER_POD:
             if not pod_serves:
                 return {'tier': TIER_POD, 'host': host,
                         'investigation_id': investigation_id}
             return self._cockpit_spawner().live_session(investigation_id)
-        return self._cockpit_ladder().live_session(investigation_id, host=host)
+        ladder = self._cockpit_ladder()
+        live = ladder.live_session(investigation_id, host=host)
+        fallback = (ladder.config.fallback_host or '').strip()
+        if live is None and fallback and fallback != host and fallback in ladder.config.hosts:
+            # Nothing on the derived host is not "no cockpit": it is also what
+            # a recovered Pi looks like when the shell is on the control node.
+            # An unreachable derived host still raises from the call above, and
+            # deliberately — that case cannot have gone to the fallback, since
+            # the tier decision would have sent it there itself.
+            live = ladder.live_session(investigation_id, host=fallback)
+        return live
 
     def verify_bridge_token(self, presented: str):
         """The same token check every other caller gets, or None with no store.

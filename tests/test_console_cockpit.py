@@ -102,6 +102,10 @@ class FakeResizeObserver{
 
 const openResponse = mode==='refused'
   ? {ok:false,status:409,body:{error:'the cockpit bridge is not enabled on this agent (cockpit.bridge_enabled)',code:'bridge_disabled',attach_command:'cfassist attach 2272'}}
+  : mode==='moved'
+  ? {ok:true,status:201,body:{status:'spawned',tier:'host',host:'ubuntu-cm5-01',expires_at:Math.floor(Date.now()/1000)+227,
+      placement_note:'session placed on ubuntu-cm5-01 (cockpit.fallback_host) — beside the incident, not on it; raspberrypi5 could not take one',
+      bridge:{url:'ws://cfop:8084/cockpit/2272',ticket:'cfop_T1CKET',scope:'investigate',ticket_ttl_seconds:120}}}
   : {ok:true,status:201,body:{status:'spawned',tier:'host',host:'raspberrypi5',expires_at:Math.floor(Date.now()/1000)+227,
       bridge:{url:'ws://cfop:8084/cockpit/2272',ticket:'cfop_T1CKET',scope:'investigate',ticket_ttl_seconds:120}}};
 
@@ -201,6 +205,16 @@ const tick=()=>new Promise(r=>setImmediate(r));
     out.note=box.document.getElementById('cockpit-note').textContent;
     out.socketsOpened=sockets.length;
   }
+  if(mode==='moved'){
+    // A cockpit that opened somewhere other than the machine the drawer is
+    // about. The terminal mounts as usual; the question is whether the page
+    // says where it went.
+    await box.openCockpit(2272);
+    await tick(); await tick(); await new Promise(r=>setTimeout(r,5));
+    out.note=box.document.getElementById('cockpit-note').textContent;
+    out.where=box.document.getElementById('cp-status').textContent;
+    out.socketsOpened=sockets.length;
+  }
   if(mode==='reentry'){
     // Open a terminal, then re-enter det() for the SAME row (a re-click, or
     // triage() ending in detail(id)). The first socket must be closed and no
@@ -245,6 +259,23 @@ def member(tmp_path_factory):
 @pytest.fixture(scope="module")
 def refused(tmp_path_factory):
     return run_page(tmp_path_factory, "refused")
+
+
+@pytest.fixture(scope="module")
+def moved(tmp_path_factory):
+    return run_page(tmp_path_factory, "moved")
+
+
+def test_a_session_that_landed_elsewhere_says_so_beside_the_button(moved):
+    """CFOP-177: `cockpit.fallback_host` can put the shell on a machine this
+    investigation is not about. On success the operator otherwise reads only
+    `tier@host` — and the drawer's own host line still names the affected box —
+    so an unexplained hostname is how someone comes to believe they are on it.
+    """
+    assert "ubuntu-cm5-01" in moved["note"] and "cockpit.fallback_host" in moved["note"]
+    assert "beside the incident" in moved["note"]
+    assert moved["socketsOpened"] == 1, "it is still a terminal, not a refusal"
+    assert "ubuntu-cm5-01" in moved["where"]
 
 
 def test_the_button_is_drawn_for_admins_and_not_for_members(admin, member):

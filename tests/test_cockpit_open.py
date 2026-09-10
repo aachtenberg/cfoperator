@@ -52,11 +52,14 @@ def live_listing(expires=None):
 
 def _client(ssh, *, store=None, auth_disabled=True, cockpit=None,
             investigation=None, remediations=("raspberrypi5",), node_names=(),
-            pod_jobs=()):
+            pod_jobs=(), ladder_over=None):
     """The real routes, the real ladder over ``ssh``, and ``store`` for tokens.
 
     ``cockpit`` is the ``cockpit:`` config block — where the bridge's own
     switches live, so the route reads the same facts the listener would.
+    ``ladder_over`` overrides ``HostLadderConfig`` fields the ladder resolves
+    for itself (``fallback_host`` and friends), which the block above does not
+    reach: the route's ladder is built here, not from ``operator.config``.
     """
     from unittest.mock import MagicMock
 
@@ -116,7 +119,7 @@ def _client(ssh, *, store=None, auth_disabled=True, cockpit=None,
         _cockpit._mint = server._mint_cockpit_token
         _cockpit._revoke = server._revoke_cockpit_token
     server._cockpit = _cockpit
-    server._ladder = spawner(ssh)
+    server._ladder = spawner(ssh, **(ladder_over or {}))
     if store is not None:
         # The real mint, so the tokens under test are the ones a deploy makes.
         server._ladder._mint = server._mint_cockpit_token

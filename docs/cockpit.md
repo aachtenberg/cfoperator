@@ -1089,7 +1089,46 @@ true and useless: the incident that prompted it was a kernel sysinfo warning
 on raspberrypi2, which a pod scheduled onto raspberrypi2 cannot look at.
 What still gets the attach line instead: an investigation that resolves to no
 host, a node with no inventory entry (the message says to add it), or a host
-whose probe failed.
+whose probe failed — unless you name a fallback.
+
+**A control host for the rest (CFOP-177).** Those three cases have one thing
+in common: there is nowhere on the affected machine to put a session, so the
+choice is a pod somewhere in the cluster or nothing. `cockpit.fallback_host`
+adds a third answer — a login shell on a machine you named:
+
+```yaml
+cockpit:
+  fallback_host: raspberrypi   # an infrastructure.hosts name; a control node
+```
+
+Pick a control node. A host cockpit is a login shell (CFOP-166), so the
+session inherits that login's `kubeconfig` — which is what an investigation
+with no affected host usually needs, since the incident is in the cluster
+rather than on a box. It is deliberately not a default and not derived from
+`role:`: a cockpit puts a shell on a real machine, and which machine is not
+something to infer.
+
+It applies to the browser drawer only, under `auto`, and only when the tier
+would otherwise be a pod the bridge cannot serve. An explicit `--tier` or
+`--host` is answered on its own terms, never redirected.
+
+A session on another machine must never read like one on the affected box, so
+when it moves the drawer says so beside the button — *session placed on
+raspberrypi (cockpit.fallback_host) — beside the incident, not on it;
+raspberrypi5 could not take one* — in the same span a refusal would use. The
+chip above the terminal shows `host@raspberrypi`, and the `tier_note` in the
+API response carries the longer version, including the probe error that ruled
+the affected machine out.
+
+**Kill and reattach look on the control host too.** The tier decision agrees
+with itself given the same probe, not with the session that was created — and
+the probe is what changes underneath it, because the machine that was down at
+open is often back by the time anyone hits kill. So `close` sweeps the
+configured fallback whatever tier it derives (the way it deletes the Job
+whatever tier it derives), and the bridge's session lookup asks the fallback
+when the derived host has none. Without that, a recovered Pi meant a shell
+left running on the control node until its TTL and a terminal that closed with
+4404.
 
 **Pod cockpits (Phase B).** To open a terminal *into a cockpit pod* from the
 browser, turn on two switches, deliberately and together:
@@ -1118,9 +1157,10 @@ ticket, the TTL, kill, and the audit line are the same as the host tiers.
 |---|---|---|
 | `the cockpit bridge is not enabled on this agent` | `bridge_enabled` is off | enable it, or use the attach line |
 | `this console's origin (…) is not in cockpit.bridge_origins` | the allow-list does not name this console | add that exact origin |
-| `<host> is a cluster node with no infrastructure.hosts entry, so the only cockpit for it is a pod` | the drawer can only reach a host by ssh, and this one has no address or key configured; Phase B is off | add the host to `infrastructure.hosts` (using the name your alerts use); or turn on both `cockpit.bridge_pod_tier` and `cockpit.bridgePodAttach`; or `cfassist attach --spawn` from a terminal |
-| `no affected host could be resolved from this investigation, so its cockpit would be a pod somewhere in the cluster` | nothing in the trigger, findings or a linked remediation names a configured host | `cfassist attach <id> --spawn --host <name>` from a terminal, or turn on Phase B |
-| `<host> could not be given a host-tier cockpit (…)` | the host is configured but the probe failed — it is down, or the key does not work | fix the reachability (the smoke test in Setting it up), or `cfassist attach --spawn --tier pod` to look at it from next door |
+| `<host> is a cluster node with no infrastructure.hosts entry, so the only cockpit for it is a pod` | the drawer can only reach a host by ssh, and this one has no address or key configured; Phase B is off | add the host to `infrastructure.hosts` (using the name your alerts use); or set `cockpit.fallback_host`; or turn on both `cockpit.bridge_pod_tier` and `cockpit.bridgePodAttach`; or `cfassist attach --spawn` from a terminal |
+| `no affected host could be resolved from this investigation, so its cockpit would be a pod somewhere in the cluster` | nothing in the trigger, findings or a linked remediation names a configured host | set `cockpit.fallback_host` to a control node and the drawer opens there; or `cfassist attach <id> --spawn --host <name>` from a terminal; or turn on Phase B |
+| `<host> could not be given a host-tier cockpit (…)` | the host is configured but the probe failed — it is down, or the key does not work | fix the reachability (the smoke test in Setting it up); or set `cockpit.fallback_host` to look at it from a control node; or `cfassist attach --spawn --tier pod` to look at it from next door |
+| `; cockpit.fallback_host (<name>) could not take the session either (…)` | the fallback is configured but is itself unreachable, or has no host tier | fix that host's reachability — everything else in this table applies to it too |
 | `disconnected: the bridge is carrying its maximum terminals` | `bridge_max_sessions` (default 2) | close one, or raise it |
 | `disconnected: the ticket was not accepted` | the 120 s ticket expired before the socket opened, or was already spent | reattach — that mints a new one |
 | `disconnected: no live session on the host` | the session ended or was reaped between open and connect | reattach |
@@ -1135,8 +1175,9 @@ ticket, the TTL, kill, and the audit line are the same as the host tiers.
   the release namespace) — see
   [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console).
   With neither, a node that is also an `infrastructure.hosts` entry gets a
-  host-tier cockpit (CFOP-98); an investigation with no reachable host says
-  so and points at `cfassist attach --spawn`.
+  host-tier cockpit (CFOP-98); an investigation with no reachable host lands on
+  `cockpit.fallback_host` when one is named (CFOP-177), and otherwise says so
+  and points at `cfassist attach --spawn`.
 - **No remediate profile.** There is one cockpit identity and it is read-only.
   A write-capable cockpit waits until something actually needs one.
 - **Reattach after a drop is tmux's job, where the host has it.** Tiers 1
