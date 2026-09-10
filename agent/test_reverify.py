@@ -59,13 +59,14 @@ def _op(*, flag=True, rows=None, response="", providers=("anthropic",),
     op._remediation_flag = lambda name: bool(op.config["remediation"].get(name))
     op._judge_providers = lambda: list(providers)
     op._judge_model = lambda backend: model
+    op._resolve_provider = lambda backend, m=None: (backend, f"https://{backend}/v1", m or model)
     op._tracker_url = lambda: "http://tracker:8092"
-    op.kb.list_remediations_by_status.return_value = list(rows if rows is not None else [_row()])
+    op.kb.list_remediations.return_value = list(rows if rows is not None else [_row()])
     op.kb.store_learning.return_value = 4242
     if raises:
-        op._chat_with_tools_with_fallback.side_effect = raises
+        op._chat_with_tools.side_effect = raises
     else:
-        op._chat_with_tools_with_fallback.return_value = {"response": response}
+        op._chat_with_tools.return_value = {"response": response}
     return op
 
 
@@ -82,26 +83,60 @@ def test_verifier_skips_the_vendor_that_filed_the_row():
     """The failure this feature exists to catch is a model's own wrong call, so
     asking that same vendor to review it would defeat the point."""
     op = _op(providers=("ollama", "anthropic"))
-    backend, _model = rv.choose_verifier(op, _row())
-    assert backend == "anthropic"
+    assert [b for b, _m in rv.eligible_peers(op, _row())] == ["anthropic"]
 
 
 def test_no_verifier_when_every_peer_is_the_reporter():
     op = _op(providers=("ollama",))
-    assert rv.choose_verifier(op, _row()) == (None, None)
+    assert rv.eligible_peers(op, _row()) == []
 
 
 def test_row_is_left_filed_when_no_peer_is_eligible():
     op = _op(providers=("ollama",))
     assert rv.reverify_row(op, _row(), max_iterations=10) is None
-    op._chat_with_tools_with_fallback.assert_not_called()
+    op._chat_with_tools.assert_not_called()
     op.kb.update_remediation_status.assert_not_called()
 
 
 def test_reporter_with_no_backend_still_matches_on_the_bare_model():
     op = _op(providers=("anthropic",), model="claude-opus-4-8")
     row = _row(payload={"provider": "claude-opus-4-8", "recommendation": "x"})
-    assert rv.choose_verifier(op, row) == (None, None)
+    assert rv.eligible_peers(op, row) == []
+
+
+def test_failover_stays_inside_the_judge_rung():
+    """_chat_with_tools_with_fallback would end this chain at the local primary
+    -- the model whose judgement is under review. Failover must not leave the
+    frontier peers."""
+    op = _op(providers=("deepseek", "anthropic"))
+    op._chat_with_tools.side_effect = [
+        RuntimeError("deepseek unreachable"),
+        {"response": '{"verdict": "open", "note": "still down"}'},
+    ]
+    assert rv.reverify_row(op, _row(), max_iterations=10) == "open"
+    op._chat_with_tools_with_fallback.assert_not_called()
+    tried = [call.args[0] for call in op._chat_with_tools.call_args_list]
+    assert tried == ["deepseek", "anthropic"]
+    assert "ollama" not in tried
+
+
+def test_a_peer_that_answered_badly_does_not_advance_to_the_next():
+    """Unreachable is a reason to try the next seat; a bad answer is not --
+    that is the mutation judge's rule and it holds here."""
+    op = _op(providers=("deepseek", "anthropic"), response="not json")
+    assert rv.reverify_row(op, _row(), max_iterations=10) is None
+    assert op._chat_with_tools.call_count == 1
+
+
+def test_note_names_the_peer_that_actually_answered():
+    op = _op(providers=("deepseek", "anthropic"))
+    op._chat_with_tools.side_effect = [
+        RuntimeError("down"),
+        {"response": '{"verdict": "resolved", "note": "node is Ready"}'},
+    ]
+    rv.reverify_row(op, _row(), max_iterations=10)
+    note = op.kb.update_remediation_status.call_args.kwargs["result"]["resolution_note"]
+    assert "anthropic/claude-opus-4-8" in note and "deepseek" not in note
 
 
 # ---- the pass is read-only by policy ----------------------------------------
@@ -111,7 +146,7 @@ def test_pass_runs_under_a_verify_only_tool_policy():
     tools are withheld from the schema and refused at execute."""
     op = _op(response=VERDICT_REJECT)
     rv.reverify_row(op, _row(), max_iterations=10)
-    policy = op._chat_with_tools_with_fallback.call_args.kwargs["tool_policy"]
+    policy = op._chat_with_tools.call_args.kwargs["tool_policy"]
     assert policy.verify_only is True
     assert policy.allows_mutation() is False
 
@@ -148,6 +183,18 @@ def test_verdict_survives_a_fenced_block_and_surrounding_prose():
     parsed = rv.parse_verdict(
         'Here is my answer.\n```json\n{"verdict": "open", "note": "still down"}\n```\nDone.')
     assert parsed["verdict"] == "open" and parsed["note"] == "still down"
+
+
+def test_a_single_object_array_is_unwrapped():
+    """The tool loop's last-iteration nudge tells OpenAI-compatible peers to
+    answer 'as the JSON array described above' -- wording inherited from the
+    sweep. Unwrap rather than throw away a spent frontier pass."""
+    parsed = rv.parse_verdict('[{"verdict": "rejected", "note": "already correct"}]')
+    assert parsed["verdict"] == "rejected"
+
+
+def test_a_multi_object_array_is_still_refused():
+    assert rv.parse_verdict('[{"verdict": "open"}, {"verdict": "resolved"}]') is None
 
 
 # ---- what each verdict writes -----------------------------------------------
@@ -223,14 +270,39 @@ def test_an_unparseable_stamp_does_not_pin_a_row_as_fresh():
 def test_tick_is_a_no_op_when_the_flag_is_off():
     op = _op(flag=False)
     assert rv.reverify_filed_rows(op) == 0
-    op.kb.list_remediations_by_status.assert_not_called()
+    op.kb.list_remediations.assert_not_called()
+
+
+def test_the_tick_reads_a_list_that_actually_carries_its_clocks():
+    """Guards the shape, not a fabricated dict.
+
+    The first cut listed rows with list_remediations_by_status, which was built
+    for the PR reconciler and returns six fields -- no `status`, `created_at`
+    or `result`. Every clock and state read here lives in those three, so the
+    tick was a silent no-op that the hand-built rows in this file could never
+    catch. Assert against the real row dict instead.
+    """
+    from knowledge_base import remediation_row_dict
+
+    class Row:
+        id = 1; status = "filed"; remediation_class = "manual"; risk = "low"
+        confidence = None; host_id = "h"; investigation_id = None; priority = 0
+        attempts = 0; pr_url = None; last_error = None
+        created_at = None; claimed_at = None; completed_at = None
+        payload = {}; result = {"tracker": {"ref": "R1"}}
+
+    real = remediation_row_dict(Row())
+    for field in ("status", "created_at", "result"):
+        assert field in real, f"{field} is missing from the row the tick lists"
+    assert rv.is_due(real, min_age=3600, recheck_after=86400) is True
+    assert rv.reverify_state(real) == {}
 
 
 def test_tick_respects_max_per_tick():
     rows = [_row(id=i, result={}) for i in range(5)]
     op = _op(rows=rows, response='{"verdict": "open", "note": "n"}')
     assert rv.reverify_filed_rows(op) == 2
-    assert op._chat_with_tools_with_fallback.call_count == 2
+    assert op._chat_with_tools.call_count == 2
 
 
 def test_tick_takes_the_least_recently_checked_first():
@@ -248,6 +320,23 @@ def test_one_raising_row_does_not_stop_the_tick():
              response='{"verdict": "open", "note": "n"}')
     op.kb.merge_remediation_result.side_effect = [RuntimeError("db"), None]
     assert rv.reverify_filed_rows(op) == 1
+
+
+def test_the_flag_is_wired_everywhere_a_flag_has_to_be():
+    """Three places, not one. The profile clamp keeps it off under
+    `investigate`; CFOperator._REMEDIATION_FLAGS is what the console's
+    GET/POST /api/remediation/flags will accept; FLAG_LABEL is the chip an
+    operator actually clicks. CFOP-170 wired queue_tracker through all three,
+    and a flag in only the first is one nobody can turn on from the console.
+    """
+    import pathlib
+    from agent import CFOperator
+    from cfshared.config import REMEDIATION_FLAGS
+
+    assert "queue_reverify" in REMEDIATION_FLAGS
+    assert "queue_reverify" in CFOperator._REMEDIATION_FLAGS
+    page = pathlib.Path(__file__).resolve().parents[1] / "ui" / "remediations.html"
+    assert "queue_reverify:'re-verify'" in page.read_text("utf-8")
 
 
 def test_question_carries_the_claim_and_frames_steps_as_checks():

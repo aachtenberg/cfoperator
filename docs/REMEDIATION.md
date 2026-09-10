@@ -479,6 +479,13 @@ Three properties carry it, and none of them is prompt wording:
 failure being hunted is a model's confidently wrong call, so that model is the
 wrong one to ask. No eligible peer means the row is left filed.
 
+The tick calls `_chat_with_tools` per peer and walks the rung itself, rather
+than `_chat_with_tools_with_fallback` — that wrapper's chain is
+`chosen → ollama → groq → xai`, so an unreachable frontier peer would land the
+pass on the local primary whose judgement is the thing under review. Failover
+is on unreachability only: a peer that *answered* badly does not advance, and
+the note names the peer that actually replied, never the one we meant to ask.
+
 **Read-only, enforced by the registry.** The pass runs under
 `ToolPolicy(verify_only=True)`: `get_schemas` withholds mutating tools and
 `execute` refuses them anyway. `ssh_execute` stays offered, because the checks
@@ -500,6 +507,10 @@ unchanged across `plane`, `github`, `jira` and whatever lands next. The one
 thing it does reach the tracker for is the `open` case, to comment without
 closing — which is precisely what an out-of-process script cannot do, since no
 console route annotates a row it is not closing.
+
+Toggleable live from the console like the other queue flags (the `re-verify`
+chip), so it is wired through `REMEDIATION_FLAGS`, `CFOperator._REMEDIATION_FLAGS`
+and `FLAG_LABEL` alike.
 
 Config: `remediation.queue_reverify` (off by default, `remediate` scope),
 `max_reverify_per_tick` (2), `remediation.reverify.min_age_seconds` (3600, so a

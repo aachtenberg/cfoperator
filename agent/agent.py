@@ -3279,7 +3279,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             return None
 
     _REMEDIATION_FLAGS = ('queue_feed', 'queue_drain', 'queue_reap', 'queue_verify',
-                          'queue_tracker')
+                          'queue_tracker', 'queue_reverify')
 
     def _triage_model(self) -> Optional[str]:
         """Resolve the dedicated triage model: DB setting overrides config.

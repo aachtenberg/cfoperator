@@ -192,28 +192,34 @@ def is_due(row: Dict[str, Any], *, min_age: int, recheck_after: int,
     return True
 
 
-def choose_verifier(op, row: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
-    """A judge-rung backend and model that did not write this row.
+def eligible_peers(op, row: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Judge-rung ``(backend, model)`` peers that did not write this row.
 
     Reuses the mutation judge's ladder (CFOP-70/121) rather than the generic
     chat chain: the point of the exercise is a stronger, *different* seat than
     the cheap local primary that filed the row. ``_judge_is_self_review`` is
     vendor-level, so re-pointing a backend's model cannot re-open that seat.
 
-    Returns ``(None, None)`` when no eligible peer exists, and the caller
-    treats that as "skip", not as a verdict.
+    Returns every eligible peer, not just the first, because the caller walks
+    them itself. It must: ``_chat_with_tools_with_fallback`` would be the
+    obvious way to get failover, and it is exactly wrong here -- its chain is
+    ``chosen -> ollama -> groq -> xai``, so an unreachable frontier peer lands
+    the pass on the local primary whose judgement is the thing under review.
+
+    An empty list is "skip this row", never a verdict.
     """
     try:
         providers = op._judge_providers()
     except Exception as exc:
         logger.debug(f"Could not list judge providers for re-verification: {exc}")
-        return None, None
+        return []
     reporter = str(_payload(row).get('provider') or '')
     # Deferred and package-qualified, like tracker_sync's reach for its
     # counters: agent.agent imports this module, so a top-level import would
     # close the cycle, and a bare `from agent import ...` resolves to the
     # package rather than to agent.py once the package is loaded.
     from agent.agent import _judge_is_self_review
+    out: List[Tuple[str, str]] = []
     for backend in providers:
         try:
             model = op._judge_model(backend)
@@ -225,8 +231,8 @@ def choose_verifier(op, row: Dict[str, Any]) -> Tuple[Optional[str], Optional[st
                 f"Re-verification skipping {backend} for remediation #{row.get('id')}: "
                 f"it is the vendor that filed the row ({reporter})")
             continue
-        return backend, model
-    return None, None
+        out.append((backend, model))
+    return out
 
 
 def build_question(row: Dict[str, Any]) -> str:
@@ -274,8 +280,9 @@ def parse_verdict(text: str) -> Optional[Dict[str, Any]]:
     fence = re.search(r"```(?:json)?\s*(.+?)```", blob, re.S)
     if fence:
         blob = fence.group(1).strip()
-    if not blob.startswith('{'):
-        start, end = blob.find('{'), blob.rfind('}')
+    if not blob.startswith('{') and not blob.startswith('['):
+        start = min((i for i in (blob.find('{'), blob.find('[')) if i >= 0), default=-1)
+        end = max(blob.rfind('}'), blob.rfind(']'))
         if start < 0 or end <= start:
             return None
         blob = blob[start:end + 1]
@@ -283,6 +290,13 @@ def parse_verdict(text: str) -> Optional[Dict[str, Any]]:
         data = json.loads(blob)
     except ValueError:
         return None
+    if isinstance(data, list):
+        # The tool loop's last-iteration nudge tells OpenAI-compatible peers
+        # (deepseek heads the judge order) to answer "as the JSON array
+        # described above" -- wording inherited from the sweep, and at odds
+        # with the one object this prompt asks for. Unwrap rather than spend a
+        # frontier pass and then fail to parse it.
+        data = data[0] if len(data) == 1 and isinstance(data[0], dict) else None
     if not isinstance(data, dict):
         return None
     verdict = str(data.get('verdict') or '').strip().lower()
@@ -421,40 +435,59 @@ def reverify_row(op, row: Dict[str, Any], *, max_iterations: int) -> Optional[st
     from tools import ToolPolicy
 
     rid = row.get('id')
-    backend, model = choose_verifier(op, row)
-    if not backend:
+    peers = eligible_peers(op, row)
+    if not peers:
         logger.info(f"No eligible re-verification peer for remediation #{rid}; leaving it filed")
         return None
 
-    try:
-        result = op._chat_with_tools_with_fallback(
-            messages=[{'role': 'user', 'content': build_question(row)}],
-            system_context=SYSTEM_PROMPT,
-            backend=backend,
-            model=model,
-            max_iterations=max_iterations,
-            # The read-only guarantee, enforced by the registry: mutating tools
-            # are withheld, ssh_execute survives for read-only one-liners and
-            # its commands are classified at execute time.
-            tool_policy=ToolPolicy(verify_only=True),
-        )
-    except Exception as exc:
-        logger.warning(f"Re-verification of remediation #{rid} failed on "
-                       f"{backend}/{model}: {exc}")
-        return None
+    question = [{'role': 'user', 'content': build_question(row)}]
+    for backend, model in peers:
+        # _chat_with_tools, not _chat_with_tools_with_fallback: that wrapper's
+        # chain ends at the local primary, which is the model whose judgement
+        # is under review. Failover here stays inside the judge rung, and only
+        # on a peer that could not answer -- a peer that DID answer badly does
+        # not advance, exactly as the mutation judge's ladder works.
+        try:
+            provider = op._resolve_provider(backend, model)
+        except Exception as exc:
+            logger.debug(f"Could not resolve {backend} for re-verification: {exc}")
+            continue
+        if not provider:
+            continue
+        provider_type, url, resolved_model = provider
+        try:
+            result = op._chat_with_tools(
+                provider_type, url, resolved_model, question, SYSTEM_PROMPT,
+                max_iterations,
+                # The read-only guarantee, enforced by the registry: mutating
+                # tools are withheld, ssh_execute survives for read-only
+                # one-liners and its commands are classified at execute time.
+                tool_policy=ToolPolicy(verify_only=True),
+            )
+        except Exception as exc:
+            logger.warning(f"Re-verification of remediation #{rid} could not reach "
+                           f"{provider_type}/{resolved_model}: {exc}")
+            continue
 
-    verdict = parse_verdict((result or {}).get('response') or '')
-    if not verdict:
-        logger.warning(f"Re-verification of remediation #{rid} returned no usable "
-                       f"verdict from {backend}/{model}; leaving it filed")
-        return None
-    if verdict['verdict'] != VERDICT_OPEN and not verdict['note']:
-        # A close with no note leaves the issue with a bare state change and
-        # nobody able to see why. Treat it as an unusable answer.
-        logger.warning(f"Re-verification of remediation #{rid} returned "
-                       f"{verdict['verdict']} with no note; leaving it filed")
-        return None
-    return apply_verdict(op, row, verdict, backend, model)
+        verdict = parse_verdict((result or {}).get('response') or '')
+        if not verdict:
+            logger.warning(f"Re-verification of remediation #{rid} returned no usable "
+                           f"verdict from {provider_type}/{resolved_model}; leaving it filed")
+            return None
+        if verdict['verdict'] != VERDICT_OPEN and not verdict['note']:
+            # A close with no note leaves the issue with a bare state change
+            # and nobody able to see why. Treat it as an unusable answer.
+            logger.warning(f"Re-verification of remediation #{rid} returned "
+                           f"{verdict['verdict']} with no note; leaving it filed")
+            return None
+        # Attributed to the peer that actually answered, never to the one we
+        # meant to ask: the note is posted on the issue, and naming a model
+        # that did not run the checks would be a lie in the audit trail.
+        return apply_verdict(op, row, verdict, provider_type, resolved_model)
+
+    logger.warning(f"No re-verification peer could be reached for remediation #{rid}; "
+                   f"leaving it filed")
+    return None
 
 
 def reverify_filed_rows(op) -> int:
@@ -469,7 +502,12 @@ def reverify_filed_rows(op) -> int:
     max_rows = max(1, int(rcfg.get('max_reverify_per_tick', 2)))
 
     try:
-        rows: List[Dict[str, Any]] = op.kb.list_remediations_by_status('filed', limit=100)
+        # list_remediations, NOT list_remediations_by_status: the latter was
+        # built for the PR reconciler and returns six fields, without `status`,
+        # `created_at` or `result`. Every clock and every state read in this
+        # module lives in those three, so that list would make the tick a
+        # silent no-op.
+        rows: List[Dict[str, Any]] = op.kb.list_remediations(status='filed', limit=100)
     except Exception as exc:
         logger.warning(f"Could not list filed rows for re-verification: {exc}")
         return 0
