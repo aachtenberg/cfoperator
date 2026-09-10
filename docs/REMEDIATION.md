@@ -454,6 +454,62 @@ built agent-side (`agent/tracker_item.py`): title, why it parked, the
 recommendation, steps, links, a footer with the dedupe key. `rendered_context`
 — raw tool output — never does, and everything else passes a credential scrub.
 
+### Re-verifying what was filed (CFOP-185)
+
+`filed` is where a row goes to be forgotten. Nothing in the agent re-reads one,
+and the first hand-audit of the homelab fleet (2026-09-10) found that six filed
+rows were really **three** that had fixed themselves overnight, **two** that
+were false diagnoses from the local reporter, and **one** that needed a person.
+Re-checking all six is what surfaced that, and `remediation.queue_reverify` is
+that re-check as a tick.
+
+Every ~15 minutes it takes the filed rows that are due, asks one question per
+row — *does this recommendation still stand?* — and acts:
+
+| verdict | row | issue |
+|---|---|---|
+| the condition is gone | `resolved` (`result.resolved_by = reverify`) | transitioned by the tracker tick, note attached |
+| the evidence contradicts the diagnosis | `rejected`, plus an `antipattern` learning | transitioned, note attached |
+| still holds, or unsettleable read-only | unchanged | a comment saying what was checked |
+
+Three properties carry it, and none of them is prompt wording:
+
+**A different seat.** The pass runs on the judge rung (CFOP-70/121), and
+`_judge_is_self_review` refuses a peer that is the reporter's own vendor. The
+failure being hunted is a model's confidently wrong call, so that model is the
+wrong one to ask. No eligible peer means the row is left filed.
+
+**Read-only, enforced by the registry.** The pass runs under
+`ToolPolicy(verify_only=True)`: `get_schemas` withholds mutating tools and
+`execute` refuses them anyway. `ssh_execute` stays offered, because the checks
+a verification needs *are* ssh one-liners, and each command is classified by
+`ssh_mutation_reason` at execute time — `systemctl is-active` runs,
+`systemctl restart` is refused. The row's proposed steps are what the pass
+checks, never what it runs.
+
+**Fails open.** The exact inverse of the mutation judge, for the same reason
+stated the other way round: there, not parking risks an unreviewed cluster
+change; here the row is already parked and the issue already filed, so an
+unavailable peer, an unparseable verdict, a close with no note or a raising
+tool all leave the row exactly as it was. Closing a row wrongly loses a real
+problem; leaving it costs one cycle.
+
+The backend never appears in this path. The tick closes the **row**; the
+tracker tick above transitions whatever holds the item, so this works
+unchanged across `plane`, `github`, `jira` and whatever lands next. The one
+thing it does reach the tracker for is the `open` case, to comment without
+closing — which is precisely what an out-of-process script cannot do, since no
+console route annotates a row it is not closing.
+
+Config: `remediation.queue_reverify` (off by default, `remediate` scope),
+`max_reverify_per_tick` (2), `remediation.reverify.min_age_seconds` (3600, so a
+row the tracker just filed is not re-read against evidence the investigation
+just wrote), `recheck_after_seconds` (86400, so an `open` row rotates daily
+rather than every tick), `max_iterations` (10), and
+`ooda.remediation_reverify_interval_seconds` (900). The tick is
+`agent/reverify.py`; state lands on `result.reverify`. Counter:
+`cfoperator_remediation_reverify_total{outcome}`.
+
 Agent side: `remediation.tracker.url` / `CFOP_TRACKER_URL`,
 `remediation.tracker.console_url` / `CFOP_CONSOLE_URL` (the public console
 address for links; never guessed, omitted when unset), `max_tracker_per_tick`,

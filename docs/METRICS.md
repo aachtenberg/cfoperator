@@ -392,11 +392,22 @@ cfoperator_remediation_human_decisions_total{decision="approve"}
 # The issue-tracker hand-off (CFOP-170): rows filed, and the tracker closing them
 cfoperator_remediation_tracker_total{action="create",outcome="ok"}
 cfoperator_remediation_queue{status="filed"}
+
+# Re-verifying what was filed (CFOP-185): filed rows re-checked against live state
+cfoperator_remediation_reverify_total{outcome="rejected"}
 ```
 
 `judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
 `verdict="unavailable"` or `verdict="unparseable"` means auto-execution has
 quietly stopped and everything is parking for a human.
+
+`reverify_total` is the mirror image, and reads the opposite way: that tick
+fails *open*, so a run of `outcome="skipped"` is not a stopped pipeline, it is
+rows being left filed because no eligible peer answered — check that a judge
+backend other than the reporter's own vendor still has a key. The one to watch
+over time is `outcome="rejected"`: it counts diagnoses that were wrong when
+filed, which is both the value this tick returns and a standing measurement of
+how much the reporting model is confabulating.
 
 ### Label values that are a closed set
 
@@ -419,6 +430,7 @@ shipped several examples that could never match.
 | `cfoperator_remediation_outcome_total` | `outcome` | `resolved`, `rejected` |
 | `cfoperator_remediation_tracker_total` | `action` | `create`, `repark`, `comment`, `transition`, `reconcile` |
 | `cfoperator_remediation_tracker_total` | `outcome` | `ok`, `error` |
+| `cfoperator_remediation_reverify_total` | `outcome` | `resolved`, `rejected`, `open`, `skipped` |
 | `cfoperator_remediation_enqueued_total` | `eligible` | `true`, `false` (`str(bool).lower()`) |
 | `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate` |
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |

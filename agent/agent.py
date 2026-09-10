@@ -64,6 +64,7 @@ from change_record_client import (
     open_record as change_record_open,
 )
 from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
+from reverify import reverify_filed_rows  # CFOP-185: re-check what was filed
 from node_action_plan import (
     allowlist_from_config as _na_allowlist_from_config,
     build_command_prompt as _na_build_command_prompt,
@@ -1548,6 +1549,7 @@ class CFOperator:
         self.last_metrics = 0  # remediation gauge refresh tick
         self.last_cockpit_reap = 0  # cockpit janitor tick (CFOP-36)
         self.last_tracker_sync = 0  # issue-tracker hand-off tick (CFOP-170)
+        self.last_reverify = 0  # filed-row re-verification tick (CFOP-185)
         self._tracker_url_warned = False
         self.start_time = time.time()
         # Initialized to start_time so the first heartbeat fires after the
@@ -3399,6 +3401,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     self._reap_cockpits(); self.last_cockpit_reap = now
                 if now - self.last_tracker_sync > self._get_tracker_interval():
                     self._sync_tracker(); self.last_tracker_sync = now
+                # After the hand-off, never before: a row files and is
+                # re-verified on the same tick otherwise, and the pass would
+                # only re-read evidence the investigation just wrote.
+                if now - self.last_reverify > self._get_reverify_interval():
+                    self._reverify_filed_rows(); self.last_reverify = now
             except Exception:
                 logger.exception("Remediation worker tick failed")
             time.sleep(10)
@@ -3683,6 +3690,10 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
     def _sync_tracker(self) -> int:
         """The issue-tracker hand-off tick (CFOP-170); see tracker_sync.py."""
         return sync_tracker(self)
+
+    def _reverify_filed_rows(self) -> int:
+        """The filed-row re-verification tick (CFOP-185); see reverify.py."""
+        return reverify_filed_rows(self)
 
     def _complete_node_action_plan(self, prompt: str) -> str:
         """LLM completion for a node-action plan (same model floor as the Job)."""
@@ -7859,6 +7870,21 @@ Only return the JSON array, no other text."""
         except Exception as e:
             logger.debug(f"Invalid remediation_tracker_interval setting, using default: {e}")
         return self.config.get('ooda', {}).get('remediation_tracker_interval_seconds', 60)
+
+    def _get_reverify_interval(self) -> int:
+        """Filed-row re-verification interval: DB setting → config.yaml → 900.
+
+        The floor is a minute rather than the tracker's 30 s because each pass
+        is a tool-using frontier call, not an HTTP round trip: a tighter loop
+        would spend money without the fleet having changed.
+        """
+        try:
+            val = self.kb.get_setting('remediation_reverify_interval', '')
+            if val:
+                return max(60, min(86400, int(val)))
+        except Exception as e:
+            logger.debug(f"Invalid remediation_reverify_interval setting, using default: {e}")
+        return self.config.get('ooda', {}).get('remediation_reverify_interval_seconds', 900)
 
     def _format_heartbeat(self) -> str:
         """Build a one-line OODA heartbeat summary for periodic log emission.
