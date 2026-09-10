@@ -283,6 +283,13 @@ ooda:
   # Proactive mode: deep sweep every N seconds (1800 = 30 minutes)
   sweep_interval: 1800
 
+  # How often the filed-row re-verification tick runs (CFOP-185), when
+  # remediation.queue_reverify is on. Two orders of magnitude slower than the
+  # tracker hand-off because each pass is a tool-using frontier call, not an
+  # HTTP round trip, and a filed row's world changes in hours. Floor 60,
+  # ceiling 86400; a `remediation_reverify_interval` DB setting wins over this.
+  remediation_reverify_interval_seconds: 900
+
   # What to sweep
   sweep:
     metrics: true
@@ -522,6 +529,20 @@ remediation:
   tracker:
     url: ""                     # http://cfop-tracker.<ns>.svc.cluster.local:8092 (or CFOP_TRACKER_URL)
     console_url: ""             # public console address for links in items (or CFOP_CONSOLE_URL); never guessed
+  # CFOP-185: re-check filed rows against live state. Nothing else re-reads a
+  # filed row, and most stop being true on their own — of six on this fleet,
+  # three had fixed themselves overnight and two were false diagnoses. The pass
+  # runs on the judge rung (never the vendor that filed the row) under a
+  # verify-only tool policy, and closes the row; the tracker tick above then
+  # transitions the item on whichever backend holds it. A rejection also writes
+  # an `antipattern` learning, so the reporting model retrieves the correction
+  # next time. Fails OPEN: anything short of a clear verdict leaves the row.
+  queue_reverify: false
+  max_reverify_per_tick: 2      # frontier tool-calls, so deliberately small
+  reverify:
+    min_age_seconds: 3600       # leave a just-filed row alone; its evidence is fresh
+    recheck_after_seconds: 86400  # an `open` row rotates daily, not every tick
+    max_iterations: 10          # tool rounds per row
   # The mutation judge (CFOP-70). Before a remediation that would auto-execute
   # is enqueued, a FRONTIER model is asked whether the change should be made
   # unattended at all — a different question from the one the classifier

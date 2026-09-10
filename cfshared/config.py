@@ -122,6 +122,9 @@ REMEDIATION_FLAGS = (
     "queue_reap",
     "queue_verify",
     "queue_tracker",
+    # CFOP-185: re-verification closes rows, which is a remediate-scope act
+    # even though every check it runs is read-only.
+    "queue_reverify",
 )
 
 
@@ -212,6 +215,9 @@ DEFAULT_CONFIG: dict = {
         "remediation_drain_interval_seconds": 60,
         "remediation_verify_interval_seconds": 300,
         "remediation_tracker_interval_seconds": 60,
+        # Slower than the hand-off by two orders of magnitude: each pass is a
+        # tool-using frontier call, and a filed row's world changes in hours.
+        "remediation_reverify_interval_seconds": 900,
     },
 
     "chat": {
@@ -259,6 +265,18 @@ DEFAULT_CONFIG: dict = {
         "queue_tracker": False,
         "max_tracker_per_tick": 10,
         "tracker": {"url": "", "console_url": ""},
+        # CFOP-185: re-check filed rows against live state and close the ones
+        # that no longer hold. Off by default like every other remediation
+        # flag. `min_age_seconds` keeps the pass off a row the tracker only
+        # just filed; `recheck_after_seconds` rotates rows that came back open
+        # so a genuinely open row is revisited daily, not every tick.
+        "queue_reverify": False,
+        "max_reverify_per_tick": 2,
+        "reverify": {
+            "min_age_seconds": 3600,
+            "recheck_after_seconds": 86400,
+            "max_iterations": 10,
+        },
         "max_open_prs": 3,
         "max_drain_per_tick": 3,
         # CFOP-148: how cluster changes reach this site. Shape only -- `mode`
