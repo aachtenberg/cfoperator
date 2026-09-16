@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional
 from contextlib import contextmanager
 
 from sqlalchemy import (
@@ -441,21 +441,37 @@ class InvestigationQueue(Base):
 # everything else is recorded as 'needs-human'. Mirrors the worker-side
 # classification — keep the class list in sync with _VALID_REMEDIATION_CLASSES.
 #
-# A class belongs here only if the executor can actually run it. 'k8s-imperative'
-# is deliberately absent (CFOP-61): a one-off kubectl verb has no manifest to
-# patch, so the executor's GitOps path cannot express it and auto-draining one
-# spends a Job plus two LLM passes to reach needs-human anyway (live row #49).
-# Add it here in the same change that gives the executor a path to run it.
+# These tuples are the SHIPPED DEFAULTS (CFOP-133). Live policy is
+# remediation.auto.classes / min_confidence in config.yaml, applied onto a
+# KnowledgeBase at agent startup. A class belongs in the default only if the
+# executor can actually run it. 'k8s-imperative' is deliberately absent
+# (CFOP-61): a one-off kubectl verb has no manifest to patch, so auto-draining
+# one spends a Job plus two LLM passes to reach needs-human anyway (live row
+# #49). Add it here in the same change that gives the executor a path to run
+# it. Config cannot put a park-only class into the live list either
+# (_NEVER_AUTO_CLASSES below).
 _AUTO_REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action')
 _AUTO_REMEDIATION_MIN_CONFIDENCE = 0.8
 # Reaper: an in-flight lease older than this (no terminal transition) is
 # assumed dead (pod OOM/evicted) and requeued. Worker Jobs have a 6h TTL.
 _REMEDIATION_LEASE_TIMEOUT_S = 1800
 _REMEDIATION_MAX_ATTEMPTS = 3
+# Morning-summary hunches are clamped to this so a cheap model cannot look
+# like a diagnosis. Agent-side; listed here so the default schema and the
+# policy resolver share one literal.
+_SUMMARY_CONFIDENCE_CAP = 0.5
 _REMEDIATION_INFLIGHT = ('claimed', 'executing')
+# Enum the code branches on — not configurable (CFOP-133 bucket C). Adding a
+# name here does nothing without a runner, a rubric line, and a CHECK widener.
 _REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action', 'k8s-imperative',
                         'node-action', 'data-fix', 'external-system', 'manual')
 _REMEDIATION_RISKS = ('low', 'med', 'high')
+# Classes that exist to PARK. Config may not auto-enable them: that would
+# drain a Job into a path the executor refuses (CFOP-61) or into 'manual'.
+# node-action is not in this set — CFOP-131 is a default-list edit.
+_NEVER_AUTO_CLASSES = frozenset({
+    'k8s-imperative', 'data-fix', 'external-system', 'manual',
+})
 
 # Rendered from _REMEDIATION_CLASSES rather than written out again, so the
 # table's CHECK cannot fall behind the tuple normalize_remediation_fields
@@ -495,16 +511,118 @@ def normalize_remediation_fields(remediation_class: str, risk: str):
     return remediation_class, risk
 
 
-def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence) -> bool:
+class RemediationPolicy(NamedTuple):
+    """Live auto-eligibility / reaper knobs, resolved from config.
+
+    The module tuples above are the shipped defaults. An omitted config key
+    keeps them; an explicit empty class list disables auto-execution.
+    """
+
+    auto_classes: tuple
+    min_confidence: float
+    lease_timeout_s: int
+    max_attempts: int
+    summary_confidence_cap: float
+
+
+def _bounded_float(raw, default: float, lo: float, hi: float, *, what: str) -> float:
+    if raw is None or raw == '':
+        return default
+    try:
+        val = float(raw)
+    except (TypeError, ValueError):
+        _log("warn", "ignoring unparseable remediation policy value",
+             key=what, got=repr(raw), using=default)
+        return default
+    if val < lo or val > hi:
+        _log("warn", "ignoring out-of-range remediation policy value",
+             key=what, got=val, lo=lo, hi=hi, using=default)
+        return default
+    return val
+
+
+def _positive_int(raw, default: int, *, what: str) -> int:
+    if raw is None or raw == '':
+        return default
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        _log("warn", "ignoring unparseable remediation policy value",
+             key=what, got=repr(raw), using=default)
+        return default
+    if val < 1:
+        _log("warn", "ignoring out-of-range remediation policy value",
+             key=what, got=val, using=default)
+        return default
+    return val
+
+
+def _configured_auto_classes(raw) -> tuple:
+    """None/absent → shipped default. An explicit list (including empty) is honoured, then filtered."""
+    if raw is None:
+        return _AUTO_REMEDIATION_CLASSES
+    if isinstance(raw, str):
+        names = [t for t in re.split(r'[,\s]+', raw.strip()) if t]
+    elif isinstance(raw, (list, tuple)):
+        names = [str(t).strip() for t in raw if str(t).strip()]
+    else:
+        _log("warn", "remediation.auto.classes is not a list; using shipped default",
+             got=type(raw).__name__)
+        return _AUTO_REMEDIATION_CLASSES
+    out = []
+    for name in names:
+        if name not in _REMEDIATION_CLASSES:
+            _log("warn", "ignoring unknown auto-remediation class", name=name)
+            continue
+        if name in _NEVER_AUTO_CLASSES:
+            _log("warn", "ignoring park-only class in auto list", name=name)
+            continue
+        if name not in out:
+            out.append(name)
+    return tuple(out)
+
+
+def resolve_auto_policy(rcfg=None) -> RemediationPolicy:
+    """Read remediation policy from a config ``remediation:`` block.
+
+    Missing or broken values fall back to the shipped defaults, so an
+    existing install that omits the new keys does not change behaviour.
+    """
+    rcfg = rcfg if isinstance(rcfg, dict) else {}
+    auto = rcfg.get('auto') if isinstance(rcfg.get('auto'), dict) else {}
+    classes_raw = auto['classes'] if 'classes' in auto else None
+    return RemediationPolicy(
+        auto_classes=_configured_auto_classes(classes_raw),
+        min_confidence=_bounded_float(
+            auto.get('min_confidence'), _AUTO_REMEDIATION_MIN_CONFIDENCE, 0.0, 1.0,
+            what='auto.min_confidence'),
+        lease_timeout_s=_positive_int(
+            rcfg.get('lease_timeout_s'), _REMEDIATION_LEASE_TIMEOUT_S,
+            what='lease_timeout_s'),
+        max_attempts=_positive_int(
+            rcfg.get('max_attempts'), _REMEDIATION_MAX_ATTEMPTS,
+            what='max_attempts'),
+        summary_confidence_cap=_bounded_float(
+            rcfg.get('summary_confidence_cap'), _SUMMARY_CONFIDENCE_CAP, 0.0, 1.0,
+            what='summary_confidence_cap'),
+    )
+
+
+def remediation_is_auto_eligible(remediation_class: str, risk: str, confidence,
+                                 classes=None, min_confidence=None) -> bool:
     """The auto-execute gate: low-risk, mechanizable, confident enough.
 
     Pure policy so the drainer and queue agree on what may run unattended.
+    ``classes`` / ``min_confidence`` default to the shipped tuples; callers
+    with a live config pass the resolved policy.
     """
+    allowed = _AUTO_REMEDIATION_CLASSES if classes is None else classes
+    floor = _AUTO_REMEDIATION_MIN_CONFIDENCE if min_confidence is None else min_confidence
     return (
-        remediation_class in _AUTO_REMEDIATION_CLASSES
+        remediation_class in allowed
         and risk == 'low'
         and confidence is not None
-        and confidence >= _AUTO_REMEDIATION_MIN_CONFIDENCE
+        and confidence >= floor
     )
 
 
@@ -1282,7 +1400,24 @@ class KnowledgeBase:
         )
         self.Session = sessionmaker(bind=self.engine)
 
+        self.apply_remediation_policy(None)
+
         _log("info", "Knowledge base initialized", db_type="postgresql", host_id=self.host_id)
+
+    def apply_remediation_policy(self, rcfg=None) -> None:
+        """Install live auto-eligibility / reaper knobs from a remediation config block."""
+        self._remediation_policy = resolve_auto_policy(rcfg)
+
+    def remediation_policy(self) -> RemediationPolicy:
+        return getattr(self, '_remediation_policy', resolve_auto_policy(None))
+
+    def is_auto_eligible(self, remediation_class: str, risk: str, confidence) -> bool:
+        policy = self.remediation_policy()
+        return remediation_is_auto_eligible(
+            remediation_class, risk, confidence,
+            classes=policy.auto_classes,
+            min_confidence=policy.min_confidence,
+        )
 
     def initialize_schema(self):
         """Create all tables if they don't exist.
@@ -3947,7 +4082,7 @@ class KnowledgeBase:
         if pr_url:
             status = 'pr-open'
         else:
-            status = 'queued' if remediation_is_auto_eligible(
+            status = 'queued' if self.is_auto_eligible(
                 remediation_class, risk, confidence) else 'needs-human'
 
         with self.session_scope() as session:
@@ -4223,16 +4358,17 @@ class KnowledgeBase:
         """Mark a remediation attempt failed; retry until the attempt cap.
 
         Increments attempts and re-queues (clearing the lease) while under
-        _REMEDIATION_MAX_ATTEMPTS, otherwise routes to 'needs-human'. Returns
+        the configured attempt cap, otherwise routes to 'needs-human'. Returns
         the resulting status ('queued' | 'needs-human' | 'unknown').
         """
+        cap = self.remediation_policy().max_attempts
         with self.session_scope() as session:
             item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
             if not item:
                 return 'unknown'
             item.attempts = (item.attempts or 0) + 1
             item.last_error = error
-            if item.attempts >= _REMEDIATION_MAX_ATTEMPTS:
+            if item.attempts >= cap:
                 item.status = 'needs-human'
                 item.completed_at = datetime.now(timezone.utc)
             else:
@@ -4243,7 +4379,7 @@ class KnowledgeBase:
                  attempts=item.attempts, status=item.status)
             return item.status
 
-    def requeue_stale_remediations(self, lease_timeout_s: int = _REMEDIATION_LEASE_TIMEOUT_S) -> int:
+    def requeue_stale_remediations(self, lease_timeout_s: Optional[int] = None) -> int:
         """Reaper: requeue in-flight remediations whose lease has expired.
 
         An executor Job that died (OOM/evicted) leaves a row stuck in 'claimed'
@@ -4251,6 +4387,8 @@ class KnowledgeBase:
         attempt, and recover it via fail_remediation (re-queue or needs-human).
         Returns the number of rows recovered.
         """
+        if lease_timeout_s is None:
+            lease_timeout_s = self.remediation_policy().lease_timeout_s
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=lease_timeout_s)
         with self.session_scope() as session:
             stale = session.query(RemediationQueue).filter(
@@ -4425,7 +4563,7 @@ class KnowledgeBase:
                 # reassign (not mutate) so SQLAlchemy tracks the JSONB change
                 item.payload = {**(item.payload or {}), 'repo': repo.strip() or None}
             if item.status in _regate:
-                item.status = 'queued' if remediation_is_auto_eligible(
+                item.status = 'queued' if self.is_auto_eligible(
                     item.remediation_class, item.risk, item.confidence) else 'needs-human'
             session.flush()
             _log("info", "Remediation reclassified", queue_id=remediation_id,

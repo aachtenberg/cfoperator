@@ -337,8 +337,13 @@ they toggle live (no redeploy) from the console pipeline bar.
 | `queue_verify` | advance `pr-open` rows by PR merge/close |
 | `queue_tracker` | file parked rows to the issue tracker (`needs-human` without a PR → `filed`), mirror PR-open rows, close rows the tracker closed |
 
-Auto-execute gate (enqueue → `queued` vs `needs-human`): class ∈
-{`gitops-patch`,`k8s-action`} **and** `risk == low` **and** `confidence ≥ 0.8`.
+Auto-execute gate (enqueue → `queued` vs `needs-human`): class in
+`remediation.auto.classes` (default `{gitops-patch, k8s-action}`) **and**
+`risk == low` **and** `confidence ≥ remediation.auto.min_confidence` (default
+0.8). The list is config, not a code tuple, so adding `node-action` or
+dropping `k8s-action` is a ConfigMap edit. Park-only classes
+(`k8s-imperative`, `data-fix`, `external-system`, `manual`) cannot be added
+from config.
 
 A class is auto-eligible only if the executor can run it. `k8s-action` means
 "expressible as a manifest edit" — the executor applies it by opening a PR.

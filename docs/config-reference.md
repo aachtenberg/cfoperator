@@ -414,6 +414,15 @@ event_runtime:
       # oneshot) skip triage and go straight to the worker with the
       # boot-forensics template. CFOP_DEEP_ROUTE_BOOT_FORENSICS
       route_boot_forensics: true
+    # Read-only tool ceiling the worker already bakes in. Omit to keep the
+    # full list (ssh, kubectl get/describe/top, Read). Listing a subset
+    # narrows; extras such as `kubectl delete` are dropped, never added.
+    # CFOP_DEEP_ALLOWED_TOOLS (comma-separated) wins over this key: present
+    # even empty refuses every tool; omit the env var to honour YAML / the
+    # baked-in ceiling.
+    # allowed_tools:
+    #   - "Bash(ssh *)"
+    #   - Read
 
 # Git & GitHub Integration
 # Maps repositories to infrastructure targets so the agent can correlate
@@ -543,6 +552,19 @@ remediation:
     min_age_seconds: 3600       # leave a just-filed row alone; its evidence is fresh
     recheck_after_seconds: 86400  # an `open` row rotates daily, not every tick
     max_iterations: 10          # tool rounds per row
+  # CFOP-133. Which classes may auto-execute, and the numbers around that gate.
+  # Omitting the block keeps today's behaviour (gitops-patch + k8s-action at
+  # 0.8). An empty `classes` list disables auto-execution. Names the code does
+  # not know, and classes that exist to park (k8s-imperative, data-fix,
+  # external-system, manual), are dropped with a warning — config cannot give
+  # the executor a Job it has no runner for. `node-action` is allowed here so
+  # enabling it is a config edit (CFOP-131), not a code change.
+  auto:
+    classes: [gitops-patch, k8s-action]
+    min_confidence: 0.8
+  summary_confidence_cap: 0.5   # morning-summary hunches; investigation-fed rows are not clamped
+  lease_timeout_s: 1800         # reaper: in-flight executor Jobs older than this are presumed dead
+  max_attempts: 3
   # The mutation judge (CFOP-70). Before a remediation that would auto-execute
   # is enqueued, a FRONTIER model is asked whether the change should be made
   # unattended at all — a different question from the one the classifier

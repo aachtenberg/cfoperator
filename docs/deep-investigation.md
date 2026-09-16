@@ -92,7 +92,11 @@ All knobs live in `event_runtime.deep_investigation` (config.yaml) with
 `routing.confidence_threshold` (default 0.4; below this, an `investigate`
 verdict on a host alert goes deep), `default_model` (opus by default —
 drop to sonnet/haiku to trade depth for cost), `default_template`
-(templates bake into the worker image under `worker/templates/`).
+(templates bake into the worker image under `worker/templates/`),
+`allowed_tools` (optional subset of the worker's read-only ceiling; omit
+to keep ssh + kubectl get/describe/top + Read). `CFOP_DEEP_ALLOWED_TOOLS`
+wins over the YAML key — present even empty refuses every tool; omit the
+env var to honour YAML / the ceiling.
 
 ## Future phases (designed, not built)
 

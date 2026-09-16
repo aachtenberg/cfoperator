@@ -60,4 +60,16 @@ data:
           allow_binaries: [chmod, chown, chgrp, ln, mkdir, install, touch, restorecon, chattr, systemctl]
           allow_systemctl_verbs: [restart, start, reload, reload-or-restart, status, is-active, is-enabled, enable, daemon-reload]
           max_commands: 4
+      # CFOP-133 remaining Bucket A. Same numbers the code shipped as
+      # literals; changing a class here is how CFOP-128/131 flip auto-eligibility
+      # without another code change. Park-only classes (k8s-imperative, data-fix,
+      # external-system, manual) are refused even if listed.
+      auto:
+        classes: [gitops-patch, k8s-action]
+        min_confidence: 0.8
+      summary_confidence_cap: 0.5
+      lease_timeout_s: 1800
+      max_attempts: 3
+      judge:
+        providers: [deepseek, anthropic, xai, gemini]
 {{- end }}

@@ -10,7 +10,10 @@ from event_runtime.deep_investigation import (
     JOB_FINGERPRINT_LABEL,
     JOB_ROLE_LABEL,
     JOB_ROLE_VALUE,
+    _WORKER_TOOL_CEILING,
     _bounded_json,
+    _parse_worker_allowed_tools,
+    build_deep_investigation_config,
 )
 from event_runtime.models import (
     ActionRequest,
@@ -237,6 +240,7 @@ def test_handler_builds_job_manifest(tmp_path):
     assert env["CLAUDE_MODEL"]["value"] == "claude-sonnet-4-6"  # decision param wins
     assert json.loads(env["CFOP_ALERT_JSON"]["value"])["alert_id"] == alert.alert_id
     assert json.loads(env["CFOP_DEEP_CONTEXT_JSON"]["value"])["original_action"] == "escalate"
+    assert env["CFOP_ALLOWED_TOOLS"]["value"] == ",".join(_WORKER_TOOL_CEILING)
 
     assert result.details["job_name"] == manifest["metadata"]["name"]
     assert result.details["host"] == "raspberrypi3"
@@ -525,3 +529,39 @@ def test_reroute_is_counted_by_the_action_it_replaced():
     # A decision that is NOT rerouted counts nothing.
     _route(_host_alert(), Decision(action="notify", confidence=0.9, reasoning="fine", params={}))
     assert child._value.get() == before + 1
+
+
+def test_parse_worker_tools_omitted_means_full_ceiling(monkeypatch):
+    monkeypatch.delenv("CFOP_DEEP_ALLOWED_TOOLS", raising=False)
+    assert _parse_worker_allowed_tools({}) is None
+    assert build_deep_investigation_config({}).allowed_tools is None
+
+
+def test_parse_worker_tools_yaml_subset_drops_writes(monkeypatch):
+    monkeypatch.delenv("CFOP_DEEP_ALLOWED_TOOLS", raising=False)
+    tools = _parse_worker_allowed_tools({
+        "allowed_tools": ["Read", "Bash(kubectl delete *)", "Bash(ssh *)"],
+    })
+    assert tools == ("Bash(ssh *)", "Read")
+
+
+def test_parse_worker_tools_empty_list_is_none_of_them(monkeypatch):
+    monkeypatch.delenv("CFOP_DEEP_ALLOWED_TOOLS", raising=False)
+    assert _parse_worker_allowed_tools({"allowed_tools": []}) == ()
+
+
+def test_parse_worker_tools_empty_env_refuses_every_tool(monkeypatch):
+    monkeypatch.setenv("CFOP_DEEP_ALLOWED_TOOLS", "")
+    assert _parse_worker_allowed_tools({"allowed_tools": ["Read"]}) == ()
+
+
+def test_handler_ships_a_narrowed_allowlist(tmp_path):
+    kubectl = _FakeKubectl()
+    handler = _handler(tmp_path, kubectl, allowed_tools=("Read",))
+    result = handler.execute(_request(_host_alert()))
+    assert result.success is True
+    env = {
+        entry["name"]: entry
+        for entry in kubectl.created_manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert env["CFOP_ALLOWED_TOOLS"]["value"] == "Read"

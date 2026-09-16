@@ -31,7 +31,7 @@ from pathlib import Path
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
-from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible
+from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible, resolve_auto_policy, _SUMMARY_CONFIDENCE_CAP
 from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService, vector_literal
 
@@ -302,7 +302,8 @@ def _raise_for_status_with_body(resp) -> None:
 # clamped so a confident hallucination can't look authoritative in the queue.
 _SUMMARY_MUTATION_CLASSES = ('node-action', 'gitops-patch', 'k8s-action',
                              'k8s-imperative')
-_SUMMARY_CONFIDENCE_CAP = 0.5
+# Shipped default; live value is remediation.summary_confidence_cap (CFOP-133).
+# Imported from knowledge_base so the default schema and this clamp cannot drift.
 # Agent-settings key recording the date (YYYY-MM-DD) the morning summary was
 # last sent. Persisted so a pod restart inside the summary window does not
 # re-run the report — the in-memory mark alone let every deploy between
@@ -1507,6 +1508,35 @@ def _with_classifier_identity(hints: Dict[str, Any], result: Dict[str, Any]) -> 
     return out
 
 
+def _auto_policy_of(op):
+    """Resolve remediation policy from op.config, shipped defaults if absent.
+
+    Module-level on purpose: several tests drive CFOperator methods with a
+    MagicMock operator, and an instance helper would be auto-mocked into a
+    truthy object that is not a policy.
+    """
+    cfg = getattr(op, 'config', None)
+    rcfg = cfg.get('remediation') if isinstance(cfg, dict) else None
+    return resolve_auto_policy(rcfg)
+
+
+def _install_kb_auto_policy(op):
+    """Push the live auto-eligibility knobs onto the KB.
+
+    The KB caches policy. Console POST and chat gitops-patch call
+    ``kb.queue_remediation`` directly, so a reload that only replaced
+    ``op.config`` would leave those paths deciding against process-start
+    lists — and disagree with ``_auto_policy_of`` (fresh) on the judge
+    gate. Module-level so MagicMock operators do not swallow it.
+    """
+    kb = getattr(op, 'kb', None)
+    apply = getattr(kb, 'apply_remediation_policy', None) if kb is not None else None
+    if apply is None:
+        return
+    cfg = getattr(op, 'config', None)
+    apply(cfg.get('remediation') if isinstance(cfg, dict) else None)
+
+
 class CFOperator:
     """
     Continuous Feedback Operator
@@ -1529,6 +1559,7 @@ class CFOperator:
             db_url=db_url,
             host_id='cfoperator'  # Single central agent
         )
+        _install_kb_auto_policy(self)
 
         # Initialize database schema (creates tables if they don't exist)
         self.kb.initialize_schema()
@@ -1650,6 +1681,9 @@ class CFOperator:
         # the file's repo list while the DB still says otherwise (CFOP-77).
         self._load_git_registry()
         self._refresh_git_tools()
+        # Same for auto-eligibility: the KB caches the policy at init, and
+        # queue_remediation / reclassify read that cache, not self.config.
+        _install_kb_auto_policy(self)
         logger.info(f"Config reloaded: {len(new_hosts)} hosts (added={added or 'none'}, removed={removed or 'none'})")
         return {
             'hosts': len(new_hosts),
@@ -3531,7 +3565,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         if not self._remediation_flag('queue_reap'):
             return 0
         try:
-            count = self.kb.requeue_stale_remediations()
+            count = self.kb.requeue_stale_remediations(
+                _auto_policy_of(self).lease_timeout_s)
             if count:
                 REMEDIATION_REAPED.inc(count)
                 logger.info(f"Reaped {count} stale remediation(s) back to the queue")
@@ -4312,7 +4347,12 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
     def _count_enqueued(self, source: str, rclass: str, risk: str, confidence) -> None:
         """Bump the enqueue counter, labelled by source/class and auto-eligibility."""
         nc, nr = normalize_remediation_fields(rclass, risk)
-        elig = remediation_is_auto_eligible(nc, nr, confidence)
+        policy = _auto_policy_of(self)
+        elig = remediation_is_auto_eligible(
+            nc, nr, confidence,
+            classes=policy.auto_classes,
+            min_confidence=policy.min_confidence,
+        )
         REMEDIATION_ENQUEUED.labels(source=source, remediation_class=nc, eligible=str(elig).lower()).inc()
 
     def _maybe_queue_remediation(self, investigation_id: Optional[int],
@@ -4483,7 +4523,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         # are a subset) while giving the two tuples a way to drift apart.
         nclass, nrisk = normalize_remediation_fields(str(rclass), risk)
         verdict = None
-        if remediation_is_auto_eligible(nclass, nrisk, confidence):
+        policy = _auto_policy_of(self)
+        if remediation_is_auto_eligible(
+                nclass, nrisk, confidence,
+                classes=policy.auto_classes,
+                min_confidence=policy.min_confidence):
             try:
                 verdict = self._judge_mutation_remediation(details, nclass, nrisk, confidence)
             except Exception as e:
@@ -5823,7 +5867,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # Clamp the cheap model's self-reported confidence: a confident
             # hallucination must not surface as a high-confidence queue row.
             if conf is not None:
-                conf = min(conf, _SUMMARY_CONFIDENCE_CAP)
+                conf = min(conf, _auto_policy_of(self).summary_confidence_cap)
             # CFOP-130: the node collapse runs BEFORE routing, above both the
             # dispatch branch and the enqueue, because a NotReady node owns
             # every finding that names it regardless of how the rec is worded

@@ -296,6 +296,19 @@ DEFAULT_CONFIG: dict = {
         # resolve_profile reads the raw file to dodge the same trap.
         "delivery": {},
         "executor": {"node_action": {"enabled": False}},
+        # CFOP-133. Policy lists that used to be module constants. Values match
+        # the shipped literals so an omitted key is a no-op. Park-only classes
+        # cannot be added from config (knowledge_base._NEVER_AUTO_CLASSES).
+        "auto": {
+            "classes": ["gitops-patch", "k8s-action"],
+            "min_confidence": 0.8,
+        },
+        "summary_confidence_cap": 0.5,
+        "lease_timeout_s": 1800,
+        "max_attempts": 3,
+        "judge": {
+            "providers": ["deepseek", "anthropic", "xai", "gemini"],
+        },
     },
 
     "kubernetes": {},

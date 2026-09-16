@@ -50,6 +50,18 @@ JOB_ROLE_LABEL = "cfop.dev/role"
 JOB_ROLE_VALUE = "deep-investigation"
 JOB_FINGERPRINT_LABEL = "cfop.dev/fingerprint"
 
+# Read-only worker tool ceiling (CFOP-133). Copied from worker/entrypoint.py
+# rather than imported: the worker is a separate image. Config may subset this
+# list; extras are dropped. Keep identical — tests/test_remediation_taxonomy.py
+# proves the two agree.
+_WORKER_TOOL_CEILING = (
+    "Bash(ssh *)",
+    "Bash(kubectl get *)",
+    "Bash(kubectl describe *)",
+    "Bash(kubectl top *)",
+    "Read",
+)
+
 # Job env vars carrying JSON payloads are capped so a sweep-enriched alert
 # can't blow past the k8s env-size limits and reject the pod.
 _ENV_JSON_MAX_BYTES = 16 * 1024
@@ -89,6 +101,9 @@ class DeepInvestigationConfig:
     route_low_confidence_investigate: bool = True
     escalate_fallback_action: str = "notify"
     route_boot_forensics: bool = True
+    # None → full baked-in ceiling. An explicit tuple (including empty) is the
+    # operator's selection intersected with _WORKER_TOOL_CEILING.
+    allowed_tools: Optional[tuple] = None
 
 
 # slots=True turns class attributes into member descriptors, so defaults must
@@ -168,7 +183,33 @@ def build_deep_investigation_config(event_runtime_cfg: dict) -> DeepInvestigatio
         route_boot_forensics=_flag(
             "CFOP_DEEP_ROUTE_BOOT_FORENSICS", "route_boot_forensics", True, source=routing
         ),
+        allowed_tools=_parse_worker_allowed_tools(cfg),
     )
+
+
+def _parse_worker_allowed_tools(cfg: dict) -> Optional[tuple]:
+    """Subset of _WORKER_TOOL_CEILING, or None to keep the full list.
+
+    Env CFOP_DEEP_ALLOWED_TOOLS (comma-separated) wins over YAML. A present
+    YAML key, even an empty list, is the operator narrowing. Omit = today's
+    full ceiling.
+    """
+    env_raw = os.getenv("CFOP_DEEP_ALLOWED_TOOLS")
+    if env_raw is not None:
+        # Present, even empty, is an explicit choice — same as the worker's
+        # CFOP_ALLOWED_TOOLS: missing keeps the ceiling, empty refuses all.
+        names = [t.strip() for t in env_raw.split(",") if t.strip()]
+        return tuple(t for t in _WORKER_TOOL_CEILING if t in set(names))
+    if "allowed_tools" not in cfg:
+        return None
+    raw = cfg.get("allowed_tools")
+    if isinstance(raw, str):
+        names = [t.strip() for t in raw.split(",") if t.strip()]
+    elif isinstance(raw, (list, tuple)):
+        names = [str(t).strip() for t in raw if str(t).strip()]
+    else:
+        return None
+    return tuple(t for t in _WORKER_TOOL_CEILING if t in set(names))
 
 
 def _is_host_shaped(alert: Alert) -> bool:
@@ -526,6 +567,9 @@ class DeepInvestigationActionHandler(ActionHandler):
             {"name": "CFOP_SSH_USER", "value": cfg.ssh_user},
             {"name": "CLAUDE_MODEL", "value": model},
             {"name": "CFOP_CLAUDE_TIMEOUT", "value": str(cfg.claude_timeout_seconds)},
+            {"name": "CFOP_ALLOWED_TOOLS", "value": ",".join(
+                cfg.allowed_tools if cfg.allowed_tools is not None else _WORKER_TOOL_CEILING
+            )},
         ]
         return {
             "apiVersion": "batch/v1",
