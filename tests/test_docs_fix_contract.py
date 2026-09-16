@@ -92,6 +92,21 @@ def test_nested_target_and_observed_keys_are_documented():
             assert f'"{key}"' in text, f"{parent}.{key} is undocumented"
 
 
+def test_schema_does_not_invite_omitting_a_required_repo():
+    """The prompt used to say repo may be omitted for every kind, then the
+    validator refused a gitops-manifest with no repo (CFOP-102). Field names
+    are checked separately; this guards the trap, not today's whole blob."""
+    schema = json.loads(_FIX_JSON_SCHEMA)
+    repo_help = schema['targets'][0]['repo']
+    assert 'or omit' not in repo_help.lower()
+    assert 'gitops-manifest' in repo_help.lower()
+    # The doc quotes the prompt; a wording change that only touches the
+    # constant would leave the trap advertised in REMEDIATION.md.
+    text = _doc_text().split('## The FIX contract', 1)[1]
+    assert repo_help in text
+    assert '"or omit"' not in text
+
+
 def test_the_documented_fallback_class_matches_the_code():
     """The row the kind table cannot express, raised in review.
 
