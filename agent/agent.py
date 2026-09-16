@@ -1225,6 +1225,7 @@ EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding g
 #              chain                    the standard provider chain answered
 #              short_circuit_resolution sweep-synthesised "Resolved:" alert
 #              short_circuit_info       severity=info, not noise (CFOP-161)
+#              short_circuit_noise      smoke-test-/tmp-/Watchdog (CFOP-162)
 #              unparseable_default      a provider answered, nothing parsed
 #              llm_unavailable          every provider failed
 # Every return path in run_triage goes through one helper, so a future
@@ -2109,10 +2110,13 @@ class CFOperator:
             context = self._orient(context)
             return self._act(context)
 
-    # The rubric's known-noise list, as a pattern: these keep their model path
-    # even at severity=info (see the short-circuit in run_triage). Mirrors
-    # NOISE_RE in scripts/build_triage_dataset.py on purpose -- the dataset
-    # and the runtime should agree on what "noise" means.
+    # The rubric's known-noise list, as a pattern. Matched in run_triage
+    # before any model call (CFOP-162): smoke-test-*, tmp-*, Watchdog are
+    # log_only regardless of severity or a similar-past-investigations
+    # block. Mirrors NOISE_RE in scripts/build_triage_dataset.py on purpose
+    # -- the dataset and the runtime should agree on what "noise" means.
+    # "Watchdog" is case-sensitive: lowercase "watchdog" is a real
+    # hardware/systemd event in this homelab and must not be log_only.
     _TRIAGE_NOISE_RE = re.compile(r"(?i:smoke-test-|tmp-)|\bWatchdog\b")
 
     def run_triage(self, alert: Dict[str, Any]) -> Dict[str, Any]:
@@ -2171,6 +2175,39 @@ class CFOperator:
                 'model': None,
             }, 'short_circuit_resolution')
 
+        # The noise test looks past the summary: the runtime keeps the stable
+        # identity in details["alertname"] / resource_name and the Watchdog's
+        # own summary ("This is an alert meant to ensure that the entire
+        # alerting pipeline is functional.") never says "Watchdog". Matching
+        # too little would send a heartbeat to Slack (via the info path
+        # below) or a tmp-* pod to the model (the CFOP-162 miss).
+        noise_haystack = " ".join(
+            str(x) for x in (
+                trigger, alert.get('resource_name'),
+                json.dumps(labels, default=str), json.dumps(details, default=str))
+            if x)
+
+        # CFOP-162: known noise never needs the model. The rubric decides
+        # smoke-test-*, tmp-*, Watchdog by name, but production almost
+        # always attaches a "Similar past investigations" block and both
+        # triage generations then follow the precedent frame instead
+        # (v5 → investigate, v1 → notify). A name match is a code rule.
+        # Watchdog arrives as info (Alertmanager "none" maps to it at
+        # intake); log_only here is what keeps it off Slack every cycle,
+        # which is why CFOP-161 had to leave noise on the model path.
+        noise_match = self._TRIAGE_NOISE_RE.search(noise_haystack)
+        if noise_match:
+            return _record({
+                'action': 'log_only',
+                'reason': (
+                    f'known noise ({noise_match.group(0)}) — '
+                    'logged, not investigated'
+                ),
+                'confidence': 0.95,
+                'backend': None,
+                'model': None,
+            }, 'short_circuit_noise')
+
         # CFOP-161: severity=info that is not known noise never needs the
         # model. The rubric below decides it by severity alone ("notify ...
         # when severity=info"), and it is the one shape the fine-tune cannot
@@ -2179,21 +2216,8 @@ class CFOperator:
         # every triage model so far (v2, v3, v4) invented a precedent to
         # justify the notify it was going to give anyway. Deciding it here
         # keeps the model off that shape and skips the embedding call too.
-        # Noise (smoke-test-*, tmp-*, Watchdog) stays on the model path: the
-        # Watchdog arrives as info (Alertmanager "none" maps to it at intake),
-        # and sending it to notify would put a heartbeat in Slack every cycle.
-        # The noise test looks past the summary: the runtime keeps the stable
-        # identity in details["alertname"] / resource_name and the Watchdog's
-        # own summary ("This is an alert meant to ensure that the entire
-        # alerting pipeline is functional.") never says "Watchdog". Matching
-        # too much only sends an alert to the model, which is the status quo;
-        # matching too little is the heartbeat.
-        noise_haystack = " ".join(
-            str(x) for x in (
-                trigger, alert.get('resource_name'),
-                json.dumps(labels, default=str), json.dumps(details, default=str))
-            if x)
-        if severity == 'info' and not self._TRIAGE_NOISE_RE.search(noise_haystack):
+        # Noise already returned above, so this is now just severity==info.
+        if severity == 'info':
             return _record({
                 'action': 'notify',
                 'reason': 'severity=info — informational, no investigation needed',
