@@ -886,6 +886,15 @@ def _validate_structured_fix(obj: dict,
             # The likeliest half-compliance: it ran something and did not say
             # what came back, which is precisely the gap #78 fell through.
             return _no_observed("`observed` entry has no value")
+        # CFOP-155: an ellipsis is the third failure mode between empty and
+        # fabricated. Row #97 quoted a real log line and replaced the
+        # timestamps that would have refuted the FIX with `...`. A source and
+        # a non-empty value were present, so the payload looked like evidence
+        # while carrying none. Live verification of the claimed value is
+        # still a separate piece of plumbing -- this only refuses the
+        # placeholder.
+        if '...' in value or '…' in value:
+            return _no_observed("`observed` value is elided")
         clean_obs.append({'source': source, 'value': value})
     rejected = obj.get('rejected')
     if rejected is None:
