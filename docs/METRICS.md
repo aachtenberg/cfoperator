@@ -347,7 +347,7 @@ histogram_quantile(0.95, sum by (le, served_by) (rate(cfoperator_triage_latency_
 ```
 
 `served_by` is the closed set `triage_model`, `chain`, `short_circuit_resolution`,
-`short_circuit_info`, `unparseable_default`, `llm_unavailable`. The two
+`short_circuit_info`, `short_circuit_noise`, `unparseable_default`, `llm_unavailable`. The three
 short-circuits never call a model (`model="none"`); the two defaults are the
 "never lose an alert" paths and are worth an alert of their own.
 
@@ -438,7 +438,7 @@ shipped several examples that could never match.
 | `cfoperator_tool_calls_total` | `result` | `success`, `error` |
 | `cfoperator_llm_requests_total` | `result` | `success`, `error` |
 | `cfoperator_llm_tokens_total` | `type` | `input`, `output` |
-| `cfoperator_triage_decisions_total` | `served_by` | `triage_model`, `chain`, `short_circuit_resolution`, `short_circuit_info`, `unparseable_default`, `llm_unavailable` |
+| `cfoperator_triage_decisions_total` | `served_by` | `triage_model`, `chain`, `short_circuit_resolution`, `short_circuit_info`, `short_circuit_noise`, `unparseable_default`, `llm_unavailable` |
 | `cfoperator_triage_model_fallbacks_total` | `reason` | `unparseable`, `exception` |
 | `cfoperator_investigation_duration_seconds` | `outcome` | as `cfoperator_investigations_total` |
 | `cfoperator_morning_summary_runs_total` | `result` | `ok`, `error` |

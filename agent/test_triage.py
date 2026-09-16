@@ -15,8 +15,10 @@ Tests cover:
 from __future__ import annotations
 
 import os
+import re
 import sys
 import threading as _t
+from pathlib import Path
 from queue import Queue
 from unittest.mock import MagicMock
 
@@ -412,8 +414,9 @@ def test_run_triage_rubric_guards_novel_pod_failures():
 # The rubric decides severity=info by severity alone, and it is the one shape
 # the fine-tune cannot learn from real data (no info alert is ever
 # investigated) -- every triage model so far invented a precedent there. So
-# non-noise info alerts never reach a model; noise keeps its model path so the
-# Watchdog (which arrives as info) stays log_only instead of a Slack heartbeat.
+# non-noise info alerts never reach a model. Known noise is a different
+# short-circuit (CFOP-162): Watchdog arrives as info, and log_only is what
+# keeps it off Slack every cycle.
 
 
 def _no_llm_operator():
@@ -437,40 +440,6 @@ def test_info_alert_that_is_not_noise_is_notify_without_any_model_call():
     op.embeddings.is_available.assert_not_called()   # skipped the lookup too
 
 
-# The real Watchdog summary never says "Watchdog"; the name lives in the
-# labels (Alertmanager shape) or details["alertname"] / resource_name (the
-# runtime's Alert.to_dict shape). Every shape must keep its model path.
-_WATCHDOG_SUMMARY = "This is an alert meant to ensure that the entire alerting pipeline is functional."
-
-
-def _runtime_alert(summary, **fields):
-    """The event runtime's Alert.to_dict() shape: no labels, identity in details."""
-    a = {"severity": "info", "summary": summary, "details": {}, "labels": {}, "alert_id": "rt-1"}
-    a.update(fields)
-    return a
-
-
-@pytest.mark.parametrize("alert", [
-    _alert(severity="info", summary="Watchdog: " + _WATCHDOG_SUMMARY),
-    _alert(severity="info", summary=_WATCHDOG_SUMMARY, alertname="Watchdog"),
-    _runtime_alert(_WATCHDOG_SUMMARY, details={"alertname": "Watchdog"}),
-    _alert(severity="info", summary="Pod smoke-test-runner-2xk4f in namespace ci is crash-looping"),
-    _runtime_alert("Pod is crash-looping", resource_name="smoke-test-runner-2xk4f"),
-    _alert(severity="info", summary="Pod tmp-restore-verify-9x2kd in namespace default exited non-zero"),
-    _runtime_alert("Pod exited non-zero", details={"alertname": "KubePodFailed", "pod": "tmp-restore-verify-9x2kd"}),
-], ids=["watchdog-in-summary", "watchdog-in-labels", "watchdog-in-details",
-        "smoke-test-in-summary", "smoke-test-in-resource_name", "tmp-in-summary", "tmp-in-details"])
-def test_info_noise_still_goes_to_the_model(alert):
-    op = _operator()
-    op._chat_with_tools_with_fallback = MagicMock(return_value={
-        "response": '{"action": "log_only", "reason": "known noise", "confidence": 0.95}',
-        "tool_calls": 0, "backend": "ollama", "model": "m",
-    })
-    result = op.run_triage(alert)
-    assert result["action"] == "log_only"
-    op._chat_with_tools_with_fallback.assert_called_once()
-
-
 def test_warning_alerts_are_untouched_by_the_info_short_circuit():
     op = _operator()
     op._chat_with_tools_with_fallback = MagicMock(return_value={
@@ -486,6 +455,118 @@ def test_resolution_short_circuit_still_wins_for_info_alerts():
     op = _no_llm_operator()
     alert = _alert(severity="info", summary="Resolved: Pod foo not ready")
     alert["details"] = {"resolution": True}
+    result = op.run_triage(alert)
+    assert result["action"] == "notify"
+    assert result["reason"] == "finding cleared since previous sweep"
+
+
+# ---- known-noise short-circuit (CFOP-162) --------------------------------
+#
+# The rubric decides smoke-test-*/tmp-*/Watchdog by name, but production
+# almost always attaches a similar-past-investigations block and both
+# triage generations then follow the precedent instead of the noise clause.
+# A name match is a code rule, not a model question — any severity, no
+# embedding lookup, no model call.
+#
+# The real Watchdog summary never says "Watchdog"; the name lives in the
+# labels (Alertmanager shape) or details["alertname"] / resource_name (the
+# runtime's Alert.to_dict shape). Every shape must short-circuit.
+
+_WATCHDOG_SUMMARY = "This is an alert meant to ensure that the entire alerting pipeline is functional."
+
+
+def _runtime_alert(summary, **fields):
+    """The event runtime's Alert.to_dict() shape: no labels, identity in details."""
+    a = {"severity": "info", "summary": summary, "details": {}, "labels": {}, "alert_id": "rt-1"}
+    a.update(fields)
+    return a
+
+
+def _builder_noise_re():
+    """The builder's NOISE_RE, without importing the rest of that module.
+
+    Executing scripts/build_triage_dataset.py pulls in triage_eval and
+    mutates sys.path; one assignment is enough to pin identity.
+    """
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "build_triage_dataset.py").read_text()
+    ns = {"re": re}
+    for line in src.splitlines():
+        if line.startswith("NOISE_RE = "):
+            exec(line, ns)
+            return ns["NOISE_RE"]
+    raise AssertionError("NOISE_RE assignment not found in the builder")
+
+
+def test_runtime_and_builder_noise_regexes_are_identical():
+    builder = _builder_noise_re()
+    runtime = CFOperator._TRIAGE_NOISE_RE
+    assert runtime.pattern == builder.pattern
+    assert runtime.flags == builder.flags
+
+
+@pytest.mark.parametrize("alert, token", [
+    (_alert(severity="info", summary="Watchdog: " + _WATCHDOG_SUMMARY), "Watchdog"),
+    (_alert(severity="info", summary=_WATCHDOG_SUMMARY, alertname="Watchdog"), "Watchdog"),
+    (_runtime_alert(_WATCHDOG_SUMMARY, details={"alertname": "Watchdog"}), "Watchdog"),
+    (_alert(severity="info", summary="Pod smoke-test-runner-2xk4f in namespace ci is crash-looping"), "smoke-test-"),
+    (_runtime_alert("Pod is crash-looping", resource_name="smoke-test-runner-2xk4f"), "smoke-test-"),
+    (_alert(severity="info", summary="Pod tmp-restore-verify-9x2kd in namespace default exited non-zero"), "tmp-"),
+    (_runtime_alert("Pod exited non-zero", details={"alertname": "KubePodFailed", "pod": "tmp-restore-verify-9x2kd"}), "tmp-"),
+], ids=["watchdog-in-summary", "watchdog-in-labels", "watchdog-in-details",
+        "smoke-test-in-summary", "smoke-test-in-resource_name", "tmp-in-summary", "tmp-in-details"])
+def test_noise_is_log_only_without_any_model_call(alert, token):
+    op = _no_llm_operator()
+    result = op.run_triage(alert)
+    assert result["action"] == "log_only"
+    assert result["reason"] == f"known noise ({token}) — logged, not investigated"
+    assert result["confidence"] == pytest.approx(0.95)
+    assert result["backend"] is None and result["model"] is None
+    op._chat_with_tools.assert_not_called()
+    op._chat_with_tools_with_fallback.assert_not_called()
+    op.embeddings.is_available.assert_not_called()
+
+
+def test_critical_tmp_pod_is_log_only_even_when_embeddings_would_return_a_neighbour():
+    """The live miss: critical tmp-restore-verify-* plus a 0.74 neighbour.
+
+    CFOP-161 never saw this shape (it is not info). The short-circuit must
+    fire before the similar-investigations lookup, which is the frame the
+    model followed instead of the noise clause.
+    """
+    op = _no_llm_operator()
+    op.embeddings.is_available.return_value = True
+    op.embeddings.generate_embedding = MagicMock(
+        side_effect=AssertionError("must not embed a noise alert"))
+    result = op.run_triage(_alert(
+        severity="critical",
+        summary="Pod tmp-restore-verify-7q1xd exited non-zero",
+    ))
+    assert result["action"] == "log_only"
+    assert "tmp-" in result["reason"]
+    assert result["confidence"] == pytest.approx(0.95)
+    op.embeddings.is_available.assert_not_called()
+    op.embeddings.generate_embedding.assert_not_called()
+
+
+def test_hardware_watchdog_is_not_noise_and_still_goes_to_the_model():
+    """Lowercase 'watchdog' is a real hardware/systemd event, not Watchdog."""
+    op = _operator()
+    op._chat_with_tools_with_fallback = MagicMock(return_value={
+        "response": '{"action": "investigate", "reason": "hardware watchdog", "confidence": 0.7}',
+        "tool_calls": 0, "backend": "ollama", "model": "m",
+    })
+    result = op.run_triage(_alert(
+        severity="warning",
+        summary="Unclean reboot on headless-gpu, journal shows watchdog reset",
+    ))
+    assert result["action"] == "investigate"
+    op._chat_with_tools_with_fallback.assert_called_once()
+
+
+def test_resolution_short_circuit_still_wins_for_noise_alerts():
+    op = _no_llm_operator()
+    alert = _alert(severity="info", summary="Resolved: Watchdog")
+    alert["details"] = {"resolution": True, "alertname": "Watchdog"}
     result = op.run_triage(alert)
     assert result["action"] == "notify"
     assert result["reason"] == "finding cleared since previous sweep"
@@ -538,6 +619,8 @@ def _with_triage_model(op, response):
      dict(action="notify", served_by="short_circuit_resolution", model="none")),
     ("info short-circuit", lambda op: None, _alert(severity="info", summary="Certificate for immich.ai renews in 25 days"),
      dict(action="notify", served_by="short_circuit_info", model="none")),
+    ("noise short-circuit", lambda op: None, _alert(severity="critical", summary="Pod tmp-restore-verify-7q1xd exited non-zero"),
+     dict(action="log_only", served_by="short_circuit_noise", model="none")),
 ])
 def test_every_triage_return_path_is_counted_by_how_it_was_served(name, setup, alert, expect):
     op = _operator()
