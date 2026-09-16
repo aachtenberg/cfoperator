@@ -564,7 +564,7 @@ _FIX_KIND_TO_CLASS = {
 _FIX_JSON_SCHEMA = (
     '{"targets": [{"kind": "gitops-manifest|k8s-object|k8s-imperative|'
     'host|database-row|external-system", "id": "path, name, or host", '
-    '"repo": "a linked repo as owner/name, or omit"}], '
+    '"repo": "required as owner/name for gitops-manifest; optional for every other kind"}], '
     '"observed": [{"source": "the command or file you READ", '
     '"value": "what it actually said, verbatim"}], '
     '"steps": ["ordered action"], '
