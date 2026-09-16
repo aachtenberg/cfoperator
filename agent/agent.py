@@ -917,6 +917,21 @@ def _validate_structured_fix(obj: dict,
     return out
 
 
+def _is_noop_recommendation(recommendation: str) -> bool:
+    """True when the rec is empty or the prompt's no-op token.
+
+    CFOP-141: whole-string, not a prefix — a rec that continues after
+    "No action needed" is a finding. Trailing ``.`` / ``!`` / ``?`` still
+    count as the same token (LLMs close the sentence); a following
+    sentence does not, because rstrip only eats the right edge.
+
+    Module-level, like _parse_structured_fix, so a MagicMock op cannot
+    make it truthy by accident.
+    """
+    rec = str(recommendation or '').strip().rstrip('.!?').strip().lower()
+    return not rec or rec == 'no action needed' or rec in ('none', 'n/a', 'nothing')
+
+
 def _parse_structured_fix(response_text: str,
                           known_repos=None) -> Optional[Dict[str, Any]]:
     """Pull a FIX object from an investigation (or nudge) reply.
@@ -2806,8 +2821,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         if outcome != 'needs_action' or fix:
             return fix, response_text
         rec = str(recommendation or '').strip()
-        if (not rec or rec.lower() == 'no action needed'
-                or rec.lower() in ('none', 'n/a', 'nothing')):
+        if _is_noop_recommendation(rec):
             return None, response_text
         nudged = self._nudge_structured_fix(response_text, rec, trigger)
         if not nudged:
@@ -5224,7 +5238,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         investigation — one fix must not get two drivers; a decline still
         enqueues. Empty / whole-string "No action needed" recommendations
         enqueue nothing (CFOP-141: not a prefix — a rec that continues
-        "However, …" is a finding).
+        "However, …" is a finding). Trailing ``.``/``!``/``?`` still skip.
 
         CFOP-80: a valid FIX skips the classifier (class from target.kind).
         Missing/invalid FIX still classifies. Parse is module-level so a
@@ -5239,7 +5253,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         if not self._remediation_flag('queue_feed'):
             return None
         rec = str(recommendation or '').strip()
-        if not rec or rec.lower() == 'no action needed' or rec.lower() in ('none', 'n/a', 'nothing'):
+        if _is_noop_recommendation(rec):
             return None
         if proposal is not None and (getattr(proposal, 'pr_result', None) or {}).get('status') == 'opened':
             logger.info(f"Investigation #{investigation_id}: inline proposer already opened a PR; "
@@ -5562,7 +5576,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         for rep in reports or []:
             for f in (rep.get('findings') or []):
                 rec = str(f.get('remediation') or '').strip()
-                if not rec or rec.lower() == 'no action needed' or rec.lower() in ('none', 'n/a', 'nothing'):
+                if _is_noop_recommendation(rec):
                     continue
                 key = f"sweep-{f.get('id') or rec[:80]}"
                 risk = self._SEVERITY_RISK.get(str(f.get('severity') or 'info'), 'high')
@@ -5766,7 +5780,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         dispatched = 0  # investigate-class findings sent to the investigation pipeline
         for r in recs:
             rec = str(r.get('recommendation') or '').strip()
-            if not rec or rec.lower() == 'no action needed' or rec.lower() in ('none', 'n/a', 'nothing'):
+            if _is_noop_recommendation(rec):
                 continue
             title = str(r.get('title') or rec[:80]).strip()
             key = "summary-" + re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')[:60]
