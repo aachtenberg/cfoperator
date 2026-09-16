@@ -444,13 +444,15 @@ class InvestigationQueue(Base):
 # These tuples are the SHIPPED DEFAULTS (CFOP-133). Live policy is
 # remediation.auto.classes / min_confidence in config.yaml, applied onto a
 # KnowledgeBase at agent startup. A class belongs in the default only if the
-# executor can actually run it. 'k8s-imperative' is deliberately absent
-# (CFOP-61): a one-off kubectl verb has no manifest to patch, so auto-draining
-# one spends a Job plus two LLM passes to reach needs-human anyway (live row
-# #49). Add it here in the same change that gives the executor a path to run
-# it. Config cannot put a park-only class into the live list either
-# (_NEVER_AUTO_CLASSES below).
-_AUTO_REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action')
+# executor can actually run it AND a feed can stamp a confidence that clears
+# the gate. 'k8s-action' left the default (CFOP-128): a FIX-fed row of that
+# class can never carry a confidence, and stamping 0.8 on k8s-object would
+# drain a bare name into run_gitops (CFOP-61). Config may still list it; it
+# is not park-only. 'k8s-imperative' is deliberately absent (CFOP-61): a
+# one-off kubectl verb has no manifest to patch. Add a class here in the
+# same change that gives the executor a path and a FIX stamp. Config cannot
+# put a park-only class into the live list either (_NEVER_AUTO_CLASSES).
+_AUTO_REMEDIATION_CLASSES = ('gitops-patch',)
 _AUTO_REMEDIATION_MIN_CONFIDENCE = 0.8
 # Reaper: an in-flight lease older than this (no terminal transition) is
 # assumed dead (pod OOM/evicted) and requeued. Worker Jobs have a 6h TTL.

@@ -182,6 +182,14 @@ def test_k8s_imperative_is_not_auto_eligible():
     assert "k8s-imperative" not in _AUTO_REMEDIATION_CLASSES
 
 
+def test_k8s_action_is_not_auto_eligible_by_default():
+    """CFOP-128: advertised auto with no FIX stamp. Still a valid class,
+    and not park-only — config may opt it back in (that is CFOP-61)."""
+    assert "k8s-action" in _REMEDIATION_CLASSES
+    assert "k8s-action" not in _AUTO_REMEDIATION_CLASSES
+    assert "k8s-action" not in _NEVER_AUTO_CLASSES
+
+
 def test_data_fix_and_external_system_are_not_auto_eligible():
     """CFOP-80: new classes exist to park honestly. Auto-draining one would
     spend an executor Job to say 'nothing can apply this class'."""

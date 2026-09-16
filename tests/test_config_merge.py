@@ -129,9 +129,9 @@ PRODUCTION_OMITTED_DEFAULTS = [
     (("ooda", "sweep", "max_iterations"), 12),
     # agent.py _get_max_tool_iterations -> `.get('max_tool_iterations', 10)`
     (("chat", "max_tool_iterations"), 10),
-    # CFOP-133: production omits these; the defaults must stay the literals
-    # the call sites used before the keys existed.
-    (("remediation", "auto", "classes"), ["gitops-patch", "k8s-action"]),
+    # CFOP-133 keys. auto.classes is gitops-patch only after CFOP-128;
+    # the other numbers still match the literals the call sites used.
+    (("remediation", "auto", "classes"), ["gitops-patch"]),
     (("remediation", "auto", "min_confidence"), 0.8),
     (("remediation", "summary_confidence_cap"), 0.5),
     (("remediation", "lease_timeout_s"), 1800),

@@ -575,17 +575,14 @@ _FIX_JSON_SCHEMA = (
 )
 
 # Why `direct` steers at k8s-imperative and not the more obvious k8s-object:
-# k8s-object maps to the k8s-action class, which is in
-# _AUTO_REMEDIATION_CLASSES and is NOT in the executor's _NO_EXECUTOR_PATH, so
-# it reaches run_gitops -- the path whose whole job is opening a pull request
-# against a manifest repository. A site in `direct` mode has none. Saying
-# "nothing is applied unattended" in the prompt does not bind
-# remediation_is_auto_eligible, so on the classifier feed that steer would
-# have pointed the one auto-executing class at a delivery lane that does not
-# exist there (PR #229 re-review). k8s-imperative is the class that parks with
-# a legible message instead. The FIX feed parks either way (a FIX-derived
-# k8s-action never carries a confidence), but only until a human approves the
-# row, so both prompts say the same thing.
+# k8s-object maps to the k8s-action class, which is NOT in the executor's
+# _NO_EXECUTOR_PATH, so a human-approved row still reaches run_gitops -- the
+# path whose whole job is opening a pull request against a manifest
+# repository. A site in `direct` mode has none. CFOP-128 took k8s-action out
+# of the default auto list, so a classifier-fed row of that class now parks
+# instead of draining unattended; human approval is still a drain, so both
+# prompts still refuse k8s-object / gitops-patch on a site with no manifest
+# repo. k8s-imperative is the class that parks with a legible message.
 #
 # CFOP-148: how a change reaches THIS installation's cluster is site policy,
 # not something the model can infer and not something this file may assume.
@@ -5004,7 +5001,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
              needs-human row that can never clear the auto gate
 
         A confidently-classified result is NOT capped: it may clear the
-        auto-execute gate (gitops-patch / k8s-action, low risk, >=0.8) and open
+        auto-execute gate (gitops-patch, low risk, >=0.8) and open
         a PR unattended — the mutation path stays a human-merge-gated PR.
         Malformed output is never salvaged into a classification — parse or
         degrade.
@@ -5123,7 +5120,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         normalize_remediation_fields to default conservatively.
 
         Confidence is NOT capped below the auto gate (CFOP-48): a confident
-        gitops-patch/k8s-action at low risk is allowed to auto-queue and become
+        gitops-patch at low risk is allowed to auto-queue and become
         a human-merge-gated PR. The summary path keeps its own
         _SUMMARY_CONFIDENCE_CAP — hunches stay capped. A value above 1 means
         the model ignored the 0–1 scale — the opposite of calibrated — so it
@@ -5691,7 +5688,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 if not _HUMAN_ONLY_SHAPED.search(rec):
                     # CFOP-53: mutation-shaped recs get the same classify →
                     # gate lane as needs_action investigations. A confident
-                    # gitops-patch/k8s-action at low risk auto-queues; parked
+                    # gitops-patch at low risk auto-queues; parked
                     # rows still carry class/confidence/provider so they say
                     # why. Degrade (manual + no confidence) or a classifier
                     # error falls through to the legacy manual enqueue below.
