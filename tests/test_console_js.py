@@ -41,7 +41,9 @@ _SCRIPT = re.compile(
     r"<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script>",
     re.IGNORECASE | re.DOTALL,
 )
-_HAS_SRC = re.compile(r"\bsrc\s*=", re.IGNORECASE)
+# Not ``\bsrc=``: ``-`` is a non-word character, so that also matches
+# ``data-src=`` and would skip a real inline body.
+_HAS_SRC = re.compile(r"(?<![\w-])src\s*=", re.IGNORECASE)
 
 
 def read(name):
@@ -133,6 +135,18 @@ def test_extraction_skips_src_tags():
         "<script>\nconst x = 1;\n</script>\n"
     )
     assert inline_script_bodies(html) == ["const x = 1;"]
+
+
+def test_extraction_does_not_treat_data_src_as_src():
+    """``\\bsrc=`` also matches ``data-src=`` because ``-`` is a non-word
+    character. Skipping on that would drop a real inline body — the vacuous
+    green this suite exists to close."""
+    html = (
+        '<script data-src="/nope.js">const a = 1;</script>\n'
+        '<script src="/nav.js"></script>\n'
+        "<script>const b = 2;</script>\n"
+    )
+    assert inline_script_bodies(html) == ["const a = 1;", "const b = 2;"]
 
 
 def test_extraction_finds_the_pages_inline_scripts():
