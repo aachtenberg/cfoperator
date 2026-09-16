@@ -7,6 +7,8 @@ from unittest.mock import patch
 import entrypoint
 from entrypoint import (
     ClaudeRun,
+    _ALLOWED_TOOLS,
+    allowed_tools_from_env,
     build_action_result,
     build_prompt,
     extract_proposed_diff,
@@ -84,6 +86,19 @@ def test_load_inputs_tolerates_garbage_json():
     inputs = _inputs(CFOP_ALERT_JSON="{not json", CFOP_DEEP_CONTEXT_JSON="")
     assert inputs.alert == {}
     assert inputs.deep_context == {}
+
+
+def test_allowed_tools_omit_env_keeps_the_full_ceiling():
+    assert allowed_tools_from_env({}) == _ALLOWED_TOOLS
+
+
+def test_allowed_tools_intersect_with_the_ceiling():
+    env = {"CFOP_ALLOWED_TOOLS": "Read,Bash(kubectl delete *),Bash(ssh *)"}
+    assert allowed_tools_from_env(env) == ("Bash(ssh *)", "Read")
+
+
+def test_allowed_tools_empty_env_refuses_every_tool():
+    assert allowed_tools_from_env({"CFOP_ALLOWED_TOOLS": ""}) == ()
 
 
 # ---- prompt rendering ---------------------------------------------------------

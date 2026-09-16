@@ -67,6 +67,11 @@ _VALID_RISKS = ("low", "med", "high")
 # Read-only tool allowlist. --permission-mode dontAsk auto-denies anything
 # not listed, so a prompt-injected `kubectl delete` simply fails. The space
 # before * is required prefix-match syntax.
+#
+# This tuple is the CEILING (CFOP-133). Config may subset it via
+# CFOP_ALLOWED_TOOLS (comma-separated); extras are dropped, never added.
+# An unset env var keeps the full list so Jobs that predate the knob behave
+# as they do today. An explicit empty value refuses every tool.
 _ALLOWED_TOOLS = (
     "Bash(ssh *)",
     "Bash(kubectl get *)",
@@ -74,6 +79,23 @@ _ALLOWED_TOOLS = (
     "Bash(kubectl top *)",
     "Read",
 )
+
+
+def allowed_tools_from_env(env: Dict[str, str] | None = None) -> tuple:
+    """Intersect CFOP_ALLOWED_TOOLS with the baked-in ceiling.
+
+    Missing key → full ceiling (backward compatible). Present key, even
+    empty → only the named tools that are already on the ceiling.
+    """
+    env = env if env is not None else dict(os.environ)
+    if "CFOP_ALLOWED_TOOLS" not in env:
+        return _ALLOWED_TOOLS
+    wanted = {
+        t.strip()
+        for t in re.split(r"\s*,\s*", str(env.get("CFOP_ALLOWED_TOOLS") or ""))
+        if t.strip()
+    }
+    return tuple(t for t in _ALLOWED_TOOLS if t in wanted)
 
 
 @dataclass
@@ -213,7 +235,7 @@ def _run_claude_once(prompt: str, *, model: str, timeout: int, cwd: str | None =
         "--output-format", "json",
         "--max-turns", "30",
         "--permission-mode", "dontAsk",
-        "--allowedTools", *_ALLOWED_TOOLS,
+        "--allowedTools", *allowed_tools_from_env(),
     ]
     if model:
         cmd.extend(["--model", model])

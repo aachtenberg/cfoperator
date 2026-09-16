@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from agent.knowledge_base import (  # noqa: E402
     _AUTO_REMEDIATION_CLASSES,
+    _NEVER_AUTO_CLASSES,
     _REMEDIATION_CLASSES,
 )
 
@@ -99,7 +100,66 @@ def test_forensics_templates_offer_every_class():
         assert _worker_classes() <= offered, name
 
 
-# ---- the CFOP-61 invariant ------------------------------------------------
+def test_never_auto_covers_the_executor_dead_end_and_manual():
+    """Config cannot auto-enable a class the executor cannot run (CFOP-61).
+
+    manual is extra: it is not on _NO_EXECUTOR_PATH (the executor would try
+    run_gitops) but it exists to park, so it stays out of the auto list even
+    if an operator writes it into remediation.auto.classes.
+    """
+    src = (ROOT / "executor" / "entrypoint.py").read_text(encoding="utf-8")
+    m = re.search(r"_NO_EXECUTOR_PATH = \((.*?)\)", src, re.DOTALL)
+    assert m, "executor no longer declares _NO_EXECUTOR_PATH"
+    no_path = set(re.findall(r'"([a-z0-9-]+)"', m.group(1)))
+    assert no_path <= _NEVER_AUTO_CLASSES
+    assert "manual" in _NEVER_AUTO_CLASSES
+    assert _NEVER_AUTO_CLASSES <= set(_REMEDIATION_CLASSES)
+    assert "node-action" not in _NEVER_AUTO_CLASSES
+
+
+def test_default_schema_auto_classes_match_the_shipped_tuple():
+    """An omitted config key must not change behaviour (CFOP-26 / CFOP-133)."""
+    from cfshared.config import DEFAULT_CONFIG
+    assert tuple(DEFAULT_CONFIG["remediation"]["auto"]["classes"]) == _AUTO_REMEDIATION_CLASSES
+    assert DEFAULT_CONFIG["remediation"]["auto"]["min_confidence"] == 0.8
+    assert DEFAULT_CONFIG["remediation"]["summary_confidence_cap"] == 0.5
+    assert DEFAULT_CONFIG["remediation"]["lease_timeout_s"] == 1800
+    assert DEFAULT_CONFIG["remediation"]["max_attempts"] == 3
+    assert DEFAULT_CONFIG["remediation"]["judge"]["providers"] == [
+        "deepseek", "anthropic", "xai", "gemini",
+    ]
+
+
+def _string_tuple(src: str, name: str):
+    """Parse a module-level tuple of strings. Stop at a closing paren on its
+    own line so values like ``Bash(ssh *)`` do not truncate the match."""
+    m = re.search(
+        rf"^{re.escape(name)} = \((.*?)^\)",
+        src,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert m, f"{name} not found"
+    found = tuple(re.findall(r'"([^"]+)"', m.group(1)))
+    assert found, f"{name} parsed empty"
+    return found
+
+
+def test_worker_tool_ceiling_matches_the_launcher():
+    """The worker image and the Job launcher cannot import each other.
+
+    A widened launcher list that the worker then drops is a silent no-op; a
+    worker ceiling the launcher does not know about cannot be selected. Keep
+    the copies identical, same posture as the node-action parity test.
+    """
+    worker_src = (ROOT / "worker" / "entrypoint.py").read_text(encoding="utf-8")
+    launcher_src = (ROOT / "event_runtime" / "deep_investigation.py").read_text(
+        encoding="utf-8")
+    worker = _string_tuple(worker_src, "_ALLOWED_TOOLS")
+    launcher = _string_tuple(launcher_src, "_WORKER_TOOL_CEILING")
+    assert worker == launcher
+    # The values contain parentheses (`Bash(ssh *)`). A naive `.*?\)` parse
+    # would still agree with itself on both files while truncating both.
+    assert "Bash(ssh *)" in worker
 
 
 def test_auto_eligible_classes_all_have_an_executor_path():
