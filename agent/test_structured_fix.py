@@ -648,6 +648,81 @@ def test_every_observed_refusal_is_logged_not_silent(caplog, bad, reason):
     assert any("apps/promtail.yaml" in m for m in warnings), warnings
 
 
+# ---- observed: refuse an ellipsis (CFOP-155) ---------------------------------
+#
+# Row #97 (investigation #2342): gemma4 quoted a real promtail log and
+# replaced the timestamps that would have refuted the FIX with `...`. The
+# CFOP-88 check passed -- source and a non-empty value were present -- so
+# the payload looked like evidence while carrying none. Option 1: refuse
+# the placeholder. Live verification of a fabricated value is CFOP-89 and
+# is not this sitting.
+
+
+def test_an_ellipsized_observed_value_is_refused():
+    """Mutation of the passing fixture: the same line, with the numbers
+    replaced by `...`. That is the #97 shape, and it used to pass."""
+    good = _valid_fix()
+    assert _parse_structured_fix(_report(good), _REGISTRY) is not None
+    elided = _valid_fix(observed=[{
+        "source": "k8s_get_pod_logs",
+        "value": (
+            'error="server returned HTTP status 400 Bad Request (400): '
+            "entry with timestamp 2026-08-30 ... ignored, reason: "
+            "'entry too far behind...'\""
+        ),
+    }])
+    assert _parse_structured_fix(_report(elided), _REGISTRY) is None
+
+
+@pytest.mark.parametrize("value", [
+    "...",
+    "…",
+    "MemoryHigh=16G...",
+    "entry with timestamp 2026-08-30 … ignored",
+    "oldest acceptable timestamp is: ...",
+])
+def test_trailing_or_embedded_ellipsis_is_refused(value):
+    """ASCII `...` and Unicode `…`, trailing or in the middle. Four dots
+    contain three, so they fail the same way."""
+    fix = _valid_fix(observed=[{"source": "cat override.conf", "value": value}])
+    assert _parse_structured_fix(_report(fix), _REGISTRY) is None
+
+
+@pytest.mark.parametrize("value", [
+    "MemoryHigh=16G",
+    "MemoryHigh=16G..",          # two dots are not an ellipsis
+    "version 1.2.3",
+    "oldest acceptable timestamp is: 2026-09-01T23:37:01Z",
+])
+def test_a_verbatim_observed_value_is_not_an_ellipsis(value):
+    fix = _valid_fix(observed=[{"source": "cat override.conf", "value": value}])
+    assert _parse_structured_fix(_report(fix), _REGISTRY) is not None
+
+
+def test_ellipsis_in_source_does_not_sink_the_value():
+    """The hole is a quote that drops its operands, not a command name."""
+    fix = _valid_fix(observed=[{
+        "source": "k8s_get_pod_logs promtail-...",
+        "value": "MemoryHigh=16G",
+    }])
+    assert _parse_structured_fix(_report(fix), _REGISTRY) is not None
+
+
+def test_elided_observed_refusal_is_logged_not_silent(caplog):
+    """Same as the empty/half-filled log: a non-complying model degrades
+    every FIX to the classifier, and the warning is what tells those apart."""
+    fix = _valid_fix(observed=[{
+        "source": "k8s_get_pod_logs",
+        "value": "entry with timestamp 2026-08-30 ... ignored",
+    }])
+    with caplog.at_level(logging.WARNING, logger="cfoperator"):
+        assert _parse_structured_fix(_report(fix), _REGISTRY) is None
+    warnings = [r.getMessage() for r in caplog.records
+                if r.levelno >= logging.WARNING]
+    assert any("elided" in m for m in warnings), warnings
+    assert any("apps/promtail.yaml" in m for m in warnings), warnings
+
+
 # ---- delivery guidance (CFOP-148) -------------------------------------------
 #
 # These guard the CLASS of regression behind live row #96: the prompt telling
