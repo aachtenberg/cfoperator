@@ -525,26 +525,36 @@ class RemediationPolicy(NamedTuple):
     summary_confidence_cap: float
 
 
-def _bounded_float(raw, default: float, lo: float, hi: float) -> float:
+def _bounded_float(raw, default: float, lo: float, hi: float, *, what: str) -> float:
     if raw is None or raw == '':
         return default
     try:
         val = float(raw)
     except (TypeError, ValueError):
+        _log("warn", "ignoring unparseable remediation policy value",
+             key=what, got=repr(raw), using=default)
         return default
     if val < lo or val > hi:
+        _log("warn", "ignoring out-of-range remediation policy value",
+             key=what, got=val, lo=lo, hi=hi, using=default)
         return default
     return val
 
 
-def _positive_int(raw, default: int) -> int:
+def _positive_int(raw, default: int, *, what: str) -> int:
     if raw is None or raw == '':
         return default
     try:
         val = int(raw)
     except (TypeError, ValueError):
+        _log("warn", "ignoring unparseable remediation policy value",
+             key=what, got=repr(raw), using=default)
         return default
-    return val if val >= 1 else default
+    if val < 1:
+        _log("warn", "ignoring out-of-range remediation policy value",
+             key=what, got=val, using=default)
+        return default
+    return val
 
 
 def _configured_auto_classes(raw) -> tuple:
@@ -584,13 +594,17 @@ def resolve_auto_policy(rcfg=None) -> RemediationPolicy:
     return RemediationPolicy(
         auto_classes=_configured_auto_classes(classes_raw),
         min_confidence=_bounded_float(
-            auto.get('min_confidence'), _AUTO_REMEDIATION_MIN_CONFIDENCE, 0.0, 1.0),
+            auto.get('min_confidence'), _AUTO_REMEDIATION_MIN_CONFIDENCE, 0.0, 1.0,
+            what='auto.min_confidence'),
         lease_timeout_s=_positive_int(
-            rcfg.get('lease_timeout_s'), _REMEDIATION_LEASE_TIMEOUT_S),
+            rcfg.get('lease_timeout_s'), _REMEDIATION_LEASE_TIMEOUT_S,
+            what='lease_timeout_s'),
         max_attempts=_positive_int(
-            rcfg.get('max_attempts'), _REMEDIATION_MAX_ATTEMPTS),
+            rcfg.get('max_attempts'), _REMEDIATION_MAX_ATTEMPTS,
+            what='max_attempts'),
         summary_confidence_cap=_bounded_float(
-            rcfg.get('summary_confidence_cap'), _SUMMARY_CONFIDENCE_CAP, 0.0, 1.0),
+            rcfg.get('summary_confidence_cap'), _SUMMARY_CONFIDENCE_CAP, 0.0, 1.0,
+            what='summary_confidence_cap'),
     )
 
 

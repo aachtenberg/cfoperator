@@ -417,6 +417,9 @@ event_runtime:
     # Read-only tool ceiling the worker already bakes in. Omit to keep the
     # full list (ssh, kubectl get/describe/top, Read). Listing a subset
     # narrows; extras such as `kubectl delete` are dropped, never added.
+    # CFOP_DEEP_ALLOWED_TOOLS (comma-separated) wins over this key: present
+    # even empty refuses every tool; omit the env var to honour YAML / the
+    # baked-in ceiling.
     # allowed_tools:
     #   - "Bash(ssh *)"
     #   - Read

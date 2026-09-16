@@ -1520,6 +1520,23 @@ def _auto_policy_of(op):
     return resolve_auto_policy(rcfg)
 
 
+def _install_kb_auto_policy(op):
+    """Push the live auto-eligibility knobs onto the KB.
+
+    The KB caches policy. Console POST and chat gitops-patch call
+    ``kb.queue_remediation`` directly, so a reload that only replaced
+    ``op.config`` would leave those paths deciding against process-start
+    lists — and disagree with ``_auto_policy_of`` (fresh) on the judge
+    gate. Module-level so MagicMock operators do not swallow it.
+    """
+    kb = getattr(op, 'kb', None)
+    apply = getattr(kb, 'apply_remediation_policy', None) if kb is not None else None
+    if apply is None:
+        return
+    cfg = getattr(op, 'config', None)
+    apply(cfg.get('remediation') if isinstance(cfg, dict) else None)
+
+
 class CFOperator:
     """
     Continuous Feedback Operator
@@ -1542,9 +1559,7 @@ class CFOperator:
             db_url=db_url,
             host_id='cfoperator'  # Single central agent
         )
-        self.kb.apply_remediation_policy(
-            self.config.get('remediation') if isinstance(self.config, dict) else None
-        )
+        _install_kb_auto_policy(self)
 
         # Initialize database schema (creates tables if they don't exist)
         self.kb.initialize_schema()
@@ -1666,6 +1681,9 @@ class CFOperator:
         # the file's repo list while the DB still says otherwise (CFOP-77).
         self._load_git_registry()
         self._refresh_git_tools()
+        # Same for auto-eligibility: the KB caches the policy at init, and
+        # queue_remediation / reclassify read that cache, not self.config.
+        _install_kb_auto_policy(self)
         logger.info(f"Config reloaded: {len(new_hosts)} hosts (added={added or 'none'}, removed={removed or 'none'})")
         return {
             'hosts': len(new_hosts),

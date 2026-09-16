@@ -123,3 +123,63 @@ def test_module_gate_without_kwargs_is_unchanged():
     assert remediation_is_auto_eligible("gitops-patch", "low", 0.9) is True
     assert remediation_is_auto_eligible("k8s-action", "low", 0.8) is True
     assert remediation_is_auto_eligible("node-action", "low", 1.0) is False
+
+
+def test_broken_numbers_are_logged(capsys):
+    """A typo'd ConfigMap value must not fail silently (PR #262 review)."""
+    resolve_auto_policy({
+        "auto": {"min_confidence": "0,8"},
+        "max_attempts": 0,
+    })
+    logged = capsys.readouterr().out
+    assert "auto.min_confidence" in logged
+    assert "max_attempts" in logged
+    assert "unparseable" in logged
+    assert "out-of-range" in logged
+
+
+def test_reload_config_refreshes_the_kb_policy():
+    """CFOP-77 live reload has to move the cached gate, not just self.config.
+
+    queue_remediation / reclassify read kb.remediation_policy(), and the
+    console POST and chat gitops-patch paths never go through
+    _auto_policy_of. A reload that skipped apply_remediation_policy would
+    keep auto-executing against process-start lists.
+    """
+    from unittest.mock import MagicMock
+    from agent import CFOperator
+    from agent.agent import _install_kb_auto_policy
+
+    class FakeKB:
+        def __init__(self):
+            self.apply_remediation_policy(None)
+
+        def apply_remediation_policy(self, rcfg=None):
+            self._policy = resolve_auto_policy(rcfg)
+
+        def remediation_policy(self):
+            return self._policy
+
+    op = MagicMock()
+    op.config = {"infrastructure": {"hosts": {}}, "git": {}}
+    op.kb = FakeKB()
+    _install_kb_auto_policy(op)
+    assert "k8s-action" in op.kb.remediation_policy().auto_classes
+
+    new_cfg = {
+        "infrastructure": {"hosts": {}},
+        "git": {},
+        "remediation": {"auto": {"classes": ["gitops-patch"]}},
+    }
+    op._load_config = lambda path: new_cfg
+    op._load_git_registry = lambda: None
+    op._refresh_git_tools = lambda: None
+    op.git_repos = lambda: []
+    op._git_repos_source = "config"
+    CFOperator.reload_config(op)
+    assert op.kb.remediation_policy().auto_classes == ("gitops-patch",)
+    assert remediation_is_auto_eligible(
+        "k8s-action", "low", 1.0,
+        classes=op.kb.remediation_policy().auto_classes,
+        min_confidence=op.kb.remediation_policy().min_confidence,
+    ) is False
