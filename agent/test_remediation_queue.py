@@ -640,7 +640,7 @@ def test_feed_from_sweeps_dispatches_investigate_shaped():
     reports = [{"findings": [
         {"id": "f1", "finding": "Ollama 500s", "remediation": "Verify DNS on raspberrypi5",
          "severity": "warning", "resource_name": "ollama"},
-        {"id": "f2", "finding": "healthy", "remediation": "No action required. Healthy.", "severity": "info"},
+        {"id": "f2", "finding": "healthy", "remediation": "No action needed", "severity": "info"},
     ]}]
     assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1  # 2nd skipped
     op.kb.queue_remediation.assert_not_called()
@@ -1234,6 +1234,26 @@ def test_needs_action_skips_empty_no_action_and_opened_pr():
     declined.pr_result = None
     assert op._queue_needs_action_remediation(1, "t", {}, "fix it", "r",
                                               provider="p", proposal=declined) == 9
+
+
+def test_needs_action_enqueues_no_action_needed_that_continues():
+    # CFOP-141 / investigation #2329: startswith('no action') dropped a rec
+    # that opened with "No action needed" and then named the offline node.
+    # Whole-string match keeps the bare no-op skip (above) and enqueues this.
+    # Mutation-check: restore startswith('no action') and this fails.
+    op = _na_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": None, "repo": None})
+    rec = (
+        "No action needed for the application service as it has recovered. "
+        "However, the raspberrypi5 node (192.168.0.216) is offline; manual "
+        "inspection of that hardware or its network connection is recommended."
+    )
+    assert op._queue_needs_action_remediation(
+        2329, "t", {}, rec, "r", provider="p") == 9
+    op.kb.queue_remediation.assert_called_once()
+    assert rec in op.kb.queue_remediation.call_args.kwargs["payload"]["recommendation"]
 
 
 def test_needs_action_flag_off_spends_no_llm_call():
