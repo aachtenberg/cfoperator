@@ -105,7 +105,7 @@ guessing at a sentence with reading a field.
 {
   "targets":  [{"kind": "gitops-manifest|k8s-object|k8s-imperative|host|database-row|external-system",
                 "id": "path, name, or host",
-                "repo": "required as owner/name for gitops-manifest; omit for every other kind"}],
+                "repo": "required as owner/name for gitops-manifest; optional for every other kind"}],
   "observed": [{"source": "the command or file you READ",
                 "value":  "what it actually said, verbatim"}],
   "steps":    ["ordered action"],
@@ -118,7 +118,8 @@ guessing at a sentence with reading a field.
 `repo` is **conditional**, matching the schema line above. For a
 `gitops-manifest` target it is required and must resolve in the git registry:
 omitted, empty and unresolvable are all refused alike. For every other kind it
-may be omitted, and a value that does not resolve is dropped rather than fatal.
+is optional: a resolvable value is kept (it becomes the work-order's repo), and
+a value that does not resolve is dropped rather than fatal.
 
 It is read from the region after the **last** `STATUS:` in the reply — a
 line-anchored `FIX:` first, then a fenced JSON block, and for a nudge reply

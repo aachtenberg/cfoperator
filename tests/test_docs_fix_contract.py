@@ -95,16 +95,27 @@ def test_nested_target_and_observed_keys_are_documented():
 def test_schema_does_not_invite_omitting_a_required_repo():
     """The prompt used to say repo may be omitted for every kind, then the
     validator refused a gitops-manifest with no repo (CFOP-102). Field names
-    are checked separately; this guards the trap, not today's whole blob."""
+    are checked separately; this guards the trap, not today's whole blob.
+
+    The first version of this guard only forbade ``or omit`` and required the
+    kind name somewhere. That still passed on ``omit for every other kind``,
+    which overcorrects: a resolvable repo on a non-manifest kind is kept.
+    """
     schema = json.loads(_FIX_JSON_SCHEMA)
     repo_help = schema['targets'][0]['repo']
-    assert 'or omit' not in repo_help.lower()
-    assert 'gitops-manifest' in repo_help.lower()
+    help_l = repo_help.lower()
+    # Original trap: invite omitting a required gitops-manifest repo.
+    assert 'or omit' not in help_l
+    assert re.search(r'required[^;]*gitops-manifest', help_l)
+    # Overcorrection: tell the model never to supply repo off a manifest.
+    assert 'omit for every other kind' not in help_l
+    assert 'optional' in help_l
     # The doc quotes the prompt; a wording change that only touches the
     # constant would leave the trap advertised in REMEDIATION.md.
     text = _doc_text().split('## The FIX contract', 1)[1]
     assert repo_help in text
     assert '"or omit"' not in text
+    assert 'omit for every other kind' not in text
 
 
 def test_the_documented_fallback_class_matches_the_code():
