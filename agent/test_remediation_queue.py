@@ -20,7 +20,11 @@ from knowledge_base import (  # noqa: E402
     remediation_is_auto_eligible,
 )
 from agent import CFOperator  # noqa: E402
-from agent.agent import _SUMMARY_CONFIDENCE_CAP, _llm_provider_tag  # noqa: E402
+from agent.agent import (  # noqa: E402
+    _SUMMARY_CONFIDENCE_CAP,
+    _is_noop_recommendation,
+    _llm_provider_tag,
+)
 import agent.agent as agent_mod  # noqa: E402
 
 
@@ -640,7 +644,7 @@ def test_feed_from_sweeps_dispatches_investigate_shaped():
     reports = [{"findings": [
         {"id": "f1", "finding": "Ollama 500s", "remediation": "Verify DNS on raspberrypi5",
          "severity": "warning", "resource_name": "ollama"},
-        {"id": "f2", "finding": "healthy", "remediation": "No action required. Healthy.", "severity": "info"},
+        {"id": "f2", "finding": "healthy", "remediation": "No action needed", "severity": "info"},
     ]}]
     assert CFOperator._feed_remediations_from_sweeps(op, reports) == 1  # 2nd skipped
     op.kb.queue_remediation.assert_not_called()
@@ -1219,6 +1223,8 @@ def test_needs_action_skips_empty_no_action_and_opened_pr():
     op._classify_needs_action_recommendation = MagicMock()
     assert op._queue_needs_action_remediation(1, "t", {}, "", "r", provider="p") is None
     assert op._queue_needs_action_remediation(1, "t", {}, "No action needed", "r", provider="p") is None
+    assert op._queue_needs_action_remediation(1, "t", {}, "No action needed.", "r", provider="p") is None
+    assert op._queue_needs_action_remediation(1, "t", {}, "No action needed!", "r", provider="p") is None
     # inline unschedulable-pod proposer already opened a PR -> one fix, one driver
     prop = MagicMock()
     prop.pr_result = {"status": "opened", "html_url": "https://x"}
@@ -1234,6 +1240,45 @@ def test_needs_action_skips_empty_no_action_and_opened_pr():
     declined.pr_result = None
     assert op._queue_needs_action_remediation(1, "t", {}, "fix it", "r",
                                               provider="p", proposal=declined) == 9
+
+
+def test_is_noop_recommendation_strips_trailing_punct_not_a_following_sentence():
+    # Review follow-up: exact match missed "No action needed." because
+    # _extract_recommendation only strips whitespace. rstrip of .!? still
+    # leaves a continuation (the #2329 shape) as a finding. "No action
+    # required" is not the prompt token — that narrowing is intentional
+    # (prefix matching was the CFOP-141 bug; #56's "No action required.
+    # Infrastructure is operating normally." will enqueue).
+    assert _is_noop_recommendation("")
+    assert _is_noop_recommendation("No action needed")
+    assert _is_noop_recommendation("No action needed.")
+    assert _is_noop_recommendation("NO ACTION NEEDED!")
+    assert _is_noop_recommendation("none")
+    assert _is_noop_recommendation("n/a.")
+    assert not _is_noop_recommendation(
+        "No action needed. However, the raspberrypi5 node is offline.")
+    assert not _is_noop_recommendation("No action required")
+    assert not _is_noop_recommendation("No action required. Healthy.")
+
+
+def test_needs_action_enqueues_no_action_needed_that_continues():
+    # CFOP-141 / investigation #2329: startswith('no action') dropped a rec
+    # that opened with "No action needed" and then named the offline node.
+    # Whole-string match keeps the bare no-op skip (above) and enqueues this.
+    # Mutation-check: restore startswith('no action') and this fails.
+    op = _na_op()
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "manual", "risk": "high", "confidence": None,
+        "host": None, "repo": None})
+    rec = (
+        "No action needed for the application service as it has recovered. "
+        "However, the raspberrypi5 node (192.168.0.216) is offline; manual "
+        "inspection of that hardware or its network connection is recommended."
+    )
+    assert op._queue_needs_action_remediation(
+        2329, "t", {}, rec, "r", provider="p") == 9
+    op.kb.queue_remediation.assert_called_once()
+    assert rec in op.kb.queue_remediation.call_args.kwargs["payload"]["recommendation"]
 
 
 def test_needs_action_flag_off_spends_no_llm_call():
