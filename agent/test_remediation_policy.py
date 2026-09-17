@@ -72,7 +72,7 @@ def test_empty_class_list_disables_all_auto():
 
 
 def test_config_can_add_node_action():
-    """CFOP-131's enablement is a default-list edit, not a new code path."""
+    """node-action is not park-only: config can list it with other classes."""
     policy = resolve_auto_policy({
         "auto": {"classes": ["gitops-patch", "k8s-action", "node-action"]},
     })
@@ -81,6 +81,16 @@ def test_config_can_add_node_action():
         "node-action", "low", 1.0,
         classes=policy.auto_classes, min_confidence=policy.min_confidence,
     ) is True
+
+
+def test_config_can_drop_node_action():
+    """The shipped default includes node-action (CFOP-131); dropping it is a list edit."""
+    dropped = resolve_auto_policy({"auto": {"classes": ["gitops-patch"]}})
+    assert dropped.auto_classes == ("gitops-patch",)
+    assert remediation_is_auto_eligible(
+        "node-action", "low", 1.0,
+        classes=dropped.auto_classes, min_confidence=dropped.min_confidence,
+    ) is False
 
 
 def test_park_only_classes_cannot_be_added_from_config():
@@ -136,7 +146,8 @@ def test_module_gate_without_kwargs_is_unchanged():
     """Existing callers that do not pass policy still see today's gate."""
     assert remediation_is_auto_eligible("gitops-patch", "low", 0.9) is True
     assert remediation_is_auto_eligible("k8s-action", "low", 0.8) is False
-    assert remediation_is_auto_eligible("node-action", "low", 1.0) is False
+    assert remediation_is_auto_eligible("node-action", "low", 1.0) is True
+    assert remediation_is_auto_eligible("node-action", "low", 0.5) is False
 
 
 def test_broken_numbers_are_logged(capsys):

@@ -536,7 +536,7 @@ function resolutionHtml(r){
 function setFilter(s){ filter=s; paint(); }
 
 // ---- pipeline flags + run-feed ----
-const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify',queue_tracker:'tracker',queue_reverify:'re-verify'};
+const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify',queue_tracker:'tracker',queue_reverify:'re-verify',node_action_enabled:'node-action'};
 async function loadFlags(){
   let f; try{ f = await (await fetch('/api/remediation/flags')).json(); }catch(e){ return; }
   document.getElementById('flags').innerHTML = Object.keys(FLAG_LABEL).map(k=>
@@ -545,6 +545,7 @@ async function loadFlags(){
 function toggleFlag(name,value){
   if(name==='queue_drain' && value){ confirmDrain(); return; }  // inline confirm, no popup
   if(name==='queue_tracker' && value){ confirmTracker(); return; }
+  if(name==='node_action_enabled' && value){ confirmNodeAction(); return; }
   setFlag(name,value);
 }
 // Turning the tracker on files EVERY parked row without a PR over the next few
@@ -559,6 +560,12 @@ function confirmDrain(){
   document.getElementById('feedmsg').innerHTML =
     `<span style="color:var(--orange)">Enable drain — agent will open PRs (you still merge).</span> ` +
     `<button class="chip" onclick="setFlag('queue_drain',true);clearMsg()">Yes, enable</button> ` +
+    `<button class="chip" onclick="clearMsg()">Cancel</button>`;
+}
+function confirmNodeAction(){
+  document.getElementById('feedmsg').innerHTML =
+    `<span style="color:var(--orange)">Enable node-action — approved change records will run allowlisted commands over SSH.</span> ` +
+    `<button class="chip" onclick="setFlag('node_action_enabled',true);clearMsg()">Yes, enable</button> ` +
     `<button class="chip" onclick="clearMsg()">Cancel</button>`;
 }
 function clearMsg(){ document.getElementById('feedmsg').textContent=''; }

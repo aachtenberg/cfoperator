@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from knowledge_base import (  # noqa: E402
     _AUTO_REMEDIATION_CLASSES,
     _AUTO_REMEDIATION_MIN_CONFIDENCE,
+    _CLASSIFIER_FED_AUTO_CLASSES,
+    _SUMMARY_CONFIDENCE_CAP,
     normalize_remediation_fields,
     remediation_is_auto_eligible,
 )
@@ -308,17 +310,23 @@ def test_multi_target_data_fix_external_system_never_auto_eligible():
     assert obj["remediation_class"] == "k8s-action"
     assert obj["confidence"] is None
     assert _auto(obj) is False
+    # host maps to node-action but FIX still stamps None (classifier-fed only)
+    host = _hints_from_structured_fix(_valid_fix(
+        targets=[{"kind": "host", "id": "pi5"}], risk="low"))
+    assert host["remediation_class"] == "node-action"
+    assert host["confidence"] is None
+    assert _auto(host) is False
 
 
-def test_every_auto_class_is_reachable_from_a_fix_confidence_stamp():
-    """CFOP-128: a class in the auto list with no FIX path to a confidence
-    is advertised as auto-executable and unreachable (k8s-action was).
+def test_every_auto_class_is_reachable_from_a_confidence_feed():
+    """CFOP-128 / CFOP-131: a class in the auto list with no feed that can
+    clear the floor is advertised as auto-executable and unreachable.
 
-    Guards the class of regression, not today's names: adding a class to
-    _AUTO_REMEDIATION_CLASSES without a stamp that can clear the floor
-    fails this. Mutation-check: put k8s-action back in the tuple.
+    FIX stamps cover gitops-patch. node-action is classifier-fed (do not
+    invent a host-kind 0.8 to satisfy this). Mutation-check: put k8s-action
+    in the tuple without adding it to _CLASSIFIER_FED_AUTO_CLASSES.
     """
-    reachable = set()
+    fix_reachable = set()
     for kind, rclass in _FIX_KIND_TO_CLASS.items():
         hints = _hints_from_structured_fix(_valid_fix(
             targets=[{"kind": kind, "id": "x", "repo": "o/r"}],
@@ -329,12 +337,38 @@ def test_every_auto_class_is_reachable_from_a_fix_confidence_stamp():
             and hints["confidence"] is not None
             and hints["confidence"] >= _AUTO_REMEDIATION_MIN_CONFIDENCE
         ):
-            reachable.add(rclass)
-    missing = set(_AUTO_REMEDIATION_CLASSES) - reachable
+            fix_reachable.add(rclass)
+    classifier_fed = set(_CLASSIFIER_FED_AUTO_CLASSES)
+    assert classifier_fed <= set(_AUTO_REMEDIATION_CLASSES), (
+        f"{classifier_fed - set(_AUTO_REMEDIATION_CLASSES)} is marked "
+        "classifier-fed but is not in the default auto list")
+    missing = set(_AUTO_REMEDIATION_CLASSES) - fix_reachable - classifier_fed
     assert not missing, (
         f"{missing} would auto-drain but no FIX kind stamps "
-        f">= {_AUTO_REMEDIATION_MIN_CONFIDENCE}"
+        f">= {_AUTO_REMEDIATION_MIN_CONFIDENCE} and they are not listed as "
+        "classifier-fed"
     )
+
+
+def test_classifier_fed_auto_classes_are_not_fix_stamped():
+    """CFOP-131: investigation-fed only. A FIX stamp on host would auto-drain
+    FIX-fed host remediations, which is the shape 128 option A rejected.
+    """
+    for rclass in _CLASSIFIER_FED_AUTO_CLASSES:
+        kinds = [k for k, c in _FIX_KIND_TO_CLASS.items() if c == rclass]
+        assert kinds, f"{rclass} has no FIX kind to refuse a stamp on"
+        for kind in kinds:
+            hints = _hints_from_structured_fix(_valid_fix(
+                targets=[{"kind": kind, "id": "x", "repo": "o/r"}],
+                risk="low",
+            ))
+            assert hints["confidence"] is None, (
+                f"FIX kind {kind} stamped {hints['confidence']}; node-action "
+                "must stay investigation-fed")
+        assert remediation_is_auto_eligible(
+            rclass, "low", _AUTO_REMEDIATION_MIN_CONFIDENCE) is True
+        assert remediation_is_auto_eligible(
+            rclass, "low", _SUMMARY_CONFIDENCE_CAP) is False
 
 
 # ---- payload -----------------------------------------------------------------

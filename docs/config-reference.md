@@ -552,17 +552,18 @@ remediation:
     min_age_seconds: 3600       # leave a just-filed row alone; its evidence is fresh
     recheck_after_seconds: 86400  # an `open` row rotates daily, not every tick
     max_iterations: 10          # tool rounds per row
-  # CFOP-133 / CFOP-128. Which classes may auto-execute, and the numbers
-  # around that gate. Omitting the block keeps gitops-patch at 0.8.
-  # An empty `classes` list disables auto-execution. Names the code does
-  # not know, and classes that exist to park (k8s-imperative, data-fix,
-  # external-system, manual), are dropped with a warning — config cannot give
-  # the executor a Job it has no runner for. `k8s-action` is allowed here so
-  # CFOP-61 can opt it back in without a park-only veto; it is not in the
-  # default. `node-action` is allowed so enabling it is a config edit
-  # (CFOP-131), not a code change.
+  # CFOP-133 / CFOP-128 / CFOP-131. Which classes may auto-execute, and the
+  # numbers around that gate. Omitting the block keeps gitops-patch and
+  # node-action at 0.8. An empty `classes` list disables auto-execution.
+  # Names the code does not know, and classes that exist to park
+  # (k8s-imperative, data-fix, external-system, manual), are dropped with a
+  # warning — config cannot give the executor a Job it has no runner for.
+  # `k8s-action` is allowed here so CFOP-61 can opt it back in without a
+  # park-only veto; it is not in the default. node-action is classifier-fed
+  # (FIX kind `host` still stamps no confidence); summary hunches stay
+  # capped at 0.5 and cannot auto-SSH.
   auto:
-    classes: [gitops-patch]
+    classes: [gitops-patch, node-action]
     min_confidence: 0.8
   summary_confidence_cap: 0.5   # morning-summary hunches; investigation-fed rows are not clamped
   lease_timeout_s: 1800         # reaper: in-flight executor Jobs older than this are presumed dead

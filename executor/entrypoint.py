@@ -257,9 +257,10 @@ def _maybe_close_change_record(env: Dict[str, str], work_order: Dict[str, Any],
 def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any]:
     """Execute a node-action: gated command plan over SSH.
 
-    Reaches here only after a human escalated the queue row (node-actions are
-    never auto-eligible). Opt-in per deploy via CFOP_NODE_ACTION_ENABLED so the
-    image cannot silently start running shell on hosts.
+    Reaches here after the agent gated spawn on a named change-record approval
+    (and, for auto-eligible rows, the frontier judge). Opt-in per deploy via
+    CFOP_NODE_ACTION_ENABLED so the image cannot silently start running shell
+    on hosts.
 
     When CFOP_EXEC_CHANGE_URL is set, the agent has already opened a change
     record with a concrete plan and gated spawn on named approval. If the work

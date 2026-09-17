@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 from agent.knowledge_base import (  # noqa: E402
     _AUTO_REMEDIATION_CLASSES,
+    _CLASSIFIER_FED_AUTO_CLASSES,
     _NEVER_AUTO_CLASSES,
     _REMEDIATION_CLASSES,
 )
@@ -188,6 +189,14 @@ def test_k8s_action_is_not_auto_eligible_by_default():
     assert "k8s-action" in _REMEDIATION_CLASSES
     assert "k8s-action" not in _AUTO_REMEDIATION_CLASSES
     assert "k8s-action" not in _NEVER_AUTO_CLASSES
+
+
+def test_node_action_is_auto_eligible_by_default():
+    """CFOP-131: executor path exists; confidence is classifier-fed."""
+    assert "node-action" in _REMEDIATION_CLASSES
+    assert "node-action" in _AUTO_REMEDIATION_CLASSES
+    assert "node-action" in _CLASSIFIER_FED_AUTO_CLASSES
+    assert "node-action" not in _NEVER_AUTO_CLASSES
 
 
 def test_data_fix_and_external_system_are_not_auto_eligible():
