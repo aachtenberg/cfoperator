@@ -3458,8 +3458,17 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         DB overrides config so the console can flip it without a rollout;
         the profile is still a ceiling. MagicMock tests that have not wired
         ``_remediation_flag`` fall through to ``executor.node_action.enabled``.
+
+        ``_mock_name`` is unittest.mock's mark on an auto-created attribute.
+        Same reason ``_remediation_flag`` reads ``self.config`` directly
+        rather than through a helper: a bare MagicMock operator would make
+        ``self._remediation_flag(...)`` truthy and ignore the nested
+        ``executor.node_action.enabled`` the manifest tests actually set.
+        A lambda from ``_wire_flags`` has no ``_mock_name`` and is used.
         """
         flag_fn = getattr(self, '_remediation_flag', None)
+        # See docstring: skip MagicMock auto-attributes, honour real methods
+        # and test lambdas.
         if callable(flag_fn) and not getattr(flag_fn, '_mock_name', None):
             return bool(flag_fn('node_action_enabled'))
         try:
