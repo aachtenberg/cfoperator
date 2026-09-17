@@ -118,6 +118,19 @@ def test_unprofiled_config_keeps_pre_cfop26_flag_behaviour(CFOperator):
     assert operator._remediation_flag("queue_drain") is True
 
 
+def test_investigate_profile_beats_node_action_enabled_db_override(CFOperator):
+    """Console kill-switch must not escalate past the investigate profile."""
+    operator = _operator_with(
+        CFOperator,
+        {
+            "profile": shared_config.PROFILE_INVESTIGATE,
+            "remediation": {"executor": {"node_action": {"enabled": True}}},
+        },
+        settings={"remediation_node_action_enabled": "true"},
+    )
+    assert operator._remediation_flag("node_action_enabled") is False
+
+
 def test_infra_summary_without_hosts_is_a_state_not_an_empty_header(CFOperator):
     """A bare "Infrastructure hosts:" header reads to the model as "there are
     none", which is wrong — they are discovered rather than declared."""

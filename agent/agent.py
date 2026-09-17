@@ -406,9 +406,9 @@ def _dispatch_checklist_followup(op, investigation_id: int, trigger: str,
     CFOP-108. Sweep recs shaped "check / verify …" are already dispatched as
     investigations rather than rows (_feed_remediations_from_sweeps); this is
     the same rule on the path every investigation takes. A row made of checks
-    helps nobody: node-action is never auto-eligible and the executor runs
-    mutating commands only, so the human it waits for would be typing the
-    `ss` and `nslookup` the agent can run itself.
+    helps nobody: a FIX-fed host row still parks (no confidence stamp) and
+    the executor runs mutating commands only, so the human it waits for
+    would be typing the `ss` and `nslookup` the agent can run itself.
 
     Exactly one extra pass. The follow-up alert carries ``followup_of`` and
     this returns False for any alert that already has it, so a model that
@@ -3357,7 +3357,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             return None
 
     _REMEDIATION_FLAGS = ('queue_feed', 'queue_drain', 'queue_reap', 'queue_verify',
-                          'queue_tracker', 'queue_reverify')
+                          'queue_tracker', 'queue_reverify', 'node_action_enabled')
 
     def _triage_model(self) -> Optional[str]:
         """Resolve the dedicated triage model: DB setting overrides config.
@@ -3443,7 +3443,40 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         except Exception as e:
             logger.debug(f"Could not read remediation flag '{name}' from DB, using config: {e}")
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        if name == 'node_action_enabled':
+            # Config lives nested (executor.node_action.enabled), not as a
+            # top-level remediation flag. The console still toggles it through
+            # this same API so it is a kill-switch without a rollout (CFOP-131).
+            executor = rcfg.get('executor') if isinstance(rcfg.get('executor'), dict) else {}
+            na = executor.get('node_action') if isinstance(executor.get('node_action'), dict) else {}
+            return bool(na.get('enabled'))
         return bool(rcfg.get(name))
+
+    def _node_action_enabled(self) -> bool:
+        """Live kill-switch for SSH on hosts (CFOP-131).
+
+        DB overrides config so the console can flip it without a rollout;
+        the profile is still a ceiling. MagicMock tests that have not wired
+        ``_remediation_flag`` fall through to ``executor.node_action.enabled``.
+
+        ``_mock_name`` is unittest.mock's mark on an auto-created attribute.
+        Same reason ``_remediation_flag`` reads ``self.config`` directly
+        rather than through a helper: a bare MagicMock operator would make
+        ``self._remediation_flag(...)`` truthy and ignore the nested
+        ``executor.node_action.enabled`` the manifest tests actually set.
+        A lambda from ``_wire_flags`` has no ``_mock_name`` and is used.
+        """
+        flag_fn = getattr(self, '_remediation_flag', None)
+        # See docstring: skip MagicMock auto-attributes, honour real methods
+        # and test lambdas.
+        if callable(flag_fn) and not getattr(flag_fn, '_mock_name', None):
+            return bool(flag_fn('node_action_enabled'))
+        try:
+            na = self._executor_config().get('node_action')
+        except Exception:
+            na = {}
+        na = na if isinstance(na, dict) else {}
+        return bool(na.get('enabled'))
 
     def _start_remediation_worker(self) -> None:
         """Run the remediation reaper/drainer/verify in a daemon thread.
@@ -3618,7 +3651,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         ``run_ssh_plan``. With the URL UNSET a node-action is refused outright
         and parked at needs-human (CFOP-131) -- it used to pass through, which
         made an unconfigured recorder indistinguishable from an approval.
-        Other classes are unaffected either way.
+        ``node_action.enabled`` (console kill-switch) skips spawn and leaves
+        the row queued. Other classes are unaffected either way.
         """
         rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
         if not self._remediation_flag('queue_drain'):
@@ -3905,6 +3939,20 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         """
         if (work.get('remediation_class') or '') != 'node-action':
             return work
+        if not CFOperator._node_action_enabled(self):
+            # Kill-switch. Leave the row queued so flipping the flag back on
+            # resumes drain; parking at needs-human would strand it.
+            logger.info(
+                "Remediation #%s skipped: node-action execution is disabled",
+                work.get('id'))
+            try:
+                self.kb.release_remediation_claim(
+                    work['id'], last_error="node-action execution is disabled")
+            except Exception as e:
+                logger.error(
+                    "Could not release remediation #%s after disabling "
+                    "node-action: %s", work.get('id'), e)
+            return None
         base_url = self._change_record_url()
         if not base_url:
             # Park at needs-human rather than release or fail. release_
@@ -3939,7 +3987,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         image = ec.get('image', os.getenv('CFOP_EXECUTOR_IMAGE',
                                          'ghcr.io/aachtenberg/cfoperator-executor:main'))
         flag_snapshot = {
-            "node_action.enabled": bool(na.get('enabled')),
+            "node_action.enabled": CFOperator._node_action_enabled(self),
             "queue_drain": bool(self._remediation_flag('queue_drain')),
             "change_record.url": base_url,
         }
@@ -4056,7 +4104,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         volumes: List[Dict[str, Any]] = []
         volume_mounts: List[Dict[str, Any]] = []
         na = ec.get('node_action') if isinstance(ec.get('node_action'), dict) else {}
-        if (work_order.get('remediation_class') or '') == 'node-action' and na.get('enabled'):
+        if ((work_order.get('remediation_class') or '') == 'node-action'
+                and CFOperator._node_action_enabled(self)):
             # Reuse the forensics keypair the deep-investigation worker already
             # uses to SSH into hosts. Mount it at a staging dir (group-readable);
             # the executor copies it into ~/.ssh at 0600 (ssh refuses looser).

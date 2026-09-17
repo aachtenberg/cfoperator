@@ -449,10 +449,18 @@ class InvestigationQueue(Base):
 # class can never carry a confidence, and stamping 0.8 on k8s-object would
 # drain a bare name into run_gitops (CFOP-61). Config may still list it; it
 # is not park-only. 'k8s-imperative' is deliberately absent (CFOP-61): a
-# one-off kubectl verb has no manifest to patch. Add a class here in the
-# same change that gives the executor a path and a FIX stamp. Config cannot
-# put a park-only class into the live list either (_NEVER_AUTO_CLASSES).
-_AUTO_REMEDIATION_CLASSES = ('gitops-patch',)
+# one-off kubectl verb has no manifest to patch. 'node-action' joined the
+# default (CFOP-131): the executor has a path, and confidence comes from the
+# investigation classifier, not a FIX stamp (kind `host` still stamps None).
+# Add a class here in the same change that gives the executor a path and a
+# feed that can clear the floor. Config cannot put a park-only class into
+# the live list either (_NEVER_AUTO_CLASSES).
+_AUTO_REMEDIATION_CLASSES = ('gitops-patch', 'node-action')
+# Default auto classes whose confidence is investigation-classifier-fed, not
+# a FIX stamp. The CFOP-128 invariant treats these as a reachable feed so
+# adding node-action does not force a host-kind 0.8 (which 131 rejected).
+# Summary-fed mutation recs stay capped at 0.5 and cannot clear the floor.
+_CLASSIFIER_FED_AUTO_CLASSES = ('node-action',)
 _AUTO_REMEDIATION_MIN_CONFIDENCE = 0.8
 # Reaper: an in-flight lease older than this (no terminal transition) is
 # assumed dead (pod OOM/evicted) and requeued. Worker Jobs have a 6h TTL.
@@ -470,7 +478,7 @@ _REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action', 'k8s-imperative',
 _REMEDIATION_RISKS = ('low', 'med', 'high')
 # Classes that exist to PARK. Config may not auto-enable them: that would
 # drain a Job into a path the executor refuses (CFOP-61) or into 'manual'.
-# node-action is not in this set — CFOP-131 is a default-list edit.
+# node-action is not in this set — it is in the default auto list (CFOP-131).
 _NEVER_AUTO_CLASSES = frozenset({
     'k8s-imperative', 'data-fix', 'external-system', 'manual',
 })

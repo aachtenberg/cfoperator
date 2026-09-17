@@ -32,7 +32,9 @@ Particularly interesting:
   — the worst outcome should be a bad pull request that a human then declines.
   A path that beats that is a real finding.
 - **SSH / node-action lane** (`node_action.enabled`) — the one place the agent
-  touches hosts directly, deliberately gated and off by default.
+  touches hosts directly. Schema default is off; the remediate-profile chart
+  flips it on (CFOP-131). Still gated on the change-record PR, the allowlist,
+  and a console kill-switch.
 
 ## Design limits, not vulnerabilities
 

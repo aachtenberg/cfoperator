@@ -37,7 +37,14 @@ def _wire_flags(op):
     enqueue would "fold" onto a mock id) and an ununpackable one from
     _commit_forked_recommendation. The real methods fail open against the
     MagicMock kb — which is itself the behaviour under test elsewhere."""
-    op._remediation_flag = lambda name: bool((op.config.get('remediation') or {}).get(name))
+    def _flag(name):
+        rcfg = op.config.get('remediation') or {}
+        if name == 'node_action_enabled':
+            executor = rcfg.get('executor') if isinstance(rcfg.get('executor'), dict) else {}
+            na = executor.get('node_action') if isinstance(executor.get('node_action'), dict) else {}
+            return bool(na.get('enabled'))
+        return bool(rcfg.get(name))
+    op._remediation_flag = _flag
     op._extract_remediation_identifiers = CFOperator._extract_remediation_identifiers
     op._absorb_repeat_remediation = (
         lambda details: CFOperator._absorb_repeat_remediation(op, details))
@@ -78,14 +85,18 @@ def test_auto_eligible_happy_path():
     assert remediation_is_auto_eligible("gitops-patch", "low", 0.9) is True
     # exactly at the threshold is eligible
     assert remediation_is_auto_eligible("gitops-patch", "low", _AUTO_REMEDIATION_MIN_CONFIDENCE) is True
+    # CFOP-131: investigation-fed node-action at the floor is eligible
+    assert remediation_is_auto_eligible("node-action", "low", _AUTO_REMEDIATION_MIN_CONFIDENCE) is True
 
 
 def test_auto_eligible_blocks_unsafe_cases():
-    # node-action / k8s-action / manual never auto by default, even when
-    # low-risk and fully confident (CFOP-128 dropped k8s-action)
-    assert remediation_is_auto_eligible("node-action", "low", 1.0) is False
+    # k8s-action / manual never auto by default, even when low-risk and fully
+    # confident (CFOP-128 dropped k8s-action). node-action is auto (CFOP-131)
+    # but still blocked below the floor / above low risk.
     assert remediation_is_auto_eligible("k8s-action", "low", 1.0) is False
     assert remediation_is_auto_eligible("manual", "low", 1.0) is False
+    assert remediation_is_auto_eligible("node-action", "low", 0.5) is False
+    assert remediation_is_auto_eligible("node-action", "med", 1.0) is False
     # any risk above low blocks
     assert remediation_is_auto_eligible("gitops-patch", "med", 1.0) is False
     assert remediation_is_auto_eligible("gitops-patch", "high", 1.0) is False
@@ -1089,6 +1100,39 @@ def test_remediation_flag_falls_back_to_config():
     assert CFOperator._remediation_flag(op, "queue_drain") is False
 
 
+def test_node_action_enabled_flag_reads_the_nested_config_key():
+    """The kill-switch is executor.node_action.enabled, not a top-level flag."""
+    op = MagicMock()
+    op.kb.get_setting.return_value = ""
+    op.config = {"remediation": {"executor": {"node_action": {"enabled": True}}}}
+    assert CFOperator._remediation_flag(op, "node_action_enabled") is True
+    op.config = {"remediation": {"executor": {"node_action": {"enabled": False}}}}
+    assert CFOperator._remediation_flag(op, "node_action_enabled") is False
+    op.kb.get_setting.return_value = "0"  # console off overrides chart on
+    op.config = {"remediation": {"executor": {"node_action": {"enabled": True}}}}
+    assert CFOperator._remediation_flag(op, "node_action_enabled") is False
+
+
+def test_node_action_disabled_never_reaches_spawn_or_the_recorder():
+    """Kill-switch: leave the row queued; do not open a change record."""
+    work = {
+        "id": 12,
+        "remediation_class": "node-action",
+        "risk": "low",
+        "payload": {"recommendation": "restart nginx", "target": {"host": "n1"}},
+        "result": {},
+    }
+    op = _unconfigured_gate_op(work)
+    op.config["remediation"]["executor"]["node_action"]["enabled"] = False
+    op._change_record_url = lambda: "http://changerecord:8091"
+    assert CFOperator._drain_remediation_queue(op) == 0
+    op._spawn_remediation_executor.assert_not_called()
+    op.kb.release_remediation_claim.assert_called_once()
+    assert op.kb.release_remediation_claim.call_args.kwargs["last_error"] == (
+        "node-action execution is disabled")
+    op.kb.update_remediation_status.assert_not_called()
+
+
 # ---- CFOP-22: reporting LLM + deep PR attempt on the queue ------------------
 
 
@@ -1742,6 +1786,17 @@ def test_judge_confirm_enqueues_at_full_confidence():
     assert "judge_reason" not in kwargs["payload"]
 
 
+def test_auto_eligible_node_action_goes_through_the_judge():
+    """CFOP-131: adding the class to the tuple is the whole wiring."""
+    op = _judge_op({"verdict": "confirm", "model": "claude-opus-4-8", "reason": "fine"})
+    details = {
+        "remediation_class": "node-action", "risk": "low", "confidence": 0.9,
+        "recommendation": "restart nginx", "host": "rpi4",
+    }
+    CFOperator._maybe_queue_remediation(op, 1, details)
+    op._judge_mutation_remediation.assert_called_once()
+
+
 def test_judge_reject_records_the_row_then_closes_it():
     # 'reject' is not a silent drop: the queue is the single ledger, so the row
     # exists and carries why it was refused. Terminal status also releases the
@@ -1760,7 +1815,7 @@ def test_judge_reject_records_the_row_then_closes_it():
     ("investigate", "low", 0.95),   # not a mutation at all
     ("gitops-patch", "high", 0.95),  # mutation, but not auto-eligible
     ("gitops-patch", "low", 0.5),   # mutation, but under the confidence bar
-    ("node-action", "low", 1.0),    # never auto-eligible whatever the confidence
+    ("node-action", "low", 0.5),    # auto class, but summary-capped below the floor
 ])
 def test_non_auto_eligible_rows_skip_the_judge_entirely(rclass, risk, conf):
     # No cost regression: the judge is a frontier-model call, and a row that
@@ -2875,11 +2930,12 @@ def test_sweep_human_only_recs_also_fold_onto_a_node_incident():
 #
 # Live row #80: investigation #2305 ended with "verify connectivity … check
 # port 10250 … check iptables" and a FIX whose target.kind was host. CFOP-80
-# classifies that to node-action by kind alone, and node-action is never
-# auto-eligible, so a list of commands the agent could have run itself was
-# parked for a human — who, asked in chat, watched the same model run them in
-# one turn. These guard the branch that sends such a rec back for one more
-# pass instead, and every way that branch must NOT fire.
+# classifies that to node-action by kind alone. A FIX-fed host row still
+# stamps no confidence (CFOP-131 is classifier-fed), so a list of commands
+# the agent could have run itself was parked for a human — who, asked in
+# chat, watched the same model run them in one turn. These guard the branch
+# that sends such a rec back for one more pass instead, and every way that
+# branch must NOT fire.
 
 _CHECKLIST_REC = ("Verify network connectivity and firewall rules between the control "
                   "plane and raspberrypi2 on port 10250, and ensure k3s-agent is "
@@ -3563,9 +3619,10 @@ def test_the_default_drain_fixture_refuses_a_node_action():
 
     _fake_op wires the real gate rather than stubbing it pass-through. If that
     ever regresses to `lambda work: work`, every drain test in this file would
-    silently assert that an unconfigured recorder lets a node-action spawn --
-    the exact shape that made the original hole look deliberate. This test
-    takes the bare fixture, changes nothing, and pins the refusal.
+    silently assert that a node-action spawns — the exact shape that made the
+    original hole look deliberate. The bare fixture has no
+    ``node_action.enabled`` (schema default is off), so the kill-switch skips
+    spawn. The unset-recorder park is pinned separately with enabled True.
     """
     op = _fake_op(drain=True, max_per_tick=1)
     op.kb.claim_next_remediation.side_effect = [
@@ -3575,7 +3632,11 @@ def test_the_default_drain_fixture_refuses_a_node_action():
     ]
     assert CFOperator._drain_remediation_queue(op) == 0
     op._spawn_remediation_executor.assert_not_called()
-    assert op.kb.update_remediation_status.call_args.args == (30, "needs-human")
+    op.kb.release_remediation_claim.assert_called_once()
+    assert op.kb.release_remediation_claim.call_args.args[0] == 30
+    assert op.kb.release_remediation_claim.call_args.kwargs["last_error"] == (
+        "node-action execution is disabled")
+    op.kb.update_remediation_status.assert_not_called()
 
 
 # ---- CFOP-133: the allowlist is resolved from config and handed to the Job ---

@@ -6,9 +6,10 @@ the recommendation into a concrete command plan via the swappable LLM, runs it
 through a *deterministic* safety gate, and executes it over SSH.
 
 Safety model:
-  * Node-actions are never auto-eligible (see knowledge_base), so they reach the
-    executor only after a human approves (escalates) the queue row. That human
-    approval is the gate that GitOps gets from a PR merge.
+  * Auto-eligible when the class is in the default list (CFOP-131), but spawn
+    still waits on a merged change-record PR — that human approval is the gate
+    that GitOps gets from a PR merge. An unset recorder URL refuses, it does
+    not pass through.
   * Execution is opt-in per deploy (CFOP_NODE_ACTION_ENABLED); shipping the image
     does not silently start running shell on hosts.
   * Every proposed command is validated against an allowlist of non-destructive

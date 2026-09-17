@@ -339,6 +339,23 @@ def test_the_flag_is_wired_everywhere_a_flag_has_to_be():
     assert "queue_reverify:'re-verify'" in page.read_text("utf-8")
 
 
+def test_node_action_enabled_is_wired_everywhere_a_flag_has_to_be():
+    """Console kill-switch (CFOP-131). Not a top-level REMEDIATION_FLAGS key
+    — those get zeroed as ``remediation.<name>`` — but it must be on the
+    operator tuple the flags API accepts, and on FLAG_LABEL so a chip exists.
+    """
+    import pathlib
+    from agent import CFOperator
+    from cfshared.config import REMEDIATION_FLAGS
+
+    assert "node_action_enabled" not in REMEDIATION_FLAGS
+    assert "node_action_enabled" in CFOperator._REMEDIATION_FLAGS
+    page = pathlib.Path(__file__).resolve().parents[1] / "ui" / "remediations.html"
+    text = page.read_text("utf-8")
+    assert "node_action_enabled:'node-action'" in text
+    assert "confirmNodeAction" in text
+
+
 def test_question_carries_the_claim_and_frames_steps_as_checks():
     text = rv.build_question(_row())
     assert "Point K3S_URL at the control plane" in text
