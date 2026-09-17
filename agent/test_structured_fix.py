@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from knowledge_base import (  # noqa: E402
     _AUTO_REMEDIATION_CLASSES,
+    _AUTO_REMEDIATION_MIN_CONFIDENCE,
     normalize_remediation_fields,
     remediation_is_auto_eligible,
 )
@@ -301,12 +302,39 @@ def test_multi_target_data_fix_external_system_never_auto_eligible():
     assert solo["remediation_class"] == "gitops-patch"
     assert solo["confidence"] == 0.8
     assert _auto(solo) is True
-    # k8s-object is auto-class but FIX does not invent confidence
+    # k8s-object parks: no FIX confidence, and k8s-action is not auto by default
     obj = _hints_from_structured_fix(_valid_fix(
         targets=[{"kind": "k8s-object", "id": "deploy/x"}], risk="low"))
     assert obj["remediation_class"] == "k8s-action"
     assert obj["confidence"] is None
     assert _auto(obj) is False
+
+
+def test_every_auto_class_is_reachable_from_a_fix_confidence_stamp():
+    """CFOP-128: a class in the auto list with no FIX path to a confidence
+    is advertised as auto-executable and unreachable (k8s-action was).
+
+    Guards the class of regression, not today's names: adding a class to
+    _AUTO_REMEDIATION_CLASSES without a stamp that can clear the floor
+    fails this. Mutation-check: put k8s-action back in the tuple.
+    """
+    reachable = set()
+    for kind, rclass in _FIX_KIND_TO_CLASS.items():
+        hints = _hints_from_structured_fix(_valid_fix(
+            targets=[{"kind": kind, "id": "x", "repo": "o/r"}],
+            risk="low",
+        ))
+        if (
+            hints["remediation_class"] == rclass
+            and hints["confidence"] is not None
+            and hints["confidence"] >= _AUTO_REMEDIATION_MIN_CONFIDENCE
+        ):
+            reachable.add(rclass)
+    missing = set(_AUTO_REMEDIATION_CLASSES) - reachable
+    assert not missing, (
+        f"{missing} would auto-drain but no FIX kind stamps "
+        f">= {_AUTO_REMEDIATION_MIN_CONFIDENCE}"
+    )
 
 
 # ---- payload -----------------------------------------------------------------
@@ -842,10 +870,11 @@ def test_direct_mode_steers_at_the_class_that_parks():
     """A cluster with no manifest repo -- plain kubectl, possibly not k3s.
 
     PR #229 re-review: an earlier cut offered `k8s-object` here, which maps to
-    the k8s-action CLASS. That class is auto-eligible and is not in the
-    executor's _NO_EXECUTOR_PATH, so it reaches run_gitops -- whose whole job
-    is opening a pull request against a manifest repo the site does not have.
-    `k8s-imperative` is the class that parks with a legible message.
+    the k8s-action CLASS. That class is not auto by default (CFOP-128) but is
+    not in the executor's _NO_EXECUTOR_PATH, so a human-approved row still
+    reaches run_gitops -- whose whole job is opening a pull request against a
+    manifest repo the site does not have. `k8s-imperative` is the class that
+    parks with a legible message.
     """
     text = _delivery_guidance(_cfg({"mode": "direct"}), _DELIVERY_REGISTRY)
     assert "k8s-imperative" in text
@@ -948,12 +977,13 @@ def test_rubric_takes_its_repo_from_the_same_config_as_the_fix_prompt():
 
 def test_rubric_direct_mode_rules_out_every_pr_delivered_class():
     """The classifier feed is the dangerous one: unlike a FIX-derived
-    k8s-action (confidence always None), a classifier-derived one can clear
-    the auto gate and reach run_gitops. On a site with no manifest repo the
+    k8s-action (confidence always None), a classifier-derived one used to
+    clear the auto gate (CFOP-128 took it off the default). A human-approved
+    row still reaches run_gitops. On a site with no manifest repo the
     appendix must name neither gitops-patch nor k8s-action as the answer.
 
     PR #229 re-review -- the first cut said "an in-cluster change is
-    k8s-action or k8s-imperative", steering the one auto-executing class at a
+    k8s-action or k8s-imperative", steering a PR-delivered class at a
     delivery lane that does not exist there.
     """
     from agent.agent import _remediation_class_rubric

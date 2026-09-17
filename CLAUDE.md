@@ -110,15 +110,25 @@ shared header, not to assert today's markup. Mutation-check a new guard once
 - Include a section for any deviation from what the issues asked for, with the
   reasoning. Reviewers should never have to discover a narrowed scope by reading
   the diff.
-- Request a Copilot review.
-- Subscribe to PR activity and drive it to green — a CI failure on your own PR
-  ends with either a pushed fix or a reply explaining the blocker.
+- Request a Copilot / Claude review (`@copilot please review this PR.` /
+  `@claude review`). Subscribe to the PR.
+- Drive CI to green. A failure on your own PR ends with either a pushed fix or
+  a reply explaining the blocker.
+- **Do not merge until the review comment is in and triaged.** The
+  `claude-review` check going green is the workflow finishing, not the
+  findings. Wait for the bot comment (CFOP-133's review sat unfixed until
+  someone asked). Then:
+  - real finding → smallest fix, reply on the PR, wait for CI
+  - nit you agree with → fix it; "non-blocking" is not skip
+  - invalid / out of scope → reply dismissing with the concrete reason
+- Squash-merge only when CI is green **and** the review is fixed or dismissed.
 - When reviewing a PR (`/review`), post findings as GitHub review comments on
   the PR. Do not only report them in chat.
 
 ### 6. Close the loop in Plane
 
-Move the issue to Done when the PR merges, and record anything learned during
+Move the issue to Done when the PR **merges**, not when it opens and not when
+CI goes green. Comment the PR URL, and record anything learned during
 implementation back into the issue if it contradicts the plan.
 
 ## Running tests

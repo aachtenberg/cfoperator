@@ -190,12 +190,14 @@ local primary reports 1.0 on calls it got wrong, so high confidence is not
 inferred from the model's own certainty.
 
 That stinginess has a corollary worth stating plainly: **a `k8s-object` FIX can
-never auto-execute**, even though `k8s-action` is in the auto-eligible class
-set. `k8s-action` reaches the gate only via the classifier, never via a FIX. So
-a model that reaches for `k8s-object` where a manifest edit was meant has
-written a row that parks at needs-human with `attempts=0` and no PR — which is
-what live row #96 did, and why the prompt now says which kind this installation
-can act on (below).
+never auto-execute**. It maps to `k8s-action`, which is not in the default
+auto list (CFOP-128) and which the FIX path never stamps a confidence on.
+Putting `k8s-action` back in config would still drain a bare object name into
+`run_gitops` — that is CFOP-61, not a stamp to add here. So a model that
+reaches for `k8s-object` where a manifest edit was meant writes a row that
+parks at needs-human with `attempts=0` and no PR — which is what live row #96
+did, and why the prompt now says which kind this installation can act on
+(below).
 
 ### Telling the model how changes are delivered here
 
@@ -338,10 +340,11 @@ they toggle live (no redeploy) from the console pipeline bar.
 | `queue_tracker` | file parked rows to the issue tracker (`needs-human` without a PR → `filed`), mirror PR-open rows, close rows the tracker closed |
 
 Auto-execute gate (enqueue → `queued` vs `needs-human`): class in
-`remediation.auto.classes` (default `{gitops-patch, k8s-action}`) **and**
+`remediation.auto.classes` (default `{gitops-patch}`) **and**
 `risk == low` **and** `confidence ≥ remediation.auto.min_confidence` (default
-0.8). The list is config, not a code tuple, so adding `node-action` or
-dropping `k8s-action` is a ConfigMap edit. Park-only classes
+0.8). The list is config, not a code tuple, so adding `node-action` is a
+ConfigMap edit (CFOP-131). `k8s-action` left the default (CFOP-128); putting
+it back is the CFOP-61 unknown, not a stamp. Park-only classes
 (`k8s-imperative`, `data-fix`, `external-system`, `manual`) cannot be added
 from config.
 

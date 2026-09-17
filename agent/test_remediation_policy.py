@@ -36,15 +36,29 @@ def test_empty_remediation_block_keeps_the_shipped_defaults():
 
 
 def test_config_can_drop_k8s_action():
-    policy = resolve_auto_policy({"auto": {"classes": ["gitops-patch"]}})
-    assert policy.auto_classes == ("gitops-patch",)
+    """k8s-action is not park-only: config can opt it in, then drop it.
+
+    The shipped default is gitops-patch only (CFOP-128), so passing that
+    list is not a drop — start from an explicit opt-in.
+    """
+    opted = resolve_auto_policy({
+        "auto": {"classes": ["gitops-patch", "k8s-action"]},
+    })
+    assert opted.auto_classes == ("gitops-patch", "k8s-action")
     assert remediation_is_auto_eligible(
         "k8s-action", "low", 1.0,
-        classes=policy.auto_classes, min_confidence=policy.min_confidence,
+        classes=opted.auto_classes, min_confidence=opted.min_confidence,
+    ) is True
+
+    dropped = resolve_auto_policy({"auto": {"classes": ["gitops-patch"]}})
+    assert dropped.auto_classes == ("gitops-patch",)
+    assert remediation_is_auto_eligible(
+        "k8s-action", "low", 1.0,
+        classes=dropped.auto_classes, min_confidence=dropped.min_confidence,
     ) is False
     assert remediation_is_auto_eligible(
         "gitops-patch", "low", 1.0,
-        classes=policy.auto_classes, min_confidence=policy.min_confidence,
+        classes=dropped.auto_classes, min_confidence=dropped.min_confidence,
     ) is True
 
 
@@ -121,7 +135,7 @@ def test_broken_numbers_fall_back_to_the_shipped_defaults():
 def test_module_gate_without_kwargs_is_unchanged():
     """Existing callers that do not pass policy still see today's gate."""
     assert remediation_is_auto_eligible("gitops-patch", "low", 0.9) is True
-    assert remediation_is_auto_eligible("k8s-action", "low", 0.8) is True
+    assert remediation_is_auto_eligible("k8s-action", "low", 0.8) is False
     assert remediation_is_auto_eligible("node-action", "low", 1.0) is False
 
 
@@ -161,7 +175,11 @@ def test_reload_config_refreshes_the_kb_policy():
             return self._policy
 
     op = MagicMock()
-    op.config = {"infrastructure": {"hosts": {}}, "git": {}}
+    op.config = {
+        "infrastructure": {"hosts": {}},
+        "git": {},
+        "remediation": {"auto": {"classes": ["gitops-patch", "k8s-action"]}},
+    }
     op.kb = FakeKB()
     _install_kb_auto_policy(op)
     assert "k8s-action" in op.kb.remediation_policy().auto_classes

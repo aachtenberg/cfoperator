@@ -300,7 +300,7 @@ DEFAULT_CONFIG: dict = {
         # the shipped literals so an omitted key is a no-op. Park-only classes
         # cannot be added from config (knowledge_base._NEVER_AUTO_CLASSES).
         "auto": {
-            "classes": ["gitops-patch", "k8s-action"],
+            "classes": ["gitops-patch"],
             "min_confidence": 0.8,
         },
         "summary_confidence_cap": 0.5,

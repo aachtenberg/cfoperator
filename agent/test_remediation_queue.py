@@ -77,12 +77,14 @@ def test_normalize_defaults_conservatively():
 def test_auto_eligible_happy_path():
     assert remediation_is_auto_eligible("gitops-patch", "low", 0.9) is True
     # exactly at the threshold is eligible
-    assert remediation_is_auto_eligible("k8s-action", "low", _AUTO_REMEDIATION_MIN_CONFIDENCE) is True
+    assert remediation_is_auto_eligible("gitops-patch", "low", _AUTO_REMEDIATION_MIN_CONFIDENCE) is True
 
 
 def test_auto_eligible_blocks_unsafe_cases():
-    # node-action / manual never auto, even when low-risk and fully confident
+    # node-action / k8s-action / manual never auto by default, even when
+    # low-risk and fully confident (CFOP-128 dropped k8s-action)
     assert remediation_is_auto_eligible("node-action", "low", 1.0) is False
+    assert remediation_is_auto_eligible("k8s-action", "low", 1.0) is False
     assert remediation_is_auto_eligible("manual", "low", 1.0) is False
     # any risk above low blocks
     assert remediation_is_auto_eligible("gitops-patch", "med", 1.0) is False
