@@ -380,3 +380,48 @@ class TestShippedCeiling:
         # mask/kill belong to a human.
         forbidden = {"stop", "disable", "mask", "kill"} & _ALLOW_V
         assert not forbidden, f"ceiling grants withdrawal verbs: {sorted(forbidden)}"
+
+
+# ---- CFOP-132: console POST → stored selection --------------------------------
+
+_CEILING = {
+    "allow_binaries": ["chmod", "chown", "systemctl"],
+    "allow_systemctl_verbs": ["restart", "status"],
+    "max_commands": 4,
+}
+
+
+class TestStoredSelection:
+    def test_a_subset_is_stored_comma_joined(self):
+        stored_b, stored_v = node_action_plan.stored_selection(
+            _CEILING, ["systemctl"], ["restart"])
+        assert stored_b == "systemctl"
+        assert stored_v == "restart"
+
+    def test_the_full_ceiling_stores_unset(self):
+        stored_b, stored_v = node_action_plan.stored_selection(
+            _CEILING, _CEILING["allow_binaries"], _CEILING["allow_systemctl_verbs"])
+        assert (stored_b, stored_v) == ("", "")
+
+    def test_a_name_off_the_ceiling_is_an_error(self):
+        with pytest.raises(node_action_plan.AllowlistEditError, match="journalctl"):
+            node_action_plan.stored_selection(
+                _CEILING, ["chmod", "journalctl"], ["restart"])
+
+    def test_empty_is_an_error_not_unset(self):
+        # Unset is Reset (store ''). Empty would otherwise restore the ceiling.
+        with pytest.raises(node_action_plan.AllowlistEditError, match="at least one"):
+            node_action_plan.stored_selection(_CEILING, [], ["restart"])
+
+
+class TestAllowlistView:
+    def test_unset_is_the_whole_ceiling(self):
+        view = node_action_plan.allowlist_view(_CEILING, "", "")
+        assert view["source"] == "config"
+        assert view["effective"]["binaries"] == ["chmod", "chown", "systemctl"]
+        assert "rm" in view["floor"]["deny_binaries"]
+
+    def test_a_failed_read_refuses_everything(self):
+        view = node_action_plan.allowlist_view(_CEILING, None, "")
+        assert view["source"] == "error"
+        assert view["effective"]["binaries"] == []

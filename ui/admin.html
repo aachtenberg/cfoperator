@@ -151,6 +151,7 @@
   <button type="button" class="tab" role="tab" data-tab="users" aria-selected="false">Users</button>
   <button type="button" class="tab" role="tab" data-tab="tokens" aria-selected="false">Tokens</button>
   <button type="button" class="tab" role="tab" data-tab="llm" aria-selected="false">LLM</button>
+  <button type="button" class="tab" role="tab" data-tab="allowlist" aria-selected="false">Allowlist</button>
   <button type="button" class="tab" role="tab" data-tab="repos" aria-selected="false">Repos</button>
 </nav>
 
@@ -304,6 +305,50 @@
   </div>
 </section>
 
+<!-- ── Node-action allowlist (CFOP-132) ── -->
+<section class="panel" id="panel-allowlist" role="tabpanel">
+  <div class="divider">What node-actions may run <span class="muted" id="allow-source"></span></div>
+  <div class="section">
+    <p class="muted" style="margin:8px 0 12px">
+      The next executor Job honours this set — no restart. The <b>ceiling</b> is
+      <code>config.yaml</code> (<code>remediation.executor.node_action</code>); a
+      console tick can only <b>narrow</b>. Widening past the ceiling is a git
+      commit, same as any other privilege change. The deny list and the
+      metacharacter rule are the floor: not operator-editable.
+    </p>
+    <div class="card" id="allow-card"><div class="muted">Loading…</div></div>
+  </div>
+
+  <div class="divider">Binaries</div>
+  <div class="section">
+    <div class="scopepick" id="allow-binaries"></div>
+  </div>
+
+  <div class="divider">systemctl verbs</div>
+  <div class="section">
+    <div class="scopepick" id="allow-verbs"></div>
+  </div>
+
+  <div class="section" style="margin-top:14px">
+    <button class="chip primary" id="allow-save" onclick="saveAllowlist()">Save</button>
+    <button class="chip" id="allow-reset" onclick="resetAllowlist()">Reset to ceiling</button>
+    <span class="muted" id="allow-status" style="margin-left:10px"></span>
+  </div>
+
+  <div class="divider">Floor — not editable</div>
+  <div class="section">
+    <p class="muted" style="margin:8px 0 8px">
+      Refused even if named in the allowlist. No config file, database row, or
+      console action can switch these off.
+    </p>
+    <div class="card">
+      <div class="eff-row"><span>Denied binaries</span><span class="mono" id="allow-deny">—</span></div>
+      <div class="eff-row"><span>Metacharacters</span><span class="mono" id="allow-meta">—</span></div>
+      <div class="eff-row"><span>max_commands</span><span class="mono" id="allow-max">—</span></div>
+    </div>
+  </div>
+</section>
+
 <!-- ── Repos ── -->
 <section class="panel" id="panel-repos" role="tabpanel">
   <div class="divider">Linked repositories <span class="muted" id="repo-count"></span></div>
@@ -412,7 +457,7 @@ async function api(path, opts){
 let ME = null;
 function isAdmin(){ return !!(ME && (ME.role === 'admin' || ME.auth_disabled)); }
 
-const TABS = ['users','tokens','llm','repos'];
+const TABS = ['users','tokens','llm','allowlist','repos'];
 function currentTab(){
   const q = new URLSearchParams(location.search).get('tab');
   return TABS.includes(q) ? q : 'users';
@@ -431,6 +476,7 @@ function showTab(tab){
   if(tab === 'llm') loadLlm();
   if(tab === 'users') loadUsers();
   if(tab === 'tokens') loadTokens();
+  if(tab === 'allowlist') loadAllowlist();
   if(tab === 'repos') loadRepos();
 }
 document.querySelector('.tabs').addEventListener('click', (e)=>{
@@ -1150,6 +1196,83 @@ async function revertRepos(){
 
 document.getElementById('llm-backend').addEventListener('change', onBackendChange);
 document.getElementById('model-select').addEventListener('change', onModelChange);
+
+/* ── Node-action allowlist ── */
+let ALLOW = null;
+function allowBoxes(id, ceiling, effective){
+  const on = new Set(effective || []);
+  const box = document.getElementById(id);
+  if(!(ceiling || []).length){
+    box.innerHTML = '<span class="muted">none declared — every node-action will be refused until config.yaml names a ceiling</span>';
+    return;
+  }
+  box.innerHTML = ceiling.map(name => {
+    const checked = on.has(name) ? ' checked' : '';
+    return `<label><input type="checkbox" value="${esc(name)}"${checked}> ${esc(name)}</label>`;
+  }).join('');
+}
+function picked(id){
+  return [...document.querySelectorAll('#'+id+' input[type=checkbox]:checked')].map(el => el.value);
+}
+function applyAllowPayload(data){
+  ALLOW = data || {};
+  const source = ALLOW.source || 'config';
+  const srcEl = document.getElementById('allow-source');
+  if(source === 'db') srcEl.textContent = 'database override';
+  else if(source === 'error') srcEl.textContent = 'unreadable — node-actions refuse';
+  else srcEl.textContent = 'config.yaml ceiling';
+  const ceil = ALLOW.ceiling || {};
+  const eff = ALLOW.effective || {};
+  const floor = ALLOW.floor || {};
+  allowBoxes('allow-binaries', ceil.binaries, eff.binaries);
+  allowBoxes('allow-verbs', ceil.verbs, eff.verbs);
+  document.getElementById('allow-deny').textContent = (floor.deny_binaries || []).join(', ') || '—';
+  document.getElementById('allow-meta').textContent = floor.metacharacters || '—';
+  document.getElementById('allow-max').textContent = String(ceil.max_commands != null ? ceil.max_commands : '—');
+  document.getElementById('allow-card').innerHTML =
+    `<div class="eff-row"><span>Live set</span><span class="mono">${esc((eff.binaries||[]).join(', ') || '(none)')}</span></div>` +
+    `<div class="eff-row"><span>systemctl</span><span class="mono">${esc((eff.verbs||[]).join(', ') || '(none)')}</span></div>` +
+    `<div class="muted" style="margin-top:8px">${source === 'db'
+      ? 'A subset is stored. Reset restores the whole ceiling, including binaries added in a later deploy.'
+      : 'No override stored — a ceiling change in config.yaml is picked up on the next Job.'}</div>`;
+}
+async function loadAllowlist(){
+  const card = document.getElementById('allow-card');
+  if(!isAdmin()){
+    card.innerHTML = '<div class="muted">Admin role required.</div>';
+    document.getElementById('allow-binaries').innerHTML = '';
+    document.getElementById('allow-verbs').innerHTML = '';
+    return;
+  }
+  const r = await api('/api/remediation/node-action-allowlist');
+  if(!r.ok){ card.innerHTML = `<div class="muted">${esc(r.error)}</div>`; if(r.status!==403) banner(r.error,'err'); return; }
+  applyAllowPayload(r.data);
+}
+async function saveAllowlist(){
+  const btn = document.getElementById('allow-save');
+  btn.disabled = true;
+  const r = await api('/api/remediation/node-action-allowlist', {
+    method:'POST',
+    body: JSON.stringify({binaries: picked('allow-binaries'), verbs: picked('allow-verbs')})
+  });
+  btn.disabled = false;
+  if(!r.ok){ toast(r.error,'err'); document.getElementById('allow-status').textContent = r.error; return; }
+  applyAllowPayload(r.data);
+  document.getElementById('allow-status').textContent = 'saved — next Job uses this set';
+  toast('allowlist saved','ok');
+}
+async function resetAllowlist(){
+  const btn = document.getElementById('allow-reset');
+  btn.disabled = true;
+  const r = await api('/api/remediation/node-action-allowlist', {
+    method:'POST', body: JSON.stringify({reset:true})
+  });
+  btn.disabled = false;
+  if(!r.ok){ toast(r.error,'err'); return; }
+  applyAllowPayload(r.data);
+  document.getElementById('allow-status').textContent = 'restored to ceiling';
+  toast('reset to ceiling','ok');
+}
 
 document.addEventListener('DOMContentLoaded', async ()=>{
   await loadMe();
