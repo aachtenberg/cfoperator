@@ -35,6 +35,16 @@ _DENY_BINARIES = {
 _METACHARS = re.compile(r"[;&|<>`$(){}\[\]*?~\n\r\\]|\$\(|&&|\|\|")
 
 
+# Console / DB keys for the operator's subset of the ceiling (CFOP-132).
+# Unset ('') means the whole ceiling; a stored list may only ever narrow.
+SETTING_BINARIES = "node_action_allow_binaries"
+SETTING_VERBS = "node_action_allow_systemctl_verbs"
+
+
+class AllowlistEditError(ValueError):
+    """Caller-correctable allowlist POST: names off the ceiling, empty pick, etc."""
+
+
 class AllowList(NamedTuple):
     """What a node-action may run. No default: an empty AllowList refuses all."""
 
@@ -96,6 +106,105 @@ def allowlist_from_config(ceiling: Dict[str, Any],
         max_commands = 4
     return AllowList(binaries=binaries, systemctl_verbs=verbs,
                      max_commands=max(1, max_commands))
+
+
+def _name_list(raw) -> List[str]:
+    """Coerce a POST field (list or comma-string) into stripped unique names."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return sorted(_split_list(raw))
+    if isinstance(raw, (list, tuple, set)):
+        names = []
+        for item in raw:
+            token = str(item).strip()
+            if token:
+                names.append(token)
+        return sorted(set(names))
+    raise AllowlistEditError("binaries and verbs must be lists of names")
+
+
+def stored_selection(ceiling: Dict[str, Any], binaries, verbs) -> Tuple[str, str]:
+    """Turn a console POST into the two DB strings ``_node_action_setting`` reads.
+
+    Names not on the ceiling raise ``AllowlistEditError`` rather than being
+    silently dropped: dropping would make ``journalctl`` look saved when the
+    next Job still refuses it. An empty pick is also an error — refusing every
+    node-action is the existing kill-switch, and restoring the ceiling is an
+    explicit reset (store ``''``). A pick that equals the ceiling also stores
+    ``''``, so a later deploy that adds a ceiling member is picked up instead
+    of being frozen out by a stale full-list row.
+    """
+    ceil_b = _split_list(ceiling.get("allow_binaries"))
+    ceil_v = _split_list(ceiling.get("allow_systemctl_verbs"))
+    picked_b = set(_name_list(binaries))
+    picked_v = set(_name_list(verbs))
+    extra_b = sorted(picked_b - ceil_b)
+    extra_v = sorted(picked_v - ceil_v)
+    if extra_b or extra_v:
+        extra = extra_b + extra_v
+        raise AllowlistEditError(
+            "not on the deployed ceiling (needs a config commit): " + ", ".join(extra)
+        )
+    if not picked_b:
+        raise AllowlistEditError(
+            "select at least one binary; to refuse every node-action use the "
+            "kill-switch, to restore the ceiling use Reset"
+        )
+    if not picked_v:
+        raise AllowlistEditError(
+            "select at least one systemctl verb; to restore the ceiling use Reset"
+        )
+    stored_b = "" if picked_b == ceil_b else ",".join(sorted(picked_b))
+    stored_v = "" if picked_v == ceil_v else ",".join(sorted(picked_v))
+    return stored_b, stored_v
+
+
+def allowlist_view(ceiling: Dict[str, Any],
+                   selected_binaries: Optional[str],
+                   selected_verbs: Optional[str]) -> Dict[str, Any]:
+    """Console GET payload: ceiling, selection, effective set, and the floor.
+
+    ``selected_*`` of ``None`` means the DB read failed — same refuse-all
+    posture as ``allowlist_from_config``. ``''`` is unset (whole ceiling).
+    The floor is included so an operator who cannot see it cannot reason
+    about the gate; it is never writable from this payload.
+    """
+    ceil_b = sorted(_split_list(ceiling.get("allow_binaries")))
+    ceil_v = sorted(_split_list(ceiling.get("allow_systemctl_verbs")))
+    try:
+        max_commands = max(1, int(ceiling.get("max_commands") or 4))
+    except (TypeError, ValueError):
+        max_commands = 4
+    floor = {
+        "deny_binaries": sorted(_DENY_BINARIES),
+        "metacharacters": _METACHARS.pattern,
+    }
+    if selected_binaries is None or selected_verbs is None:
+        return {
+            "ceiling": {"binaries": ceil_b, "verbs": ceil_v,
+                        "max_commands": max_commands},
+            "selected": {"binaries": None, "verbs": None},
+            "effective": {"binaries": [], "verbs": [], "max_commands": 1},
+            "source": "error",
+            "floor": floor,
+        }
+    allow = allowlist_from_config(ceiling, selected_binaries, selected_verbs)
+    sel_b = None if selected_binaries == "" else sorted(_split_list(selected_binaries))
+    sel_v = None if selected_verbs == "" else sorted(_split_list(selected_verbs))
+    source = "config" if sel_b is None and sel_v is None else "db"
+    return {
+        "ceiling": {"binaries": ceil_b, "verbs": ceil_v,
+                    "max_commands": allow.max_commands},
+        "selected": {"binaries": sel_b, "verbs": sel_v},
+        "effective": {
+            "binaries": sorted(allow.binaries),
+            "verbs": sorted(allow.systemctl_verbs),
+            "max_commands": allow.max_commands,
+        },
+        "source": source,
+        "floor": floor,
+    }
 
 
 def build_command_prompt(work_order: Dict[str, Any], allow: AllowList) -> str:

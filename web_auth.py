@@ -216,6 +216,47 @@ def require_role(role: str):
     return decorator
 
 
+def require_console_admin():
+    """Admin *session* only. Tokens, even ``remediate``, are refused.
+
+    ``require_role(ROLE_ADMIN)`` maps a remediate token to admin because that
+    is the capability Approve / drain need. This gate is stricter: it changes
+    what the executor's SSH key may run, and a Slack bridge token with
+    ``remediate`` must not be able to move it (CFOP-124 / CFOP-132).
+    """
+
+    def decorator(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            auth = getattr(g, "cfop_auth", None)
+            if auth is not None and auth.disabled:
+                return fn(*args, **kwargs)
+
+            if current_token() is not None:
+                return jsonify({
+                    "error": "forbidden",
+                    "detail": "this action requires a console admin session, not an API token",
+                }), 403
+
+            try:
+                effective = auth.effective_role() if auth is not None else current_role()
+            except AuthBackendUnavailable:
+                return jsonify({"error": "authentication backend unavailable"}), 503
+
+            if effective is None:
+                return jsonify({"error": "authentication required"}), 401
+            if effective != ROLE_ADMIN:
+                return jsonify({
+                    "error": "forbidden",
+                    "detail": "this action requires the admin role",
+                }), 403
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
 def require_token_scope(scope: str):
     """Gate a route on a token scope, for routes any logged-in user may call
     but a token needs a specific grant for (e.g. POST /api/learnings needs

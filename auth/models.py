@@ -243,3 +243,7 @@ EVENT_COCKPIT_SESSION = "cockpit.session"
 EVENT_COCKPIT_BRIDGE = "cockpit.bridge"
 EVENT_TOKEN_AUTH_FAIL = "token.auth_failure"
 EVENT_LEGACY_TOKEN_USED = "token.legacy_used"
+#: Console edit of the node-action command allowlist (CFOP-132). Actor plus
+#: before/after live in ``detail``; this is the row someone asks for after a
+#: silent-looking change to what the executor may run over SSH.
+EVENT_REMEDIATION_ALLOWLIST = "remediation.allowlist"

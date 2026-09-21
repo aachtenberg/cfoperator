@@ -25,10 +25,12 @@ import requests
 
 from cfshared import repos as shared_repos
 from cfshared.version import build_version
-from web_auth import ROLE_ADMIN, install_auth, require_role, require_token_scope
+from web_auth import (
+    ROLE_ADMIN, install_auth, require_console_admin, require_role, require_token_scope)
 from auth.bootstrap import init_auth_store
 from auth.models import (
-    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
+    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_REMEDIATION_ALLOWLIST,
+    EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
 # The cockpit spawn mints a session token server-side, and it must resolve the
 # caller exactly as POST /api/auth/tokens does — same role ceiling, same audit
 # actor. Importing those helpers is deliberate: a second copy of "who is
@@ -1298,6 +1300,124 @@ class WebServer:
             except Exception as e:
                 logger.error(f"set remediation flag failed: {e}")
                 return jsonify({'error': str(e)}), 500
+
+        def _na_plan():
+            """Load agent/node_action_plan.py without importing the agent package.
+
+            ``from agent import …`` would execute agent/__init__.py, which
+            imports agent.py, which imports this module. File-load keeps the
+            console routes usable from tests/ (PYTHONPATH=repo-root).
+            """
+            cached = getattr(self, '_node_action_plan_mod', None)
+            if cached is not None:
+                return cached
+            import importlib.util
+            from pathlib import Path
+            path = Path(__file__).resolve().parent / 'agent' / 'node_action_plan.py'
+            spec = importlib.util.spec_from_file_location(
+                'cfop_node_action_plan', path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            self._node_action_plan_mod = mod
+            return mod
+
+        def _na_ceiling():
+            rcfg = (self.operator.config or {}).get('remediation') \
+                if isinstance(getattr(self.operator, 'config', None), dict) else {}
+            rcfg = rcfg if isinstance(rcfg, dict) else {}
+            ex = rcfg.get('executor') if isinstance(rcfg.get('executor'), dict) else {}
+            na = ex.get('node_action') if isinstance(ex.get('node_action'), dict) else {}
+            return na
+
+        def _na_setting(name):
+            """'' when unset, None when the read failed — same three states
+            as CFOperator._node_action_setting."""
+            try:
+                val = self.operator.kb.get_setting(name, '')
+            except Exception as e:
+                logger.warning(f"Could not read allowlist setting '{name}' ({e})")
+                return None
+            if val is None:
+                return ''
+            if not isinstance(val, str):
+                logger.warning(f"Allowlist setting '{name}' is not text "
+                               f"({type(val).__name__})")
+                return None
+            return val.strip()
+
+        def _na_payload():
+            plan = _na_plan()
+            return plan.allowlist_view(
+                _na_ceiling(),
+                _na_setting(plan.SETTING_BINARIES),
+                _na_setting(plan.SETTING_VERBS),
+            )
+
+        def _na_audit(before, after, reset=False):
+            store = getattr(self, 'auth_store', None)
+            if store is None:
+                return
+            store.record(
+                EVENT_REMEDIATION_ALLOWLIST,
+                actor=_actor(),
+                target='node-action',
+                source_ip=request.remote_addr,
+                before={'selected': before.get('selected'),
+                        'effective': before.get('effective'),
+                        'source': before.get('source')},
+                after={'selected': after.get('selected'),
+                       'effective': after.get('effective'),
+                       'source': after.get('source')},
+                reset=bool(reset),
+            )
+
+        @self.app.route('/api/remediation/node-action-allowlist')
+        def get_node_action_allowlist():
+            """Ceiling, console selection, effective set, and the hardcoded floor.
+
+            Read is any authenticated console caller (the page is admin-tabbed;
+            members who land here still 403 on write). The floor is included
+            because an operator who cannot see it cannot reason about the gate.
+            """
+            try:
+                return jsonify(_na_payload())
+            except Exception as e:
+                logger.error(f"get node-action allowlist failed: {e}")
+                return jsonify({'error': str(e)}), 500
+
+        @self.app.route('/api/remediation/node-action-allowlist', methods=['POST'])
+        @require_console_admin()
+        def set_node_action_allowlist():
+            """Narrow (or reset) the node-action command set within the ceiling.
+
+            Widening past config.yaml is a 400, never a silent intersect.
+            Tokens — including a remediate Slack bridge token — are refused
+            by require_console_admin (CFOP-124).
+            """
+            plan = _na_plan()
+            body = json_object()
+            before = _na_payload()
+            try:
+                if body.get('reset'):
+                    stored_b, stored_v = '', ''
+                    reset = True
+                else:
+                    stored_b, stored_v = plan.stored_selection(
+                        _na_ceiling(), body.get('binaries'), body.get('verbs'))
+                    reset = False
+            except plan.AllowlistEditError as e:
+                return jsonify({'error': str(e)}), 400
+            try:
+                self.operator.kb.set_setting(plan.SETTING_BINARIES, stored_b)
+                self.operator.kb.set_setting(plan.SETTING_VERBS, stored_v)
+            except Exception as e:
+                logger.warning(f"Could not persist node-action allowlist: {e}")
+                return jsonify({
+                    'error': f'Database unavailable, could not save: {e}'
+                }), 503
+            after = _na_payload()
+            _na_audit(before, after, reset=reset)
+            return jsonify(after)
 
         @self.app.route('/api/remediation/run-feed', methods=['POST'])
         @require_role(ROLE_ADMIN)
