@@ -10,8 +10,12 @@ from __future__ import annotations
 
 from repo_paths import REPO_ROOT
 import os
+import sys
 import threading
 from unittest.mock import MagicMock
+
+sys.path.insert(0, str(REPO_ROOT / "agent"))
+from knowledge_base import ResilientKnowledgeBase
 
 from flask import Flask
 from sqlalchemy import create_engine
@@ -45,7 +49,7 @@ def _client(*, stored=None, store=None, auth_disabled=True):
 
     operator = MagicMock()
     operator.config = {"remediation": {"executor": {"node_action": dict(CEILING)}}}
-    operator.kb.get_setting.side_effect = lambda key, default=None: settings.get(key, default)
+    operator.kb.get_setting.side_effect = lambda key, default=None, **_kw: settings.get(key, default)
     operator.kb.set_setting.side_effect = lambda key, value: settings.__setitem__(key, value)
 
     server = WebServer.__new__(WebServer)
@@ -232,6 +236,69 @@ def test_a_remediate_token_cannot_write():
     assert resp.status_code == 403
     assert "token" in resp.get_json()["detail"]
     assert settings[SETTING_B] == ""
+
+
+class _InnerKB:
+    def __init__(self, values, raises=False):
+        self.values = dict(values)
+        self.raises = raises
+
+    def get_setting(self, key, default=None):
+        if self.raises:
+            raise RuntimeError("db down")
+        return self.values.get(key, default)
+
+
+class _Monitor:
+    def __init__(self, healthy=True):
+        self._healthy = healthy
+
+    def is_healthy(self):
+        return self._healthy
+
+    def mark_unhealthy(self):
+        self._healthy = False
+
+
+def _rkb(*, healthy=True, values=None, inner_raises=False):
+    rkb = ResilientKnowledgeBase.__new__(ResilientKnowledgeBase)
+    rkb._kb = _InnerKB(values or {}, raises=inner_raises)
+    rkb._health_monitor = _Monitor(healthy)
+    return rkb
+
+
+def test_a_resilient_kb_outage_is_error_not_the_ceiling():
+    """CFOP-197: ResilientKB.get_setting returns '' on a blip, which used to
+    look like unset. GET must show source=error and an empty effective set,
+    not the ceiling the operator had narrowed away from.
+    """
+    stored = {SETTING_B: "systemctl", SETTING_V: "restart"}
+    client, operator, _ = _client(stored=stored)
+    operator.kb = _rkb(healthy=False, values=stored)
+    body = client.get("/api/remediation/node-action-allowlist").get_json()
+    assert body["source"] == "error"
+    assert body["effective"]["binaries"] == []
+    assert body["effective"]["verbs"] == []
+    assert "chmod" not in body["effective"]["binaries"]
+
+
+def test_a_resilient_kb_inner_error_is_error_not_the_ceiling():
+    stored = {SETTING_B: "systemctl", SETTING_V: "restart"}
+    client, operator, _ = _client(stored=stored)
+    operator.kb = _rkb(healthy=True, values=stored, inner_raises=True)
+    body = client.get("/api/remediation/node-action-allowlist").get_json()
+    assert body["source"] == "error"
+    assert body["effective"]["binaries"] == []
+
+
+def test_a_healthy_resilient_kb_still_reports_the_subset():
+    stored = {SETTING_B: "systemctl", SETTING_V: "restart"}
+    client, operator, _ = _client(stored=stored)
+    operator.kb = _rkb(healthy=True, values=stored)
+    body = client.get("/api/remediation/node-action-allowlist").get_json()
+    assert body["source"] == "db"
+    assert body["effective"]["binaries"] == ["systemctl"]
+    assert body["effective"]["verbs"] == ["restart"]
 
 
 def test_an_admin_session_may_write():
