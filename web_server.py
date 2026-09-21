@@ -1333,7 +1333,7 @@ class WebServer:
             """'' when unset, None when the read failed — same three states
             as CFOperator._node_action_setting."""
             try:
-                val = self.operator.kb.get_setting(name, '')
+                val = self.operator.kb.get_setting(name, '', strict=True)
             except Exception as e:
                 logger.warning(f"Could not read allowlist setting '{name}' ({e})")
                 return None

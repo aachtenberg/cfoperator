@@ -3861,7 +3861,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         silently widen the allowlist either.
         """
         try:
-            val = self.kb.get_setting(name, '')
+            val = self.kb.get_setting(name, '', strict=True)
         except Exception as e:
             logger.warning(f"Could not read allowlist setting '{name}' ({e}); "
                            f"refusing node-actions until it is readable")
@@ -9864,12 +9864,15 @@ IMPORTANT:
     def _settings_readable(self) -> bool:
         """Whether a settings read just now can be believed.
 
-        ``ResilientKnowledgeBase.get_setting`` degrades silently: when the
-        health monitor says the connection is down it returns the *default*
-        instead of raising, so an empty read is ambiguous — no marker, or no
-        database. ``is_online()`` disambiguates. A plain KnowledgeBase (and the
-        test doubles) has no such probe; those raise on failure, so absent a
-        probe the read is taken at face value.
+        ``ResilientKnowledgeBase.get_setting`` degrades silently by default:
+        when the health monitor says the connection is down it returns the
+        *default* instead of raising, so an empty read is ambiguous — no
+        marker, or no database. ``is_online()`` disambiguates. Callers that
+        must not treat a blip as unset pass ``strict=True`` instead (the
+        node-action allowlist, CFOP-197) and let the exception speak.
+
+        A plain KnowledgeBase (and the test doubles) has no such probe; those
+        raise on failure, so absent a probe the read is taken at face value.
         """
         probe = getattr(self.kb, 'is_online', None)
         if not callable(probe):

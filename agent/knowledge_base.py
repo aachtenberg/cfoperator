@@ -3191,8 +3191,14 @@ class KnowledgeBase:
 
     # ============================= Settings =================================
 
-    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        """Get a setting value by key."""
+    def get_setting(self, key: str, default: Optional[str] = None,
+                    *, strict: bool = False) -> Optional[str]:
+        """Get a setting value by key.
+
+        ``strict`` is accepted so callers can pass the same keyword they use
+        against ResilientKnowledgeBase. This class has no degrade path — a
+        failed read already raises — so the flag is a no-op.
+        """
         with self.session_scope() as session:
             setting = session.query(AgentSettings).filter_by(key=key).first()
             return setting.value if setting else default
@@ -5939,13 +5945,25 @@ class ResilientKnowledgeBase:
 
     # ====================== Read Operations - Graceful Degradation ==============
 
-    def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
-        """Get setting - returns default if offline."""
+    def get_setting(self, key: str, default: Optional[str] = None,
+                    *, strict: bool = False) -> Optional[str]:
+        """Get a setting.
+
+        By default this degrades to ``default`` when the database is
+        unreachable, matching the rest of the read path. Callers that must
+        not treat a blip as "unset" (the node-action allowlist is the
+        specimen: ``''`` is the whole ceiling) pass ``strict=True`` and get
+        the same raise ``set_setting`` already does when offline.
+        """
         if self._health_monitor.is_healthy():
             try:
                 return self._kb.get_setting(key, default)
             except Exception:
                 self._health_monitor.mark_unhealthy()
+                if strict:
+                    raise
+        elif strict:
+            raise ConnectionError("Database is offline")
         return default
 
     def set_setting(self, key: str, value: str) -> None:

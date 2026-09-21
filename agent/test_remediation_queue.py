@@ -3654,7 +3654,7 @@ def _allowlist_op(ceiling=None, selected_b="", selected_v=""):
     op._executor_config.return_value = {
         "node_action": {"enabled": True, "host": "controller",
                         **(ceiling if ceiling is not None else _CEILING)}}
-    op.kb.get_setting.side_effect = lambda name, default='': {
+    op.kb.get_setting.side_effect = lambda name, default='', **_kw: {
         "node_action_allow_binaries": selected_b,
         "node_action_allow_systemctl_verbs": selected_v,
     }.get(name, default)
@@ -3710,6 +3710,10 @@ def test_an_unreadable_db_refuses_rather_than_restoring_the_ceiling(caplog):
     had narrowed to systemctl gets chmod, chattr and ln back on a postgres
     blip. That is a silent widening of the only control this mechanism adds.
     Unset is the ONE path back to the ceiling; an error is not unset.
+
+    This stubs get_setting to raise, which is what a plain KnowledgeBase does.
+    Production uses ResilientKnowledgeBase, which swallows that raise unless
+    the caller passes strict=True — see test_allowlist_fail_closed.py (CFOP-197).
     """
     op = _allowlist_op(selected_b="systemctl")
     op.kb.get_setting.side_effect = RuntimeError("db down")
@@ -3725,7 +3729,7 @@ def test_a_corrupted_setting_refuses_rather_than_widening(caplog):
     # AgentSettings.value is a Text column; anything else is a corrupted row,
     # and a corrupted row must not resolve to the maximum either.
     op = _allowlist_op(selected_b="systemctl")
-    op.kb.get_setting.side_effect = lambda name, default='': object()
+    op.kb.get_setting.side_effect = lambda name, default='', **_kw: object()
     import logging
     with caplog.at_level(logging.WARNING, logger="cfoperator"):
         env = _manifest_env(op)
