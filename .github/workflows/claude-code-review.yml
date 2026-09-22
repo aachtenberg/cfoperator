@@ -3,25 +3,22 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
-    # The code-review plugin stops on a draft, so a run on a draft only spends
-    # subscription usage. cursor opens its PRs as drafts; ready_for_review is
-    # the event that actually gets reviewed.
+    # A draft has nothing to review yet. Marking it ready fires
+    # ready_for_review, which is the run that posts. A PR opened ready
+    # reviews on opened — nobody has to comment @claude. That mention is
+    # claude.yml, a different workflow, and it is not the review.
     if: github.event.pull_request.draft == false
 
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
-      issues: read
+      # gh pr comment writes an issue comment. pull-requests: write does
+      # not cover that endpoint.
+      issues: write
       id-token: write
 
     steps:
@@ -41,17 +38,24 @@ jobs:
           # and claude[bot] is omitted so a review that commits cannot retrigger
           # this job.
           allowed_bots: 'cursor'
-          # Temporary: runs finish green with permission denials and no review
-          # posted, and the log only carries the denial count. Turn off once the
-          # denied tool is on the allowlist below.
+          # The job goes green either way. This is how a run that posted
+          # nothing is distinguishable from a review in the log.
           show_full_output: true
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # The code-review plugin fans out to subagents (Agent, formerly Task)
-          # and reads the PR through gh. Any tool missing here is denied, and
-          # the job still reports success without posting anything.
-          claude_args: '--allowedTools "Agent,Task,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*)"'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-
+          # Not the code-review plugin. That plugin launches background
+          # subagents and then ends the turn to wait for a notification.
+          # This action never resumes the session, so the check is green
+          # and the PR has no review (anthropics/claude-code-action#1087).
+          # @claude still works, because claude.yml has no plugin and
+          # finishes in the same session — which is why a mention posted
+          # and the automatic run did not. Do the review here, in this
+          # session, and post it before stopping.
+          prompt: |
+            Review pull request ${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Do the review in this session. Do not launch a subagent, a background task, or a skill. Those end this job before anything is posted, and the check still goes green.
+            The checkout is a detached merge commit, so gh will not infer the pull request. Pass the number and the repo on every command.
+            Read the description with `gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }}` and the diff with `gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }}`.
+            Review for bugs and for conflicts with CLAUDE.md.
+            Before you stop, post the review with `gh pr comment ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --body "..."`. Findings go in that comment. If there are none, the comment says so. Stopping without that comment is a failed review.
+          # No Agent, Task, or Skill. Those are the tools that background
+          # the review. Read, search, and gh are enough to post one.
+          claude_args: '--allowedTools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr review:*)"'
