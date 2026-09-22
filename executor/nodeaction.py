@@ -208,6 +208,35 @@ def validate_plan(commands: List[str], allow: AllowList) -> Tuple[bool, str]:
     return True, "ok"
 
 
+def command_is_query(command: str) -> bool:
+    """True when a non-zero exit is the answer, not a failure (CFOP-140).
+
+    Derived from the verb, not a second allowlist beside
+    ``allow_systemctl_verbs``. systemd's ``status`` and ``is-*`` verbs exit
+    non-zero to report state — ``is-active`` returns 3 when the unit is
+    inactive — so that exit is data. ``restart``, ``enable``, ``chmod`` and
+    every other allowed command stay mutations: a non-zero exit stops the
+    plan. An operator who adds ``is-failed`` through the console gets this
+    without a new setting, which is the drift a companion query-verb list
+    would reintroduce.
+    """
+    raw = (command or "").strip()
+    if not raw:
+        return False
+    try:
+        tokens = shlex.split(raw)
+    except ValueError:
+        return False
+    if tokens and tokens[0] == "sudo":
+        if len(tokens) < 3 or tokens[1] != "-n":
+            return False
+        tokens = tokens[2:]
+    if len(tokens) < 2 or tokens[0] != "systemctl":
+        return False
+    verb = tokens[1]
+    return verb == "status" or verb.startswith("is-")
+
+
 def prepare_ssh(secret_dir: Path, ssh_dir: Path) -> None:
     """Copy the mounted SSH secret into ~/.ssh with key-safe permissions.
 
@@ -278,7 +307,12 @@ def run_ssh_plan(host: str, commands: List[str], env: Dict[str, str]) -> List[Di
         results.append(entry)
         if proc.returncode == 255:
             raise SSHError(f"ssh could not connect to {host}: {proc.stderr.strip()[:300]}")
-        if proc.returncode != 0:
+        # A query verb's non-zero exit is the answer (is-active rc=3 means
+        # inactive). Record it and keep going. A mutation that fails still
+        # stops the plan: later commands would run against a host the earlier
+        # one did not change. SSH's own 255 is handled above, so a query can
+        # never swallow a connect failure.
+        if proc.returncode != 0 and not command_is_query(command):
             logger.warning("command failed (rc=%s): %s", proc.returncode, command)
             break  # do not run later commands once one fails
     return results

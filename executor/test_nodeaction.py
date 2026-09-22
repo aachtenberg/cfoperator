@@ -11,7 +11,7 @@ import entrypoint
 import nodeaction
 from entrypoint import run
 from nodeaction import (
-    SSHError, parse_command_plan, validate_command, validate_plan,
+    SSHError, command_is_query, parse_command_plan, validate_command, validate_plan,
 )
 
 
@@ -228,6 +228,47 @@ def test_node_action_command_failure_routes_to_human():
     assert payload["status"] == "needs-human" and "exited 1" in payload["detail"]
 
 
+def test_node_action_inactive_query_resolves_as_checked():
+    """is-active rc=3 is the answer "inactive", not a failed lane (CFOP-140).
+
+    Mutation-check: restoring a blanket ``returncode != 0`` in run_node_action
+    parks this row at needs-human again and this assertion fails.
+    """
+    reply = '{"host": "controller", "commands": ["systemctl is-active ssh"], "explanation": "check"}'
+    runs = [{"command": "systemctl is-active ssh", "returncode": 3,
+             "stdout": "inactive", "stderr": ""}]
+    with patch.object(entrypoint, "make_llm", return_value=_FixedLLM(reply)), \
+         patch.object(entrypoint, "run_ssh_plan", return_value=runs):
+        payload = run(_env(_node_order()))
+    assert payload["status"] == "resolved"
+    assert "checked, inactive" in payload["detail"]
+    assert "systemctl is-active ssh" in payload["detail"]
+    assert payload["result"]["executed"][0]["returncode"] == 3
+    assert payload["result"]["executed"][0]["stdout"] == "inactive"
+
+
+@pytest.mark.parametrize("command,rc,stdout,present,absent", [
+    ("systemctl is-enabled ssh", 1, "disabled\n", "disabled", "inactive"),
+    ("systemctl status nope.service", 4, "", "rc=4", "inactive"),
+])
+def test_node_action_query_detail_quotes_the_answer(command, rc, stdout, present, absent):
+    """A non-zero query is not automatically 'inactive' (CFOP-140 review).
+
+    is-enabled 1 is disabled. status 4 with no stdout is 'no such unit',
+    reported as its exit code. is-failed is not on the allowlist, so it
+    never reaches this detail.
+    """
+    reply = json.dumps({"host": "controller", "commands": [command], "explanation": "check"})
+    runs = [{"command": command, "returncode": rc, "stdout": stdout, "stderr": ""}]
+    with patch.object(entrypoint, "make_llm", return_value=_FixedLLM(reply)), \
+         patch.object(entrypoint, "run_ssh_plan", return_value=runs):
+        payload = run(_env(_node_order()))
+    assert payload["status"] == "resolved"
+    assert present in payload["detail"]
+    assert absent not in payload["detail"]
+    assert command in payload["detail"]
+
+
 def test_node_action_no_host_routes_to_human():
     order = _node_order()
     order["payload"]["target"] = {}
@@ -286,6 +327,96 @@ def test_run_ssh_plan_refuses_before_attempting_any_connection():
             nodeaction.run_ssh_plan("controller", ["chmod 600 /a"],
                                     dict(_ALLOW_ENV))
     ran.assert_not_called()
+
+
+def _proc(rc, out="", err=""):
+    return type("P", (), {"returncode": rc, "stdout": out, "stderr": err})()
+
+
+def _ssh_env():
+    return {**_ALLOW_ENV, "CFOP_SSH_USER": "op"}
+
+
+@pytest.mark.parametrize("command,query", [
+    ("systemctl is-active ssh", True),
+    ("sudo -n systemctl is-enabled ssh", True),
+    ("systemctl status ssh", True),
+    ("systemctl is-failed ollama", True),
+    ("sudo -n systemctl restart ssh", False),
+    ("systemctl enable ssh", False),
+    ("systemctl daemon-reload", False),
+    ("sudo -n chmod 600 /root/.ssh/config", False),
+])
+def test_command_is_query_follows_the_verb(command, query):
+    assert command_is_query(command) is query
+
+
+def test_query_verb_nonzero_does_not_stop_the_plan():
+    """A stopped unit answers rc=3; the next command still runs (CFOP-140).
+
+    Mutation-check: a blanket ``returncode != 0: break`` stops after the
+    query and this sees one result instead of two.
+    """
+    ran = []
+
+    def fake(argv, **_kw):
+        cmd = argv[-1]
+        ran.append(cmd)
+        if "is-active" in cmd:
+            return _proc(3, "inactive\n", "")
+        return _proc(0, "", "")
+
+    with patch.object(nodeaction.subprocess, "run", side_effect=fake):
+        results = nodeaction.run_ssh_plan(
+            "controller",
+            ["systemctl is-active ssh", "sudo -n chmod 600 /root/.ssh/config"],
+            _ssh_env())
+    assert [r["returncode"] for r in results] == [3, 0]
+    assert results[0]["stdout"] == "inactive"
+    assert len(ran) == 2
+
+
+def test_mutation_failure_still_stops_the_plan():
+    ran = []
+
+    def fake(argv, **_kw):
+        ran.append(argv[-1])
+        return _proc(1, "", "Operation not permitted")
+
+    with patch.object(nodeaction.subprocess, "run", side_effect=fake):
+        results = nodeaction.run_ssh_plan(
+            "controller",
+            ["sudo -n chmod 600 /a", "sudo -n chown root:root /a"],
+            _ssh_env())
+    assert len(results) == 1 and results[0]["returncode"] == 1
+    assert len(ran) == 1
+
+
+def test_mixed_plan_runs_the_query_and_stops_at_the_mutation():
+    ran = []
+
+    def fake(argv, **_kw):
+        cmd = argv[-1]
+        ran.append(cmd)
+        if "is-active" in cmd:
+            return _proc(3, "inactive\n", "")
+        return _proc(1, "", "start failed")
+
+    with patch.object(nodeaction.subprocess, "run", side_effect=fake):
+        results = nodeaction.run_ssh_plan(
+            "controller",
+            ["systemctl is-active ssh", "sudo -n systemctl restart ssh",
+             "sudo -n chmod 600 /a"],
+            _ssh_env())
+    assert [r["returncode"] for r in results] == [3, 1]
+    assert len(ran) == 2
+
+
+def test_query_connect_failure_is_still_a_connect_failure():
+    """SSH exit 255 is the transport, not an is-active answer."""
+    with patch.object(nodeaction.subprocess, "run", return_value=_proc(255, "", "Connection timed out")):
+        with pytest.raises(SSHError):
+            nodeaction.run_ssh_plan("controller", ["systemctl is-active ssh"], _ssh_env())
 
 
 def test_run_ssh_plan_uses_the_user_it_was_given():

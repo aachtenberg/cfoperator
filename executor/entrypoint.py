@@ -35,8 +35,8 @@ from diff import extract_diff_block
 from github import GitHubClient, get_file, list_repo_files, open_pr_from_diff
 from llm import make_llm
 from nodeaction import (
-    allowlist_from_env, build_command_prompt, parse_command_plan, run_ssh_plan,
-    validate_plan,
+    allowlist_from_env, build_command_prompt, command_is_query, parse_command_plan,
+    run_ssh_plan, validate_plan,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -308,7 +308,12 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
                                         {"proposed_commands": commands})
 
     results = run_ssh_plan(host, commands, env)  # raises SSHError on connect failure -> reaped/retried
-    failed = [r for r in results if r["returncode"] != 0]
+    # A query that answered "inactive" (is-active rc=3) ran successfully.
+    # Only a mutation's non-zero exit is a failed command (CFOP-140).
+    failed = [r for r in results
+              if r["returncode"] != 0 and not command_is_query(r.get("command") or "")]
+    answered = [r for r in results
+                if r["returncode"] != 0 and command_is_query(r.get("command") or "")]
     approval = work_order.get("change_record_approval") if isinstance(
         work_order.get("change_record_approval"), dict) else None
     result: Dict[str, Any] = {
@@ -344,8 +349,28 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
         last = failed[-1]
         return build_completion_payload(work_order, "needs-human", pr_url,
                                         f"command exited {last['returncode']}: {last['stderr'][:200]}", result)
-    return build_completion_payload(work_order, "resolved", pr_url,
-                                    f"ran {len(results)} command(s) on {host}", result)
+    # A read-only plan that ran to completion succeeded regardless of what it
+    # found. The detail quotes each query's own answer — is-active "inactive"
+    # is not what is-enabled or is-failed reported (CFOP-140 review).
+    if answered:
+        detail = _checked_detail(answered, len(results), host)
+    else:
+        detail = f"ran {len(results)} command(s) on {host}"
+    return build_completion_payload(work_order, "resolved", pr_url, detail, result)
+
+
+def _checked_detail(answered: list, n_results: int, host: str) -> str:
+    """What the query verbs actually printed, not a fixed 'inactive'."""
+    parts = []
+    for entry in answered:
+        stdout = str(entry.get("stdout") or "").strip()
+        first = stdout.splitlines()[0].strip() if stdout else ""
+        if len(first) > 80:
+            first = first[:77] + "..."
+        answer = first or f"rc={entry.get('returncode')}"
+        command = str(entry.get("command") or "").strip()
+        parts.append(f"{answer} ({command})" if command else answer)
+    return f"checked, {'; '.join(parts)}; ran {n_results} command(s) on {host}"
 
 
 def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any]:

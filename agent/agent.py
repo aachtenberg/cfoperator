@@ -1402,14 +1402,55 @@ def _is_transport_failure(error: Exception) -> bool:
     import requests
     if isinstance(error, (requests.Timeout, requests.ConnectionError)):
         return True
-    if isinstance(error, requests.HTTPError):
-        status = getattr(getattr(error, 'response', None), 'status_code', None)
-        try:
-            status = int(status)
-        except (TypeError, ValueError):
-            return False
-        return status in (408, 429) or status >= 500
-    return False
+    status = _http_status(error)
+    if status is None:
+        return False
+    return status in (408, 429) or status >= 500
+
+
+def _http_status(error: Exception):
+    """Status code off a requests HTTPError, or None."""
+    import requests
+    if not isinstance(error, requests.HTTPError):
+        return None
+    status = getattr(getattr(error, 'response', None), 'status_code', None)
+    try:
+        return int(status)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_request_refusal(error: Exception) -> bool:
+    """The vendor was reached and refused this request (CFOP-118).
+
+    A 400 for a rejected parameter, a 404 for a retired model id, or a
+    401/403 for a bad key is an answer, not an outage: the vendor was
+    reached. A bad key stays visible on the verdict while the next peer
+    judges, which is the same hole a 400 used to hide. 408 and 429 stay
+    transport — "not now" — and are classified by ``_is_transport_failure``.
+    Failing over past a refusal without recording it hides the bug for as
+    long as any lower peer answers.
+    """
+    status = _http_status(error)
+    return status is not None and 400 <= status < 500 and status not in (408, 429)
+
+
+def _stamp_judge_refusals(reason: str, refusals: List[str], decided_by: str = "") -> str:
+    """Prefix a verdict with the peers that refused the request (CFOP-118).
+
+    The shape the console reads is ``anthropic refused (400: …); judged by
+    xai``. No refusals leaves the reason untouched, so a clean ladder looks
+    the same as before.
+    """
+    if not refusals:
+        return reason
+    stamp = "; ".join(refusals)
+    if decided_by:
+        stamp = f"{stamp}; judged by {decided_by}"
+    body = (reason or "").strip()
+    if not body:
+        return stamp
+    return f"{stamp}. {body}"
 
 
 def _tool_was_refused(result) -> bool:
@@ -4704,13 +4745,17 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         there, the cost of parking was an operator's attention; here, the cost
         of *not* parking is an unreviewed mutation of a live cluster.
 
-        The one escalation rung that DOES exist is peer failover, and only on
-        unreachability. CFOP-70 refused a cross-provider rung because the rung
-        it had in mind reached the cheap local primary whose judgement is the
-        thing under review; reaching another vendor's frontier model keeps the
-        tier and only changes who serves it, and it is what stops one missing
-        API key from parking every remediation. A model that WAS reached and
-        answered badly does not advance to the next peer — see the loop.
+        The one escalation rung that DOES exist is peer failover, and only
+        when this vendor did not judge. CFOP-70 refused a cross-provider rung
+        because the rung it had in mind reached the cheap local primary whose
+        judgement is the thing under review; reaching another vendor's
+        frontier model keeps the tier and only changes who serves it, and it
+        is what stops one missing key from parking every remediation. A model
+        that WAS reached and answered badly does not advance to the next peer
+        — see the loop. A 4xx (other than 408/429) is not an answer either
+        (CFOP-118): the vendor refused the request, so the next peer still
+        judges, but the refusal is counted and stamped onto the verdict
+        instead of disappearing behind a healthy lower rung.
         """
         labels = ((details.get('alert_labels') or {})
                   if isinstance(details.get('alert_labels'), dict) else {})
@@ -4757,7 +4802,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         # reporter is payload.provider — see _judge_is_self_review for why the
         # match is on the vendor rather than the exact id.
         reporter = str(details.get('provider') or '').strip()
-        last_error = None
+        # Kept per peer, not collapsed to the last exception. A parked row
+        # that says only "gemini: 404" hid the Anthropic 400 that was the
+        # actual bug (CFOP-117, and the console half of CFOP-118).
+        refusals: List[str] = []
+        unavailable: List[str] = []
         self_reviewed: List[str] = []
         for backend in providers:
             model = self._judge_model(backend)
@@ -4772,11 +4821,22 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 reply = self._complete_judge(self._JUDGE_SYSTEM_PROMPT, user_msg,
                                              backend, model)
             except Exception as e:
-                # AVAILABILITY failure — this vendor could not be reached at
-                # all, so nothing was judged. Trying the next peer is failover,
+                if _is_request_refusal(e):
+                    # The vendor was reached and refused the request. Fail
+                    # over so a misconfigured primary does not stall the
+                    # queue, but do not let the refusal vanish behind a
+                    # healthy lower peer: count it and keep the note.
+                    note = f"{backend} refused ({_http_status(e)}: {e})"
+                    logger.error(f"Mutation judge {backend}/{model} refused the "
+                                 f"request: {e}")
+                    REMEDIATION_JUDGE.labels(verdict='refused').inc()
+                    refusals.append(note[:240])
+                    continue
+                # AVAILABILITY failure — this vendor could not be reached, or
+                # said not now (408/429). Trying the next peer is failover,
                 # not answer-shopping.
                 logger.warning(f"Mutation judge {backend}/{model} unavailable: {e}")
-                last_error = e
+                unavailable.append(f"{backend}: {e}"[:240])
                 continue
 
             parsed = self._parse_judge_verdict(reply)
@@ -4791,7 +4851,14 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                         backend, model)
                     parsed = self._parse_judge_verdict(reply2)
                 except Exception as e:
-                    logger.warning(f"Mutation judge {backend} nudge failed: {e}")
+                    if _is_request_refusal(e):
+                        note = f"{backend} refused ({_http_status(e)}: {e})"
+                        logger.error(f"Mutation judge {backend}/{model} nudge "
+                                     f"refused the request: {e}")
+                        REMEDIATION_JUDGE.labels(verdict='refused').inc()
+                        refusals.append(note[:240])
+                    else:
+                        logger.warning(f"Mutation judge {backend} nudge failed: {e}")
 
             if parsed is None:
                 # SUBSTANTIVE failure — this model was reached and answered, it
@@ -4803,26 +4870,31 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                                f"parking for human review: {str(reply)[:200]}")
                 REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
                 return {'verdict': 'downgrade', 'backend': backend, 'model': model,
-                        'reason': "judge verdict unparseable; parked rather than "
-                                  "executed unattended"}
+                        'reason': _stamp_judge_refusals(
+                            "judge verdict unparseable; parked rather than "
+                            "executed unattended", refusals)}
 
             parsed['backend'] = backend
             parsed['model'] = model
+            parsed['reason'] = _stamp_judge_refusals(
+                parsed.get('reason') or '', refusals, decided_by=backend)
             REMEDIATION_JUDGE.labels(verdict=parsed['verdict']).inc()
             return parsed
 
-        # Every configured peer was unreachable, or was the reporter itself.
+        # Every configured peer was unreachable, refused the request, or was
+        # the reporter itself. Nothing judged the row.
         REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
-        if self_reviewed and last_error is None:
+        if self_reviewed and not unavailable and not refusals:
             logger.warning("Every eligible mutation judge wrote the recommendation "
                            "under review, parking for human review")
             return {'verdict': 'downgrade', 'backend': None, 'model': None,
                     'reason': ("the only available judge (" + ', '.join(self_reviewed) +
                                ") is the model that wrote this recommendation; parked "
                                "rather than letting it review its own work")}
+        named = "; ".join(refusals + unavailable) or "unknown"
         logger.warning("Every mutation judge provider was unavailable, parking for human review")
         return {'verdict': 'downgrade', 'backend': None, 'model': None,
-                'reason': f"judge unavailable ({last_error}); parked rather than "
+                'reason': f"judge unavailable ({named}); parked rather than "
                           "executed unattended"}
 
     def _judge_providers(self) -> List[str]:

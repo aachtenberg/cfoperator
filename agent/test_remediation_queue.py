@@ -1896,6 +1896,71 @@ def test_no_retired_model_id_sits_in_the_judge_floor():
             f"{backend} judge model {model} is no longer served"
 
 
+def _http_error(status, message):
+    import requests
+    resp = type("R", (), {"status_code": status})()
+    return requests.HTTPError(message, response=resp)
+
+
+def test_judge_refusal_fails_over_and_stays_on_the_verdict():
+    """An Anthropic 400 with a healthy peer is visible without every rung dying.
+
+    Failover stays (a misconfigured primary must not stall the queue), but
+    the refusal is counted and stamped onto the deciding peer's verdict
+    (CFOP-118). A blanket ``except: continue`` that only keeps last_error
+    drops the 400 out of this reason and the counter.
+    """
+    def complete(system, user, backend, model):
+        if backend == "anthropic":
+            raise _http_error(400, "400: temperature is deprecated")
+        return '{"verdict": "confirm", "reason": "the pin is explained"}'
+
+    before = agent_mod.REMEDIATION_JUDGE.labels(verdict="refused")._value.get()
+    op = _judging_op(complete, providers=("anthropic", "xai"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "confirm"
+    assert out["backend"] == "xai"
+    assert "anthropic refused (400:" in out["reason"]
+    assert "judged by xai" in out["reason"]
+    assert "the pin is explained" in out["reason"]
+    assert agent_mod.REMEDIATION_JUDGE.labels(verdict="refused")._value.get() == before + 1
+
+
+def test_judge_park_names_every_peer_that_failed():
+    def complete(system, user, backend, model):
+        if backend == "anthropic":
+            raise _http_error(400, "400: temperature is deprecated")
+        if backend == "xai":
+            raise RuntimeError("timeout")
+        raise _http_error(404, "404: model retired")
+
+    op = _judging_op(complete, providers=("anthropic", "xai", "gemini"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "downgrade"
+    reason = out["reason"]
+    assert "anthropic refused (400:" in reason
+    assert "xai: timeout" in reason
+    assert "gemini refused (404:" in reason
+
+
+def test_judge_429_is_availability_not_a_refusal():
+    def complete(system, user, backend, model):
+        if backend == "anthropic":
+            raise _http_error(429, "429: slow down")
+        return '{"verdict": "reject", "reason": "the pin is deliberate"}'
+
+    before = agent_mod.REMEDIATION_JUDGE.labels(verdict="refused")._value.get()
+    op = _judging_op(complete, providers=("anthropic", "xai"))
+    out = CFOperator._judge_mutation_remediation(
+        op, dict(_IMMICH_KIOSK_DETAILS), "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "reject"
+    assert out["backend"] == "xai"
+    assert "refused" not in out["reason"]
+    assert agent_mod.REMEDIATION_JUDGE.labels(verdict="refused")._value.get() == before
+
+
 def test_judge_fails_over_to_the_next_peer_when_a_vendor_is_unreachable():
     # Availability failover, not answer-shopping: anthropic is down, so xai
     # rules instead. Before this, one missing key parked every remediation.
