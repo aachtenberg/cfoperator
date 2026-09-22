@@ -195,6 +195,33 @@ def test_an_error_is_stored_and_a_dead_database_does_not_drop_the_turn():
     assert any(evt["event"] == "done" for evt in done["events"])
 
 
+def test_a_token_is_not_stored_and_a_stop_is_not_an_assistant_turn():
+    """The log redacts a credential-shaped argument. The transcript is the
+    other copy of those arguments, and a member can read it, so it redacts
+    the same keys. A cancelled turn is marked stopped so a reload does not
+    replay it as the model's own reply."""
+    kb = RecordingKB()
+    client = _client(_operator(kb, [
+        {"event": "tool_call", "data": {"tool": "k8s_exec_pod", "args": {
+            "namespace": "sre",
+            "pod_name": "sre-postgres-0",
+            "command": "echo hi",
+            "token": "super-secret",
+        }}},
+        {"event": "done", "data": {"response": "", "stopped": True}},
+    ]))
+    _post(client, {"message": "resolve 82", "session_id": 21})
+    _wait_for(lambda: any(m.get("stopped") for m in kb.messages),
+              f"stop was not stored; rows={kb.messages}")
+    call = kb.messages[0]
+    assert call["args"]["pod_name"] == "sre-postgres-0"
+    assert call["args"]["command"] == "echo hi"
+    assert call["args"]["token"] == "***"
+    assert "super-secret" not in call["content"]
+    assert kb.messages[-1]["content"] == "Stopped."
+    assert kb.messages[-1]["stopped"] is True
+
+
 def test_the_page_sends_the_session_and_does_not_save_the_assistant_itself():
     """Two writers would double the reply. The user row stays on the client,
     and it is saved before the turn starts so it cannot land under the tool
@@ -205,6 +232,7 @@ def test_the_page_sends_the_session_and_does_not_save_the_assistant_itself():
     assert "saveMessage('user', message).then(" in page
     assert "msg.role === 'tool_call'" in page
     assert "msg.role === 'tool_result'" in page
+    assert "msg.stopped" in page
 
 
 # --------------------------------------------------------------------------
@@ -288,6 +316,7 @@ const session={
       namespace:'sre', pod_name:'sre-postgres-0', command:'psql -c "select 1"'}},
     {role:'tool_result', tool:'k8s_exec_pod', result:'UPDATE 1'},
     {role:'assistant', content:'Closed the row.', backend:'xai', model:'grok'},
+    {role:'assistant', content:'Stopped.', stopped:true},
     {role:'error', content:'the database refused'}
   ]
 };
@@ -351,5 +380,8 @@ def test_a_reloaded_session_draws_the_tool_row(tmp_path):
     assert "psql" in out["html"]
     assert "UPDATE 1" in out["html"]
     assert "Closed the row." in out["html"]
+    assert "Stopped." in out["html"]
     assert "Error: the database refused" in out["html"]
+    # The real reply is a turn. Stopped. is not — a reload must not hand
+    # the cancellation back to the model as something it said.
     assert out["history"] == ["user", "assistant"]

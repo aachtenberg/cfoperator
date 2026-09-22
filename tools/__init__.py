@@ -24,6 +24,7 @@ import os
 import re
 import requests as _requests
 from cfshared.config import ROLE_ADMIN
+from cfshared.tool_args import redact_tool_args
 from .ssh import SSHTools, ssh_mutation_reason
 from .discovery import DiscoveryTools
 from .k8s import K8sTools
@@ -69,42 +70,15 @@ _VERIFY_COMMAND_GATED = {'ssh_execute': 'command'}
 #                remediation past the auto-execute gate (CFOP-160, review).
 _SCHEMA_MARKERS = ('mutating', 'human_only')
 
-# How much of one argument value is worth an INFO line. A command has to be
-# readable; a multi-megabyte payload does not belong in the pod log.
-_LOG_ARG_LIMIT = 1000
-# Argument *names* that carry a credential. The value is redacted. Command
-# text is not — the whole point of the line is to show what was run — and
-# none of the mutating tools pass these keys today.
-_SECRET_ARG_KEYS = frozenset({
-    'password', 'token', 'secret', 'api_key', 'authorization', 'credential',
-})
-
-
-def _arg_key_is_secret(key: Any) -> bool:
-    name = str(key).lower()
-    if name in _SECRET_ARG_KEYS:
-        return True
-    return name.endswith(('_password', '_token', '_secret', '_api_key'))
-
-
-def _args_for_log(value: Any, limit: int = _LOG_ARG_LIMIT) -> Any:
-    """A log-safe copy of tool arguments: secrets redacted, long strings cut."""
-    if isinstance(value, dict):
-        return {
-            key: '***' if _arg_key_is_secret(key) else _args_for_log(item, limit)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_args_for_log(item, limit) for item in value]
-    if isinstance(value, str) and len(value) > limit:
-        return value[:limit] + '…'
-    return value
-
 
 def summarize_tool_args(arguments: Any) -> str:
-    """One JSON blob for the mutating-tool INFO line."""
+    """One JSON blob for the mutating-tool INFO line.
+
+    The same ``redact_tool_args`` the chat transcript stores, so a credential
+    that is ``***`` in the pod log is ``***`` in the session too.
+    """
     try:
-        return json.dumps(_args_for_log(arguments), default=str, ensure_ascii=False)
+        return json.dumps(redact_tool_args(arguments), default=str, ensure_ascii=False)
     except Exception:
         return '{}'
 

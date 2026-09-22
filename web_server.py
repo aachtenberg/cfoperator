@@ -157,16 +157,6 @@ def chat_session_id(raw: Any) -> Optional[int]:
     return session_id if session_id > 0 else None
 
 
-def _clip_chat_value(value: Any, limit: int = _CHAT_ARG_LIMIT) -> Any:
-    if isinstance(value, str):
-        return value if len(value) <= limit else value[:limit] + '…'
-    if isinstance(value, dict):
-        return {str(key): _clip_chat_value(item, limit) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_clip_chat_value(item, limit) for item in value]
-    return value
-
-
 def persist_chat_event(kb, session_id: Optional[int], evt: Dict[str, Any]) -> None:
     """Write one streamed chat event into the session transcript (CFOP-125).
 
@@ -189,7 +179,10 @@ def persist_chat_event(kb, session_id: Optional[int], evt: Dict[str, Any]) -> No
             args = data.get('args')
             if not isinstance(args, (dict, list, str)):
                 args = {} if args is None else str(args)
-            args = _clip_chat_value(args)
+            # Same redaction as the INFO line. A length clip alone would
+            # store a token the log replaced with ***.
+            from cfshared.tool_args import redact_tool_args
+            args = redact_tool_args(args, limit=_CHAT_ARG_LIMIT)
             try:
                 rendered = json.dumps(args, default=str, ensure_ascii=False)
             except Exception:
@@ -206,7 +199,10 @@ def persist_chat_event(kb, session_id: Optional[int], evt: Dict[str, Any]) -> No
                                     extra={'tool': tool, 'result': text})
         elif kind == 'done':
             if data.get('stopped'):
-                kb.append_chat_message(session_id, 'assistant', 'Stopped.')
+                # Not an assistant turn. Reload must not hand "Stopped."
+                # back to the model as something it said.
+                kb.append_chat_message(session_id, 'assistant', 'Stopped.',
+                                        extra={'stopped': True})
                 return
             response = data.get('response') or ''
             if not isinstance(response, str):

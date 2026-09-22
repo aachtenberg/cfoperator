@@ -1181,6 +1181,11 @@
                         addToolCall(msg.tool || '', msg.args != null ? msg.args : msg.content);
                     } else if (msg.role === 'tool_result') {
                         addToolResult(msg.tool || '', msg.result != null ? msg.result : msg.content);
+                    } else if (msg.stopped) {
+                        // A cancelled turn. The live Stop button draws this
+                        // and does not put it in chatHistory; reload matches.
+                        currentToolLog = null; currentToolCard = null; toolCallCount = 0;
+                        addMessage('agent', msg.content || 'Stopped.', 'error', 'none');
                     } else if (msg.role === 'error') {
                         currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                         addMessage('agent', 'Error: ' + (msg.content || ''), 'error', 'none');
