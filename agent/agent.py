@@ -31,7 +31,7 @@ from pathlib import Path
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
-from knowledge_base import ResilientKnowledgeBase, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible, resolve_auto_policy, _SUMMARY_CONFIDENCE_CAP
+from knowledge_base import ResilientKnowledgeBase, correlation_insight_keys, correlation_insight_rejection, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible, resolve_auto_policy, _SUMMARY_CONFIDENCE_CAP
 from llm_fallback import LLMFallbackManager as LLMFallback
 from embedding_service import EmbeddingService, vector_literal
 
@@ -6358,7 +6358,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                         )
                 logger.info(f"Correlation analysis: {len(patterns)} service failure patterns found")
 
-            # Persist event correlations (investigation<->drift, investigation<->investigation)
+            # Persist investigation<->drift correlations. Two investigations
+            # that started together are not a pair (CFOP-149).
             correlated = self.kb._kb.find_correlated_events(window_seconds=300, hours=168)
             persisted = 0
             for ce in correlated:
@@ -6382,6 +6383,42 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             self._analyze_correlations(findings, patterns or [])
         except Exception as e:
             logger.warning(f"Correlation analysis failed: {e}", exc_info=True)
+
+    def _known_namespaces(self):
+        """Namespace names from the cluster, or None when they cannot be read.
+
+        None skips the CFOP-149 namespace check. An empty success payload is
+        the same: a listing that returned nothing is not evidence that every
+        name is invented.
+        """
+        k8s = getattr(getattr(self, "tools", None), "k8s_tools", None)
+        if k8s is None:
+            return None
+        try:
+            result = k8s.get_namespaces()
+        except Exception as e:
+            logger.debug(f"Could not list namespaces for correlation check: {e}")
+            return None
+        if not isinstance(result, dict) or not result.get("success"):
+            return None
+        names = [n.get("name") for n in (result.get("namespaces") or [])
+                 if isinstance(n, dict) and n.get("name")]
+        return names or None
+
+    def _existing_correlation_keys(self) -> set:
+        """Substance keys of learnings already stored, for correlation dedupe."""
+        try:
+            rows = self.kb.find_learnings(tags=["automated"], limit=200)
+        except Exception as e:
+            logger.debug(f"Could not list learnings for correlation dedupe: {e}")
+            return set()
+        if not isinstance(rows, list):
+            return set()
+        keys = set()
+        for row in rows:
+            if isinstance(row, dict):
+                keys |= correlation_insight_keys(row)
+        return keys
 
     def _analyze_correlations(self, sweep_findings: list, failure_patterns: list):
         """Have the LLM analyze operational data and correlations to produce insights."""
@@ -6460,7 +6497,7 @@ Return ONLY valid JSON:
   }}
 ]}}
 
-learning_type must be one of: solution, pattern, root_cause, antipattern, insight
+learning_type must be one of: solution, pattern, antipattern, insight
 category must be one of: resource, network, config, dependency
 
 Focus on:
@@ -6469,6 +6506,10 @@ Focus on:
 - Escalation patterns (info → warning → critical over time)
 - Issues that investigations failed to resolve
 
+Do NOT treat two investigations that started near each other as evidence that
+their subjects caused each other. That is the queue, not the infrastructure.
+Do NOT claim root_cause: co-occurrence is not a cause.
+Do NOT name a namespace that does not appear in the data above.
 Do NOT emit an insight for a healthy/normal state, a one-off transient blip, or a
 restatement of a single finding. Only genuine cross-event patterns worth remembering.
 Every insight MUST have a non-empty, specific `applies_when`. Omit any insight you
@@ -6533,7 +6574,14 @@ Return empty array if nothing notable: {{"insights": []}}"""
 
             stored = 0
             skipped = 0
+            # Prior automated learnings, so the 18th near-copy of one sentence
+            # is not stored. A KB that cannot list them fails open on dedupe
+            # only; the root_cause and namespace gates still apply.
+            seen = self._existing_correlation_keys()
+            known_namespaces = self._known_namespaces()
             for insight in insights[:3]:
+                if not isinstance(insight, dict):
+                    continue
                 if not insight.get('title') or not insight.get('description'):
                     continue
                 # Drop insights with no concrete trigger condition — they can
@@ -6542,15 +6590,24 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     skipped += 1
                     logger.info(f"Skipping correlation insight without applies_when: {insight.get('title','')[:60]}")
                     continue
+                reason = correlation_insight_rejection(
+                    insight, known_namespaces=known_namespaces, seen_keys=seen)
+                if reason:
+                    skipped += 1
+                    logger.info(f"Skipping correlation insight ({reason}): {insight.get('title','')[:60]}")
+                    continue
                 insight.setdefault('learning_type', 'insight')
                 insight.setdefault('tags', ['correlation', 'automated'])
-                valid_types = {'pattern', 'solution', 'root_cause', 'antipattern', 'insight'}
+                # root_cause is refused above. It is not in this set on purpose:
+                # co-occurrence from this pass must not be stored as a cause.
+                valid_types = {'pattern', 'solution', 'antipattern', 'insight'}
                 if insight['learning_type'] not in valid_types:
                     logger.warning(f"Invalid learning_type '{insight['learning_type']}', defaulting to 'insight'")
                     insight['learning_type'] = 'insight'
                 try:
                     lid = self.kb.store_learning(insight)
                     stored += 1
+                    seen |= correlation_insight_keys(insight)
                     if lid and lid > 0:
                         search_text = ' '.join(filter(None, [
                             insight.get('title', ''),
@@ -6561,7 +6618,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
                 except Exception as e:
                     logger.warning(f"Failed to store correlation insight: {e}")
             if skipped:
-                logger.info(f"Correlation analysis: skipped {skipped} insight(s) lacking a trigger condition")
+                logger.info(f"Correlation analysis: skipped {skipped} insight(s)")
 
             # Tier-2 noise routing: correlation insights are informational, not
             # actionable-now. By default they're stored as learnings (and rolled

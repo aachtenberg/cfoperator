@@ -144,6 +144,128 @@ def learning_has_trigger_condition(learning_data: Dict[str, Any]) -> bool:
     return bool(aw and str(aw).strip())
 
 
+# "in the plane namespace" / "namespace plane". Stopwords are not namespace
+# names; "in the same namespace" must not be read as a namespace called same.
+_NAMESPACE_MENTION = re.compile(
+    r"\b(?:in|within|inside)\s+(?:the\s+)?([a-z0-9][a-z0-9-]*)\s+namespace\b"
+    r"|\bnamespace\s+([a-z0-9][a-z0-9-]*)\b",
+    re.IGNORECASE,
+)
+_NAMESPACE_STOPWORDS = frozenset({
+    "a", "an", "the", "this", "that", "same", "its", "their", "each",
+    "every", "other", "one", "some", "any", "no", "our",
+})
+
+
+def named_namespaces(*parts: Any) -> set:
+    """Namespace names an insight claims, lowercased, stopwords removed."""
+    found = set()
+    for part in parts:
+        for match in _NAMESPACE_MENTION.finditer(str(part or "")):
+            name = next(group for group in match.groups() if group).lower()
+            if name not in _NAMESPACE_STOPWORDS:
+                found.add(name)
+    return found
+
+
+def _learning_substance_key(text: Any) -> str:
+    """Fold a title or applies_when so near-identical wording collides.
+
+    Short strings are not a substance key: deduping on "x" would collapse
+    unrelated rows. The duplicates CFOP-149 saw were full sentences.
+    """
+    folded = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+    return folded if len(folded) >= 12 else ""
+
+
+def correlation_insight_keys(insight: Dict[str, Any]) -> set:
+    """Identity of a correlation insight for dedupe: title and applies_when."""
+    keys = set()
+    for field in ("title", "applies_when"):
+        folded = _learning_substance_key((insight or {}).get(field))
+        if folded:
+            keys.add(f"{field}:{folded}")
+    return keys
+
+
+def correlation_insight_rejection(
+    insight: Dict[str, Any],
+    *,
+    known_namespaces: Optional[Iterable[str]] = None,
+    seen_keys: Optional[Iterable[str]] = None,
+) -> Optional[str]:
+    """Why an automated correlation insight must not be stored, or None.
+
+    CFOP-149. Co-occurrence is not a root cause, so ``root_cause`` from this
+    pass is refused rather than relabelled. A namespace the cluster does not
+    have is refutable at write time, but only when a namespace list was
+    actually read — an empty or missing list skips the check instead of
+    blocking every insight. A title or applies_when already stored (or
+    already accepted in this response) is the same observation again.
+    """
+    if not isinstance(insight, dict):
+        return "not an insight"
+    if str(insight.get("learning_type") or "").strip().lower() == "root_cause":
+        return "automated correlation cannot claim root_cause"
+    if known_namespaces:
+        known = {str(name).strip().lower() for name in known_namespaces if str(name or "").strip()}
+        if known:
+            missing = sorted(
+                name for name in named_namespaces(
+                    insight.get("title"), insight.get("description"), insight.get("applies_when"),
+                )
+                if name not in known
+            )
+            if missing:
+                return f"names namespace {missing[0]!r}, which is not in the cluster"
+    seen = set(seen_keys or ())
+    if correlation_insight_keys(insight) & seen:
+        return "duplicate correlation learning"
+    return None
+
+
+def correlate_events(investigations, drift_events, window_seconds: int = 300) -> List[Dict[str, Any]]:
+    """Pair an investigation with a drift event that landed inside the window.
+
+    Investigation-investigation pairs are not correlations (CFOP-149). Two
+    investigations starting near each other is a fact about the queue, and
+    writing that down as causation is how the learning pass fabricated
+    "camera-api correlates with plane-api" from its own timestamps.
+    """
+    correlations: List[Dict[str, Any]] = []
+    for inv in investigations or []:
+        started = getattr(inv, "started_at", None)
+        if started is None:
+            continue
+        for drift in drift_events or []:
+            detected = getattr(drift, "detected_at", None)
+            if detected is None:
+                continue
+            delta = abs((started - detected).total_seconds())
+            if delta > window_seconds:
+                continue
+            correlations.append({
+                "event_a": {
+                    "type": "investigation",
+                    "id": getattr(inv, "id", None),
+                    "time": started.isoformat(),
+                    "trigger": getattr(inv, "trigger", None),
+                    "outcome": getattr(inv, "outcome", None),
+                },
+                "event_b": {
+                    "type": "drift",
+                    "id": getattr(drift, "id", None),
+                    "time": detected.isoformat(),
+                    "drift_type": getattr(drift, "drift_type", None),
+                    "description": getattr(drift, "description", None),
+                },
+                "time_delta_seconds": delta,
+                "likely_related": delta < 60,
+            })
+    correlations.sort(key=lambda item: item["time_delta_seconds"])
+    return correlations
+
+
 # CronJob-run pod names look like '<cronjob>-<unix-minute-timestamp>-<podhash>',
 # e.g. 'freshet-alerter-29676615-6slrn'. The all-digit middle segment is the
 # distinguishing signal vs a Deployment pod ('searxng-c55b97cbb-ccnj6', hash has
@@ -5172,7 +5294,11 @@ class KnowledgeBase:
         window_seconds: int = 300,
         hours: int = 24
     ) -> List[Dict[str, Any]]:
-        """Find events (investigations + drift) that occurred within a time window of each other."""
+        """Pair investigations with drift events inside the window.
+
+        Two investigations that merely started near each other are not a
+        correlation (CFOP-149); that pairing used to be written down here.
+        """
         from datetime import timedelta
         with self.session_scope() as session:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
@@ -5186,59 +5312,7 @@ class KnowledgeBase:
                 DriftEvent.detected_at >= cutoff
             ).all()
 
-            correlations = []
-
-            # Find investigation <-> drift correlations
-            for inv in investigations:
-                for drift in drift_events:
-                    delta = abs((inv.started_at - drift.detected_at).total_seconds())
-                    if delta <= window_seconds:
-                        correlations.append({
-                            "event_a": {
-                                "type": "investigation",
-                                "id": inv.id,
-                                "time": inv.started_at.isoformat(),
-                                "trigger": inv.trigger,
-                                "outcome": inv.outcome
-                            },
-                            "event_b": {
-                                "type": "drift",
-                                "id": drift.id,
-                                "time": drift.detected_at.isoformat(),
-                                "drift_type": drift.drift_type,
-                                "description": drift.description
-                            },
-                            "time_delta_seconds": delta,
-                            "likely_related": delta < 60  # Very likely if < 1 minute
-                        })
-
-            # Find investigation <-> investigation correlations (cascade detection)
-            for i, inv1 in enumerate(investigations):
-                for inv2 in investigations[i+1:]:
-                    delta = abs((inv1.started_at - inv2.started_at).total_seconds())
-                    if delta <= window_seconds and delta > 0:
-                        correlations.append({
-                            "event_a": {
-                                "type": "investigation",
-                                "id": inv1.id,
-                                "time": inv1.started_at.isoformat(),
-                                "trigger": inv1.trigger,
-                                "outcome": inv1.outcome
-                            },
-                            "event_b": {
-                                "type": "investigation",
-                                "id": inv2.id,
-                                "time": inv2.started_at.isoformat(),
-                                "trigger": inv2.trigger,
-                                "outcome": inv2.outcome
-                            },
-                            "time_delta_seconds": delta,
-                            "likely_related": delta < 60
-                        })
-
-            # Sort by time delta (closest events first)
-            correlations.sort(key=lambda x: x["time_delta_seconds"])
-            return correlations
+            return correlate_events(investigations, drift_events, window_seconds)
 
     @staticmethod
     def _normalize_service_name(name: str) -> str:
