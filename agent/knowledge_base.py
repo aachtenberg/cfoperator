@@ -2317,8 +2317,14 @@ class KnowledgeBase:
             return chat.id
 
     def append_chat_message(self, session_id: int, role: str, content: str,
-                            backend: str = '', model: str = '') -> bool:
-        """Append a message to a chat session."""
+                            backend: str = '', model: str = '',
+                            extra: Optional[Dict[str, Any]] = None) -> bool:
+        """Append a message to a chat session.
+
+        ``extra`` lands on the stored JSON next to role/content (a tool row's
+        ``tool`` / ``args`` / ``result``). It cannot overwrite the fields this
+        function owns.
+        """
         with self.session_scope() as session:
             chat = session.query(ChatSession).filter(ChatSession.id == session_id).first()
             if not chat:
@@ -2329,6 +2335,10 @@ class KnowledgeBase:
                 msg['backend'] = backend
             if model:
                 msg['model'] = model
+            if extra:
+                for key, value in extra.items():
+                    if key not in ('role', 'content', 'ts', 'backend', 'model'):
+                        msg[key] = value
             msgs.append(msg)
             chat.messages = msgs
             chat.message_count = len(msgs)

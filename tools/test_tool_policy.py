@@ -461,6 +461,48 @@ def test_the_other_ssh_writers_are_still_withheld_on_a_verification_turn():
         assert name not in offered
 
 
+def test_a_mutating_exec_logs_the_pod_and_a_read_only_one_does_not(caplog):
+    """CFOP-125: the INFO line for a mutating tool names what it was given.
+    k8s_exec_pod has no log of its own, so this line is the one that has to
+    carry namespace, pod and command. A read-only tool stays name-only, and
+    a credential-shaped argument is not written out."""
+    import logging
+
+    reg = ToolRegistry.__new__(ToolRegistry)
+    reg.tools = {
+        "k8s_exec_pod": {
+            "function": lambda **kwargs: {"ok": True},
+            "schema": {"name": "k8s_exec_pod", "mutating": True},
+        },
+        "k8s_get_pods": {
+            "function": lambda **kwargs: {"ok": True},
+            "schema": {"name": "k8s_get_pods"},
+        },
+    }
+    command = "psql -c " + ("x" * 2000)
+    with caplog.at_level(logging.INFO, logger="cfoperator.tools"):
+        reg.execute("k8s_exec_pod", {
+            "namespace": "sre",
+            "pod_name": "sre-postgres-0",
+            "command": command,
+            "token": "super-secret",
+        })
+    line = next(r.message for r in caplog.records
+                if r.message.startswith("Executing tool: k8s_exec_pod"))
+    assert "sre-postgres-0" in line
+    assert '"namespace": "sre"' in line
+    assert "psql -c " in line
+    assert "x" * 2000 not in line, "a long command is written out in full"
+    assert "super-secret" not in line
+    assert "***" in line
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="cfoperator.tools"):
+        reg.execute("k8s_get_pods", {"namespace": "sre"})
+    names = [r.message for r in caplog.records if r.message.startswith("Executing tool:")]
+    assert names == ["Executing tool: k8s_get_pods"]
+
+
 def test_a_member_never_gets_ssh_execute_even_to_verify():
     """The role gate is stricter than the turn's purpose and is not softened
     by it: command-gating is for an admin verifying, not for a member."""

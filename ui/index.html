@@ -1150,8 +1150,11 @@
         }
 
         function saveMessage(role, content, backend, model) {
-            if (!chatSessionId) return;
-            fetch(`/api/chat-sessions/${chatSessionId}/messages`, {
+            if (!chatSessionId) return Promise.resolve();
+            // The caller waits on this for the user row: the worker appends
+            // tool calls as soon as the turn starts, and a fire-and-forget
+            // save can land after them (CFOP-125).
+            return fetch(`/api/chat-sessions/${chatSessionId}/messages`, {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({role, content, backend: backend || '', model: model || ''})
             }).catch(() => {});
@@ -1167,10 +1170,25 @@
                 chatSessionId = data.id;
                 localStorage.setItem('cfoperator_chat_session', chatSessionId);
 
-                // Replay messages
+                // Replay messages. Tool rows are drawn the way the live view
+                // drew them, and kept out of chatHistory: that array is
+                // re-sent to the model, and a tool row is not a turn.
+                currentToolLog = null;
+                currentToolCard = null;
+                toolCallCount = 0;
                 for (const msg of (data.messages || [])) {
-                    chatHistory.push({role: msg.role, content: msg.content});
-                    addMessage(msg.role === 'assistant' ? 'agent' : msg.role, msg.content, msg.backend, msg.model);
+                    if (msg.role === 'tool_call') {
+                        addToolCall(msg.tool || '', msg.args != null ? msg.args : msg.content);
+                    } else if (msg.role === 'tool_result') {
+                        addToolResult(msg.tool || '', msg.result != null ? msg.result : msg.content);
+                    } else if (msg.role === 'error') {
+                        currentToolLog = null; currentToolCard = null; toolCallCount = 0;
+                        addMessage('agent', 'Error: ' + (msg.content || ''), 'error', 'none');
+                    } else {
+                        currentToolLog = null; currentToolCard = null; toolCallCount = 0;
+                        chatHistory.push({role: msg.role, content: msg.content});
+                        addMessage(msg.role === 'assistant' ? 'agent' : msg.role, msg.content, msg.backend, msg.model);
+                    }
                 }
                 highlightActiveSession();
             }).catch(() => {});
@@ -1418,7 +1436,6 @@
             // model are set via the header chip (or Admin → LLM).
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
-            saveMessage('user', message);
             input.value = '';
             input.rows = 1;
             saveDraft('');
@@ -1428,14 +1445,21 @@
             document.getElementById('chat-container').scrollTop = document.getElementById('chat-container').scrollHeight;
 
             const payload = {message, history: chatHistory, backend: 'auto'};
+            // The worker writes tool rows and the assistant reply against this
+            // session as they happen (CFOP-125). Without it a closed tab loses
+            // the turn: nothing server-side knew which transcript to append to.
+            if (chatSessionId) payload.session_id = chatSessionId;
             // mode: 'verify' is a hand-off turn — the agent withholds mutating tools.
             if (opts && opts.mode) payload.mode = opts.mode;
 
-            fetch('/api/chat', {
+            // User row first, then the turn. The worker persists tool calls
+            // the moment they happen; posting the chat before this resolves
+            // lets an exec land above the question that asked for it.
+            saveMessage('user', message).then(() => fetch('/api/chat', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify(payload)
-            })
+            }))
             .then(r => r.json())
             .then(data => {
                 SENDING = false;
@@ -1552,7 +1576,8 @@
                 if (data.response) {
                     const msgEl = addMessage('agent', data.response, data.backend, data.model);
                     chatHistory.push({role: 'assistant', content: data.response});
-                    saveMessage('assistant', data.response, data.backend, data.model);
+                    // The assistant row is written by the /api/chat worker
+                    // (CFOP-125). Saving it here as well double-writes the turn.
 
                     if (data.learning_ids && data.learning_ids.length > 0) {
                         const fbDiv = document.createElement('div');

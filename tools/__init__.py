@@ -18,6 +18,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlsplit
 import hashlib
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -67,6 +68,45 @@ _VERIFY_COMMAND_GATED = {'ssh_execute': 'command'}
 #                approved. Without this an investigation could queue itself a
 #                remediation past the auto-execute gate (CFOP-160, review).
 _SCHEMA_MARKERS = ('mutating', 'human_only')
+
+# How much of one argument value is worth an INFO line. A command has to be
+# readable; a multi-megabyte payload does not belong in the pod log.
+_LOG_ARG_LIMIT = 1000
+# Argument *names* that carry a credential. The value is redacted. Command
+# text is not — the whole point of the line is to show what was run — and
+# none of the mutating tools pass these keys today.
+_SECRET_ARG_KEYS = frozenset({
+    'password', 'token', 'secret', 'api_key', 'authorization', 'credential',
+})
+
+
+def _arg_key_is_secret(key: Any) -> bool:
+    name = str(key).lower()
+    if name in _SECRET_ARG_KEYS:
+        return True
+    return name.endswith(('_password', '_token', '_secret', '_api_key'))
+
+
+def _args_for_log(value: Any, limit: int = _LOG_ARG_LIMIT) -> Any:
+    """A log-safe copy of tool arguments: secrets redacted, long strings cut."""
+    if isinstance(value, dict):
+        return {
+            key: '***' if _arg_key_is_secret(key) else _args_for_log(item, limit)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_args_for_log(item, limit) for item in value]
+    if isinstance(value, str) and len(value) > limit:
+        return value[:limit] + '…'
+    return value
+
+
+def summarize_tool_args(arguments: Any) -> str:
+    """One JSON blob for the mutating-tool INFO line."""
+    try:
+        return json.dumps(_args_for_log(arguments), default=str, ensure_ascii=False)
+    except Exception:
+        return '{}'
 
 
 @dataclass(frozen=True)
@@ -1081,7 +1121,13 @@ class ToolRegistry:
             elif arguments is None:
                 arguments = {}
 
-            logger.info(f"Executing tool: {tool_name}")
+            # Mutating calls name their arguments (CFOP-125). The marker is
+            # the same one the policy reads — a second list would drift.
+            # Read-only stays name-only: those lines are already noise.
+            if self.is_mutating(tool_name):
+                logger.info("Executing tool: %s %s", tool_name, summarize_tool_args(arguments))
+            else:
+                logger.info("Executing tool: %s", tool_name)
             func = self.tools[tool_name]['function']
             result = func(**arguments)
             logger.info(f"Tool {tool_name} completed successfully")

@@ -132,6 +132,100 @@ _PROVIDER_DESCRIPTIONS = {
     'deepseek': 'DeepSeek models',
 }
 
+# A tool result stored in the transcript. The live event is already cut at
+# 500 characters by the agent; this is the ceiling for anything longer.
+_CHAT_RESULT_LIMIT = 2000
+# Argument values stored with a tool_call. Long enough that a SQL statement
+# survives whole; short of letting one call fill the JSONB row.
+_CHAT_ARG_LIMIT = 8000
+
+
+def chat_session_id(raw: Any) -> Optional[int]:
+    """The persisted chat session a turn should be written into, or None.
+
+    Missing, blank, and non-numeric values mean "do not persist" — the chat
+    still runs. Bool is rejected because ``int(True)`` is 1.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        session_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return session_id if session_id > 0 else None
+
+
+def _clip_chat_value(value: Any, limit: int = _CHAT_ARG_LIMIT) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= limit else value[:limit] + '…'
+    if isinstance(value, dict):
+        return {str(key): _clip_chat_value(item, limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clip_chat_value(item, limit) for item in value]
+    return value
+
+
+def persist_chat_event(kb, session_id: Optional[int], evt: Dict[str, Any]) -> None:
+    """Write one streamed chat event into the session transcript (CFOP-125).
+
+    Called from the ``/api/chat`` worker as the event arrives, so a closed
+    tab — or a pod that is replaced after this write — still has the row.
+    The browser used to be the only writer, and it only wrote the assistant
+    text, and only if it was still on the page when ``done`` arrived.
+
+    A missing session, or a failed write, leaves the live turn alone.
+    """
+    if not session_id or kb is None:
+        return
+    kind = (evt or {}).get('event')
+    data = (evt or {}).get('data') or {}
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        if kind == 'tool_call':
+            tool = str(data.get('tool') or '')
+            args = data.get('args')
+            if not isinstance(args, (dict, list, str)):
+                args = {} if args is None else str(args)
+            args = _clip_chat_value(args)
+            try:
+                rendered = json.dumps(args, default=str, ensure_ascii=False)
+            except Exception:
+                rendered = str(args)
+            text = f"{tool} {rendered}" if rendered and rendered not in ('{}', '') else tool
+            kb.append_chat_message(session_id, 'tool_call', text,
+                                    extra={'tool': tool, 'args': args})
+        elif kind == 'tool_result':
+            tool = str(data.get('tool') or '')
+            result = data.get('result')
+            text = result if isinstance(result, str) else json.dumps(result, default=str, ensure_ascii=False)
+            text = text[:_CHAT_RESULT_LIMIT]
+            kb.append_chat_message(session_id, 'tool_result', text,
+                                    extra={'tool': tool, 'result': text})
+        elif kind == 'done':
+            if data.get('stopped'):
+                kb.append_chat_message(session_id, 'assistant', 'Stopped.')
+                return
+            response = data.get('response') or ''
+            if not isinstance(response, str):
+                response = str(response)
+            if response:
+                kb.append_chat_message(
+                    session_id, 'assistant', response,
+                    backend=str(data.get('backend') or ''),
+                    model=str(data.get('model') or ''),
+                )
+        elif kind == 'error':
+            err = data.get('error') or ''
+            if not isinstance(err, str):
+                err = str(err)
+            if err:
+                kb.append_chat_message(session_id, 'error', err)
+    except Exception as e:
+        logger.warning("Could not persist chat %s event: %s", kind, e)
+
 
 class WebServer:
     """
@@ -849,6 +943,10 @@ class WebServer:
             history = data.get('history', [])
             backend = data.get('backend', 'auto')
             model = data.get('model')
+            # The persisted transcript this turn belongs to. Absent for a
+            # caller that has no session; the chat still runs, it just is
+            # not written down (CFOP-125).
+            session_id = chat_session_id(data.get('session_id'))
 
             if not message:
                 return jsonify({'error': 'No message provided'}), 400
@@ -886,28 +984,40 @@ class WebServer:
                 try:
                     logger.debug(f"Chat {chat_id} started")
                     for evt in stream:
+                        stop_evt = None
                         with self._sessions_lock:
                             session = self._chat_sessions.get(chat_id)
                             if session is None:
                                 return
                             if session['cancelled']:
-                                session['events'].append({
+                                stop_evt = {
                                     'event': 'done',
                                     'data': {'response': '', 'stopped': True}
-                                })
+                                }
+                                session['events'].append(stop_evt)
                                 session['done'] = True
                                 logger.info(f"Chat {chat_id} stopped by user")
-                                return
-                            session['events'].append(evt)
-                            if evt['event'] in ('done', 'error'):
-                                session['done'] = True
+                            else:
+                                session['events'].append(evt)
+                                if evt['event'] in ('done', 'error'):
+                                    session['done'] = True
+                        # Outside the sessions lock: a DB write must not stall
+                        # every other chat's poll. As the event arrives, not
+                        # at the end of the turn — a restart mid-exec keeps
+                        # the command that already went out.
+                        if stop_evt is not None:
+                            persist_chat_event(self.operator.kb, session_id, stop_evt)
+                            return
+                        persist_chat_event(self.operator.kb, session_id, evt)
                 except Exception as e:
                     logger.error(f"Chat session {chat_id} failed: {e}", exc_info=True)
+                    err_evt = {'event': 'error', 'data': {'error': str(e)}}
                     with self._sessions_lock:
                         session = self._chat_sessions.get(chat_id)
                         if session:
-                            session['events'].append({'event': 'error', 'data': {'error': str(e)}})
+                            session['events'].append(err_evt)
                             session['done'] = True
+                    persist_chat_event(self.operator.kb, session_id, err_evt)
                 finally:
                     # Closing the generator raises GeneratorExit at its current
                     # yield point, unwinding the tool-iteration loop so a stopped
