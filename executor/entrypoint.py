@@ -350,14 +350,27 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
         return build_completion_payload(work_order, "needs-human", pr_url,
                                         f"command exited {last['returncode']}: {last['stderr'][:200]}", result)
     # A read-only plan that ran to completion succeeded regardless of what it
-    # found. "checked, inactive" is the answer the operator wanted, not a
-    # lane failure — say so even when a later mutation in the same plan also
-    # ran cleanly.
+    # found. The detail quotes each query's own answer — is-active "inactive"
+    # is not what is-enabled or is-failed reported (CFOP-140 review).
     if answered:
-        detail = f"checked, inactive; ran {len(results)} command(s) on {host}"
+        detail = _checked_detail(answered, len(results), host)
     else:
         detail = f"ran {len(results)} command(s) on {host}"
     return build_completion_payload(work_order, "resolved", pr_url, detail, result)
+
+
+def _checked_detail(answered: list, n_results: int, host: str) -> str:
+    """What the query verbs actually printed, not a fixed 'inactive'."""
+    parts = []
+    for entry in answered:
+        stdout = str(entry.get("stdout") or "").strip()
+        first = stdout.splitlines()[0].strip() if stdout else ""
+        if len(first) > 80:
+            first = first[:77] + "..."
+        answer = first or f"rc={entry.get('returncode')}"
+        command = str(entry.get("command") or "").strip()
+        parts.append(f"{answer} ({command})" if command else answer)
+    return f"checked, {'; '.join(parts)}; ran {n_results} command(s) on {host}"
 
 
 def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any]:

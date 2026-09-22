@@ -1402,14 +1402,10 @@ def _is_transport_failure(error: Exception) -> bool:
     import requests
     if isinstance(error, (requests.Timeout, requests.ConnectionError)):
         return True
-    if isinstance(error, requests.HTTPError):
-        status = getattr(getattr(error, 'response', None), 'status_code', None)
-        try:
-            status = int(status)
-        except (TypeError, ValueError):
-            return False
-        return status in (408, 429) or status >= 500
-    return False
+    status = _http_status(error)
+    if status is None:
+        return False
+    return status in (408, 429) or status >= 500
 
 
 def _http_status(error: Exception):
@@ -1427,11 +1423,13 @@ def _http_status(error: Exception):
 def _is_request_refusal(error: Exception) -> bool:
     """The vendor was reached and refused this request (CFOP-118).
 
-    A 400 for a rejected parameter or a 404 for a retired model id is an
-    answer, not an outage. 408 and 429 stay transport — "not now" — and are
-    classified by ``_is_transport_failure``. Failing over past a refusal
-    without recording it hides a request-shape bug for as long as any lower
-    peer answers.
+    A 400 for a rejected parameter, a 404 for a retired model id, or a
+    401/403 for a bad key is an answer, not an outage: the vendor was
+    reached. A bad key stays visible on the verdict while the next peer
+    judges, which is the same hole a 400 used to hide. 408 and 429 stay
+    transport — "not now" — and are classified by ``_is_transport_failure``.
+    Failing over past a refusal without recording it hides the bug for as
+    long as any lower peer answers.
     """
     status = _http_status(error)
     return status is not None and 400 <= status < 500 and status not in (408, 429)

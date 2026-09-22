@@ -242,8 +242,31 @@ def test_node_action_inactive_query_resolves_as_checked():
         payload = run(_env(_node_order()))
     assert payload["status"] == "resolved"
     assert "checked, inactive" in payload["detail"]
+    assert "systemctl is-active ssh" in payload["detail"]
     assert payload["result"]["executed"][0]["returncode"] == 3
     assert payload["result"]["executed"][0]["stdout"] == "inactive"
+
+
+@pytest.mark.parametrize("command,rc,stdout,present,absent", [
+    ("systemctl is-enabled ssh", 1, "disabled\n", "disabled", "inactive"),
+    ("systemctl status nope.service", 4, "", "rc=4", "inactive"),
+])
+def test_node_action_query_detail_quotes_the_answer(command, rc, stdout, present, absent):
+    """A non-zero query is not automatically 'inactive' (CFOP-140 review).
+
+    is-enabled 1 is disabled. status 4 with no stdout is 'no such unit',
+    reported as its exit code. is-failed is not on the allowlist, so it
+    never reaches this detail.
+    """
+    reply = json.dumps({"host": "controller", "commands": [command], "explanation": "check"})
+    runs = [{"command": command, "returncode": rc, "stdout": stdout, "stderr": ""}]
+    with patch.object(entrypoint, "make_llm", return_value=_FixedLLM(reply)), \
+         patch.object(entrypoint, "run_ssh_plan", return_value=runs):
+        payload = run(_env(_node_order()))
+    assert payload["status"] == "resolved"
+    assert present in payload["detail"]
+    assert absent not in payload["detail"]
+    assert command in payload["detail"]
 
 
 def test_node_action_no_host_routes_to_human():
