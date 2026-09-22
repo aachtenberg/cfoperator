@@ -4868,10 +4868,13 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 # one field that can never clear the gate (the eligibility test
                 # requires confidence is not None), and it leaves the
                 # classifier's honest risk assessment visible on the row
-                # instead of overwriting it with a fiction.
+                # instead of overwriting it with a fiction. reject is closed
+                # after the insert; downgrade stays parked (CFOP-165).
+                disposition = ("closed" if verdict.get('verdict') == 'reject'
+                               else "parked for human review")
                 logger.warning(
                     f"Mutation judge {verdict.get('verdict')}: {nclass}/{nrisk} "
-                    f"parked for human review — {verdict.get('reason')}")
+                    f"{disposition} — {verdict.get('reason')}")
                 confidence = None
                 payload['judge_reason'] = str(verdict.get('reason') or '')
         if decided_by:
@@ -4938,13 +4941,63 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         '{"verdict": "confirm|downgrade|reject", "reason": "one sentence"}\n\n'
         "- confirm: the change is correct, proportionate, and safe to make "
         "unattended.\n"
-        "- downgrade: it may well be right, but a human should look first. "
-        "The row is parked for review; nothing is lost.\n"
-        "- reject: the recommendation is WRONG, not merely risky — doing it "
-        "would make things worse.\n\n"
-        "When you are unsure, downgrade. A parked row costs a human two "
-        "minutes; a wrong unattended change costs an outage."
+        "- downgrade: you cannot decide. The evidence is missing, the target "
+        "is ambiguous, or you are unsure whether the change is right. The row "
+        "is parked. Use this only when you do not have a specific objection.\n"
+        "- reject: you have a specific objection. The recommendation is wrong, "
+        "or it should not be done unattended for a reason you can state. Put "
+        "that objection in \"reason\". The row is closed with the note. The "
+        "cases listed above — a deliberate constraint, a symptom of a larger "
+        "failure, evidence that does not support the change, a blast radius "
+        "wider than the problem — are rejections, not downgrades.\n\n"
+        "When you are unsure, downgrade. A parked row is not cheap: a human "
+        "has to reconstruct the evidence with another frontier session. A "
+        "wrong unattended change costs an outage. A wrong rejection costs one "
+        "missed cycle — the row is closed, and if the problem comes back it "
+        "is judged again — so do not reject merely to avoid deciding."
     )
+
+    def _judge_gitops_context(self, details: Dict[str, Any]) -> str:
+        """The gitops file the judge is about to approve a change to.
+
+        CFOP-165. The same contents read as the observed check, not a second
+        client. A file that is not the FIX target is not fetched: #100's
+        objection was a backup script the FIX did not name, and guessing
+        which other file would answer it is the model-authored command this
+        gate does not run. Truncated so a chart cannot crowd out the
+        recommendation.
+        """
+        lines: List[str] = []
+        check = details.get('observed_check')
+        if isinstance(check, dict) and check.get('status'):
+            lines.append(
+                f"Observed check: {check.get('status')} — "
+                f"{str(check.get('reason') or '')[:300]}"
+            )
+        targets = details.get('targets') if isinstance(details.get('targets'), list) else []
+        shown = 0
+        for target in targets:
+            if shown >= 2:
+                break
+            if not isinstance(target, dict) or target.get('kind') != 'gitops-manifest':
+                continue
+            repo = str(target.get('repo') or '').strip()
+            path = str(target.get('id') or '').strip().lstrip('/')
+            if not repo or not path:
+                continue
+            shown += 1
+            try:
+                body = self._read_gitops_target(repo, path)
+            except Exception as e:
+                logger.warning("Mutation judge: could not read %s/%s (%s)", repo, path, e)
+                body = None
+            if not isinstance(body, str):
+                lines.append(f"Target file {repo}:{path}: could not read")
+                continue
+            if len(body) > 4000:
+                body = body[:4000] + "\n…(truncated)"
+            lines.append(f"Target file {repo}:{path} as it is now:\n{body}")
+        return "\n".join(lines)
 
     def _judge_mutation_remediation(self, details: Dict[str, Any], rclass: str,
                                     risk: str, confidence) -> Dict[str, Any]:
@@ -5001,6 +5054,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             f"Proposed remediation: {str(details.get('recommendation') or '')[:800]}\n"
             f"Classified by a smaller model as: {rclass} / risk={risk} / "
             f"confidence={confidence}\n\n"
+            f"{self._judge_gitops_context(details)}\n"
             "Should this be done unattended?"
         )
         providers = self._judge_providers()

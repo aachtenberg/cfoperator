@@ -247,6 +247,14 @@ Two further bars sit in front of an auto-execute:
   auto-execute. It is pinned to its own model floor, so a cost downgrade of the
   executor's model cannot demote the model holding the veto, and it **fails
   closed** — unavailable, unparseable, or raising all park the row.
+  `confirm` lets the row through. `downgrade` means the judge cannot decide
+  (missing evidence, an ambiguous target, or unsure) and the row stays parked.
+  `reject` means a specific objection: the row is recorded and then closed,
+  with the objection as the note. A repeated problem is judged again, because
+  `rejected` is terminal and the dedupe key stops matching. For a
+  `gitops-manifest` target the judge is shown that file's current text,
+  truncated, from the same contents read as the observed check. A file the
+  FIX does not name is not fetched.
 
 `targets`, `observed`, `steps`, `verify` and `rejected` ride onto the queue row
 and are rendered in the console drawer, so an operator sees the claimed current

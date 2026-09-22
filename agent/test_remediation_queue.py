@@ -1836,6 +1836,9 @@ def _judging_op(complete=None, providers=("anthropic",), judge_model=None):
     op._JUDGE_SYSTEM_PROMPT = CFOperator._JUDGE_SYSTEM_PROMPT
     op._judge_providers = lambda: list(providers)
     op._judge_model = judge_model or (lambda b: agent_mod._JUDGE_MODEL_FLOOR[b])
+    # The real file section. A bare MagicMock would stringify into the prompt
+    # and the tests would be asserting against that, not the read.
+    op._judge_gitops_context = lambda details: CFOperator._judge_gitops_context(op, details)
     if complete is not None:
         op._complete_judge = complete
     return op
@@ -2385,11 +2388,97 @@ def test_judge_prompt_never_frames_confirm_as_the_default():
     # A gate whose prompt nudges toward approval is decoration. The prompt must
     # tell the model that uncertainty means downgrade, and must name the class
     # of mistake that actually happened (removing a deliberate constraint).
+    # CFOP-165: a specific objection is reject, not a park described as cheap.
     prompt = CFOperator._JUDGE_SYSTEM_PROMPT
     assert "When you are unsure, downgrade" in prompt
     assert "DELIBERATE" in prompt
+    assert "two minutes" not in prompt
+    assert "cannot decide" in prompt
+    assert "specific objection" in prompt
+    assert "another frontier session" in prompt
     for verdict in ("confirm", "downgrade", "reject"):
         assert verdict in prompt
+
+
+def test_judge_is_shown_the_gitops_file_it_would_change():
+    """CFOP-165. The file is the target's current text, plus the observed
+    check. Mutation check: stop appending _judge_gitops_context and the
+    replicas line is gone."""
+    seen = {}
+
+    def complete(system, user, backend, model):
+        seen["user"] = user
+        return '{"verdict": "confirm", "reason": "ok"}'
+
+    op = _judging_op(complete)
+    op._read_gitops_target = lambda repo, path: "replicas: 1\n"
+    details = dict(
+        _IMMICH_KIOSK_DETAILS,
+        targets=[{"kind": "gitops-manifest", "id": "apps/grafana.yaml",
+                  "repo": "aachtenberg/homelab-infra"}],
+        observed_check={"status": "verified",
+                        "reason": "quoted text is in the gitops target"},
+    )
+    out = CFOperator._judge_mutation_remediation(
+        op, details, "gitops-patch", "low", 1.0)
+    assert out["verdict"] == "confirm"
+    assert "aachtenberg/homelab-infra:apps/grafana.yaml" in seen["user"]
+    assert "replicas: 1" in seen["user"]
+    assert "Observed check: verified" in seen["user"]
+
+
+def test_judge_says_when_the_gitops_file_could_not_be_read():
+    seen = {}
+
+    def complete(system, user, backend, model):
+        seen["user"] = user
+        return '{"verdict": "downgrade", "reason": "no file"}'
+
+    op = _judging_op(complete)
+    op._read_gitops_target = lambda repo, path: None
+    details = dict(
+        _IMMICH_KIOSK_DETAILS,
+        targets=[{"kind": "gitops-manifest", "id": "apps/grafana.yaml",
+                  "repo": "aachtenberg/homelab-infra"}],
+    )
+    CFOperator._judge_mutation_remediation(op, details, "gitops-patch", "low", 1.0)
+    assert "could not read" in seen["user"]
+    assert "replicas" not in seen["user"]
+
+
+def test_a_host_target_does_not_invent_a_file_for_the_judge():
+    seen = {}
+
+    def complete(system, user, backend, model):
+        seen["user"] = user
+        return '{"verdict": "confirm", "reason": "ok"}'
+
+    op = _judging_op(complete)
+    op._read_gitops_target = lambda repo, path: "should-not-appear"
+    details = dict(_IMMICH_KIOSK_DETAILS,
+                   targets=[{"kind": "host", "id": "raspberrypi4"}])
+    CFOperator._judge_mutation_remediation(op, details, "node-action", "low", 0.9)
+    assert "should-not-appear" not in seen["user"]
+    assert "Target file" not in seen["user"]
+
+
+def test_a_long_gitops_file_is_truncated_for_the_judge():
+    seen = {}
+
+    def complete(system, user, backend, model):
+        seen["user"] = user
+        return '{"verdict": "confirm", "reason": "ok"}'
+
+    op = _judging_op(complete)
+    op._read_gitops_target = lambda repo, path: "x" * 5000
+    details = dict(
+        _IMMICH_KIOSK_DETAILS,
+        targets=[{"kind": "gitops-manifest", "id": "apps/big.yaml",
+                  "repo": "aachtenberg/homelab-infra"}],
+    )
+    CFOperator._judge_mutation_remediation(op, details, "gitops-patch", "low", 1.0)
+    assert "…(truncated)" in seen["user"]
+    assert "x" * 4001 not in seen["user"]
 
 
 def test_classifier_identity_is_recorded_on_the_payload():
