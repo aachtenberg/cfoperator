@@ -12,11 +12,10 @@ on:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+    # The code-review plugin stops on a draft, so a run on a draft only spends
+    # subscription usage. cursor opens its PRs as drafts; ready_for_review is
+    # the event that actually gets reviewed.
+    if: github.event.pull_request.draft == false
 
     runs-on: ubuntu-latest
     permissions:
@@ -42,6 +41,10 @@ jobs:
           # and claude[bot] is omitted so a review that commits cannot retrigger
           # this job.
           allowed_bots: 'cursor'
+          # Temporary: runs finish green with permission denials and no review
+          # posted, and the log only carries the denial count. Turn off once the
+          # denied tool is on the allowlist below.
+          show_full_output: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
