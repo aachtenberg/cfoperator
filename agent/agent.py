@@ -6286,7 +6286,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                         )
                 logger.info(f"Correlation analysis: {len(patterns)} service failure patterns found")
 
-            # Persist event correlations (investigation<->drift, investigation<->investigation)
+            # Persist investigation<->drift correlations. Two investigations
+            # that started together are not a pair (CFOP-149).
             correlated = self.kb._kb.find_correlated_events(window_seconds=300, hours=168)
             persisted = 0
             for ce in correlated:
