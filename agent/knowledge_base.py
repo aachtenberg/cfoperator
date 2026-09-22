@@ -5294,7 +5294,11 @@ class KnowledgeBase:
         window_seconds: int = 300,
         hours: int = 24
     ) -> List[Dict[str, Any]]:
-        """Find events (investigations + drift) that occurred within a time window of each other."""
+        """Pair investigations with drift events inside the window.
+
+        Two investigations that merely started near each other are not a
+        correlation (CFOP-149); that pairing used to be written down here.
+        """
         from datetime import timedelta
         with self.session_scope() as session:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
