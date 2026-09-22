@@ -260,10 +260,14 @@ which stays pure. At enqueue, `_check_observed_against_targets` reads
 claimed text to those bytes. It does not run `source`.
 
 A quote that occurs in the file is `verified`. A bare assignment
-(`MemoryHigh=8G`, `memory: 256Mi`) whose key the file also assigns, and whose
-value is not one of the file's, **refuses the FIX**: the refusal is logged and
-the recommendation is classified instead of judged. A quote that is neither
-(a log line, a pod status, a dotted path) is `unverified`, and the FIX still
+(`MemoryHigh=8G`, `memory: 256Mi`) **refuses the FIX** when the file assigns
+that key once and the claimed value is not it. A key the file assigns more
+than once is a list, not a setting — the union of every `value:` in an env
+block is not agreement. A claim that pairs `name` with `value` is compared
+to that name's own next value, so putting another entry's value on the wrong
+name still refuses. The refusal is logged and the recommendation is classified
+instead of judged. A quote that is neither (a log line, a pod status, a dotted
+path, a bare `value:` with no name) is `unverified`, and the FIX still
 enqueues. A failed read, a missing GitHub client, or any kind other than
 `gitops-manifest` is also `unverified` — contradiction is only decided when
 every gitops-manifest target was actually read.

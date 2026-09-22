@@ -33,6 +33,8 @@ MemoryMax=20G
 
 _LIVE = (Path(__file__).resolve().parents[1]
          / "charts" / "cfoperator" / "templates" / "configmap.yaml")
+_AGENT = (Path(__file__).resolve().parents[1]
+          / "charts" / "cfoperator" / "templates" / "agent.yaml")
 
 
 def _gitops(**overrides):
@@ -236,6 +238,53 @@ def test_a_dotted_path_is_not_treated_as_the_files_key():
     )
     assert result["status"] == "unverified"
     assert result["entries"][0]["result"] == "unverified"
+
+
+def test_a_named_env_does_not_inherit_another_entrys_value():
+    """agent.yaml is a list of name/value pairs. Borrowing CONFIG_PATH's
+    value onto OLLAMA_MODEL must refuse. Mutation check: drop
+    _named_list_disagreement and this stays unverified, because the flat
+    map sees `value` repeated and will not call that agreement."""
+    text = _AGENT.read_text()
+    assert "name: CONFIG_PATH" in text
+    assert "value: /app/config/config.yaml" in text
+    assert "name: OLLAMA_MODEL" in text
+    repo_root = Path(__file__).resolve().parents[1]
+    result = _check_observed_against_targets(
+        _gitops(
+            targets=[{"kind": "gitops-manifest",
+                      "id": str(_AGENT.relative_to(repo_root)),
+                      "repo": "aachtenberg/cfoperator"}],
+            observed=[{"source": "agent.yaml", "value": (
+                "- name: OLLAMA_MODEL\n"
+                "  value: /app/config/config.yaml"
+            )}],
+        ),
+        lambda repo, path: text,
+    )
+    assert result["status"] == "contradicted"
+    assert "OLLAMA_MODEL" in result["reason"]
+    assert "/app/config/config.yaml" in result["reason"]
+
+
+def test_a_bare_value_in_an_env_list_is_not_a_setting():
+    """`value` occurs once per env entry. A token that is none of them is
+    unverified, not refused: the union is not one setting, and there is no
+    name to pin it to. The real line still verifies by quote."""
+    text = _AGENT.read_text()
+    borrowed = _check_observed_against_targets(
+        _gitops(observed=[{"source": "agent.yaml", "value": "value: /not/the/config"}]),
+        lambda repo, path: text,
+    )
+    assert borrowed["status"] == "unverified"
+    quoted = _check_observed_against_targets(
+        _gitops(observed=[{
+            "source": "agent.yaml",
+            "value": "value: /app/config/config.yaml",
+        }]),
+        lambda repo, path: text,
+    )
+    assert quoted["status"] == "verified"
 
 
 def test_two_settings_quoted_as_one_blob_verify_when_the_file_has_them_in_order():

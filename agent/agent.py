@@ -929,7 +929,8 @@ def _validate_structured_fix(obj: dict,
 # or `image`, and treating those as settings refuses FIXes that quoted a path.
 _OBSERVED_ASSIGNMENT = re.compile(
     r'(?<![\w.])([A-Za-z_][\w.-]{1,80})\s*[=:]\s*'
-    r'("[^"\n]{0,200}"|\'[^\'\n]{0,200}\'|`[^`\n]{0,200}`|[^\s,;#]{1,200})'
+    r'("[^"\n]{0,200}"|\'[^\'\n]{0,200}\'|`[^`\n]{0,200}`|'
+    r'\{\{[^}]{0,200}\}\}|[^\s,;#]{1,200})'
 )
 
 
@@ -966,14 +967,72 @@ def _quote_in_text(blob: str, claim: str) -> bool:
         return True
 
 
+def _assignment_value(raw: str) -> str:
+    return raw.strip().strip('"\'').strip('`').strip()
+
+
+def _assignments(text: str) -> List[Tuple[str, str]]:
+    """Assignments in file order. A Helm ``{{ }}`` is one value, not ``{{``."""
+    found: List[Tuple[str, str]] = []
+    for match in _OBSERVED_ASSIGNMENT.finditer(text or ''):
+        val = _assignment_value(match.group(2))
+        if val:
+            found.append((match.group(1), val))
+    return found
+
+
 def _assignment_map(text: str) -> Dict[str, set]:
     found: Dict[str, set] = {}
-    for match in _OBSERVED_ASSIGNMENT.finditer(text or ''):
-        key = match.group(1)
-        val = match.group(2).strip().strip('"\'').strip('`').strip()
-        if val:
-            found.setdefault(key, set()).add(val)
+    for key, val in _assignments(text):
+        found.setdefault(key, set()).add(val)
     return found
+
+
+def _named_list_disagreement(file_text: str, claim: str) -> Optional[str]:
+    """A ``name`` / ``value`` pair compared to that name's own next value.
+
+    k8s env lists repeat ``name`` and ``value``. The flat map unions every
+    ``value:``, so a fabricated value can match some other entry and skip
+    the refusal. This only fires when the claim names the entry. A bare
+    ``value:`` with no name is not a setting we can pin to one list item.
+    """
+    claim_pairs = _assignments(claim)
+    file_pairs = _assignments(file_text)
+    for i, (key, named) in enumerate(claim_pairs):
+        if key != 'name':
+            continue
+        claimed_value = None
+        for nkey, nval in claim_pairs[i + 1:]:
+            if nkey == 'name':
+                break
+            if nkey == 'value':
+                claimed_value = nval
+                break
+        if claimed_value is None:
+            continue
+        saw_name = False
+        agreed = False
+        held_values: List[str] = []
+        for j, (fkey, fval) in enumerate(file_pairs):
+            if fkey != 'name' or fval != named:
+                continue
+            saw_name = True
+            for nkey, nval in file_pairs[j + 1:]:
+                if nkey == 'name':
+                    break
+                if nkey == 'value':
+                    if nval == claimed_value:
+                        agreed = True
+                    else:
+                        held_values.append(nval)
+                    break
+        if saw_name and not agreed and held_values:
+            have = ', '.join(held_values)
+            return (
+                f"observed value contradicts the target: name={named} "
+                f"value={claimed_value} is not what the file holds (value={have})"
+            )
+    return None
 
 
 def _check_observed_against_targets(fix: Dict[str, Any], read_file) -> Dict[str, Any]:
@@ -984,9 +1043,13 @@ def _check_observed_against_targets(fix: Dict[str, Any], read_file) -> Dict[str,
     read; every other kind stays unverified, which the row then says.
 
     A quote that occurs in a file that was read is verified. A bare
-    assignment whose key the file also assigns, and whose value is not one
-    of those, contradicts — the caller refuses the FIX. Anything else
-    (a log line, a pod status) is unverified and the FIX still stands.
+    assignment contradicts only when the file assigns that key once and
+    the claimed value is not it — a repeated key is a list (``name`` /
+    ``value`` in an env block), and the union of those values is not a
+    setting. A claim that pairs ``name`` with ``value`` is compared to
+    that name's own next value, so borrowing another entry's value does
+    not slip through. Anything else (a log line, a pod status, a bare
+    ``value:`` with no name) is unverified and the FIX still stands.
     Contradiction is decided only when every gitops-manifest target was
     read. A failed read cannot tell a lie from a file we do not have.
     """
@@ -1039,10 +1102,17 @@ def _check_observed_against_targets(fix: Dict[str, Any], read_file) -> Dict[str,
         if value and _quote_in_text(blob, value):
             entries.append({'source': source, 'result': 'verified'})
             continue
+        pair = _named_list_disagreement(blob, value)
+        if pair:
+            contradiction = pair
+            entries.append({'source': source, 'result': 'contradicted'})
+            continue
         disagreed = False
         for key, vals in _assignment_map(value).items():
             held = file_assign.get(key)
-            if not held or vals <= held:
+            # One value means a setting. Many values means a list, and
+            # matching any of them is noise, not agreement.
+            if not held or len(held) != 1 or vals <= held:
                 continue
             got = ', '.join(sorted(vals))
             have = ', '.join(sorted(held))
