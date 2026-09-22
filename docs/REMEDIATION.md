@@ -254,11 +254,28 @@ state next to the proposed change.
 
 ### Limit worth knowing
 
-`observed` is checked for **presence and shape, not truth**. Nothing yet reads
-the target to confirm the claimed value, so a fabricated one passes. The
-mechanism is that filling the field requires a tool call, and the read is what
-puts the target's own context — a comment explaining a limit, say — in front of
-the model. Verification against the live target is tracked separately.
+`observed` is checked for **presence and shape** in `_validate_structured_fix`,
+which stays pure. At enqueue, `_check_observed_against_targets` reads
+`gitops-manifest` files through the GitHub contents API and compares the
+claimed text to those bytes. It does not run `source`.
+
+A quote that occurs in the file is `verified`. A bare assignment
+(`MemoryHigh=8G`, `memory: 256Mi`) **refuses the FIX** when the file assigns
+that key once and the claimed value is not it. A key the file assigns more
+than once is a list, not a setting — the union of every `value:` in an env
+block is not agreement. A claim that pairs `name` with `value` is compared
+to that name's own next value, so putting another entry's value on the wrong
+name still refuses. The refusal is logged and the recommendation is classified
+instead of judged. A quote that is neither (a log line, a pod status, a dotted
+path, a bare `value:` with no name) is `unverified`, and the FIX still
+enqueues. A failed read, a missing GitHub client, or any kind other than
+`gitops-manifest` is also `unverified` — contradiction is only decided when
+every gitops-manifest target was actually read.
+
+The queue payload's `observed_check` (`status`, `reason`) is what the drawer
+shows, so an unverified claim is not presented as a value that was checked.
+The read that fills `observed` is still what puts the file's own comment in
+front of the model. k8s, ssh, and database targets are not read here.
 
 ## Remediation queue state machine
 
