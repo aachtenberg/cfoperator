@@ -440,6 +440,8 @@ function recommendationBlock(f){
   if(steps.length) h+=`<div class="kv"><b>steps</b>${copyIcon('steps',{text:steps.map((x,i)=>(i+1)+'. '+x).join('\n')})}</div>
     <ol class="steps">${steps.map(x=>`<li>${esc(x)}</li>`).join('')}</ol>`;
   if(v&&(v.command||v.expect)) h+=`<div class="kv verify"><b>verify</b> ${v.command?`<code id="verify-cmd">${esc(v.command)}</code>${copyIcon('verify command',{from:'verify-cmd'})}`:''}${v.expect?` <span class="muted">→ expect: ${esc(v.expect)}</span>`:''}</div>`;
+  const chk=(fix.observed_check&&typeof fix.observed_check==='object')?fix.observed_check:null;
+  if(chk&&chk.status) h+=`<div class="kv"><b>observed check</b> ${esc(chk.status)} <span class="muted">${esc(chk.reason||'')}</span></div>`;
   if(observed.length||rejected.length){
     const n=[observed.length?observed.length+' observed':'', rejected.length?rejected.length+' rejected':''].filter(Boolean).join(' · ');
     h+=`<details><summary>Evidence <span class="muted">(${n})</span></summary>`;

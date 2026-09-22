@@ -262,6 +262,11 @@ def build_question(row: Dict[str, Any]) -> str:
                              f"{str(item.get('value') or '')[:400]}")
             else:
                 lines.append(f"- {str(item)[:400]}")
+    check = p.get('observed_check')
+    if isinstance(check, dict) and check.get('status'):
+        lines.append(
+            f"Observed check: {check.get('status')} — {str(check.get('reason') or '')[:300]}"
+        )
     lines += ["", "Does this recommendation still stand?"]
     return "\n".join(lines)
 

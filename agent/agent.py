@@ -850,9 +850,9 @@ def _validate_structured_fix(obj: dict,
     # explains three lines above the setting that the 16G/20G cap exists
     # because ollama+runners once OOM-killed cluster pods. Requiring the
     # current value forces the call that puts that comment in context.
-    # Validation only checks that a specific claim was made -- a fabricated
-    # value still passes, and verifying it against the live target is a
-    # separate piece of plumbing.
+    # Validation only checks that a specific claim was made. Whether that
+    # claim is in the gitops file is _check_observed_against_targets
+    # (CFOP-89), which does not run here.
     # Every refusal here is logged, none silently. Requiring this field means
     # a non-complying model degrades every FIX to the classifier, which is a
     # real quality drop that would otherwise look like the FIX path simply
@@ -888,9 +888,9 @@ def _validate_structured_fix(obj: dict,
         # fabricated. Row #97 quoted a real log line and replaced the
         # timestamps that would have refuted the FIX with `...`. A source and
         # a non-empty value were present, so the payload looked like evidence
-        # while carrying none. Live verification of the claimed value is
-        # still a separate piece of plumbing -- this only refuses the
-        # placeholder.
+        # while carrying none. Whether the value is actually in the target is
+        # _check_observed_against_targets (CFOP-89), which runs later and
+        # reads the file itself. This function stays pure.
         if '...' in value or '…' in value:
             return _no_observed("`observed` value is elided")
         clean_obs.append({'source': source, 'value': value})
@@ -922,6 +922,153 @@ def _validate_structured_fix(obj: dict,
             return None
         out['risk'] = risk
     return out
+
+
+# A bare assignment the file can disagree with. Dotted paths
+# (resources.limits.memory) are not keys: the last segment is often `name`
+# or `image`, and treating those as settings refuses FIXes that quoted a path.
+_OBSERVED_ASSIGNMENT = re.compile(
+    r'(?<![\w.])([A-Za-z_][\w.-]{1,80})\s*[=:]\s*'
+    r'("[^"\n]{0,200}"|\'[^\'\n]{0,200}\'|`[^`\n]{0,200}`|[^\s,;#]{1,200})'
+)
+
+
+def _norm_observed_quote(text: str) -> str:
+    """Whitespace-collapsed, with spaces around = and : removed.
+
+    `MemoryHigh = 16G` and `MemoryHigh=16G` are the same quote. Other
+    spaces stay, so `8G` is not found inside `128G` by deleting them.
+    """
+    text = re.sub(r'\s+', ' ', str(text or '')).strip()
+    return re.sub(r'\s*([=:])\s*', r'\1', text)
+
+
+def _quote_in_text(blob: str, claim: str) -> bool:
+    """True when the normalized claim occurs in the blob on a token boundary."""
+    blob_n = _norm_observed_quote(blob)
+    claim_n = _norm_observed_quote(claim)
+    if not claim_n:
+        return False
+    start = 0
+    while True:
+        i = blob_n.find(claim_n, start)
+        if i < 0:
+            return False
+        before = blob_n[i - 1] if i else ''
+        after_at = i + len(claim_n)
+        after = blob_n[after_at] if after_at < len(blob_n) else ''
+        if claim_n[0].isalnum() and before.isalnum():
+            start = i + 1
+            continue
+        if claim_n[-1].isalnum() and after.isalnum():
+            start = i + 1
+            continue
+        return True
+
+
+def _assignment_map(text: str) -> Dict[str, set]:
+    found: Dict[str, set] = {}
+    for match in _OBSERVED_ASSIGNMENT.finditer(text or ''):
+        key = match.group(1)
+        val = match.group(2).strip().strip('"\'').strip('`').strip()
+        if val:
+            found.setdefault(key, set()).add(val)
+    return found
+
+
+def _check_observed_against_targets(fix: Dict[str, Any], read_file) -> Dict[str, Any]:
+    """Compare observed values to gitops-manifest files (CFOP-89).
+
+    ``read_file(repo, path)`` returns the file text, or None when it could
+    not be read. ``source`` is not executed. Only ``gitops-manifest`` is
+    read; every other kind stays unverified, which the row then says.
+
+    A quote that occurs in a file that was read is verified. A bare
+    assignment whose key the file also assigns, and whose value is not one
+    of those, contradicts — the caller refuses the FIX. Anything else
+    (a log line, a pod status) is unverified and the FIX still stands.
+    Contradiction is decided only when every gitops-manifest target was
+    read. A failed read cannot tell a lie from a file we do not have.
+    """
+    targets = [t for t in (fix.get('targets') or [])
+               if isinstance(t, dict) and t.get('kind') == 'gitops-manifest']
+    observed = [o for o in (fix.get('observed') or []) if isinstance(o, dict)]
+
+    def _entries(result: str) -> List[Dict[str, str]]:
+        return [{'source': str(o.get('source') or ''), 'result': result} for o in observed]
+
+    if not targets:
+        return {
+            'status': 'unverified',
+            'reason': 'no gitops-manifest target to read',
+            'entries': _entries('unverified'),
+        }
+
+    texts: List[str] = []
+    unread: List[str] = []
+    for target in targets:
+        repo = str(target.get('repo') or '').strip()
+        path = str(target.get('id') or '').strip().lstrip('/')
+        body = None
+        if read_file is not None and repo and path:
+            try:
+                body = read_file(repo, path)
+            except Exception as e:
+                logger.warning("FIX observed check: read %s/%s failed (%s)",
+                               repo, path, e)
+                body = None
+        if isinstance(body, str):
+            texts.append(body)
+        else:
+            unread.append(f"{repo}:{path}" if repo else path)
+    if unread or not texts:
+        missed = ', '.join(unread or ['gitops-manifest target'])
+        return {
+            'status': 'unverified',
+            'reason': f'could not read {missed}',
+            'entries': _entries('unverified'),
+        }
+
+    blob = '\n'.join(texts)
+    file_assign = _assignment_map(blob)
+    entries: List[Dict[str, str]] = []
+    contradiction = None
+    for item in observed:
+        source = str(item.get('source') or '')
+        value = str(item.get('value') or '')
+        if value and _quote_in_text(blob, value):
+            entries.append({'source': source, 'result': 'verified'})
+            continue
+        disagreed = False
+        for key, vals in _assignment_map(value).items():
+            held = file_assign.get(key)
+            if not held or vals <= held:
+                continue
+            got = ', '.join(sorted(vals))
+            have = ', '.join(sorted(held))
+            contradiction = (
+                f"observed value contradicts the target: {key}={got} "
+                f"is not what the file holds ({key}={have})"
+            )
+            entries.append({'source': source, 'result': 'contradicted'})
+            disagreed = True
+            break
+        if not disagreed:
+            entries.append({'source': source, 'result': 'unverified'})
+    if contradiction:
+        return {'status': 'contradicted', 'reason': contradiction, 'entries': entries}
+    if entries and all(e['result'] == 'verified' for e in entries):
+        return {
+            'status': 'verified',
+            'reason': 'quoted text is in the gitops target',
+            'entries': entries,
+        }
+    return {
+        'status': 'unverified',
+        'reason': ('quoted text is not in the gitops target, and it states '
+                   'no setting the file disagrees with'),
+        'entries': entries,
+    }
 
 
 def _is_noop_recommendation(recommendation: str) -> bool:
@@ -1116,6 +1263,7 @@ def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
         'steps': list(fix.get('steps') or []),
         'verify': dict(fix.get('verify') or {}),
         'rejected': list(fix.get('rejected') or []),
+        'observed_check': dict(fix.get('observed_check') or {}),
     }
 
 # Triggers that describe a *recoverable* runtime condition — if the pod is
@@ -4583,7 +4731,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         if dedupe_key:
             payload['dedupe_key'] = dedupe_key
         # CFOP-80: structured FIX rides beside target.host, never replaces it.
-        for key in ('targets', 'observed', 'steps', 'verify', 'rejected'):
+        for key in ('targets', 'observed', 'steps', 'verify', 'rejected',
+                    'observed_check'):
             if details.get(key) is not None:
                 payload[key] = details[key]
         if details.get('opened_prs'):
@@ -5420,6 +5569,27 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         basis = re.sub(r'\s+', ' ', f"{host}|{recommendation}".lower()).strip()
         return 'inv-' + hashlib.sha1(basis.encode('utf-8')).hexdigest()[:16]
 
+    def _read_gitops_target(self, repo: str, path: str):
+        """File bytes for a gitops-manifest target, or None when unread.
+
+        The contents API, not the model's ``source`` string. A missing
+        client, a non-dict result, or a failed read is None — the check
+        then says unverified instead of inventing a contradiction.
+        """
+        gh = getattr(getattr(self, 'tools', None), 'github_tools', None)
+        get = getattr(gh, 'get_file_contents', None)
+        if not callable(get):
+            return None
+        try:
+            result = get(repo, path)
+        except Exception as e:
+            logger.warning("FIX observed check: read %s/%s failed (%s)", repo, path, e)
+            return None
+        if not isinstance(result, dict) or not result.get('success'):
+            return None
+        content = result.get('content')
+        return content if isinstance(content, str) else None
+
     def _queue_needs_action_remediation(self, investigation_id: int, trigger: str,
                                         alert_info: Dict[str, Any], recommendation: str,
                                         response_text: str, provider: str,
@@ -5480,6 +5650,30 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                      else _parse_structured_fix(response_text, repos))
         fix = (_validate_structured_fix(candidate, repos)
                if isinstance(candidate, dict) else None)
+        if fix:
+            # CFOP-89: the pure validator only checked the shape. This reads
+            # the gitops file. A contradiction drops the FIX the same way a
+            # missing `observed` does — the classifier still runs, the judge
+            # does not see the fabricated value. The stamp stays on the
+            # caller's object, so the investigation drawer can say refused.
+            check = _check_observed_against_targets(fix, self._read_gitops_target)
+            # `fix` is the validated copy. `candidate` is the object the
+            # caller stored on the investigation, when it passed one in.
+            # Stamp both, or the drawer still shows a bare claim.
+            stamp = {
+                'status': check['status'],
+                'reason': check['reason'],
+                'entries': check['entries'],
+            }
+            fix['observed_check'] = stamp
+            if isinstance(candidate, dict):
+                candidate['observed_check'] = stamp
+            if check['status'] == 'contradicted':
+                logger.warning(
+                    "FIX rejected: %s — cannot show what was read before "
+                    "proposing a change (targets=%r)",
+                    check['reason'], [t.get('id') for t in fix.get('targets') or []])
+                fix = None
         if fix:
             # Mutation check: drop this branch and test_valid_fix_skips_classifier fails.
             hints = _hints_from_structured_fix(fix)

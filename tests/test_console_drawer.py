@@ -743,7 +743,8 @@ const base={investigation_id:2312,remediation_class:'gitops-patch',risk:'low',ho
 const ROWS={
   85:Object.assign({},base,{id:85,status:'needs-human',pr_url:null,named_pr_url:NAMED}),
   86:Object.assign({},base,{id:86,status:'pr-open',pr_url:TRACKED,named_pr_url:null}),
-  87:Object.assign({},base,{id:87,status:'needs-human',pr_url:null,named_pr_url:null})};
+  87:Object.assign({},base,{id:87,status:'needs-human',pr_url:null,named_pr_url:null,
+    payload:Object.assign({},base.payload,{observed_check:{status:'unverified',reason:'no gitops-manifest target to read'}})})};
 const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,Set,
   setTimeout,clearTimeout, setInterval:()=>0, clearInterval:()=>{},
   location:loc, history:hist,
@@ -815,7 +816,66 @@ def test_a_row_with_no_pr_is_unchanged(pr_drawer):
     assert "Review PR" not in d and "Named PR" not in d and "github.com" not in d
 
 
+def test_an_unverified_observed_check_is_on_the_row(pr_drawer):
+    """CFOP-89. A claim that was not read against a file must not look like
+    one that was. Mutation check: drop the observed_check line in
+    remediations.html and this fails."""
+    d = pr_drawer["drawer87"]
+    assert "observed check" in d
+    assert "unverified" in d
+    assert "no gitops-manifest target to read" in d
+    assert "observed check" not in pr_drawer["drawer86"]
+
+
 def test_the_list_links_both_kinds_of_pr(pr_drawer):
     assert f'href="{_TRACKED}"' in pr_drawer["row86"] and "PR ↗" in pr_drawer["row86"]
     assert f'href="{_NAMED}"' in pr_drawer["row85"] and "not tracked" in pr_drawer["row85"]
     assert "github.com" not in pr_drawer["row87"]
+
+
+def test_investigation_evidence_shows_an_observed_check():
+    """The investigation drawer is the other place a FIX is read. A refused
+    or unread value has to be visible there too, not only on the queue row."""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+    stub = r"""
+const fs=require('fs'), vm=require('vm'), path=require('path');
+const html=fs.readFileSync(process.argv[2],'utf8');
+const src=html.match(/<script>([\s\S]*?)<\/script>/)[1];
+const common=fs.readFileSync(path.join(path.dirname(process.argv[2]),'common.js'),'utf8');
+function el(){return{className:'',innerHTML:'',textContent:'',value:'',hidden:false,
+  style:{},classList:{add(){},remove(){}},setAttribute(){},select(){},remove(){},
+  focus(){},scrollIntoView(){},appendChild(){},addEventListener(){}};}
+const loc={pathname:'/investigations',search:'',hash:'',href:'http://cfop/investigations'};
+const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
+  setTimeout,clearTimeout, setInterval:()=>0, clearInterval:()=>{},
+  location:loc, history:{replaceState(){}},
+  window:{location:loc,addEventListener(){},removeEventListener(){}},
+  getComputedStyle:()=>({getPropertyValue:()=>'#888888'}),
+  document:{documentElement:{},body:{appendChild(){}},addEventListener(){},
+    createElement:()=>el(), getElementById:()=>el()},
+  DOMParser:function(){ this.parseFromString=h=>({body:{firstChild:{querySelectorAll:()=>[],
+    innerHTML:h}}}); },
+  navigator:{},
+  fetch:()=>Promise.resolve({ok:true,json:()=>Promise.resolve({investigations:[]})})};
+box.globalThis=box; vm.createContext(box);
+vm.runInContext(common,box); vm.runInContext(src,box);
+const htmlOut=box.recommendationBlock({recommendation:'raise the cap', fix:{
+  risk:'low', targets:[{kind:'gitops-manifest',id:'apps/override.conf',repo:'aachtenberg/homelab-infra'}],
+  steps:['set MemoryHigh=20G'],
+  observed:[{source:'override.conf',value:'MemoryHigh=8G'}],
+  observed_check:{status:'contradicted',reason:'observed value contradicts the target: MemoryHigh=8G is not what the file holds (MemoryHigh=16G)'}
+}});
+if(!htmlOut || htmlOut.indexOf('observed check')<0 || htmlOut.indexOf('contradicted')<0){
+  console.error(htmlOut); process.exit(1);
+}
+"""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "stub.js")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(stub)
+        out = subprocess.run([node, path, str(UI / "investigations.html")],
+                             capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr or out.stdout
