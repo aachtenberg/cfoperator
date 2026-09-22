@@ -221,3 +221,31 @@ def test_every_test_directory_runs_in_ci():
         checked += 1
         assert d.name in listed, f"{d.name}/ has test_*.py but tests.yml never runs them"
     assert checked >= 5, "the glob found almost nothing; is REPO_ROOT right?"
+
+
+def test_the_pr_review_posts_in_this_session():
+    """A ready pull request is reviewed without anyone commenting @claude.
+
+    The code-review plugin launches background subagents and then ends the
+    turn to wait for a notification. This action never resumes that session,
+    so the check goes green and the PR gets nothing (claude-code-action
+    #1087). @claude still posts, because that workflow has no plugin and
+    finishes in the same turn — which is why a mention worked and the
+    automatic run did not. The review prompt has to do the work itself and
+    post before it stops, and Agent/Task/Skill stay off the allowlist
+    because those are the tools that background it.
+    """
+    text = (REPO_ROOT / ".github" / "workflows" / "claude-code-review.yml").read_text(encoding="utf-8")
+    assert "types: [opened, synchronize, ready_for_review, reopened]" in text
+    assert "github.event.pull_request.draft == false" in text
+    assert "code-review@claude-code-plugins" not in text
+    assert "/code-review:code-review" not in text
+    assert "Do not launch a subagent" in text
+    assert "gh pr comment" in text
+    # The allowlist is one line. A tool named there is offered; the plugin
+    # path put Agent and Task on it, and that is the run that posted nothing.
+    allow = next(line for line in text.splitlines() if "allowedTools" in line)
+    for banned in ("Agent", "Task", "Skill"):
+        assert banned not in allow, f"{banned} is back on the review allowlist"
+    assert "Bash(gh pr comment:*)" in allow
+    assert "issues: write" in text
