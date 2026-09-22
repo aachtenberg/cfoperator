@@ -18,11 +18,13 @@ from typing import Dict, Any, List, Optional, Tuple
 from urllib.parse import urlsplit
 import hashlib
 import ipaddress
+import json
 import logging
 import os
 import re
 import requests as _requests
 from cfshared.config import ROLE_ADMIN
+from cfshared.tool_args import redact_tool_args
 from .ssh import SSHTools, ssh_mutation_reason
 from .discovery import DiscoveryTools
 from .k8s import K8sTools
@@ -67,6 +69,18 @@ _VERIFY_COMMAND_GATED = {'ssh_execute': 'command'}
 #                approved. Without this an investigation could queue itself a
 #                remediation past the auto-execute gate (CFOP-160, review).
 _SCHEMA_MARKERS = ('mutating', 'human_only')
+
+
+def summarize_tool_args(arguments: Any) -> str:
+    """One JSON blob for the mutating-tool INFO line.
+
+    The same ``redact_tool_args`` the chat transcript stores, so a credential
+    that is ``***`` in the pod log is ``***`` in the session too.
+    """
+    try:
+        return json.dumps(redact_tool_args(arguments), default=str, ensure_ascii=False)
+    except Exception:
+        return '{}'
 
 
 @dataclass(frozen=True)
@@ -1081,7 +1095,13 @@ class ToolRegistry:
             elif arguments is None:
                 arguments = {}
 
-            logger.info(f"Executing tool: {tool_name}")
+            # Mutating calls name their arguments (CFOP-125). The marker is
+            # the same one the policy reads — a second list would drift.
+            # Read-only stays name-only: those lines are already noise.
+            if self.is_mutating(tool_name):
+                logger.info("Executing tool: %s %s", tool_name, summarize_tool_args(arguments))
+            else:
+                logger.info("Executing tool: %s", tool_name)
             func = self.tools[tool_name]['function']
             result = func(**arguments)
             logger.info(f"Tool {tool_name} completed successfully")
