@@ -84,6 +84,7 @@ class DynatraceProblemSource(AlertSource):
         escalation_ledger: EscalationLedger | None = None,
         poll_seconds: float = 60.0,
         lookback: str = "7d",
+        problem_filter: str | None = None,
         max_backoff_seconds: float = 900.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -93,8 +94,15 @@ class DynatraceProblemSource(AlertSource):
         self._lookback_seconds = lookback_seconds(lookback)
         self._max_backoff = float(max_backoff_seconds)
         self._clock = clock
+        # CFOP-213: an operator-owned DQL condition scoping which problems count.
+        # It applies to the CLOSED row that resolves a problem too, so it must
+        # select on where a problem is, not on its state. The parentheses keep
+        # an "or" inside it from binding to the rest of the query.
+        self._problem_filter = (problem_filter or "").strip() or None
+        scope = f"| filter ({self._problem_filter})\n" if self._problem_filter else ""
         self._query = (
             f"fetch dt.davis.problems, from:-{lookback.strip()}\n"
+            f"{scope}"
             "| sort timestamp desc\n"
             f"| fields {', '.join(_FIELDS)}"
         )
@@ -114,6 +122,16 @@ class DynatraceProblemSource(AlertSource):
             self._failures += 1
             backoff = min(self._max_backoff, self._poll_seconds * 2 ** min(self._failures - 1, 6))
             self._next_poll = now + backoff
+            if exc.status == 400:
+                # Grail rejected the query itself. The fixed part is tested, so
+                # this is almost always the operator's filter; a warning per
+                # backoff cycle would leave the source quietly never working.
+                logger.error(
+                    "Dynatrace rejected the problem query (%s); no problems will arrive until it is fixed%s",
+                    exc,
+                    f". Check CFOP_DYNATRACE_PROBLEM_FILTER={self._problem_filter!r}" if self._problem_filter else "",
+                )
+                return []
             if self._failures <= 3 or self._failures % 10 == 0:
                 logger.warning(
                     "Dynatrace problem poll failed (failure #%d, next try in %.0fs): %s",
