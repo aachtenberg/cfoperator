@@ -272,6 +272,9 @@ def test_register_needs_both_url_and_token(monkeypatch):
 @pytest.mark.parametrize("env,message", [
     ({"CFOP_DYNATRACE_POLL_SECONDS": "5"}, "must be a number of seconds >= 10"),
     ({"CFOP_DYNATRACE_POLL_SECONDS": "often"}, "must be a number of seconds >= 10"),
+    ({"CFOP_DYNATRACE_POLL_SECONDS": "nan"}, "must be a number of seconds >= 10"),
+    ({"CFOP_DYNATRACE_POLL_SECONDS": "inf"}, "must be a number of seconds >= 10"),
+    ({"CFOP_DYNATRACE_POLL_SECONDS": "-inf"}, "must be a number of seconds >= 10"),
     ({"CFOP_DYNATRACE_LOOKBACK": "a week"}, "lookback must look like"),
     ({"DT_ENVIRONMENT_URL": "https://abc12345.live.dynatrace.com"}, "platform host"),
 ])

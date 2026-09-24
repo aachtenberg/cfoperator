@@ -218,8 +218,11 @@ class DynatraceProblemSource(AlertSource):
 
         # Order is load-bearing. The agent puts json.dumps(alert)[:1000] into
         # the investigation prompt (agent.run_investigation), and details comes
-        # before namespace/resource_name in Alert.to_dict(). So what an
-        # investigation needs goes first and the unbounded parts go last.
+        # before namespace/resource_name in Alert.to_dict(), so for a big
+        # problem those top-level fields fall outside that window entirely.
+        # What an investigation needs therefore rides inside details, first:
+        # the title, then labels (which repeat namespace and workload), then
+        # the display id; the unbounded parts go last.
         details: Dict[str, Any] = {"alertname": title, "labels": labels}
         if host:
             details["host"] = host

@@ -26,6 +26,7 @@ and retried with backoff, and the runtime's other sources carry on.
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Any
 
@@ -46,7 +47,9 @@ def register(plugins: Any, context: Any) -> None:
         poll_seconds = float(raw_poll)
     except ValueError:
         poll_seconds = 0.0
-    if poll_seconds < 10:
+    # float() takes "nan" and "inf", and nan < 10 is False: without the
+    # isfinite check a NaN would disable the throttle and inf stop polling.
+    if not math.isfinite(poll_seconds) or poll_seconds < 10:
         raise ValueError(f"CFOP_DYNATRACE_POLL_SECONDS must be a number of seconds >= 10, got {raw_poll!r}")
 
     plugins.register_alert_source(
