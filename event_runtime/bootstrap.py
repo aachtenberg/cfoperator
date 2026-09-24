@@ -34,6 +34,7 @@ from .http_actions import (
     log_runtime_auth_status,
 )
 from .escalation import EscalationLedger
+from .external_plugins import PluginContext, load_external_plugins
 from .notifications import SlackNotificationSink, DiscordNotificationSink, NtfyNotificationSink
 from .heartbeat import HeartbeatPusher, build_heartbeat_pusher
 from .plugins import AlertSource
@@ -173,6 +174,17 @@ def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
         plugins.register_alert_source(
             AlertmanagerAlertSource(url=alertmanager_url, escalation_ledger=escalation_ledger)
         )
+
+    # Plugins the core does not name (CFOP_EVENT_RUNTIME_PLUGINS). Last, so a
+    # plugin sees the built-ins and gets the same escalation ledger they do.
+    load_external_plugins(
+        plugins,
+        PluginContext(
+            config=_load_root_config(config_path),
+            config_path=config_path,
+            escalation_ledger=escalation_ledger,
+        ),
+    )
 
     return EventRuntime(plugins, escalation_ledger=escalation_ledger)
 

@@ -234,6 +234,7 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_CONFIG_PATH`: path to a JSON config file for bare-metal observability providers
 - `CFOP_AGENT_URL`: base URL of the CFOperator agent (e.g. `http://cfoperator.apps.svc.cluster.local:8083`). When set, the runtime registers `HTTPInvestigateActionHandler` in place of the default stub for the `investigate` action, so every `investigate` decision is dispatched to the agent over HTTP. Unsetting it falls back to the stub.
 - `CFOP_RUNTIME_TOKEN`: bearer token enforced on the HTTP surface — `POST /alert` (which enqueues LLM investigations) plus the `/history`, `/activity`, `/scheduled` and `/jobs` read endpoints that replay the fleet's incident history. `/livez`, `/health`, `/metrics` and the completion endpoint (separately authenticated) stay open. When unset, those routes accept unauthenticated requests and a warning is logged at startup. Compared via `secrets.compare_digest`.
+- `CFOP_EVENT_RUNTIME_PLUGINS`: plugins to load after the built-ins, as comma-separated `module` or `module:callable` entries (callable defaults to `register`). A named plugin that cannot be loaded stops the runtime at startup. See [External Plugins](#external-plugins).
 - `CFOP_COMPLETION_SHARED_SECRET`: shared secret enforced on `POST /v1/investigations/{alert_id}/complete`. Callers must send a matching `X-CFOP-Token` header. When unset, the endpoint accepts unauthenticated posts (portable deployments without an agent stay runnable) and logs a warning at startup. Compared via `secrets.compare_digest` to avoid timing attacks.
 
 The runtime also reads bare-metal host observability config from `config.yaml` when PyYAML is available. It looks for `event_runtime.host_observability` first, then `observability.host_observability`. You can point the runtime at a specific file with `CONFIG_PATH=/path/to/config.yaml` or `python3 -m event_runtime --config /path/to/config.yaml`.
@@ -444,6 +445,44 @@ WantedBy=multi-user.target
 ```
 
 You can also start from the repository unit template at [deploy/systemd/cfoperator-event-runtime.service](../deploy/systemd/cfoperator-event-runtime.service).
+
+## External Plugins
+
+The runtime's plugin roles (alert sources, context providers, notification
+sinks, action handlers and the rest, in `event_runtime/plugins.py`) are not
+limited to the ones it registers itself. Name a module in
+`CFOP_EVENT_RUNTIME_PLUGINS` and the runtime imports it and calls its
+`register` function once the built-ins are in place:
+
+```python
+# my_plugin.py -- importable from the runtime's PYTHONPATH
+from event_runtime.plugins import AlertSource
+
+class MySource(AlertSource):
+    name = "my-source"
+
+    def poll(self):
+        return []  # normalized event_runtime.models.Alert objects
+
+def register(plugins, context):
+    # plugins: the runtime's PluginManager; use its register_* methods.
+    # context.config: the merged root config; context.config_path: its path.
+    # context.escalation_ledger: pass it to an alert source that reports
+    #   clears, so escalated alerts still get their one "Resolved:" notice.
+    plugins.register_alert_source(MySource())
+```
+
+```bash
+export CFOP_EVENT_RUNTIME_PLUGINS=my_plugin            # calls my_plugin.register
+export CFOP_EVENT_RUNTIME_PLUGINS=my_plugin:setup      # calls my_plugin.setup instead
+```
+
+Plugins load last, in the order named, and a module named twice loads once.
+Because action handlers are keyed by action name, a plugin can deliberately
+replace a built-in one, the same way `CFOP_AGENT_URL` replaces the
+`investigate` stub. A plugin that fails to import or raises while registering
+stops the runtime at startup with the entry in the message: silently running
+without a source the operator asked for is the worse failure.
 
 ## Notes
 

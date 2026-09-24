@@ -81,6 +81,8 @@ jobs:
 
           run "observability" "${root}" observability
           run "auth" "${root}" auth
+          # Absolute `from integrations...` imports, so repo root only, like the two above.
+          run "integrations" "${root}" integrations
 
           run "tests" "${root}" tests
 
