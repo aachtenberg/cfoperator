@@ -290,8 +290,17 @@ def test_a_malformed_lookback_is_refused(value):
 
 # --- register(), through the real loader ------------------------------------
 
+# Every variable register() reads. Each _load clears all of them first, so a
+# value exported in the developer's shell cannot leak into a "not set" test.
+PLUGIN_ENV = (
+    "DT_ENVIRONMENT_URL", "DT_PLATFORM_TOKEN", "DT_PROBLEMS_TOKEN", "DT_API_URL",
+    "CFOP_DYNATRACE_POLL_SECONDS", "CFOP_DYNATRACE_LOOKBACK", "CFOP_DYNATRACE_EVIDENCE",
+    "CFOP_DYNATRACE_PROBLEM_FILTER",
+)
+
+
 def _load(monkeypatch, **env):
-    for key in ("DT_ENVIRONMENT_URL", "DT_PLATFORM_TOKEN", "CFOP_DYNATRACE_POLL_SECONDS", "CFOP_DYNATRACE_LOOKBACK"):
+    for key in PLUGIN_ENV:
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -327,9 +336,8 @@ def test_register_refuses_bad_settings_at_startup(monkeypatch, env, message):
     ("   ", None),
 ])
 def test_register_reads_the_problem_filter(monkeypatch, raw, expected):
-    monkeypatch.setenv("CFOP_DYNATRACE_PROBLEM_FILTER", raw)
     plugins, _ = _load(monkeypatch, DT_ENVIRONMENT_URL="https://abc12345.apps.dynatrace.com",
-                       DT_PLATFORM_TOKEN="dt0s16.X.Y")
+                       DT_PLATFORM_TOKEN="dt0s16.X.Y", CFOP_DYNATRACE_PROBLEM_FILTER=raw)
     query = plugins.alert_sources[0]._query
     if expected:
         assert expected in query
@@ -347,6 +355,8 @@ def test_register_adds_the_problem_source_with_the_runtimes_ledger(monkeypatch):
 
 def test_the_plugin_feeds_the_real_runtime_end_to_end(monkeypatch, tmp_path):
     """CFOP_EVENT_RUNTIME_PLUGINS=integrations.dynatrace through build_portable_runtime."""
+    for key in PLUGIN_ENV:
+        monkeypatch.delenv(key, raising=False)
     from event_runtime.bootstrap import build_portable_runtime
 
     monkeypatch.setattr(grail.GrailClient, "query", lambda self, dql, **kw: GrailResult(records=[P_26091]))

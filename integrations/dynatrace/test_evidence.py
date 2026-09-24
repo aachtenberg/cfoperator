@@ -21,7 +21,7 @@ from integrations.dynatrace import grail
 from integrations.dynatrace.evidence import DynatraceEvidenceProvider, dql_string
 from integrations.dynatrace.grail import GrailQueryError, GrailResult
 from integrations.dynatrace.problems import DynatraceProblemSource
-from integrations.dynatrace.test_problems import P_26091, row
+from integrations.dynatrace.test_problems import P_26091, PLUGIN_ENV, row
 
 EVENT_IDS = ["5800326029497036406_1790275140000", "-2519149835338629331_1790276580000"]
 DAVIS_EVENTS = [
@@ -183,7 +183,7 @@ BASE_ENV = {"DT_ENVIRONMENT_URL": "https://abc12345.apps.dynatrace.com", "DT_PLA
 
 
 def _load(monkeypatch, **env):
-    for key in ("CFOP_DYNATRACE_EVIDENCE", "CFOP_DYNATRACE_POLL_SECONDS", "CFOP_DYNATRACE_LOOKBACK"):
+    for key in PLUGIN_ENV:
         monkeypatch.delenv(key, raising=False)
     for key, value in {**BASE_ENV, **env}.items():
         monkeypatch.setenv(key, value)
@@ -206,6 +206,8 @@ def test_evidence_can_be_switched_off_without_losing_the_problem_source(monkeypa
 
 def test_the_evidence_reaches_the_investigate_request_end_to_end(monkeypatch, tmp_path):
     """Problem -> alert -> evidence -> the body POSTed to the agent, through build_portable_runtime."""
+    for key in PLUGIN_ENV:
+        monkeypatch.delenv(key, raising=False)
     from event_runtime.bootstrap import build_portable_runtime
     from event_runtime.http_actions import HTTPInvestigateActionHandler, HTTPTriageDecisionEngine
 

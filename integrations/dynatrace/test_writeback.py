@@ -20,7 +20,7 @@ from event_runtime.models import ActionResult, Alert, AlertSeverity
 from event_runtime.plugin_manager import PluginManager
 from integrations.dynatrace import writeback
 from integrations.dynatrace.test_evidence import alert_from
-from integrations.dynatrace.test_problems import P_26091
+from integrations.dynatrace.test_problems import P_26091, PLUGIN_ENV
 from integrations.dynatrace.writeback import DynatraceProblemCommenter, classic_api_url
 
 API = "https://abc12345.live.dynatrace.com"
@@ -197,7 +197,7 @@ BASE_ENV = {"DT_ENVIRONMENT_URL": "https://abc12345.apps.dynatrace.com", "DT_PLA
 
 
 def _load(monkeypatch, **env):
-    for key in ("DT_PROBLEMS_TOKEN", "DT_API_URL", "CFOP_DYNATRACE_EVIDENCE"):
+    for key in PLUGIN_ENV:
         monkeypatch.delenv(key, raising=False)
     for key, value in {**BASE_ENV, **env}.items():
         monkeypatch.setenv(key, value)
