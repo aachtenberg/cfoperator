@@ -9,7 +9,9 @@ Load it with ``CFOP_EVENT_RUNTIME_PLUGINS=integrations.dynatrace``. It then
 registers ``DynatraceProblemSource`` (``problems.py``), which turns Davis
 problems into alerts, and ``DynatraceEvidenceProvider`` (``evidence.py``),
 which hands each such alert's investigation Dynatrace's own view of it. Both
-read Grail through ``grail.py``.
+read Grail through ``grail.py``. With a write token it also registers
+``DynatraceProblemCommenter`` (``writeback.py``), which comments each
+investigation's conclusion onto the problem.
 
 Environment:
 
@@ -22,6 +24,12 @@ Environment:
   query reaches, as ``<n>m``, ``<n>h`` or ``<n>d``.
 - ``CFOP_DYNATRACE_EVIDENCE`` (default on): ``0``, ``false`` or ``off`` keeps
   the problem source and drops the evidence queries.
+- ``DT_PROBLEMS_TOKEN`` (optional): a classic access token (``dt0c01...``) with
+  ``problems.write``. Set, each investigation is written back as a comment on
+  its problem; unset, nothing is written.
+- ``DT_API_URL`` (optional): the classic environment API. Derived from
+  ``DT_ENVIRONMENT_URL`` for SaaS (``.apps.`` becomes ``.live.``); set it for
+  anything else.
 
 A missing or malformed setting stops the runtime at startup, since the operator
 asked for this plugin. Dynatrace being unreachable does not: that is logged
@@ -40,6 +48,7 @@ def register(plugins: Any, context: Any) -> None:
     from .evidence import DynatraceEvidenceProvider
     from .grail import GrailClient
     from .problems import DynatraceProblemSource
+    from .writeback import DynatraceProblemCommenter, classic_api_url
 
     url = os.getenv("DT_ENVIRONMENT_URL", "").strip()
     token = os.getenv("DT_PLATFORM_TOKEN", "").strip()
@@ -72,3 +81,7 @@ def register(plugins: Any, context: Any) -> None:
         plugins.register_context_provider(
             DynatraceEvidenceProvider(GrailClient(url, token, timeout=10), lookback=lookback)
         )
+    problems_token = os.getenv("DT_PROBLEMS_TOKEN", "").strip()
+    if problems_token:
+        api_url = os.getenv("DT_API_URL", "").strip() or classic_api_url(url)
+        plugins.register_completion_observer(DynatraceProblemCommenter(api_url, problems_token))

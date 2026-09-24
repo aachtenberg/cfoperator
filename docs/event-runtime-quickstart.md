@@ -501,6 +501,20 @@ def provide(self, alert, envelope):
     return envelope
 ```
 
+### Acting on results
+
+A plugin that needs to act on what an investigation concluded (write it back to
+the system the alert came from, say) registers a `CompletionObserver` with
+`plugins.register_completion_observer(...)`. Its `observe(alert, result)` is
+called for every completed action, from the agent's post-back as well as
+in-process ones, **before** any notification policy. So it also sees the
+resolved and monitoring outcomes that the low-severity digest keeps out of real
+time. Interim results (`quiet`, such as "investigation queued") are not
+completions and are not observed. An observer that raises is logged and
+changes nothing else. Use a notification sink to tell people and an observer
+to act on results: a sink's return value is recorded as delivery success or
+failure, and a sink sits behind the paging gates.
+
 ### Dynatrace problems (`integrations.dynatrace`)
 
 An optional plugin that ships in the image and stays inert until it is named.
@@ -517,6 +531,9 @@ export DT_PLATFORM_TOKEN=dt0s16....                          # needs storage:eve
 export CFOP_DYNATRACE_POLL_SECONDS=60    # least time between queries (>= 10)
 export CFOP_DYNATRACE_LOOKBACK=7d        # how far back the problem query reaches
 export CFOP_DYNATRACE_EVIDENCE=1         # 0/false/off: problems only, no evidence queries
+# optional: write each investigation's conclusion back onto its problem
+export DT_PROBLEMS_TOKEN=dt0c01....        # classic access token with problems.write
+export DT_API_URL=https://<env>.live.dynatrace.com   # derived from DT_ENVIRONMENT_URL on SaaS
 ```
 
 - One alert per problem, the first time it is seen ACTIVE. The fingerprint is
@@ -534,6 +551,14 @@ export CFOP_DYNATRACE_EVIDENCE=1         # 0/false/off: problems only, no eviden
   INFO and its CPU instead). The queries are fixed and run under a 20 s budget
   before triage; the model reads the results and never writes DQL. A failed
   query is reported in the evidence rather than left out.
+- With `DT_PROBLEMS_TOKEN` set, each finished investigation is written back as
+  a comment on its problem: outcome, recommendation, summary and model. That
+  includes resolved and monitoring outcomes, which the low-severity digest
+  keeps out of real-time notifications (it is a
+  [completion observer](#acting-on-results), not a sink). The token must be a
+  classic access token with `problems.write`; a platform token is refused at
+  startup. A failed post is logged and not retried, because a comment is not
+  idempotent. Each investigation is written once.
 - Kubernetes problems carry `namespace`, workload kind and name; host problems
   carry `host`. The Davis description and affected entities ride in
   `details.dynatrace`.
