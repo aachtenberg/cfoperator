@@ -189,10 +189,17 @@ def test_an_empty_result_is_a_result(fake):
 
 
 def test_a_limited_result_says_so(fake):
-    fake((200, LIMITED))
+    transport = fake((200, LIMITED))
     result = GrailClient(URL, TOKEN).query("fetch logs | limit 50", max_records=2)
+    assert transport.requests[0]["body"]["maxResultRecords"] == 2
     assert len(result.records) == 2
     assert result.warnings == ["Your result has been limited to 2."]
+
+
+def test_an_explicit_zero_limit_is_sent_not_replaced_by_the_default(fake):
+    transport = fake((200, EMPTY))
+    GrailClient(URL, TOKEN).query("fetch logs", max_records=0)
+    assert transport.requests[0]["body"]["maxResultRecords"] == 0
 
 
 def test_the_timeframe_is_sent_in_utc(fake):

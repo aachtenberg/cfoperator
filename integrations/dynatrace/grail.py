@@ -133,7 +133,7 @@ class GrailClient:
         body: Dict[str, Any] = {
             "query": dql,
             "requestTimeoutMilliseconds": _wait_ms(deadline),
-            "maxResultRecords": int(max_records or self.max_records),
+            "maxResultRecords": int(self.max_records if max_records is None else max_records),
         }
         if timeframe_start is not None:
             body["defaultTimeframeStart"] = _iso(timeframe_start)
