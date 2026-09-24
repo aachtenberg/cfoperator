@@ -30,6 +30,11 @@ ever disagree, the code is right and this table is a bug.
 | Notifications (out) | `slack`, `discord`, `ntfy` | — | PagerDuty, Opsgenie, email |
 | Issue trackers (out) | `plane`, `github` (Issues) | `jira` (adapter shipped, **not live-tested**) | Linear, ServiceNow |
 
+Dynatrace problems can still reach the event runtime through an optional plugin,
+`integrations/dynatrace`, loaded only when named in `CFOP_EVENT_RUNTIME_PLUGINS`
+([event-runtime-quickstart.md](event-runtime-quickstart.md#dynatrace-problems-integrationsdynatrace)).
+It is an alert source, not a metrics or logs backend, so the table above stands.
+
 **Why so short?** The design bet is that Prometheus + Loki + Alertmanager covers
 the target user — a self-hosted shop that will not send its logs to a SaaS. The
 "not planned" column is not a backlog: those are the vendors whose customers are
