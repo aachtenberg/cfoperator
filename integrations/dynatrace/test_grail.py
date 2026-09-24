@@ -178,9 +178,41 @@ def test_a_non_json_error_page_is_reported_not_parsed(fake):
 
 
 def test_a_network_failure_is_an_error_not_an_empty_result(fake):
-    fake(URLError(ConnectionResetError(104, "Connection reset by peer")))
+    fake(URLError(ConnectionRefusedError(111, "Connection refused")))   # not retried, unlike a reset
     with pytest.raises(GrailQueryError, match="cannot reach https://abc12345.apps.dynatrace.com"):
         GrailClient(URL, TOKEN).query("fetch logs")
+
+
+def test_a_reset_connection_is_retried_once(fake, monkeypatch):
+    monkeypatch.setattr(grail, "_RETRY_PAUSE_S", 0)
+    transport = fake(URLError(ConnectionResetError(104, "Connection reset by peer")), (200, SUCCEEDED))
+    assert GrailClient(URL, TOKEN).query("fetch logs").records == [{"entity.name": "ubuntu-itx-01"}]
+    assert len(transport.requests) == 2
+
+
+def test_a_second_reset_is_an_error_not_a_loop(fake, monkeypatch):
+    monkeypatch.setattr(grail, "_RETRY_PAUSE_S", 0)
+    reset = URLError(ConnectionResetError(104, "Connection reset by peer"))
+    transport = fake(reset, reset, (200, SUCCEEDED))
+    with pytest.raises(GrailQueryError, match="Connection reset by peer"):
+        GrailClient(URL, TOKEN).query("fetch logs")
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.parametrize("failure", [URLError(TimeoutError("timed out")), URLError(OSError("no route to host"))])
+def test_other_network_failures_are_not_retried(fake, monkeypatch, failure):
+    monkeypatch.setattr(grail, "_RETRY_PAUSE_S", 0)
+    transport = fake(failure, (200, SUCCEEDED))
+    with pytest.raises(GrailQueryError, match="cannot reach"):
+        GrailClient(URL, TOKEN).query("fetch logs")
+    assert len(transport.requests) == 1
+
+
+def test_an_http_error_is_an_answer_and_is_not_retried(fake):
+    transport = fake((401, BAD_TOKEN), (200, SUCCEEDED))
+    with pytest.raises(GrailQueryError, match="HTTP 401"):
+        GrailClient(URL, TOKEN).query("fetch logs")
+    assert len(transport.requests) == 1
 
 
 def test_an_empty_result_is_a_result(fake):
