@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections import deque
 from typing import Any, Deque, Dict, Set, Tuple
 from urllib.error import HTTPError, URLError
@@ -76,7 +77,13 @@ class DynatraceProblemCommenter(CompletionObserver):
         self._token = token
         self._timeout = float(timeout)
         self._context = context
+        # Completions arrive on server threads, so "written once" needs the
+        # check and the claim to be one step (as EscalationLedger does). The
+        # POST itself runs outside the lock: an in-flight claim stops a second
+        # post of the same investigation without serialising other problems.
+        self._lock = threading.Lock()
         self._written: Set[Tuple[str, str]] = set()
+        self._in_flight: Set[Tuple[str, str]] = set()
         self._order: Deque[Tuple[str, str]] = deque()
 
     def __repr__(self) -> str:
@@ -94,8 +101,10 @@ class DynatraceProblemCommenter(CompletionObserver):
             return          # a dispatch or stub result, not an investigation's conclusion
         problem_id = fingerprint[len(FINGERPRINT_PREFIX):]
         key = (problem_id, str(investigation_id))
-        if key in self._written:
-            return
+        with self._lock:
+            if key in self._written or key in self._in_flight:
+                return
+            self._in_flight.add(key)
         display_id = (alert.details.get("dynatrace") or {}).get("display_id") or problem_id
         try:
             self._post(problem_id, self._message(result, details, investigation_id))
@@ -103,7 +112,11 @@ class DynatraceProblemCommenter(CompletionObserver):
             logger.warning("Could not write investigation #%s back to Dynatrace problem %s: %s",
                            investigation_id, display_id, exc)
             return
-        self._remember(key)
+        finally:
+            with self._lock:
+                self._in_flight.discard(key)
+        with self._lock:
+            self._remember(key)
         logger.info("Wrote investigation #%s back to Dynatrace problem %s", investigation_id, display_id)
 
     def _message(self, result: ActionResult, details: Dict[str, Any], investigation_id: Any) -> str:
@@ -143,6 +156,7 @@ class DynatraceProblemCommenter(CompletionObserver):
             raise CommentError(f"cannot reach {self.api_url}: {getattr(exc, 'reason', exc)}") from exc
 
     def _remember(self, key: Tuple[str, str]) -> None:
+        """Record a written key, forgetting the oldest past the bound. Caller holds the lock."""
         self._written.add(key)
         self._order.append(key)
         while len(self._order) > _REMEMBERED:

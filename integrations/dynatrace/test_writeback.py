@@ -109,6 +109,35 @@ def test_each_investigation_is_written_once(capture):
     assert len(cap.requests) == 1
 
 
+def test_two_racing_post_backs_of_one_investigation_post_once(monkeypatch):
+    """Completions arrive on server threads; the second must not pass the check mid-POST."""
+    import threading
+
+    requests, second_done = [], threading.Event()
+
+    def slow_urlopen(request, timeout=None):
+        requests.append(request.full_url)
+        second_done.wait(timeout=2)            # hold the first POST open while the second arrives
+        return io.BytesIO(b"{}")
+
+    monkeypatch.setattr(writeback, "urlopen", slow_urlopen)
+    c, alert = commenter(), alert_from(P_26091)
+    first = threading.Thread(target=c.observe, args=(alert, RESULT))
+    first.start()
+    while not requests:                         # wait until the first POST is in flight
+        pass
+
+    def second():
+        c.observe(alert, RESULT)
+        second_done.set()
+
+    other = threading.Thread(target=second)
+    other.start()
+    other.join(timeout=5)
+    first.join(timeout=5)
+    assert len(requests) == 1
+
+
 @pytest.mark.parametrize("alert,result", [
     (Alert(source="alertmanager", severity=AlertSeverity.WARNING, summary="x", fingerprint="dynatrace:1"), RESULT),
     (Alert(source="dynatrace", severity=AlertSeverity.WARNING, summary="x", fingerprint="am:1"), RESULT),
