@@ -22,6 +22,10 @@ Environment:
 - ``CFOP_DYNATRACE_POLL_SECONDS`` (default 60): the least time between queries.
 - ``CFOP_DYNATRACE_LOOKBACK`` (default ``7d``): how far back the problem
   query reaches, as ``<n>m``, ``<n>h`` or ``<n>d``.
+- ``CFOP_DYNATRACE_PROBLEM_FILTER`` (optional): a DQL condition scoping which
+  problems become alerts, e.g. ``in("my-cluster", k8s.cluster.name)``. Select
+  on where a problem is, never on its state: the resolving CLOSED row must
+  pass the filter too.
 - ``CFOP_DYNATRACE_EVIDENCE`` (default on): ``0``, ``false`` or ``off`` keeps
   the problem source and drops the evidence queries.
 - ``DT_PROBLEMS_TOKEN`` (optional): a classic access token (``dt0c01...``) with
@@ -73,6 +77,7 @@ def register(plugins: Any, context: Any) -> None:
             escalation_ledger=context.escalation_ledger,
             poll_seconds=poll_seconds,
             lookback=lookback,
+            problem_filter=os.getenv("CFOP_DYNATRACE_PROBLEM_FILTER", "").strip() or None,
         )
     )
     if os.getenv("CFOP_DYNATRACE_EVIDENCE", "1").strip().lower() not in ("0", "false", "off", "no"):

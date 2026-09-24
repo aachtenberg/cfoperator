@@ -530,6 +530,7 @@ export DT_PLATFORM_TOKEN=dt0s16....                          # needs storage:eve
 # optional
 export CFOP_DYNATRACE_POLL_SECONDS=60    # least time between queries (>= 10)
 export CFOP_DYNATRACE_LOOKBACK=7d        # how far back the problem query reaches
+export CFOP_DYNATRACE_PROBLEM_FILTER='in("my-cluster", k8s.cluster.name)'   # DQL scope; unset = every problem
 export CFOP_DYNATRACE_EVIDENCE=1         # 0/false/off: problems only, no evidence queries
 # optional: write each investigation's conclusion back onto its problem
 export DT_PROBLEMS_TOKEN=dt0c01....        # classic access token with problems.write
@@ -544,6 +545,12 @@ export DT_API_URL=https://<env>.live.dynatrace.com   # derived from DT_ENVIRONME
   a new row. An escalated problem gets the usual single `Resolved:` notice.
 - Duplicates, muted problems and problems under maintenance are skipped until
   that stops being true.
+- `CFOP_DYNATRACE_PROBLEM_FILTER` scopes which problems count, as a DQL
+  condition. The evidence and write-back act only on the source's alerts, so
+  they follow it. Select on where a problem is (cluster, host, entity), never
+  on its state: the CLOSED row that resolves a problem has to pass the filter
+  too. If Dynatrace rejects the query, it is logged as an error naming the
+  filter, since until it is fixed no problems arrive.
 - Each problem's investigation also gets Dynatrace's own view of it as
   [evidence](#evidence-for-the-investigation): the Davis events in the problem,
   the last hour of the workload's logs grouped into distinct lines with counts,

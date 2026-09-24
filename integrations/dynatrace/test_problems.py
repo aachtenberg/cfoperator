@@ -136,6 +136,44 @@ def test_what_an_investigation_needs_survives_the_agents_prompt_cut():
     assert len(alert.details["dynatrace"]["affected_entities"]) == 10
 
 
+def test_without_a_filter_the_query_is_unscoped():
+    src, client, clock = source([P_26091])
+    poll(src, clock)
+    assert "| filter" not in client.queries[0]
+
+
+def test_a_filter_scopes_the_query_before_anything_else_runs_on_it():
+    clock = Clock()
+    client = FakeClient([P_26091])
+    src = DynatraceProblemSource(client, clock=clock, problem_filter='in("dev", k8s.cluster.name) or x == 1')
+    poll(src, clock)
+    query = client.queries[0]
+    assert query.index('| filter (in("dev", k8s.cluster.name) or x == 1)\n') < query.index("| sort timestamp desc")
+
+
+def test_a_rejected_query_is_an_error_that_names_the_filter(caplog):
+    ledger = EscalationLedger()
+    clock = Clock()
+    client = FakeClient([P_26091], GrailQueryError("HTTP 400 PARSE_ERROR: `|` isn't allowed here", status=400))
+    src = DynatraceProblemSource(client, clock=clock, escalation_ledger=ledger, problem_filter="in(")
+    poll(src, clock)
+    ledger.mark(FP)
+    with caplog.at_level("WARNING"):
+        assert poll(src, clock) == []
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors and "CFOP_DYNATRACE_PROBLEM_FILTER='in('" in errors[0].getMessage()
+    assert ledger.take(FP) is True             # the open problem was kept, not resolved
+
+
+def test_other_failures_stay_warnings(caplog):
+    clock = Clock()
+    src = DynatraceProblemSource(FakeClient(GrailQueryError("cannot reach", status=None)), clock=clock,
+                                 problem_filter='in("dev", k8s.cluster.name)')
+    with caplog.at_level("WARNING"):
+        poll(src, clock)
+    assert [r.levelname for r in caplog.records] == ["WARNING"]
+
+
 def test_a_retitled_problem_does_not_alert_again():
     src, _, clock = source([P_26091], [row(event__name="Multiple Kubernetes problems")])
     assert len(poll(src, clock)) == 1
@@ -252,8 +290,17 @@ def test_a_malformed_lookback_is_refused(value):
 
 # --- register(), through the real loader ------------------------------------
 
+# Every variable register() reads. Each _load clears all of them first, so a
+# value exported in the developer's shell cannot leak into a "not set" test.
+PLUGIN_ENV = (
+    "DT_ENVIRONMENT_URL", "DT_PLATFORM_TOKEN", "DT_PROBLEMS_TOKEN", "DT_API_URL",
+    "CFOP_DYNATRACE_POLL_SECONDS", "CFOP_DYNATRACE_LOOKBACK", "CFOP_DYNATRACE_EVIDENCE",
+    "CFOP_DYNATRACE_PROBLEM_FILTER",
+)
+
+
 def _load(monkeypatch, **env):
-    for key in ("DT_ENVIRONMENT_URL", "DT_PLATFORM_TOKEN", "CFOP_DYNATRACE_POLL_SECONDS", "CFOP_DYNATRACE_LOOKBACK"):
+    for key in PLUGIN_ENV:
         monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
@@ -284,6 +331,20 @@ def test_register_refuses_bad_settings_at_startup(monkeypatch, env, message):
         _load(monkeypatch, **{**base, **env})
 
 
+@pytest.mark.parametrize("raw,expected", [
+    ('in("eks-k8s-2026-09-24", k8s.cluster.name)', '| filter (in("eks-k8s-2026-09-24", k8s.cluster.name))'),
+    ("   ", None),
+])
+def test_register_reads_the_problem_filter(monkeypatch, raw, expected):
+    plugins, _ = _load(monkeypatch, DT_ENVIRONMENT_URL="https://abc12345.apps.dynatrace.com",
+                       DT_PLATFORM_TOKEN="dt0s16.X.Y", CFOP_DYNATRACE_PROBLEM_FILTER=raw)
+    query = plugins.alert_sources[0]._query
+    if expected:
+        assert expected in query
+    else:
+        assert "| filter" not in query
+
+
 def test_register_adds_the_problem_source_with_the_runtimes_ledger(monkeypatch):
     plugins, ledger = _load(monkeypatch, DT_ENVIRONMENT_URL="https://abc12345.apps.dynatrace.com",
                             DT_PLATFORM_TOKEN="dt0s16.X.Y")
@@ -294,6 +355,8 @@ def test_register_adds_the_problem_source_with_the_runtimes_ledger(monkeypatch):
 
 def test_the_plugin_feeds_the_real_runtime_end_to_end(monkeypatch, tmp_path):
     """CFOP_EVENT_RUNTIME_PLUGINS=integrations.dynatrace through build_portable_runtime."""
+    for key in PLUGIN_ENV:
+        monkeypatch.delenv(key, raising=False)
     from event_runtime.bootstrap import build_portable_runtime
 
     monkeypatch.setattr(grail.GrailClient, "query", lambda self, dql, **kw: GrailResult(records=[P_26091]))
