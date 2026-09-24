@@ -80,6 +80,13 @@ class DynatraceEvidenceProvider(ContextProvider):
         evidence = envelope.context.setdefault(EVIDENCE_KEY, {})
         if isinstance(evidence, dict):
             evidence[EVIDENCE_NAME] = text
+        else:
+            # Another provider broke the contract (evidence must be a mapping);
+            # say so rather than lose this evidence without a trace.
+            logger.warning(
+                "Dropping Dynatrace evidence for %s: envelope.context[%r] is a %s, not a mapping",
+                display_id_of(alert), EVIDENCE_KEY, type(evidence).__name__,
+            )
         return envelope
 
     def _gather(self, alert: Alert, problem_id: str, display_id: str) -> str:
@@ -184,6 +191,11 @@ class DynatraceEvidenceProvider(ContextProvider):
         row = rows[0]
         return [f"- CPU %: peak {_number(row.get('peak'))}, latest {_number(row.get('last'))}; "
                 f"per 10 minutes, oldest first: {_series(row.get('cpu'))}"]
+
+
+def display_id_of(alert: Alert) -> str:
+    dynatrace = alert.details.get("dynatrace") or {}
+    return str(dynatrace.get("display_id") or dynatrace.get("problem_id") or alert.summary)
 
 
 def _clock_time(raw: Any) -> str:

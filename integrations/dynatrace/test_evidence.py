@@ -155,6 +155,14 @@ def test_a_host_problem_gets_filtered_logs_and_cpu_instead():
     assert not any("restarts" in q for q in client.queries)
 
 
+def test_evidence_that_cannot_be_stored_is_logged_not_lost_silently(caplog):
+    alert = alert_from(P_26091)
+    envelope = ContextEnvelope(alert=alert, context={EVIDENCE_KEY: "a provider that broke the contract"})
+    with caplog.at_level("WARNING"):
+        DynatraceEvidenceProvider(ScriptedGrail(), clock=Ticks()).provide(alert, envelope)
+    assert "Dropping Dynatrace evidence for P-26091" in caplog.text and "not a mapping" in caplog.text
+
+
 @pytest.mark.parametrize("alert", [
     Alert(source="alertmanager", severity=AlertSeverity.WARNING, summary="KubePodCrashLooping"),
     # another source carrying a Dynatrace-shaped id is still not ours to query for
