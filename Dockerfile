@@ -60,6 +60,9 @@ COPY tools/ ./tools/
 COPY skills/ ./skills/
 COPY ui/ ./ui/
 COPY event_runtime/ ./event_runtime/
+# Optional event runtime plugins, loaded only when named in
+# CFOP_EVENT_RUNTIME_PLUGINS (e.g. integrations.dynatrace). Inert otherwise.
+COPY integrations/ ./integrations/
 # MCP facade — the sibling MCP Deployment reuses this image with
 # command: ["python", "-m", "mcp_server"]
 COPY mcp_server/ ./mcp_server/

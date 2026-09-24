@@ -484,6 +484,42 @@ replace a built-in one, the same way `CFOP_AGENT_URL` replaces the
 stops the runtime at startup with the entry in the message: silently running
 without a source the operator asked for is the worse failure.
 
+### Dynatrace problems (`integrations.dynatrace`)
+
+An optional plugin that ships in the image and stays inert until it is named.
+It turns Davis problems into alerts, so a Dynatrace environment can start
+investigations the way Alertmanager does. It is not a shipped backend:
+[infrastructure-config.md](infrastructure-config.md#what-actually-ships) keeps
+Dynatrace "not planned" for that.
+
+```bash
+export CFOP_EVENT_RUNTIME_PLUGINS=integrations.dynatrace
+export DT_ENVIRONMENT_URL=https://<env>.apps.dynatrace.com   # the platform URL, not <env>.live
+export DT_PLATFORM_TOKEN=dt0s16....                          # needs storage:events:read
+# optional
+export CFOP_DYNATRACE_POLL_SECONDS=60    # least time between queries (>= 10)
+export CFOP_DYNATRACE_LOOKBACK=7d        # how far back the problem query reaches
+```
+
+- One alert per problem, the first time it is seen ACTIVE. The fingerprint is
+  `dynatrace:<event.id>`, so Davis retitling the problem as it merges events
+  does not alert again.
+- A problem is resolved only when a CLOSED row for it is seen. Dropping out of
+  the query window does not count: an open problem can go a long time without
+  a new row. An escalated problem gets the usual single `Resolved:` notice.
+- Duplicates, muted problems and problems under maintenance are skipped until
+  that stops being true.
+- Kubernetes problems carry `namespace`, workload kind and name; host problems
+  carry `host`. The Davis description and affected entities ride in
+  `details.dynatrace`.
+- A missing or malformed setting stops the runtime at startup. Dynatrace being
+  unreachable does not: the poll logs, backs off, and the other sources carry on.
+- Like the Alertmanager source, it re-emits the problems still open after a
+  restart. Whether those count as repeats is up to the runtime's file-backed
+  policies (see Duplicate Suppression): by default the recurrence window
+  suppresses a critical alert for 30 minutes after it first fired and anything
+  else for 6 hours. Davis `ERROR` and `AVAILABILITY` problems map to critical.
+
 ## Notes
 
 - The portable mode is intentionally minimal and safe.
