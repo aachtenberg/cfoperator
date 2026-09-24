@@ -61,6 +61,11 @@ os.environ["CFOP_NO_DOTENV"] = "1"
 os.environ["SLACK_WEBHOOK_URL"] = ""
 os.environ["DISCORD_WEBHOOK_URL"] = ""
 
+# Same reasoning for a plugin list exported into the shell: every test that
+# builds the runtime would import that plugin and run its registration, which
+# for a real integration means real credentials and real polling (CFOP-208).
+os.environ["CFOP_EVENT_RUNTIME_PLUGINS"] = ""
+
 # Point config resolution at an empty file instead of dropping CONFIG_PATH.
 #
 # Dropping it used to be enough: the old loader returned {} when CONFIG_PATH
