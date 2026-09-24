@@ -484,6 +484,23 @@ replace a built-in one, the same way `CFOP_AGENT_URL` replaces the
 stops the runtime at startup with the entry in the message: silently running
 without a source the operator asked for is the worse failure.
 
+### Evidence for the investigation
+
+Context providers write into the envelope for the runtime's own use, and the
+investigate request to the agent carries only the alert. One key is the
+exception: text a provider puts under `envelope.context["evidence"][<name>]` is
+sent with the request, and the agent shows it to the model as its own section
+of the investigation prompt, labelled as data rather than instructions. Each
+block is capped at 4000 characters and the total at 8000, by the runtime before
+sending and again by the agent. Nothing else in the envelope crosses, so
+existing providers are unaffected. The contract lives in `cfshared/evidence.py`.
+
+```python
+def provide(self, alert, envelope):
+    envelope.context.setdefault("evidence", {})["my-source"] = "Recent errors:\n- ..."
+    return envelope
+```
+
 ### Dynatrace problems (`integrations.dynatrace`)
 
 An optional plugin that ships in the image and stays inert until it is named.
@@ -499,6 +516,7 @@ export DT_PLATFORM_TOKEN=dt0s16....                          # needs storage:eve
 # optional
 export CFOP_DYNATRACE_POLL_SECONDS=60    # least time between queries (>= 10)
 export CFOP_DYNATRACE_LOOKBACK=7d        # how far back the problem query reaches
+export CFOP_DYNATRACE_EVIDENCE=1         # 0/false/off: problems only, no evidence queries
 ```
 
 - One alert per problem, the first time it is seen ACTIVE. The fingerprint is
@@ -509,6 +527,13 @@ export CFOP_DYNATRACE_LOOKBACK=7d        # how far back the problem query reache
   a new row. An escalated problem gets the usual single `Resolved:` notice.
 - Duplicates, muted problems and problems under maintenance are skipped until
   that stops being true.
+- Each problem's investigation also gets Dynatrace's own view of it as
+  [evidence](#evidence-for-the-investigation): the Davis events in the problem,
+  the last hour of the workload's logs grouped into distinct lines with counts,
+  and its container restarts over two hours (for a host problem, its logs above
+  INFO and its CPU instead). The queries are fixed and run under a 20 s budget
+  before triage; the model reads the results and never writes DQL. A failed
+  query is reported in the evidence rather than left out.
 - Kubernetes problems carry `namespace`, workload kind and name; host problems
   carry `host`. The Davis description and affected entities ride in
   `details.dynatrace`.

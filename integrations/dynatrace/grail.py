@@ -42,6 +42,13 @@ _PENDING_STATES = {"RUNNING", "NOT_STARTED"}
 _LONG_POLL_MS = 10_000
 # Socket timeout on top of the time Grail was asked to hold the request.
 _SOCKET_GRACE_S = 10.0
+# A reset connection is retried once. Seen live twice in about 40 calls from
+# the dev box (TLS handshake "Connection reset by peer"); without a retry about
+# one alert in five would lose part of its evidence. Only connection-level
+# failures: an HTTP error or a timeout is an answer, and is not repeated. Every
+# call here reads, so re-sending a started query is harmless.
+_RETRYABLE = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
+_RETRY_PAUSE_S = 0.5
 
 
 class GrailQueryError(RuntimeError):
@@ -166,16 +173,22 @@ class GrailClient:
         headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/json"}
         if data is not None:
             headers["Content-Type"] = "application/json"
-        request = Request(self.url + path, data=data, method=method, headers=headers)
-        socket_timeout = max(deadline - time.monotonic(), 0.0) + _SOCKET_GRACE_S
-        try:
-            with urlopen(request, timeout=socket_timeout) as response:
-                raw = response.read()
-        except HTTPError as exc:
-            raise _http_error(exc) from exc
-        except (URLError, TimeoutError, OSError) as exc:
-            reason = getattr(exc, "reason", exc)
-            raise GrailQueryError(f"cannot reach {self.url}: {reason}") from exc
+        for attempt in (1, 2):
+            request = Request(self.url + path, data=data, method=method, headers=headers)
+            socket_timeout = max(deadline - time.monotonic(), 0.0) + _SOCKET_GRACE_S
+            try:
+                with urlopen(request, timeout=socket_timeout) as response:
+                    raw = response.read()
+                break
+            except HTTPError as exc:
+                raise _http_error(exc) from exc
+            except (URLError, TimeoutError, OSError) as exc:
+                reason = getattr(exc, "reason", exc)
+                if attempt == 1 and isinstance(reason, _RETRYABLE):
+                    logger.info("Grail connection failed (%s); retrying once", reason)
+                    time.sleep(_RETRY_PAUSE_S)
+                    continue
+                raise GrailQueryError(f"cannot reach {self.url}: {reason}") from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

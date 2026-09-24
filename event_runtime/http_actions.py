@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from typing import Optional, Tuple
 
+from cfshared.evidence import EVIDENCE_KEY, collect as collect_evidence
 from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision
 from .plugins import ActionHandler, DecisionEngine
 
@@ -240,7 +241,12 @@ class HTTPInvestigateActionHandler(ActionHandler):
 
     def execute(self, request: ActionRequest) -> ActionResult:
         endpoint = f"{self._agent_url}/v1/investigate"
-        body = json.dumps(request.alert.to_dict(), default=str).encode("utf-8")
+        payload = request.alert.to_dict()
+        # The one part of the context envelope the investigation sees (CFOP-211).
+        evidence = collect_evidence(request.context.context if request.context else None)
+        if evidence:
+            payload[EVIDENCE_KEY] = evidence
+        body = json.dumps(payload, default=str).encode("utf-8")
         try:
             self._post(endpoint, body)
         except urllib.error.HTTPError as exc:
