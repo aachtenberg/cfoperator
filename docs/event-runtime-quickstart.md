@@ -484,6 +484,23 @@ replace a built-in one, the same way `CFOP_AGENT_URL` replaces the
 stops the runtime at startup with the entry in the message: silently running
 without a source the operator asked for is the worse failure.
 
+### Evidence for the investigation
+
+Context providers write into the envelope for the runtime's own use, and the
+investigate request to the agent carries only the alert. One key is the
+exception: text a provider puts under `envelope.context["evidence"][<name>]` is
+sent with the request, and the agent shows it to the model as its own section
+of the investigation prompt, labelled as data rather than instructions. Each
+block is capped at 4000 characters and the total at 8000, by the runtime before
+sending and again by the agent. Nothing else in the envelope crosses, so
+existing providers are unaffected. The contract lives in `cfshared/evidence.py`.
+
+```python
+def provide(self, alert, envelope):
+    envelope.context.setdefault("evidence", {})["my-source"] = "Recent errors:\n- ..."
+    return envelope
+```
+
 ### Dynatrace problems (`integrations.dynatrace`)
 
 An optional plugin that ships in the image and stays inert until it is named.

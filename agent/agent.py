@@ -76,6 +76,7 @@ from node_action_plan import (
 # Config semantics shared with event_runtime — one loader, one default schema.
 from cfshared import config as shared_config
 from cfshared import repos as shared_repos
+from cfshared.evidence import EVIDENCE_KEY, render as render_evidence
 
 # Configure logging
 logging.basicConfig(
@@ -609,6 +610,21 @@ _DELIVERY_DIRECT = (
     "by opening a pull request against a manifest repository, and there is "
     "none here. Write steps a human will run."
 )
+
+
+def _alert_prompt_block(alert_info: Dict[str, Any]) -> str:
+    """The alert as the investigation prompt shows it, plus forwarded evidence.
+
+    The alert JSON is cut at 1000 characters, as it always has been. Evidence
+    the event runtime forwarded (CFOP-211) is taken out of that JSON, where it
+    would only be cut off, and rendered as its own bounded section.
+    """
+    alert_info = alert_info if isinstance(alert_info, dict) else {}
+    shown = {k: v for k, v in alert_info.items() if k != EVIDENCE_KEY}
+    return (
+        f"Alert details: {json.dumps(shown, default=str)[:1000]}"
+        f"{render_evidence(alert_info.get(EVIDENCE_KEY))}"
+    )
 
 
 def _delivery_guidance(config, known_repos=None) -> str:
@@ -2879,6 +2895,13 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
                     similar_text += f"- [{inv.get('outcome', '?')}] {inv.get('trigger', '')[:100]} (similarity: {sim_score})\n"
 
             alert_info = context.get('alert', {})
+            forwarded = alert_info.get(EVIDENCE_KEY) if isinstance(alert_info, dict) else None
+            if isinstance(forwarded, dict) and forwarded:
+                logger.info(
+                    "Investigation #%s: evidence forwarded by the event runtime: %s",
+                    inv_id,
+                    ", ".join(f"{name} ({len(str(text))} chars)" for name, text in forwarded.items()),
+                )
 
             # Tier-1 noise filter (1b): if the alert is about a recoverable
             # runtime condition and the pod is healthy now with a settled
@@ -2898,7 +2921,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
             system_prompt = f"""You are CFOperator investigating an infrastructure alert.
 
 Alert: {trigger}
-Alert details: {json.dumps(alert_info, default=str)[:1000]}
+{_alert_prompt_block(alert_info)}
 {learnings_text}{similar_text}
 
 Investigate this alert using the available tools. Check metrics, logs, and container/service status.
