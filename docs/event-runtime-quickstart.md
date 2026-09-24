@@ -501,6 +501,20 @@ def provide(self, alert, envelope):
     return envelope
 ```
 
+### Acting on results
+
+A plugin that needs to act on what an investigation concluded (write it back to
+the system the alert came from, say) registers a `CompletionObserver` with
+`plugins.register_completion_observer(...)`. Its `observe(alert, result)` is
+called for every completed action, from the agent's post-back as well as
+in-process ones, **before** any notification policy. So it also sees the
+resolved and monitoring outcomes that the low-severity digest keeps out of real
+time. Interim results (`quiet`, such as "investigation queued") are not
+completions and are not observed. An observer that raises is logged and
+changes nothing else. Use a notification sink to tell people and an observer
+to act on results: a sink's return value is recorded as delivery success or
+failure, and a sink sits behind the paging gates.
+
 ### Dynatrace problems (`integrations.dynatrace`)
 
 An optional plugin that ships in the image and stays inert until it is named.

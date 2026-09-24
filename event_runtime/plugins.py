@@ -105,6 +105,22 @@ class ScheduledAlertSource(AlertSource):
     """Alert source that emits alerts originating from scheduled tasks."""
 
 
+class CompletionObserver(RuntimePlugin):
+    """Told about every completed action, before any notification policy (CFOP-212).
+
+    Notification sinks page people, so they sit behind the paging gates: the
+    skip list and the low-severity digest, which keeps resolved and monitoring
+    outcomes out of real time. An observer is for acting on a result -- writing
+    it back to the system the alert came from -- so it sees those too. Interim
+    results (``quiet``, such as "investigation queued") are not completions and
+    are not observed.
+    """
+
+    @abstractmethod
+    def observe(self, alert: Alert, result: ActionResult) -> None:
+        """React to a completed action. Exceptions are logged and go no further."""
+
+
 class NotificationSink(RuntimePlugin):
     """Plugin that delivers outbound notifications when actions complete."""
 

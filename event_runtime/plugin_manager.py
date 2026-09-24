@@ -9,6 +9,7 @@ from .plugins import (
     ActionHandler,
     AlertPolicy,
     AlertSource,
+    CompletionObserver,
     ContextProvider,
     DecisionEngine,
     HostObservabilityProvider,
@@ -28,6 +29,7 @@ class PluginManager:
     context_providers: List[ContextProvider] = field(default_factory=list)
     action_handlers: Dict[str, ActionHandler] = field(default_factory=dict)
     notification_sinks: List[NotificationSink] = field(default_factory=list)
+    completion_observers: List[CompletionObserver] = field(default_factory=list)
     schedulers: List[Scheduler] = field(default_factory=list)
     decision_engine: Optional[DecisionEngine] = None
     state_sink: Optional[StateSink] = None
@@ -49,6 +51,9 @@ class PluginManager:
 
     def register_notification_sink(self, plugin: NotificationSink) -> None:
         self.notification_sinks.append(plugin)
+
+    def register_completion_observer(self, plugin: CompletionObserver) -> None:
+        self.completion_observers.append(plugin)
 
     def register_scheduler(self, plugin: Scheduler) -> None:
         self.schedulers.append(plugin)
@@ -77,6 +82,7 @@ class PluginManager:
             self.context_providers,
             self.action_handlers.values(),
             self.notification_sinks,
+            self.completion_observers,
             self.schedulers,
         ):
             plugin.start()
@@ -93,6 +99,7 @@ class PluginManager:
         for plugin in self._iter_unique_plugins(
             self.schedulers,
             self.action_handlers.values(),
+            self.completion_observers,
             self.notification_sinks,
             self.context_providers,
             self.host_observability_providers,

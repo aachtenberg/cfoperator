@@ -174,6 +174,7 @@ class EventRuntime:
                 decision=asdict(decision),
                 result=action_result.to_dict(),
             )
+            self._observe_completion(alert, action_result)
             self._notify_action_completed(alert, action_result, decision=decision)
             schedule_results = self._schedule_tasks(decision.scheduled_tasks)
             result = {
@@ -269,6 +270,7 @@ class EventRuntime:
             "context_providers": [plugin.name for plugin in self.plugins.context_providers],
             "actions": sorted(self.plugins.action_handlers.keys()),
             "notification_sinks": [plugin.name for plugin in self.plugins.notification_sinks],
+            "completion_observers": [plugin.name for plugin in self.plugins.completion_observers],
             "schedulers": [plugin.name for plugin in self.plugins.schedulers],
             "scheduler": scheduler_states,
             "host_discovery": host_discovery_state,
@@ -296,7 +298,18 @@ class EventRuntime:
             result=action_result.to_dict(),
             source="external",
         )
+        self._observe_completion(alert, action_result)
         self._notify_action_completed(alert, action_result)
+
+    def _observe_completion(self, alert: Alert, action_result: ActionResult) -> None:
+        """Tell completion observers, before any notification policy applies (CFOP-212)."""
+        if action_result.quiet:
+            return
+        for observer in self.plugins.completion_observers:
+            try:
+                observer.observe(alert, action_result)
+            except Exception:
+                logger.warning("Completion observer %s failed", observer.name, exc_info=True)
 
     def _maybe_mark_escalation(self, alert: Alert, action_result: ActionResult) -> None:
         """Record an escalated alert's fingerprint so its later resolution can
