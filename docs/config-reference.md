@@ -106,11 +106,12 @@ annotated kitchen sink that `config.yaml.example` used to be.
 ```yaml
 # Observability Backends
 #
-# Every backend named here is one that ships and is registered in
-# `observability/__init__.py`. This deliberately lists no aspirational
-# alternatives: if a backend is not named below, it does not exist yet, and a
-# config naming it fails at startup. See docs/infrastructure-config.md for the
-# shipped / planned / not-planned matrix and for how to write your own.
+# Every backend named here is one that ships: the names the agent accepts in
+# _init_observability_backends (agent/agent.py). This deliberately lists no
+# aspirational alternatives. A backend not named below does not exist yet, and
+# a config naming one is not rejected: the agent logs "Unsupported ... backend"
+# at startup and runs with that backend off. See docs/infrastructure-config.md
+# for the shipped / planned / not-planned matrix and for what can be extended.
 observability:
   # Metrics backend. Shipped: prometheus
   metrics:

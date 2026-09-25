@@ -13,12 +13,17 @@ CFOperator is designed to monitor **heterogeneous infrastructure** - not just Do
 ## What actually ships
 
 This is the whole list. A backend not in the **Shipped** column does not exist
-in this build, and a `config.yaml` naming it fails at startup — so treat the
-other two columns as intent, not as configuration you can write today.
+in this build. A `config.yaml` naming one is not rejected, which makes a typo
+easy to miss: the agent logs `Unsupported metrics backend: <name>` (or logs,
+containers, alerts) at startup and runs with that backend switched off. Treat
+the other two columns as intent, not as configuration you can write today.
 
-The shipped metrics/logs/containers/alerts backends are exactly what
-`observability/__init__.py` registers. Outbound notification sinks are wired in
-`event_runtime` instead (that is where `ntfy` lives). If this table and the code
+The shipped metrics/logs/containers/alerts backends are exactly the names the
+agent accepts in `_init_observability_backends` (`agent/agent.py`), and
+`tests/test_docs_extension.py` holds this table to that list. Notifications
+are wired in two places. The agent itself sends to `slack` and `discord` (and
+can post to Alertmanager) from `observability.notifications`. The event runtime
+has its own sinks, and `ntfy` exists only there. If this table and the code
 ever disagree, the code is right and this table is a bug.
 
 | Capability | Shipped | Planned | Not planned |
@@ -273,45 +278,52 @@ Every 30 minutes, CFOperator:
    - "immich-ml always OOMs after Pi2 reboots" → increase memory limit
    - "influxdb writes fail when loki is busy" → I/O contention
 
-## Writing your own backend
+## Extending CFOperator
 
-The observability layer is an interface, not a fixed list. Nothing below ships —
-this is the extension path if the shipped set does not cover you, and the
-example is deliberately a vendor CFOperator has no plans to support, to make the
-point that you do not need us to.
+There are two layers, and only one of them takes plugins.
 
-The agent never learns a vendor's query language. It calls
-`query_metric("cpu_usage{host=pi2}")` and your adapter translates; that is the
-whole contract.
+### The event runtime takes plugins
 
-**1. Implement the interface.** Create `observability/mymetrics.py`:
+The event runtime (alert intake, triage, dispatch to the agent, notification)
+imports the modules named in `CFOP_EVENT_RUNTIME_PLUGINS` and lets each one
+register:
 
-```python
-from .base import MetricsBackend
+- **alert sources**: somewhere new that alerts come from;
+- **context providers**: enrichment before triage, including **evidence** that
+  the investigation itself is shown;
+- **completion observers**: acting on an investigation's result, for example
+  writing it back to the system the alert came from;
+- **notification sinks** and **action handlers**.
 
-class MyMetrics(MetricsBackend):
-    def query(self, query: str) -> Dict[str, Any]:
-        # Translate the PromQL-shaped query to your vendor's language,
-        # call their API, and return the normalized result shape.
-        ...
-```
+No core change is needed. The contract, a minimal example, and the rules for
+evidence and observers are in
+[event-runtime-quickstart.md](event-runtime-quickstart.md#external-plugins).
+`integrations/dynatrace/` is a complete worked example, for a vendor that is
+"not planned" as a backend above. It turns Davis problems into alerts, hands
+each investigation fixed-DQL evidence, and writes the conclusion back onto the
+problem.
 
-**2. Register it** in `observability/__init__.py` — import it and add it to
-`__all__`. That file is the single source of truth for what the config loader
-will accept, which is why the matrix at the top of this document is checkable
-against it.
+### The agent's backends do not
 
-**3. Name it in config:**
+Replacing the metrics or logs backend (Prometheus, Loki) with another vendor is a
+code change in the agent, not a plugin:
 
-```yaml
-observability:
-  metrics:
-    backend: mymetrics
-    api_token: ${MY_API_TOKEN}
-```
+- The backend names are a fixed list in `_init_observability_backends`
+  (`agent/agent.py`). Any other name is logged as unsupported and switched off.
+- The investigation tools `prometheus_query` and `loki_query`
+  (`tools/__init__.py`) take PromQL and LogQL that the model writes, and they
+  correct it as PromQL and LogQL.
+- The agent's sweeps send hard-coded PromQL to the metrics backend.
 
-If you build one that others would want, an integration request issue plus a PR
-is the fastest route to it shipping.
+An adapter implementing `MetricsBackend` for another vendor would therefore
+have to accept arbitrary PromQL. A store that speaks the Prometheus query API
+avoids all of this. VictoriaMetrics, the one planned entry, is expected to work
+as `backend: prometheus` with its URL. That has not been tested, which is why
+it is listed as planned rather than shipped.
+
+If you need another vendor, open an integration request issue. Alert-shaped
+integrations (problems, incidents) are plugin-sized, like the Dynatrace one.
+A metrics or logs backend is core work.
 
 ## Hybrid and multi-site infrastructure
 
