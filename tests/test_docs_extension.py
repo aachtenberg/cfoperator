@@ -24,7 +24,9 @@ INFRA_DOC = REPO_ROOT / "docs" / "infrastructure-config.md"
 PLUGIN_DOCS = [REPO_ROOT / "docs" / "event-runtime-quickstart.md", INFRA_DOC]
 # The matrix rows whose backends only the agent wires. The Notifications row is
 # shared with the event runtime (ntfy lives only there), so it is used for the
-# "nothing accepted is undocumented" direction, not the other.
+# "nothing accepted is undocumented" direction only. That direction covers every
+# name _init_observability_backends compares, including its notification backends
+# (slack, discord, alertmanager): a new one there needs a row entry too, on purpose.
 AGENT_ROWS = ("Metrics", "Logs", "Containers", "Alerts (ingest)")
 
 
@@ -60,7 +62,11 @@ def _shipped_names_in_matrix(rows=None) -> set[str]:
 
 
 def test_the_matrix_ships_exactly_what_the_agent_accepts():
-    """Both directions: no documented backend the agent lacks, no accepted backend the table omits."""
+    """Both directions: no documented backend the agent lacks, no accepted backend the table omits.
+
+    "Accepted" is every name the function compares, notification backends
+    included, so adding one to the agent without documenting it fails here.
+    """
     accepted = _accepted_backend_names()
     assert accepted, "found no backend comparisons; the AST walk no longer matches the function"
     claimed = _shipped_names_in_matrix(AGENT_ROWS)
