@@ -26,6 +26,7 @@ import logging
 import os
 import threading
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import timezone
 from typing import Iterable, List, Optional
 
@@ -107,7 +108,7 @@ class PostgresStateSink(BaseStateSink):
                 "VALUES (%s, %s, %s, %s, %s) "
                 "ON CONFLICT (event_id) DO NOTHING"
             ).format(sql.Identifier(self.table_name))
-            with psycopg2.connect(self.dsn) as conn:
+            with self._transaction() as conn:
                 with conn.cursor() as cur:
                     cur.executemany(
                         query,
@@ -244,7 +245,7 @@ class PostgresStateSink(BaseStateSink):
                 "SELECT event_id, created_at, event_type, payload "
                 "FROM {} ORDER BY created_at DESC LIMIT %s"
             ).format(sql.Identifier(self.table_name))
-            with psycopg2.connect(self.dsn) as conn:
+            with self._transaction() as conn:
                 with conn.cursor() as cur:
                     cur.execute(query, (limit,))
                     rows = cur.fetchall()
@@ -295,7 +296,7 @@ class PostgresStateSink(BaseStateSink):
         ).format(body=body, table=sql.Identifier(self.alerts_table), where=where)
         params.append(query.limit + 1)
         try:
-            with psycopg2.connect(self.dsn) as conn:
+            with self._transaction() as conn:
                 with conn.cursor() as cur:
                     cur.execute(statement, params)
                     rows = cur.fetchall()
@@ -313,7 +314,7 @@ class PostgresStateSink(BaseStateSink):
         self._require_read_model()
         psycopg2, _extras, sql = self._load_driver()
         try:
-            with psycopg2.connect(self.dsn) as conn:
+            with self._transaction() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         sql.SQL(
@@ -417,7 +418,7 @@ class PostgresStateSink(BaseStateSink):
         psycopg2, extras, sql = self._load_driver()
         last, total = "", 0
         while not self._stop.is_set():
-            with psycopg2.connect(self.dsn) as conn:
+            with self._transaction() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         sql.SQL("SELECT event_id, payload FROM {} WHERE event_id > %s AND alert_id IS NULL "
@@ -442,7 +443,7 @@ class PostgresStateSink(BaseStateSink):
         psycopg2, _extras, sql = self._load_driver()
         last, total = "", 0
         while not self._stop.is_set():
-            with psycopg2.connect(self.dsn) as conn:
+            with self._transaction() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
                         sql.SQL(
@@ -487,7 +488,7 @@ class PostgresStateSink(BaseStateSink):
         table_identifier = sql.Identifier(self.table_name)
         index_identifier = sql.Identifier(f"idx_{self.table_name}_created_at")
         alerts = sql.Identifier(self.alerts_table)
-        with psycopg2.connect(self.dsn) as conn:
+        with self._transaction() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     sql.SQL(
@@ -543,6 +544,22 @@ class PostgresStateSink(BaseStateSink):
                         sql.Identifier(f"idx_{self.alerts_table}_{column}"), alerts, sql.Identifier(column)))
         self._schema_ready = True
         self._last_error = None
+
+    @contextmanager
+    def _transaction(self):
+        """One connection, one transaction, always closed.
+
+        psycopg2's own ``with connect()`` commits or rolls back but leaves the
+        connection open until garbage collection. Per-append connections and
+        batch loops should not depend on refcounting for their sockets.
+        """
+        psycopg2, _extras, _sql = self._load_driver()
+        conn = psycopg2.connect(self.dsn)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
 
     @staticmethod
     def _load_driver():
