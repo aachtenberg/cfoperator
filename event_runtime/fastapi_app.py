@@ -9,7 +9,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any, Dict
 
-from .activity import render_activity_html
+from .alert_store import AlertStoreUnavailable, parse_alert_query
 from .bootstrap import build_portable_runtime, build_portable_worker
 from .http_actions import (
     COMPLETION_AUTH_HEADER,
@@ -120,10 +120,28 @@ def create_app(runtime=None, worker=None):
     ) -> dict:
         return {"scheduled_tasks": runtime.scheduled_tasks(limit=limit, scheduler_name=scheduler)}
 
-    @app.get("/activity.html")
-    def activity_html(limit: int = Query(default=25, ge=1, le=250)) -> Response:
-        payload = render_activity_html(runtime.recent_activity(limit=limit))
-        return Response(content=payload, media_type="text/html")
+    @app.get("/v1/alerts")
+    def alerts(request: Request) -> dict:
+        try:
+            query = parse_alert_query(dict(request.query_params))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            return runtime.list_alerts(query).to_dict()
+        except AlertStoreUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get("/v1/alerts/{alert_id}")
+    def alert_detail(alert_id: str) -> dict:
+        if not alert_id or len(alert_id) > 200:
+            raise HTTPException(status_code=404, detail="Not found")
+        try:
+            found = runtime.get_alert(alert_id)
+        except AlertStoreUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if found is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        return found
 
     @app.get("/metrics")
     def metrics() -> Response:

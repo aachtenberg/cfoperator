@@ -155,6 +155,9 @@ event_runtime:
 
 - `GET /health`
 - `GET /history?limit=50`
+- `GET /activity?limit=25&status=&action=` — the newest alerts with their full timelines (the legacy feed; served from the read model below)
+- `GET /v1/alerts` — alerts by their folded state, newest first. Parameters: `limit` (1–200, default 50), `cursor` (the previous page's `next_cursor`), `status`, `action`, `source`, `severity`, `since`/`until` (ISO 8601, bounds on the latest event), `q` (substring of summary, resource, namespace or alert id). An unknown parameter is a 400. Returns `{alerts, next_cursor, store, lagging}`: `store` is `postgres` or `outbox`, and `lagging` means Postgres answered while the outbox still holds events it has not replayed.
+- `GET /v1/alerts/<alert_id>` — one alert's folded state plus every event behind it, oldest first; 404 if unknown
 - `GET /scheduled?limit=100`
 - `GET /metrics`
 - `POST /alert`
@@ -162,6 +165,14 @@ event_runtime:
 - `POST /v1/investigations/<alert_id>/complete` — receive a completed `ActionResult` from an external executor (the agent). Body shape: `{"alert": <Alert>, "result": <ActionResult>}`. Requires `X-CFOP-Token` header when `CFOP_COMPLETION_SHARED_SECRET` is set.
 
 When `CFOP_RUNTIME_TOKEN` is set, every route above except `/livez`, `/health`, `/metrics` and the completion endpoint requires `Authorization: Bearer $CFOP_RUNTIME_TOKEN`.
+
+### The alert read model (CFOP-215)
+
+`/v1/alerts` filters on an alert's *folded* state (status, action, and so on), which exists only after all of the alert's events are combined. With Postgres configured, `event_runtime_alerts` keeps one row per alert. Each row is recomputed from all of that alert's events, in the same transaction that inserts a new one, using the same fold as the in-memory path (`activity.fold_alert`). There is no second definition of status in SQL, and replaying an event rewrites the same row. `activity.FOLD_VERSION` is stored on every row. On start, a background rebuild folds every alert that is missing or at another version, which is also how an existing `event_runtime_events` table gets its read model.
+
+Until that rebuild finishes, or whenever Postgres cannot answer, the runtime answers from the local outbox. The answer is complete but slower, and the response says `store: "outbox"`. Without Postgres configured, the outbox is the only store. `/health` reports the rebuild under `sink.remotes[].read_model`.
+
+If you change the fold (`_merge_activity` and friends), bump `FOLD_VERSION`, or rows written before the change keep the old answer.
 
 The agent is a caller too. It forwards every sweep finding and "Resolved" notice to `POST /alert`, so it needs the **same** `CFOP_RUNTIME_TOKEN` in its own environment. The runtime cannot tell a caller that forgot the token from one that was never meant to call, and turning the gate on without giving the agent the token stopped every sweep notification for 34 days (CFOP-214). A refused forward is logged at WARNING and counted in `cfoperator_sweep_forward_total{outcome="unauthorized"}`.
 

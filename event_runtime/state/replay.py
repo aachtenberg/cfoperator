@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
+from ..alert_store import AlertPage, AlertQuery, AlertStoreUnavailable
 from .base import BaseStateSink
 from .local_outbox import LocalOutboxStateSink
 from ..telemetry import observe_replay_attempt
@@ -157,6 +158,41 @@ class ReplayingStateSink(BaseStateSink):
             if events:
                 return events
         return self.local_sink.recent(limit=limit)
+
+    def list_alerts(self, query: AlertQuery) -> AlertPage:
+        """Postgres when it can answer, else the outbox, which has everything.
+
+        A Postgres answer while the outbox still holds events it has not
+        replayed is complete up to the gap, so it says so (``lagging``)
+        rather than passing as current (CFOP-215).
+        """
+        for sink in self.remote_sinks:
+            try:
+                page = sink.list_alerts(query)
+            except AlertStoreUnavailable as exc:
+                logger.info("Alert read model on %s unavailable, trying the next store: %s", sink.name, exc)
+                continue
+            page.lagging = self._behind(sink)
+            return page
+        return self.local_sink.list_alerts(query)
+
+    def get_alert(self, alert_id: str) -> dict | None:
+        for sink in self.remote_sinks:
+            try:
+                found = sink.get_alert(alert_id)
+            except AlertStoreUnavailable as exc:
+                logger.info("Alert read model on %s unavailable, trying the next store: %s", sink.name, exc)
+                continue
+            # Not in Postgres may only mean not replayed yet; the outbox decides.
+            if found is not None or not self._behind(sink):
+                return found
+        return self.local_sink.get_alert(alert_id)
+
+    def _behind(self, sink: BaseStateSink) -> bool:
+        try:
+            return self.local_sink.has_events_after(self.checkpoints.get_cursor(sink.name))
+        except Exception:
+            return True
 
     def health(self) -> dict:
         local = self.local_sink.health()

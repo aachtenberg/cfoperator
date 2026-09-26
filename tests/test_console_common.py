@@ -40,7 +40,7 @@ SHARED_HELPERS = ["esc", "color", "badge", "age", "refreshAges", "toast", "trapF
 #: Pages whose main content is a polled row list. Same set as
 #: test_console_a11y.LIST_PAGES; repeated rather than imported so this file
 #: reads on its own.
-LIST_PAGES = ["investigations.html", "remediations.html"]
+LIST_PAGES = ["investigations.html", "remediations.html", "events.html"]
 
 
 def read(name):
@@ -235,10 +235,12 @@ const src=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 const common=fs.readFileSync(path.join(path.dirname(process.argv[2]),'common.js'),'utf8');
 const api=process.argv[3], key=process.argv[4];
 
-let data=[{id:7,status:'queued',outcome:'monitoring',risk:'low',remediation_class:'gitops-patch',
-           host_id:'h',payload:{},created_at:'2026-08-25T10:00:00Z',started_at:'2026-08-25T10:00:00Z'},
-          {id:6,status:'resolved',outcome:'resolved',risk:'low',remediation_class:'gitops-patch',
-           host_id:'h',payload:{},created_at:'2026-08-25T09:00:00Z',started_at:'2026-08-25T09:00:00Z'}];
+let data=[{id:7,alert_id:'7',status:'queued',outcome:'monitoring',risk:'low',remediation_class:'gitops-patch',
+           host_id:'h',payload:{},created_at:'2026-08-25T10:00:00Z',started_at:'2026-08-25T10:00:00Z',
+           latest_event_at:'2026-08-25T10:00:00+00:00'},
+          {id:6,alert_id:'6',status:'resolved',outcome:'resolved',risk:'low',remediation_class:'gitops-patch',
+           host_id:'h',payload:{},created_at:'2026-08-25T09:00:00Z',started_at:'2026-08-25T09:00:00Z',
+           latest_event_at:'2026-08-25T09:00:00+00:00'}];
 let fetches=0, paints=0;
 const doc={documentElement:{},body:{appendChild(){}},addEventListener(){},activeElement:null,hidden:false};
 function el(id){const e={id:id||'',className:'',textContent:'',value:'',hidden:false,
@@ -256,7 +258,7 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
   getComputedStyle:()=>({getPropertyValue:()=>'#888888'}),
   fetch:(url)=>{
     if(url.indexOf(api)===0 && url.indexOf(api+'/')!==0){ fetches++;
-      return Promise.resolve({json:()=>Promise.resolve({[key]:data,investigations:key==='investigations'?data:[],remediations:key==='remediations'?data:[]})}); }
+      return Promise.resolve({ok:true,json:()=>Promise.resolve({[key]:data,investigations:key==='investigations'?data:[],remediations:key==='remediations'?data:[]})}); }
     return Promise.resolve({ok:true,json:()=>Promise.resolve({})});
   }};
 box.window={location:loc,history:box.history,addEventListener(){},removeEventListener(){},
@@ -283,7 +285,8 @@ const tick=()=>new Promise(r=>setImmediate(r));
 """
 
 _API = {"investigations.html": ("/api/investigations", "investigations"),
-        "remediations.html": ("/api/remediations", "remediations")}
+        "remediations.html": ("/api/remediations", "remediations"),
+        "events.html": ("/api/events", "alerts")}
 
 
 @pytest.fixture(scope="module", params=LIST_PAGES)

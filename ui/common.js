@@ -31,8 +31,11 @@ function badge(text, varname){ const c=color(varname);
   return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(text)||'—'}</span>`; }
 
 // Relative age of an ISO timestamp. Server timestamps are UTC but not always
-// suffixed; a bare one would otherwise be read as local time.
-function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(iso+(iso.endsWith('Z')?'':'Z')).getTime())/1000;
+// suffixed; a bare one would otherwise be read as local time. One that
+// already names its zone — the event runtime's "+00:00" (CFOP-215) — is
+// taken as it is: appending Z to it made an invalid date and a "NaNd" age.
+const ZONED=/(Z|[+-]\d\d:?\d\d)$/;
+function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(ZONED.test(iso)?iso:iso+'Z').getTime())/1000;
   if(s<90) return Math.round(s)+'s'; if(s<5400) return Math.round(s/60)+'m';
   if(s<129600) return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
 

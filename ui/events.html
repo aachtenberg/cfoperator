@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CFOperator · Events</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root {
+    --bg-primary:#0a0a0f; --bg-secondary:#12121a; --bg-tertiary:#1a1a26; --bg-hover:#22222e;
+    --border:#2a2a3a; --border-subtle:#1e1e2e;
+    --text-primary:#e0e0e8; --text-secondary:#8888a0; --text-muted:#555566;
+    --accent:#22c55e; --cyan:#06b6d4; --orange:#f59e0b; --red:#ef4444; --purple:#a371f7;
+    --radius:10px; --radius-sm:6px; --header-height:56px;
+  }
+  * { box-sizing:border-box; }
+  button, input, select, textarea { font-family:inherit; }
+  body { margin:0; min-height:100vh; background:var(--bg-primary); color:var(--text-primary);
+    font-family:'JetBrains Mono',monospace; font-size:14px; }  /* one face, every page (CFOP-113) */
+  header { height:var(--header-height); background:var(--bg-secondary); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; padding:0 20px; gap:16px; position:sticky; top:0; z-index:10; }
+  .logo { font-family:'JetBrains Mono',monospace; font-size:18px; font-weight:700; color:var(--accent);
+    letter-spacing:-0.5px; display:flex; align-items:center; gap:10px; }
+  .logo svg { width:24px; height:24px; opacity:.9; }
+  .logo .sub { color:var(--text-secondary); font-weight:500; font-size:14px; }
+  .right { margin-left:auto; display:flex; align-items:center; gap:14px; }
+  .muted { color:var(--text-secondary); font-size:12px; }
+  a { color:var(--cyan); text-decoration:none; } a:hover { text-decoration:underline; }
+  .filters { padding:14px 20px 8px; display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:var(--radius-sm); padding:5px 12px; cursor:pointer; font-size:13px; font-family:inherit; }
+  .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+  .chip.active { background:var(--accent); border-color:var(--accent); color:#0a0a0f; font-weight:600; }
+  /* Selects and the search box read as chips: same surface, same size. */
+  .bar { padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .bar select, .bar input { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:var(--radius-sm); padding:5px 10px; font-size:13px; }
+  .bar input { min-width:260px; }
+  .bar select:focus-visible, .bar input:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+  #banner { margin:12px 20px 0; padding:10px 14px; border:1px solid var(--border); border-left:3px solid var(--orange);
+    border-radius:var(--radius-sm); background:var(--bg-tertiary); font-size:13px; line-height:1.5; }
+  #banner.err { border-left-color:var(--red); }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
+  th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
+    letter-spacing:.04em; position:sticky; top:var(--header-height); background:var(--bg-primary); }
+  td { font-size:13px; }
+  tbody tr { cursor:pointer; } tbody tr:hover { background:var(--bg-hover); }
+  tbody tr:focus-visible { outline:2px solid var(--cyan); outline-offset:-2px; background:var(--bg-hover); }
+  .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
+    font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
+  .summ { max-width:560px; } .summ .muted { margin-top:3px; }
+  .more { padding:16px 20px; text-align:center; }
+  .empty { padding:40px; text-align:center; color:var(--text-muted); }
+  #backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:40; opacity:0;
+    pointer-events:none; transition:opacity .15s; }
+  #backdrop.open { opacity:1; pointer-events:auto; }
+  #detail { position:fixed; top:0; right:0; width:min(620px,94vw); height:100%; z-index:50;
+    background:var(--bg-secondary); border-left:1px solid var(--border); padding:20px; overflow:auto;
+    transform:translateX(100%); transition:transform .15s; box-shadow:-8px 0 24px #0008; font-size:13px; }
+  #detail.open { transform:translateX(0); }
+  #detail h2 { font-size:20px; margin:0 0 8px; } #detail h3 { font-size:14px; margin:16px 0 8px; }
+  #detail pre { background:var(--bg-primary); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);
+    padding:10px; margin:0; overflow:auto; white-space:pre-wrap; word-break:break-word; font-size:12px; }
+  .kv { margin:0 0 8px; line-height:1.55; } .kv b { color:var(--text-secondary); font-weight:600; }
+  .kv > b:first-child { display:inline-block; min-width:88px; }
+  .prose { margin:0 0 8px; line-height:1.55; white-space:pre-wrap; word-break:break-word; }
+  .x { float:right; cursor:pointer; color:var(--text-secondary); font-size:20px;
+    background:none; border:0; padding:0 2px; font-family:inherit; line-height:1; }
+  .x:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+  #detail details { margin:0 0 8px; }
+  #detail summary { cursor:pointer; color:var(--text-secondary); font-weight:600; font-size:13px; user-select:none; }
+  #detail summary:hover { color:var(--text-primary); }
+  #detail details[open] > summary { margin-bottom:8px; }
+  ol.tl { list-style:none; padding:0; margin:0 0 8px; } ol.tl li { margin:0 0 6px; line-height:1.5; }
+  ol.tl .when { color:var(--text-secondary); } ol.tl .note { display:block; margin-left:12px; white-space:pre-wrap; word-break:break-word; }
+  .cp { background:none; border:0; padding:2px; margin-left:4px; cursor:pointer; color:var(--text-muted);
+    vertical-align:middle; line-height:0; border-radius:var(--radius-sm); }
+  .cp:hover { color:var(--text-primary); background:var(--bg-hover); }
+  .cp:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+  .cp.done { color:var(--accent); }
+  #toasts { position:fixed; bottom:20px; right:20px; display:flex; flex-direction:column; gap:8px; z-index:60; }
+  .toast { background:var(--bg-tertiary); border:1px solid var(--border); border-left:3px solid var(--cyan);
+    color:var(--text-primary); padding:10px 14px; border-radius:var(--radius-sm); box-shadow:0 4px 16px #0008;
+    font-size:13px; min-width:200px; transition:opacity .2s; }
+  .toast.err { border-left-color:var(--red); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/" class="logo" style="text-decoration:none" title="Back to console">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>
+    </svg>
+    CFOperator <span class="sub">/ Events</span>
+  </a>
+  <div class="right"><span class="muted" id="updated"></span></div>
+  <!-- Section nav, identity and logout — see ui/nav.js -->
+  <div id="cfop-nav"></div>
+</header>
+<script src="/nav.js" defer></script>
+<div id="banner" role="status" hidden></div>
+<div class="filters" id="filters" aria-label="Status"></div>
+<div class="bar">
+  <select id="f-action" aria-label="Decision" onchange="setFilter('action', this.value)"></select>
+  <select id="f-source" aria-label="Source" onchange="setFilter('source', this.value)"></select>
+  <select id="f-severity" aria-label="Severity" onchange="setFilter('severity', this.value)"></select>
+  <select id="f-window" aria-label="Time window" onchange="setFilter('window', this.value)"></select>
+  <input type="search" id="f-q" aria-label="Search alerts" placeholder="search summary, resource, alert id" oninput="searchInput(this.value)">
+</div>
+<table>
+  <thead><tr><th>When</th><th>Source</th><th>Severity</th><th>Alert</th><th>Decision</th><th>Status</th><th>Investigation</th></tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty" hidden>No alerts match these filters.</div>
+<div id="more" class="more" hidden><button type="button" class="chip" onclick="loadMore()">Load older alerts</button></div>
+<div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
+<!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
+     order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
+<div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
+<div id="toasts"></div>
+
+<!-- esc/badge/age/toast/trapFocus/copyIcon — one copy, see ui/common.js. Not deferred:
+     the script below calls them at top level. -->
+<script src="/common.js"></script>
+<script>
+// Every alert the event runtime received and what it decided (CFOP-215):
+// the ones triaged to log_only or notify, suppressed as duplicates, gated as
+// info or handed to a deep investigation, as well as the ones that became
+// investigations. Read through /api/events, which proxies the runtime's
+// per-alert read model — filters and paging run there, over every alert, so
+// what a filter shows is everything that matches rather than whatever fitted
+// in a window of recent events.
+const PAGE=50;
+// A poll re-reads what is on screen. Past this many rows (the server's page
+// cap) it would be a partial re-read, so it stops and says so.
+const MAX_POLLED=200;
+const STATUSES=['completed','failed','suppressed','logged','running','queued','received'];
+const STATUS_COLOR={completed:'--accent',failed:'--red',suppressed:'--text-muted',logged:'--text-secondary',
+  running:'--cyan',queued:'--cyan',received:'--cyan'};
+const ACTIONS=['investigate','deep_investigate','notify','escalate','log_only','suppressed'];
+const ACTION_COLOR={investigate:'--cyan',deep_investigate:'--purple',notify:'--orange',escalate:'--red',
+  log_only:'--text-muted',suppressed:'--text-muted'};
+const SEVERITY_COLOR={critical:'--red',warning:'--orange',info:'--cyan'};
+const KNOWN_SOURCES=['alertmanager','cfoperator-sweep','boot-forensics','manual'];
+const WINDOWS={'1h':3600,'24h':86400,'7d':604800,'30d':2592000};
+// What /api/events says went wrong, in the words that tell the operator what
+// to do. "unauthorized" is the agent's token being refused by the runtime —
+// a deploy fix, not a reason to sign in again.
+const REASONS={
+  not_configured:'This console has no event runtime configured, so there are no events to show.',
+  unreachable:'The event runtime is not answering.',
+  unauthorized:'The event runtime refused this console. The agent needs the runtime’s CFOP_RUNTIME_TOKEN (docs/auth.md).',
+  store_unavailable:'The event runtime cannot answer queries right now.',
+  bad_request:'The event runtime rejected this filter.'
+};
+
+// Filters live in the query string and the open alert in the hash, so a URL
+// is a view you can paste and a reload comes back to (the CFOP-73 pattern).
+const F={status:'',action:'',source:'',severity:'',window:'',q:''};
+let ROWS=[], CURSOR=null, LAST_SIG=null, SEEN_SOURCES=new Set(KNOWN_SOURCES), PAUSED=false;
+
+function parseQuery(search){
+  const out={};
+  String(search||'').replace(/^\?/,'').split('&').forEach(pair=>{
+    if(!pair) return;
+    const i=pair.indexOf('=');
+    const dec=v=>{ try{ return decodeURIComponent(v.replace(/\+/g,' ')); }catch(e){ return ''; } };
+    out[dec(i<0?pair:pair.slice(0,i))]=dec(i<0?'':pair.slice(i+1));
+  });
+  return out;
+}
+function encodePairs(obj){
+  return Object.keys(obj).filter(k=>obj[k]!==''&&obj[k]!=null)
+    .map(k=>encodeURIComponent(k)+'='+encodeURIComponent(obj[k])).join('&');
+}
+// The page's own URL: filters as written, window included.
+function pageQuery(){ return encodePairs(F); }
+// The API's: the window becomes a since bound; everything else passes as is.
+function apiQuery(extra){
+  const p={status:F.status, action:F.action, source:F.source, severity:F.severity, q:F.q};
+  if(WINDOWS[F.window]) p.since=new Date(Date.now()-WINDOWS[F.window]*1000).toISOString();
+  return encodePairs(Object.assign(p, extra||{}));
+}
+function writeUrl(){
+  const q=pageQuery();
+  history.replaceState(null,'',location.pathname+(q?'?'+q:'')+(OPEN!==null?'#'+encodeURIComponent(OPEN):''));
+}
+(function readFilters(){
+  const q=parseQuery(location.search);
+  Object.keys(F).forEach(k=>{ F[k]=q[k]||''; });
+})();
+
+// A non-OK body is JSON with a reason; say what it means.
+async function getJson(url){
+  const res=await fetch(url);
+  let body=null; try{ body=await res.json(); }catch(e){ body=null; }
+  if(res.ok===false){
+    const reason=body&&body.reason, detail=body&&body.error;
+    const msg=res.status===401?'Signed out — sign in again.'
+      :REASONS[reason]?REASONS[reason]+(detail?' ('+detail+')':'')
+      :(detail||('HTTP '+res.status));
+    const err=new Error(msg); err.status=res.status; throw err;
+  }
+  return body||{};
+}
+function setBanner(msg, isError){
+  const b=document.getElementById('banner');
+  b.hidden=!msg; b.className=isError?'err':''; b.textContent=msg||'';
+}
+function storeNote(body){
+  if(PAUSED) return 'Auto-refresh is paused while more than '+MAX_POLLED+' alerts are loaded. Reload to resume.';
+  if(body.store==='outbox') return 'The event runtime’s Postgres is unavailable, so this is its local outbox: complete, but slower to query.';
+  if(body.lagging) return 'The event runtime’s Postgres copy is catching up; the newest events may be missing for a moment.';
+  return '';
+}
+
+// A poll that brought nothing new does not rebuild the table (CFOP-95).
+function signature(){
+  return ROWS.map(r=>[r.alert_id,r.status,r.action,r.latest_event_at,r.event_count,investigationOf(r)].join('\u0001')).join('\n')
+    +'\n'+(CURSOR||'');
+}
+async function load(){
+  if(document.hidden) return;
+  if(ROWS.length>MAX_POLLED){ PAUSED=true; return; }
+  PAUSED=false;
+  const limit=Math.min(Math.max(PAGE, Math.ceil(ROWS.length/PAGE)*PAGE), MAX_POLLED);
+  let body;
+  try{ body=await getJson('/api/events?'+apiQuery({limit:limit})); }
+  catch(e){ setBanner(e.message,true); return; }
+  ROWS=body.alerts||[]; CURSOR=body.next_cursor||null;
+  setBanner(storeNote(body),false);
+  const sig=signature();
+  if(sig!==LAST_SIG){ LAST_SIG=sig; paint(); } else refreshAges();
+  document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
+}
+async function loadMore(){
+  if(!CURSOR) return;
+  let body;
+  try{ body=await getJson('/api/events?'+apiQuery({limit:PAGE, cursor:CURSOR})); }
+  catch(e){ toast(e.message,'err'); return; }
+  const have=new Set(ROWS.map(r=>r.alert_id));
+  ROWS=ROWS.concat((body.alerts||[]).filter(r=>!have.has(r.alert_id)));
+  CURSOR=body.next_cursor||null;
+  LAST_SIG=signature(); paint();
+}
+function setFilter(key, value){
+  F[key]=value||''; writeUrl();
+  ROWS=[]; CURSOR=null; LAST_SIG=null;
+  paintFilters(); load();
+}
+// Typing searches after a pause, not per keystroke.
+let SEARCH_TIMER=null;
+function searchInput(value){
+  clearTimeout(SEARCH_TIMER);
+  SEARCH_TIMER=setTimeout(()=>setFilter('q', String(value||'').trim()), 300);
+}
+
+function investigationOf(r){
+  const v=((r.result||{}).details||{}).investigation_id;
+  return /^\d+$/.test(String(v==null?'':v))&&Number(v)>0?Number(v):null;
+}
+function sourceLabel(s){ return s==='cfoperator-sweep'?'sweep':(s||'—'); }
+function resource(r){ return [r.namespace, r.resource_name].filter(Boolean).join('/'); }
+// LLM- and alert-adjacent URLs: only http(s) reaches an href (same posture as
+// the investigations and remediations pages).
+function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
+  try{ const p=new URL(s, window.location.href);
+  return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
+
+function chip(value, label){
+  const on=F.status===value;
+  return `<button type="button" class="chip ${on?'active':''}" aria-pressed="${on}" data-status="${esc(value)}" onclick="setFilter('status', this.getAttribute('data-status'))">${esc(label)}</button>`;
+}
+function options(id, values, allLabel, current, label){
+  const el=document.getElementById(id);
+  el.innerHTML=`<option value="">${esc(allLabel)}</option>`+values.map(v=>
+    `<option value="${esc(v)}"${v===current?' selected':''}>${esc(label?label(v):v)}</option>`).join('');
+  el.value=current;
+}
+function paintFilters(){
+  document.getElementById('filters').innerHTML=chip('','all')+STATUSES.map(s=>chip(s,s)).join('');
+  options('f-action', ACTIONS, 'any decision', F.action);
+  options('f-source', Array.from(SEEN_SOURCES), 'any source', F.source, sourceLabel);
+  options('f-severity', ['critical','warning','info'], 'any severity', F.severity);
+  options('f-window', Object.keys(WINDOWS), 'all time', F.window, w=>'last '+w);
+  const q=document.getElementById('f-q'); if(q.value!==F.q) q.value=F.q;
+}
+function paint(){
+  ROWS.forEach(r=>{ if(r.source && !SEEN_SOURCES.has(r.source)){ SEEN_SOURCES.add(r.source); paintFilters(); } });
+  document.getElementById('empty').hidden=ROWS.length>0;
+  document.getElementById('more').hidden=!CURSOR;
+  const focused=focusedRow();
+  // The alert id reaches the handler through data-id, never through the
+  // inline JS: ids come from alert sources, and a quote in one must not be
+  // able to become script.
+  document.getElementById('rows').innerHTML=ROWS.map(r=>{
+    const inv=investigationOf(r), res=resource(r);
+    return `
+    <tr id="row-${esc(r.alert_id)}" data-id="${esc(r.alert_id)}" tabindex="0" onclick="openRow(this)" onkeydown="rowKey(event,this)">
+      <td class="muted" data-age="${esc(r.latest_event_at||'')}" title="${esc(r.latest_event_at||'')}">${age(r.latest_event_at)}</td>
+      <td>${esc(sourceLabel(r.source))}</td>
+      <td>${badge(r.severity, SEVERITY_COLOR[r.severity]||'--text-muted')}</td>
+      <td class="summ">${esc(String(r.summary||'').slice(0,160))}${res?`<div class="muted">${esc(res)}</div>`:''}</td>
+      <td>${r.action?badge(r.action, ACTION_COLOR[r.action]||'--text-muted'):'<span class="muted">—</span>'}</td>
+      <td>${badge(r.status, STATUS_COLOR[r.status]||'--text-muted')}</td>
+      <td>${inv?`<a href="/investigations#${inv}" onclick="event.stopPropagation()">#${inv}</a>`:''}</td></tr>`;
+  }).join('');
+  refocusRow(focused);
+}
+function openRow(tr){ detail(tr.getAttribute('data-id')); }
+// Rows are focusable rather than links (CFOP-94); Enter and Space open, as on
+// a button. A key pressed on a link inside the row is the link's own.
+function rowKey(e,tr){
+  if(e.target!==e.currentTarget) return;
+  if(e.key==='Enter'||e.key===' '){ e.preventDefault(); openRow(tr); }
+}
+function focusedRow(){ const a=document.activeElement; return (a&&a.id&&a.id.indexOf('row-')===0)?a.id:null; }
+function refocusRow(id){ if(!id) return; const el=document.getElementById(id); if(el&&el.focus) el.focus(); }
+function focusDetailClose(){ const x=document.getElementById('detail-close'); if(x&&x.focus) x.focus(); }
+
+// The open drawer names itself in the URL: /events#<alert id>. replaceState,
+// not location.hash — assigning fires hashchange, which would re-enter
+// detail() and refetch, and fill the back button with every row glanced at.
+let OPEN=null;
+// The element that opened the drawer, so closing can hand focus back (CFOP-94).
+let OPENER=null;
+function closeDetail(){
+  const d=document.getElementById('detail'); d.classList.remove('open'); d.inert=true;
+  document.getElementById('backdrop').classList.remove('open');
+  if(OPEN===null) return;
+  OPEN=null; history.replaceState(null,'',location.pathname+location.search); restoreFocus();
+}
+function restoreFocus(){
+  const o=OPENER; OPENER=null; if(!o) return;
+  const t=(o.isConnected===false && o.id)?document.getElementById(o.id):o;
+  if(t&&t.focus) t.focus();
+}
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
+trapFocus(document.getElementById('detail'));
+bindCopyIcons(document);
+
+function fmtTs(iso){
+  if(!iso) return '';
+  const d=new Date(iso); if(isNaN(d)) return esc(iso);
+  const p=n=>String(n).padStart(2,'0');
+  return `<span title="${esc(iso)}">${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}</span>`;
+}
+function closeButton(){ return '<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>'; }
+
+async function detail(id){
+  id=String(id);
+  const d=document.getElementById('detail'); d.innerHTML='<span class="muted">loading…</span>';
+  if(OPEN===null) OPENER=document.activeElement||null;
+  d.classList.add('open'); d.inert=false; document.getElementById('backdrop').classList.add('open');
+  OPEN=id; history.replaceState(null,'','#'+encodeURIComponent(id));
+  let body;
+  try{
+    body=await getJson('/api/events/'+encodeURIComponent(id));
+    if(!body || !body.alert) throw new Error('empty response');
+  }catch(e){
+    if(OPEN===id){ d.innerHTML=closeButton()+'<span class="muted">error loading this alert'+(e&&e.message?' ('+esc(e.message)+')':'')+'</span>'; focusDetailClose(); }
+    return;
+  }
+  // Two clicks in quick succession: last click wins, a stale answer is dropped.
+  if(OPEN!==id) return;
+  d.innerHTML=renderDetail(body.alert, body.events||[]);
+  focusDetailClose();
+}
+function renderDetail(a, events){
+  const dec=a.decision||{}, res=a.result||{}, det=res.details||{};
+  const inv=investigationOf(a);
+  const links=['html_url','url','investigation_url'].map(k=>safeUrl(det[k])).filter(Boolean);
+  const source=(events.find(e=>(e.payload||{}).alert)||{}).payload;
+  const alertDetails=((source||{}).alert||{}).details||{};
+  const title=a.summary||a.alert_id;
+  return `${closeButton()}
+    <h2 id="detail-title">${esc(title)}${copyIcon('summary',{text:title})}</h2>
+    <div class="kv">${badge(a.status, STATUS_COLOR[a.status]||'--text-muted')}
+      ${a.action?badge(a.action, ACTION_COLOR[a.action]||'--text-muted'):''}
+      ${badge(a.severity, SEVERITY_COLOR[a.severity]||'--text-muted')}
+      <span class="muted">${esc(a.source||'')}</span></div>
+    <div class="kv"><b>alert</b> <span id="alert-id">${esc(a.alert_id)}</span>${copyIcon('alert id',{from:'alert-id'})}</div>
+    ${resource(a)?`<div class="kv"><b>resource</b> ${esc(resource(a))}${a.resource_type?' <span class="muted">('+esc(a.resource_type)+')</span>':''}</div>`:''}
+    <div class="kv"><b>first seen</b> ${fmtTs(a.first_event_at)}</div>
+    <div class="kv"><b>latest</b> ${fmtTs(a.latest_event_at)} <span class="muted">· ${esc(a.event_count)} events</span></div>
+    ${a.reason?`<div class="kv"><b>reason</b> ${esc(a.reason)}</div>`:''}
+    ${dec.action?`<h3>Triage</h3>
+      <div class="kv"><b>decision</b> ${badge(dec.action, ACTION_COLOR[dec.action]||'--text-muted')}${dec.confidence!=null?' <span class="muted">confidence '+esc(dec.confidence)+'</span>':''}</div>
+      ${dec.reasoning?`<div class="prose">${esc(dec.reasoning)}</div>`:''}`:''}
+    ${(a.message||inv||links.length)?`<h3>Outcome</h3>
+      ${inv?`<div class="kv"><b>investigation</b> <a href="/investigations#${inv}">#${inv}</a></div>`:''}
+      ${links.map(u=>`<div class="kv"><b>link</b> <a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)} ↗</a></div>`).join('')}
+      ${a.message?`<div class="prose">${esc(a.message)}</div>`:''}`:''}
+    <h3>Timeline</h3>
+    <ol class="tl">${(a.timeline||[]).map(t=>`<li><span class="when">${fmtTs(t.created_at)}</span> ${esc(t.event_type)}${t.note?`<span class="note">${esc(t.note)}</span>`:''}</li>`).join('')}</ol>
+    ${Object.keys(alertDetails).length?`<details><summary>Alert details${copyIcon('alert details',{from:'alert-details'})}</summary>
+      <pre id="alert-details">${esc(JSON.stringify(alertDetails,null,2))}</pre></details>`:''}
+    <details><summary>Raw events (${events.length})${copyIcon('raw events',{from:'raw-events'})}</summary>
+      <pre id="raw-events">${esc(JSON.stringify(events,null,2))}</pre></details>`;
+}
+function openFromHash(){
+  let id=''; try{ id=decodeURIComponent(location.hash.replace(/^#/,'')); }catch(e){ id=''; }
+  if(id && id!==OPEN) detail(id);
+}
+window.addEventListener('hashchange', openFromHash);
+// A hidden tab has nobody looking; coming back catches up at once.
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) load(); });
+setInterval(load, 20000);
+paintFilters();
+load();
+openFromHash();
+</script>
+</body>
+</html>

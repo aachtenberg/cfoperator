@@ -1,9 +1,48 @@
-"""Helpers for turning raw runtime events into readable activity records."""
+"""Helpers for turning raw runtime events into readable activity records.
+
+The fold here (``build_activity_feed`` → ``_merge_activity``) is the one
+definition of what an alert's status, action and outcome are. The Postgres
+read model (``state/postgres.py``) stores its output per alert rather than
+restating it in SQL, and the outbox store folds on read, so both answer the
+same question the same way (CFOP-215).
+"""
 
 from __future__ import annotations
 
-from html import escape
 from typing import Iterable, List
+
+# Bump when a change to the fold would change what it returns for events
+# already stored. The Postgres read model rebuilds every row whose version
+# differs on the next start; without the bump, old alerts keep the old answer.
+FOLD_VERSION = 1
+
+# Dropped from list views: the per-event detail belongs to the one-alert read.
+_DETAIL_ONLY = ("timeline", "event_types")
+
+
+def alert_key(event: dict) -> str:
+    """The alert an event belongs to, or "" when it belongs to none.
+
+    The same extraction the fold groups by, so a read model keyed on this
+    groups exactly as the fold does.
+    """
+    payload = event.get("payload") or {}
+    alert = _extract_alert(payload)
+    return str((alert or {}).get("alert_id") or "")
+
+
+def fold_alert(events: Iterable[dict]) -> dict:
+    """Fold every event of ONE alert into its activity record."""
+    events = list(events)
+    keys = {alert_key(event) for event in events}
+    if len(keys) != 1 or "" in keys:
+        raise ValueError(f"fold_alert needs the events of exactly one alert, got {sorted(keys)}")
+    return build_activity_feed(events, limit=1)[0]
+
+
+def summarize_activity(activity: dict) -> dict:
+    """An activity record without its per-event detail, for list views."""
+    return {key: value for key, value in activity.items() if key not in _DETAIL_ONLY}
 
 
 def filter_events(
@@ -69,168 +108,6 @@ def filter_activities(
             continue
         filtered.append(activity)
     return filtered
-
-
-def render_activity_html(activities: Iterable[dict]) -> bytes:
-    """Render a small HTML timeline for operators who need a quick audit view."""
-    cards: List[str] = []
-    for activity in activities:
-        summary = escape(str(activity.get("summary") or "(no summary)"))
-        source = escape(str(activity.get("source") or "unknown"))
-        severity = escape(str(activity.get("severity") or "unknown"))
-        status = escape(str(activity.get("status") or "unknown"))
-        action = escape(str(activity.get("action") or "unknown"))
-        latest_event_at = escape(str(activity.get("latest_event_at") or ""))
-        alert_id = escape(str(activity.get("alert_id") or ""))
-        job_id = escape(str(activity.get("job_id") or ""))
-        message = escape(str(activity.get("message") or activity.get("reason") or ""))
-        cards.append(
-            """
-            <article class=\"activity-card\">
-              <header>
-                <div>
-                  <h2>{summary}</h2>
-                  <p>{source} / {severity}</p>
-                </div>
-                <div class=\"status-pill\">{status}</div>
-              </header>
-              <dl>
-                <div><dt>Action</dt><dd>{action}</dd></div>
-                <div><dt>Latest Event</dt><dd>{latest_event_at}</dd></div>
-                <div><dt>Alert ID</dt><dd>{alert_id}</dd></div>
-                <div><dt>Job ID</dt><dd>{job_id}</dd></div>
-              </dl>
-              <p class=\"message\">{message}</p>
-            </article>
-            """.format(
-                summary=summary,
-                source=source,
-                severity=severity,
-                status=status,
-                action=action,
-                latest_event_at=latest_event_at,
-                alert_id=alert_id,
-                job_id=job_id,
-                message=message,
-            )
-        )
-
-    body = "".join(cards) or "<p class=\"empty-state\">No runtime activity recorded yet.</p>"
-    html = (
-        "<!doctype html>\n"
-        "<html lang=\"en\">\n"
-        "  <head>\n"
-        "    <meta charset=\"utf-8\" />\n"
-        "    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n"
-        "    <title>CFOperator Event Runtime Activity</title>\n"
-        "    <style>\n"
-        "      :root {\n"
-        "        color-scheme: light;\n"
-        "        --bg: #f3efe6;\n"
-        "        --panel: rgba(255, 252, 246, 0.92);\n"
-        "        --ink: #17222f;\n"
-        "        --muted: #58636f;\n"
-        "        --line: rgba(23, 34, 47, 0.14);\n"
-        "        --accent: #0d6b5f;\n"
-        "      }\n"
-        "      * { box-sizing: border-box; }\n"
-        "      body {\n"
-        "        margin: 0;\n"
-        "        font-family: \"IBM Plex Sans\", \"Segoe UI\", sans-serif;\n"
-        "        background:\n"
-        "          radial-gradient(circle at top left, rgba(13, 107, 95, 0.12), transparent 32%),\n"
-        "          linear-gradient(180deg, #f7f2e8 0%, var(--bg) 100%);\n"
-        "        color: var(--ink);\n"
-        "      }\n"
-        "      main {\n"
-        "        max-width: 1100px;\n"
-        "        margin: 0 auto;\n"
-        "        padding: 32px 20px 48px;\n"
-        "      }\n"
-        "      h1 {\n"
-        "        margin: 0 0 8px;\n"
-        "        font-family: \"IBM Plex Serif\", Georgia, serif;\n"
-        "        font-size: clamp(2rem, 4vw, 3rem);\n"
-        "      }\n"
-        "      .lede {\n"
-        "        margin: 0 0 24px;\n"
-        "        color: var(--muted);\n"
-        "        max-width: 60ch;\n"
-        "      }\n"
-        "      .activity-grid {\n"
-        "        display: grid;\n"
-        "        gap: 16px;\n"
-        "      }\n"
-        "      .activity-card {\n"
-        "        border: 1px solid var(--line);\n"
-        "        border-radius: 18px;\n"
-        "        background: var(--panel);\n"
-        "        padding: 18px 20px;\n"
-        "        box-shadow: 0 18px 40px rgba(23, 34, 47, 0.06);\n"
-        "      }\n"
-        "      .activity-card header {\n"
-        "        display: flex;\n"
-        "        justify-content: space-between;\n"
-        "        gap: 12px;\n"
-        "        align-items: start;\n"
-        "      }\n"
-        "      .activity-card h2 {\n"
-        "        margin: 0 0 4px;\n"
-        "        font-size: 1.1rem;\n"
-        "      }\n"
-        "      .activity-card p {\n"
-        "        margin: 0;\n"
-        "        color: var(--muted);\n"
-        "      }\n"
-        "      .status-pill {\n"
-        "        padding: 6px 12px;\n"
-        "        border-radius: 999px;\n"
-        "        background: rgba(13, 107, 95, 0.12);\n"
-        "        color: var(--accent);\n"
-        "        font-weight: 600;\n"
-        "        text-transform: capitalize;\n"
-        "        white-space: nowrap;\n"
-        "      }\n"
-        "      dl {\n"
-        "        display: grid;\n"
-        "        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));\n"
-        "        gap: 12px;\n"
-        "        margin: 16px 0 0;\n"
-        "      }\n"
-        "      dt {\n"
-        "        font-size: 0.75rem;\n"
-        "        text-transform: uppercase;\n"
-        "        letter-spacing: 0.08em;\n"
-        "        color: var(--muted);\n"
-        "      }\n"
-        "      dd {\n"
-        "        margin: 6px 0 0;\n"
-        "        font-family: \"IBM Plex Mono\", monospace;\n"
-        "        word-break: break-word;\n"
-        "      }\n"
-        "      .message {\n"
-        "        margin-top: 16px;\n"
-        "        color: var(--ink);\n"
-        "      }\n"
-        "      .empty-state {\n"
-        "        margin: 0;\n"
-        "        padding: 32px;\n"
-        "        border-radius: 18px;\n"
-        "        background: var(--panel);\n"
-        "        border: 1px solid var(--line);\n"
-        "      }\n"
-        "    </style>\n"
-        "  </head>\n"
-        "  <body>\n"
-        "    <main>\n"
-        "      <h1>Event Runtime Activity</h1>\n"
-        "      <p class=\"lede\">A readable audit trail of what the runtime received, decided, skipped, queued, and completed.</p>\n"
-        f"      <section class=\"activity-grid\">{body}</section>\n"
-        "    </main>\n"
-        "  </body>\n"
-        "</html>\n"
-    )
-    return html.encode("utf-8")
 
 
 def _activity_key(event: dict, alert: dict | None, job: dict | None) -> str:

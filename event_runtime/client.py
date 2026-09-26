@@ -31,7 +31,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from .http_actions import COMPLETION_AUTH_HEADER, COMPLETION_SECRET_ENV, RUNTIME_TOKEN_ENV
 
@@ -128,6 +128,17 @@ class EventRuntimeClient:
         path = f"/v1/investigations/{quote(alert_id, safe='')}/complete"
         return self._request("POST", path, payload, headers, COMPLETION_SECRET_ENV)
 
+    def list_alerts(self, params: Mapping[str, str]) -> RuntimeResponse:
+        """``GET /v1/alerts`` — one page of alerts by folded state (CFOP-215)."""
+        query = urlencode(sorted((key, value) for key, value in params.items() if value not in (None, "")))
+        path = "/v1/alerts" + (f"?{query}" if query else "")
+        return self._request("GET", path, None, self._bearer(), RUNTIME_TOKEN_ENV)
+
+    def get_alert(self, alert_id: str) -> RuntimeResponse:
+        """``GET /v1/alerts/<id>`` — one alert and every event behind it."""
+        return self._request("GET", f"/v1/alerts/{quote(alert_id, safe='')}", None,
+                             self._bearer(), RUNTIME_TOKEN_ENV)
+
     def _bearer(self) -> dict:
         return {"Authorization": f"Bearer {self._runtime_token}"} if self._runtime_token else {}
 
@@ -170,6 +181,7 @@ def _error_text(exc: urllib.error.HTTPError) -> str:
     except Exception:
         body = b""
     decoded = _decode(body)
-    if isinstance(decoded, dict) and decoded.get("error"):
-        return str(decoded["error"])[:200]
+    # The stdlib server says "error", FastAPI says "detail".
+    if isinstance(decoded, dict) and (decoded.get("error") or decoded.get("detail")):
+        return str(decoded.get("error") or decoded.get("detail"))[:200]
     return str(exc.reason or "")[:200]

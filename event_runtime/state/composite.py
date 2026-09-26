@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import List
 
+from ..alert_store import AlertPage, AlertQuery, AlertStoreUnavailable
 from .base import BaseStateSink
 
 
@@ -47,6 +48,21 @@ class CompositeStateSink(BaseStateSink):
             if events:
                 return events
         return []
+
+    def list_alerts(self, query: AlertQuery) -> AlertPage:
+        return self._first_answer(lambda sink: sink.list_alerts(query))
+
+    def get_alert(self, alert_id: str) -> dict | None:
+        return self._first_answer(lambda sink: sink.get_alert(alert_id))
+
+    def _first_answer(self, ask):
+        reasons = []
+        for sink in self.sinks:
+            try:
+                return ask(sink)
+            except AlertStoreUnavailable as exc:
+                reasons.append(f"{sink.name}: {exc}")
+        raise AlertStoreUnavailable("; ".join(reasons) or "no sinks")
 
     def health(self) -> dict:
         statuses = [sink.health() for sink in self.sinks]

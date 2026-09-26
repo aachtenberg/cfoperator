@@ -10,6 +10,8 @@ import threading
 from pathlib import Path
 from typing import Iterator, List
 
+from ..activity import alert_key, build_activity_feed, fold_alert
+from ..alert_store import AlertPage, AlertQuery, apply_query
 from .base import BaseStateSink
 
 
@@ -67,6 +69,23 @@ class LocalOutboxStateSink(BaseStateSink):
             except json.JSONDecodeError as exc:
                 logger.warning("Skipping invalid outbox line while reading %s: %s", path, exc)
         return events
+
+    def list_alerts(self, query: AlertQuery) -> AlertPage:
+        """Fold the whole outbox and query it (CFOP-215).
+
+        A full scan on every call, which is the price of answering without
+        Postgres. It is the fallback, not the steady state: with Postgres
+        configured this runs only while Postgres cannot answer.
+        """
+        events = list(self.iter_events())
+        return apply_query(build_activity_feed(events, limit=len(events) or 1), query, store="outbox")
+
+    def get_alert(self, alert_id: str) -> dict | None:
+        events = [event for event in self.iter_events() if alert_key(event) == alert_id]
+        if not events:
+            return None
+        events.sort(key=lambda event: (str(event.get("created_at") or ""), str(event.get("event_id") or "")))
+        return {"alert": fold_alert(events), "events": events}
 
     def iter_events(self) -> Iterator[dict]:
         """Yield events in append order across all outbox files."""

@@ -1215,7 +1215,7 @@ def test_runtime_activity_summarizes_completed_and_logged_alerts(tmp_path: Path)
     assert skipped[0]["event_type"] == "alert_skipped"
 
 
-def test_server_exposes_activity_feed_and_html(tmp_path: Path):
+def test_server_exposes_activity_feed(tmp_path: Path):
     sink = CompositeStateSink([LocalOutboxStateSink(directory=str(tmp_path / "activity-server-outbox"))])
     plugins = PluginManager()
     plugins.register_state_sink(sink)
@@ -1232,11 +1232,6 @@ def test_server_exposes_activity_feed_and_html(tmp_path: Path):
         status, payload = _request_json(server, "GET", "/activity?limit=5")
         assert status == 200
         assert payload["activities"][0]["summary"] == "api degraded"
-
-        status, content_type, data = _request_raw(server, "GET", "/activity.html?limit=5")
-        assert status == 200
-        assert "text/html" in content_type
-        assert b"Event Runtime Activity" in data
     finally:
         server.shutdown()
         thread.join(timeout=2)

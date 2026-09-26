@@ -8,9 +8,9 @@ import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-from .activity import render_activity_html
+from .alert_store import AlertStoreUnavailable, parse_alert_query
 from .engine import EventRuntime
 from .heartbeat import HeartbeatPusher
 from .http_actions import (
@@ -42,6 +42,17 @@ def _match_completion_path(path: str) -> str | None:
     if not middle or "/" in middle:
         return None
     return middle
+
+
+ALERT_DETAIL_PREFIX = "/v1/alerts/"
+
+
+def alert_id_from_path(path: str) -> str | None:
+    """The id in ``/v1/alerts/<id>``, or None for anything deeper or empty."""
+    rest = unquote(path[len(ALERT_DETAIL_PREFIX):])
+    if not rest or "/" in rest or len(rest) > 200:
+        return None
+    return rest
 
 
 def _bounded_int(raw: str | None, default: int, low: int, high: int) -> int:
@@ -147,11 +158,11 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                     {"scheduled_tasks": runtime.scheduled_tasks(limit=limit, scheduler_name=scheduler)},
                 )
                 return
-            if parsed.path == "/activity.html":
-                query = parse_qs(parsed.query)
-                limit = _bounded_int(query.get("limit", [None])[0], 25, 1, 250)
-                payload = render_activity_html(runtime.recent_activity(limit=limit))
-                _bytes_response(self, HTTPStatus.OK, payload, "text/html; charset=utf-8")
+            if parsed.path == "/v1/alerts":
+                self._handle_alert_list(parsed)
+                return
+            if parsed.path.startswith(ALERT_DETAIL_PREFIX):
+                self._handle_alert_detail(parsed)
                 return
             if parsed.path == "/metrics":
                 if worker is not None:
@@ -187,6 +198,34 @@ def make_handler(runtime: EventRuntime, worker: BackgroundAlertWorker | None = N
                 return
 
             _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+
+        def _handle_alert_list(self, parsed) -> None:
+            try:
+                query = parse_alert_query({key: values[-1] for key, values in parse_qs(parsed.query).items()})
+            except ValueError as exc:
+                _json_response(self, HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            try:
+                page = runtime.list_alerts(query)
+            except AlertStoreUnavailable as exc:
+                _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+                return
+            _json_response(self, HTTPStatus.OK, page.to_dict())
+
+        def _handle_alert_detail(self, parsed) -> None:
+            alert_id = alert_id_from_path(parsed.path)
+            if alert_id is None:
+                _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Not found"})
+                return
+            try:
+                found = runtime.get_alert(alert_id)
+            except AlertStoreUnavailable as exc:
+                _json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+                return
+            if found is None:
+                _json_response(self, HTTPStatus.NOT_FOUND, {"error": "Alert not found"})
+                return
+            _json_response(self, HTTPStatus.OK, found)
 
         def _handle_alert_post(self, parsed) -> None:
             try:

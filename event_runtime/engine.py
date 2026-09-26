@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Dict, List, Optional
 
 from .activity import build_activity_feed, filter_activities, filter_events
+from .alert_store import AlertPage, AlertQuery, AlertStoreUnavailable
 from .escalation import EscalationLedger
 from .models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, Decision, DomainEvent, ScheduledTask
 from .notifications import should_notify
@@ -219,12 +220,30 @@ class EventRuntime:
         action: str | None = None,
         event_limit: int | None = None,
     ) -> List[dict]:
-        """Return a human-readable activity feed derived from recent events."""
+        """Return a human-readable activity feed, newest alert first.
+
+        Served from the per-alert read model, so ``status`` and ``action``
+        filter every alert rather than a window of recent events (CFOP-215).
+        ``event_limit`` only matters on the fallback below, for a sink that
+        keeps no read model: there the feed is still a window, as before.
+        """
+        try:
+            return self.list_alerts(AlertQuery(limit=limit, status=status, action=action, full=True)).alerts
+        except AlertStoreUnavailable:
+            pass
         fetch_limit = max(limit * 12, 100)
         if event_limit is not None:
             fetch_limit = max(limit, event_limit)
         activities = build_activity_feed(self.plugins.state_sink.recent(limit=fetch_limit), limit=fetch_limit)
         return filter_activities(activities, status=status, action=action)[:limit]
+
+    def list_alerts(self, query: AlertQuery) -> AlertPage:
+        """One page of alerts by folded state. Raises AlertStoreUnavailable."""
+        return self.plugins.state_sink.list_alerts(query)
+
+    def get_alert(self, alert_id: str) -> Optional[dict]:
+        """An alert's activity and every event behind it, or None."""
+        return self.plugins.state_sink.get_alert(alert_id)
 
     def scheduled_tasks(self, limit: int = 100, *, scheduler_name: str | None = None) -> List[dict]:
         """Return scheduled tasks known to registered schedulers."""

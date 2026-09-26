@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Dict, Iterable, List, Tuple
+from typing import TYPE_CHECKING, Dict, Iterable, List, Tuple
 
 from .models import (
     ActionRequest,
@@ -15,6 +15,9 @@ from .models import (
     HostTarget,
     ScheduledTask,
 )
+
+if TYPE_CHECKING:
+    from .alert_store import AlertPage, AlertQuery
 
 
 class RuntimePlugin(ABC):
@@ -145,3 +148,20 @@ class StateSink(RuntimePlugin):
     @abstractmethod
     def health(self) -> dict:
         """Return sink health metadata."""
+
+    # The per-alert read model (CFOP-215). Not abstract: a sink that keeps no
+    # such model says so, and the runtime answers /v1/alerts with a 503
+    # rather than folding a window of raw events and calling it complete.
+
+    def list_alerts(self, query: "AlertQuery") -> "AlertPage":
+        """One page of alerts, by folded state. Raises AlertStoreUnavailable."""
+        from .alert_store import AlertStoreUnavailable
+        raise AlertStoreUnavailable(f"{type(self).__name__} keeps no per-alert read model")
+
+    def get_alert(self, alert_id: str) -> "dict | None":
+        """``{"alert": <activity>, "events": [...]}``, or None if unknown.
+
+        Raises AlertStoreUnavailable when this sink cannot answer.
+        """
+        from .alert_store import AlertStoreUnavailable
+        raise AlertStoreUnavailable(f"{type(self).__name__} keeps no per-alert read model")
