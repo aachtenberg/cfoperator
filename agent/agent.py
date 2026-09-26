@@ -51,6 +51,7 @@ from observability import (
 # Import web server
 from web_server import WebServer
 from cfshared.version import build_version
+from event_runtime.client import EventRuntimeClient, UNREACHABLE as RUNTIME_UNREACHABLE
 
 # Import tool registry
 from tools import ToolRegistry, ToolPolicy
@@ -136,6 +137,27 @@ LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'componen
 INVESTIGATION_QUEUE_DEPTH = Gauge('cfoperator_investigation_queue_depth', 'Pending HTTP-triggered investigations')
 INVESTIGATION_QUEUE_REJECTED = Counter('cfoperator_investigation_queue_rejected_total', 'HTTP investigations rejected because queue was full')
 INVESTIGATION_POSTBACK = Counter('cfoperator_investigation_postback_total', 'Investigation completions posted back to event_runtime', ['status'])
+# kind: finding | resolution. outcome: ok | unauthorized | http_error |
+# unreachable (event_runtime/client.py). Anything but ok means sweep output is
+# not reaching triage or Slack, which went unnoticed for 34 days (CFOP-214).
+SWEEP_FORWARD = Counter('cfoperator_sweep_forward_total', 'Sweep findings and resolutions forwarded to the event runtime', ['kind', 'outcome'])
+
+
+@dataclass(frozen=True)
+class Forwarded:
+    """How a batch of sweep output fared at the event runtime (CFOP-214).
+
+    ``sent`` is what was left to send after operator dismissals; ``delivered``
+    is what the runtime accepted. Kept as counts rather than a bool because
+    "nothing to send" is neither success nor failure, and treating it as
+    success wrote history rows claiming a delegation that never happened.
+    """
+    sent: int
+    delivered: int
+
+    @property
+    def complete(self) -> bool:
+        return self.delivered == self.sent
 REMEDIATION_QUEUE = Gauge('cfoperator_remediation_queue', 'Remediation queue rows by status', ['status'])
 REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remediations enqueued', ['source', 'remediation_class', 'eligible'])
 # result: ok (first try) | nudged (corrective retry) | escalated (distinct
@@ -2822,37 +2844,27 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         Sends ``{"alert": <alert>, "result": <ActionResult>}`` so the
         completion endpoint can fire its Slack notification with the
         original alert's severity and summary. No-op when
-        CFOP_EVENT_RUNTIME_URL is unset or the completion endpoint is
-        unavailable (it ships in a follow-up PR). Failures are logged at
-        debug — durability lives in the agent's investigation row, not here.
+        CFOP_EVENT_RUNTIME_URL is unset. The investigation row is the durable
+        record, but this post is the only thing that tells a human the
+        investigation finished, so a failure is a WARNING, not DEBUG
+        (CFOP-214). The client sends CFOP_COMPLETION_SHARED_SECRET as
+        X-CFOP-Token, so a completion cannot be spoofed by other cluster pods.
         """
-        url = os.getenv('CFOP_EVENT_RUNTIME_URL', '').strip()
-        if not url:
+        client = EventRuntimeClient.from_env()
+        if client is None:
             return
         alert_id = alert.get('alert_id')
         if not alert_id:
             return
-        endpoint = f"{url.rstrip('/')}/v1/investigations/{alert_id}/complete"
-        body = json.dumps({'alert': alert, 'result': result}, default=str).encode('utf-8')
-        headers = {'Content-Type': 'application/json'}
-        # Shared secret matches event_runtime's CFOP_COMPLETION_SHARED_SECRET.
-        # Without the header, event_runtime returns 401 (when its secret is set)
-        # so completion notifications can't be spoofed by other cluster pods.
-        secret = os.getenv('CFOP_COMPLETION_SHARED_SECRET', '').strip()
-        if secret:
-            headers['X-CFOP-Token'] = secret
-        from urllib.request import Request, urlopen
-        from urllib.error import URLError, HTTPError
-        req = Request(endpoint, data=body, headers=headers, method='POST')
-        try:
-            with urlopen(req, timeout=5) as resp:
-                status = 'ok' if 200 <= resp.status < 300 else f'http_{resp.status}'
-        except HTTPError as exc:
-            status = f'http_{exc.code}'
-            logger.debug(f"Post-back to event_runtime returned {exc.code}: {endpoint}")
-        except (URLError, TimeoutError, OSError) as exc:
+        resp = client.post_completion(alert_id, {'alert': alert, 'result': result})
+        if resp.ok:
+            status = 'ok'
+        elif resp.outcome == RUNTIME_UNREACHABLE:
             status = 'transport_error'
-            logger.debug(f"Post-back to event_runtime failed ({type(exc).__name__}): {endpoint}")
+        else:
+            status = f'http_{resp.http_status}'
+        if not resp.ok:
+            logger.warning(f"Investigation completion for alert {alert_id} not delivered: {resp.describe()}")
         INVESTIGATION_POSTBACK.labels(status=status).inc()
 
     def _act(self, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -6606,12 +6618,15 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         # 6b. LLM judge — filter hallucinated/unsupported findings
         findings = self._verify_findings(findings)
 
-        # 6c. Post findings to event runtime (if configured)
+        # 6c. Post findings to event runtime (if configured). None = no
+        # runtime; an incomplete Forwarded means step 7 notifies itself.
+        forwarded = None
         if findings:
             try:
-                self._post_findings_to_event_runtime(findings)
+                forwarded = self._post_findings_to_event_runtime(findings)
             except Exception as e:
-                logger.debug(f"Could not post findings to event runtime: {e}")
+                forwarded = Forwarded(sent=len(findings), delivered=0)
+                logger.warning(f"Could not post findings to event runtime: {e}")
 
         # 6d. Emit resolutions for findings that cleared since last sweep
         # so Slack/Discord see explicit "Resolved: …" notifications instead
@@ -6622,7 +6637,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 logger.info(f"Sweep: {len(resolved)} finding(s) resolved since last sweep")
                 self._post_resolutions_to_event_runtime(resolved)
         except Exception as e:
-            logger.debug(f"Could not emit resolutions: {e}")
+            logger.warning(f"Could not emit resolutions: {e}")
 
         # 7. Generate sweep report
         if findings:
@@ -6637,7 +6652,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     # Build a notification-only report with just the new stuff
                     notif_report = self._generate_sweep_report(new_findings)
                     notif_report['summary'] = f"[{len(new_findings)} new of {len(findings)} total] " + notif_report['summary']
-                    self._notify_sweep_findings(notif_report)
+                    self._notify_sweep_findings(notif_report, forwarded=forwarded)
                 else:
                     logger.info(f"Sweep found {len(findings)} issues (all known from previous sweep, skipping notification)")
 
@@ -8272,20 +8287,47 @@ Only return the JSON array, no other text."""
             }
         }
 
-    def _post_findings_to_event_runtime(self, findings: List[Dict[str, Any]]) -> None:
-        """Post sweep findings as alerts to the event runtime if configured."""
-        url = os.getenv("CFOP_EVENT_RUNTIME_URL", "").strip()
-        if not url:
-            return
-        from urllib.request import Request, urlopen
-        from urllib.error import URLError
-        endpoint = f"{url.rstrip('/')}/alert?mode=async"
+    def _forward_to_event_runtime(self, client: EventRuntimeClient, kind: str,
+                                  payloads: List[Dict[str, Any]]) -> Forwarded:
+        """POST each payload to the runtime's /alert.
+
+        Stops at the first failure the rest of the batch would repeat (down,
+        overloaded, refusing the agent) and says so at WARNING. When a runtime
+        is configured it is the only notification path for sweep output, so a
+        refusal logged at DEBUG was 34 days of silence (CFOP-214).
+        """
+        delivered = 0
+        failure = None
+        for payload in payloads:
+            resp = client.post_alert(payload)
+            SWEEP_FORWARD.labels(kind=kind, outcome=resp.outcome).inc()
+            if resp.ok:
+                delivered += 1
+                continue
+            failure = resp
+            if resp.stops_batch:
+                break
+        if failure is not None:
+            logger.warning(f"Event runtime took {delivered} of {len(payloads)} sweep {kind}(s): "
+                           f"{failure.describe()}")
+        return Forwarded(sent=len(payloads), delivered=delivered)
+
+    def _post_findings_to_event_runtime(self, findings: List[Dict[str, Any]]) -> Optional[Forwarded]:
+        """Post sweep findings as alerts to the event runtime if configured.
+
+        Returns None when no runtime is configured, else how many of the
+        findings that were not dismissed it accepted.
+        """
+        client = EventRuntimeClient.from_env()
+        if client is None:
+            return None
         # Honor operator dismissals: don't re-post findings marked
         # acknowledged/false_positive — they'd otherwise recur every sweep.
         try:
             dismissed = self.kb._kb.get_dismissed_finding_keys()
         except Exception:
             dismissed = set()
+        payloads = []
         for finding in findings:
             summary_text = str(finding.get("finding") or finding.get("summary") or "").strip()
             fid = finding.get("id") or hashlib.md5(
@@ -8313,16 +8355,10 @@ Only return the JSON array, no other text."""
                     "sweep_source": finding.get("source"),
                 },
             }
-            body = json.dumps(payload, default=str).encode("utf-8")
-            try:
-                req = Request(endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST")
-                with urlopen(req, timeout=5) as resp:
-                    resp.read()
-            except (URLError, TimeoutError, OSError) as exc:
-                logger.debug(f"Failed to post finding to event runtime: {exc}")
-                return  # Stop trying on first failure
+            payloads.append(payload)
+        return self._forward_to_event_runtime(client, "finding", payloads)
 
-    def _post_resolutions_to_event_runtime(self, resolved: List[Dict[str, Any]]) -> None:
+    def _post_resolutions_to_event_runtime(self, resolved: List[Dict[str, Any]]) -> Optional[Forwarded]:
         """Post 'finding cleared' notifications to the event runtime.
 
         These ride the same /alert path as live findings but are tagged
@@ -8333,12 +8369,10 @@ Only return the JSON array, no other text."""
         Severity is forced to info — a resolution is by definition not
         a firing alert.
         """
-        url = os.getenv("CFOP_EVENT_RUNTIME_URL", "").strip()
-        if not url or not resolved:
-            return
-        from urllib.request import Request, urlopen
-        from urllib.error import URLError
-        endpoint = f"{url.rstrip('/')}/alert?mode=async"
+        client = EventRuntimeClient.from_env()
+        if client is None or not resolved:
+            return None
+        payloads = []
         for finding in resolved:
             payload = {
                 "source": "cfoperator-sweep",
@@ -8354,28 +8388,37 @@ Only return the JSON array, no other text."""
                     "sweep_source": finding.get("source"),
                 },
             }
-            body = json.dumps(payload, default=str).encode("utf-8")
-            try:
-                req = Request(endpoint, data=body, headers={"Content-Type": "application/json"}, method="POST")
-                with urlopen(req, timeout=5) as resp:
-                    resp.read()
-            except (URLError, TimeoutError, OSError) as exc:
-                logger.debug(f"Failed to post resolution to event runtime: {exc}")
-                return
+            payloads.append(payload)
+        return self._forward_to_event_runtime(client, "resolution", payloads)
 
-    def _notify_sweep_findings(self, report: Dict[str, Any]):
+    def _notify_sweep_findings(self, report: Dict[str, Any], forwarded: Optional[Forwarded] = None):
         """Send notifications for sweep findings and record in history.
 
-        When CFOP_EVENT_RUNTIME_URL is set, the event runtime is the sole
-        owner of Slack/Discord for sweep findings: each finding is already
-        forwarded to /alert by _post_findings_to_event_runtime and triaged
-        individually, so emitting a roll-up here would produce duplicate
-        (and lower-fidelity) Slack messages. We still record one
-        notification_history row so audit/UI counters reflect that the
-        sweep produced operator-visible output.
+        ``forwarded`` is what _post_findings_to_event_runtime returned. When
+        the runtime took everything that was sent, it is the sole owner of
+        Slack/Discord for these findings: each one was forwarded to /alert and
+        is triaged individually, so a roll-up here would duplicate them at
+        lower fidelity. We still record one notification_history row so
+        audit/UI counters reflect that the sweep produced operator-visible
+        output.
+
+        When it did not, the duplicate argument no longer holds, so the agent
+        sends its own roll-up. Keying this on "a runtime is configured"
+        instead is how a refused forward became no notification at all, with
+        a history row claiming one (CFOP-214). Over-notifying on a partial
+        failure is the right way to be wrong.
+
+        When nothing was sent because the operator dismissed every finding,
+        there is nothing to notify and nothing was delegated, so neither a
+        roll-up nor a history row.
         """
-        event_runtime_url = os.getenv("CFOP_EVENT_RUNTIME_URL", "").strip()
-        if event_runtime_url:
+        if forwarded is not None and forwarded.sent == 0:
+            logger.info("Every sweep finding was dismissed by an operator; nothing to notify")
+            return
+        if forwarded is not None and not forwarded.complete:
+            logger.warning(f"The event runtime took {forwarded.delivered} of {forwarded.sent} sweep "
+                           "findings; sending the agent's own roll-up so they are not lost")
+        if forwarded is not None and forwarded.complete:
             try:
                 self.kb._kb.record_notification_history(
                     channel_id=0,
@@ -8387,6 +8430,7 @@ Only return the JSON array, no other text."""
                     context={
                         'findings_count': len(report.get('findings', [])),
                         'delegated_to': 'event_runtime',
+                        'forwarded': forwarded.delivered,
                     },
                     error_message=None,
                 )

@@ -18,7 +18,8 @@
 #
 # 2. IT TALKS TO event_runtime THROUGH `docker compose exec`, not a published
 #    port. POST /alert is an unauthenticated alert-injection endpoint in the
-#    trial (CFOP_RUNTIME_TOKEN is unset), so the compose deliberately does not
+#    trial (CFOP_RUNTIME_TOKEN is unset unless .env sets it; the script sends
+#    it when it is), so the compose deliberately does not
 #    put it on your LAN. Production does not need it either — event_runtime
 #    polls Alertmanager rather than being pushed to.
 set -euo pipefail
@@ -141,10 +142,16 @@ except Exception:
     pass  # a fresh stack has none; baseline 0 is correct
 
 print("\n  submitting to event_runtime for triage...")
+# Unset in the trial, but compose passes it through when .env sets it, and
+# then the runtime refuses a POST without it (CFOP-214).
+alert_headers = {"Content-Type": "application/json"}
+runtime_token = os.environ.get("CFOP_RUNTIME_TOKEN", "").strip()
+if runtime_token:
+    alert_headers["Authorization"] = f"Bearer {runtime_token}"
 req = urllib.request.Request(
     "http://localhost:8080/alert?mode=sync",
     data=json.dumps(payload).encode(),
-    headers={"Content-Type": "application/json"},
+    headers=alert_headers,
 )
 try:
     with urllib.request.urlopen(req, timeout=300) as resp:

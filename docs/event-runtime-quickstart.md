@@ -161,7 +161,11 @@ event_runtime:
 - `GET /jobs/<job_id>` when background workers are enabled
 - `POST /v1/investigations/<alert_id>/complete` — receive a completed `ActionResult` from an external executor (the agent). Body shape: `{"alert": <Alert>, "result": <ActionResult>}`. Requires `X-CFOP-Token` header when `CFOP_COMPLETION_SHARED_SECRET` is set.
 
-When `CFOP_RUNTIME_TOKEN` is set, every route above except `/livez`, `/health`, `/metrics` and the completion endpoint requires `Authorization: Bearer $CFOP_RUNTIME_TOKEN`. Alertmanager sends it with a `http_config.authorization` block:
+When `CFOP_RUNTIME_TOKEN` is set, every route above except `/livez`, `/health`, `/metrics` and the completion endpoint requires `Authorization: Bearer $CFOP_RUNTIME_TOKEN`.
+
+The agent is a caller too. It forwards every sweep finding and "Resolved" notice to `POST /alert`, so it needs the **same** `CFOP_RUNTIME_TOKEN` in its own environment. The runtime cannot tell a caller that forgot the token from one that was never meant to call, and turning the gate on without giving the agent the token stopped every sweep notification for 34 days (CFOP-214). A refused forward is logged at WARNING and counted in `cfoperator_sweep_forward_total{outcome="unauthorized"}`.
+
+Alertmanager, if you push to the runtime rather than letting it poll, sends the token with a `http_config.authorization` block:
 
 ```yaml
 receivers:
@@ -233,7 +237,7 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_JSON`: inline JSON config for bare-metal observability providers
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_CONFIG_PATH`: path to a JSON config file for bare-metal observability providers
 - `CFOP_AGENT_URL`: base URL of the CFOperator agent (e.g. `http://cfoperator.apps.svc.cluster.local:8083`). When set, the runtime registers `HTTPInvestigateActionHandler` in place of the default stub for the `investigate` action, so every `investigate` decision is dispatched to the agent over HTTP. Unsetting it falls back to the stub.
-- `CFOP_RUNTIME_TOKEN`: bearer token enforced on the HTTP surface — `POST /alert` (which enqueues LLM investigations) plus the `/history`, `/activity`, `/scheduled` and `/jobs` read endpoints that replay the fleet's incident history. `/livez`, `/health`, `/metrics` and the completion endpoint (separately authenticated) stay open. When unset, those routes accept unauthenticated requests and a warning is logged at startup. Compared via `secrets.compare_digest`.
+- `CFOP_RUNTIME_TOKEN`: bearer token enforced on the HTTP surface — `POST /alert` (which enqueues LLM investigations) plus the `/history`, `/activity`, `/scheduled` and `/jobs` read endpoints that replay the fleet's incident history. `/livez`, `/health`, `/metrics` and the completion endpoint (separately authenticated) stay open. When unset, those routes accept unauthenticated requests and a warning is logged at startup. Compared via `secrets.compare_digest`. Set it on the agent as well: the agent sends it on its `/alert` forwards (`event_runtime/client.py`).
 - `CFOP_EVENT_RUNTIME_PLUGINS`: plugins to load after the built-ins, as comma-separated `module` or `module:callable` entries (callable defaults to `register`). A named plugin that cannot be loaded stops the runtime at startup. See [External Plugins](#external-plugins).
 - `CFOP_COMPLETION_SHARED_SECRET`: shared secret enforced on `POST /v1/investigations/{alert_id}/complete`. Callers must send a matching `X-CFOP-Token` header. When unset, the endpoint accepts unauthenticated posts (portable deployments without an agent stay runnable) and logs a warning at startup. Compared via `secrets.compare_digest` to avoid timing attacks.
 

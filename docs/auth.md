@@ -193,6 +193,14 @@ disposable executor Job pod, so honouring it anywhere else would turn the
 lowest-privilege credential in the system into a full console credential. A role
 check here would 403 every callback and strand remediations mid-flight.
 
+The reverse direction has its own gate. The event runtime's HTTP surface is
+guarded by `CFOP_RUNTIME_TOKEN`, a static bearer rather than a database token
+because the runtime must keep working with Postgres down. The agent is one of its
+callers — it forwards sweep findings to `POST /alert` — so **both** deployments
+need the token. Mounting it on the runtime alone refuses the agent, and that
+stopped every sweep notification for 34 days (CFOP-214). See
+[event-runtime-quickstart.md](event-runtime-quickstart.md).
+
 `/account` and `/admin` are served without a role check. The markup gives
 nothing away, every `/api/*` call they make is authorised on its own, and
 gating the page would only mean a member sees a 403 instead of a page that
