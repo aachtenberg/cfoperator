@@ -30,7 +30,7 @@ UI = REPO_ROOT / "ui"
 
 #: Pages whose main content is a row list plus a slide-in detail drawer. A new
 #: one belongs here; the guards below are the price of a drawer.
-LIST_PAGES = ["investigations.html", "remediations.html"]
+LIST_PAGES = ["investigations.html", "remediations.html", "events.html"]
 
 
 def read(name):
@@ -165,9 +165,10 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
       const id=Number(url.split('/').pop());
       return Promise.resolve({ok:true,json:()=>Promise.resolve({id:id,trigger:'t',outcome:'monitoring',
         status:'queued',risk:'low',remediation_class:'gitops-patch',host_id:'h',payload:{},
-        attach_command:'cfassist attach '+id,findings:{}})});
+        attach_command:'cfassist attach '+id,findings:{},
+        alert:{alert_id:String(id),status:'completed',summary:'s',timeline:[]},events:[]})});
     }
-    if(url.indexOf(api)===0) return Promise.resolve({json:()=>Promise.resolve({investigations:[],remediations:[]})});
+    if(url.indexOf(api)===0) return Promise.resolve({ok:true,json:()=>Promise.resolve({investigations:[],remediations:[],alerts:[]})});
     return Promise.resolve({ok:true,json:()=>Promise.resolve({})});
   }};
 box.window={location:loc,history:hist,addEventListener(){},removeEventListener(){},
@@ -210,7 +211,8 @@ const tick=()=>new Promise(r=>setImmediate(r));
 """
 
 _API = {"investigations.html": "/api/investigations",
-        "remediations.html": "/api/remediations"}
+        "remediations.html": "/api/remediations",
+        "events.html": "/api/events"}
 
 
 @pytest.fixture(scope="module", params=LIST_PAGES)

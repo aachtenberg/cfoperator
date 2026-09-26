@@ -27,10 +27,10 @@ NAV_JS = UI / "nav.js"
 # sees, so it has no identity to show, nothing to log out of, and no sections
 # to navigate to.
 CONSOLE_PAGES = ["index.html", "remediations.html", "investigations.html",
-                 "account.html", "admin.html"]
+                 "events.html", "account.html", "admin.html"]
 
 # Admin is adminOnly and appears after /me; the rest always render.
-SECTIONS = ["/", "/remediations", "/investigations", "/account", "/admin"]
+SECTIONS = ["/", "/remediations", "/investigations", "/events", "/account", "/admin"]
 
 
 def read(name):
@@ -64,7 +64,7 @@ def test_page_does_not_hand_roll_its_own_nav(page):
     body = header.group(0)
 
     # Its own link to another section, outside the mount.
-    for target in ["/remediations", "/investigations", "/account", "/admin"]:
+    for target in ["/remediations", "/investigations", "/events", "/account", "/admin"]:
         assert f'href="{target}"' not in body, \
             f'{page} still hard-codes a nav link to {target} in its header'
 

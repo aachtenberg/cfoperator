@@ -58,7 +58,14 @@ added in CFOP-163. A separate top-level Overview board remains unbuilt.
   `feed/drain/reap/verify` toggles + run-feed; toasts, click-away dismiss.
 - **`/investigations`** — outcome-filtered list + drill into each one's
   recommendation/findings (read what the agent concluded).
-- Both theme-matched to the main UI; logo links home; cross-linked.
+- **`/events`** (CFOP-215) — every alert the event runtime received and what it
+  decided, including the ones triaged to `log_only`/`notify`, suppressed or
+  gated, which never become investigations. Filter by status, decision, source,
+  severity, time window and text (kept in the URL); page with "load older";
+  the drawer shows the triage reasoning, the outcome, the event timeline and a
+  link to the investigation it caused. Read through `/api/events`, a proxy to
+  the runtime's `/v1/alerts` read model.
+- All theme-matched to the main UI; logo links home; cross-linked.
 
 ## Metrics
 

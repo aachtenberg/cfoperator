@@ -50,6 +50,7 @@ from cockpit.ladder import (
 # copy of it that nothing checks — and the failure mode of drift is an operator
 # pasting a command that no longer exists, mid-incident.
 from event_runtime.notifications import ATTACH_COMMAND
+from event_runtime.client import EventRuntimeClient, UNAUTHORIZED as RUNTIME_UNAUTHORIZED, UNREACHABLE as RUNTIME_UNREACHABLE
 
 logger = logging.getLogger("cfoperator.web")
 
@@ -1612,6 +1613,30 @@ class WebServer:
             """Operator console: recent investigations + conclusions."""
             return send_from_directory('ui', 'investigations.html')
 
+        # ---- event runtime alerts (CFOP-215) -------------------------------
+        # Every alert the event runtime received and what it decided,
+        # including the ones triaged to log_only/notify, suppressed as
+        # duplicates or gated as info — none of which become investigations,
+        # so until now the console showed none of them. Proxied rather than
+        # called from the browser: the runtime's surface takes a service
+        # bearer (event_runtime/client.py), and this route sits behind the
+        # console's own login like /api/investigations. Parameters pass
+        # through untouched; the runtime validates them and refuses unknown
+        # ones, so there is one definition of what a query means.
+        @self.app.route('/events')
+        def events_page():
+            """Operator console: every alert the event runtime has seen."""
+            return send_from_directory('ui', 'events.html')
+
+        @self.app.route('/api/events')
+        def list_events_api():
+            params = {key: request.args.get(key, '') for key in request.args}
+            return self._event_runtime_reply(lambda client: client.list_alerts(params))
+
+        @self.app.route('/api/events/<alert_id>')
+        def get_event_api(alert_id):
+            return self._event_runtime_reply(lambda client: client.get_alert(alert_id))
+
         # ---- cockpit (CFOP-35, ladder CFOP-36) --------------------------
         # Spawn the ephemeral cockpit for an investigation. Server-side rather
         # than "cfassist creates the workload" because the console button
@@ -2705,6 +2730,32 @@ class WebServer:
         logger.info(f"Starting Waitress web server on {self.host}:{self.port}")
         # Waitress is production-ready, multi-threaded, and works great with Flask
         serve(self.app, host=self.host, port=self.port, threads=8)
+
+    @staticmethod
+    def _event_runtime_reply(call):
+        """Relay one runtime read, keeping its failures distinguishable.
+
+        ``reason`` tells the console page what to say: nothing configured, the
+        runtime down, the agent's token refused (a deploy fix, not the
+        operator's login), or the runtime's own 400/404/503.
+        """
+        client = EventRuntimeClient.from_env(timeout=10)
+        if client is None:
+            return jsonify({'error': 'no event runtime is configured for this console '
+                                     '(CFOP_EVENT_RUNTIME_URL is unset)',
+                            'reason': 'not_configured'}), 503
+        resp = call(client)
+        if resp.ok:
+            return jsonify(resp.body)
+        if resp.outcome == RUNTIME_UNREACHABLE:
+            return jsonify({'error': resp.describe(), 'reason': 'unreachable'}), 502
+        if resp.outcome == RUNTIME_UNAUTHORIZED:
+            logger.warning(f"Event runtime refused the console's read: {resp.describe()}")
+            return jsonify({'error': resp.describe(), 'reason': 'unauthorized'}), 502
+        passthrough = {400: 'bad_request', 404: 'not_found', 503: 'store_unavailable'}
+        if resp.http_status in passthrough:
+            return jsonify({'error': resp.error, 'reason': passthrough[resp.http_status]}), resp.http_status
+        return jsonify({'error': resp.describe(), 'reason': 'runtime_error'}), 502
 
     def run_threaded(self):
         """Start the web server in a separate thread."""
