@@ -226,6 +226,14 @@ cfoperator_investigation_queue_rejected_total
 cfoperator_investigation_postback_total{status="ok"}
 cfoperator_investigation_postback_total{status="http_401"}
 cfoperator_investigation_postback_total{status="transport_error"}
+
+# Sweep findings and "Resolved" notices forwarded to event_runtime POST /alert
+# (CFOP-214). kind: finding | resolution. outcome: ok | unauthorized |
+# http_error | unreachable. With a runtime configured it is the only
+# notification path for sweep output, so anything but ok is output nobody
+# sees. unauthorized means the agent lacks the runtime's CFOP_RUNTIME_TOKEN.
+cfoperator_sweep_forward_total{kind="finding", outcome="ok"}
+sum by (outcome) (increase(cfoperator_sweep_forward_total{outcome!="ok"}[2h])) > 0   # alert
 ```
 
 ### Morning Summary

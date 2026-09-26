@@ -101,6 +101,9 @@ services:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       # Sweep findings flow into the event runtime's noise pipeline.
       CFOP_EVENT_RUNTIME_URL: http://event-runtime:8080
+      # The runtime's bearer, when set in .env. Both services get it: the
+      # agent is a caller of the runtime's POST /alert (CFOP-214).
+      CFOP_RUNTIME_TOKEN: ${CFOP_RUNTIME_TOKEN:-}
     volumes:
       - ./deploy/compose/config.yaml:/app/config.yaml:ro
       - shared-run:/shared:ro
@@ -131,6 +134,9 @@ services:
     environment:
       CONFIG_PATH: /app/config.yaml
       CFOP_AGENT_URL: http://agent:8083
+      # Unset (the trial default) leaves the surface open inside the compose
+      # network. Set in .env, it reaches the agent too.
+      CFOP_RUNTIME_TOKEN: ${CFOP_RUNTIME_TOKEN:-}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_DB: ${POSTGRES_DB:-cfoperator}

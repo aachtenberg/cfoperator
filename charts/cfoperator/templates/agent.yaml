@@ -105,6 +105,11 @@ spec:
                   key: completion-secret
             - name: CFOP_EVENT_RUNTIME_URL
               value: http://{{ include "cfoperator.fullname" . }}-event-runtime:8080
+            - name: CFOP_RUNTIME_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: runtime-token
 {{- if eq .Values.profile "remediate" }}
             - name: GITHUB_TOKEN
               valueFrom:

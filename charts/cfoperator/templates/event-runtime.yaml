@@ -87,6 +87,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "cfoperator.fullname" . }}-generated
                   key: completion-secret
+            - name: CFOP_RUNTIME_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: runtime-token
           volumeMounts:
             - name: config
               mountPath: /app/config

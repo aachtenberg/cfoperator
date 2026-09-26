@@ -54,6 +54,10 @@ install NOTES show the exact command).
 
 ## What differs from the compose trial
 
+- The event runtime's bearer (`CFOP_RUNTIME_TOKEN`) is generated and mounted
+  on both the runtime and the agent, so the runtime's `/alert` and history
+  reads are closed by default. The compose trial leaves it unset (its runtime
+  port is not published); set it in `.env` and compose gives it to both.
 - Session secret, service API token, and the completion shared secret are
   chart-generated Secrets (stable across upgrades via `lookup`), not
   bootstrap-written files — pods share no volume. The event-runtime → agent
