@@ -138,3 +138,18 @@ def test_no_runtime_configured_is_not_a_failure(monkeypatch):
     monkeypatch.delenv("CFOP_EVENT_RUNTIME_URL", raising=False)
     assert _operator()._post_findings_to_event_runtime(FINDINGS) is None
     assert _operator()._post_resolutions_to_event_runtime(FINDINGS) is None
+
+
+def test_a_refused_completion_names_the_completion_secret(runtime, monkeypatch, caplog):
+    """The post-back is exempt from the bearer gate and checked against
+    CFOP_COMPLETION_SHARED_SECRET instead, so its refusal must say that — a
+    message blaming CFOP_RUNTIME_TOKEN sends the operator after a variable that
+    is fine (review of #283)."""
+    monkeypatch.delenv("CFOP_COMPLETION_SHARED_SECRET", raising=False)
+    monkeypatch.setattr(http_actions, "_expected_completion_secret", lambda: "runtime-only-secret")
+    with caplog.at_level("WARNING"):
+        _operator()._post_action_result_to_event_runtime(
+            {"alert_id": "abc-123", "summary": "x", "severity": "warning", "source": "test"},
+            {"action": "investigate", "success": True, "message": "ok"})
+    assert "CFOP_COMPLETION_SHARED_SECRET" in caplog.text
+    assert "CFOP_RUNTIME_TOKEN" not in caplog.text

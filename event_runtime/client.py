@@ -54,6 +54,11 @@ class RuntimeResponse:
     http_status: Optional[int] = None
     body: Any = None
     error: str = ""
+    # The env var holding the credential this endpoint checks, so a refusal
+    # names the one to fix: the bearer gates /alert, the completion secret
+    # gates the post-back, and naming the wrong one sends an operator after a
+    # variable that is fine.
+    credential: str = RUNTIME_TOKEN_ENV
 
     @property
     def ok(self) -> bool:
@@ -76,7 +81,7 @@ class RuntimeResponse:
     def describe(self) -> str:
         if self.outcome == UNAUTHORIZED:
             return (f"event runtime refused the agent ({self.http_status}): "
-                    f"is {RUNTIME_TOKEN_ENV} mounted on the agent, and equal to the runtime's?")
+                    f"is {self.credential} mounted on the agent, and equal to the runtime's?")
         if self.outcome == HTTP_ERROR:
             return f"event runtime returned HTTP {self.http_status}: {self.error}"
         if self.outcome == UNREACHABLE:
@@ -107,13 +112,9 @@ class EventRuntimeClient:
         return cls(url, runtime_token=env.get(RUNTIME_TOKEN_ENV),
                    completion_secret=env.get(COMPLETION_SECRET_ENV), timeout=timeout)
 
-    @property
-    def has_runtime_token(self) -> bool:
-        return self._runtime_token is not None
-
     def post_alert(self, payload: Mapping[str, Any]) -> RuntimeResponse:
         """``POST /alert?mode=async`` — queue an alert for triage."""
-        return self._request("POST", "/alert?mode=async", payload, self._bearer())
+        return self._request("POST", "/alert?mode=async", payload, self._bearer(), RUNTIME_TOKEN_ENV)
 
     def post_completion(self, alert_id: str, payload: Mapping[str, Any]) -> RuntimeResponse:
         """``POST /v1/investigations/<id>/complete`` — report an investigation's outcome.
@@ -125,13 +126,13 @@ class EventRuntimeClient:
         if self._completion_secret:
             headers[COMPLETION_AUTH_HEADER] = self._completion_secret
         path = f"/v1/investigations/{quote(alert_id, safe='')}/complete"
-        return self._request("POST", path, payload, headers)
+        return self._request("POST", path, payload, headers, COMPLETION_SECRET_ENV)
 
     def _bearer(self) -> dict:
         return {"Authorization": f"Bearer {self._runtime_token}"} if self._runtime_token else {}
 
     def _request(self, method: str, path: str, payload: Optional[Mapping[str, Any]],
-                 headers: Mapping[str, str]) -> RuntimeResponse:
+                 headers: Mapping[str, str], credential: str) -> RuntimeResponse:
         data = None
         all_headers = dict(headers)
         if payload is not None:
@@ -145,12 +146,13 @@ class EventRuntimeClient:
                 raw = resp.read()
         except urllib.error.HTTPError as exc:
             outcome = UNAUTHORIZED if exc.code in (401, 403) else HTTP_ERROR
-            return RuntimeResponse(outcome, exc.code, error=_error_text(exc))
+            return RuntimeResponse(outcome, exc.code, error=_error_text(exc), credential=credential)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            return RuntimeResponse(UNREACHABLE, error=f"{type(exc).__name__}: {exc}")
+            return RuntimeResponse(UNREACHABLE, error=f"{type(exc).__name__}: {exc}",
+                                   credential=credential)
         if status is not None and not 200 <= status < 300:
-            return RuntimeResponse(HTTP_ERROR, status, error="non-2xx response")
-        return RuntimeResponse(OK, status, body=_decode(raw))
+            return RuntimeResponse(HTTP_ERROR, status, error="non-2xx response", credential=credential)
+        return RuntimeResponse(OK, status, body=_decode(raw), credential=credential)
 
 
 def _decode(raw: Any) -> Any:
