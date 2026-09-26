@@ -279,3 +279,50 @@ def test_the_replaying_sink_uses_the_outbox_until_postgres_can_answer(table, tmp
     page = replaying.list_alerts(AlertQuery(limit=50))
     assert page.store == "postgres" and page.lagging is True
     assert replaying.get_alert("alert-00777")["alert"]["status"] == "completed"
+
+
+def test_a_failed_refold_is_repaired_after_its_append_commits(table, monkeypatch):
+    """Review of #284. A refold that fails marks its rows stale; the rebuild
+    that repairs them must start after the append commits, or it can run
+    before the marks are visible and declare the model ready with them."""
+    import time
+    sink = _built(table)
+    a = alert(1)
+    first = lifecycle(a, BASE, "received")
+    assert sink.append(first)
+
+    real, calls = sink._refresh, []
+
+    def fail_once(cur, ids):
+        calls.append(ids)
+        if len(calls) == 1:
+            raise RuntimeError("simulated database error during refold")
+        return real(cur, ids)
+
+    monkeypatch.setattr(sink, "_refresh", fail_once)
+    later = [event("alert_skipped", BASE + timedelta(seconds=5), alert=a, reason="severity_gate")]
+    assert sink.append(later), "a read-model failure must not fail the append"
+    assert _sql(f'SELECT count(*) FROM "{table}"')[0][0] == len(first) + len(later)
+
+    deadline = time.time() + 10
+    while not sink._read_model_ready.is_set() and time.time() < deadline:
+        time.sleep(0.05)
+    version, activity = _rows(sink)[a["alert_id"]]
+    assert version == activity_module.FOLD_VERSION
+    assert activity["event_count"] == len(first) + len(later) and activity["status"] == "logged"
+
+
+def test_a_rebuild_repeats_when_rows_went_stale_during_its_pass(table, monkeypatch):
+    sink = _built(table)
+    sink.append(fleet(6))
+    real, passes = sink._fold_stale_alerts, []
+
+    def fold_and_mark(*args):
+        passes.append(1)
+        if len(passes) == 1:
+            sink._stale_generation += 1   # an append marked rows mid-pass
+        return real(*args)
+
+    monkeypatch.setattr(sink, "_fold_stale_alerts", fold_and_mark)
+    sink.rebuild_read_model()
+    assert len(passes) == 2

@@ -68,6 +68,10 @@ class PostgresStateSink(BaseStateSink):
         self._stop = threading.Event()
         self._read_model_status: dict = {"ready": False}
         self._fold_failures = 0
+        # Bumped each time an append marks rows stale. A rebuild that saw it
+        # change during its pass runs another, so rows marked while it was
+        # already past them are not left behind a "ready" flag.
+        self._stale_generation = 0
 
     def start(self) -> None:
         if not self.dsn:
@@ -118,7 +122,14 @@ class PostgresStateSink(BaseStateSink):
                             for event in events
                         ],
                     )
-                    self._refresh_in_savepoint(cur, {alert_key(event) for event in events})
+                    marked_stale = self._refresh_in_savepoint(cur, {alert_key(event) for event in events})
+            # Only now, after the commit: a rebuild started inside the
+            # transaction could finish before the stale marks were visible
+            # to it and declare the read model ready with those rows unfixed.
+            if marked_stale:
+                self._stale_generation += 1
+                self._read_model_ready.clear()
+                self.start_rebuild()
             self._last_error = None
             return True
         except Exception as exc:
@@ -126,20 +137,22 @@ class PostgresStateSink(BaseStateSink):
             logger.warning("Failed to append events to PostgreSQL sink %s: %s", self.table_name, exc)
             return False
 
-    def _refresh_in_savepoint(self, cur, alert_ids: Iterable[str]) -> None:
+    def _refresh_in_savepoint(self, cur, alert_ids: Iterable[str]) -> bool:
         """Recompute these alerts without risking the events' own insert.
 
         A read-model failure must not roll back the events — that would stall
         the outbox replay behind a derived table. On a database error the
-        rows are marked stale instead and the rebuild picks them up.
+        rows are marked stale instead, and True tells the caller to start a
+        rebuild once the transaction has committed.
         """
         ids = sorted({alert_id for alert_id in alert_ids if alert_id})
         if not ids:
-            return
+            return False
         cur.execute("SAVEPOINT read_model")
         try:
             self._refresh(cur, ids)
             cur.execute("RELEASE SAVEPOINT read_model")
+            return False
         except Exception as exc:
             cur.execute("ROLLBACK TO SAVEPOINT read_model")
             logger.warning("Alert read model refresh failed for %d alert(s); marking them stale: %s",
@@ -150,8 +163,7 @@ class PostgresStateSink(BaseStateSink):
                     sql.Identifier(self.alerts_table)),
                 (ids,),
             )
-            self._read_model_ready.clear()
-            self.start_rebuild()
+            return True
 
     def _refresh(self, cur, alert_ids: List[str]) -> int:
         """Fold each alert from all of its events and upsert its row."""
@@ -358,7 +370,12 @@ class PostgresStateSink(BaseStateSink):
         self._ensure_schema()
         self._ensure_alert_id_index()
         backfilled = self._backfill_alert_ids()
-        rebuilt = self._fold_stale_alerts()
+        rebuilt = 0
+        while True:
+            generation = self._stale_generation
+            rebuilt += self._fold_stale_alerts()
+            if generation == self._stale_generation or self._stop.is_set():
+                break
         self._read_model_status = {"ready": True, "backfilled_events": backfilled,
                                    "rebuilt_alerts": rebuilt, "fold_version": FOLD_VERSION}
         self._read_model_ready.set()
