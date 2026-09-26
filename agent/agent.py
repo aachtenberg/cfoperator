@@ -141,6 +141,23 @@ INVESTIGATION_POSTBACK = Counter('cfoperator_investigation_postback_total', 'Inv
 # unreachable (event_runtime/client.py). Anything but ok means sweep output is
 # not reaching triage or Slack, which went unnoticed for 34 days (CFOP-214).
 SWEEP_FORWARD = Counter('cfoperator_sweep_forward_total', 'Sweep findings and resolutions forwarded to the event runtime', ['kind', 'outcome'])
+
+
+@dataclass(frozen=True)
+class Forwarded:
+    """How a batch of sweep output fared at the event runtime (CFOP-214).
+
+    ``sent`` is what was left to send after operator dismissals; ``delivered``
+    is what the runtime accepted. Kept as counts rather than a bool because
+    "nothing to send" is neither success nor failure, and treating it as
+    success wrote history rows claiming a delegation that never happened.
+    """
+    sent: int
+    delivered: int
+
+    @property
+    def complete(self) -> bool:
+        return self.delivered == self.sent
 REMEDIATION_QUEUE = Gauge('cfoperator_remediation_queue', 'Remediation queue rows by status', ['status'])
 REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remediations enqueued', ['source', 'remediation_class', 'eligible'])
 # result: ok (first try) | nudged (corrective retry) | escalated (distinct
@@ -6602,13 +6619,13 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         findings = self._verify_findings(findings)
 
         # 6c. Post findings to event runtime (if configured). None = no
-        # runtime; False = it did not take them all, so step 7 notifies itself.
+        # runtime; an incomplete Forwarded means step 7 notifies itself.
         forwarded = None
         if findings:
             try:
                 forwarded = self._post_findings_to_event_runtime(findings)
             except Exception as e:
-                forwarded = False
+                forwarded = Forwarded(sent=len(findings), delivered=0)
                 logger.warning(f"Could not post findings to event runtime: {e}")
 
         # 6d. Emit resolutions for findings that cleared since last sweep
@@ -8271,8 +8288,8 @@ Only return the JSON array, no other text."""
         }
 
     def _forward_to_event_runtime(self, client: EventRuntimeClient, kind: str,
-                                  payloads: List[Dict[str, Any]]) -> bool:
-        """POST each payload to the runtime's /alert; True when it took them all.
+                                  payloads: List[Dict[str, Any]]) -> Forwarded:
+        """POST each payload to the runtime's /alert.
 
         Stops at the first failure the rest of the batch would repeat (down,
         overloaded, refusing the agent) and says so at WARNING. When a runtime
@@ -8293,13 +8310,13 @@ Only return the JSON array, no other text."""
         if failure is not None:
             logger.warning(f"Event runtime took {delivered} of {len(payloads)} sweep {kind}(s): "
                            f"{failure.describe()}")
-        return delivered == len(payloads)
+        return Forwarded(sent=len(payloads), delivered=delivered)
 
-    def _post_findings_to_event_runtime(self, findings: List[Dict[str, Any]]) -> Optional[bool]:
+    def _post_findings_to_event_runtime(self, findings: List[Dict[str, Any]]) -> Optional[Forwarded]:
         """Post sweep findings as alerts to the event runtime if configured.
 
-        Returns None when no runtime is configured, else whether it accepted
-        every finding that was not dismissed.
+        Returns None when no runtime is configured, else how many of the
+        findings that were not dismissed it accepted.
         """
         client = EventRuntimeClient.from_env()
         if client is None:
@@ -8341,7 +8358,7 @@ Only return the JSON array, no other text."""
             payloads.append(payload)
         return self._forward_to_event_runtime(client, "finding", payloads)
 
-    def _post_resolutions_to_event_runtime(self, resolved: List[Dict[str, Any]]) -> Optional[bool]:
+    def _post_resolutions_to_event_runtime(self, resolved: List[Dict[str, Any]]) -> Optional[Forwarded]:
         """Post 'finding cleared' notifications to the event runtime.
 
         These ride the same /alert path as live findings but are tagged
@@ -8374,27 +8391,34 @@ Only return the JSON array, no other text."""
             payloads.append(payload)
         return self._forward_to_event_runtime(client, "resolution", payloads)
 
-    def _notify_sweep_findings(self, report: Dict[str, Any], forwarded: Optional[bool] = None):
+    def _notify_sweep_findings(self, report: Dict[str, Any], forwarded: Optional[Forwarded] = None):
         """Send notifications for sweep findings and record in history.
 
         ``forwarded`` is what _post_findings_to_event_runtime returned. When
-        True, the event runtime is the sole owner of Slack/Discord for these
-        findings: each one was forwarded to /alert and is triaged
-        individually, so a roll-up here would duplicate them at lower
-        fidelity. We still record one notification_history row so audit/UI
-        counters reflect that the sweep produced operator-visible output.
+        the runtime took everything that was sent, it is the sole owner of
+        Slack/Discord for these findings: each one was forwarded to /alert and
+        is triaged individually, so a roll-up here would duplicate them at
+        lower fidelity. We still record one notification_history row so
+        audit/UI counters reflect that the sweep produced operator-visible
+        output.
 
-        When False the runtime did not take them all, and the duplicate
-        argument no longer holds, so the agent sends its own roll-up. Keying
-        this on "a runtime is configured" instead is how a refused forward
-        became no notification at all, with a history row claiming one
-        (CFOP-214). Over-notifying on a partial failure is the right way to
-        be wrong.
+        When it did not, the duplicate argument no longer holds, so the agent
+        sends its own roll-up. Keying this on "a runtime is configured"
+        instead is how a refused forward became no notification at all, with
+        a history row claiming one (CFOP-214). Over-notifying on a partial
+        failure is the right way to be wrong.
+
+        When nothing was sent because the operator dismissed every finding,
+        there is nothing to notify and nothing was delegated, so neither a
+        roll-up nor a history row.
         """
-        if forwarded is False:
-            logger.warning("The event runtime did not take every sweep finding; "
-                           "sending the agent's own roll-up so they are not lost")
-        if forwarded:
+        if forwarded is not None and forwarded.sent == 0:
+            logger.info("Every sweep finding was dismissed by an operator; nothing to notify")
+            return
+        if forwarded is not None and not forwarded.complete:
+            logger.warning(f"The event runtime took {forwarded.delivered} of {forwarded.sent} sweep "
+                           "findings; sending the agent's own roll-up so they are not lost")
+        if forwarded is not None and forwarded.complete:
             try:
                 self.kb._kb.record_notification_history(
                     channel_id=0,
@@ -8406,6 +8430,7 @@ Only return the JSON array, no other text."""
                     context={
                         'findings_count': len(report.get('findings', [])),
                         'delegated_to': 'event_runtime',
+                        'forwarded': forwarded.delivered,
                     },
                     error_message=None,
                 )

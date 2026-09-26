@@ -14,7 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.agent import CFOperator, SWEEP_FORWARD
+from agent.agent import CFOperator, Forwarded, SWEEP_FORWARD
 import event_runtime.http_actions as http_actions
 from event_runtime.server import make_handler
 
@@ -77,14 +77,14 @@ FINDINGS = [
 
 def test_findings_pass_the_runtime_gate(runtime):
     before = _count("finding", "ok")
-    assert _operator()._post_findings_to_event_runtime(FINDINGS) is True
+    assert _operator()._post_findings_to_event_runtime(FINDINGS) == Forwarded(sent=2, delivered=2)
     assert [a.summary for a in runtime.alerts] == [f["finding"] for f in FINDINGS]
     assert all(a.source == "cfoperator-sweep" for a in runtime.alerts)
     assert _count("finding", "ok") - before == 2
 
 
 def test_resolutions_pass_the_runtime_gate(runtime):
-    assert _operator()._post_resolutions_to_event_runtime(FINDINGS[:1]) is True
+    assert _operator()._post_resolutions_to_event_runtime(FINDINGS[:1]) == Forwarded(sent=1, delivered=1)
     assert len(runtime.alerts) == 1
     assert runtime.alerts[0].details["resolution"] is True
 
@@ -97,7 +97,7 @@ def test_a_refused_forward_is_reported_and_stops_the_batch(runtime, monkeypatch,
     monkeypatch.setattr(http_actions, "_expected_runtime_token", lambda: "runtime-only-token")
     before = _count("finding", "unauthorized")
     with caplog.at_level("WARNING"):
-        assert _operator()._post_findings_to_event_runtime(FINDINGS) is False
+        assert _operator()._post_findings_to_event_runtime(FINDINGS) == Forwarded(sent=2, delivered=0)
     assert runtime.alerts == []
     # One refusal, then stop: the second finding would be refused the same way.
     assert _count("finding", "unauthorized") - before == 1
@@ -153,3 +153,21 @@ def test_a_refused_completion_names_the_completion_secret(runtime, monkeypatch, 
             {"action": "investigate", "success": True, "message": "ok"})
     assert "CFOP_COMPLETION_SHARED_SECRET" in caplog.text
     assert "CFOP_RUNTIME_TOKEN" not in caplog.text
+
+
+def test_all_dismissed_is_neither_a_rollup_nor_a_delegation(runtime):
+    """Nothing sent is not "the runtime took it": no roll-up, because the
+    operator dismissed these, and no history row claiming a delegation
+    (review of #283)."""
+    op = _operator()
+    op.kb._kb.get_dismissed_finding_keys = lambda days=30: {f["finding"] for f in FINDINGS}
+    notifier = _Notifier()
+    op.notifications = [notifier]
+    recorded = []
+    op.kb._kb.record_notification_history = lambda **kw: recorded.append(kw)
+
+    forwarded = op._post_findings_to_event_runtime(FINDINGS)
+    assert forwarded == Forwarded(sent=0, delivered=0)
+    op._notify_sweep_findings({"summary": "2 findings", "severity": "critical",
+                               "findings": FINDINGS}, forwarded=forwarded)
+    assert notifier.sent == [] and recorded == [] and runtime.alerts == []
