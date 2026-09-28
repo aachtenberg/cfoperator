@@ -339,6 +339,7 @@ const html=fs.readFileSync(process.argv[2],'utf8');
 const src=html.match(/<script>([\s\S]*?)<\/script>/)[1];
 
 const detailFetches=[], slow=new Set();
+let nextList=null;
 function el(){return{className:'',innerHTML:'',textContent:'',value:'',hidden:false,
   style:{},classList:{add(){},remove(){}},setAttribute(){},select(){},remove(){},
   focus(){},scrollIntoView(){},appendChild(){},addEventListener(){}};}
@@ -380,7 +381,7 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
                           : Promise.resolve(res);
     }
     if(url.indexOf('/api/investigations')===0){
-      return Promise.resolve({json:()=>Promise.resolve({investigations:[]})});
+      return Promise.resolve({json:()=>Promise.resolve({investigations:nextList||[]})});
     }
     return Promise.resolve({json:()=>Promise.resolve({remediations:[]})});
   }};
@@ -406,6 +407,16 @@ const tick=()=>new Promise(r=>setImmediate(r));
   out.hashAfterOpen=loc.hash;
   const opened=box.document.getElementById('detail').innerHTML;
   out.drawerHasCommand=opened.indexOf('cfassist attach 2272')>=0;
+  out.drawerNamesModel=opened.indexOf('>investigated by</b>')>=0 && opened.indexOf('ollama/x')>=0;
+  // ALL is a lexical binding of the page script, so the list is filled the
+  // way the page fills it: load() reads /api/investigations.
+  nextList=[{id:7,outcome:'resolved',trigger:'disk full',provider:'ollama/gemma4:26b',started_at:'2026-09-28T12:00:00'}];
+  await box.load();
+  out.listNamesModel=box.document.getElementById('rows').innerHTML.indexOf('ollama/gemma4:26b')>=0;
+  nextList=[{id:8,outcome:'failed',trigger:'never reached a model',started_at:'2026-09-28T12:00:00'}];
+  await box.load();
+  const blank=box.document.getElementById('rows').innerHTML;
+  out.listBlankWithoutModel=blank.indexOf('>—</td>')>=0 && blank.indexOf('unknown')<0;
   // The fix as a list, not a JSON dump (CFOP-113).
   out.fixStepsAsList=/<ol class="steps"><li>check the PSU<\/li><li>reboot pi4<\/li><\/ol>/.test(opened);
   out.fixDumpedAsJson=opened.indexOf('"steps"')>=0 && opened.indexOf('<h3>FIX</h3>')>=0;
@@ -480,6 +491,17 @@ def test_opening_a_row_names_it_in_the_url(drawer_behaviour):
 def test_the_open_drawer_shows_the_handoff_line(drawer_behaviour):
     assert drawer_behaviour["drawerHasCommand"], (
         "the drawer rendered without the attach command the payload carried")
+
+
+def test_the_drawer_and_list_name_the_model_that_wrote_the_report(drawer_behaviour):
+    """The served model is ``backend/model``. A row that never reached one
+    stays an em dash — "unknown" would read as an attribution."""
+    assert drawer_behaviour["drawerNamesModel"], (
+        "the drawer did not name the model in findings.provider")
+    assert drawer_behaviour["listNamesModel"], (
+        "the list did not render the provider the row carried")
+    assert drawer_behaviour["listBlankWithoutModel"], (
+        "a row with no provider invented a model, or lost the em dash")
 
 
 def test_the_fix_is_rendered_as_steps_not_json(drawer_behaviour):

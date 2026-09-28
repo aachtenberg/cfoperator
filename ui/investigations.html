@@ -166,7 +166,7 @@
 <script src="/nav.js" defer></script>
 <div class="filters" id="filters"></div>
 <table>
-  <thead><tr><th>ID</th><th>Outcome</th><th>Trigger</th><th>Remediation</th><th>Duration</th><th>Started</th></tr></thead>
+  <thead><tr><th>ID</th><th>Outcome</th><th>Trigger</th><th>LLM</th><th>Remediation</th><th>Duration</th><th>Started</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" class="empty" hidden>No investigations match this filter.</div>
@@ -194,7 +194,7 @@ let filter='', ALL=[], REMS={}, REMID={};
 let LAST_SIG=null;
 function signature(){
   return ALL.map(r=>{ const m=REMS[r.id]||(r.remediation_id?REMID[r.remediation_id]:null)||{};
-    return [r.id,r.outcome,r.triage_action,r.trigger,r.duration_seconds,r.completed_at,m.id,m.status,r.remediation_id,r.remediation_pr_url].join('\u0001'); }).join('\n');
+    return [r.id,r.outcome,r.triage_action,r.trigger,r.provider,r.duration_seconds,r.completed_at,m.id,m.status,r.remediation_id,r.remediation_pr_url].join('\u0001'); }).join('\n');
 }
 async function load(){
   // A hidden tab has nobody looking; the visibilitychange hook below catches up.
@@ -252,6 +252,11 @@ function similarBlock(f){
     `${badge(p.outcome,OC[p.outcome]||'--text-muted')} ${esc((p.trigger||'').slice(0,110))}`+
     `<span class="muted"> (similarity ${Number(p.similarity||0).toFixed(2)})</span></div>`).join('');
 }
+// The model that wrote the report (backend/model). Absence means the row
+// predates the stamp, or the run never reached a model — not "unknown".
+function llmStamp(provider){
+  return provider ? `<span class="mono muted">${esc(provider)}</span>` : '—';
+}
 function paint(){
   const c={}; ALL.forEach(r=>c[r.outcome]=(c[r.outcome]||0)+1);
   const tri=ALL.filter(r=>r.triage_action).length;
@@ -270,6 +275,7 @@ function paint(){
       <td class="mono">#${r.id}</td>
       <td>${badge(r.outcome, OC[r.outcome]||'--text-muted')}${r.triage_action?' '+badge(r.triage_action,'--accent'):''}</td>
       <td class="trig">${esc(r.trigger||'').slice(0,140)}</td>
+      <td>${llmStamp(r.provider)}</td>
       <td>${remLink(r)}</td>
       <td class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':'—'}</td>
       <td class="muted" data-age="${esc(r.started_at||'')}">${age(r.started_at)}</td></tr>`).join('');
@@ -383,7 +389,8 @@ async function detail(id){
     <button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>${maxButton()}
     <h2 id="detail-title" style="margin:0 0 8px">${esc(title)}${copyIcon('investigation title',{text:title+(r.trigger?' — '+r.trigger:'')})}</h2>
     <div class="kv">${badge(r.outcome,OC[r.outcome]||'--text-muted')}
-      <span class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':''} · ${r.tool_calls_count||0} tool calls${f.provider?' · '+esc(f.provider):''}</span></div>
+      <span class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':''} · ${r.tool_calls_count||0} tool calls</span></div>
+    ${f.provider?`<div class="kv"><b>investigated by</b> <span class="mono">${esc(f.provider)}</span></div>`:''}
     <div class="kv"><b>trigger</b> <span id="trigger-text">${esc(r.trigger)}</span>${copyIcon('trigger',{from:'trigger-text'})}</div>
     <div class="kv"><b>started</b> ${fmtTs(r.started_at)}${r.completed_at?' · <b>completed</b> '+fmtTs(r.completed_at, r.started_at):''}</div>
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}

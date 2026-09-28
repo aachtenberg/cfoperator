@@ -811,6 +811,22 @@ def remediation_approve_conflict(row) -> Optional[str]:
     return None
 
 
+def _investigation_provider(findings) -> Optional[str]:
+    """The LLM that wrote this investigation, as ``backend/model``.
+
+    The investigation loop stamps ``findings['provider']`` with the model
+    that actually served the call (the configured primary may have been
+    bypassed). Older rows and failures that never reached a model have
+    none — callers show an em dash rather than inventing "unknown".
+    """
+    f = findings if isinstance(findings, dict) else {}
+    provider = f.get('provider')
+    if not isinstance(provider, str):
+        return None
+    provider = provider.strip()
+    return provider or None
+
+
 def _investigation_remediation_id(findings) -> Optional[int]:
     """The queue row an investigation's needs_action fed (or deduped onto)."""
     f = findings if isinstance(findings, dict) else {}
@@ -3024,6 +3040,11 @@ class KnowledgeBase:
                     # say "none" only when neither exists.
                     "remediation_id": _investigation_remediation_id(inv.findings),
                     "remediation_pr_url": _investigation_remediation_pr_url(inv.findings),
+                    # Which LLM wrote the report. The list used to drop
+                    # findings entirely, so the only place the model appeared
+                    # was a suffix inside the drawer — and only after opening
+                    # the row. Same string Slack prints as "Investigated by".
+                    "provider": _investigation_provider(inv.findings),
                 }
                 for inv in investigations
             ]
