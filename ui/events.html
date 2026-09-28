@@ -276,7 +276,7 @@ function llmCell(a){
   const s=llmStamps(a);
   if(s.investigated) return `<span class="mono muted" title="investigated by">${esc(s.investigated)}</span>`;
   if(s.triaged) return `<span class="mono muted" title="triaged by">${esc(s.triaged)}</span>`;
-  return '—';
+  return '<span class="muted">—</span>';
 }
 function sourceLabel(s){ return s==='cfoperator-sweep'?'sweep':(s||'—'); }
 function resource(r){ return [r.namespace, r.resource_name].filter(Boolean).join('/'); }

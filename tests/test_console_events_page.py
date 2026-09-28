@@ -95,7 +95,7 @@ const tick=()=>new Promise(r=>setImmediate(r));
   const out={firstFetch:fetched[0], rows:els['rows'].innerHTML};
   out.listNamesInvestigated=out.rows.indexOf('title="investigated by">groq/openai/gpt-oss-120b')>=0;
   out.listNamesTriage=out.rows.indexOf('title="triaged by">ollama/qwen3:8b')>=0;
-  out.listBlankWithoutModel=/<td>—<\/td>/.test(out.rows);
+  out.listBlankWithoutModel=/<td><span class="muted">—<\/span><\/td>/.test(out.rows);
   if(scenario==='from-url'){
     out.sourceSelect=els['f-source'].value; out.windowSelect=els['f-window'].value; out.searchBox=els['f-q'].value;
   }
