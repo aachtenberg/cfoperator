@@ -109,7 +109,7 @@
   <input type="search" id="f-q" aria-label="Search alerts" placeholder="search summary, resource, alert id" oninput="searchInput(this.value)">
 </div>
 <table>
-  <thead><tr><th>When</th><th>Source</th><th>Severity</th><th>Alert</th><th>Decision</th><th>Status</th><th>Investigation</th></tr></thead>
+  <thead><tr><th>When</th><th>Source</th><th>Severity</th><th>Alert</th><th>Decision</th><th>LLM</th><th>Status</th><th>Investigation</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" class="empty" hidden>No alerts match these filters.</div>
@@ -217,7 +217,8 @@ function storeNote(body){
 
 // A poll that brought nothing new does not rebuild the table (CFOP-95).
 function signature(){
-  return ROWS.map(r=>[r.alert_id,r.status,r.action,r.latest_event_at,r.event_count,investigationOf(r)].join('\u0001')).join('\n')
+  return ROWS.map(r=>{ const s=llmStamps(r);
+    return [r.alert_id,r.status,r.action,r.latest_event_at,r.event_count,investigationOf(r),s.triaged,s.investigated].join('\u0001'); }).join('\n')
     +'\n'+(CURSOR||'');
 }
 async function load(){
@@ -259,6 +260,23 @@ function searchInput(value){
 function investigationOf(r){
   const v=((r.result||{}).details||{}).investigation_id;
   return /^\d+$/.test(String(v==null?'':v))&&Number(v)>0?Number(v):null;
+}
+// The models that produced this alert's output. Triage chose the action;
+// the investigation model wrote the result. Either half can be missing —
+// a log-only skip never called a model — and absence stays a blank, not
+// "unknown". The list shows the investigation model when there is one,
+// since that is the output; the drawer names both.
+function llmStamps(a){
+  const params=(a.decision||{}).params||{};
+  const triaged=[params.triage_backend, params.triage_model].map(x=>String(x||'').trim()).filter(Boolean).join('/');
+  const investigated=String((((a.result||{}).details)||{}).provider||'').trim();
+  return {triaged, investigated};
+}
+function llmCell(a){
+  const s=llmStamps(a);
+  if(s.investigated) return `<span class="mono muted" title="investigated by">${esc(s.investigated)}</span>`;
+  if(s.triaged) return `<span class="mono muted" title="triaged by">${esc(s.triaged)}</span>`;
+  return '<span class="muted">—</span>';
 }
 function sourceLabel(s){ return s==='cfoperator-sweep'?'sweep':(s||'—'); }
 function resource(r){ return [r.namespace, r.resource_name].filter(Boolean).join('/'); }
@@ -303,6 +321,7 @@ function paint(){
       <td>${badge(r.severity, SEVERITY_COLOR[r.severity]||'--text-muted')}</td>
       <td class="summ">${esc(String(r.summary||'').slice(0,160))}${res?`<div class="muted">${esc(res)}</div>`:''}</td>
       <td>${r.action?badge(r.action, ACTION_COLOR[r.action]||'--text-muted'):'<span class="muted">—</span>'}</td>
+      <td>${llmCell(r)}</td>
       <td>${badge(r.status, STATUS_COLOR[r.status]||'--text-muted')}</td>
       <td>${inv?`<a href="/investigations#${inv}" onclick="event.stopPropagation()">#${inv}</a>`:''}</td></tr>`;
   }).join('');
@@ -368,7 +387,7 @@ async function detail(id){
   focusDetailClose();
 }
 function renderDetail(a, events){
-  const dec=a.decision||{}, res=a.result||{}, det=res.details||{};
+  const dec=a.decision||{}, res=a.result||{}, det=res.details||{}, llm=llmStamps(a);
   const inv=investigationOf(a);
   const links=['html_url','url','investigation_url'].map(k=>safeUrl(det[k])).filter(Boolean);
   const source=(events.find(e=>(e.payload||{}).alert)||{}).payload;
@@ -387,8 +406,10 @@ function renderDetail(a, events){
     ${a.reason?`<div class="kv"><b>reason</b> ${esc(a.reason)}</div>`:''}
     ${dec.action?`<h3>Triage</h3>
       <div class="kv"><b>decision</b> ${badge(dec.action, ACTION_COLOR[dec.action]||'--text-muted')}${dec.confidence!=null?' <span class="muted">confidence '+esc(dec.confidence)+'</span>':''}</div>
+      ${llm.triaged?`<div class="kv"><b>triaged by</b> <span class="mono">${esc(llm.triaged)}</span></div>`:''}
       ${dec.reasoning?`<div class="prose">${esc(dec.reasoning)}</div>`:''}`:''}
-    ${(a.message||inv||links.length)?`<h3>Outcome</h3>
+    ${(a.message||inv||links.length||llm.investigated)?`<h3>Outcome</h3>
+      ${llm.investigated?`<div class="kv"><b>investigated by</b> <span class="mono">${esc(llm.investigated)}</span></div>`:''}
       ${inv?`<div class="kv"><b>investigation</b> <a href="/investigations#${inv}">#${inv}</a></div>`:''}
       ${links.map(u=>`<div class="kv"><b>link</b> <a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)} ↗</a></div>`).join('')}
       ${a.message?`<div class="prose">${esc(a.message)}</div>`:''}`:''}

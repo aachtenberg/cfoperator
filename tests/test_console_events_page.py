@@ -33,7 +33,10 @@ function row(i, extra){ return Object.assign({alert_id:'alert-'+i, source:i%2?'c
   severity:'warning', summary:'thing '+i, status:i===2?'failed':'completed', action:'investigate',
   namespace:'apps', resource_name:'pod-'+i,
   latest_event_at:new Date(Date.UTC(2026,8,26,13,0,0)-i*60000).toISOString().replace('.000Z','+00:00'),
-  event_count:3, result:{details:{investigation_id:i===2?7:null}}}, extra||{}); }
+  event_count:3,
+  decision:i===2?{action:'investigate',params:{triage_backend:'ollama',triage_model:'qwen3-coder:latest'}}
+    :i===1?{action:'notify',params:{triage_backend:'ollama',triage_model:'qwen3:8b'}}:null,
+  result:{details:{investigation_id:i===2?7:null, provider:i===2?'groq/openai/gpt-oss-120b':''}}}, extra||{}); }
 const N=scenario==='paging'?60:5;
 const ALL=Array.from({length:N},(_,k)=>row(k+1));
 if(scenario==='hostile') ALL.unshift(row(0,{alert_id:HOSTILE, summary:HOSTILE}));
@@ -75,7 +78,8 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,Set,
     if(url.indexOf('/api/events/')===0){
       return Promise.resolve({ok:true,status:200,json:()=>Promise.resolve({
         alert:Object.assign(row(2),{first_event_at:'2026-09-26T13:07:00+00:00',
-          decision:{action:'investigate',confidence:0.9,reasoning:'disk filling on node-2'},
+          decision:{action:'investigate',confidence:0.9,reasoning:'disk filling on node-2',
+            params:{triage_backend:'ollama',triage_model:'qwen3-coder:latest'}},
           message:'Resolved: freed space',
           timeline:events.map(e=>({created_at:e.created_at,event_type:e.event_type,note:null}))}),
         events:events})});
@@ -89,6 +93,9 @@ const tick=()=>new Promise(r=>setImmediate(r));
 (async () => {
   await tick(); await tick();
   const out={firstFetch:fetched[0], rows:els['rows'].innerHTML};
+  out.listNamesInvestigated=out.rows.indexOf('title="investigated by">groq/openai/gpt-oss-120b')>=0;
+  out.listNamesTriage=out.rows.indexOf('title="triaged by">ollama/qwen3:8b')>=0;
+  out.listBlankWithoutModel=/<td><span class="muted">—<\/span><\/td>/.test(out.rows);
   if(scenario==='from-url'){
     out.sourceSelect=els['f-source'].value; out.windowSelect=els['f-window'].value; out.searchBox=els['f-q'].value;
   }
@@ -103,6 +110,8 @@ const tick=()=>new Promise(r=>setImmediate(r));
     out.hash=loc.hash;
     out.linksInvestigation=drawer.indexOf('href="/investigations#7"')>=0;
     out.showsReasoning=drawer.indexOf('disk filling on node-2')>=0;
+    out.drawerTriaged=drawer.indexOf('>triaged by</b>')>=0 && drawer.indexOf('ollama/qwen3-coder:latest')>=0;
+    out.drawerInvestigated=drawer.indexOf('>investigated by</b>')>=0 && drawer.indexOf('groq/openai/gpt-oss-120b')>=0;
     out.timelineItems=(drawer.match(/<li>/g)||[]).length;
     out.rawFolded=/<details><summary>Raw events \(3\)/.test(drawer);
     out.alertDetails=drawer.indexOf('&quot;category&quot;: &quot;disk&quot;')>=0;
@@ -165,6 +174,9 @@ def test_the_drawer_opens_by_hash_and_links_the_investigation(tmp_path):
     assert b["hash"] == "#alert-2"
     assert b["linksInvestigation"], "an alert whose completion names investigation 7 must link to it"
     assert b["showsReasoning"], "the triage decision's reasoning is not in the drawer"
+    assert b["drawerTriaged"], "the drawer did not name the triage model"
+    assert b["drawerInvestigated"], "the drawer did not name the investigation model"
+    assert b["listNamesInvestigated"] and b["listNamesTriage"] and b["listBlankWithoutModel"]
     assert b["timelineItems"] == 3
     assert b["rawFolded"] and b["alertDetails"]
     assert b["hashAfterClose"] == ""
