@@ -158,7 +158,16 @@ sudo ls  # Should not ask for password
 ```
 
 **Why this matters:**
-CFOperator may need to restart services (`sudo systemctl restart docker`) during investigations. If sudo prompts for a password, the automation breaks.
+Investigations read with sudo (`sudo dmesg`, `sudo crictl ps`), and the
+node-action lane runs its gated fixes as `sudo -n <command>`. If sudo prompts
+for a password, both break.
+
+Investigations themselves do not change hosts: every unattended run is
+read-only, and each command it sends is classified before it runs (CFOP-240).
+That classifier is a denylist, though — a script or an interpreter one-liner
+is not recognised — so with `NOPASSWD: ALL` it is the only thing between an
+investigation and root. A sudoers entry restricted to the commands you want
+the agent to run makes the host enforce the same boundary.
 
 ### Observability Backend Configuration
 

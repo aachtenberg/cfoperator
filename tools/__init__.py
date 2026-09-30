@@ -55,20 +55,33 @@ logger = logging.getLogger("cfoperator.tools")
 # The ROLE gate is separate and stricter: a member never gets these at all.
 _VERIFY_COMMAND_GATED = {'ssh_execute': 'command'}
 
+# The same exception for an unattended run (CFOP-240), plus k8s_exec_pod: the
+# investigation's in-pod reads are its second most used tool, and before this
+# it ran every command unclassified, so classifying is strictly tighter. A
+# verification turn does not gain it — it never had it, and the classifier
+# does not know database clients (psql -c "DELETE ..." passes), which is what
+# an exec into an app pod most often reaches.
+_UNATTENDED_COMMAND_GATED = {**_VERIFY_COMMAND_GATED, 'k8s_exec_pod': 'command'}
+
 # Schema keys that are policy for THIS process, not part of the function
 # contract sent to a model. Stripped on the way out: a stray key is a 400 on
 # the stricter providers.
 #
-#   mutating   — changes the system, or what the system will act on.
-#   human_only — additionally needs a named admin behind the turn. A mutating
-#                tool is still offered to internal callers (policy=None:
-#                sweep, investigation, morning summary), which is correct for
-#                every one that existed before — they are trusted to restart a
-#                service. It is wrong for a tool whose semantics are "a person
-#                asked for this", because the row it writes is then treated as
-#                approved. Without this an investigation could queue itself a
-#                remediation past the auto-execute gate (CFOP-160, review).
-_SCHEMA_MARKERS = ('mutating', 'human_only')
+#   mutating      — changes the system, or what the system will act on.
+#   human_only    — additionally needs a named admin behind the turn. It is for
+#                   a tool whose semantics are "a person asked for this",
+#                   because the row it writes is then treated as approved.
+#                   Without it an investigation could queue itself a
+#                   remediation past the auto-execute gate (CFOP-160, review).
+#   unattended_ok — a mutating tool an unattended run (investigation, sweep,
+#                   triage, the classifiers) may still call, because nothing
+#                   changes until a gate a person owns: a learning, a PR that
+#                   waits for its merge. Fail-closed on purpose — a write tool
+#                   added without it is refused to every unattended run
+#                   (CFOP-240). Before that those runs were unrestricted and
+#                   "trusted to restart a service"; investigation 2558 used the
+#                   trust to run rocm-smi --setfan as root.
+_SCHEMA_MARKERS = ('mutating', 'human_only', 'unattended_ok')
 
 
 def summarize_tool_args(arguments: Any) -> str:
@@ -85,14 +98,21 @@ def summarize_tool_args(arguments: Any) -> str:
 
 @dataclass(frozen=True)
 class ToolPolicy:
-    """What one chat turn may do with the registry (CFOP-124).
+    """What one tool-loop turn may do with the registry (CFOP-124, CFOP-240).
 
-    ``None`` in place of a policy is an internal caller — sweep, investigation,
-    morning summary — and is unrestricted, exactly as before. A policy exists
-    only for user-initiated chat: ``actor_role`` is the console role captured
-    in ``POST /api/chat`` while request context still exists (the chat itself
-    runs in a thread where it is gone), and ``verify_only`` marks a drawer or
-    sweep-banner hand-off that asks for checks, not changes.
+    ``actor_role`` is the console role captured in ``POST /api/chat`` while
+    request context still exists (the chat itself runs in a thread where it is
+    gone), and ``verify_only`` marks a drawer or sweep-banner hand-off that
+    asks for checks, not changes. ``unattended`` is every run with no person
+    behind it — investigation, sweep, triage, the classifiers — and may
+    observe but not change: only ``unattended_ok`` writes, and the
+    command-gated tools with a command the classifier reads as a read. What
+    such a run wants changed goes into its FIX, and from there through the
+    queue's lanes. Pass ``UNATTENDED``.
+
+    ``None`` in place of a policy is unrestricted. Nothing in the agent passes
+    it any more (test_every_tool_loop_names_its_policy); it remains the
+    registry's default for direct callers such as tests.
 
     Both layers consult it: ``get_schemas(policy)`` withholds mutating tools
     from what the model is offered, and ``execute(..., policy)`` refuses them
@@ -100,6 +120,7 @@ class ToolPolicy:
     """
     actor_role: Optional[str] = None
     verify_only: bool = False
+    unattended: bool = False
 
     def role_allows_mutation(self) -> bool:
         """Whether the ASKER may change things at all, ignoring the turn's mode."""
@@ -117,24 +138,36 @@ class ToolPolicy:
         return self.actor_role == ROLE_ADMIN and not self.verify_only
 
     def allows_mutation(self) -> bool:
-        return self.role_allows_mutation() and not self.verify_only
+        return self.role_allows_mutation() and not self.verify_only and not self.unattended
 
-    def allows_tool(self, tool_name: str, mutating: bool) -> bool:
+    def command_gated(self) -> Dict[str, str]:
+        """Mutating tools this turn may run one command at a time, mapped to
+        the argument that carries the command. Empty when the turn may run
+        them outright, or when the role refuses them whatever the command."""
+        if self.allows_mutation() or not self.role_allows_mutation():
+            return {}
+        if self.verify_only:
+            return _VERIFY_COMMAND_GATED
+        return _UNATTENDED_COMMAND_GATED if self.unattended else {}
+
+    def allows_tool(self, tool_name: str, mutating: bool, unattended_ok: bool = False) -> bool:
         """Whether this turn may be OFFERED the tool at all.
 
         A verification turn keeps the command-gated tools (ssh_execute): the
         checks a hand-off asks for are ssh one-liners, and withholding the tool
         outright leaves the model narrating what it would have run. What it
-        sends is classified at execute time instead. A member is refused them
-        whatever the mode — that is the role gate, and it is not negotiable by
-        the turn's purpose.
+        sends is classified at execute time instead. An unattended run keeps
+        them for the same reason, and its ``unattended_ok`` writes. A member is
+        refused them whatever the mode — that is the role gate, and it is not
+        negotiable by the turn's purpose.
         """
         if not mutating:
             return True
         if self.allows_mutation():
             return True
-        return (self.verify_only and self.role_allows_mutation()
-                and tool_name in _VERIFY_COMMAND_GATED)
+        if self.unattended and unattended_ok and not self.verify_only:
+            return True
+        return tool_name in self.command_gated()
 
     def refusal(self, tool_name: str) -> str:
         """The error the model sees. Refusal, not escalation: it names what is
@@ -143,17 +176,31 @@ class ToolPolicy:
             return (f"{tool_name} changes the system, and this turn is a verification pass. "
                     "Report what you found and what should happen next; an operator "
                     "applies changes from the console.")
+        if self.unattended:
+            return (f"{tool_name} changes the system, and this is an unattended run: it may "
+                    "observe, not change. Put the change in your FIX; the remediation queue "
+                    "applies it through a gated lane.")
         return (f"{tool_name} changes the system; that needs an admin. Say exactly what "
                 "you would run and why, so an admin can do it from the console.")
 
     def command_refusal(self, tool_name: str, reason: str) -> str:
         """The error for a read-only tool call carrying a command that writes."""
+        if self.unattended and not self.verify_only:
+            return (f"{tool_name} is available on this unattended run for read-only checks, "
+                    f"but the command was refused: {reason}. Run the check that observes the "
+                    "state, and put the change in your FIX; the remediation queue applies it.")
         return (f"{tool_name} is available on this verification turn for read-only checks, "
                 f"but the command was refused: {reason}. Run the check that observes the "
                 "state and report what should be done; an operator applies it.")
 
     def describe(self) -> str:
-        return f"actor_role={self.actor_role!r} verify_only={self.verify_only}"
+        return (f"actor_role={self.actor_role!r} verify_only={self.verify_only} "
+                f"unattended={self.unattended}")
+
+
+# Every run with no person behind it (CFOP-240). One instance, so a call site
+# names the mode rather than spelling its flags.
+UNATTENDED = ToolPolicy(unattended=True)
 
 
 _NAMESPACE_FILE = '/var/run/secrets/kubernetes.io/serviceaccount/namespace'
@@ -537,6 +584,9 @@ class ToolRegistry:
                 # will not act on, the same test the admin gate on
                 # PATCH /api/findings cites.
                 'mutating': True,
+                # Still an investigation's to write: it changes what later runs
+                # read, not the infrastructure (CFOP-240).
+                'unattended_ok': True,
                 'description': 'Save a learning/insight to the knowledge base. Use this when you diagnose an issue, the user tells you how they fixed something, or you discover a useful pattern. Learnings are reused in future investigations.',
                 'parameters': {
                     'type': 'object',
@@ -1021,11 +1071,24 @@ class ToolRegistry:
             raise ValueError(
                 "policy markers belong inside the tool's schema, not on the registry entry: "
                 + ', '.join(misplaced))
+        # unattended_ok is an exception to the mutating gate. On a read it means
+        # nothing, and most likely marks a tool whose 'mutating' went missing.
+        stray = sorted(name for name, entry in self.tools.items()
+                       if (entry.get('schema') or {}).get('unattended_ok')
+                       and not (entry.get('schema') or {}).get('mutating'))
+        if stray:
+            raise ValueError("unattended_ok is only meaningful on a mutating tool: "
+                             + ', '.join(stray))
 
     def is_mutating(self, tool_name: str) -> bool:
         """True if the tool changes the system, or what the system will act on."""
         entry = self.tools.get(tool_name)
         return bool(entry and (entry.get('schema') or {}).get('mutating'))
+
+    def is_unattended_ok(self, tool_name: str) -> bool:
+        """True if an unattended run may call this mutating tool (CFOP-240)."""
+        entry = self.tools.get(tool_name)
+        return bool(entry and (entry.get('schema') or {}).get('unattended_ok'))
 
     def is_human_only(self, tool_name: str) -> bool:
         """True if the tool additionally requires a named admin behind the turn."""
@@ -1045,7 +1108,8 @@ class ToolRegistry:
             return False
         if policy is None:
             return True
-        return policy.allows_tool(name, bool(schema.get('mutating')))
+        return policy.allows_tool(name, bool(schema.get('mutating')),
+                                  bool(schema.get('unattended_ok')))
 
     def execute(self, tool_name: str, arguments: Dict[str, Any],
                 policy: Optional[ToolPolicy] = None) -> Dict[str, Any]:
@@ -1072,15 +1136,16 @@ class ToolRegistry:
                              'your findings and let the queue classify it.',
                     'refused': True, 'tool': tool_name}
         if policy is not None and self.is_mutating(tool_name):
-            if not policy.allows_tool(tool_name, True):
+            if not policy.allows_tool(tool_name, True, self.is_unattended_ok(tool_name)):
                 # Defence in depth: get_schemas(policy) already withheld this
                 # tool from the model. A model that names it anyway is refused.
                 logger.warning(f"Tool {tool_name} refused ({policy.describe()})")
                 return {'error': policy.refusal(tool_name), 'refused': True, 'tool': tool_name}
             if not policy.allows_mutation():
-                # Offered only because it is command-gated (verify turn): the
-                # tool may run, this particular command may not.
-                arg = _VERIFY_COMMAND_GATED.get(tool_name)
+                # Offered because it is command-gated (verify turn, unattended
+                # run): the tool may run, this particular command may not. An
+                # unattended_ok tool has no command argument and runs.
+                arg = policy.command_gated().get(tool_name)
                 reason = ssh_mutation_reason((arguments or {}).get(arg)) if arg else None
                 if reason:
                     logger.warning(f"Tool {tool_name} command refused ({policy.describe()}): {reason}")

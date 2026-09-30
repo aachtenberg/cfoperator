@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import tools as tools_module
-from tools import ToolPolicy, ToolRegistry, _service_from_host
+from tools import UNATTENDED, ToolPolicy, ToolRegistry, _service_from_host
 from tools.ssh import ssh_mutation_reason
 from tools.github import GitHubTools
 from tools.k8s import K8sTools
@@ -37,6 +37,12 @@ KNOWN_MUTATING = {
 # (policy=None) is refused these, unlike every other mutating tool. See
 # _SCHEMA_MARKERS in tools/__init__.py for why the two are not the same gate.
 KNOWN_HUMAN_ONLY = {"queue_gitops_patch"}
+# Mutating tools an unattended run (investigation, sweep, triage) may still
+# call, because a person's gate stands between the call and any effect
+# (CFOP-240). Everything else mutating is refused to those runs.
+KNOWN_UNATTENDED_OK = {"store_learning", "github_create_pr"}
+# ... and the ones it runs one command at a time, through the classifier.
+UNATTENDED_COMMAND_GATED = {"ssh_execute", "k8s_exec_pod"}
 # 'triage_' is in the pattern because triage_investigation is the first write
 # tool whose name carries none of the other verbs — an unmarked one would have
 # landed open (CFOP-138).
@@ -119,10 +125,14 @@ def test_family_schemas_carry_the_marker_and_the_model_never_sees_it():
     by_name = {s["name"]: s for s in gh.get_schemas()}
     assert all(by_name[n].get("mutating") for n in ("github_create_pr", "github_create_issue_comment"))
     assert not by_name["github_get_pr"].get("mutating")
+    assert by_name["github_create_pr"].get("unattended_ok")
+    assert not by_name["github_create_issue_comment"].get("unattended_ok")
     # Stripped on the way into the registry: an OpenAI-shaped function schema
     # with a stray key is a 400 on the stricter providers.
     _, reg = _registry()
-    assert not any("mutating" in s["function"] for s in reg.get_schemas())
+    for policy in (None, UNATTENDED):
+        for marker in ("mutating", "unattended_ok"):
+            assert not any(marker in s["function"] for s in reg.get_schemas(policy=policy))
 
 
 # --------------------------------------------------------------------------
@@ -151,10 +161,9 @@ def test_admin_and_internal_callers_are_unchanged():
 # --------------------------------------------------------------------------
 
 def test_a_human_only_tool_is_withheld_from_internal_callers():
-    """policy=None is the sweep, the investigation and the morning summary.
-    They are trusted to restart a service, and are still not a person — a tool
-    that treats its caller's request AS the human approval must not be
-    reachable from one (CFOP-160, caught in review)."""
+    """No person is behind policy=None or an unattended run — a tool that
+    treats its caller's request AS the human approval must not be reachable
+    from either (CFOP-160, caught in review)."""
     _, reg = _registry()
     for name in KNOWN_HUMAN_ONLY:
         assert name not in _names(reg.get_schemas(policy=None)), name
@@ -166,7 +175,8 @@ def test_a_human_only_tool_is_offered_to_a_named_admin():
     assert KNOWN_HUMAN_ONLY <= _names(reg.get_schemas(policy=ADMIN))
 
 
-@pytest.mark.parametrize("policy", [None, MEMBER, VERIFY], ids=["internal", "member", "verify"])
+@pytest.mark.parametrize("policy", [None, MEMBER, VERIFY, UNATTENDED],
+                         ids=["internal", "member", "verify", "unattended"])
 def test_a_human_only_tool_named_anyway_is_refused_before_it_runs(policy):
     op, reg = _registry()
     for name in KNOWN_HUMAN_ONLY:
@@ -394,6 +404,24 @@ VERIFY_READS = [
     "curl -s http://localhost:9100/metrics",
     "git -C /home/x/homelab-infra log -1 --oneline",
     "kubectl get pods -n data",
+    # Refused by the pre-CFOP-240 classifier, verbatim from 30 days of
+    # investigation logs: a '|' inside a quoted pattern is not a pipe, and a
+    # status probe that discards its body writes nothing.
+    'dmesg | grep -iE "oom|kill|error" | tail -n 20',
+    'journalctl -k | grep -iE "oom|kill|error" | tail -n 20',
+    'curl -s -o /dev/null -w "%{http_code}" http://10.42.4.189:3001/metrics',
+    'curl -sk -o /dev/null -w "%{http_code}" https://localhost:10250/metrics/cadvisor '
+    '-H "Authorization: Bearer $(cat /var/lib/token)"',
+    "rocm-smi --showtemp",
+    "rocm-smi --showallinfo",
+    "sudo rocm-smi -d 0 --showfan --showpower",
+    "amd-smi metric --temperature",
+    "nvidia-smi --query-gpu=temperature.gpu,fan.speed --format=csv",
+    "nvidia-smi dmon -c 5",
+    "sudo crictl ps -a | grep kube-proxy",
+    "sudo du -x -h --max-depth=1 /var 2>/dev/null | sort -rh | head -20",
+    "grep -E 'restart|kill' /var/log/syslog",
+    "echo 'a; rm -rf /' | wc -c",
 ]
 
 VERIFY_WRITES = [
@@ -415,6 +443,28 @@ VERIFY_WRITES = [
     ("curl -X POST http://x/admin", "writes or sends data"),
     ("df -h; sudo systemctl stop nginx", "systemctl stop"),
     ("systemctl restart x", "systemctl restart"),
+    # CFOP-240: investigation 2558, and the rest of the GPU set verbs.
+    ("rocm-smi --setfan 80", "rocm-smi changes GPU settings"),
+    ("sudo rocm-smi --setfan 80", "rocm-smi changes GPU settings"),
+    ("rocm-smi --setpoweroverdrive 200", "rocm-smi changes GPU settings"),
+    ("rocm-smi --gpureset -d 0", "rocm-smi changes GPU settings"),
+    ("rocm-smi --resetfans", "rocm-smi changes GPU settings"),
+    ("rocm-smi -r", "rocm-smi changes GPU settings"),
+    ("amd-smi set --fan 80", "amd-smi changes GPU settings"),
+    ("amd-smi reset -G", "amd-smi changes GPU settings"),
+    ("nvidia-smi -pl 100", "nvidia-smi changes GPU settings"),
+    ("nvidia-smi -i 0 -pm 1", "nvidia-smi changes GPU settings"),
+    ("nvidia-smi --gpu-reset -i 0", "nvidia-smi changes GPU settings"),
+    # A program by its path is the same program.
+    ("/opt/rocm/bin/rocm-smi --setfan 80", "rocm-smi changes GPU settings"),
+    ("sudo /usr/bin/systemctl restart docker", "systemctl restart"),
+    # Quote-aware splitting must not hide what the shell still runs.
+    ('echo "$(rm -rf /tmp/x)"', "changes the filesystem"),
+    ('echo "`reboot`"', "takes the host down"),
+    ('echo "$(date)" | tee /etc/motd', "tee writes"),
+    ("sh -c 'uptime; systemctl restart nginx'", "systemctl restart"),
+    ("curl -s -o /tmp/out http://x/", "writes or sends data"),
+    ("curl -so/tmp/out http://x/", "writes or sends data"),
 ]
 
 
@@ -515,3 +565,97 @@ def test_a_member_never_gets_ssh_execute_even_to_verify():
                       policy=member_verify)
     assert out["refused"] is True and "needs an admin" in out["error"]
     assert ran == []
+
+
+# --------------------------------------------------------------------------
+# unattended runs observe; they do not change (CFOP-240)
+# --------------------------------------------------------------------------
+
+def test_the_unattended_ok_tools_are_marked_and_nothing_else_is():
+    _, reg = _registry()
+    marked = {n for n in reg.tools if reg.is_unattended_ok(n)}
+    # github_create_pr is registered only with GitHub configured; its family
+    # schema carries the marker (test_family_schemas_...).
+    assert marked == KNOWN_UNATTENDED_OK - {"github_create_pr"}
+
+
+def test_unattended_ok_on_a_read_fails_registration():
+    """The marker is an exception to the mutating gate. On a read it means
+    nothing — most likely a tool that lost its 'mutating'."""
+    _, reg = _registry()
+    reg.tools["k8s_get_pods"]["schema"]["unattended_ok"] = True
+    with pytest.raises(ValueError, match="only meaningful on a mutating tool"):
+        reg._check_marker_placement()
+
+
+def test_an_unattended_run_is_offered_reads_gated_commands_and_gated_writes():
+    _, reg = _registry()
+    offered = _names(reg.get_schemas(policy=UNATTENDED))
+    assert {"k8s_get_pods", "ssh_check_service", "find_learnings", "ping_host"} <= offered
+    assert offered & KNOWN_MUTATING == UNATTENDED_COMMAND_GATED | {"store_learning"}
+
+
+@pytest.mark.parametrize("name, args", [
+    ("ssh_restart_service", {"host": "box1", "service": "docker"}),
+    ("ssh_docker_restart", {"host": "box1", "container": "square-redis"}),
+    ("k8s_rollout_restart", {"deployment": "freshet-dashboard", "namespace": "apps"}),
+    ("resolve_remediation", {"remediation_id": 1}),
+])
+def test_an_unattended_run_naming_a_write_is_refused_and_pointed_at_fix(name, args):
+    """The seven restarts investigations made outside the queue in the 30 days
+    before this, by the tools they used."""
+    _, reg = _registry()
+    run = MagicMock()
+    reg.tools[name]["function"] = run
+    out = reg.execute(name, args, policy=UNATTENDED)
+    assert out["refused"] is True and "unattended run" in out["error"] and "FIX" in out["error"]
+    run.assert_not_called()
+
+
+def test_a_new_write_tool_is_refused_to_unattended_runs_by_default():
+    """Fail-closed: before CFOP-240 a new mutating tool was open to every
+    internal caller. Now it has to be marked unattended_ok to be reachable."""
+    _, reg = _registry()
+    run = MagicMock()
+    reg.tools["invented_writer"] = {"function": run,
+                                    "schema": {"name": "invented_writer", "mutating": True}}
+    assert "invented_writer" not in _names(reg.get_schemas(policy=UNATTENDED))
+    assert reg.execute("invented_writer", {}, policy=UNATTENDED)["refused"] is True
+    run.assert_not_called()
+
+
+def test_an_unattended_ok_write_runs():
+    _, reg = _registry()
+    reg.tools["store_learning"]["function"] = lambda **kw: {"success": True}
+    assert reg.execute("store_learning", {"learning_type": "x"}, policy=UNATTENDED) == {"success": True}
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("ssh_execute", {"host": "box1"}),
+    ("k8s_exec_pod", {"namespace": "apps", "pod_name": "web-0"}),
+])
+def test_an_unattended_run_classifies_each_command(tool, args):
+    _, reg = _registry()
+    ran = []
+    reg.tools[tool]["function"] = lambda **kw: ran.append(kw["command"]) or {"stdout": "ok"}
+    refused = reg.execute(tool, {**args, "command": "rm -rf /var/lib/x"}, policy=UNATTENDED)
+    assert refused["refused"] is True and "unattended run" in refused["error"]
+    assert "FIX" in refused["error"]
+    assert reg.execute(tool, {**args, "command": "cat /etc/hosts"}, policy=UNATTENDED) == {"stdout": "ok"}
+    assert ran == ["cat /etc/hosts"]
+
+
+def test_a_verification_turn_does_not_gain_k8s_exec_pod():
+    """k8s_exec_pod is command-gated for unattended runs only: a verification
+    turn never had it, and the classifier does not know database clients."""
+    _, reg = _registry()
+    assert "k8s_exec_pod" not in _names(reg.get_schemas(policy=VERIFY))
+    assert reg.execute("k8s_exec_pod", {"namespace": "a", "pod_name": "b", "command": "id"},
+                       policy=VERIFY)["refused"] is True
+
+
+def test_a_verification_turn_keeps_its_own_rules_when_also_unattended():
+    """reverify is unattended AND a verification pass; the stricter wins."""
+    _, reg = _registry()
+    both = ToolPolicy(verify_only=True, unattended=True)
+    assert _names(reg.get_schemas(policy=both)) & KNOWN_MUTATING == {"ssh_execute"}

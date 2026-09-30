@@ -388,6 +388,10 @@ class GitHubTools:
             {
                 "name": "github_create_pr",
                 "mutating": True,  # CFOP-124: withheld from members and verify-only turns
+                # A PR changes nothing until it is merged, and the merge is the
+                # human gate — so an investigation may still open one (CFOP-116,
+                # CFOP-240).
+                "unattended_ok": True,
                 "description": "Create a new pull request on GitHub. Requires an existing branch with commits.",
                 "parameters": {
                     "type": "object",

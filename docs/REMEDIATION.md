@@ -524,7 +524,10 @@ the note names the peer that actually replied, never the one we meant to ask.
 a verification needs *are* ssh one-liners, and each command is classified by
 `ssh_mutation_reason` at execute time — `systemctl is-active` runs,
 `systemctl restart` is refused. The row's proposed steps are what the pass
-checks, never what it runs.
+checks, never what it runs. Investigations, sweeps and triage run under the
+looser `UNATTENDED` policy (CFOP-240): the same classifier, plus `k8s_exec_pod`
+command-gated and the writes a person's gate stands behind (`store_learning`,
+`github_create_pr`).
 
 **Fails open.** The exact inverse of the mutation judge, for the same reason
 stated the other way round: there, not parking risks an unreviewed cluster

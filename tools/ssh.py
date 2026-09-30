@@ -36,22 +36,29 @@ def _int(value: Any, default: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Read-only classification for verification turns (CFOP-124)
+# Read-only classification for verification turns and unattended runs
+# (CFOP-124, CFOP-240)
 # ---------------------------------------------------------------------------
-# A verify-only chat turn (a drawer or sweep-banner hand-off) keeps ssh_execute
-# — the sweep's own checks are ssh one-liners: mountpoint, systemctl status,
-# journalctl, nc — but every command it sends goes through this classifier,
-# which refuses the mutators it knows. It is a denylist of known write shapes,
-# not a proof of harmlessness: an interpreter one-liner (python -c, perl -e)
-# is not classified and runs. That gap is accepted; the role gate is separate
-# and a member never gets ssh_execute at all.
-
-_SEGMENT_SPLIT = re.compile(r"\s*(?:\|\||&&|;|\||\n|&(?![>\d])|\$\(|`|\(|\))\s*")
+# A verify-only chat turn (a drawer or sweep-banner hand-off) and every
+# unattended run (investigation, sweep) keep ssh_execute — the checks are ssh
+# one-liners: mountpoint, systemctl status, journalctl, nc — but every command
+# they send goes through this classifier, which refuses the mutators it knows.
+# It is a denylist of known write shapes, not a proof of harmlessness: an
+# interpreter one-liner (python -c, perl -e), a database client, or a script
+# (sudo /usr/local/bin/docker-backup.sh, which an investigation ran on
+# 2026-09-24) is not classified and runs. That gap is accepted here; what
+# closes it is the SSH user not holding blanket sudo on the host. The role gate
+# is separate and a member never gets ssh_execute at all.
+#
+# Since unattended runs go through it, a false positive refuses a real
+# investigation read, so the reads it wrongly refused in 30 days of logs are
+# pinned as tests: a '|' inside a quoted grep pattern, curl -o /dev/null.
 _ENV_ASSIGN = re.compile(r"^(?:[A-Za-z_]\w*=\S*\s+)+")
 _WRAPPER = re.compile(
     r"^(?:sudo(?:\s+-\S+)*|doas|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\S+)*"
     r"|timeout(?:\s+-\S+)*\s+\S+|command|exec|nohup|time|stdbuf(?:\s+-\S+)*|\\)\s+")
 _SHELL_C = re.compile(r"^(?:ba|z|da|k|a)?sh\s+(?:-\S+\s+)*-c\s+(['\"])(.*)\1", re.S)
+_PROGRAM_PATH = re.compile(r"^(?:\.{0,2}/)?(?:[\w.+-]+/)+(?=[\w.+-])")
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 _REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\|?(?!\s*(?:&\s*[12]|/dev/(?:null|tcp|udp|std)))")
 
@@ -91,9 +98,103 @@ _MUTATORS = [
     (re.compile(r"^journalctl\b(?=.*--(?:vacuum|rotate|flush))"), "journalctl --vacuum/--rotate changes the journal"),
     (re.compile(r"^find\b(?=.*\s(?:-delete\b|-exec\s+(?:rm|mv|chmod|chown|sed\s+-i)\b))"), "find -delete/-exec changes files"),
     (re.compile(r"^curl\b(?=.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request\s+(?:POST|PUT|DELETE|PATCH)\b|"
-                r"-d\b|--data\S*|-F\b|-T\b|-o\s|--output\s|-O\b))"), "curl that writes or sends data"),
+                r"-d\b|--data\S*|-F\b|-T\b|-[A-Za-z]*o(?:\s+|=?)(?!/dev/null\b|-(?:\s|$))\S|"
+                r"--output(?:\s+|=)(?!/dev/null\b|-(?:\s|$))\S|-O\b|--remote-name\b))"),
+     "curl that writes or sends data"),
     (re.compile(r"^wget\b(?!.*(?:-q?O\s*-|--spider))"), "wget writes a file"),
+    # GPU management (CFOP-240). rocm-smi re-execs itself through sudo for any
+    # set operation, so the program word alone never looked like a privileged
+    # write; investigation 2558 ran --setfan 80 as root this way.
+    (re.compile(r"^(rocm-smi)\b(?=.*\s(?:--(?:set\S*|reset\S*|gpureset|load|save|autorespond|"
+                r"ras(?:enable|disable|inject))|-r)(?:[\s=]|$))"), "{0} changes GPU settings"),
+    (re.compile(r"^(amd-smi)\s+(?:-\S+\s+)*(?:set|reset)\b"), "{0} changes GPU settings"),
+    (re.compile(r"^(nvidia-smi)\b(?!\s+(?:dmon|pmon|topo)\b)(?=.*\s(?:-pl|-ac|-rac|-r|-pm|-c|-e|"
+                r"-lgc|-rgc|-lmc|-rmc|-cgi|-dgi|-cci|-dci|--power-limit|--applications-clocks|"
+                r"--reset-applications-clocks|--persistence-mode|--compute-mode|--ecc-config|"
+                r"--gpu-reset|--lock-gpu-clocks|--reset-gpu-clocks|--lock-memory-clocks|"
+                r"--reset-memory-clocks)(?:[\s=]|$))"), "{0} changes GPU settings"),
 ]
+
+
+def _segments(text: str) -> List[str]:
+    """Split a command line into the simple commands a shell would run.
+
+    Quote-aware: a separator inside single quotes is text, and so is one inside
+    double quotes — except ``$(`` and a backtick, which the shell still
+    executes there. ``sh -c '...'`` stays one segment so its body is recursed
+    into whole. Separators: ``;``, ``|``, ``||``, ``&&``, a background ``&``
+    (not ``2>&1`` / ``&>``), newline, parentheses, ``$(`` and backticks.
+    """
+    out: List[str] = []
+    buf: List[str] = []
+    state = None          # None, "'" or '"'
+    stack: List[tuple] = []  # (closer, state to restore) for $( ( and `
+
+    def cut():
+        seg = ''.join(buf).strip()
+        if seg:
+            out.append(seg)
+        buf.clear()
+
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ''
+        if c == '\\' and state != "'":
+            buf.append(text[i:i + 2])
+            i += 2
+            continue
+        if state == "'":
+            if c == "'":
+                state = None
+            buf.append(c)
+        elif state == '"' and c == '"':
+            state = None
+            buf.append(c)
+        elif c == '$' and nxt == '(':
+            cut()
+            stack.append((')', state))
+            state = None
+            i += 2
+            continue
+        elif c == '`':
+            cut()
+            if state is None and stack and stack[-1][0] == '`':
+                state = stack.pop()[1]
+            else:
+                stack.append(('`', state))
+                state = None
+        elif state == '"':
+            buf.append(c)
+        elif c in '\'"':
+            state = c
+            buf.append(c)
+        elif c == '(':
+            cut()
+            stack.append((')', None))
+        elif c == ')':
+            cut()
+            if stack and stack[-1][0] == ')':
+                state = stack.pop()[1]
+        elif c in ';\n':
+            cut()
+        elif c == '|':
+            cut()
+            if nxt == '|':
+                i += 1
+        elif c == '&':
+            if nxt == '&':
+                cut()
+                i += 1
+            elif nxt == '>' or nxt.isdigit() or (buf and buf[-1] in '<>'):
+                buf.append(c)
+            else:
+                cut()
+        else:
+            buf.append(c)
+        i += 1
+    cut()
+    return out
 
 
 def _unwrap(segment: str) -> str:
@@ -103,6 +204,9 @@ def _unwrap(segment: str) -> str:
         before = seg
         seg = _ENV_ASSIGN.sub('', seg)
         seg = _WRAPPER.sub('', seg)
+        # The program by its name, not its path: /usr/bin/systemctl restart
+        # and /opt/rocm/bin/rocm-smi --setfan are the same writes.
+        seg = _PROGRAM_PATH.sub('', seg)
         if seg == before:
             return seg
 
@@ -116,7 +220,7 @@ def ssh_mutation_reason(command) -> Optional[str]:
     not).
     """
     text = str(command or '')
-    for raw in _SEGMENT_SPLIT.split(text):
+    for raw in _segments(text):
         seg = _unwrap(raw)
         if not seg:
             continue

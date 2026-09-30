@@ -18,6 +18,7 @@ import threading as _t
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent import CFOperator
+from tools import UNATTENDED
 
 
 def _operator(config=None, db=None):
@@ -91,8 +92,10 @@ def _route_capture(op):
     """Stub the single-shot chat and record the url it was POSTed to."""
     seen = {}
 
-    def fake_chat(*, provider_type, url, model, messages, system_context, max_iterations):
+    def fake_chat(*, provider_type, url, model, messages, system_context, max_iterations,
+                  tool_policy):
         seen["url"] = url
+        seen["tool_policy"] = tool_policy
         seen["model"] = model
         return {"response": '{"action": "notify", "reason": "ok", "confidence": 0.8}',
                 "tool_calls": 0}
@@ -109,6 +112,7 @@ def test_run_triage_posts_to_the_triage_host_not_primary():
     assert result["action"] == "notify"          # the triage-model branch served it
     assert seen["url"] == "http://192.168.0.232:11434"
     assert seen["model"] == "cfop-triage-ministral3:v5-q4"
+    assert seen["tool_policy"] is UNATTENDED  # triage is unattended (CFOP-240)
 
 
 def test_run_triage_uses_primary_when_no_triage_url(monkeypatch):

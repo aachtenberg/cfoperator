@@ -53,7 +53,7 @@ separate concept.
 
 | `profile` | Effect |
 |---|---|
-| `investigate` | Observe, triage, investigate, notify. Every `remediation.*` flag is forced off — including a flag toggled live from the operator console, which would otherwise be a way around the profile. |
+| `investigate` | Observe, triage, investigate, notify. Every `remediation.*` flag is forced off — including a flag toggled live from the operator console, which would otherwise be a way around the profile. Investigations, sweeps and triage are read-only under every profile, so this profile turns off only the queue's lanes (CFOP-240). |
 | `remediate` | The `remediation.*` flags below take effect as written. |
 | *(key absent)* | Unprofiled: flags exactly as written. This is what configs written before profiles existed expect, and it is why the key does not default to `investigate` — doing so would silently disarm an existing remediation deployment on its next routine deploy. |
 
