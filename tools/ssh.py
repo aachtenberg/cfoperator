@@ -67,7 +67,10 @@ _SUDO_OPT = (r"(?:--(?:user|group|host|prompt|chdir|chroot|role|type|command-tim
 _WRAPPER = re.compile(
     r"^(?:sudo(?:\s+" + _SUDO_OPT + r")*|doas(?:\s+(?:-u\s*\S+|-\S+))*|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\S+)*"
     r"|timeout(?:\s+-\S+)*\s+\S+|command|exec|nohup|time|stdbuf(?:\s+-\S+)*"
-    # Launchers that run their arguments as a command (CFOP-240, CodeRabbit):
+    # Launchers that run their arguments as a command (CFOP-240, CodeRabbit).
+    # A new launcher or option goes into LAUNCHER_PREFIXES in
+    # tools/test_tool_policy.py in the same commit — an unhandled flag turns
+    # its value into "the program" and lets a write through:
     # `xargs systemctl restart`, `chroot / systemctl stop x`, `nsenter -t 1 -m
     # -- systemctl restart kubelet`. Options that take a value are consumed
     # with it, or the value would be read as the program.

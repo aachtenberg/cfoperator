@@ -123,6 +123,13 @@ class ToolPolicy:
     verify_only: bool = False
     unattended: bool = False
 
+    def __post_init__(self):
+        # An unattended run has no person behind it. With a role it would read
+        # as one: is_named_admin() and the human_only gate go by actor_role,
+        # so unattended + admin would reopen what CFOP-160 closed.
+        if self.unattended and self.actor_role is not None:
+            raise ValueError("an unattended policy carries no actor_role")
+
     def role_allows_mutation(self) -> bool:
         """Whether the ASKER may change things at all, ignoring the turn's mode."""
         return self.actor_role is None or self.actor_role == ROLE_ADMIN

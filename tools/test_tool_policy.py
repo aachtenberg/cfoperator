@@ -787,6 +787,14 @@ def test_a_verification_turn_does_not_gain_k8s_exec_pod():
                        policy=VERIFY)["refused"] is True
 
 
+def test_an_unattended_policy_cannot_carry_a_role():
+    """With a role, an unattended policy would read as a person behind the
+    turn and pass the human_only gate. It cannot be built."""
+    with pytest.raises(ValueError, match="no actor_role"):
+        ToolPolicy(unattended=True, actor_role="admin")
+    assert not UNATTENDED.is_named_admin()
+
+
 def test_a_verification_turn_keeps_its_own_rules_when_also_unattended():
     """reverify is unattended AND a verification pass; the stricter wins."""
     _, reg = _registry()
