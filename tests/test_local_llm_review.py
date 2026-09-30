@@ -117,6 +117,7 @@ def test_grounding_keeps_only_findings_anchored_on_added_code():
 @pytest.mark.parametrize("line, is_comment", [
     ("# note", True), ("// note", True), ("/* note", True), (" * note", True), (" */", True),
     ("-- note", True), ("*ptr = value;", False), ("x = a * b", False),
+    ("#include <stdio.h>", False), ("#[derive(Debug)]", False), ("#!/bin/sh", True),
 ])
 def test_a_docblock_star_is_a_comment_but_a_dereference_is_code(line, is_comment):
     assert bool(review.COMMENT_LINE.match(line)) is is_comment
@@ -156,6 +157,7 @@ def test_model_text_cannot_mention_link_or_inject_html():
     assert "@aachtenberg" not in out
     assert "](" not in out and "![" not in out and "https://" not in out
     assert "www.evil" not in out
+    assert "#12" not in review.defang("see #12")
     assert "<img" not in out
     body = review.render([{"path": "m.py", "line": 1, "severity": "high", "problem": "cc @someone"}],
                          {"proposed": 1, "grounded": 1, "kept": 1}, "m", "abcdef0", [1], [], 1.0)

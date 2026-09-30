@@ -53,8 +53,10 @@ GITHUB_API = "https://api.github.com"
 # gemma4 is busy often enough (20-110 chats per 15 min) that each review waited
 # minutes for a swap while cfoperator's calls queued behind it.
 DEFAULT_MODEL = "gemma4:26b"
-# The model runs with a 32k-token window. ~60k chars of diff is ~17k tokens,
-# which leaves room for the prompt, the description and the answer.
+# The model runs with a 32k-token window. The budget counts numbered patch
+# text only; the prompt, per-file headers and up to 4000 chars of description
+# come on top. ~60k chars of diff is ~17k tokens, so the whole prompt stays
+# near 20k, which leaves the answer room but not a wide margin.
 DEFAULT_MAX_DIFF_CHARS = 60000
 # Per Ollama call. A review makes at most two; both must fit timeout-minutes: 20.
 OLLAMA_TIMEOUT_SECONDS = 480
@@ -69,8 +71,9 @@ SKIP_PATTERNS = (
 
 #: A line whose code part is only a comment. Findings anchored on one are
 #: dropped: they are nearly always about wording, not behaviour.
-#: A bare "*" counts only as a docblock line ("* text", "*/"): "*ptr = x" is code.
-COMMENT_LINE = re.compile(r"^\s*(#|//|/\*|\*(\s|/|$)|<!--|--\s)")
+#: "#" and a bare "*" count only when followed by space, "!" or the end:
+#: "#include", "#[derive]" and "*ptr = x" are code, not comments.
+COMMENT_LINE = re.compile(r"^\s*(#(\s|!|$)|//|/\*|\*(\s|/|$)|<!--|--\s)")
 
 READING_THE_DIFF = """\
 How to read the diff: each line starts with its line number in the NEW file,
@@ -410,7 +413,9 @@ def defang(text):
     changing how the text reads."""
     return (str(text).replace("<", "&lt;").replace("@", "@" + ZWSP)
             .replace("](", "]" + ZWSP + "(").replace("![", "!" + ZWSP + "[")
-            .replace("://", ":" + ZWSP + "//").replace("www.", "www" + ZWSP + "."))
+            .replace("://", ":" + ZWSP + "//").replace("www.", "www" + ZWSP + ".")
+            # "#123" cross-links another issue or PR and adds an event there.
+            .replace("#", "#" + ZWSP))
 
 
 def render(findings, counts, model, head_sha, included, skipped, seconds):
