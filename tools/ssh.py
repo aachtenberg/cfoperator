@@ -59,8 +59,8 @@ _ENV_ASSIGN = re.compile(r"^(?:[A-Za-z_]\w*=\S*\s+)+")
 # systemctl restart x` classified as a command named "root" and ran (CFOP-240,
 # claude-review). The clustered form counts too: -nu root, -uroot, and the
 # long form: --user root (CodeRabbit).
-_SUDO_OPT = (r"(?:--(?:user|group|host|prompt|chdir|role|type|command-timeout|close-from|"
-             r"other-user|login-class)\s+\S+|-[A-Za-z]*[ugUhpCDrtT](?:\s+|(?=\S))\S+|-\S+)")
+_SUDO_OPT = (r"(?:--(?:user|group|host|prompt|chdir|chroot|role|type|command-timeout|close-from|"
+             r"other-user|login-class)\s+\S+|-[A-Za-z]*[ugUhpCDRrtT](?:\s+|(?=\S))\S+|-\S+)")
 # The patterns below are constants built by concatenation, never from input,
 # and each repetition alternates whitespace with non-whitespace, so matching
 # stays linear in the command's length.
