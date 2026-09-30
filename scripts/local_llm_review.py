@@ -36,6 +36,7 @@ Environment:
     REVIEW_DRY_RUN        1 = print the comment instead of posting it
 """
 import fnmatch
+import http.client
 import json
 import os
 import re
@@ -504,7 +505,9 @@ def main():
     if included:
         try:
             findings, counts = review(ollama, model, build_diff(repo, pr, included), included)
-        except (UnreadableAnswer, urllib.error.URLError, TimeoutError) as e:
+        # OSError covers URLError, timeouts and a reset connection; ValueError a
+        # truncated body that is not JSON; HTTPException a bad status line.
+        except (UnreadableAnswer, OSError, ValueError, http.client.HTTPException) as e:
             failure = e
     seconds = time.monotonic() - started
 

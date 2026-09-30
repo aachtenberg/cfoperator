@@ -277,7 +277,21 @@ def test_an_unset_repo_variable_falls_back_to_the_default(monkeypatch, value, ex
     assert review.env("REVIEW_MODEL", review.DEFAULT_MODEL) == expected
 
 
-def test_a_failed_review_replaces_the_old_one_and_fails_the_job(monkeypatch):
+def _unreadable(*a):
+    return None, {}
+
+
+def _connection_reset(*a):
+    raise ConnectionResetError("Ollama restarted mid-generation")
+
+
+def _truncated_body(*a):
+    raise json.JSONDecodeError("Expecting value", "", 0)
+
+
+@pytest.mark.parametrize("fail", [_unreadable, _connection_reset, _truncated_body],
+                         ids=lambda f: f.__name__.strip("_"))
+def test_a_failed_review_replaces_the_old_one_and_fails_the_job(monkeypatch, fail):
     """Otherwise the previous push's review stays up looking current."""
     posted = []
     for k, v in {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "PR_NUMBER": "1",
@@ -287,7 +301,7 @@ def test_a_failed_review_replaces_the_old_one_and_fails_the_job(monkeypatch):
                                                            "title": "t", "body": ""})
     monkeypatch.setattr(review, "paged", lambda *a: [{"filename": "m.py", "status": "modified",
                                                       "additions": 1, "deletions": 0, "patch": PATCH}])
-    monkeypatch.setattr(review, "ask_ollama", lambda *a: (None, {}))
+    monkeypatch.setattr(review, "ask_ollama", fail)
     monkeypatch.setattr(review, "upsert_comment", lambda repo, n, token, body: posted.append(body) or ("updated", "u"))
     with pytest.raises(SystemExit, match="review failed"):
         review.main()
