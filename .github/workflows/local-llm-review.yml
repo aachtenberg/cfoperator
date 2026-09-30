@@ -32,9 +32,10 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      pull-requests: read
-      # The review is an issue comment; pull-requests: write does not cover
-      # that endpoint.
+      # The review is an issue comment on a PR. That endpoint wants both:
+      # with issues: write alone the POST is a 403 (homelab-infra#162, run
+      # 36663300175), and pull-requests: write alone does not cover it either.
+      pull-requests: write
       issues: write
 
     steps:
