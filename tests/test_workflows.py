@@ -134,6 +134,12 @@ SAME_REPO = "github.event.pull_request.head.repo.full_name == github.repository"
 PR_HEAD = re.compile(r"pull_request\.head\.(sha|ref)|github\.head_ref|refs/pull/")
 #: The only scopes a fenced job may write to: it posts a review comment.
 COMMENT_SCOPES = {"issues", "pull-requests"}
+#: An allowlist, not a blocklist: any other action is code the fence has not
+#: judged, running on the homelab runner.
+FENCE_ACTIONS = {"actions/checkout@v4"}
+#: Fetching or checking out code from a run step, however the ref is named
+#: (`gh pr checkout "$N"` never mentions the head).
+FETCHES_CODE = re.compile(r"\b(gh\s+pr\s+checkout|git\s+(fetch|checkout|pull|clone|switch|worktree))\b")
 
 
 def fence_violations(doc, job):
@@ -154,6 +160,10 @@ def fence_violations(doc, job):
                 problems.append(f"permissions grant {scope}: write")
     for step in job.get("steps") or []:
         opts = step.get("with") or {}
+        if "uses" in step and step["uses"] not in FENCE_ACTIONS:
+            problems.append(f"step uses {step['uses']!r}; only {sorted(FENCE_ACTIONS)} are allowed")
+        if FETCHES_CODE.search(str(step.get("run", ""))):
+            problems.append(f"step {step.get('name', step)!r} fetches or checks out code")
         if "actions/checkout" in str(step.get("uses", "")):
             if "ref" in opts or "repository" in opts:
                 problems.append("a checkout names a ref or repository; only the base may be checked out")
@@ -226,9 +236,17 @@ def _smuggle_head_through_env(doc, job):
     job["steps"][1]["run"] = 'git fetch origin "$HEAD" && ' + job["steps"][1]["run"]
 
 
+def _use_another_action(doc, job):
+    job["steps"].insert(1, {"uses": "someone/setup-thing@v1"})
+
+def _check_out_the_pr_by_number(doc, job):
+    job["steps"][1]["run"] = 'gh pr checkout "$PR_NUMBER" && ' + job["steps"][1]["run"]
+
+
 @pytest.mark.parametrize("mutate", [
     _drop_same_repo, _or_it_away, _add_pull_request, _checkout_head,
     _keep_credential, _fetch_head_in_a_step, _widen_token, _smuggle_head_through_env,
+    _use_another_action, _check_out_the_pr_by_number,
 ], ids=lambda f: f.__name__.strip("_"))
 def test_breaking_any_piece_of_the_fence_fails_it(mutate):
     """The mutation check, kept in the suite: each piece the module doc names

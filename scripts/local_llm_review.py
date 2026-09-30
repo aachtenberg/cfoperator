@@ -56,6 +56,8 @@ DEFAULT_MODEL = "gemma4:26b"
 # The model runs with a 32k-token window. ~60k chars of diff is ~17k tokens,
 # which leaves room for the prompt, the description and the answer.
 DEFAULT_MAX_DIFF_CHARS = 60000
+# Per Ollama call. A review makes at most two; both must fit timeout-minutes: 20.
+OLLAMA_TIMEOUT_SECONDS = 480
 
 #: Files whose diff costs context and carries nothing a reviewer can judge.
 SKIP_PATTERNS = (
@@ -67,7 +69,8 @@ SKIP_PATTERNS = (
 
 #: A line whose code part is only a comment. Findings anchored on one are
 #: dropped: they are nearly always about wording, not behaviour.
-COMMENT_LINE = re.compile(r"^\s*(#|//|/\*|\*|<!--|--\s)")
+#: A bare "*" counts only as a docblock line ("* text", "*/"): "*ptr = x" is code.
+COMMENT_LINE = re.compile(r"^\s*(#|//|/\*|\*(\s|/|$)|<!--|--\s)")
 
 READING_THE_DIFF = """\
 How to read the diff: each line starts with its line number in the NEW file,
@@ -346,7 +349,9 @@ def ask_ollama(url, model, system, user, schema):
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=900) as resp:
+    # Two calls per review must fit the job's 20 minutes, or the job is
+    # killed mid-call and leaves no comment; a timeout here fails it visibly.
+    with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_SECONDS) as resp:
         data = json.loads(resp.read())
     content = (data.get("message") or {}).get("content", "")
     try:
@@ -405,7 +410,7 @@ def defang(text):
     changing how the text reads."""
     return (str(text).replace("<", "&lt;").replace("@", "@" + ZWSP)
             .replace("](", "]" + ZWSP + "(").replace("![", "!" + ZWSP + "[")
-            .replace("://", ":" + ZWSP + "//"))
+            .replace("://", ":" + ZWSP + "//").replace("www.", "www" + ZWSP + "."))
 
 
 def render(findings, counts, model, head_sha, included, skipped, seconds):
@@ -472,7 +477,8 @@ def main():
     files = paged(f"/repos/{repo}/pulls/{number}/files", token)
     included, skipped = select_files(files, budget)
     print(f"{repo}#{number} @ {pr['head']['sha'][:7]}: {len(included)} file(s) to review, "
-          f"{len(skipped)} skipped, model {model} at {ollama}")
+          # Not the URL: this log is public on cfoperator, and vars.* are not masked.
+          f"{len(skipped)} skipped, model {model}")
 
     started = time.monotonic()
     findings, counts = [], None

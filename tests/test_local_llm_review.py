@@ -4,6 +4,7 @@ What is worth guarding here is not the prompt wording but the behaviour that
 costs something when it drifts: which files reach the model, that nothing
 forces Ollama to reload, and that a PR ends up with one review comment."""
 import io
+import re
 import json
 
 import pytest
@@ -113,6 +114,31 @@ def test_grounding_keeps_only_findings_anchored_on_added_code():
     assert kept == [_finding("c = compute(b)", line=13)]
 
 
+@pytest.mark.parametrize("line, is_comment", [
+    ("# note", True), ("// note", True), ("/* note", True), (" * note", True), (" */", True),
+    ("-- note", True), ("*ptr = value;", False), ("x = a * b", False),
+])
+def test_a_docblock_star_is_a_comment_but_a_dereference_is_code(line, is_comment):
+    assert bool(review.COMMENT_LINE.match(line)) is is_comment
+
+
+def test_two_ollama_calls_fit_inside_the_job_timeout():
+    """Killed mid-call, the job leaves no comment at all."""
+    wf = (review.__file__.rsplit("/scripts/", 1)[0] + "/.github/workflows/local-llm-review.yml")
+    minutes = int(re.search(r"timeout-minutes:\s*(\d+)", open(wf).read()).group(1))
+    assert 2 * review.OLLAMA_TIMEOUT_SECONDS < minutes * 60
+
+
+def test_the_ollama_url_never_reaches_the_public_log(monkeypatch, capsys):
+    for k, v in {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "PR_NUMBER": "1",
+                 "OLLAMA_URL": "http://10.1.2.3:11434", "REVIEW_DRY_RUN": "1"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(review, "github", lambda *a, **k: {"head": {"sha": "abcdef0"}})
+    monkeypatch.setattr(review, "paged", lambda *a: [])
+    review.main()
+    assert "10.1.2.3" not in capsys.readouterr().out
+
+
 def test_short_evidence_must_be_the_whole_line():
     """ "return" would otherwise match every return in the diff and pin the
     finding to whichever is nearest the model's guessed line."""
@@ -125,9 +151,11 @@ def test_short_evidence_must_be_the_whole_line():
 
 
 def test_model_text_cannot_mention_link_or_inject_html():
-    out = review.defang("ping @aachtenberg, see [here](https://evil.example) ![x](y) <img src=x>")
+    out = review.defang("ping @aachtenberg, see [here](https://evil.example) ![x](y) <img src=x> "
+                        "or www.evil.example")
     assert "@aachtenberg" not in out
     assert "](" not in out and "![" not in out and "https://" not in out
+    assert "www.evil" not in out
     assert "<img" not in out
     body = review.render([{"path": "m.py", "line": 1, "severity": "high", "problem": "cc @someone"}],
                          {"proposed": 1, "grounded": 1, "kept": 1}, "m", "abcdef0", [1], [], 1.0)
