@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent import CFOperator
-from tools import ToolPolicy, ToolRegistry
+from tools import UNATTENDED, ToolPolicy, ToolRegistry
 
 TOOL_SCHEMA = {
     'type': 'function',
@@ -180,6 +180,16 @@ def test_a_verification_prompt_says_so():
     # spends a round discovering the refusal.
     assert '- ssh_execute' in text and 'read-only commands only' in text
     assert '- ssh_restart_service' not in text and '- store_learning' not in text
+
+
+def test_an_unattended_prompt_is_not_told_it_is_a_member():
+    """CFOP-240 review: an unattended policy also fails allows_mutation(), and
+    reading that as "a member is asking" gives the wrong instruction."""
+    text = _real_operator()._build_chat_system_context(tool_policy=UNATTENDED)
+    assert 'unattended run' in text and 'FIX' in text
+    assert 'is a member' not in text
+    assert '- ssh_execute' in text and '- ssh_restart_service' not in text
+    assert 'ALWAYS use store_learning' in text
 
 
 def test_an_internal_prompt_is_unchanged():

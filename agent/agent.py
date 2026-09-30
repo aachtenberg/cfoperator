@@ -9954,18 +9954,11 @@ Only return the JSON array, no other text."""
         return stats.result(
             "Maximum tool iterations reached. Please simplify your request.")
 
-    def _build_chat_system_context(self, mention_skills: bool = False,
-                                   tool_policy: Optional[ToolPolicy] = None) -> str:
-        """Build the chat system prompt: infra state, capabilities, recent learnings.
-
-        Shared by the buffered and streaming chat paths. ``mention_skills``
-        adds the slash-command bullet, which only the buffered path (the one
-        that routes ``/skill`` messages itself) advertises.
-        """
+    def _build_chat_system_context(self, tool_policy: Optional[ToolPolicy] = None) -> str:
+        """Build the chat system prompt: infra state, capabilities, recent learnings."""
         hosts_config = self.config.get('infrastructure', {}).get('hosts', {})
         host_list = ', '.join(f"{name} ({info.get('address', '?')}, {info.get('role', 'unknown')})"
                               for name, info in hosts_config.items())
-        skills_line = "- Execute skills when requested (e.g., /investigate-container)\n" if mention_skills else ""
 
         # Capability list is derived from the live tool registry so it cannot
         # drift behind newly registered tools (CFOP-22 C). One line per schema.
@@ -10004,7 +9997,13 @@ Only return the JSON array, no other text."""
                             "withheld, and ssh_execute accepts read-only commands only — a command "
                             "that restarts, edits or installs is refused, so send the one that "
                             "observes the state instead. An operator applies changes from the console.\n")
-        elif tool_policy is not None and not tool_policy.allows_mutation():
+        elif tool_policy is not None and tool_policy.unattended:
+            # No console chat passes this today; the branch keeps the first
+            # caller that does from being told it is a member (review).
+            policy_block = ("\nThis is an unattended run: observe, do not change. Tools that change "
+                            "the system are withheld, and ssh_execute accepts read-only commands "
+                            "only. Put the change you would make in your FIX.\n")
+        elif tool_policy is not None and not tool_policy.role_allows_mutation():
             policy_block = ("\nThe person asking is a member: tools that change the system are "
                             "withheld. When a change is needed, say exactly what you would run "
                             "and why, so an admin can do it from the console.\n")
@@ -10029,7 +10028,7 @@ Use ssh_list_services to see BOTH containers and systemd services on a host.
 Your role:
 - Answer infrastructure-specific questions
 - Investigate issues using available tools
-{skills_line}{learning_line}- Use find_learnings to check for known solutions before investigating
+{learning_line}- Use find_learnings to check for known solutions before investigating
 - NOT general system administration (user has Claude Code CLI for that)
 
 Be concise and infrastructure-focused.
