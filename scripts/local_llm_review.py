@@ -395,7 +395,10 @@ def review(url, model, diff, files, log=print):
         real = {}
         for v in answer.get("verdicts") or []:
             log(f"verify [{v.get('id')}]: real={v.get('real')} {v.get('reason', '')}")
-            real[v.get("id")] = v.get("real") is True
+            try:
+                real[int(v.get("id"))] = v.get("real") is True
+            except (TypeError, ValueError):
+                continue
         verified = [f for i, f in enumerate(grounded) if real.get(i)]
     return verified, {"proposed": len(proposed), "grounded": len(grounded), "kept": len(verified),
                       "prompt_tokens": raw.get("prompt_eval_count", "?")}
@@ -422,7 +425,9 @@ def render(findings, counts, model, head_sha, included, skipped, seconds):
     lines = [MARKER, "### Local LLM review", ""]
     if findings:
         for f in sorted(findings, key=lambda f: SEVERITY_ORDER.get(f["severity"], 3)):
-            lines.append(f"- **[{f['severity']}] {code(f['path'])}:{f['line']}** {defang(f['problem'])}")
+            # Clamped: the schema asks for one of these, but it is model output.
+            severity = f["severity"] if f["severity"] in SEVERITY_ORDER else "low"
+            lines.append(f"- **[{severity}] {code(f['path'])}:{f['line']}** {defang(f['problem'])}")
     elif included:
         lines.append("No significant issues found.")
     else:
@@ -444,6 +449,15 @@ def render(findings, counts, model, head_sha, included, skipped, seconds):
 
 #: Who posts the review under Actions' GITHUB_TOKEN.
 DEFAULT_BOT_LOGIN = "github-actions[bot]"
+
+
+def render_failure(error, model, head_sha):
+    return "\n".join([
+        MARKER, "### Local LLM review", "",
+        f"_No review for {head_sha[:7]}: {defang(type(error).__name__)}. "
+        "See the workflow run's log. Any earlier review on this PR is for an older commit._",
+        "", f"<sub>{model} on the homelab's Ollama · {head_sha[:7]}.</sub>",
+    ])
 
 
 def code(name):
@@ -486,17 +500,27 @@ def main():
           f"{len(skipped)} skipped, model {model}")
 
     started = time.monotonic()
-    findings, counts = [], None
+    findings, counts, failure = [], None, None
     if included:
-        findings, counts = review(ollama, model, build_diff(repo, pr, included), included)
+        try:
+            findings, counts = review(ollama, model, build_diff(repo, pr, included), included)
+        except (UnreadableAnswer, urllib.error.URLError, TimeoutError) as e:
+            failure = e
     seconds = time.monotonic() - started
 
-    body = render(findings, counts, model, pr["head"]["sha"], included, skipped, seconds)
+    if failure is None:
+        body = render(findings, counts, model, pr["head"]["sha"], included, skipped, seconds)
+    else:
+        # Say so on the PR too: otherwise the previous push's review stays up
+        # looking current, and nothing shows this head went unreviewed.
+        body = render_failure(failure, model, pr["head"]["sha"])
     if env("REVIEW_DRY_RUN") == "1":
         print(body)
-        return
-    action, url = upsert_comment(repo, number, token, body)
-    print(f"{action} {url}")
+    else:
+        action, url = upsert_comment(repo, number, token, body)
+        print(f"{action} {url}")
+    if failure is not None:
+        sys.exit(f"review failed: {failure}")
 
 
 if __name__ == "__main__":

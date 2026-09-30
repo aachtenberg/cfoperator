@@ -10,6 +10,7 @@ import json
 import pytest
 
 import scripts.local_llm_review as review
+from repo_paths import REPO_ROOT
 
 
 def _file(name, patch="@@ -1 +1 @@\n-a\n+b", status="modified"):
@@ -125,8 +126,8 @@ def test_a_docblock_star_is_a_comment_but_a_dereference_is_code(line, is_comment
 
 def test_two_ollama_calls_fit_inside_the_job_timeout():
     """Killed mid-call, the job leaves no comment at all."""
-    wf = (review.__file__.rsplit("/scripts/", 1)[0] + "/.github/workflows/local-llm-review.yml")
-    minutes = int(re.search(r"timeout-minutes:\s*(\d+)", open(wf).read()).group(1))
+    wf = REPO_ROOT / ".github" / "workflows" / "local-llm-review.yml"
+    minutes = int(re.search(r"timeout-minutes:\s*(\d+)", wf.read_text()).group(1))
     assert 2 * review.OLLAMA_TIMEOUT_SECONDS < minutes * 60
 
 
@@ -274,3 +275,35 @@ def test_an_unset_repo_variable_falls_back_to_the_default(monkeypatch, value, ex
     """Actions passes an unset vars.X as an empty string, not a missing key."""
     monkeypatch.setenv("REVIEW_MODEL", value)
     assert review.env("REVIEW_MODEL", review.DEFAULT_MODEL) == expected
+
+
+def test_a_failed_review_replaces_the_old_one_and_fails_the_job(monkeypatch):
+    """Otherwise the previous push's review stays up looking current."""
+    posted = []
+    for k, v in {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "PR_NUMBER": "1",
+                 "OLLAMA_URL": "http://ollama", "REVIEW_DRY_RUN": ""}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(review, "github", lambda *a, **k: {"head": {"sha": "abcdef0123"}, "number": 1,
+                                                           "title": "t", "body": ""})
+    monkeypatch.setattr(review, "paged", lambda *a: [{"filename": "m.py", "status": "modified",
+                                                      "additions": 1, "deletions": 0, "patch": PATCH}])
+    monkeypatch.setattr(review, "ask_ollama", lambda *a: (None, {}))
+    monkeypatch.setattr(review, "upsert_comment", lambda repo, n, token, body: posted.append(body) or ("updated", "u"))
+    with pytest.raises(SystemExit, match="review failed"):
+        review.main()
+    assert len(posted) == 1 and "No review for abcdef0" in posted[0] and review.MARKER in posted[0]
+
+
+def test_verdict_ids_given_as_strings_still_count(monkeypatch):
+    files = [{"filename": "m.py", "patch": PATCH}]
+    monkeypatch.setattr(review, "ask_ollama", lambda url, model, system, user, schema: (
+        {"findings": [_finding("c = compute(b)", line=13)]}, {}) if schema is review.FINDINGS_SCHEMA
+        else ({"verdicts": [{"id": "0", "real": True, "reason": "bug"}]}, {}))
+    kept, _ = review.review("u", "m", "diff", files, log=lambda *_: None)
+    assert [f["line"] for f in kept] == [13]
+
+
+def test_an_off_schema_severity_is_clamped():
+    body = review.render([{"path": "m.py", "line": 1, "severity": "<b>CRITICAL</b>", "problem": "p"}],
+                         {"proposed": 1, "grounded": 1, "kept": 1}, "m", "abcdef0", [1], [], 1.0)
+    assert "CRITICAL" not in body and "[low]" in body
