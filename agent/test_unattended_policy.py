@@ -39,11 +39,27 @@ def _tool_loop_calls():
                 yield f"{path.name}:{node.lineno}", node
 
 
+def _restrictive_policy(value) -> bool:
+    """What a tool loop may be handed: UNATTENDED, its own forwarded
+    ``tool_policy`` (the chat hops), or a literal ToolPolicy that is
+    unattended or verify-only (reverify). ``ToolPolicy()`` allows every
+    write, so naming a policy is not enough (CodeRabbit on #290)."""
+    if isinstance(value, ast.Name):
+        return value.id in ('UNATTENDED', 'tool_policy')
+    if (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+            and value.func.id == 'ToolPolicy'):
+        return any(k.arg in ('unattended', 'verify_only')
+                   and isinstance(k.value, ast.Constant) and k.value.value is True
+                   for k in value.keywords)
+    return False
+
+
 def test_every_tool_loop_names_its_policy():
-    """A hop forwards its own ``tool_policy``; everything else names one —
-    UNATTENDED for a run with no person behind it. Omitting it, passing
-    ``None``, or hiding it in ``**kwargs`` is how the investigation came to
-    run unrestricted, so each fails here."""
+    """A hop forwards its own ``tool_policy``; everything else names a
+    restrictive one — UNATTENDED for a run with no person behind it.
+    Omitting it, passing ``None``, hiding it in ``**kwargs``, or passing a
+    permissive ``ToolPolicy()`` is how an internal run ends up unrestricted,
+    so each fails here."""
     calls = list(_tool_loop_calls())
     # Not vacuous: the agent has well over ten of these.
     assert len(calls) >= 10, f"found only {len(calls)} tool-loop calls — is AGENT_DIR right?"
@@ -55,9 +71,21 @@ def test_every_tool_loop_names_its_policy():
             unnamed.append(f"{where} (policy hidden in **kwargs)")
         elif value is None:
             unnamed.append(f"{where} (no tool_policy)")
-        elif isinstance(value, ast.Constant) and value.value is None:
-            unnamed.append(f"{where} (tool_policy=None)")
-    assert not unnamed, "tool loops that do not name their policy: " + ', '.join(unnamed)
+        elif not _restrictive_policy(value):
+            unnamed.append(f"{where} (tool_policy={ast.unparse(value)} is not UNATTENDED, "
+                           "a forwarded tool_policy, or an unattended/verify-only ToolPolicy)")
+    assert not unnamed, "tool loops without a restrictive policy: " + ', '.join(unnamed)
+
+
+def test_the_guard_rejects_a_permissive_policy():
+    """The guard's own check, so loosening it is caught too."""
+    parse = lambda src: ast.parse(src, mode='eval').body
+    assert _restrictive_policy(parse('UNATTENDED'))
+    assert _restrictive_policy(parse('tool_policy'))
+    assert _restrictive_policy(parse('ToolPolicy(verify_only=True)'))
+    for permissive in ('ToolPolicy()', 'ToolPolicy(actor_role="admin")', 'None',
+                       'ToolPolicy(verify_only=False)', 'some_policy'):
+        assert not _restrictive_policy(parse(permissive)), permissive
 
 
 # --------------------------------------------------------------------------
