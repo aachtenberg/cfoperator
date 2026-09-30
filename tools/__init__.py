@@ -1146,7 +1146,11 @@ class ToolRegistry:
                 # run): the tool may run, this particular command may not. An
                 # unattended_ok tool has no command argument and runs.
                 arg = policy.command_gated().get(tool_name)
-                reason = ssh_mutation_reason((arguments or {}).get(arg)) if arg else None
+                try:
+                    reason = ssh_mutation_reason((arguments or {}).get(arg)) if arg else None
+                except Exception as e:  # fail closed: an unclassifiable command does not run
+                    logger.warning(f"Tool {tool_name} command could not be classified: {e}")
+                    reason = "the command could not be classified"
                 if reason:
                     logger.warning(f"Tool {tool_name} command refused ({policy.describe()}): {reason}")
                     return {'error': policy.command_refusal(tool_name, reason),

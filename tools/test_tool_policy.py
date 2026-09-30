@@ -540,6 +540,28 @@ def test_the_classifier_names_why_a_write_is_refused(command, fragment):
     assert reason and fragment in reason, (command, reason)
 
 
+def test_deep_nesting_is_refused_not_raised():
+    """A crafted body re-matches the -c rule at every layer. Unbounded, that
+    was a RecursionError out of the gate; now it is a refusal, and ordinary
+    nesting still classifies by what it runs."""
+    assert "nests too deeply" in ssh_mutation_reason("su " + "-c ' " * 5000)
+    assert "nests too deeply" in ssh_mutation_reason("'" * 5000)
+    assert ssh_mutation_reason("""bash -c "su -c 'uptime'" """) is None
+    assert "reboot" in ssh_mutation_reason("""bash -c "su -c 'sudo reboot'" """)
+
+
+def test_the_classifier_stays_fast_on_long_input():
+    """No pattern backtracks badly: 50k-character commands classify quickly."""
+    import time
+    for command in ("sudo " + "-a " * 15000 + "ls", "xargs " + "-I {} " * 8000 + "ls",
+                    "su " + "a " * 20000, "ssh " + "-o x " * 10000 + "h ls",
+                    "curl " + "-s " * 15000 + "http://x", "ls; " * 12000,
+                    "echo " + "$(" * 3000 + ")" * 3000):
+        start = time.perf_counter()
+        ssh_mutation_reason(command)
+        assert time.perf_counter() - start < 2.0, command[:40]
+
+
 def test_a_verification_turn_can_still_run_the_checks():
     """Withholding ssh_execute outright left a verification pass unable to
     verify — the sweep's own checks are ssh one-liners. The tool stays; the
@@ -704,6 +726,19 @@ def test_an_unattended_run_classifies_each_command(tool, args):
     assert "FIX" in refused["error"]
     assert reg.execute(tool, {**args, "command": "cat /etc/hosts"}, policy=UNATTENDED) == {"stdout": "ok"}
     assert ran == ["cat /etc/hosts"]
+
+
+def test_a_classifier_error_refuses_the_command(monkeypatch):
+    """Fail closed: if the classifier raises, the command does not run."""
+    _, reg = _registry()
+    ran = []
+    reg.tools["ssh_execute"]["function"] = lambda **kw: ran.append(kw)
+    def boom(command):
+        raise RuntimeError("unexpected")
+    monkeypatch.setattr(tools_module, "ssh_mutation_reason", boom)
+    out = reg.execute("ssh_execute", {"host": "box1", "command": "uptime"}, policy=UNATTENDED)
+    assert out["refused"] is True and "could not be classified" in out["error"]
+    assert ran == []
 
 
 def test_a_verification_turn_does_not_gain_k8s_exec_pod():

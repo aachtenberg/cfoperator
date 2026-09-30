@@ -250,7 +250,14 @@ def _unwrap(segment: str) -> str:
             return seg
 
 
-def ssh_mutation_reason(command) -> Optional[str]:
+# How many command-in-a-string layers are unwrapped (bash -c "su -c '...'").
+# Real commands use two or three; past this the command is refused rather
+# than recursed into, so a crafted `su -c ' -c ' -c ' ...` cannot exhaust
+# the stack and raise out of the gate instead of answering (CFOP-240).
+_MAX_NESTING = 8
+
+
+def ssh_mutation_reason(command, _depth: int = 0) -> Optional[str]:
     """Why this shell command is not read-only, or None if nothing known matched.
 
     Every pipeline segment, subshell and ``sh -c`` body is unwrapped and its
@@ -258,6 +265,8 @@ def ssh_mutation_reason(command) -> Optional[str]:
     file counts as a write (``2>&1``, ``/dev/null`` and ``/dev/tcp`` probes do
     not).
     """
+    if _depth > _MAX_NESTING:
+        return "the command nests too deeply to classify"
     text = str(command or '')
     for raw in _segments(text):
         seg = _unwrap(raw)
@@ -267,7 +276,7 @@ def ssh_mutation_reason(command) -> Optional[str]:
         # watch '...') runs its body; the body is what gets classified.
         inner = _SHELL_C.match(seg) or _WHOLLY_QUOTED.match(seg)
         if inner:
-            reason = ssh_mutation_reason(inner.group(2))
+            reason = ssh_mutation_reason(inner.group(2), _depth + 1)
             if reason:
                 return reason
             continue
