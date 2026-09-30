@@ -440,7 +440,44 @@ VERIFY_READS = [
     "su postgres -c 'psql -c \"select 1\"'",
     "chroot /host cat /etc/os-release",
     "nsenter -t 1 -m -- journalctl -u kubelet -n 20",
+    # nvidia-smi's set flags are bare letters (-e, -c, -r); its reads must
+    # not trip them.
+    "nvidia-smi -q -d ECC",
+    "nvidia-smi -q -d CLOCK,POWER -i 0",
+    "nvidia-smi --query-gpu=ecc.mode.current,clocks.sm --format=csv,noheader",
+    "nvidia-smi -L",
+    "nvidia-smi topo -m",
 ]
+
+# Every launcher the classifier unwraps, as a prefix. The matrix test below
+# puts each in front of each write, so a new launcher alternative that
+# misparses its options — and reads the next word as the program — fails
+# here rather than on a host (claude-review on #290).
+LAUNCHER_PREFIXES = [
+    "sudo", "sudo -n", "sudo -u root", "sudo --user root", "sudo -nu root", "doas -u root",
+    "env A=1", "nice -n 5", "ionice -c3", "timeout 30", "nohup", "stdbuf -oL",
+    "xargs", "xargs -I {}", "xargs -n1 -P4", "watch -n1", "watch -n 5",
+    "flock /tmp/l", "flock -w 5 /tmp/l", "chroot /host", "setsid", "unshare -m",
+    "nsenter -t 1 -m --", "runuser -u root --", "ssh pi2", "ssh -i k -p 22 pi2",
+    "/usr/bin/sudo", "sudo /usr/bin/env A=1",
+]
+MATRIX_WRITES = [
+    ("systemctl restart svc", "systemctl restart"),
+    ("rm -rf /x", "changes the filesystem"),
+    ("reboot", "takes the host down"),
+    ("rocm-smi --setfan 80", "changes GPU settings"),
+    ("docker restart c", "docker restart"),
+]
+
+
+@pytest.mark.parametrize("prefix", LAUNCHER_PREFIXES)
+@pytest.mark.parametrize("command, fragment", MATRIX_WRITES)
+def test_a_write_stays_refused_under_every_launcher(prefix, command, fragment):
+    reason = ssh_mutation_reason(f"{prefix} {command}")
+    assert reason and fragment in reason, (prefix, command, reason)
+    quoted = ssh_mutation_reason(f"{prefix} '{command}'")
+    if prefix.split()[0] in ("watch", "ssh"):  # these run a quoted body as a command
+        assert quoted and fragment in quoted, (prefix, command, quoted)
 
 VERIFY_WRITES = [
     ("sudo systemctl restart 'mnt-router\\x2dshare.mount'", "systemctl restart"),
