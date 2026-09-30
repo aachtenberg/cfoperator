@@ -422,6 +422,8 @@ VERIFY_READS = [
     "sudo du -x -h --max-depth=1 /var 2>/dev/null | sort -rh | head -20",
     "grep -E 'restart|kill' /var/log/syslog",
     "echo 'a; rm -rf /' | wc -c",
+    "sudo -n -u ops systemctl status x",
+    "sudo -u postgres psql -c 'select 1'",
 ]
 
 VERIFY_WRITES = [
@@ -465,6 +467,13 @@ VERIFY_WRITES = [
     ("sh -c 'uptime; systemctl restart nginx'", "systemctl restart"),
     ("curl -s -o /tmp/out http://x/", "writes or sends data"),
     ("curl -so/tmp/out http://x/", "writes or sends data"),
+    # sudo/doas options that take an argument must not become the program.
+    ("sudo -u root systemctl restart x", "systemctl restart"),
+    ("sudo -u root /usr/bin/rocm-smi --setfan 80", "rocm-smi changes GPU settings"),
+    ("sudo -g adm -u root reboot", "takes the host down"),
+    ("sudo -nu root reboot", "takes the host down"),
+    ("sudo -uroot reboot", "takes the host down"),
+    ("doas -u root systemctl stop nginx", "systemctl stop"),
 ]
 
 

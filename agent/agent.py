@@ -8649,7 +8649,7 @@ Only return the JSON array, no other text."""
         """Every ``/command`` the chat path recognises, for the console.
 
         Two sources, the same two the chat path dispatches on: the skills
-        loaded from ``skills/*/SKILL.md`` (``_execute_skill``) and the
+        loaded from ``skills/*/SKILL.md`` (``_execute_skill_stream``) and the
         shortcut expansions above. The console renders both its sidebar and
         its slash-autocomplete from this list, so a skill added server-side
         appears in both without the page changing. Nothing is hand-listed

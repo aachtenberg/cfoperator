@@ -54,8 +54,13 @@ def _int(value: Any, default: int) -> int:
 # investigation read, so the reads it wrongly refused in 30 days of logs are
 # pinned as tests: a '|' inside a quoted grep pattern, curl -o /dev/null.
 _ENV_ASSIGN = re.compile(r"^(?:[A-Za-z_]\w*=\S*\s+)+")
+# sudo/doas options that take an argument (-u root, -g adm, -D dir, ...) are
+# consumed with it, or the argument is read as the program: `sudo -u root
+# systemctl restart x` classified as a command named "root" and ran (CFOP-240,
+# claude-review). The clustered form counts too: -nu root, -uroot.
+_SUDO_OPT = r"(?:-[A-Za-z]*[ugUhpCDrtT](?:\s+|(?=\S))\S+|-\S+)"
 _WRAPPER = re.compile(
-    r"^(?:sudo(?:\s+-\S+)*|doas|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\S+)*"
+    r"^(?:sudo(?:\s+" + _SUDO_OPT + r")*|doas(?:\s+(?:-u\s*\S+|-\S+))*|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\S+)*"
     r"|timeout(?:\s+-\S+)*\s+\S+|command|exec|nohup|time|stdbuf(?:\s+-\S+)*|\\)\s+")
 _SHELL_C = re.compile(r"^(?:ba|z|da|k|a)?sh\s+(?:-\S+\s+)*-c\s+(['\"])(.*)\1", re.S)
 _PROGRAM_PATH = re.compile(r"^(?:\.{0,2}/)?(?:[\w.+-]+/)+(?=[\w.+-])")
@@ -97,6 +102,10 @@ _MUTATORS = [
     (re.compile(r"^(systemd-run|at|batch)\b"), "{0} schedules work on the host"),
     (re.compile(r"^journalctl\b(?=.*--(?:vacuum|rotate|flush))"), "journalctl --vacuum/--rotate changes the journal"),
     (re.compile(r"^find\b(?=.*\s(?:-delete\b|-exec\s+(?:rm|mv|chmod|chown|sed\s+-i)\b))"), "find -delete/-exec changes files"),
+    # curl writes when it sends data or saves the body to a file. -o/--output
+    # to a file counts, in any short-flag cluster (-so file, -sko file,
+    # -ofile); -o /dev/null and -o - (stdout) do not, since a status probe that
+    # discards its body is the commonest investigation read there is.
     (re.compile(r"^curl\b(?=.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request\s+(?:POST|PUT|DELETE|PATCH)\b|"
                 r"-d\b|--data\S*|-F\b|-T\b|-[A-Za-z]*o(?:\s+|=?)(?!/dev/null\b|-(?:\s|$))\S|"
                 r"--output(?:\s+|=)(?!/dev/null\b|-(?:\s|$))\S|-O\b|--remote-name\b))"),

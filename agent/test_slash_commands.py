@@ -4,7 +4,7 @@ The console used to keep two hand-written copies of this list and both were
 wrong — they disagreed with each other and neither knew about two of the
 nine skills. ``list_slash_commands()`` is what the page now renders from,
 built from the same two things the chat path dispatches on: ``self.skills``
-(``_execute_skill``) and ``_SLASH_SHORTCUTS`` (``_expand_slash_shortcut``).
+(``_execute_skill_stream``) and ``_SLASH_SHORTCUTS`` (``_expand_slash_shortcut``).
 These pin that nothing else feeds it, and that a skill the agent loads is a
 skill the console will show.
 """
