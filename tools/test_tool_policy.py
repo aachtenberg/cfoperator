@@ -424,6 +424,12 @@ VERIFY_READS = [
     "echo 'a; rm -rf /' | wc -c",
     "sudo -n -u ops systemctl status x",
     "sudo -u postgres psql -c 'select 1'",
+    "echo x > /dev/null; ls 2>/dev/stderr; echo y >/dev/tcp/10.0.0.1/80",
+    "curl -so /dev/null http://x/ && curl -s -o - http://y/",
+    # Pinned, not endorsed: an unterminated quote swallows the rest of the
+    # line into one segment, so this reads as echo. A shell refuses the line
+    # outright (syntax error), so nothing in it runs.
+    "echo 'unterminated; rm -rf /",
 ]
 
 VERIFY_WRITES = [
@@ -474,6 +480,15 @@ VERIFY_WRITES = [
     ("sudo -nu root reboot", "takes the host down"),
     ("sudo -uroot reboot", "takes the host down"),
     ("doas -u root systemctl stop nginx", "systemctl stop"),
+    # A /dev path is exempt only as a whole path; curl flags that send data.
+    ("echo x > /dev/null.bak", "redirected"),
+    ("echo x > /dev/stdout-x", "redirected"),
+    ("curl -o /dev/null.bak http://x/", "writes or sends data"),
+    ("curl --upload-file f http://x/", "writes or sends data"),
+    ("curl --json '{}' http://x/", "writes or sends data"),
+    ("curl --form a=b http://x/", "writes or sends data"),
+    # A heredoc body is lines, and each line is classified.
+    ("cat <<EOF\nrm -rf /x\nEOF", "changes the filesystem"),
 ]
 
 

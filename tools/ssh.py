@@ -65,7 +65,11 @@ _WRAPPER = re.compile(
 _SHELL_C = re.compile(r"^(?:ba|z|da|k|a)?sh\s+(?:-\S+\s+)*-c\s+(['\"])(.*)\1", re.S)
 _PROGRAM_PATH = re.compile(r"^(?:\.{0,2}/)?(?:[\w.+-]+/)+(?=[\w.+-])")
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
-_REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\|?(?!\s*(?:&\s*[12]|/dev/(?:null|tcp|udp|std)))")
+# Device paths a write to is not a write: the bit bucket, the standard
+# streams, and bash's /dev/tcp probes. Whole paths only — /dev/null.bak is a
+# file (CFOP-240, claude-review).
+_DEV_SINK = r"/dev/(?:null|stdout|stderr|stdin|fd/\d+|(?:tcp|udp)/\S+)(?![^\s;|&)])"
+_REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\|?(?!\s*(?:&\s*[12]|" + _DEV_SINK + r"))")
 
 _MUTATORS = [
     (re.compile(r"^systemctl\s+(?:--?\S+\s+)*(restart|stop|start|reload|reload-or-restart|try-restart|"
@@ -107,8 +111,9 @@ _MUTATORS = [
     # -ofile); -o /dev/null and -o - (stdout) do not, since a status probe that
     # discards its body is the commonest investigation read there is.
     (re.compile(r"^curl\b(?=.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request\s+(?:POST|PUT|DELETE|PATCH)\b|"
-                r"-d\b|--data\S*|-F\b|-T\b|-[A-Za-z]*o(?:\s+|=?)(?!/dev/null\b|-(?:\s|$))\S|"
-                r"--output(?:\s+|=)(?!/dev/null\b|-(?:\s|$))\S|-O\b|--remote-name\b))"),
+                r"-d\b|--data\S*|--json\b|-F\b|--form\S*|-T\b|--upload-file\b|"
+                r"-[A-Za-z]*o(?:\s+|=?)(?!" + _DEV_SINK + r"|-(?:\s|$))\S|"
+                r"--output(?:\s+|=)(?!" + _DEV_SINK + r"|-(?:\s|$))\S|-O\b|--remote-name\b))"),
      "curl that writes or sends data"),
     (re.compile(r"^wget\b(?!.*(?:-q?O\s*-|--spider))"), "wget writes a file"),
     # GPU management (CFOP-240). rocm-smi re-execs itself through sudo for any
