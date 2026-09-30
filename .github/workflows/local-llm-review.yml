@@ -50,7 +50,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          # Unset repo variables fall back to the script's defaults.
+          # Required: where the homelab's Ollama is. A repo variable, not a
+          # default in the script, which ships in a public repo.
           OLLAMA_URL: ${{ vars.LOCAL_REVIEW_OLLAMA_URL }}
+          # Optional: unset means the script's default model.
           REVIEW_MODEL: ${{ vars.LOCAL_REVIEW_MODEL }}
         run: python3 scripts/local_llm_review.py

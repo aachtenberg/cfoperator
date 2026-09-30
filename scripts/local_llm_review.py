@@ -30,7 +30,7 @@ Environment:
     GITHUB_TOKEN          token with pull-requests read and issues write
     GITHUB_REPOSITORY     owner/name (set by Actions)
     PR_NUMBER             the pull request to review
-    OLLAMA_URL            default http://192.168.0.150:11434
+    OLLAMA_URL            required, e.g. http://<ollama-host>:11434
     REVIEW_MODEL          default gemma4:26b
     REVIEW_MAX_DIFF_CHARS default 60000
     REVIEW_DRY_RUN        1 = print the comment instead of posting it
@@ -47,7 +47,6 @@ import urllib.request
 MARKER = "<!-- local-llm-review -->"
 GITHUB_API = "https://api.github.com"
 
-DEFAULT_OLLAMA_URL = "http://192.168.0.150:11434"
 # The model cfoperator already keeps resident on the 24 GB card. A dedicated
 # coder model was tried (qwen3-coder:30b, CFOP-236): through this pipeline it
 # found exactly what gemma4 found, but at ~19 GB it cannot share the card, and
@@ -312,7 +311,11 @@ def ground(findings, files):
         matches = [n for n, text in lines.items() if _evidence_matches(evidence, text)]
         if not matches:
             continue
-        line_no = min(matches, key=lambda n: abs(n - int(finding.get("line") or 0)))
+        try:
+            cited = int(finding.get("line") or 0)
+        except (TypeError, ValueError):
+            cited = 0
+        line_no = min(matches, key=lambda n: abs(n - cited))
         if COMMENT_LINE.match(lines[line_no]):
             continue
         kept.append({**finding, "line": line_no})
@@ -352,12 +355,22 @@ def ask_ollama(url, model, system, user, schema):
         return None, data
 
 
+class UnreadableAnswer(RuntimeError):
+    """The model's answer was not the JSON asked for (truncated, or the schema
+    ignored). Reported as a failed review, never as a clean one."""
+
+    def __init__(self, step):
+        super().__init__(f"the model's {step} answer was not valid JSON; no review")
+
+
 def review(url, model, diff, files, log=print):
     """Propose, ground, verify. Returns (kept findings, counts)."""
     proposed, raw = ask_ollama(url, model, PROPOSE_PROMPT, diff, FINDINGS_SCHEMA)
     log(f"propose: {raw.get('prompt_eval_count', '?')} prompt tokens, "
         f"{raw.get('eval_count', '?')} generated, load {raw.get('load_duration', 0) / 1e9:.1f}s")
-    proposed = (proposed or {}).get("findings") or []
+    if proposed is None:
+        raise UnreadableAnswer("propose")
+    proposed = proposed.get("findings") or []
     grounded = ground(proposed, files)
     verified = []
     if grounded:
@@ -368,8 +381,11 @@ def review(url, model, diff, files, log=print):
             f"    evidence: {f['evidence']}" for i, f in enumerate(grounded))
         answer, _ = ask_ollama(url, model, VERIFY_PROMPT,
                                f"{diff}\n\nClaimed defects:\n{claims}", VERDICTS_SCHEMA)
+        if answer is None:
+            # Not "no findings": every grounded claim would vanish unseen.
+            raise UnreadableAnswer("verify")
         real = {}
-        for v in (answer or {}).get("verdicts") or []:
+        for v in answer.get("verdicts") or []:
             log(f"verify [{v.get('id')}]: real={v.get('real')} {v.get('reason', '')}")
             real[v.get("id")] = v.get("real") is True
         verified = [f for i, f in enumerate(grounded) if real.get(i)]
@@ -396,7 +412,7 @@ def render(findings, counts, model, head_sha, included, skipped, seconds):
     lines = [MARKER, "### Local LLM review", ""]
     if findings:
         for f in sorted(findings, key=lambda f: SEVERITY_ORDER.get(f["severity"], 3)):
-            lines.append(f"- **[{f['severity']}] `{f['path']}:{f['line']}`** {defang(f['problem'])}")
+            lines.append(f"- **[{f['severity']}] {code(f['path'])}:{f['line']}** {defang(f['problem'])}")
     elif included:
         lines.append("No significant issues found.")
     else:
@@ -404,7 +420,7 @@ def render(findings, counts, model, head_sha, included, skipped, seconds):
     lines.append("")
     if skipped:
         lines.append("<details><summary>Not reviewed ({})</summary>\n".format(len(skipped)))
-        lines.extend(f"- `{name}`: {reason}" for name, reason in skipped)
+        lines.extend(f"- {code(name)}: {reason}" for name, reason in skipped)
         lines.append("\n</details>\n")
     tally = (f"{counts['proposed']} proposed, {counts['grounded']} grounded, {counts['kept']} kept"
              if counts else "not run")
@@ -418,6 +434,13 @@ def render(findings, counts, model, head_sha, included, skipped, seconds):
 
 #: Who posts the review under Actions' GITHUB_TOKEN.
 DEFAULT_BOT_LOGIN = "github-actions[bot]"
+
+
+def code(name):
+    """A path as an inline code span. PR authors choose file names, so a
+    backtick in one could close the span and let the rest (an @mention, a
+    link) render; drop backticks, and defang what is left."""
+    return "`" + defang(str(name).replace("`", "'")) + "`"
 
 
 def upsert_comment(repo, number, token, body, bot_login=DEFAULT_BOT_LOGIN):
@@ -438,7 +461,10 @@ def main():
     number = env("PR_NUMBER")
     if not (token and repo and number):
         sys.exit("GITHUB_TOKEN, GITHUB_REPOSITORY and PR_NUMBER are required")
-    ollama = env("OLLAMA_URL", DEFAULT_OLLAMA_URL)
+    ollama = env("OLLAMA_URL")
+    if not ollama:
+        sys.exit("OLLAMA_URL is required (the workflows set it from the LOCAL_REVIEW_OLLAMA_URL "
+                 "repo variable)")
     model = env("REVIEW_MODEL", DEFAULT_MODEL)
     budget = int(env("REVIEW_MAX_DIFF_CHARS", str(DEFAULT_MAX_DIFF_CHARS)))
 

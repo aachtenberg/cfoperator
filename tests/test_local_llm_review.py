@@ -154,6 +154,42 @@ def test_every_claim_is_verified_in_one_call_and_only_confirmed_ones_are_kept(mo
     assert counts["proposed"] == 2 and counts["grounded"] == 2 and counts["kept"] == 1
 
 
+@pytest.mark.parametrize("broken", ["propose", "verify"])
+def test_an_unreadable_model_answer_fails_the_review_instead_of_passing_it(monkeypatch, broken):
+    """A truncated or schema-ignoring answer parses to None. Read as "no
+    findings" it would post a clean review, or silently drop every grounded
+    claim at the verify step."""
+    files = [{"filename": "m.py", "patch": PATCH}]
+
+    def fake_ask(url, model, system, user, schema):
+        if schema is review.FINDINGS_SCHEMA:
+            return (None, {}) if broken == "propose" else (
+                {"findings": [_finding("c = compute(b)", line=13)]}, {})
+        return None, {}
+
+    monkeypatch.setattr(review, "ask_ollama", fake_ask)
+    with pytest.raises(review.UnreadableAnswer, match=broken):
+        review.review("u", "m", "diff", files, log=lambda *_: None)
+
+
+def test_a_file_name_cannot_break_out_of_its_code_span():
+    out = review.code("a`@team [x](y).py")
+    assert out.count("`") == 2 and "@team" not in out and "](" not in out
+    body = review.render([], {"proposed": 0, "grounded": 0, "kept": 0}, "m", "abcdef0", [],
+                         [("evil`@team.lock", "generated or vendored")], 0.0)
+    assert "@team" not in body
+
+
+def test_ollama_url_is_required_not_defaulted(monkeypatch):
+    """The script is public; the homelab's address belongs in a repo variable."""
+    assert not hasattr(review, "DEFAULT_OLLAMA_URL")
+    for k, v in {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "PR_NUMBER": "1",
+                 "OLLAMA_URL": ""}.items():
+        monkeypatch.setenv(k, v)
+    with pytest.raises(SystemExit, match="OLLAMA_URL is required"):
+        review.main()
+
+
 def test_no_grounded_claim_means_no_verify_call(monkeypatch):
     calls = []
     monkeypatch.setattr(review, "ask_ollama", lambda *a: calls.append(a[-1]) or ({"findings": []}, {}))
