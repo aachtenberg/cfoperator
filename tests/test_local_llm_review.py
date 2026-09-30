@@ -36,9 +36,19 @@ def test_noise_and_unreviewable_files_are_left_out_with_a_reason():
 
 def test_the_budget_skips_a_file_that_does_not_fit_but_keeps_later_small_ones():
     files = [_file("a.py", "x" * 60), _file("huge.py", "x" * 100), _file("b.py", "x" * 30)]
-    included, skipped = review.select_files(files, budget=100)
+    # Measured with line numbers added (7 chars per one-line patch here).
+    included, skipped = review.select_files(files, budget=67 + 37)
     assert [f["filename"] for f in included] == ["a.py", "b.py"]
     assert skipped == [("huge.py", "over the size budget")]
+
+
+def test_the_budget_counts_what_the_model_sees_not_the_raw_patch():
+    """number_patch adds a column per line; a budget on the raw patch lets the
+    prompt run past it."""
+    patch = "\n".join(f"+line {i}" for i in range(50))
+    assert len(review.number_patch(patch)) > len(patch)
+    included, skipped = review.select_files([_file("m.py", patch)], budget=len(patch))
+    assert included == [] and skipped == [("m.py", "over the size budget")]
 
 
 class _Resp(io.BytesIO):
@@ -103,6 +113,27 @@ def test_grounding_keeps_only_findings_anchored_on_added_code():
     assert kept == [_finding("c = compute(b)", line=13)]
 
 
+def test_short_evidence_must_be_the_whole_line():
+    """ "return" would otherwise match every return in the diff and pin the
+    finding to whichever is nearest the model's guessed line."""
+    patch = "@@ -1,0 +1,3 @@\n+def f():\n+    return compute(x)\n+    return"
+    files = [{"filename": "m.py", "patch": patch}]
+    assert review.ground([_finding("return", line=2)], files) == [_finding("return", line=3)]
+    assert review.ground([_finding("compute", line=1)], files) == []
+    assert review.ground([_finding("return compute(x)", line=9)], files) == [
+        _finding("return compute(x)", line=2)]
+
+
+def test_model_text_cannot_mention_link_or_inject_html():
+    out = review.defang("ping @aachtenberg, see [here](https://evil.example) ![x](y) <img src=x>")
+    assert "@aachtenberg" not in out
+    assert "](" not in out and "![" not in out and "https://" not in out
+    assert "<img" not in out
+    body = review.render([{"path": "m.py", "line": 1, "severity": "high", "problem": "cc @someone"}],
+                         {"proposed": 1, "grounded": 1, "kept": 1}, "m", "abcdef0", [1], [], 1.0)
+    assert "@someone" not in body
+
+
 def test_every_claim_is_verified_in_one_call_and_only_confirmed_ones_are_kept(monkeypatch):
     """One verify call per review, not one per claim: the review shares
     cfoperator's model, and every call is time cfoperator's requests queue."""
@@ -140,12 +171,25 @@ def test_a_later_push_edits_the_existing_review_instead_of_adding_one(monkeypatc
 
     monkeypatch.setattr(review, "github", fake_github)
     monkeypatch.setattr(review, "paged", lambda path, token: [
-        {"id": 1, "body": "an unrelated comment"},
-        {"id": 7, "body": review.MARKER + "\nold review"},
+        {"id": 1, "body": "an unrelated comment", "user": {"login": "someone"}},
+        {"id": 7, "body": review.MARKER + "\nold review", "user": {"login": "github-actions[bot]"}},
     ])
     action, _ = review.upsert_comment("o/r", "5", "t", review.MARKER + "\nnew")
     assert action == "updated"
     assert calls == [("PATCH", "/repos/o/r/issues/comments/7")]
+
+
+def test_a_pasted_marker_does_not_get_someone_elses_comment_overwritten(monkeypatch):
+    calls = []
+    monkeypatch.setattr(review, "github",
+                        lambda method, path, token, body=None, accept=None:
+                        calls.append((method, path)) or {"html_url": "u"})
+    monkeypatch.setattr(review, "paged", lambda path, token: [
+        {"id": 3, "body": "my notes " + review.MARKER, "user": {"login": "someone"}},
+    ])
+    action, _ = review.upsert_comment("o/r", "5", "t", "body")
+    assert action == "created"
+    assert calls == [("POST", "/repos/o/r/issues/5/comments")]
 
 
 def test_the_first_review_creates_the_comment(monkeypatch):

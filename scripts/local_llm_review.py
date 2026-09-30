@@ -212,7 +212,8 @@ def select_files(files, budget):
     for f in files:
         reason = skip_reason(f)
         if reason is None:
-            size = len(f["patch"])
+            # Measured as the model will see it, line numbers included.
+            size = len(number_patch(f["patch"]))
             if used + size > budget:
                 reason = "over the size budget"
             else:
@@ -281,6 +282,22 @@ def _norm(text):
     return " ".join(text.split())
 
 
+#: Evidence shorter than this must equal a line, not merely occur in one:
+#: "return" or "}" would otherwise match half the diff.
+MIN_SUBSTRING_EVIDENCE = 12
+
+
+def _evidence_matches(evidence, line):
+    line = _norm(line)
+    if not line:
+        return False
+    if evidence == line:
+        return True
+    # A quote of part of a line, or a multi-line quote containing the line.
+    return ((len(evidence) >= MIN_SUBSTRING_EVIDENCE and evidence in line) or
+            (len(line) >= MIN_SUBSTRING_EVIDENCE and line in evidence))
+
+
 def ground(findings, files):
     """Keep a finding only if its evidence is an added line of the file it
     names, and that line is code, not a comment. The line number is taken
@@ -292,8 +309,7 @@ def ground(findings, files):
         evidence = _norm(finding.get("evidence", ""))
         if not lines or not evidence:
             continue
-        matches = [n for n, text in lines.items() if evidence in _norm(text) or
-                   (len(_norm(text)) >= 8 and _norm(text) in evidence)]
+        matches = [n for n, text in lines.items() if _evidence_matches(evidence, text)]
         if not matches:
             continue
         line_no = min(matches, key=lambda n: abs(n - int(finding.get("line") or 0)))
@@ -363,12 +379,24 @@ def review(url, model, diff, files, log=print):
 
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 
+ZWSP = "​"
+
+
+def defang(text):
+    """Model text goes into a public comment, and the model has read a PR
+    that anyone can write. Keep it inert: no @mentions (they notify), no
+    links or images, no raw HTML. A zero-width space breaks each without
+    changing how the text reads."""
+    return (str(text).replace("<", "&lt;").replace("@", "@" + ZWSP)
+            .replace("](", "]" + ZWSP + "(").replace("![", "!" + ZWSP + "[")
+            .replace("://", ":" + ZWSP + "//"))
+
 
 def render(findings, counts, model, head_sha, included, skipped, seconds):
     lines = [MARKER, "### Local LLM review", ""]
     if findings:
         for f in sorted(findings, key=lambda f: SEVERITY_ORDER.get(f["severity"], 3)):
-            lines.append(f"- **[{f['severity']}] `{f['path']}:{f['line']}`** {f['problem']}")
+            lines.append(f"- **[{f['severity']}] `{f['path']}:{f['line']}`** {defang(f['problem'])}")
     elif included:
         lines.append("No significant issues found.")
     else:
@@ -388,18 +416,18 @@ def render(findings, counts, model, head_sha, included, skipped, seconds):
     return "\n".join(lines)
 
 
-def upsert_comment(repo, number, token, body):
+#: Who posts the review under Actions' GITHUB_TOKEN.
+DEFAULT_BOT_LOGIN = "github-actions[bot]"
+
+
+def upsert_comment(repo, number, token, body, bot_login=DEFAULT_BOT_LOGIN):
     """Edit this workflow's earlier comment if there is one, else create it.
-    A comment someone else wrote with the marker cannot be edited with this
-    token; fall back to a new comment rather than failing the review."""
+    Only a comment the bot itself wrote counts: anyone can paste the marker
+    into their own comment, and that must not get it overwritten."""
     for c in paged(f"/repos/{repo}/issues/{number}/comments", token):
-        if MARKER in (c.get("body") or ""):
-            try:
-                edited = github("PATCH", f"/repos/{repo}/issues/comments/{c['id']}", token, {"body": body})
-                return "updated", edited["html_url"]
-            except urllib.error.HTTPError as e:
-                if e.code not in (403, 404):
-                    raise
+        if MARKER in (c.get("body") or "") and (c.get("user") or {}).get("login") == bot_login:
+            edited = github("PATCH", f"/repos/{repo}/issues/comments/{c['id']}", token, {"body": body})
+            return "updated", edited["html_url"]
     c = github("POST", f"/repos/{repo}/issues/{number}/comments", token, {"body": body})
     return "created", c["html_url"]
 

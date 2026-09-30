@@ -159,8 +159,12 @@ def fence_violations(doc, job):
                 problems.append("a checkout names a ref or repository; only the base may be checked out")
             if opts.get("persist-credentials") is not False:
                 problems.append("a checkout keeps its credential on the persistent runner")
-        if PR_HEAD.search(str(step.get("run", "")) + str(opts)):
-            problems.append(f"step {step.get('name', step)!r} refers to the PR's head")
+    # The whole job, not just run/with: a head SHA passed through a job or
+    # step env and then used by `run` is the same checkout by another name.
+    # `if` is left out; it names pull_request.head.repo, which is the fence.
+    rest = {k: v for k, v in job.items() if k != "if"}
+    if PR_HEAD.search(yaml.safe_dump(rest)):
+        problems.append("the job refers to the PR's head (run, with, env or elsewhere)")
     return problems
 
 
@@ -217,10 +221,14 @@ def _fetch_head_in_a_step(doc, job):
 def _widen_token(doc, job):
     job["permissions"]["contents"] = "write"
 
+def _smuggle_head_through_env(doc, job):
+    job.setdefault("env", {})["HEAD"] = "${{ github.event.pull_request.head.sha }}"
+    job["steps"][1]["run"] = 'git fetch origin "$HEAD" && ' + job["steps"][1]["run"]
+
 
 @pytest.mark.parametrize("mutate", [
     _drop_same_repo, _or_it_away, _add_pull_request, _checkout_head,
-    _keep_credential, _fetch_head_in_a_step, _widen_token,
+    _keep_credential, _fetch_head_in_a_step, _widen_token, _smuggle_head_through_env,
 ], ids=lambda f: f.__name__.strip("_"))
 def test_breaking_any_piece_of_the_fence_fails_it(mutate):
     """The mutation check, kept in the suite: each piece the module doc names
