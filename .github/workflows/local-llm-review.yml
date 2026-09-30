@@ -1,0 +1,56 @@
+name: Local LLM Review
+
+# A second review, from a model on the homelab's own Ollama (CFOP-236). The
+# Claude review needs a cloud model; this one never leaves the LAN. It is
+# advisory: the job fails only if it could not produce a review at all.
+#
+# It runs on the homelab runner, the one self-hosted job a pull request can
+# reach, and only because every piece of this shape holds together
+# (tests/test_workflows.py enforces each one):
+#
+#   - pull_request_target, not pull_request. It runs the workflow and the
+#     script from the BASE branch, so no PR, fork or not, can change what
+#     executes on the runner. Under pull_request a fork could.
+#   - Same-repo PRs only. A fork PR skips the job entirely.
+#   - The checkout is the base branch, sparse, and keeps no credential. The
+#     PR's code is never checked out: the script reads the diff from the API
+#     and hands it to the model as text.
+#   - The token can read the repo and comment, nothing else.
+on:
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  # A push while a review runs makes that review stale; replace it.
+  group: local-llm-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  local-review:
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, ubuntu-itx-01]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      # The review is an issue comment; pull-requests: write does not cover
+      # that endpoint.
+      issues: write
+
+    steps:
+      - name: Checkout the reviewer (base branch only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/local_llm_review.py
+          sparse-checkout-cone-mode: false
+          # itx-01's work dir outlives the job; do not leave the token in .git.
+          persist-credentials: false
+
+      - name: Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # Unset repo variables fall back to the script's defaults.
+          OLLAMA_URL: ${{ vars.LOCAL_REVIEW_OLLAMA_URL }}
+          REVIEW_MODEL: ${{ vars.LOCAL_REVIEW_MODEL }}
+        run: python3 scripts/local_llm_review.py
