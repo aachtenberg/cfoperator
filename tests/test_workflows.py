@@ -15,9 +15,16 @@ Two rules, each learned the hard way or nearly so:
 2. No job that a ``pull_request`` can trigger runs on a self-hosted runner.
    cfoperator is public; a fork PR can edit the workflow it runs under, and
    the homelab runner's user is in the docker group on a box that also runs
-   k3s. The one self-hosted job, ``bump-deploy-repo``, is main-push only.
-   GitHub's own guidance says the same; this makes it a test failure
+   k3s. GitHub's own guidance says the same; this makes it a test failure
    rather than a code review catch.
+
+   One shape is exempt, and only as a whole (CFOP-236, the local-LLM
+   review, which has to run where Ollama is): ``pull_request_target`` as the
+   only trigger, so the workflow and scripts come from the base branch and a
+   PR cannot change what runs; a same-repo ``if``, so forks never start it;
+   checkouts of the base only, keeping no credential; nothing that names
+   the PR's head; and a token that can at most comment. Drop any one piece
+   and the exemption no longer holds, so the test checks every piece.
 """
 from repo_paths import REPO_ROOT
 import re
@@ -121,15 +128,148 @@ def runs_on_of(wf, name, job):
     return str(runs_on).lower()
 
 
+#: The condition that keeps fork PRs from starting a fenced job at all.
+SAME_REPO = "github.event.pull_request.head.repo.full_name == github.repository"
+#: Anything that points a step at the PR's own code instead of the base.
+PR_HEAD = re.compile(r"pull_request\.head\.(sha|ref)|github\.head_ref|refs/pull/")
+#: The only scopes a fenced job may write to: it posts a review comment.
+COMMENT_SCOPES = {"issues", "pull-requests"}
+#: An allowlist, not a blocklist: any other action is code the fence has not
+#: judged, running on the homelab runner.
+FENCE_ACTIONS = {"actions/checkout@v4"}
+#: Fetching or checking out code from a run step, however the ref is named
+#: (`gh pr checkout "$N"` never mentions the head).
+FETCHES_CODE = re.compile(
+    r"\b(gh\s+pr\s+checkout|git\s+(fetch|checkout|pull|clone|switch|worktree)|tarball|zipball)\b"
+    r"|codeload\.github\.com")
+
+
+def fence_violations(doc, job):
+    """Why a PR-reachable self-hosted job is NOT the exempt review shape.
+    Empty means every piece of the fence is present (see the module doc)."""
+    problems = []
+    if "uses" in job:
+        problems.append(f"the job calls a reusable workflow ({job['uses']!r}) the fence cannot see into")
+    if triggers(doc) != {"pull_request_target"}:
+        problems.append(f"triggers are {sorted(triggers(doc))}, want only pull_request_target")
+    cond = str(job.get("if", ""))
+    if SAME_REPO not in cond or "||" in cond:
+        problems.append(f"if: {cond!r} does not require a same-repo PR (and nothing else may OR it away)")
+    perms = job.get("permissions")
+    if not isinstance(perms, dict):
+        problems.append(f"permissions: {perms!r}, want an explicit per-scope map")
+    else:
+        for scope, level in perms.items():
+            if level == "write" and scope not in COMMENT_SCOPES:
+                problems.append(f"permissions grant {scope}: write")
+    for step in job.get("steps") or []:
+        opts = step.get("with") or {}
+        if "uses" in step and step["uses"] not in FENCE_ACTIONS:
+            problems.append(f"step uses {step['uses']!r}; only {sorted(FENCE_ACTIONS)} are allowed")
+        if FETCHES_CODE.search(str(step.get("run", ""))):
+            problems.append(f"step {step.get('name', step)!r} fetches or checks out code")
+        if "actions/checkout" in str(step.get("uses", "")):
+            if "ref" in opts or "repository" in opts:
+                problems.append("a checkout names a ref or repository; only the base may be checked out")
+            if opts.get("persist-credentials") is not False:
+                problems.append("a checkout keeps its credential on the persistent runner")
+    # The whole job, not just run/with: a head SHA passed through a job or
+    # step env and then used by `run` is the same checkout by another name.
+    # `if` is left out; it names pull_request.head.repo, which is the fence.
+    # Plus the workflow-level env and defaults, which every step inherits.
+    rest = {k: v for k, v in job.items() if k != "if"}
+    inherited = {k: doc.get(k) for k in ("env", "defaults") if doc.get(k)}
+    if PR_HEAD.search(yaml.safe_dump(rest) + yaml.safe_dump(inherited)):
+        problems.append("the job refers to the PR's head (run, with, env or elsewhere)")
+    return problems
+
+
 @pytest.mark.parametrize("wf", WORKFLOWS, ids=lambda p: p.name)
 def test_no_pull_request_job_targets_a_self_hosted_runner(wf):
     doc = yaml.safe_load(read(wf))
     if not triggers(doc) & {"pull_request", "pull_request_target"}:
         pytest.skip(f"{wf.name} is not triggered by pull requests")
     for name, job in (doc.get("jobs") or {}).items():
-        assert "self-hosted" not in runs_on_of(wf, name, job), (
-            f"{wf.name} job {name!r} runs on {job.get('runs-on')!r} and a pull_request can "
-            "trigger it — a fork could edit this workflow and run on the homelab runner")
+        if "self-hosted" not in runs_on_of(wf, name, job):
+            continue
+        problems = fence_violations(doc, job)
+        assert not problems, (
+            f"{wf.name} job {name!r} runs on {job.get('runs-on')!r} and a pull request can "
+            "trigger it, which is allowed only in the fenced pull_request_target shape: "
+            + "; ".join(problems))
+
+
+LOCAL_REVIEW = REPO_ROOT / ".github" / "workflows" / "local-llm-review.yml"
+
+
+def _review_job():
+    doc = yaml.safe_load(read(LOCAL_REVIEW))
+    return doc, doc["jobs"]["local-review"]
+
+
+def test_the_local_review_is_the_fenced_shape():
+    """Not vacuous: the review really is self-hosted and PR-reachable, so the
+    exemption above is exercised by a real workflow, and it passes the fence."""
+    doc, job = _review_job()
+    assert "self-hosted" in runs_on_of(LOCAL_REVIEW, "local-review", job)
+    assert triggers(doc) & {"pull_request_target"}
+    assert fence_violations(doc, job) == []
+
+
+def _drop_same_repo(doc, job):
+    job["if"] = "github.event.pull_request.draft == false"
+
+def _or_it_away(doc, job):
+    job["if"] += " || github.actor == 'anyone'"
+
+def _add_pull_request(doc, job):
+    doc[True if True in doc else "on"]["pull_request"] = {"types": ["opened"]}
+
+def _checkout_head(doc, job):
+    job["steps"][0]["with"]["ref"] = "${{ github.event.pull_request.head.sha }}"
+
+def _keep_credential(doc, job):
+    job["steps"][0]["with"].pop("persist-credentials")
+
+def _fetch_head_in_a_step(doc, job):
+    job["steps"][1]["run"] = "git fetch origin refs/pull/1/head && " + job["steps"][1]["run"]
+
+def _widen_token(doc, job):
+    job["permissions"]["contents"] = "write"
+
+def _smuggle_head_through_env(doc, job):
+    job.setdefault("env", {})["HEAD"] = "${{ github.event.pull_request.head.sha }}"
+    job["steps"][1]["run"] = 'git fetch origin "$HEAD" && ' + job["steps"][1]["run"]
+
+
+def _use_another_action(doc, job):
+    job["steps"].insert(1, {"uses": "someone/setup-thing@v1"})
+
+def _check_out_the_pr_by_number(doc, job):
+    job["steps"][1]["run"] = 'gh pr checkout "$PR_NUMBER" && ' + job["steps"][1]["run"]
+
+def _download_a_tarball(doc, job):
+    job["steps"][1]["run"] = 'curl -sL "$API/repos/$R/tarball/$SHA" | tar xz && ' + job["steps"][1]["run"]
+
+def _head_in_workflow_env(doc, job):
+    doc["env"] = {"HEAD": "${{ github.event.pull_request.head.sha }}"}
+
+def _call_a_reusable_workflow(doc, job):
+    job["uses"] = "./.github/workflows/other.yml"
+
+
+@pytest.mark.parametrize("mutate", [
+    _drop_same_repo, _or_it_away, _add_pull_request, _checkout_head,
+    _keep_credential, _fetch_head_in_a_step, _widen_token, _smuggle_head_through_env,
+    _use_another_action, _check_out_the_pr_by_number, _download_a_tarball,
+    _head_in_workflow_env, _call_a_reusable_workflow,
+], ids=lambda f: f.__name__.strip("_"))
+def test_breaking_any_piece_of_the_fence_fails_it(mutate):
+    """The mutation check, kept in the suite: each piece the module doc names
+    is load-bearing, so removing any one must be caught."""
+    doc, job = _review_job()
+    mutate(doc, job)
+    assert fence_violations(doc, job), f"{mutate.__name__} went unnoticed"
 
 
 def test_a_self_hosted_job_lives_only_in_a_main_push_workflow():
@@ -137,12 +277,14 @@ def test_a_self_hosted_job_lives_only_in_a_main_push_workflow():
     no pull_request trigger AND its push trigger is branches: [main] — a bare
     `on: push` would run every branch anyone with write access pushes, and
     that is the whole fleet's deploy token. Tags and workflow_dispatch are
-    collaborator-only and stay allowed. Today one job; a second has to pass
-    the same bar."""
+    collaborator-only and stay allowed. The fenced review shape is the one
+    other way onto the runner, judged by the test above."""
     for wf in WORKFLOWS:
         doc = yaml.safe_load(read(wf))
         for name, job in (doc.get("jobs") or {}).items():
             if "self-hosted" not in runs_on_of(wf, name, job):
+                continue
+            if not fence_violations(doc, job):
                 continue
             trig = triggers(doc)
             assert not (trig & {"pull_request", "pull_request_target"}), (wf.name, name)
