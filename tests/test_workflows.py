@@ -139,13 +139,17 @@ COMMENT_SCOPES = {"issues", "pull-requests"}
 FENCE_ACTIONS = {"actions/checkout@v4"}
 #: Fetching or checking out code from a run step, however the ref is named
 #: (`gh pr checkout "$N"` never mentions the head).
-FETCHES_CODE = re.compile(r"\b(gh\s+pr\s+checkout|git\s+(fetch|checkout|pull|clone|switch|worktree))\b")
+FETCHES_CODE = re.compile(
+    r"\b(gh\s+pr\s+checkout|git\s+(fetch|checkout|pull|clone|switch|worktree)|tarball|zipball)\b"
+    r"|codeload\.github\.com")
 
 
 def fence_violations(doc, job):
     """Why a PR-reachable self-hosted job is NOT the exempt review shape.
     Empty means every piece of the fence is present (see the module doc)."""
     problems = []
+    if "uses" in job:
+        problems.append(f"the job calls a reusable workflow ({job['uses']!r}) the fence cannot see into")
     if triggers(doc) != {"pull_request_target"}:
         problems.append(f"triggers are {sorted(triggers(doc))}, want only pull_request_target")
     cond = str(job.get("if", ""))
@@ -172,8 +176,10 @@ def fence_violations(doc, job):
     # The whole job, not just run/with: a head SHA passed through a job or
     # step env and then used by `run` is the same checkout by another name.
     # `if` is left out; it names pull_request.head.repo, which is the fence.
+    # Plus the workflow-level env and defaults, which every step inherits.
     rest = {k: v for k, v in job.items() if k != "if"}
-    if PR_HEAD.search(yaml.safe_dump(rest)):
+    inherited = {k: doc.get(k) for k in ("env", "defaults") if doc.get(k)}
+    if PR_HEAD.search(yaml.safe_dump(rest) + yaml.safe_dump(inherited)):
         problems.append("the job refers to the PR's head (run, with, env or elsewhere)")
     return problems
 
@@ -242,11 +248,21 @@ def _use_another_action(doc, job):
 def _check_out_the_pr_by_number(doc, job):
     job["steps"][1]["run"] = 'gh pr checkout "$PR_NUMBER" && ' + job["steps"][1]["run"]
 
+def _download_a_tarball(doc, job):
+    job["steps"][1]["run"] = 'curl -sL "$API/repos/$R/tarball/$SHA" | tar xz && ' + job["steps"][1]["run"]
+
+def _head_in_workflow_env(doc, job):
+    doc["env"] = {"HEAD": "${{ github.event.pull_request.head.sha }}"}
+
+def _call_a_reusable_workflow(doc, job):
+    job["uses"] = "./.github/workflows/other.yml"
+
 
 @pytest.mark.parametrize("mutate", [
     _drop_same_repo, _or_it_away, _add_pull_request, _checkout_head,
     _keep_credential, _fetch_head_in_a_step, _widen_token, _smuggle_head_through_env,
-    _use_another_action, _check_out_the_pr_by_number,
+    _use_another_action, _check_out_the_pr_by_number, _download_a_tarball,
+    _head_in_workflow_env, _call_a_reusable_workflow,
 ], ids=lambda f: f.__name__.strip("_"))
 def test_breaking_any_piece_of_the_fence_fails_it(mutate):
     """The mutation check, kept in the suite: each piece the module doc names
