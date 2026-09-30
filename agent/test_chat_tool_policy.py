@@ -130,9 +130,11 @@ def test_the_stream_entry_builds_the_policy_from_role_and_mode(monkeypatch):
     list(op.handle_chat_message_stream('hello', [], actor_role='member', verify_only=True))
     list(op.handle_chat_message_stream('hello', [], actor_role='admin'))
     list(op.handle_chat_message_stream('hello', []))
+    # No role is a member, not "unrestricted" — the console route falls back
+    # the same way, and nothing internal enters here (CFOP-240, review).
     assert seen == [ToolPolicy(actor_role='member', verify_only=True),
                     ToolPolicy(actor_role='admin', verify_only=False),
-                    None]
+                    ToolPolicy(actor_role='member')]
 
 
 def test_the_stream_entry_threads_the_policy_into_skills_too(monkeypatch):

@@ -10101,8 +10101,9 @@ IMPORTANT:
         ``actor_role`` is the console role of whoever is asking, captured by
         the route while request context exists; ``verify_only`` marks a
         drawer / sweep-banner hand-off. Together they become the turn's
-        ToolPolicy (CFOP-124). Neither set means an internal caller: no
-        policy, every tool, exactly as before.
+        ToolPolicy (CFOP-124). No role is read as a member, the same fallback
+        the console route applies: a chat turn always has a person behind it,
+        and nothing internal calls this (CFOP-240, review).
 
         Events yielded:
             {'event': 'tool_call', 'data': {'tool': ..., 'args': ..., 'iteration': ..., 'max': ...}}
@@ -10111,8 +10112,8 @@ IMPORTANT:
             {'event': 'error', 'data': {'error': ...}}
         """
         event_queue = queue.Queue()
-        tool_policy = (ToolPolicy(actor_role=actor_role, verify_only=verify_only)
-                       if (actor_role is not None or verify_only) else None)
+        tool_policy = ToolPolicy(actor_role=actor_role or shared_config.ROLE_MEMBER,
+                                 verify_only=verify_only)
 
         def event_callback(event_type, data):
             event_queue.put({'event': event_type, 'data': data})

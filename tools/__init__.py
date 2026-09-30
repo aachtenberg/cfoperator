@@ -110,9 +110,10 @@ class ToolPolicy:
     such a run wants changed goes into its FIX, and from there through the
     queue's lanes. Pass ``UNATTENDED``.
 
-    ``None`` in place of a policy is unrestricted. Nothing in the agent passes
-    it any more (test_every_tool_loop_names_its_policy); it remains the
-    registry's default for direct callers such as tests.
+    ``None`` in place of a policy is unrestricted. No tool loop in the agent
+    runs with it any more: unattended runs pass ``UNATTENDED``
+    (test_every_tool_loop_names_its_policy) and a chat turn with no role is a
+    member. It remains the registry's default for direct callers such as tests.
 
     Both layers consult it: ``get_schemas(policy)`` withholds mutating tools
     from what the model is offered, and ``execute(..., policy)`` refuses them
