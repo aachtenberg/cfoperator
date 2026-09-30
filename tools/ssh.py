@@ -57,12 +57,37 @@ _ENV_ASSIGN = re.compile(r"^(?:[A-Za-z_]\w*=\S*\s+)+")
 # sudo/doas options that take an argument (-u root, -g adm, -D dir, ...) are
 # consumed with it, or the argument is read as the program: `sudo -u root
 # systemctl restart x` classified as a command named "root" and ran (CFOP-240,
-# claude-review). The clustered form counts too: -nu root, -uroot.
-_SUDO_OPT = r"(?:-[A-Za-z]*[ugUhpCDrtT](?:\s+|(?=\S))\S+|-\S+)"
+# claude-review). The clustered form counts too: -nu root, -uroot, and the
+# long form: --user root (CodeRabbit).
+_SUDO_OPT = (r"(?:--(?:user|group|host|prompt|chdir|role|type|command-timeout|close-from|"
+             r"other-user|login-class)\s+\S+|-[A-Za-z]*[ugUhpCDrtT](?:\s+|(?=\S))\S+|-\S+)")
+# The patterns below are constants built by concatenation, never from input,
+# and each repetition alternates whitespace with non-whitespace, so matching
+# stays linear in the command's length.
 _WRAPPER = re.compile(
     r"^(?:sudo(?:\s+" + _SUDO_OPT + r")*|doas(?:\s+(?:-u\s*\S+|-\S+))*|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\S+)*"
-    r"|timeout(?:\s+-\S+)*\s+\S+|command|exec|nohup|time|stdbuf(?:\s+-\S+)*|\\)\s+")
-_SHELL_C = re.compile(r"^(?:ba|z|da|k|a)?sh\s+(?:-\S+\s+)*-c\s+(['\"])(.*)\1", re.S)
+    r"|timeout(?:\s+-\S+)*\s+\S+|command|exec|nohup|time|stdbuf(?:\s+-\S+)*"
+    # Launchers that run their arguments as a command (CFOP-240, CodeRabbit):
+    # `xargs systemctl restart`, `chroot / systemctl stop x`, `nsenter -t 1 -m
+    # -- systemctl restart kubelet`. Options that take a value are consumed
+    # with it, or the value would be read as the program.
+    r"|xargs(?:\s+(?:-[InPLsdEa](?:\s+|(?=\S))\S+|-\S+))*"
+    r"|watch(?:\s+(?:-[ng](?:\s+|(?=\S))\S+|--interval(?:=|\s+)\S+|-\S+))*"
+    r"|flock(?:\s+(?:-[wE](?:\s+|(?=\S))\S+|-(?![A-Za-z]*c\b)\S+))*\s+(?!-[A-Za-z]*c\b)\S+"
+    r"|chroot(?:\s+-\S+)*\s+\S+|setsid(?:\s+-\S+)*|unshare(?:\s+-\S+)*"
+    r"|nsenter(?:\s+(?:-[tSG](?:\s+|(?=\S))\S+|--(?:target|setuid|setgid)(?:=|\s+)\S+|-\S+))*"
+    r"|runuser(?:\s+(?:-[ugG](?:\s+|(?=\S))\S+|-(?!-(?:\s|$))(?![A-Za-z]*c\b)\S+))*\s+--"
+    r"|ssh(?:\s+(?:-[A-Za-z]*[BbcDEeFIiJLlmOoPpQRSWw](?:\s+|(?=\S))\S+|-\S+))*\s+\S+"
+    r"|\\)\s+")
+# A command handed over as one string: `sh -c '...'`, `bash -lc "..."`,
+# `su - root -c '...'`, `runuser -l u -c '...'`, and what flock leaves once
+# its file is consumed (`-c '...'`). The body is classified in turn.
+_SHELL_C = re.compile(
+    r"^(?:(?:(?:ba|z|da|k|a)?sh|su|runuser|flock)(?:\s+(?!-[A-Za-z]*c\b)\S+)*?\s+)?"
+    r"-[A-Za-z]*c\s+(['\"])(.*)\1", re.S)
+# A segment that is one quoted string once its launcher is stripped:
+# `watch -n5 'systemctl restart x'`, `ssh pi2 'sudo reboot'`.
+_WHOLLY_QUOTED = re.compile(r"^(['\"])(.*)\1$", re.S)
 _PROGRAM_PATH = re.compile(r"^(?:\.{0,2}/)?(?:[\w.+-]+/)+(?=[\w.+-])")
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
 # Device paths a write to is not a write: the bit bucket, the standard
@@ -212,7 +237,7 @@ def _segments(text: str) -> List[str]:
 
 
 def _unwrap(segment: str) -> str:
-    """Strip sudo/env/timeout-style prefixes so the program word is first."""
+    """Strip sudo/env/launcher prefixes so the program word is first."""
     seg = segment.strip()
     while True:
         before = seg
@@ -238,7 +263,9 @@ def ssh_mutation_reason(command) -> Optional[str]:
         seg = _unwrap(raw)
         if not seg:
             continue
-        inner = _SHELL_C.match(seg)
+        # A command handed over as a string (sh -c, su -c, ssh host '...',
+        # watch '...') runs its body; the body is what gets classified.
+        inner = _SHELL_C.match(seg) or _WHOLLY_QUOTED.match(seg)
         if inner:
             reason = ssh_mutation_reason(inner.group(2))
             if reason:

@@ -430,6 +430,16 @@ VERIFY_READS = [
     # line into one segment, so this reads as echo. A shell refuses the line
     # outright (syntax error), so nothing in it runs.
     "echo 'unterminated; rm -rf /",
+    # The launchers above, running reads — and names that only start alike.
+    "ls | xargs grep foo",
+    "ssh pi2 cat /etc/hosts",
+    "ssh pi2 'uptime; df -h'",
+    "ssh-keygen -lf k.pub",
+    "sshd -T",
+    "watch -n1 uptime",
+    "su postgres -c 'psql -c \"select 1\"'",
+    "chroot /host cat /etc/os-release",
+    "nsenter -t 1 -m -- journalctl -u kubelet -n 20",
 ]
 
 VERIFY_WRITES = [
@@ -489,6 +499,30 @@ VERIFY_WRITES = [
     ("curl --form a=b http://x/", "writes or sends data"),
     # A heredoc body is lines, and each line is classified.
     ("cat <<EOF\nrm -rf /x\nEOF", "changes the filesystem"),
+    # Launchers that run their arguments as a command (CodeRabbit on #290),
+    # and a command handed over as a string at any layer.
+    ("echo x | xargs systemctl restart", "systemctl restart"),
+    ("ls | xargs -I {} rm {}", "changes the filesystem"),
+    ("xargs -n1 -P4 kill < pids", "ends processes"),
+    ("su -c 'systemctl restart nginx'", "systemctl restart"),
+    ("su - root -c 'reboot'", "takes the host down"),
+    ("su -c 'reboot' root", "takes the host down"),
+    ("sudo su -c 'reboot'", "takes the host down"),
+    ("bash -lc 'systemctl restart x'", "systemctl restart"),
+    ("watch -n1 reboot", "takes the host down"),
+    ("watch -n 5 'systemctl restart x'", "systemctl restart"),
+    ("flock /tmp/l rm -rf /x", "changes the filesystem"),
+    ("flock -w 5 /tmp/l -c 'reboot'", "takes the host down"),
+    ("flock -c 'reboot' /tmp/l", "takes the host down"),
+    ("chroot / systemctl stop nginx", "systemctl stop"),
+    ("sudo --user root systemctl restart x", "systemctl restart"),
+    ("nsenter -t 1 -m -u -i -n -p -- systemctl restart kubelet", "systemctl restart"),
+    ("setsid reboot", "takes the host down"),
+    ("runuser -l postgres -c 'rm -rf /x'", "changes the filesystem"),
+    ("runuser -u postgres -- rm -rf /x", "changes the filesystem"),
+    ("ssh pi2 'sudo reboot'", "takes the host down"),
+    ("ssh -i k -p 22 pi2 systemctl restart docker", "systemctl restart"),
+    ("ssh -ti k pi2 reboot", "takes the host down"),
 ]
 
 
