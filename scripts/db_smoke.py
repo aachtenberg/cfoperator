@@ -183,7 +183,9 @@ def run(admin_dsn):
         try:
             _drop_database(admin_url, name)
         except Exception as exc:
-            results.append(("drop database", False, f"{type(exc).__name__}: {exc}"))
+            # Cleanup, not a property of the image: a throwaway database left
+            # in a CI service container is harmless, so it warns, not fails.
+            print(f"warn drop database {name}: {type(exc).__name__}: {exc}", file=sys.stderr)
     return results
 
 
