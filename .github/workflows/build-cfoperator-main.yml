@@ -381,7 +381,7 @@ jobs:
 
   bump-deploy-repo:
     # db-smoke gates the deploy: an image that cannot talk to its database is
-    # never bumped (CFOP-249). test_workflows.py pins this.
+    # never bumped (CFOP-249). tests/test_db_rollout.py pins this.
     needs: [build-and-push, db-smoke]
     # Homelab deploys follow main pushes only. A v* tag build publishes images
     # for the chart/demo audience and must not touch the deploy repo — pointing
