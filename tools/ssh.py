@@ -15,6 +15,12 @@ from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger("cfoperator.tools.ssh")
 
+# HOMELAB-28: cfop-forensics is not in the docker group, on purpose. These
+# helpers used to work only because the login (aachten) was. `sudo -n` uses
+# the host sudoers, which allows the read subcommands and refuses the rest,
+# and it fails closed instead of prompting.
+_SUDO_DOCKER = "sudo -n docker"
+
 
 def _q(value: Any) -> str:
     """Quote a value for interpolation into a remote shell command.
@@ -423,7 +429,7 @@ class SSHTools:
         lines = _int(lines, 100)
         if service:
             # Try docker first, then journalctl
-            docker_result = self.execute(host, f'docker logs --tail {lines} {_q(service)} 2>&1')
+            docker_result = self.execute(host, f'{_SUDO_DOCKER} logs --tail {lines} {_q(service)} 2>&1')
             if docker_result['success']:
                 return {
                     'success': True,
@@ -457,7 +463,8 @@ class SSHTools:
         services = []
 
         # Docker containers
-        docker_result = self.execute(host, 'docker ps --format "{{.Names}}|{{.Status}}|{{.Image}}" 2>/dev/null')
+        docker_result = self.execute(
+            host, _SUDO_DOCKER + ' ps --format "{{.Names}}|{{.Status}}|{{.Image}}" 2>/dev/null')
         if docker_result['success']:
             for line in docker_result['stdout'].strip().split('\n'):
                 if line:
@@ -495,7 +502,8 @@ class SSHTools:
 
     def list_docker_containers(self, host: str) -> Dict[str, Any]:
         """List Docker containers on host."""
-        result = self.execute(host, 'docker ps -a --format "{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}"')
+        result = self.execute(
+            host, _SUDO_DOCKER + ' ps -a --format "{{.ID}}|{{.Names}}|{{.Status}}|{{.Image}}"')
         if result['success']:
             containers = []
             for line in result['stdout'].strip().split('\n'):
@@ -518,7 +526,7 @@ class SSHTools:
 
     def docker_inspect(self, host: str, container: str) -> Dict[str, Any]:
         """Get detailed info about Docker container on host."""
-        result = self.execute(host, f'docker inspect {_q(container)}')
+        result = self.execute(host, f'{_SUDO_DOCKER} inspect {_q(container)}')
         if result['success']:
             try:
                 inspect_data = json.loads(result['stdout'])
@@ -539,7 +547,7 @@ class SSHTools:
 
     def docker_restart(self, host: str, container: str) -> Dict[str, Any]:
         """Restart Docker container on host."""
-        result = self.execute(host, f'docker restart {_q(container)}')
+        result = self.execute(host, f'{_SUDO_DOCKER} restart {_q(container)}')
         if result['success']:
             return {
                 'success': True,

@@ -122,7 +122,7 @@ class TestInspect:
         with patch("subprocess.run", return_value=completed) as run:
             assert backend.inspect("nginx", host="web1")["Id"] == "abc"
 
-        assert run.call_args.args[0] == ["ssh", "ops@web1", "docker", "inspect", "nginx"]
+        assert run.call_args.args[0] == ["ssh", "ops@web1", "sudo", "-n", "docker", "inspect", "nginx"]
 
     def test_resolves_host_from_prometheus(self, backend):
         payload = _prom_payload(_metric_result("nginx", engine_host="web1"))
@@ -162,7 +162,7 @@ class TestGetLogs:
             assert backend.get_logs("nginx", tail=50, since="10m", host="web1") == "line1\n"
 
         assert run.call_args.args[0] == [
-            "ssh", "ops@web1", "docker", "logs", "--tail", "50", "--since", "10m", "nginx",
+            "ssh", "ops@web1", "sudo", "-n", "docker", "logs", "--tail", "50", "--since", "10m", "nginx",
         ]
 
     def test_default_tail_without_since(self, backend):
@@ -194,7 +194,7 @@ class TestRestart:
         with patch("subprocess.run", return_value=completed) as run:
             assert backend.restart("nginx", host="web1") is True
 
-        assert run.call_args.args[0] == ["ssh", "ops@web1", "docker", "restart", "nginx"]
+        assert run.call_args.args[0] == ["ssh", "ops@web1", "sudo", "-n", "docker", "restart", "nginx"]
 
     def test_failed_ssh_is_false(self, backend):
         completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="no such container")
