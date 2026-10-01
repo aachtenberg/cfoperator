@@ -65,8 +65,13 @@ _SUDO_OPT = (r"(?:--(?:user|group|host|prompt|chdir|chroot|role|type|command-tim
 # and each repetition alternates whitespace with non-whitespace, so matching
 # stays linear in the command's length.
 _WRAPPER = re.compile(
-    r"^(?:sudo(?:\s+" + _SUDO_OPT + r")*|doas(?:\s+(?:-u\s*\S+|-\S+))*|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\S+)*"
-    r"|timeout(?:\s+-\S+)*\s+\S+|command|exec|nohup|time|stdbuf(?:\s+-\S+)*"
+    r"^(?:sudo(?:\s+" + _SUDO_OPT + r")*|doas(?:\s+(?:-u\s*\S+|-\S+))*"
+    # env/nice/timeout options that take a value, likewise (claude-review):
+    # `timeout -s KILL 5 x` read KILL as the duration and 5 as the program.
+    r"|env(?:\s+(?:-[uCP](?:\s+|(?=\S))\S+|--(?:unset|chdir)(?:=|\s+)\S+|-\S+|[A-Za-z_]\w*=\S*))*"
+    r"|nice(?:\s+(?:-n\s*-?\d+|--adjustment(?:=|\s+)-?\d+|-{1,2}\d+))*|ionice(?:\s+-\S+)*"
+    r"|timeout(?:\s+(?:-[sk](?:\s+|(?=\S))\S+|--(?:signal|kill-after)(?:=|\s+)\S+|-\S+))*\s+\S+"
+    r"|command|exec|nohup|time|stdbuf(?:\s+-\S+)*"
     # Launchers that run their arguments as a command (CFOP-240, CodeRabbit).
     # A new launcher or option goes into LAUNCHER_PREFIXES in
     # tools/test_tool_policy.py in the same commit — an unhandled flag turns

@@ -447,6 +447,9 @@ VERIFY_READS = [
     "nvidia-smi --query-gpu=ecc.mode.current,clocks.sm --format=csv,noheader",
     "nvidia-smi -L",
     "nvidia-smi topo -m",
+    "timeout -s KILL 5 cat /proc/loadavg",
+    "env -i PATH=/usr/bin uptime",
+    "nice -5 du -sh /var",
 ]
 
 # Every launcher the classifier unwraps, as a prefix. The matrix test below
@@ -455,7 +458,10 @@ VERIFY_READS = [
 # here rather than on a host (claude-review on #290).
 LAUNCHER_PREFIXES = [
     "sudo", "sudo -n", "sudo -u root", "sudo --user root", "sudo -nu root", "doas -u root",
-    "env A=1", "nice -n 5", "ionice -c3", "timeout 30", "nohup", "stdbuf -oL",
+    "env A=1", "env -i", "env -u FOO", "env --unset=FOO A=1", "env -C /tmp",
+    "nice -n 5", "nice -5", "nice --adjustment=5", "ionice -c3",
+    "timeout 30", "timeout -s KILL 5", "timeout -k 2 30", "timeout --signal KILL 5",
+    "nohup", "stdbuf -oL",
     "xargs", "xargs -I {}", "xargs -n1 -P4", "watch -n1", "watch -n 5",
     "flock /tmp/l", "flock -w 5 /tmp/l", "chroot /host", "setsid", "unshare -m",
     "nsenter -t 1 -m --", "runuser -u root --", "ssh pi2", "ssh -i k -p 22 pi2",
