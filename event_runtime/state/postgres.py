@@ -217,7 +217,8 @@ class PostgresStateSink(BaseStateSink):
         return written
 
     @staticmethod
-    def _row(alert_id: str, activity: dict, Jsonb) -> tuple:
+    def _row(alert_id: str, activity: dict, jsonb) -> tuple:
+        """One read-model row; ``jsonb`` is the driver's JSONB adapter."""
         return (
             alert_id,
             activity.get("source"),
@@ -231,7 +232,7 @@ class PostgresStateSink(BaseStateSink):
             parse_timestamp(activity["latest_event_at"]),
             int(activity.get("event_count") or 0),
             FOLD_VERSION,
-            Jsonb(activity, dumps=lambda value: json.dumps(value, default=str)),
+            jsonb(activity, dumps=lambda value: json.dumps(value, default=str)),
         )
 
     # ---- reads -------------------------------------------------------------
