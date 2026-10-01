@@ -166,10 +166,14 @@ def run(admin_dsn):
     name = f"cfop_db_smoke_{uuid.uuid4().hex[:10]}"
     results = []
     try:
-        _create_database(admin_url, name)
-    except Exception as exc:
-        return [("create database", False, f"{type(exc).__name__}: {exc}")]
-    try:
+        # Inside the cleanup: CREATE DATABASE can succeed and CREATE EXTENSION
+        # then fail, and that database must still be dropped (DROP ... IF
+        # EXISTS covers the case where nothing was created).
+        try:
+            _create_database(admin_url, name)
+        except Exception as exc:
+            results.append(("create database", False, f"{type(exc).__name__}: {exc}"))
+            return results
         url = admin_url.set(database=name)
         for step, check in CHECKS:
             try:
