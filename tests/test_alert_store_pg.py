@@ -45,10 +45,12 @@ def _normal(value):
 
 
 def _sql(statement, params=()):
-    import psycopg2
-    with psycopg2.connect(DSN) as conn:
+    import psycopg
+    with psycopg.connect(DSN) as conn:
         with conn.cursor() as cur:
-            cur.execute(statement, params)
+            # No params means no placeholders: the DROP pair below is two
+            # statements, which psycopg 3 only sends unparameterized.
+            cur.execute(statement, params or None)
             return cur.fetchall() if cur.description else None
 
 

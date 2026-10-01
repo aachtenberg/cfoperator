@@ -21,8 +21,8 @@ import decimal
 import logging
 import re
 
-import psycopg2
-import psycopg2.extras
+import psycopg
+from psycopg.rows import dict_row
 
 logger = logging.getLogger("cfoperator.tools.timescale")
 
@@ -119,7 +119,7 @@ class TimescaleTools:
 
         conn = None
         try:
-            conn = psycopg2.connect(
+            conn = psycopg.connect(
                 host=self.host,
                 port=self.port,
                 dbname=self.database,
@@ -130,8 +130,9 @@ class TimescaleTools:
                     f"-c default_transaction_read_only=on "
                     f"-c statement_timeout={self.statement_timeout_ms}"
                 ),
+                row_factory=dict_row,
             )
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            with conn.cursor() as cur:
                 cur.execute(cleaned)
                 rows = cur.fetchmany(max_rows)
                 truncated = cur.fetchone() is not None
@@ -150,8 +151,8 @@ class TimescaleTools:
                     "or add LIMIT instead of paging raw rows."
                 )
             return out
-        except psycopg2.Error as e:
-            # primary error line only - psycopg2 messages carry multi-line detail
+        except psycopg.Error as e:
+            # primary error line only - driver messages carry multi-line detail
             msg = str(e).strip().split("\n")[0]
             return {"error": f"Query failed: {msg}"}
         finally:

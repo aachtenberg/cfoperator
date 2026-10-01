@@ -67,7 +67,9 @@ def ensure_pgvector() -> None:
     try:
         from sqlalchemy import create_engine, text
 
-        engine = create_engine(default_db_url())
+        from cfshared.db import sqlalchemy_url
+
+        engine = create_engine(sqlalchemy_url(default_db_url()))
         with engine.begin() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         log("pgvector extension present")

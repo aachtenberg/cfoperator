@@ -51,7 +51,7 @@ def alerts_table_name(events_table: str) -> str:
 
 
 class PostgresStateSink(BaseStateSink):
-    """Persist domain events to PostgreSQL when psycopg2 is available."""
+    """Persist domain events to PostgreSQL when psycopg (v3) is available."""
 
     durable = True
 
@@ -101,7 +101,7 @@ class PostgresStateSink(BaseStateSink):
             return True
 
         try:
-            psycopg2, extras, sql = self._load_driver()
+            _psycopg, Jsonb, sql = self._load_driver()
             self._ensure_schema()
             query = sql.SQL(
                 "INSERT INTO {} (event_id, created_at, event_type, payload, alert_id) "
@@ -117,7 +117,7 @@ class PostgresStateSink(BaseStateSink):
                                 event["event_id"],
                                 event["created_at"],
                                 event["event_type"],
-                                extras.Json(event.get("payload", {})),
+                                Jsonb(event.get("payload", {})),
                                 alert_key(event),
                             )
                             for event in events
@@ -158,7 +158,7 @@ class PostgresStateSink(BaseStateSink):
             cur.execute("ROLLBACK TO SAVEPOINT read_model")
             logger.warning("Alert read model refresh failed for %d alert(s); marking them stale: %s",
                            len(ids), exc)
-            _psycopg2, _extras, sql = self._load_driver()
+            _psycopg, _Jsonb, sql = self._load_driver()
             cur.execute(
                 sql.SQL("UPDATE {} SET fold_version = -1 WHERE alert_id = ANY(%s)").format(
                     sql.Identifier(self.alerts_table)),
@@ -168,7 +168,7 @@ class PostgresStateSink(BaseStateSink):
 
     def _refresh(self, cur, alert_ids: List[str]) -> int:
         """Fold each alert from all of its events and upsert its row."""
-        _psycopg2, extras, sql = self._load_driver()
+        _psycopg, Jsonb, sql = self._load_driver()
         written = 0
         for start in range(0, len(alert_ids), _REFRESH_CHUNK):
             chunk = alert_ids[start:start + _REFRESH_CHUNK]
@@ -197,12 +197,14 @@ class PostgresStateSink(BaseStateSink):
                     self._fold_failures += 1
                     logger.error("Could not fold alert %s (%d events): %s", alert_id, len(events), exc)
                     continue
-                rows.append(self._row(alert_id, activity, extras))
+                rows.append(self._row(alert_id, activity, Jsonb))
             if rows:
-                extras.execute_values(cur, sql.SQL(
+                # executemany is pipelined in psycopg 3: one round trip for
+                # the chunk, as execute_values was in psycopg2.
+                cur.executemany(sql.SQL(
                     "INSERT INTO {} (alert_id, source, severity, status, action, summary, namespace, "
                     "resource_name, first_event_at, latest_event_at, event_count, fold_version, activity, "
-                    "updated_at) VALUES %s "
+                    "updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
                     "ON CONFLICT (alert_id) DO UPDATE SET source = EXCLUDED.source, "
                     "severity = EXCLUDED.severity, status = EXCLUDED.status, action = EXCLUDED.action, "
                     "summary = EXCLUDED.summary, namespace = EXCLUDED.namespace, "
@@ -210,13 +212,12 @@ class PostgresStateSink(BaseStateSink):
                     "latest_event_at = EXCLUDED.latest_event_at, event_count = EXCLUDED.event_count, "
                     "fold_version = EXCLUDED.fold_version, activity = EXCLUDED.activity, "
                     "updated_at = EXCLUDED.updated_at"
-                ).format(sql.Identifier(self.alerts_table)).as_string(cur), rows,
-                    template="(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())")
+                ).format(sql.Identifier(self.alerts_table)), rows)
                 written += len(rows)
         return written
 
     @staticmethod
-    def _row(alert_id: str, activity: dict, extras) -> tuple:
+    def _row(alert_id: str, activity: dict, Jsonb) -> tuple:
         return (
             alert_id,
             activity.get("source"),
@@ -230,7 +231,7 @@ class PostgresStateSink(BaseStateSink):
             parse_timestamp(activity["latest_event_at"]),
             int(activity.get("event_count") or 0),
             FOLD_VERSION,
-            extras.Json(activity, dumps=lambda value: json.dumps(value, default=str)),
+            Jsonb(activity, dumps=lambda value: json.dumps(value, default=str)),
         )
 
     # ---- reads -------------------------------------------------------------
@@ -239,7 +240,7 @@ class PostgresStateSink(BaseStateSink):
         if not self.dsn:
             return []
         try:
-            psycopg2, _extras, sql = self._load_driver()
+            _psycopg, _Jsonb, sql = self._load_driver()
             self._ensure_schema()
             query = sql.SQL(
                 "SELECT event_id, created_at, event_type, payload "
@@ -267,7 +268,7 @@ class PostgresStateSink(BaseStateSink):
     def list_alerts(self, query: AlertQuery) -> AlertPage:
         """Answer the query in SQL. Semantics: ``alert_store.apply_query``."""
         self._require_read_model()
-        psycopg2, _extras, sql = self._load_driver()
+        _psycopg, _Jsonb, sql = self._load_driver()
         conditions, params = [], []
         for column in ("status", "action", "source", "severity"):
             value = getattr(query, column)
@@ -312,7 +313,7 @@ class PostgresStateSink(BaseStateSink):
     def get_alert(self, alert_id: str) -> Optional[dict]:
         """Fold the alert fresh from its events; the row is for lists."""
         self._require_read_model()
-        psycopg2, _extras, sql = self._load_driver()
+        _psycopg, _Jsonb, sql = self._load_driver()
         try:
             with self._transaction() as conn:
                 with conn.cursor() as cur:
@@ -390,11 +391,9 @@ class PostgresStateSink(BaseStateSink):
         leaves an INVALID index that IF NOT EXISTS would then keep forever — so
         an invalid one is dropped and rebuilt.
         """
-        psycopg2, _extras, sql = self._load_driver()
+        psycopg, _Jsonb, sql = self._load_driver()
         index = f"idx_{self.table_name}_alert_id"
-        conn = psycopg2.connect(self.dsn)
-        try:
-            conn.autocommit = True
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid "
                             "WHERE c.relname = %s", (index,))
@@ -405,8 +404,6 @@ class PostgresStateSink(BaseStateSink):
                     cur.execute(sql.SQL("DROP INDEX CONCURRENTLY IF EXISTS {}").format(sql.Identifier(index)))
                 cur.execute(sql.SQL("CREATE INDEX CONCURRENTLY IF NOT EXISTS {} ON {} (alert_id, created_at)")
                             .format(sql.Identifier(index), sql.Identifier(self.table_name)))
-        finally:
-            conn.close()
 
     def _backfill_alert_ids(self) -> int:
         """Fill ``alert_id`` on rows written before the column existed.
@@ -415,7 +412,7 @@ class PostgresStateSink(BaseStateSink):
         no alert, so NULL means only "not classified yet". Keyset on event_id
         keeps each batch an index range, not a rescan.
         """
-        psycopg2, extras, sql = self._load_driver()
+        _psycopg, _Jsonb, sql = self._load_driver()
         last, total = "", 0
         while not self._stop.is_set():
             with self._transaction() as conn:
@@ -428,19 +425,17 @@ class PostgresStateSink(BaseStateSink):
                     rows = cur.fetchall()
                     if not rows:
                         return total
-                    extras.execute_values(
-                        cur,
-                        sql.SQL("UPDATE {} AS e SET alert_id = v.alert_id FROM (VALUES %s) AS v(event_id, alert_id) "
-                                "WHERE e.event_id = v.event_id").format(
-                            sql.Identifier(self.table_name)).as_string(cur),
-                        [(event_id, alert_key({"payload": payload})) for event_id, payload in rows],
+                    cur.executemany(
+                        sql.SQL("UPDATE {} SET alert_id = %s WHERE event_id = %s").format(
+                            sql.Identifier(self.table_name)),
+                        [(alert_key({"payload": payload}), event_id) for event_id, payload in rows],
                     )
             last, total = rows[-1][0], total + len(rows)
         return total
 
     def _fold_stale_alerts(self) -> int:
         """Refold every alert whose row is missing or at another FOLD_VERSION."""
-        psycopg2, _extras, sql = self._load_driver()
+        _psycopg, _Jsonb, sql = self._load_driver()
         last, total = "", 0
         while not self._stop.is_set():
             with self._transaction() as conn:
@@ -484,7 +479,7 @@ class PostgresStateSink(BaseStateSink):
     def _ensure_schema(self) -> None:
         if self._schema_ready or not self.dsn:
             return
-        psycopg2, _extras, sql = self._load_driver()
+        _psycopg, _Jsonb, sql = self._load_driver()
         table_identifier = sql.Identifier(self.table_name)
         index_identifier = sql.Identifier(f"idx_{self.table_name}_created_at")
         alerts = sql.Identifier(self.alerts_table)
@@ -549,24 +544,20 @@ class PostgresStateSink(BaseStateSink):
     def _transaction(self):
         """One connection, one transaction, always closed.
 
-        psycopg2's own ``with connect()`` commits or rolls back but leaves the
-        connection open until garbage collection. Per-append connections and
-        batch loops should not depend on refcounting for their sockets.
+        psycopg 3's ``with connect()`` commits (or rolls back on an exception)
+        and closes the connection — what psycopg2 needed an explicit close for.
         """
-        psycopg2, _extras, _sql = self._load_driver()
-        conn = psycopg2.connect(self.dsn)
-        try:
-            with conn:
-                yield conn
-        finally:
-            conn.close()
+        psycopg, _Jsonb, _sql = self._load_driver()
+        with psycopg.connect(self.dsn) as conn:
+            yield conn
 
     @staticmethod
     def _load_driver():
-        import psycopg2
-        from psycopg2 import extras, sql
+        import psycopg
+        from psycopg import sql
+        from psycopg.types.json import Jsonb
 
-        return psycopg2, extras, sql
+        return psycopg, Jsonb, sql
 
 
 def _event_from_row(row) -> dict:

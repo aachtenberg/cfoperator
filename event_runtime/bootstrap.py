@@ -384,19 +384,16 @@ def _load_git_repos_from_db(cfg: dict) -> list | None:
     if not dsn:
         return None
     try:
-        import psycopg2  # noqa: PLC0415 — optional dependency, same as the state sink
+        import psycopg  # noqa: PLC0415 — optional dependency, same as the state sink
     except ImportError:
         return None
     try:
         # Bounded: this runs before the runtime serves anything, and a DB that
         # is slow to answer must not hold up alert handling.
-        conn = psycopg2.connect(dsn, connect_timeout=5)
-        try:
+        with psycopg.connect(dsn, connect_timeout=5) as conn:
             with conn.cursor() as cur:
                 cur.execute(_SETTINGS_QUERY, (shared_repos.SETTING_KEY,))
                 row = cur.fetchone()
-        finally:
-            conn.close()
     except Exception as exc:
         log.warning("Could not read the repo registry from the database, using config: %s", exc)
         return None

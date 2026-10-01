@@ -40,9 +40,9 @@ def config_file(tmp_path):
     return str(path)
 
 
-def _fake_psycopg2(monkeypatch, *, value=None, row=True, connect_raises=None, calls=None):
-    """A psycopg2 stand-in. The real driver is an optional dependency here, and
-    this suite must not need a database."""
+def _fake_psycopg(monkeypatch, *, value=None, row=True, connect_raises=None, calls=None):
+    """A psycopg (v3) stand-in. The real driver is an optional dependency here,
+    and this suite must not need a database."""
 
     class _Cursor:
         def __enter__(self):
@@ -59,6 +59,14 @@ def _fake_psycopg2(monkeypatch, *, value=None, row=True, connect_raises=None, ca
             return (value,) if row else None
 
     class _Conn:
+        # psycopg 3's connection is a context manager that closes on exit.
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.close()
+            return False
+
         def cursor(self):
             return _Cursor()
 
@@ -72,9 +80,9 @@ def _fake_psycopg2(monkeypatch, *, value=None, row=True, connect_raises=None, ca
             calls.append(("connect", dsn, kwargs))
         return _Conn()
 
-    module = types.ModuleType("psycopg2")
+    module = types.ModuleType("psycopg")
     module.connect = connect
-    monkeypatch.setitem(sys.modules, "psycopg2", module)
+    monkeypatch.setitem(sys.modules, "psycopg", module)
     return module
 
 
@@ -85,7 +93,7 @@ def _no_ambient_env(monkeypatch):
 
 
 def test_the_console_registry_wins_over_the_file(monkeypatch, config_file):
-    _fake_psycopg2(monkeypatch, value=json.dumps(DB_REPOS))
+    _fake_psycopg(monkeypatch, value=json.dumps(DB_REPOS))
     cfg = bootstrap._load_git_config(config_file)
     assert [r["name"] for r in cfg["repos"]] == ["esp-sensor-hub"]
     # The github block still comes from the file — the console manages repos,
@@ -94,28 +102,28 @@ def test_the_console_registry_wins_over_the_file(monkeypatch, config_file):
 
 
 def test_no_stored_row_leaves_the_file_in_charge(monkeypatch, config_file):
-    _fake_psycopg2(monkeypatch, row=False)
+    _fake_psycopg(monkeypatch, row=False)
     assert [r["name"] for r in bootstrap._load_git_config(config_file)["repos"]] == ["homelab-infra"]
 
 
 def test_a_database_that_will_not_answer_leaves_the_file_in_charge(monkeypatch, config_file):
-    _fake_psycopg2(monkeypatch, connect_raises=OSError("connection refused"))
+    _fake_psycopg(monkeypatch, connect_raises=OSError("connection refused"))
     assert [r["name"] for r in bootstrap._load_git_config(config_file)["repos"]] == ["homelab-infra"]
 
 
 def test_a_junk_setting_leaves_the_file_in_charge(monkeypatch, config_file):
-    _fake_psycopg2(monkeypatch, value="{not json")
+    _fake_psycopg(monkeypatch, value="{not json")
     assert [r["name"] for r in bootstrap._load_git_config(config_file)["repos"]] == ["homelab-infra"]
 
 
 def test_an_emptied_registry_is_honoured(monkeypatch, config_file):
     """Distinct from unreadable: the operator unlinked everything."""
-    _fake_psycopg2(monkeypatch, value="[]")
+    _fake_psycopg(monkeypatch, value="[]")
     assert bootstrap._load_git_config(config_file)["repos"] == []
 
 
 def test_the_env_var_still_outranks_the_console(monkeypatch, config_file):
-    _fake_psycopg2(monkeypatch, value=json.dumps(DB_REPOS))
+    _fake_psycopg(monkeypatch, value=json.dumps(DB_REPOS))
     monkeypatch.setenv("CFOP_GIT_REPOS_JSON", json.dumps([{"name": "pinned", "github": "o/pinned"}]))
     assert [r["name"] for r in bootstrap._load_git_config(config_file)["repos"]] == ["pinned"]
 
@@ -125,7 +133,7 @@ def test_without_an_explicit_dsn_the_database_block_is_used(monkeypatch, config_
     rest of this config already describes is the right one to read it over."""
     monkeypatch.setenv("CFOP_EVENT_RUNTIME_PG_DSN", "")
     calls: list = []
-    _fake_psycopg2(monkeypatch, value=json.dumps(DB_REPOS), calls=calls)
+    _fake_psycopg(monkeypatch, value=json.dumps(DB_REPOS), calls=calls)
     assert [r["name"] for r in bootstrap._load_git_config(config_file)["repos"]] == ["esp-sensor-hub"]
     connects = [c for c in calls if c[0] == "connect"]
     assert connects and connects[0][1].startswith("postgresql://")
@@ -135,14 +143,14 @@ def test_a_config_with_no_database_reads_nothing(monkeypatch):
     """No host, no user, no read — not a connection attempt to a guess."""
     monkeypatch.setenv("CFOP_EVENT_RUNTIME_PG_DSN", "")
     calls: list = []
-    _fake_psycopg2(monkeypatch, value=json.dumps(DB_REPOS), calls=calls)
+    _fake_psycopg(monkeypatch, value=json.dumps(DB_REPOS), calls=calls)
     assert bootstrap._load_git_repos_from_db({"database": {}}) is None
     assert calls == []
 
 
 def test_the_read_is_bounded_and_asks_for_the_registry_key(monkeypatch, config_file):
     calls: list = []
-    _fake_psycopg2(monkeypatch, value=json.dumps(DB_REPOS), calls=calls)
+    _fake_psycopg(monkeypatch, value=json.dumps(DB_REPOS), calls=calls)
     bootstrap._load_git_config(config_file)
     connects = [c for c in calls if c[0] == "connect"]
     assert connects and connects[0][2].get("connect_timeout"), "startup must not hang on a slow DB"

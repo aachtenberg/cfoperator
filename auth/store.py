@@ -26,6 +26,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 from werkzeug.security import check_password_hash, generate_password_hash
 
+from cfshared.db import sqlalchemy_url
+
 from .models import (
     EVENT_LEGACY_TOKEN_USED,
     EVENT_TOKEN_AUTH_FAIL,
@@ -87,7 +89,7 @@ class AuthStore:
             self.engine = engine
         else:
             self.engine = create_engine(
-                db_url or default_db_url(),
+                sqlalchemy_url(db_url or default_db_url()),
                 poolclass=QueuePool,
                 pool_size=5,
                 max_overflow=10,
