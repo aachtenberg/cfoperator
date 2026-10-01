@@ -47,7 +47,14 @@ class PrometheusContainers(ContainerBackend):
             return []
 
     def _ssh_docker_command(self, host: str, command: List[str]) -> str:
-        """Execute docker command via SSH."""
+        """Execute docker command via SSH.
+
+        HOMELAB-28: the forensics user is not in the docker group. Prefix
+        with ``sudo -n`` so the host sudoers (read subcommands only) is what
+        grants access, and a missing grant fails closed instead of prompting.
+        """
+        if command and command[0] == "docker":
+            command = ["sudo", "-n", *command]
         try:
             result = subprocess.run(
                 ['ssh', f'{self.ssh_user}@{host}'] + command,

