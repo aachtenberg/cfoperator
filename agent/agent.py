@@ -54,7 +54,7 @@ from cfshared.version import build_version
 from event_runtime.client import EventRuntimeClient, UNREACHABLE as RUNTIME_UNREACHABLE
 
 # Import tool registry
-from tools import ToolRegistry, ToolPolicy
+from tools import ToolRegistry, ToolPolicy, UNATTENDED
 
 # Import Ollama pool (for parallel sweeps)
 from ollama_pool import OllamaPool
@@ -2662,6 +2662,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
                     messages=[{'role': 'user', 'content': user_msg}],
                     system_context=system_prompt,
                     max_iterations=1,  # one-shot classification — no tool loop
+                    tool_policy=UNATTENDED,
                 )
                 result['backend'] = 'ollama'
                 result['model'] = triage_model
@@ -2693,6 +2694,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
                     messages=[{'role': 'user', 'content': user_msg}],
                     system_context=system_prompt,
                     max_iterations=1,  # one-shot classification — no tool loop
+                    tool_policy=UNATTENDED,
                 )
             except Exception as e:
                 logger.warning(f"Triage LLM unavailable, defaulting to investigate: {e}")
@@ -2937,11 +2939,12 @@ Alert: {trigger}
 {learnings_text}{similar_text}
 
 Investigate this alert using the available tools. Check metrics, logs, and container/service status.
+This investigation is read-only: observe, do not change anything. A command that restarts, writes, or changes settings is refused; the change you would make goes in your FIX, and the remediation queue applies it.
 First give a short summary of what you found. Then end your response with:
 
 STATUS: <one of: resolved | needs_action | monitoring | escalate>
-  - resolved: the resource is healthy RIGHT NOW — the problem is gone, or you fixed it during this investigation. Do NOT use resolved just because you identified a fix that someone still has to apply.
-  - needs_action: you found the problem but it needs a change you could not make yourself; your RECOMMENDATION says what to do.
+  - resolved: the resource is healthy RIGHT NOW — the problem is gone. Do NOT use resolved just because you identified a fix that someone still has to apply.
+  - needs_action: you found the problem and it needs a change; your RECOMMENDATION says what to do.
   - monitoring: transient or inconclusive; worth watching, no action yet.
   - escalate: urgent; a human should look now.
 RECOMMENDATION: <the single most useful operator-facing next step — a concrete command or config change, or "No action needed" when the resource is genuinely healthy>
@@ -2955,6 +2958,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 result = self._chat_with_tools_with_fallback(
                     messages=[{'role': 'user', 'content': f'Investigate this alert: {trigger}'}],
                     system_context=system_prompt,
+                    tool_policy=UNATTENDED,
                 )
             except RuntimeError as e:
                 if "No LLM providers available" not in str(e):
@@ -3215,6 +3219,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     "investigation. No other text, no array."
                 ),
                 max_iterations=1,
+                tool_policy=UNATTENDED,
             )
             return result.get('response', '')
         except Exception as e:
@@ -5471,6 +5476,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             result = self._chat_with_tools_with_fallback(
                 messages=messages, system_context=system_prompt,
                 max_iterations=1,  # one-shot classification — no tool loop
+                tool_policy=UNATTENDED,
             )
         except Exception as e:
             logger.warning(f"Remediation classifier LLM unavailable, degrading to manual/high: {e}")
@@ -5500,6 +5506,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             retry = self._chat_with_tools_with_fallback(
                 messages=nudge_messages, system_context=system_prompt,
                 max_iterations=1,
+                tool_policy=UNATTENDED,
             )
             parsed = self._parse_remediation_classification(retry.get('response', ''))
             if parsed is not None:
@@ -5524,6 +5531,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     provider_type=ptype, url=url, model=mname,
                     messages=messages, system_context=system_prompt,
                     max_iterations=1,
+                    tool_policy=UNATTENDED,
                 )
                 parsed = self._parse_remediation_classification(esc.get('response', ''))
                 if parsed is not None:
@@ -6006,6 +6014,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             result = self._chat_with_tools_with_fallback(
                 messages=messages, system_context=system_prompt,
                 max_iterations=1,
+                tool_policy=UNATTENDED,
             )
             committed = str(result.get('response') or '').strip()
             if committed and len(committed) <= 1200 \
@@ -7171,6 +7180,7 @@ Only return the JSON array, no other text."""
                 backend=sweep_backend or 'auto',
                 model=sweep_model or None,
                 max_iterations=max_iterations,
+                tool_policy=UNATTENDED,
             )
 
             provider_type = result.get('backend', 'unknown')
@@ -7421,7 +7431,8 @@ Only return the JSON array, no other text."""
                 model=model,
                 messages=[{'role': 'user', 'content': task}],
                 system_context=system_prompt,
-                max_iterations=max_iterations
+                max_iterations=max_iterations,
+                tool_policy=UNATTENDED,
             )
 
             response_text = result.get('response', '')
@@ -8116,6 +8127,7 @@ Only return the JSON array, no other text."""
                 messages=[{'role': 'user', 'content': user_msg}],
                 system_context=system_prompt,
                 max_iterations=max_iterations,
+                tool_policy=UNATTENDED,
             )
         except Exception as e:
             logger.warning(f"Verification skipped (LLM unavailable): {e}")
@@ -8637,7 +8649,7 @@ Only return the JSON array, no other text."""
         """Every ``/command`` the chat path recognises, for the console.
 
         Two sources, the same two the chat path dispatches on: the skills
-        loaded from ``skills/*/SKILL.md`` (``_execute_skill``) and the
+        loaded from ``skills/*/SKILL.md`` (``_execute_skill_stream``) and the
         shortcut expansions above. The console renders both its sidebar and
         its slash-autocomplete from this list, so a skill added server-side
         appears in both without the page changing. Nothing is hand-listed
@@ -9429,15 +9441,11 @@ Only return the JSON array, no other text."""
                     f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: "
                     f"{provider_type}/{model_name}"
                 )
-                # The policy kwarg travels only when one exists (CFOP-124), so
-                # every internal caller — and every test double of this hop —
-                # sees the call it always did.
-                policy_kw = {'tool_policy': tool_policy} if tool_policy is not None else {}
                 result = self._chat_with_tools(
                     provider_type=provider_type, url=url, model=model_name,
                     messages=messages, system_context=system_context,
                     max_iterations=max_iterations, event_callback=event_callback,
-                    **policy_kw,
+                    tool_policy=tool_policy,
                 )
                 provider_key = (
                     f"{provider_type}/{url}/{model_name}" if url
@@ -9479,10 +9487,9 @@ Only return the JSON array, no other text."""
         """
         start = time.time()
         try:
-            policy_kw = {'tool_policy': tool_policy} if tool_policy is not None else {}
             result = self._chat_with_tools_inner(
                 provider_type, url, model, messages, system_context,
-                max_iterations, event_callback, **policy_kw,
+                max_iterations, event_callback, tool_policy=tool_policy,
             )
             latency = time.time() - start
             LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
@@ -9947,18 +9954,11 @@ Only return the JSON array, no other text."""
         return stats.result(
             "Maximum tool iterations reached. Please simplify your request.")
 
-    def _build_chat_system_context(self, mention_skills: bool = False,
-                                   tool_policy: Optional[ToolPolicy] = None) -> str:
-        """Build the chat system prompt: infra state, capabilities, recent learnings.
-
-        Shared by the buffered and streaming chat paths. ``mention_skills``
-        adds the slash-command bullet, which only the buffered path (the one
-        that routes ``/skill`` messages itself) advertises.
-        """
+    def _build_chat_system_context(self, tool_policy: Optional[ToolPolicy] = None) -> str:
+        """Build the chat system prompt: infra state, capabilities, recent learnings."""
         hosts_config = self.config.get('infrastructure', {}).get('hosts', {})
         host_list = ', '.join(f"{name} ({info.get('address', '?')}, {info.get('role', 'unknown')})"
                               for name, info in hosts_config.items())
-        skills_line = "- Execute skills when requested (e.g., /investigate-container)\n" if mention_skills else ""
 
         # Capability list is derived from the live tool registry so it cannot
         # drift behind newly registered tools (CFOP-22 C). One line per schema.
@@ -9997,7 +9997,13 @@ Only return the JSON array, no other text."""
                             "withheld, and ssh_execute accepts read-only commands only — a command "
                             "that restarts, edits or installs is refused, so send the one that "
                             "observes the state instead. An operator applies changes from the console.\n")
-        elif tool_policy is not None and not tool_policy.allows_mutation():
+        elif tool_policy is not None and tool_policy.unattended:
+            # No console chat passes this today; the branch keeps the first
+            # caller that does from being told it is a member (review).
+            policy_block = ("\nThis is an unattended run: observe, do not change. Tools that change "
+                            "the system are withheld, and ssh_execute accepts read-only commands "
+                            "only. Put the change you would make in your FIX.\n")
+        elif tool_policy is not None and not tool_policy.role_allows_mutation():
             policy_block = ("\nThe person asking is a member: tools that change the system are "
                             "withheld. When a change is needed, say exactly what you would run "
                             "and why, so an admin can do it from the console.\n")
@@ -10022,7 +10028,7 @@ Use ssh_list_services to see BOTH containers and systemd services on a host.
 Your role:
 - Answer infrastructure-specific questions
 - Investigate issues using available tools
-{skills_line}{learning_line}- Use find_learnings to check for known solutions before investigating
+{learning_line}- Use find_learnings to check for known solutions before investigating
 - NOT general system administration (user has Claude Code CLI for that)
 
 Be concise and infrastructure-focused.
@@ -10087,112 +10093,17 @@ IMPORTANT:
             'tool_calls': 0
         }
 
-    def handle_chat_message(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None) -> Dict[str, Any]:
-        """
-        Handle chat message from user (via web UI).
-
-        This is for infrastructure-specific questions like:
-        - "Why did immich restart?"
-        - "Show me Pi2 container status"
-        - "What's using memory on Pi3?"
-        - "/investigate-container immich-ml"
-
-        NOT for general system administration (that's Claude Code CLI).
-
-        Args:
-            message: User's message
-            history: Chat history
-            backend: LLM backend to use (auto, ollama, groq, gemini, anthropic)
-            model: Specific model to use (overrides default for the backend)
-
-        Returns:
-            {
-                'response': '...',
-                'backend': 'ollama',
-                'model': 'qwen3:14b',
-                'tool_calls': 2
-            }
-        """
-        logger.info(f"Handling chat message: {message[:100]}")
-
-        system_context = self._build_chat_system_context(mention_skills=True)
-
-        # Expand shortcut slash commands into natural language prompts
-        message = self._expand_slash_shortcut(message)
-
-        # Check for skill/command invocation
-        if message.startswith('/'):
-            return self._execute_skill(message, backend=backend, model=model)
-
-        # Check for explicit summary request (must be the primary intent, not just containing the word)
-        msg_lower = message.lower().strip()
-        if msg_lower in ('summary', 'report', 'status', 'tps report', 'morning summary', 'give me a summary', 'show summary'):
-            summary = self._generate_morning_summary()
-            return {
-                'response': summary['text'],
-                'backend': 'N/A',
-                'model': 'N/A',
-                'tool_calls': 0
-            }
-
-        # Call LLM with tools + metrics tracking
-        start_time = time.time()
-        tool_calls_count = 0
-
-        try:
-            # Build messages
-            messages = list(history) + [{'role': 'user', 'content': message}]
-
-            result = self._chat_with_tools_with_fallback(
-                messages=messages,
-                system_context=system_context,
-                backend=backend,
-                model=model,
-            )
-
-            return {
-                'response': result.get('response', ''),
-                'backend': result.get('backend', 'unknown'),
-                'model': result.get('model', 'unknown'),
-                'tool_calls': result.get('tool_calls', 0),
-                'learning_ids': result.get('learning_ids', []),
-            }
-
-        except Exception as e:
-            # Track failed LLM request
-            latency = time.time() - start_time
-            provider = provider_type if 'provider_type' in locals() else 'unknown'
-            model_name = model if 'model' in locals() else 'unknown'
-
-            LLM_REQUESTS.labels(provider=provider, model=model_name, result='error').inc()
-            LLM_ERRORS.labels(provider=provider, error_type=type(e).__name__).inc()
-            LLM_LATENCY.labels(provider=provider, model=model_name).observe(latency)
-
-            # Record failure in fallback manager
-            if 'provider_key' in locals():
-                error_type = self.llm.classify_error(e)
-                self.llm.record_failure(provider_key, error_type)
-
-            logger.error(f"Chat failed: {e}", exc_info=True)
-
-            return {
-                'response': f"Error processing request: {str(e)}",
-                'backend': provider,
-                'model': model_name,
-                'tool_calls': tool_calls_count,
-                'learning_ids': []
-            }
-
     def handle_chat_message_stream(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None,
                                    actor_role: Optional[str] = None, verify_only: bool = False):
         """
-        Streaming version of handle_chat_message. Yields SSE event dicts.
+        Run one console chat turn, yielding SSE event dicts.
 
         ``actor_role`` is the console role of whoever is asking, captured by
         the route while request context exists; ``verify_only`` marks a
         drawer / sweep-banner hand-off. Together they become the turn's
-        ToolPolicy (CFOP-124). Neither set means an internal caller: no
-        policy, every tool, exactly as before.
+        ToolPolicy (CFOP-124). No role is read as a member, the same fallback
+        the console route applies: a chat turn always has a person behind it,
+        and nothing internal calls this (CFOP-240, review).
 
         Events yielded:
             {'event': 'tool_call', 'data': {'tool': ..., 'args': ..., 'iteration': ..., 'max': ...}}
@@ -10201,8 +10112,8 @@ IMPORTANT:
             {'event': 'error', 'data': {'error': ...}}
         """
         event_queue = queue.Queue()
-        tool_policy = (ToolPolicy(actor_role=actor_role, verify_only=verify_only)
-                       if (actor_role is not None or verify_only) else None)
+        tool_policy = ToolPolicy(actor_role=actor_role or shared_config.ROLE_MEMBER,
+                                 verify_only=verify_only)
 
         def event_callback(event_type, data):
             event_queue.put({'event': event_type, 'data': data})
@@ -10246,7 +10157,7 @@ IMPORTANT:
 
     def _handle_chat_with_stream(self, message, history, backend, model, event_callback,
                                  tool_policy: Optional[ToolPolicy] = None):
-        """Internal: runs handle_chat_message logic but passes event_callback to _chat_with_tools."""
+        """Internal: one chat turn, with event_callback passed through to _chat_with_tools."""
         system_context = self._build_chat_system_context(tool_policy=tool_policy)
 
         messages = list(history) + [{'role': 'user', 'content': message}]
@@ -10304,62 +10215,6 @@ IMPORTANT:
         except Exception as e:
             logger.error(f"Skill execution (stream) failed: {e}", exc_info=True)
             return {'response': f"Skill execution failed: {str(e)}", 'backend': 'error', 'model': 'N/A', 'tool_calls': 0}
-
-    def _execute_skill(self, message: str, backend: str = 'auto', model: str = None) -> Dict[str, Any]:
-        """
-        Execute a skill command (e.g., /investigate-container immich-ml).
-
-        Skills are structured LLM prompts with:
-        - Clear instructions for what to do
-        - Tool calling sequence
-        - Expected output format
-
-        The skill instructions are injected into the system context,
-        and the LLM executes the skill using available tools.
-        """
-        system_context, user_message, skill_name = self._prepare_skill_invocation(message)
-        if system_context is None:
-            return self._unknown_skill_response(skill_name)
-
-        # Execute with LLM + tools
-        start_time = time.time()
-
-        try:
-            result = self._chat_with_tools_with_fallback(
-                messages=[{'role': 'user', 'content': user_message}],
-                system_context=system_context,
-                backend=backend,
-                model=model,
-            )
-            return {
-                'response': result.get('response', ''),
-                'backend': result.get('backend', 'unknown'),
-                'model': result.get('model', 'unknown'),
-                'tool_calls': result.get('tool_calls', 0),
-            }
-        except RuntimeError as e:
-            if "No LLM providers available" in str(e):
-                return {
-                    'response': f'LLM provider unavailable: {backend}',
-                    'backend': 'none',
-                    'model': 'none',
-                    'tool_calls': 0
-                }
-            logger.error(f"Skill execution failed (all providers exhausted): {e}", exc_info=True)
-            return {
-                'response': f"Skill execution failed: {str(e)}",
-                'backend': 'error',
-                'model': 'N/A',
-                'tool_calls': 0
-            }
-        except Exception as e:
-            logger.error(f"Skill execution failed: {e}", exc_info=True)
-            return {
-                'response': f"Skill execution failed: {str(e)}",
-                'backend': 'error',
-                'model': 'N/A',
-                'tool_calls': 0
-            }
 
     def answer_question(self, question_id: int, answer: str):
         """
@@ -10636,6 +10491,7 @@ IMPORTANT:
                     f"{infra}"
                 ),
                 max_iterations=15,
+                tool_policy=UNATTENDED,
             )
             summary_text = result.get('response', '')
             if summary_text and 'Maximum tool iterations' not in summary_text:

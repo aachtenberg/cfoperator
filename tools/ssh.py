@@ -36,24 +36,73 @@ def _int(value: Any, default: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Read-only classification for verification turns (CFOP-124)
+# Read-only classification for verification turns and unattended runs
+# (CFOP-124, CFOP-240)
 # ---------------------------------------------------------------------------
-# A verify-only chat turn (a drawer or sweep-banner hand-off) keeps ssh_execute
-# — the sweep's own checks are ssh one-liners: mountpoint, systemctl status,
-# journalctl, nc — but every command it sends goes through this classifier,
-# which refuses the mutators it knows. It is a denylist of known write shapes,
-# not a proof of harmlessness: an interpreter one-liner (python -c, perl -e)
-# is not classified and runs. That gap is accepted; the role gate is separate
-# and a member never gets ssh_execute at all.
-
-_SEGMENT_SPLIT = re.compile(r"\s*(?:\|\||&&|;|\||\n|&(?![>\d])|\$\(|`|\(|\))\s*")
+# A verify-only chat turn (a drawer or sweep-banner hand-off) and every
+# unattended run (investigation, sweep) keep ssh_execute — the checks are ssh
+# one-liners: mountpoint, systemctl status, journalctl, nc — but every command
+# they send goes through this classifier, which refuses the mutators it knows.
+# It is a denylist of known write shapes, not a proof of harmlessness: an
+# interpreter one-liner (python -c, perl -e), a database client, or a script
+# (sudo /usr/local/bin/docker-backup.sh, which an investigation ran on
+# 2026-09-24) is not classified and runs. That gap is accepted here; what
+# closes it is the SSH user not holding blanket sudo on the host. The role gate
+# is separate and a member never gets ssh_execute at all.
+#
+# Since unattended runs go through it, a false positive refuses a real
+# investigation read, so the reads it wrongly refused in 30 days of logs are
+# pinned as tests: a '|' inside a quoted grep pattern, curl -o /dev/null.
 _ENV_ASSIGN = re.compile(r"^(?:[A-Za-z_]\w*=\S*\s+)+")
+# sudo/doas options that take an argument (-u root, -g adm, -D dir, ...) are
+# consumed with it, or the argument is read as the program: `sudo -u root
+# systemctl restart x` classified as a command named "root" and ran (CFOP-240,
+# claude-review). The clustered form counts too: -nu root, -uroot, and the
+# long form: --user root (CodeRabbit).
+_SUDO_OPT = (r"(?:--(?:user|group|host|prompt|chdir|chroot|role|type|command-timeout|close-from|"
+             r"other-user|login-class)\s+\S+|-[A-Za-z]*[ugUhpCDRrtT](?:\s+|(?=\S))\S+|-\S+)")
+# The patterns below are constants built by concatenation, never from input,
+# and each repetition alternates whitespace with non-whitespace, so matching
+# stays linear in the command's length.
 _WRAPPER = re.compile(
-    r"^(?:sudo(?:\s+-\S+)*|doas|env(?:\s+[A-Za-z_]\w*=\S*)*|nice(?:\s+-n\s*-?\d+)?|ionice(?:\s+-\S+)*"
-    r"|timeout(?:\s+-\S+)*\s+\S+|command|exec|nohup|time|stdbuf(?:\s+-\S+)*|\\)\s+")
-_SHELL_C = re.compile(r"^(?:ba|z|da|k|a)?sh\s+(?:-\S+\s+)*-c\s+(['\"])(.*)\1", re.S)
+    r"^(?:sudo(?:\s+" + _SUDO_OPT + r")*|doas(?:\s+(?:-u\s*\S+|-\S+))*"
+    # env/nice/timeout options that take a value, likewise (claude-review):
+    # `timeout -s KILL 5 x` read KILL as the duration and 5 as the program.
+    r"|env(?:\s+(?:-[uCP](?:\s+|(?=\S))\S+|--(?:unset|chdir)(?:=|\s+)\S+|-\S+|[A-Za-z_]\w*=\S*))*"
+    r"|nice(?:\s+(?:-n\s*-?\d+|--adjustment(?:=|\s+)-?\d+|-{1,2}\d+))*|ionice(?:\s+-\S+)*"
+    r"|timeout(?:\s+(?:-[sk](?:\s+|(?=\S))\S+|--(?:signal|kill-after)(?:=|\s+)\S+|-\S+))*\s+\S+"
+    r"|command|exec|nohup|time|stdbuf(?:\s+-\S+)*"
+    # Launchers that run their arguments as a command (CFOP-240, CodeRabbit).
+    # A new launcher or option goes into LAUNCHER_PREFIXES in
+    # tools/test_tool_policy.py in the same commit — an unhandled flag turns
+    # its value into "the program" and lets a write through:
+    # `xargs systemctl restart`, `chroot / systemctl stop x`, `nsenter -t 1 -m
+    # -- systemctl restart kubelet`. Options that take a value are consumed
+    # with it, or the value would be read as the program.
+    r"|xargs(?:\s+(?:-[InPLsdEa](?:\s+|(?=\S))\S+|-\S+))*"
+    r"|watch(?:\s+(?:-[ng](?:\s+|(?=\S))\S+|--interval(?:=|\s+)\S+|-\S+))*"
+    r"|flock(?:\s+(?:-[wE](?:\s+|(?=\S))\S+|-(?![A-Za-z]*c\b)\S+))*\s+(?!-[A-Za-z]*c\b)\S+"
+    r"|chroot(?:\s+-\S+)*\s+\S+|setsid(?:\s+-\S+)*|unshare(?:\s+-\S+)*"
+    r"|nsenter(?:\s+(?:-[tSG](?:\s+|(?=\S))\S+|--(?:target|setuid|setgid)(?:=|\s+)\S+|-\S+))*"
+    r"|runuser(?:\s+(?:-[ugG](?:\s+|(?=\S))\S+|-(?!-(?:\s|$))(?![A-Za-z]*c\b)\S+))*\s+--"
+    r"|ssh(?:\s+(?:-[A-Za-z]*[BbcDEeFIiJLlmOoPpQRSWw](?:\s+|(?=\S))\S+|-\S+))*\s+\S+"
+    r"|\\)\s+")
+# A command handed over as one string: `sh -c '...'`, `bash -lc "..."`,
+# `su - root -c '...'`, `runuser -l u -c '...'`, and what flock leaves once
+# its file is consumed (`-c '...'`). The body is classified in turn.
+_SHELL_C = re.compile(
+    r"^(?:(?:(?:ba|z|da|k|a)?sh|su|runuser|flock)(?:\s+(?!-[A-Za-z]*c\b)\S+)*?\s+)?"
+    r"-[A-Za-z]*c\s+(['\"])(.*)\1", re.S)
+# A segment that is one quoted string once its launcher is stripped:
+# `watch -n5 'systemctl restart x'`, `ssh pi2 'sudo reboot'`.
+_WHOLLY_QUOTED = re.compile(r"^(['\"])(.*)\1$", re.S)
+_PROGRAM_PATH = re.compile(r"^(?:\.{0,2}/)?(?:[\w.+-]+/)+(?=[\w.+-])")
 _QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
-_REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\|?(?!\s*(?:&\s*[12]|/dev/(?:null|tcp|udp|std)))")
+# Device paths a write to is not a write: the bit bucket, the standard
+# streams, and bash's /dev/tcp probes. Whole paths only — /dev/null.bak is a
+# file (CFOP-240, claude-review).
+_DEV_SINK = r"/dev/(?:null|stdout|stderr|stdin|fd/\d+|(?:tcp|udp)/\S+)(?![^\s;|&)])"
+_REDIRECT = re.compile(r"(?<![<>&\d])>{1,2}\|?(?!\s*(?:&\s*[12]|" + _DEV_SINK + r"))")
 
 _MUTATORS = [
     (re.compile(r"^systemctl\s+(?:--?\S+\s+)*(restart|stop|start|reload|reload-or-restart|try-restart|"
@@ -90,24 +139,133 @@ _MUTATORS = [
     (re.compile(r"^(systemd-run|at|batch)\b"), "{0} schedules work on the host"),
     (re.compile(r"^journalctl\b(?=.*--(?:vacuum|rotate|flush))"), "journalctl --vacuum/--rotate changes the journal"),
     (re.compile(r"^find\b(?=.*\s(?:-delete\b|-exec\s+(?:rm|mv|chmod|chown|sed\s+-i)\b))"), "find -delete/-exec changes files"),
+    # curl writes when it sends data or saves the body to a file. -o/--output
+    # to a file counts, in any short-flag cluster (-so file, -sko file,
+    # -ofile); -o /dev/null and -o - (stdout) do not, since a status probe that
+    # discards its body is the commonest investigation read there is.
     (re.compile(r"^curl\b(?=.*\s(?:-X\s*(?:POST|PUT|DELETE|PATCH)\b|--request\s+(?:POST|PUT|DELETE|PATCH)\b|"
-                r"-d\b|--data\S*|-F\b|-T\b|-o\s|--output\s|-O\b))"), "curl that writes or sends data"),
+                r"-d\b|--data\S*|--json\b|-F\b|--form\S*|-T\b|--upload-file\b|"
+                r"-[A-Za-z]*o(?:\s+|=?)(?!" + _DEV_SINK + r"|-(?:\s|$))\S|"
+                r"--output(?:\s+|=)(?!" + _DEV_SINK + r"|-(?:\s|$))\S|-O\b|--remote-name\b))"),
+     "curl that writes or sends data"),
     (re.compile(r"^wget\b(?!.*(?:-q?O\s*-|--spider))"), "wget writes a file"),
+    # GPU management (CFOP-240). rocm-smi re-execs itself through sudo for any
+    # set operation, so the program word alone never looked like a privileged
+    # write; investigation 2558 ran --setfan 80 as root this way.
+    (re.compile(r"^(rocm-smi)\b(?=.*\s(?:--(?:set\S*|reset\S*|gpureset|load|save|autorespond|"
+                r"ras(?:enable|disable|inject))|-r)(?:[\s=]|$))"), "{0} changes GPU settings"),
+    (re.compile(r"^(amd-smi)\s+(?:-\S+\s+)*(?:set|reset)\b"), "{0} changes GPU settings"),
+    (re.compile(r"^(nvidia-smi)\b(?!\s+(?:dmon|pmon|topo)\b)(?=.*\s(?:-pl|-ac|-rac|-r|-pm|-c|-e|"
+                r"-lgc|-rgc|-lmc|-rmc|-cgi|-dgi|-cci|-dci|--power-limit|--applications-clocks|"
+                r"--reset-applications-clocks|--persistence-mode|--compute-mode|--ecc-config|"
+                r"--gpu-reset|--lock-gpu-clocks|--reset-gpu-clocks|--lock-memory-clocks|"
+                r"--reset-memory-clocks)(?:[\s=]|$))"), "{0} changes GPU settings"),
 ]
 
 
+def _segments(text: str) -> List[str]:
+    """Split a command line into the simple commands a shell would run.
+
+    Quote-aware: a separator inside single quotes is text, and so is one inside
+    double quotes — except ``$(`` and a backtick, which the shell still
+    executes there. ``sh -c '...'`` stays one segment so its body is recursed
+    into whole. Separators: ``;``, ``|``, ``||``, ``&&``, a background ``&``
+    (not ``2>&1`` / ``&>``), newline, parentheses, ``$(`` and backticks.
+    """
+    out: List[str] = []
+    buf: List[str] = []
+    state = None          # None, "'" or '"'
+    stack: List[tuple] = []  # (closer, state to restore) for $( ( and `
+
+    def cut():
+        seg = ''.join(buf).strip()
+        if seg:
+            out.append(seg)
+        buf.clear()
+
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < n else ''
+        if c == '\\' and state != "'":
+            buf.append(text[i:i + 2])
+            i += 2
+            continue
+        if state == "'":
+            if c == "'":
+                state = None
+            buf.append(c)
+        elif state == '"' and c == '"':
+            state = None
+            buf.append(c)
+        elif c == '$' and nxt == '(':
+            cut()
+            stack.append((')', state))
+            state = None
+            i += 2
+            continue
+        elif c == '`':
+            cut()
+            if state is None and stack and stack[-1][0] == '`':
+                state = stack.pop()[1]
+            else:
+                stack.append(('`', state))
+                state = None
+        elif state == '"':
+            buf.append(c)
+        elif c in '\'"':
+            state = c
+            buf.append(c)
+        elif c == '(':
+            cut()
+            stack.append((')', None))
+        elif c == ')':
+            cut()
+            if stack and stack[-1][0] == ')':
+                state = stack.pop()[1]
+        elif c in ';\n':
+            cut()
+        elif c == '|':
+            cut()
+            if nxt == '|':
+                i += 1
+        elif c == '&':
+            if nxt == '&':
+                cut()
+                i += 1
+            elif nxt == '>' or nxt.isdigit() or (buf and buf[-1] in '<>'):
+                buf.append(c)
+            else:
+                cut()
+        else:
+            buf.append(c)
+        i += 1
+    cut()
+    return out
+
+
 def _unwrap(segment: str) -> str:
-    """Strip sudo/env/timeout-style prefixes so the program word is first."""
+    """Strip sudo/env/launcher prefixes so the program word is first."""
     seg = segment.strip()
     while True:
         before = seg
         seg = _ENV_ASSIGN.sub('', seg)
         seg = _WRAPPER.sub('', seg)
+        # The program by its name, not its path: /usr/bin/systemctl restart
+        # and /opt/rocm/bin/rocm-smi --setfan are the same writes.
+        seg = _PROGRAM_PATH.sub('', seg)
         if seg == before:
             return seg
 
 
-def ssh_mutation_reason(command) -> Optional[str]:
+# How many command-in-a-string layers are unwrapped (bash -c "su -c '...'").
+# Real commands use two or three; past this the command is refused rather
+# than recursed into, so a crafted `su -c ' -c ' -c ' ...` cannot exhaust
+# the stack and raise out of the gate instead of answering (CFOP-240).
+_MAX_NESTING = 8
+
+
+def ssh_mutation_reason(command, _depth: int = 0) -> Optional[str]:
     """Why this shell command is not read-only, or None if nothing known matched.
 
     Every pipeline segment, subshell and ``sh -c`` body is unwrapped and its
@@ -115,14 +273,18 @@ def ssh_mutation_reason(command) -> Optional[str]:
     file counts as a write (``2>&1``, ``/dev/null`` and ``/dev/tcp`` probes do
     not).
     """
+    if _depth > _MAX_NESTING:
+        return "the command nests too deeply to classify"
     text = str(command or '')
-    for raw in _SEGMENT_SPLIT.split(text):
+    for raw in _segments(text):
         seg = _unwrap(raw)
         if not seg:
             continue
-        inner = _SHELL_C.match(seg)
+        # A command handed over as a string (sh -c, su -c, ssh host '...',
+        # watch '...') runs its body; the body is what gets classified.
+        inner = _SHELL_C.match(seg) or _WHOLLY_QUOTED.match(seg)
         if inner:
-            reason = ssh_mutation_reason(inner.group(2))
+            reason = ssh_mutation_reason(inner.group(2), _depth + 1)
             if reason:
                 return reason
             continue

@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent import CFOperator
+from tools import UNATTENDED
 from llm_fallback import LLMFallbackManager
 
 
@@ -41,7 +42,7 @@ def _operator(provider_chain, chat_responses):
     iterator = iter(chat_responses)
 
     def fake_chat_with_tools(provider_type, url, model, messages, system_context,
-                             max_iterations=None, event_callback=None):
+                             max_iterations=None, event_callback=None, tool_policy=None):
         item = next(iterator)
         if isinstance(item, Exception):
             raise item
@@ -175,8 +176,10 @@ def test_passes_max_iterations_and_system_context_through():
     op = _operator(provider_chain=[("ollama", None, "m")], chat_responses=[{"response": "", "tool_calls": 0}])
     original = op._chat_with_tools
 
-    def spy_chat(provider_type, url, model, messages, system_context, max_iterations=None, event_callback=None):
+    def spy_chat(provider_type, url, model, messages, system_context, max_iterations=None,
+                 event_callback=None, tool_policy=None):
         captured["max_iterations"] = max_iterations
+        captured["tool_policy"] = tool_policy
         captured["system_context"] = system_context
         captured["messages"] = messages
         return original(provider_type, url, model, messages, system_context, max_iterations, event_callback)
@@ -186,8 +189,12 @@ def test_passes_max_iterations_and_system_context_through():
         messages=[{"role": "user", "content": "investigate this"}],
         system_context="You are CFOperator.",
         max_iterations=15,
+        tool_policy=UNATTENDED,
     )
     assert captured["max_iterations"] == 15
+    # The fallback hop used to drop the policy kwarg whenever it was None;
+    # now it always travels, and an unattended run's must arrive (CFOP-240).
+    assert captured["tool_policy"] is UNATTENDED
     assert captured["system_context"] == "You are CFOperator."
     assert captured["messages"] == [{"role": "user", "content": "investigate this"}]
 

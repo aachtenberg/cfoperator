@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import tools as tools_module
-from tools import ToolPolicy, ToolRegistry, _service_from_host
+from tools import UNATTENDED, ToolPolicy, ToolRegistry, _service_from_host
 from tools.ssh import ssh_mutation_reason
 from tools.github import GitHubTools
 from tools.k8s import K8sTools
@@ -37,6 +37,12 @@ KNOWN_MUTATING = {
 # (policy=None) is refused these, unlike every other mutating tool. See
 # _SCHEMA_MARKERS in tools/__init__.py for why the two are not the same gate.
 KNOWN_HUMAN_ONLY = {"queue_gitops_patch"}
+# Mutating tools an unattended run (investigation, sweep, triage) may still
+# call, because a person's gate stands between the call and any effect
+# (CFOP-240). Everything else mutating is refused to those runs.
+KNOWN_UNATTENDED_OK = {"store_learning", "github_create_pr"}
+# ... and the ones it runs one command at a time, through the classifier.
+UNATTENDED_COMMAND_GATED = {"ssh_execute", "k8s_exec_pod"}
 # 'triage_' is in the pattern because triage_investigation is the first write
 # tool whose name carries none of the other verbs — an unmarked one would have
 # landed open (CFOP-138).
@@ -119,10 +125,14 @@ def test_family_schemas_carry_the_marker_and_the_model_never_sees_it():
     by_name = {s["name"]: s for s in gh.get_schemas()}
     assert all(by_name[n].get("mutating") for n in ("github_create_pr", "github_create_issue_comment"))
     assert not by_name["github_get_pr"].get("mutating")
+    assert by_name["github_create_pr"].get("unattended_ok")
+    assert not by_name["github_create_issue_comment"].get("unattended_ok")
     # Stripped on the way into the registry: an OpenAI-shaped function schema
     # with a stray key is a 400 on the stricter providers.
     _, reg = _registry()
-    assert not any("mutating" in s["function"] for s in reg.get_schemas())
+    for policy in (None, UNATTENDED):
+        for marker in ("mutating", "unattended_ok"):
+            assert not any(marker in s["function"] for s in reg.get_schemas(policy=policy))
 
 
 # --------------------------------------------------------------------------
@@ -151,10 +161,9 @@ def test_admin_and_internal_callers_are_unchanged():
 # --------------------------------------------------------------------------
 
 def test_a_human_only_tool_is_withheld_from_internal_callers():
-    """policy=None is the sweep, the investigation and the morning summary.
-    They are trusted to restart a service, and are still not a person — a tool
-    that treats its caller's request AS the human approval must not be
-    reachable from one (CFOP-160, caught in review)."""
+    """No person is behind policy=None or an unattended run — a tool that
+    treats its caller's request AS the human approval must not be reachable
+    from either (CFOP-160, caught in review)."""
     _, reg = _registry()
     for name in KNOWN_HUMAN_ONLY:
         assert name not in _names(reg.get_schemas(policy=None)), name
@@ -166,7 +175,8 @@ def test_a_human_only_tool_is_offered_to_a_named_admin():
     assert KNOWN_HUMAN_ONLY <= _names(reg.get_schemas(policy=ADMIN))
 
 
-@pytest.mark.parametrize("policy", [None, MEMBER, VERIFY], ids=["internal", "member", "verify"])
+@pytest.mark.parametrize("policy", [None, MEMBER, VERIFY, UNATTENDED],
+                         ids=["internal", "member", "verify", "unattended"])
 def test_a_human_only_tool_named_anyway_is_refused_before_it_runs(policy):
     op, reg = _registry()
     for name in KNOWN_HUMAN_ONLY:
@@ -394,7 +404,86 @@ VERIFY_READS = [
     "curl -s http://localhost:9100/metrics",
     "git -C /home/x/homelab-infra log -1 --oneline",
     "kubectl get pods -n data",
+    # Refused by the pre-CFOP-240 classifier, verbatim from 30 days of
+    # investigation logs: a '|' inside a quoted pattern is not a pipe, and a
+    # status probe that discards its body writes nothing.
+    'dmesg | grep -iE "oom|kill|error" | tail -n 20',
+    'journalctl -k | grep -iE "oom|kill|error" | tail -n 20',
+    'curl -s -o /dev/null -w "%{http_code}" http://10.42.4.189:3001/metrics',
+    'curl -sk -o /dev/null -w "%{http_code}" https://localhost:10250/metrics/cadvisor '
+    '-H "Authorization: Bearer $(cat /var/lib/token)"',
+    "rocm-smi --showtemp",
+    "rocm-smi --showallinfo",
+    "sudo rocm-smi -d 0 --showfan --showpower",
+    "amd-smi metric --temperature",
+    "nvidia-smi --query-gpu=temperature.gpu,fan.speed --format=csv",
+    "nvidia-smi dmon -c 5",
+    "sudo crictl ps -a | grep kube-proxy",
+    "sudo du -x -h --max-depth=1 /var 2>/dev/null | sort -rh | head -20",
+    "grep -E 'restart|kill' /var/log/syslog",
+    "echo 'a; rm -rf /' | wc -c",
+    "sudo -n -u ops systemctl status x",
+    "sudo -u postgres psql -c 'select 1'",
+    "echo x > /dev/null; ls 2>/dev/stderr; echo y >/dev/tcp/10.0.0.1/80",
+    "curl -so /dev/null http://x/ && curl -s -o - http://y/",
+    # Pinned, not endorsed: an unterminated quote swallows the rest of the
+    # line into one segment, so this reads as echo. A shell refuses the line
+    # outright (syntax error), so nothing in it runs.
+    "echo 'unterminated; rm -rf /",
+    # The launchers above, running reads — and names that only start alike.
+    "ls | xargs grep foo",
+    "ssh pi2 cat /etc/hosts",
+    "ssh pi2 'uptime; df -h'",
+    "ssh-keygen -lf k.pub",
+    "sshd -T",
+    "watch -n1 uptime",
+    "su postgres -c 'psql -c \"select 1\"'",
+    "chroot /host cat /etc/os-release",
+    "nsenter -t 1 -m -- journalctl -u kubelet -n 20",
+    # nvidia-smi's set flags are bare letters (-e, -c, -r); its reads must
+    # not trip them.
+    "nvidia-smi -q -d ECC",
+    "nvidia-smi -q -d CLOCK,POWER -i 0",
+    "nvidia-smi --query-gpu=ecc.mode.current,clocks.sm --format=csv,noheader",
+    "nvidia-smi -L",
+    "nvidia-smi topo -m",
+    "timeout -s KILL 5 cat /proc/loadavg",
+    "env -i PATH=/usr/bin uptime",
+    "nice -5 du -sh /var",
 ]
+
+# Every launcher the classifier unwraps, as a prefix. The matrix test below
+# puts each in front of each write, so a new launcher alternative that
+# misparses its options — and reads the next word as the program — fails
+# here rather than on a host (claude-review on #290).
+LAUNCHER_PREFIXES = [
+    "sudo", "sudo -n", "sudo -u root", "sudo --user root", "sudo -nu root", "doas -u root",
+    "env A=1", "env -i", "env -u FOO", "env --unset=FOO A=1", "env -C /tmp",
+    "nice -n 5", "nice -5", "nice --adjustment=5", "ionice -c3",
+    "timeout 30", "timeout -s KILL 5", "timeout -k 2 30", "timeout --signal KILL 5",
+    "nohup", "stdbuf -oL",
+    "xargs", "xargs -I {}", "xargs -n1 -P4", "watch -n1", "watch -n 5",
+    "flock /tmp/l", "flock -w 5 /tmp/l", "chroot /host", "setsid", "unshare -m",
+    "nsenter -t 1 -m --", "runuser -u root --", "ssh pi2", "ssh -i k -p 22 pi2",
+    "/usr/bin/sudo", "sudo /usr/bin/env A=1",
+]
+MATRIX_WRITES = [
+    ("systemctl restart svc", "systemctl restart"),
+    ("rm -rf /x", "changes the filesystem"),
+    ("reboot", "takes the host down"),
+    ("rocm-smi --setfan 80", "changes GPU settings"),
+    ("docker restart c", "docker restart"),
+]
+
+
+@pytest.mark.parametrize("prefix", LAUNCHER_PREFIXES)
+@pytest.mark.parametrize("command, fragment", MATRIX_WRITES)
+def test_a_write_stays_refused_under_every_launcher(prefix, command, fragment):
+    reason = ssh_mutation_reason(f"{prefix} {command}")
+    assert reason and fragment in reason, (prefix, command, reason)
+    quoted = ssh_mutation_reason(f"{prefix} '{command}'")
+    if prefix.split()[0] in ("watch", "ssh"):  # these run a quoted body as a command
+        assert quoted and fragment in quoted, (prefix, command, quoted)
 
 VERIFY_WRITES = [
     ("sudo systemctl restart 'mnt-router\\x2dshare.mount'", "systemctl restart"),
@@ -415,6 +504,71 @@ VERIFY_WRITES = [
     ("curl -X POST http://x/admin", "writes or sends data"),
     ("df -h; sudo systemctl stop nginx", "systemctl stop"),
     ("systemctl restart x", "systemctl restart"),
+    # CFOP-240: investigation 2558, and the rest of the GPU set verbs.
+    ("rocm-smi --setfan 80", "rocm-smi changes GPU settings"),
+    ("sudo rocm-smi --setfan 80", "rocm-smi changes GPU settings"),
+    ("rocm-smi --setpoweroverdrive 200", "rocm-smi changes GPU settings"),
+    ("rocm-smi --gpureset -d 0", "rocm-smi changes GPU settings"),
+    ("rocm-smi --resetfans", "rocm-smi changes GPU settings"),
+    ("rocm-smi -r", "rocm-smi changes GPU settings"),
+    ("amd-smi set --fan 80", "amd-smi changes GPU settings"),
+    ("amd-smi reset -G", "amd-smi changes GPU settings"),
+    ("nvidia-smi -pl 100", "nvidia-smi changes GPU settings"),
+    ("nvidia-smi -i 0 -pm 1", "nvidia-smi changes GPU settings"),
+    ("nvidia-smi --gpu-reset -i 0", "nvidia-smi changes GPU settings"),
+    # A program by its path is the same program.
+    ("/opt/rocm/bin/rocm-smi --setfan 80", "rocm-smi changes GPU settings"),
+    ("sudo /usr/bin/systemctl restart docker", "systemctl restart"),
+    # Quote-aware splitting must not hide what the shell still runs.
+    ('echo "$(rm -rf /tmp/x)"', "changes the filesystem"),
+    ('echo "`reboot`"', "takes the host down"),
+    ('echo "$(date)" | tee /etc/motd', "tee writes"),
+    ("sh -c 'uptime; systemctl restart nginx'", "systemctl restart"),
+    ("curl -s -o /tmp/out http://x/", "writes or sends data"),
+    ("curl -so/tmp/out http://x/", "writes or sends data"),
+    # sudo/doas options that take an argument must not become the program.
+    ("sudo -u root systemctl restart x", "systemctl restart"),
+    ("sudo -u root /usr/bin/rocm-smi --setfan 80", "rocm-smi changes GPU settings"),
+    ("sudo -g adm -u root reboot", "takes the host down"),
+    ("sudo -nu root reboot", "takes the host down"),
+    ("sudo -uroot reboot", "takes the host down"),
+    ("doas -u root systemctl stop nginx", "systemctl stop"),
+    # A /dev path is exempt only as a whole path; curl flags that send data.
+    ("echo x > /dev/null.bak", "redirected"),
+    ("echo x > /dev/stdout-x", "redirected"),
+    ("curl -o /dev/null.bak http://x/", "writes or sends data"),
+    ("curl --upload-file f http://x/", "writes or sends data"),
+    ("curl --json '{}' http://x/", "writes or sends data"),
+    ("curl --form a=b http://x/", "writes or sends data"),
+    # A heredoc body is lines, and each line is classified.
+    ("cat <<EOF\nrm -rf /x\nEOF", "changes the filesystem"),
+    # Launchers that run their arguments as a command (CodeRabbit on #290),
+    # and a command handed over as a string at any layer.
+    ("echo x | xargs systemctl restart", "systemctl restart"),
+    ("ls | xargs -I {} rm {}", "changes the filesystem"),
+    ("xargs -n1 -P4 kill < pids", "ends processes"),
+    ("su -c 'systemctl restart nginx'", "systemctl restart"),
+    ("su - root -c 'reboot'", "takes the host down"),
+    ("su -c 'reboot' root", "takes the host down"),
+    ("sudo su -c 'reboot'", "takes the host down"),
+    ("bash -lc 'systemctl restart x'", "systemctl restart"),
+    ("watch -n1 reboot", "takes the host down"),
+    ("watch -n 5 'systemctl restart x'", "systemctl restart"),
+    ("flock /tmp/l rm -rf /x", "changes the filesystem"),
+    ("flock -w 5 /tmp/l -c 'reboot'", "takes the host down"),
+    ("flock -c 'reboot' /tmp/l", "takes the host down"),
+    ("chroot / systemctl stop nginx", "systemctl stop"),
+    ("sudo --user root systemctl restart x", "systemctl restart"),
+    ("sudo --group adm --chdir /tmp reboot", "takes the host down"),
+    ("sudo --chroot / systemctl stop nginx", "systemctl stop"),
+    ("sudo -R / systemctl stop nginx", "systemctl stop"),
+    ("nsenter -t 1 -m -u -i -n -p -- systemctl restart kubelet", "systemctl restart"),
+    ("setsid reboot", "takes the host down"),
+    ("runuser -l postgres -c 'rm -rf /x'", "changes the filesystem"),
+    ("runuser -u postgres -- rm -rf /x", "changes the filesystem"),
+    ("ssh pi2 'sudo reboot'", "takes the host down"),
+    ("ssh -i k -p 22 pi2 systemctl restart docker", "systemctl restart"),
+    ("ssh -ti k pi2 reboot", "takes the host down"),
 ]
 
 
@@ -427,6 +581,28 @@ def test_the_classifier_lets_a_read_through(command):
 def test_the_classifier_names_why_a_write_is_refused(command, fragment):
     reason = ssh_mutation_reason(command)
     assert reason and fragment in reason, (command, reason)
+
+
+def test_deep_nesting_is_refused_not_raised():
+    """A crafted body re-matches the -c rule at every layer. Unbounded, that
+    was a RecursionError out of the gate; now it is a refusal, and ordinary
+    nesting still classifies by what it runs."""
+    assert "nests too deeply" in ssh_mutation_reason("su " + "-c ' " * 5000)
+    assert "nests too deeply" in ssh_mutation_reason("'" * 5000)
+    assert ssh_mutation_reason("""bash -c "su -c 'uptime'" """) is None
+    assert "reboot" in ssh_mutation_reason("""bash -c "su -c 'sudo reboot'" """)
+
+
+def test_the_classifier_stays_fast_on_long_input():
+    """No pattern backtracks badly: 50k-character commands classify quickly."""
+    import time
+    for command in ("sudo " + "-a " * 15000 + "ls", "xargs " + "-I {} " * 8000 + "ls",
+                    "su " + "a " * 20000, "ssh " + "-o x " * 10000 + "h ls",
+                    "curl " + "-s " * 15000 + "http://x", "ls; " * 12000,
+                    "echo " + "$(" * 3000 + ")" * 3000):
+        start = time.perf_counter()
+        ssh_mutation_reason(command)
+        assert time.perf_counter() - start < 2.0, command[:40]
 
 
 def test_a_verification_turn_can_still_run_the_checks():
@@ -515,3 +691,118 @@ def test_a_member_never_gets_ssh_execute_even_to_verify():
                       policy=member_verify)
     assert out["refused"] is True and "needs an admin" in out["error"]
     assert ran == []
+
+
+# --------------------------------------------------------------------------
+# unattended runs observe; they do not change (CFOP-240)
+# --------------------------------------------------------------------------
+
+def test_the_unattended_ok_tools_are_marked_and_nothing_else_is():
+    _, reg = _registry()
+    marked = {n for n in reg.tools if reg.is_unattended_ok(n)}
+    # github_create_pr is registered only with GitHub configured; its family
+    # schema carries the marker (test_family_schemas_...).
+    assert marked == KNOWN_UNATTENDED_OK - {"github_create_pr"}
+
+
+def test_unattended_ok_on_a_read_fails_registration():
+    """The marker is an exception to the mutating gate. On a read it means
+    nothing — most likely a tool that lost its 'mutating'."""
+    _, reg = _registry()
+    reg.tools["k8s_get_pods"]["schema"]["unattended_ok"] = True
+    with pytest.raises(ValueError, match="only meaningful on a mutating tool"):
+        reg._check_marker_placement()
+
+
+def test_an_unattended_run_is_offered_reads_gated_commands_and_gated_writes():
+    _, reg = _registry()
+    offered = _names(reg.get_schemas(policy=UNATTENDED))
+    assert {"k8s_get_pods", "ssh_check_service", "find_learnings", "ping_host"} <= offered
+    assert offered & KNOWN_MUTATING == UNATTENDED_COMMAND_GATED | {"store_learning"}
+
+
+@pytest.mark.parametrize("name, args", [
+    ("ssh_restart_service", {"host": "box1", "service": "docker"}),
+    ("ssh_docker_restart", {"host": "box1", "container": "square-redis"}),
+    ("k8s_rollout_restart", {"deployment": "freshet-dashboard", "namespace": "apps"}),
+    ("resolve_remediation", {"remediation_id": 1}),
+])
+def test_an_unattended_run_naming_a_write_is_refused_and_pointed_at_fix(name, args):
+    """The seven restarts investigations made outside the queue in the 30 days
+    before this, by the tools they used."""
+    _, reg = _registry()
+    run = MagicMock()
+    reg.tools[name]["function"] = run
+    out = reg.execute(name, args, policy=UNATTENDED)
+    assert out["refused"] is True and "unattended run" in out["error"] and "FIX" in out["error"]
+    run.assert_not_called()
+
+
+def test_a_new_write_tool_is_refused_to_unattended_runs_by_default():
+    """Fail-closed: before CFOP-240 a new mutating tool was open to every
+    internal caller. Now it has to be marked unattended_ok to be reachable."""
+    _, reg = _registry()
+    run = MagicMock()
+    reg.tools["invented_writer"] = {"function": run,
+                                    "schema": {"name": "invented_writer", "mutating": True}}
+    assert "invented_writer" not in _names(reg.get_schemas(policy=UNATTENDED))
+    assert reg.execute("invented_writer", {}, policy=UNATTENDED)["refused"] is True
+    run.assert_not_called()
+
+
+def test_an_unattended_ok_write_runs():
+    _, reg = _registry()
+    reg.tools["store_learning"]["function"] = lambda **kw: {"success": True}
+    assert reg.execute("store_learning", {"learning_type": "x"}, policy=UNATTENDED) == {"success": True}
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("ssh_execute", {"host": "box1"}),
+    ("k8s_exec_pod", {"namespace": "apps", "pod_name": "web-0"}),
+])
+def test_an_unattended_run_classifies_each_command(tool, args):
+    _, reg = _registry()
+    ran = []
+    reg.tools[tool]["function"] = lambda **kw: ran.append(kw["command"]) or {"stdout": "ok"}
+    refused = reg.execute(tool, {**args, "command": "rm -rf /var/lib/x"}, policy=UNATTENDED)
+    assert refused["refused"] is True and "unattended run" in refused["error"]
+    assert "FIX" in refused["error"]
+    assert reg.execute(tool, {**args, "command": "cat /etc/hosts"}, policy=UNATTENDED) == {"stdout": "ok"}
+    assert ran == ["cat /etc/hosts"]
+
+
+def test_a_classifier_error_refuses_the_command(monkeypatch):
+    """Fail closed: if the classifier raises, the command does not run."""
+    _, reg = _registry()
+    ran = []
+    reg.tools["ssh_execute"]["function"] = lambda **kw: ran.append(kw)
+    def boom(command):
+        raise RuntimeError("unexpected")
+    monkeypatch.setattr(tools_module, "ssh_mutation_reason", boom)
+    out = reg.execute("ssh_execute", {"host": "box1", "command": "uptime"}, policy=UNATTENDED)
+    assert out["refused"] is True and "could not be classified" in out["error"]
+    assert ran == []
+
+
+def test_a_verification_turn_does_not_gain_k8s_exec_pod():
+    """k8s_exec_pod is command-gated for unattended runs only: a verification
+    turn never had it, and the classifier does not know database clients."""
+    _, reg = _registry()
+    assert "k8s_exec_pod" not in _names(reg.get_schemas(policy=VERIFY))
+    assert reg.execute("k8s_exec_pod", {"namespace": "a", "pod_name": "b", "command": "id"},
+                       policy=VERIFY)["refused"] is True
+
+
+def test_an_unattended_policy_cannot_carry_a_role():
+    """With a role, an unattended policy would read as a person behind the
+    turn and pass the human_only gate. It cannot be built."""
+    with pytest.raises(ValueError, match="no actor_role"):
+        ToolPolicy(unattended=True, actor_role="admin")
+    assert not UNATTENDED.is_named_admin()
+
+
+def test_a_verification_turn_keeps_its_own_rules_when_also_unattended():
+    """reverify is unattended AND a verification pass; the stricter wins."""
+    _, reg = _registry()
+    both = ToolPolicy(verify_only=True, unattended=True)
+    assert _names(reg.get_schemas(policy=both)) & KNOWN_MUTATING == {"ssh_execute"}
