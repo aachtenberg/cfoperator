@@ -31,6 +31,7 @@ from sqlalchemy import TIMESTAMP
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import QueuePool
 
+from cfshared.db import sqlalchemy_url
 from embedding_service import vector_literal
 
 Base = declarative_base()
@@ -1540,7 +1541,7 @@ class KnowledgeBase:
 
         self.db_url = db_url
         self.engine = create_engine(
-            db_url,
+            sqlalchemy_url(db_url),
             poolclass=QueuePool,
             pool_size=5,
             max_overflow=10,

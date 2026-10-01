@@ -19,8 +19,8 @@ started the built image against a database. This runs on every PR
 bump (build-cfoperator-main.yml, db-smoke), so an image that cannot talk to
 its database is pushed but never deployed.
 
-Driver-neutral on purpose: it checks that the layers work with the installed
-driver, not which driver that is.
+Engines are built through cfshared.db.sqlalchemy_url, exactly as the layers
+build their own, so a driver the code names but the image lacks fails here.
 """
 
 import os
@@ -40,17 +40,19 @@ for entry in (ROOT, ROOT / "agent"):
 from sqlalchemy import create_engine, text  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
 
+from cfshared.db import sqlalchemy_url  # noqa: E402
+
 EMBEDDING_DIM = 768  # nomic-embed-text, the column the knowledge base creates
 
 
 def _create_database(admin_url, name):
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    engine = create_engine(sqlalchemy_url(admin_url), isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             conn.execute(text(f'CREATE DATABASE "{name}"'))
     finally:
         engine.dispose()
-    engine = create_engine(admin_url.set(database=name), isolation_level="AUTOCOMMIT")
+    engine = create_engine(sqlalchemy_url(admin_url.set(database=name)), isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             # Production's knowledge-base database ships pgvector
@@ -61,7 +63,7 @@ def _create_database(admin_url, name):
 
 
 def _drop_database(admin_url, name):
-    engine = create_engine(admin_url, isolation_level="AUTOCOMMIT")
+    engine = create_engine(sqlalchemy_url(admin_url), isolation_level="AUTOCOMMIT")
     try:
         with engine.connect() as conn:
             conn.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
@@ -75,7 +77,7 @@ def _libpq_dsn(url):
 
 
 def check_driver(url):
-    engine = create_engine(url)
+    engine = create_engine(sqlalchemy_url(url))
     try:
         with engine.connect() as conn:
             version = conn.execute(text("SHOW server_version")).scalar()
