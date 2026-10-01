@@ -23,8 +23,10 @@ _POSTGRES_SCHEMES = ("postgresql", "postgres", "postgresql+psycopg2")
 def sqlalchemy_url(url):
     """``url`` with the PostgreSQL driver named explicitly as psycopg 3.
 
-    Takes a string or a SQLAlchemy ``URL``; anything that is not PostgreSQL
-    (sqlite in tests) is returned unchanged.
+    Takes a string or a SQLAlchemy ``URL``. Only the bare scheme, ``postgres``
+    and ``postgresql+psycopg2`` are rewritten; another explicitly named driver
+    (``postgresql+asyncpg``) and other backends (sqlite in tests) are returned
+    unchanged — naming one deliberately is the point.
     """
     if hasattr(url, "drivername"):  # a sqlalchemy.engine.URL
         if url.drivername in _POSTGRES_SCHEMES:
