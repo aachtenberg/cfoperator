@@ -339,8 +339,50 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-  bump-deploy-repo:
+  # The deploy gate for the database (CFOP-249). The image just built must
+  # boot every database layer — knowledge base and its schema migrations,
+  # auth store, event_runtime's store, the timescale tool — against a
+  # Postgres like production's before the bump below may deploy it. On
+  # 2026-10-01 a rebuild pulled SQLAlchemy 2.1, whose default driver was not
+  # installed, and the agent crash-looped on boot: CI's tests ran in their own
+  # virtualenv and nothing had started the built image against a database.
+  # A failure here leaves the image pushed but undeployed.
+  db-smoke:
     needs: build-and-push
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Production's knowledge-base database image (sre-postgres).
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_PASSWORD: cfop-smoke
+          POSTGRES_DB: cfop_smoke
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run the database smoke inside the built image
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator:${{ needs.build-and-push.outputs.image-tag }}
+        run: |
+          docker run --rm --network host "$IMAGE" \
+            python scripts/db_smoke.py postgresql://postgres:cfop-smoke@localhost:5432/cfop_smoke
+
+  bump-deploy-repo:
+    # db-smoke gates the deploy: an image that cannot talk to its database is
+    # never bumped (CFOP-249). test_workflows.py pins this.
+    needs: [build-and-push, db-smoke]
     # Homelab deploys follow main pushes only. A v* tag build publishes images
     # for the chart/demo audience and must not touch the deploy repo — pointing
     # ArgoCD at a release tag would freeze the fleet on it.

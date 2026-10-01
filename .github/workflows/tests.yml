@@ -21,12 +21,14 @@ jobs:
   pytest:
     runs-on: ubuntu-latest
     # A real Postgres for the suites that test SQL rather than mocks
-    # (tests/test_alert_store_pg.py, CFOP-215). 15 matches production. Those
-    # tests FAIL when CI lacks CFOP_TEST_PG_DSN instead of skipping, so taking
-    # this service away cannot turn them into a green run that tested nothing.
+    # (tests/test_alert_store_pg.py, CFOP-215; tests/test_db_rollout.py,
+    # CFOP-249). The image is production's knowledge-base database, pgvector
+    # included — the knowledge base's embedding tables need it. Those tests
+    # FAIL when CI lacks CFOP_TEST_PG_DSN instead of skipping, so taking this
+    # service away cannot turn them into a green run that tested nothing.
     services:
       postgres:
-        image: postgres:15
+        image: pgvector/pgvector:pg15
         env:
           POSTGRES_PASSWORD: cfop-ci
           POSTGRES_DB: cfop_ci
