@@ -14,7 +14,10 @@ groq>=0.4.0
 openai>=1.12.0
 
 # Database
-sqlalchemy>=2.0.0
+# <2.1: SQLAlchemy 2.1 made psycopg (v3) the default driver for postgresql://
+# URLs, and only psycopg2 is installed — a rebuild crashed the agent on boot
+# (2026-10-01, tests/test_db_driver.py).
+sqlalchemy>=2.0.0,<2.1
 psycopg2-binary>=2.9.0
 pgvector>=0.2.0
 
