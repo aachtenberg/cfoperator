@@ -150,7 +150,9 @@ func run(cmd *cobra.Command, args []string) error {
 		)
 		api := cfoperator.New(url, token, timeout)
 		api.URLFrom = cfoperator.AgentURLSource(cfg.CFOperator.URL, os.Getenv)
-		toolReg.AddCFOperator(api)
+		// Writes stay off attach. This is the session the operator is sitting in,
+		// so asking it to close a row has to actually close the row.
+		toolReg.AddCFOperatorInteractive(api)
 	}
 
 	// Load context files

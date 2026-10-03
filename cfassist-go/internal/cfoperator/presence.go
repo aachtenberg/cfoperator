@@ -175,10 +175,13 @@ func (p Presence) PromptSection() string {
 				"and reads are currently failing: %s. The `cfoperator` tool will report the same. "+
 				"%s Tell the operator that rather than working around it.", p.Reason, p.readFix()))
 		}
-		b.WriteString("\n\nYour access to it is read-only. Approving, rejecting or queueing a " +
-			"remediation happens in the console or through the MCP server — recommend those " +
-			"actions, never claim to have taken them. `cfassist attach <investigation-id>` starts " +
-			"a session briefed on one investigation.")
+		b.WriteString("\n\nThis is a terminal session, and the operator is here. When they ask you " +
+			"to close or act on a row, do it with the `cfoperator` tool: approve, reject or " +
+			"resolve a remediation, or triage an investigation. Do not do those unless they " +
+			"asked, and do not claim you did if the tool returned an error. Closing a " +
+			"remediation does not triage the investigation it came from — if they want the " +
+			"investigation out of Untriaged, triage it too. `cfassist attach <investigation-id>` " +
+			"is a different, read-only session.")
 	case p.Configured:
 		b.WriteString(fmt.Sprintf("\n\nCFOperator is configured at %s but did not answer: %s. "+
 			"Report that address as unreachable from here — do not conclude the fleet's agent is "+
