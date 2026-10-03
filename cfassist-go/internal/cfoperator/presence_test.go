@@ -73,10 +73,66 @@ func TestDetectReachableAndReadable(t *testing.T) {
 	}
 }
 
+// CFOP-147: over SSH with no token, the token was not forwarded. Fleet hosts
+// store none, so the reason and the prompt must say forward it, not mint one.
+func TestDetectWithoutTokenOverSSHSaysNotForwarded(t *testing.T) {
+	withSSH(t, true)
+	srv := probeServer(t, healthy, http.StatusOK)
+
+	p := Detect(srv.URL, false, "", 2*time.Second)
+
+	if !strings.Contains(p.Reason, "reached this SSH session") || !strings.Contains(p.Reason, "SendEnv") {
+		t.Errorf("over SSH with no token the reason should say it was not forwarded, got %q", p.Reason)
+	}
+	if prompt := p.PromptSection(); !strings.Contains(prompt, "SendEnv CFOP_API_TOKEN") {
+		t.Errorf("the prompt should tell the model the token is forwarded, not stored:\n%s", prompt)
+	}
+}
+
+// The fix is chosen, not appended: one instruction per situation, and a
+// failure that is not about the credential is not blamed on it.
+func TestThePromptsFixFollowsTheFailure(t *testing.T) {
+	cases := []struct {
+		name             string
+		ssh              bool
+		token            string
+		status           int
+		want, wantAbsent []string
+	}{
+		{"ssh, no token", true, "", http.StatusOK,
+			[]string{"SendEnv CFOP_API_TOKEN", "do not suggest putting a token here"},
+			[]string{"set as CFOP_API_TOKEN or cfoperator.token"}},
+		{"ssh, refused token", true, "stale", http.StatusUnauthorized,
+			[]string{"was refused", "investigate"}, []string{"no token reached it"}},
+		{"ssh, server failing", true, "fine", http.StatusInternalServerError,
+			[]string{"not a credential problem"}, []string{"refused", "SendEnv", "revoked"}},
+		{"off ssh, no token", false, "", http.StatusOK,
+			[]string{"set as CFOP_API_TOKEN or cfoperator.token"}, []string{"SendEnv", "over SSH"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withSSH(t, tc.ssh)
+			srv := probeServer(t, healthy, tc.status)
+			prompt := Detect(srv.URL, tc.token != "", tc.token, 2*time.Second).PromptSection()
+			for _, w := range tc.want {
+				if !strings.Contains(prompt, w) {
+					t.Errorf("want %q in:\n%s", w, prompt)
+				}
+			}
+			for _, w := range tc.wantAbsent {
+				if strings.Contains(prompt, w) {
+					t.Errorf("did not want %q in:\n%s", w, prompt)
+				}
+			}
+		})
+	}
+}
+
 // A reachable agent with no usable credential is a *different* situation from
 // an unreachable one, and the difference has to survive into the prompt: the
 // fix is a token, not a restart.
 func TestDetectReachableWithoutToken(t *testing.T) {
+	withSSH(t, false)
 	srv := probeServer(t, healthy, http.StatusOK)
 
 	p := Detect(srv.URL, false, "", 2*time.Second)

@@ -163,6 +163,70 @@ credential.
    [mcp-server.md](mcp-server.md)); from a workstation use
    `kubectl -n apps port-forward svc/cfoperator 8083:8083`.
 
+### Attaching from a fleet host (CFOP-147)
+
+The alert's attach line is pasted on the host the incident is on, after you
+SSH in. **That host stores no CFOperator token.** Your own token travels with
+you: your SSH client sends it, and the host's sshd accepts that one variable.
+
+This keeps the principal right. The audit trail names the person who
+attached, not "raspberrypi5", and a token is revoked per person, not per
+machine. It also keeps long-lived secrets off disposable root drives. A shared
+fleet read token used to sit in every host's `~/.cfassist/config.yaml`
+(2026-09-01 to 2026-10-02). It was retired because attach can mint an
+`investigate` session token from it, so in practice it granted that on every
+host.
+
+**On your workstation, once:**
+
+1. Mint a token at `<console>/admin?tab=tokens` with scope `investigate`. That
+   is enough for attach to brief and to mint its own session token, and no
+   more than the session needs.
+2. Keep it in a file only you can read, and export it from your shell rc:
+
+   ```bash
+   (umask 077; mkdir -p ~/.config/cfop; cat > ~/.config/cfop/api-token)   # paste, Enter, Ctrl-D
+   echo '[ -r "$HOME/.config/cfop/api-token" ] && export CFOP_API_TOKEN="$(cat "$HOME/.config/cfop/api-token")"' >> ~/.bashrc
+   ```
+
+3. Forward it to the fleet, and only the fleet, in `~/.ssh/config`:
+
+   ```
+   Host raspberrypi raspberrypi2 raspberrypi3 raspberrypi4 raspberrypi5 ubuntu-cm5-01 headless-gpu ubuntu-itx-01
+      SendEnv CFOP_API_TOKEN
+   ```
+
+   Name hosts, or their addresses, explicitly. **Never put `SendEnv
+   CFOP_API_TOKEN` under `Host *`.** That sends your token to every server you
+   ever connect to.
+
+**On the hosts:** homelab-infra's `ansible/deploy-cfassist.yml` installs
+`/etc/ssh/sshd_config.d/cfassist.conf`, containing `AcceptEnv CFOP_API_TOKEN`
+and nothing wider, and writes a `~/.cfassist/config.yaml` with no token in it.
+With no token in the file, cfassist uses the one in the environment.
+
+**Check it:**
+
+```bash
+ssh raspberrypi2 'echo ${CFOP_API_TOKEN:+forwarded}'   # prints "forwarded"
+ssh raspberrypi2 cfassist attach 2612 --print          # briefs
+```
+
+**When it does not work:**
+
+- **Over SSH with no token,** attach's 401 hint says the token was not
+  forwarded, rather than telling you to mint one and paste it into the host.
+  Check the `Host` line matches the name you typed: `ssh -G <host> | grep -i
+  sendenv` shows what will be sent.
+- **`sudo cfassist` drops the variable,** because sudo resets the environment.
+  attach needs no root.
+- **A rejected forwarded token** is revoked or expired. Mint a new one and
+  replace the file.
+- **While your session is open, root on that host can read the token** from
+  `/proc/<pid>/environ`. That is the same exposure as exporting it by hand, and
+  far less than a token at rest on the disk. Attach itself uses the shorter-lived
+  session token it mints from yours.
+
 ### attach is read-only, and structurally so
 
 The client refuses any HTTP method that is not GET, in the transport itself

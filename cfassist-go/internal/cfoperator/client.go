@@ -59,12 +59,49 @@ var allowedMethods = map[string]bool{http.MethodGet: true}
 type Error struct {
 	Message string
 	Hint    string
+	// Status is the HTTP status that produced the error, or 0 when there was
+	// none (connection failures, unreadable bodies). Lets a caller tell a
+	// rejected credential from a server that is merely failing.
+	Status int
 }
 
 func (e *Error) Error() string { return e.Message }
 
 func newError(hint, format string, args ...any) *Error {
 	return &Error{Message: fmt.Sprintf(format, args...), Hint: hint}
+}
+
+// getenv is os.Getenv, as a variable so tests do not depend on whether they
+// themselves run over SSH.
+var getenv = os.Getenv
+
+// underSSH reports whether this process runs in an SSH session.
+func underSSH() bool { return getenv("SSH_CONNECTION") != "" }
+
+// unauthorizedHint is what a 401/403 tells the operator to do.
+//
+// Fleet hosts store no CFOperator token (CFOP-147). They accept the
+// operator's own, forwarded from their workstation with SendEnv. So on SSH
+// with no token, the useful thing to say is that it was not forwarded, not
+// to mint one and paste it into a host that is meant to hold none.
+func unauthorizedHint(agentURL, token string) string {
+	mint := fmt.Sprintf("Mint one at %s/admin?tab=tokens and export %s, "+
+		"or set cfoperator.token in ~/.cfassist/config.yaml.", agentURL, EnvAPIToken)
+	if !underSSH() {
+		return mint
+	}
+	if token == "" {
+		return fmt.Sprintf("No %s reached this SSH session. Fleet hosts store no token; "+
+			"they accept yours. On your workstation, export %s and add `SendEnv %s` "+
+			"to the ~/.ssh/config Host entry for this host (fleet hosts only, never Host *), "+
+			"then reconnect. `sudo cfassist` drops it. Otherwise: %s",
+			EnvAPIToken, EnvAPIToken, EnvAPIToken, mint)
+	}
+	return fmt.Sprintf("The token in use was rejected. If it was forwarded from your "+
+		"workstation (SendEnv), it may be revoked or expired there, or (on a 403) lack the "+
+		"scope this call needs; attach needs investigate. If this host's "+
+		"~/.cfassist/config.yaml sets cfoperator.token, that one is used instead and is "+
+		"the one to check. %s", mint)
 }
 
 // Where a resolved agent URL came from. Only the unreachable hint reads this,
@@ -189,11 +226,11 @@ func (c *Client) do(method, path string, params url.Values) ([]byte, error) {
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, newError(
-			fmt.Sprintf("Mint one at %s/admin?tab=tokens and export %s, "+
-				"or set cfoperator.token in ~/.cfassist/config.yaml.", c.URL, EnvAPIToken),
+		e := newError(unauthorizedHint(c.URL, c.Token),
 			"CFOperator rejected the API token (HTTP %d)", resp.StatusCode,
 		)
+		e.Status = resp.StatusCode
+		return nil, e
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, newError("", "Not found: %s", path)
 	case resp.StatusCode >= 400:
