@@ -98,6 +98,11 @@ func Detect(rawURL string, configured bool, token string, timeout time.Duration)
 	// rather than letting the model discover the 401 mid-answer.
 	if !p.HasToken {
 		p.Reason = "no API token configured"
+		if underSSH() {
+			// CFOP-147: fleet hosts hold none; the operator's is forwarded.
+			p.Reason = "no API token reached this SSH session (fleet hosts store none; " +
+				"the operator's is forwarded with SendEnv " + EnvAPIToken + ")"
+		}
 		return p
 	}
 	if _, err := c.ListInvestigations(1); err != nil {
@@ -160,8 +165,10 @@ func (p Presence) PromptSection() string {
 			b.WriteString(fmt.Sprintf("\n\nOnly its health endpoint answers without credentials, "+
 				"and reads are currently failing: %s. The `cfoperator` tool will report the same. "+
 				"The fix is an API token — minted at %s/admin?tab=tokens, then set as CFOP_API_TOKEN "+
-				"or cfoperator.token in ~/.cfassist/config.yaml. Tell the operator that rather than "+
-				"working around it.", p.Reason, p.URL))
+				"or cfoperator.token in ~/.cfassist/config.yaml. On a fleet host reached over SSH, "+
+				"the token is the operator's own, forwarded from their workstation with "+
+				"`SendEnv CFOP_API_TOKEN`; nothing is stored on the host. Tell the operator that "+
+				"rather than working around it.", p.Reason, p.URL))
 		}
 		b.WriteString("\n\nYour access to it is read-only. Approving, rejecting or queueing a " +
 			"remediation happens in the console or through the MCP server — recommend those " +

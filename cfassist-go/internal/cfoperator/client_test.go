@@ -132,7 +132,70 @@ func TestBearerTokenIsSent(t *testing.T) {
 	}
 }
 
+// withSSH pins whether the code under test believes it runs over SSH, so the
+// result does not depend on how the test itself was launched.
+func withSSH(t *testing.T, on bool) {
+	t.Helper()
+	prev := getenv
+	getenv = func(k string) string {
+		if k == "SSH_CONNECTION" && on {
+			return "192.168.0.150 51234 192.168.0.146 22"
+		}
+		if k == "SSH_CONNECTION" {
+			return ""
+		}
+		return prev(k)
+	}
+	t.Cleanup(func() { getenv = prev })
+}
+
+func unauthorizedHintFor(t *testing.T, token string) string {
+	t.Helper()
+	rec := &recorder{handler: func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusUnauthorized) }}
+	srv := httptest.NewServer(rec)
+	t.Cleanup(srv.Close)
+	_, err := New(srv.URL, token, 5*time.Second).GetInvestigation(1)
+	var apiErr *Error
+	if !asError(err, &apiErr) {
+		t.Fatalf("expected *Error, got %v", err)
+	}
+	return apiErr.Hint
+}
+
+// CFOP-147: fleet hosts store no token; the operator's is forwarded. On SSH
+// with none, the hint must say it was not forwarded and how to forward it,
+// rather than telling the operator to paste one into the host.
+func TestUnauthorizedOverSSHWithNoTokenSaysForwardIt(t *testing.T) {
+	withSSH(t, true)
+	hint := unauthorizedHintFor(t, "")
+	for _, want := range []string{"No " + EnvAPIToken + " reached this SSH session", "SendEnv " + EnvAPIToken, "never Host *", "sudo"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("hint should contain %q, got %q", want, hint)
+		}
+	}
+}
+
+func TestUnauthorizedOverSSHWithARejectedTokenSaysRevoked(t *testing.T) {
+	withSSH(t, true)
+	hint := unauthorizedHintFor(t, "stale-token")
+	if !strings.Contains(hint, "rejected") || !strings.Contains(hint, "revoked or expired") {
+		t.Errorf("a rejected forwarded token should say so, got %q", hint)
+	}
+	if strings.Contains(hint, "reached this SSH session") {
+		t.Errorf("a token did reach the session; the hint must not claim otherwise: %q", hint)
+	}
+}
+
+func TestUnauthorizedOffSSHKeepsTheMintHint(t *testing.T) {
+	withSSH(t, false)
+	hint := unauthorizedHintFor(t, "")
+	if strings.Contains(hint, "SendEnv") {
+		t.Errorf("off SSH there is nothing to forward; got %q", hint)
+	}
+}
+
 func TestUnauthorizedCarriesMintHint(t *testing.T) {
+	withSSH(t, false)
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})

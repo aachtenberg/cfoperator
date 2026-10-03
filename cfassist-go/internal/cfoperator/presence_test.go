@@ -76,7 +76,22 @@ func TestDetectReachableAndReadable(t *testing.T) {
 // A reachable agent with no usable credential is a *different* situation from
 // an unreachable one, and the difference has to survive into the prompt: the
 // fix is a token, not a restart.
+func TestDetectWithoutTokenOverSSHSaysNotForwarded(t *testing.T) {
+	withSSH(t, true)
+	srv := probeServer(t, healthy, http.StatusOK)
+
+	p := Detect(srv.URL, false, "", 2*time.Second)
+
+	if !strings.Contains(p.Reason, "reached this SSH session") || !strings.Contains(p.Reason, "SendEnv") {
+		t.Errorf("over SSH with no token the reason should say it was not forwarded, got %q", p.Reason)
+	}
+	if prompt := p.PromptSection(); !strings.Contains(prompt, "SendEnv CFOP_API_TOKEN") {
+		t.Errorf("the prompt should tell the model the token is forwarded, not stored:\n%s", prompt)
+	}
+}
+
 func TestDetectReachableWithoutToken(t *testing.T) {
+	withSSH(t, false)
 	srv := probeServer(t, healthy, http.StatusOK)
 
 	p := Detect(srv.URL, false, "", 2*time.Second)
