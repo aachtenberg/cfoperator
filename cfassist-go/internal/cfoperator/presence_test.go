@@ -63,10 +63,17 @@ func TestDetectReachableAndReadable(t *testing.T) {
 	}
 
 	prompt := p.PromptSection()
-	for _, want := range []string{srv.URL, "`cfoperator` tool", "read-only", "attach"} {
+	for _, want := range []string{srv.URL, "`cfoperator` tool", "read-only", "attach", "When they ask"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+	piped := p.PromptSectionReadOnly()
+	if strings.Contains(piped, "When they ask") {
+		t.Errorf("piped prompt must not authorize writes:\n%s", piped)
+	}
+	if !strings.Contains(piped, "read-only") {
+		t.Errorf("piped prompt should say the tool is read-only:\n%s", piped)
 	}
 	if line := p.BannerLine(); !strings.Contains(line, "investigating") {
 		t.Errorf("banner should say what it is doing, got %q", line)

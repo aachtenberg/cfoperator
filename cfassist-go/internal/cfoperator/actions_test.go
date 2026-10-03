@@ -25,6 +25,8 @@ func TestActionClientRefusesAnythingButTheFourPosts(t *testing.T) {
 		{http.MethodPost, "/api/remediations/1/reclassify"},
 		{http.MethodDelete, "/api/remediations/1"},
 		{http.MethodPost, "/api/investigations/1/triage/extra"},
+		{http.MethodPost, "/api/remediations/1/approve/../x"},
+		{http.MethodPost, "/api/remediations/nope/approve"},
 	} {
 		if _, err := c.do(call.method, call.path, nil); err == nil {
 			t.Errorf("%s %s was allowed", call.method, call.path)
@@ -93,5 +95,26 @@ func TestActionClientRequiresANote(t *testing.T) {
 	}
 	if _, err := c.TriageInvestigation(1, "suppress", "no"); err == nil {
 		t.Fatal("triage should refuse a verdict the route does not accept")
+	}
+}
+
+func TestActionClientDoesNotFollowRedirects(t *testing.T) {
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.URL.Path)
+		if r.URL.Path == "/api/remediations/1/approve" {
+			http.Redirect(w, r, "/api/auth/tokens", http.StatusFound)
+			return
+		}
+		t.Errorf("followed the redirect to %s", r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := NewActionClient(srv.URL, "tok", time.Second)
+	if _, err := c.ApproveRemediation(1); err == nil {
+		t.Fatal("a redirect must not count as success")
+	}
+	if len(hits) != 1 || hits[0] != "/api/remediations/1/approve" {
+		t.Fatalf("hits = %v, want only the original POST", hits)
 	}
 }

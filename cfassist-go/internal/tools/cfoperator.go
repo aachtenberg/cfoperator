@@ -251,7 +251,16 @@ func cfoperatorExecute(api *cfoperator.Client, act *cfoperator.ActionClient, arg
 // inflightRemediation is a row the executor still holds. Closing it strands
 // the job, which will complete against a row that has already moved on.
 // Keyed on status, not claimed_at: a finished pr-open row still looks claimed.
+//
+// Best-effort. The reject and resolve routes do not check status, so a claim
+// that lands between this GET and the POST still goes through.
 var inflightRemediation = map[string]bool{"claimed": true, "executing": true}
+
+// closedRemediation is a row approve must not send back to the executor.
+// The approve route only refuses manual-class rows and rows with an open PR,
+// so without this a "close it" followed by a confused approve would re-queue
+// a row the operator just finished.
+var closedRemediation = map[string]bool{"resolved": true, "rejected": true}
 
 func closeRemediation(api *cfoperator.Client, act *cfoperator.ActionClient, action string, args map[string]any) map[string]any {
 	if act == nil {
@@ -263,6 +272,11 @@ func closeRemediation(api *cfoperator.Client, act *cfoperator.ActionClient, acti
 		return map[string]any{"error": action + " needs a remediation id"}
 	}
 	note, _ := args["note"].(string)
+	// Before the GET, so a missing note is the error the model sees, not
+	// "unreachable" or "still running" from a call that was never going to post.
+	if action != "approve_remediation" && strings.TrimSpace(note) == "" {
+		return map[string]any{"error": "a note is required — it is the only record of why this was closed"}
+	}
 	row, err := api.GetRemediation(id)
 	if err != nil {
 		return cfoperatorError(err)
@@ -272,6 +286,11 @@ func closeRemediation(api *cfoperator.Client, act *cfoperator.ActionClient, acti
 		return map[string]any{"error": fmt.Sprintf(
 			"Remediation #%d is leased by the executor and still running (status %q). "+
 				"Closing it now would strand that job. Wait for it to finish, then close it.",
+			id, status)}
+	}
+	if action == "approve_remediation" && closedRemediation[status] {
+		return map[string]any{"error": fmt.Sprintf(
+			"Remediation #%d is already %s. Approving it would queue it for the executor again.",
 			id, status)}
 	}
 	var updated map[string]any

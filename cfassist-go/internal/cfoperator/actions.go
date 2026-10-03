@@ -49,7 +49,14 @@ func NewActionClient(rawURL, token string, timeout time.Duration) *ActionClient 
 	return &ActionClient{
 		URL:   strings.TrimRight(strings.TrimSpace(rawURL), "/"),
 		Token: strings.TrimSpace(token),
-		http:  &http.Client{Timeout: timeout},
+		http: &http.Client{
+			Timeout: timeout,
+			// A 301/302 would turn this POST into a GET of wherever the
+			// redirect points, past the path allowlist. Refuse to follow.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}
 }
 
@@ -125,8 +132,11 @@ func (c *ActionClient) TriageInvestigation(id int, action, note string) (map[str
 
 func clipNote(note string) string {
 	note = strings.TrimSpace(note)
-	if len(note) > 2000 {
-		note = note[:2000]
+	// Runes, not bytes: the route clips with Python's [:2000], which counts
+	// characters, and a byte slice can split a multibyte rune.
+	r := []rune(note)
+	if len(r) > 2000 {
+		note = string(r[:2000])
 	}
 	return note
 }
@@ -187,12 +197,20 @@ func (c *ActionClient) do(method, path string, payload []byte) ([]byte, error) {
 		return nil, newError("", "CFOperator response could not be read: %v", readErr)
 	}
 	switch {
-	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+	case resp.StatusCode == http.StatusUnauthorized:
 		return nil, newError(
-			fmt.Sprintf("Closing and acting need a token with the remediate scope. "+
-				"Mint one at %s/admin?tab=tokens.", c.URL),
+			fmt.Sprintf("Mint a token at %s/admin?tab=tokens and export %s, "+
+				"or set cfoperator.token in ~/.cfassist/config.yaml.", c.URL, EnvAPIToken),
 			"CFOperator rejected the API token (HTTP %d)", resp.StatusCode,
 		)
+	case resp.StatusCode == http.StatusForbidden:
+		return nil, newError(
+			"The token authenticated, but closing and acting need an admin role "+
+				"(the remediate scope). A member token cannot do this.",
+			"CFOperator refused the action (HTTP %d)", resp.StatusCode,
+		)
+	case resp.StatusCode >= 300 && resp.StatusCode < 400:
+		return nil, newError("", "CFOperator redirected %s (HTTP %d); refusing to follow", path, resp.StatusCode)
 	case resp.StatusCode >= 400:
 		snippet := string(raw)
 		if len(snippet) > 200 {

@@ -1043,13 +1043,17 @@ teaches a model to route around it.
 | `resolve_remediation` | Closes the row as done. A note is required. Does not triage the investigation. Plain session only |
 | `triage_investigation` | Records the operator's verdict (`resolved` or `ack`) plus a note. Plain session only |
 
-A plain `cfassist` — the session an operator starts in a terminal — can take
-those four actions, because that is the person asking. They go through a
+A plain `cfassist` — the TUI, or a one-shot question the operator typed — can
+take those four actions, because that is the person asking. A pipe cannot:
+that input was not typed as the question, so it gets the read-only tool.
+They go through a
 separate client whose allowlist is exactly those POSTs, not through `Client`,
 so `allowedMethods` stays GET-only. `cfassist attach` does not register them:
 an attached session is still the read-only handoff, and a model there cannot
 reach approve, reject, resolve or triage. A row the executor still holds
-(`claimed`, `executing`) is refused before the POST. Long free-text fields are
+(`claimed`, `executing`) is refused when the read still shows that status. The
+reject and resolve routes do not re-check, so a claim that lands between the
+GET and the POST still goes through. Long free-text fields are
 clipped per value rather than rows being dropped, because a queue dump that
 crowds an incident out of an 8k context is not a favour — and `limit` is a
 ceiling (50 rows, 25 learnings), not a suggestion, since neither

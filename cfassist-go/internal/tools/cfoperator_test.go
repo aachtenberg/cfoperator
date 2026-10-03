@@ -103,6 +103,19 @@ func TestCFOperatorToolRegistered(t *testing.T) {
 	if !strings.Contains(schema, "not ps") {
 		t.Errorf("description should redirect away from process hunting: %q", schema)
 	}
+	for _, s := range r.GetSchemas() {
+		if s.Function.Name != "cfoperator" {
+			continue
+		}
+		props, _ := s.Function.Parameters["properties"].(map[string]any)
+		action, _ := props["action"].(map[string]any)
+		enum, _ := action["enum"].([]string)
+		for _, name := range enum {
+			if name == "approve_remediation" {
+				t.Fatal("the read-only registration must not offer approve_remediation")
+			}
+		}
+	}
 }
 
 func TestCFOperatorActions(t *testing.T) {
@@ -329,6 +342,56 @@ func TestInteractiveCFOperatorRefusesAnInflightRow(t *testing.T) {
 	for _, m := range stub.methods {
 		if m == http.MethodPost {
 			t.Fatal("an inflight row must not be posted")
+		}
+	}
+}
+
+func TestInteractiveCFOperatorChecksTheNoteBeforeCalling(t *testing.T) {
+	stub := &agentStub{}
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+
+	cfg := config.Defaults()
+	cfg.Memory.Directory = os.TempDir()
+	r := New(cfg)
+	r.AddCFOperatorInteractive(cfoperator.New(srv.URL, "test-token", 5*time.Second))
+
+	res := r.Execute(context.Background(), "cfoperator", map[string]any{
+		"action": "resolve_remediation", "id": float64(7),
+	})
+	errMsg, _ := res["error"].(string)
+	if !strings.Contains(errMsg, "note is required") {
+		t.Fatalf("missing note = %+v", res)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.methods) != 0 {
+		t.Fatalf("a missing note still called the agent: %v", stub.methods)
+	}
+}
+
+func TestInteractiveCFOperatorDoesNotRequeueAClosedRow(t *testing.T) {
+	stub := &agentStub{remediationStatus: "resolved"}
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+
+	cfg := config.Defaults()
+	cfg.Memory.Directory = os.TempDir()
+	r := New(cfg)
+	r.AddCFOperatorInteractive(cfoperator.New(srv.URL, "test-token", 5*time.Second))
+
+	res := r.Execute(context.Background(), "cfoperator", map[string]any{
+		"action": "approve_remediation", "id": float64(7),
+	})
+	errMsg, _ := res["error"].(string)
+	if !strings.Contains(errMsg, "already resolved") {
+		t.Fatalf("approve of a closed row = %+v", res)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	for _, m := range stub.methods {
+		if m == http.MethodPost {
+			t.Fatal("a closed row must not be re-queued")
 		}
 	}
 }
