@@ -666,6 +666,34 @@ func TestRunNudgesAnnouncedStep(t *testing.T) {
 	}
 }
 
+// An announcement on the final allowed iteration is the answer. Nudging would
+// continue past the loop and return an empty Response plus the iteration-limit
+// warning, even though the reply was already shown.
+func TestRunDoesNotNudgeOnTheLastIteration(t *testing.T) {
+	server := newMockOllamaServer(t, []mockOllamaResponse{
+		{content: "I'll check the events.", done: true},
+	})
+	t.Cleanup(server.Close)
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	output := &mockOutput{}
+	result, msgs := Run(context.Background(), llm, tools.New(cfg), output,
+		[]client.Message{{Role: "user", Content: "why did the job fail?"}}, "sys", 1)
+
+	if result.Response != "I'll check the events." {
+		t.Errorf("Response = %q, want the announcement kept as the answer", result.Response)
+	}
+	if len(output.warnings) != 0 {
+		t.Errorf("warnings = %v, want none", output.warnings)
+	}
+	for _, m := range msgs {
+		if m.Content == AnnouncedStepNudge {
+			t.Errorf("transcript contains a nudge on the last iteration")
+		}
+	}
+}
+
 // A model that narrates again after being nudged is answering; nudging forever
 // on a heuristic would burn the iteration budget for nothing.
 func TestRunNudgesAtMostOnceInARow(t *testing.T) {

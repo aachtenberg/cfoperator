@@ -164,7 +164,10 @@ func Run(
 		// to type "continue". gemma4 does this on most multi-step turns. Ask
 		// once; if the next reply narrates again, take it as the answer rather
 		// than loop on a heuristic.
-		if !nudged && announcesStep(text) {
+		// The last iteration has nowhere to send the nudge: continue would fall
+		// out of the loop with Result.Response still empty. Take the reply as
+		// the answer instead.
+		if !nudged && announcesStep(text) && i+1 < maxIterations {
 			nudged = true
 			output.ShowResponse(text)
 			output.ShowWarning("Model described its next step without taking it — asking it to continue.")
