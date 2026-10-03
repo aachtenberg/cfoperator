@@ -441,8 +441,8 @@ A plain `cfassist` — no id, no `attach` — probes that same address at startu
 (one GET to the auth-exempt `/api/health`, 1.5s ceiling, concurrent with the LLM
 connection check). When something answers, the session is told where CFOperator
 is, what version, and whether it is investigating right now, and gets a
-read-only `cfoperator` tool for its investigations, remediation queue and
-knowledge base:
+`cfoperator` tool for its investigations, remediation queue and
+knowledge base, and — unlike `attach` — can close or act on a row when asked:
 
 ```
   cfoperator v1.0.8 at http://127.0.0.1:8083 · investigating now · up 2h5m

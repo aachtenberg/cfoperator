@@ -1,10 +1,12 @@
 // The `cfoperator` tool: how a session looks at the agent it is running next to
-// (CFOP-66).
+// (CFOP-66), and — in a plain terminal session — how the operator closes and
+// acts on what they see (CFOP-256).
 //
 // Registered only when the presence probe actually found an instance — a tool
-// that can only fail teaches a model to work around it. Everything here goes
-// through internal/cfoperator's client, whose transport refuses any method
-// outside GET, so this cannot grow a write by accident.
+// that can only fail teaches a model to work around it. Reads go through
+// Client, whose transport refuses any method outside GET. Writes go through
+// ActionClient, which allows four POSTs and nothing else, and only the plain
+// session registers them. `cfassist attach` stays read-only.
 
 package tools
 
@@ -40,43 +42,104 @@ const (
 	briefingChars = 4000
 )
 
+// readOnlyActions are what `cfassist attach` may do. The plain terminal
+// session adds the writes below; attach must not, because its client refuses
+// every non-GET in the transport.
+var readOnlyActions = []string{
+	"health", "list_investigations", "get_investigation",
+	"list_remediations", "get_remediation", "search_knowledge",
+}
+
+// writeActions are what an operator sitting at a terminal can ask for.
+// Closing a remediation does not triage the investigation it came from.
+var writeActions = []string{
+	"approve_remediation", "reject_remediation", "resolve_remediation",
+	"triage_investigation",
+}
+
 // AddCFOperator registers the read-only cfoperator tool against a live client.
+// `cfassist attach` uses this. A plain terminal session uses
+// AddCFOperatorInteractive.
 func (r *Registry) AddCFOperator(api *cfoperator.Client) {
+	r.addCFOperator(api, nil)
+}
+
+// AddCFOperatorInteractive registers the same tool plus the writes an operator
+// can ask for from a terminal: approve, reject or resolve a remediation, and
+// triage an investigation. Attach does not call this.
+func (r *Registry) AddCFOperatorInteractive(api *cfoperator.Client) {
 	if api == nil {
 		return
+	}
+	r.addCFOperator(api, api.Actions())
+}
+
+func (r *Registry) addCFOperator(api *cfoperator.Client, act *cfoperator.ActionClient) {
+	if api == nil {
+		return
+	}
+	actions := append([]string{}, readOnlyActions...)
+	description := "Query the CFOperator SRE agent reachable from this machine (read-only). " +
+		"CFOperator is the autonomous agent that investigates alerts, queues remediation " +
+		"proposals for human approval, and keeps a knowledge base of what it learned. " +
+		"Use this — not ps, systemctl, docker or kubectl — to answer anything about " +
+		"cfoperator itself: whether it is up, what it is investigating, what is in the " +
+		"remediation queue, and what it has already learned about a host or symptom. " +
+		"It cannot approve, reject or queue anything."
+	actionHelp := "health: is it up, what version, is it investigating now. " +
+		"list_investigations: recent investigations, newest first. " +
+		"get_investigation: full briefing for one id — trigger, conclusion, " +
+		"linked remediations, related learnings. " +
+		"list_remediations: the remediation queue. " +
+		"get_remediation: one queue row in full. " +
+		"search_knowledge: search past learnings."
+	if act != nil {
+		actions = append(actions, writeActions...)
+		description = "Query and act on the CFOperator SRE agent reachable from this machine. " +
+			"CFOperator is the autonomous agent that investigates alerts, queues remediation " +
+			"proposals for human approval, and keeps a knowledge base of what it learned. " +
+			"Use this — not ps, systemctl, docker or kubectl — to answer anything about " +
+			"cfoperator itself: whether it is up, what it is investigating, what is in the " +
+			"remediation queue, and what it has already learned about a host or symptom. " +
+			"When the operator asks you to close or act on a row, do it: " +
+			"approve_remediation sends it to the executor, reject_remediation and " +
+			"resolve_remediation close it (a note is required), triage_investigation " +
+			"records their verdict on an investigation (resolved or ack, note required). " +
+			"Closing a remediation does not triage the investigation it came from. " +
+			"Do not approve, reject, resolve or triage unless they asked."
+		actionHelp += " approve_remediation: queue the row for the executor. " +
+			"reject_remediation: close it as unwanted; note required. " +
+			"resolve_remediation: close it as done; note required. Does not run anything. " +
+			"triage_investigation: record the operator's verdict (verdict resolved or ack); note required."
 	}
 	r.tools["cfoperator"] = tool{
 		schema: client.ToolSchema{
 			Type: "function",
 			Function: client.ToolSchemaFunction{
-				Name: "cfoperator",
-				Description: "Query the CFOperator SRE agent reachable from this machine (read-only). " +
-					"CFOperator is the autonomous agent that investigates alerts, queues remediation " +
-					"proposals for human approval, and keeps a knowledge base of what it learned. " +
-					"Use this — not ps, systemctl, docker or kubectl — to answer anything about " +
-					"cfoperator itself: whether it is up, what it is investigating, what is in the " +
-					"remediation queue, and what it has already learned about a host or symptom. " +
-					"It cannot approve, reject or queue anything.",
+				Name:        "cfoperator",
+				Description: description,
 				Parameters: map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"action": map[string]any{
-							"type": "string",
-							"enum": []string{
-								"health", "list_investigations", "get_investigation",
-								"list_remediations", "get_remediation", "search_knowledge",
-							},
-							"description": "health: is it up, what version, is it investigating now. " +
-								"list_investigations: recent investigations, newest first. " +
-								"get_investigation: full briefing for one id — trigger, conclusion, " +
-								"linked remediations, related learnings. " +
-								"list_remediations: the remediation queue. " +
-								"get_remediation: one queue row in full. " +
-								"search_knowledge: search past learnings.",
+							"type":        "string",
+							"enum":        actions,
+							"description": actionHelp,
 						},
 						"id": map[string]any{
 							"type":        "integer",
-							"description": "Investigation or remediation id (get_investigation, get_remediation)",
+							"description": "Investigation or remediation id (get_*, and the write actions)",
+						},
+						"note": map[string]any{
+							"type": "string",
+							"description": "Why, in the operator's words. Required for reject_remediation, " +
+								"resolve_remediation and triage_investigation.",
+						},
+						"verdict": map[string]any{
+							"type": "string",
+							"enum": []string{"resolved", "ack"},
+							"description": "triage_investigation only. resolved: the problem is handled or moot. " +
+								"ack: seen and accepted, not claimed fixed.",
 						},
 						"query": map[string]any{
 							"type":        "string",
@@ -101,12 +164,16 @@ func (r *Registry) AddCFOperator(api *cfoperator.Client) {
 			// Bound to the turn: these are network calls against an agent that
 			// may be behind a wedged port-forward, and a turn the operator has
 			// stopped must not sit through every one of their timeouts.
-			return cfoperatorExecute(api.WithContext(ctx), args)
+			var bound *cfoperator.ActionClient
+			if act != nil {
+				bound = act.WithContext(ctx)
+			}
+			return cfoperatorExecute(api.WithContext(ctx), bound, args)
 		},
 	}
 }
 
-func cfoperatorExecute(api *cfoperator.Client, args map[string]any) map[string]any {
+func cfoperatorExecute(api *cfoperator.Client, act *cfoperator.ActionClient, args map[string]any) map[string]any {
 	action, _ := args["action"].(string)
 	limit := argInt(args, "limit")
 
@@ -171,9 +238,92 @@ func cfoperatorExecute(api *cfoperator.Client, args map[string]any) map[string]a
 			return cfoperatorError(err)
 		}
 		return map[string]any{"count": len(rows), "mode": mode, "learnings": clipRows(rows)}
+
+	case "approve_remediation", "reject_remediation", "resolve_remediation":
+		return closeRemediation(api, act, action, args)
+	case "triage_investigation":
+		return triageInvestigation(act, args)
 	}
 
 	return map[string]any{"error": fmt.Sprintf("unknown action %q", action)}
+}
+
+// inflightRemediation is a row the executor still holds. Closing it strands
+// the job, which will complete against a row that has already moved on.
+// Keyed on status, not claimed_at: a finished pr-open row still looks claimed.
+//
+// Best-effort. The reject and resolve routes do not check status, so a claim
+// that lands between this GET and the POST still goes through.
+var inflightRemediation = map[string]bool{"claimed": true, "executing": true}
+
+// closedRemediation is a row approve must not send back to the executor.
+// The approve route only refuses manual-class rows and rows with an open PR,
+// so without this a "close it" followed by a confused approve would re-queue
+// a row the operator just finished.
+var closedRemediation = map[string]bool{"resolved": true, "rejected": true}
+
+func closeRemediation(api *cfoperator.Client, act *cfoperator.ActionClient, action string, args map[string]any) map[string]any {
+	if act == nil {
+		return map[string]any{"error": "this session cannot act on remediations. " +
+			"cfassist attach is read-only; run cfassist from a terminal."}
+	}
+	id := argInt(args, "id")
+	if id <= 0 {
+		return map[string]any{"error": action + " needs a remediation id"}
+	}
+	note, _ := args["note"].(string)
+	// Before the GET, so a missing note is the error the model sees, not
+	// "unreachable" or "still running" from a call that was never going to post.
+	if action != "approve_remediation" && strings.TrimSpace(note) == "" {
+		return map[string]any{"error": "a note is required — it is the only record of why this was closed"}
+	}
+	row, err := api.GetRemediation(id)
+	if err != nil {
+		return cfoperatorError(err)
+	}
+	status, _ := row["status"].(string)
+	if inflightRemediation[status] {
+		return map[string]any{"error": fmt.Sprintf(
+			"Remediation #%d is leased by the executor and still running (status %q). "+
+				"Closing it now would strand that job. Wait for it to finish, then close it.",
+			id, status)}
+	}
+	if action == "approve_remediation" && closedRemediation[status] {
+		return map[string]any{"error": fmt.Sprintf(
+			"Remediation #%d is already %s. Approving it would queue it for the executor again.",
+			id, status)}
+	}
+	var updated map[string]any
+	switch action {
+	case "approve_remediation":
+		updated, err = act.ApproveRemediation(id)
+	case "reject_remediation":
+		updated, err = act.RejectRemediation(id, note)
+	default:
+		updated, err = act.ResolveRemediation(id, note)
+	}
+	if err != nil {
+		return cfoperatorError(err)
+	}
+	return map[string]any{"remediation": clipRow(updated)}
+}
+
+func triageInvestigation(act *cfoperator.ActionClient, args map[string]any) map[string]any {
+	if act == nil {
+		return map[string]any{"error": "this session cannot triage investigations. " +
+			"cfassist attach is read-only; run cfassist from a terminal."}
+	}
+	id := argInt(args, "id")
+	if id <= 0 {
+		return map[string]any{"error": "triage_investigation needs an investigation id"}
+	}
+	verdict, _ := args["verdict"].(string)
+	note, _ := args["note"].(string)
+	updated, err := act.TriageInvestigation(id, verdict, note)
+	if err != nil {
+		return cfoperatorError(err)
+	}
+	return map[string]any{"investigation": clipRow(updated)}
 }
 
 // cfoperatorError passes the client's operator-facing hint through to the

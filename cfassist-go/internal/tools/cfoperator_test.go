@@ -19,9 +19,10 @@ import (
 // remembers the methods it was asked for — the read-only claim is worth
 // asserting from the outside, not just trusting the transport.
 type agentStub struct {
-	mu      sync.Mutex
-	methods []string
-	queries []url.Values
+	mu                sync.Mutex
+	methods           []string
+	queries           []url.Values
+	remediationStatus string
 }
 
 func (a *agentStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -41,8 +42,16 @@ func (a *agentStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"id":1889,"trigger":"Pod not ready","findings":{"recommendation":"raise the limit"}}`))
 	case r.URL.Path == "/api/remediations":
 		w.Write([]byte(`{"remediations":[{"id":7,"status":"queued","investigation_id":1889}],"count":1}`))
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/remediations/") && strings.HasSuffix(r.URL.Path, "/resolve"):
+		w.Write([]byte(`{"id":7,"status":"resolved"}`))
+	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/investigations/") && strings.HasSuffix(r.URL.Path, "/triage"):
+		w.Write([]byte(`{"id":1889,"triage_action":"resolved"}`))
 	case strings.HasPrefix(r.URL.Path, "/api/remediations/"):
-		w.Write([]byte(`{"id":7,"status":"queued"}`))
+		status := a.remediationStatus
+		if status == "" {
+			status = "queued"
+		}
+		w.Write([]byte(`{"id":7,"status":"` + status + `"}`))
 	case r.URL.Path == "/api/kb/search":
 		w.Write([]byte(`{"results":[{"id":2024,"learning":"macb NIC hang"}],"mode":"fts"}`))
 	default:
@@ -93,6 +102,19 @@ func TestCFOperatorToolRegistered(t *testing.T) {
 	// this issue is about: hunting for a process instead of asking the service.
 	if !strings.Contains(schema, "not ps") {
 		t.Errorf("description should redirect away from process hunting: %q", schema)
+	}
+	for _, s := range r.GetSchemas() {
+		if s.Function.Name != "cfoperator" {
+			continue
+		}
+		props, _ := s.Function.Parameters["properties"].(map[string]any)
+		action, _ := props["action"].(map[string]any)
+		enum, _ := action["enum"].([]string)
+		for _, name := range enum {
+			if name == "approve_remediation" {
+				t.Fatal("the read-only registration must not offer approve_remediation")
+			}
+		}
 	}
 }
 
@@ -243,6 +265,133 @@ func TestCFOperatorToolOnlyEverGETs(t *testing.T) {
 	for _, m := range stub.methods {
 		if m != http.MethodGet {
 			t.Fatalf("tool issued a %s", m)
+		}
+	}
+}
+
+// A terminal session is the one the operator is sitting in. Asking it to
+// close a row has to POST. Attach keeps the read-only registration, covered
+// above.
+func TestInteractiveCFOperatorClosesAndTriages(t *testing.T) {
+	stub := &agentStub{}
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+
+	cfg := config.Defaults()
+	cfg.Memory.Directory = os.TempDir()
+	r := New(cfg)
+	r.AddCFOperatorInteractive(cfoperator.New(srv.URL, "test-token", 5*time.Second))
+
+	var schema string
+	for _, s := range r.GetSchemas() {
+		if s.Function.Name == "cfoperator" {
+			schema = s.Function.Description
+		}
+	}
+	if !strings.Contains(schema, "When the operator asks") {
+		t.Fatalf("interactive description should tell the model to act: %q", schema)
+	}
+
+	res := r.Execute(context.Background(), "cfoperator", map[string]any{
+		"action": "resolve_remediation", "id": float64(7), "note": "fixed by hand",
+	})
+	row, ok := res["remediation"].(map[string]any)
+	if !ok || row["status"] != "resolved" {
+		t.Fatalf("resolve = %+v", res)
+	}
+
+	res = r.Execute(context.Background(), "cfoperator", map[string]any{
+		"action": "triage_investigation", "id": float64(1889), "verdict": "resolved", "note": "moot",
+	})
+	if _, ok := res["investigation"].(map[string]any); !ok {
+		t.Fatalf("triage = %+v", res)
+	}
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	var posts int
+	for _, m := range stub.methods {
+		if m == http.MethodPost {
+			posts++
+		}
+	}
+	if posts != 2 {
+		t.Fatalf("posts = %d, methods = %v", posts, stub.methods)
+	}
+}
+
+func TestInteractiveCFOperatorRefusesAnInflightRow(t *testing.T) {
+	stub := &agentStub{remediationStatus: "executing"}
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+
+	cfg := config.Defaults()
+	cfg.Memory.Directory = os.TempDir()
+	r := New(cfg)
+	r.AddCFOperatorInteractive(cfoperator.New(srv.URL, "test-token", 5*time.Second))
+
+	res := r.Execute(context.Background(), "cfoperator", map[string]any{
+		"action": "approve_remediation", "id": float64(7),
+	})
+	errMsg, _ := res["error"].(string)
+	if !strings.Contains(errMsg, "still running") {
+		t.Fatalf("inflight approve = %+v", res)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	for _, m := range stub.methods {
+		if m == http.MethodPost {
+			t.Fatal("an inflight row must not be posted")
+		}
+	}
+}
+
+func TestInteractiveCFOperatorChecksTheNoteBeforeCalling(t *testing.T) {
+	stub := &agentStub{}
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+
+	cfg := config.Defaults()
+	cfg.Memory.Directory = os.TempDir()
+	r := New(cfg)
+	r.AddCFOperatorInteractive(cfoperator.New(srv.URL, "test-token", 5*time.Second))
+
+	res := r.Execute(context.Background(), "cfoperator", map[string]any{
+		"action": "resolve_remediation", "id": float64(7),
+	})
+	errMsg, _ := res["error"].(string)
+	if !strings.Contains(errMsg, "note is required") {
+		t.Fatalf("missing note = %+v", res)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.methods) != 0 {
+		t.Fatalf("a missing note still called the agent: %v", stub.methods)
+	}
+}
+
+func TestInteractiveCFOperatorDoesNotRequeueAClosedRow(t *testing.T) {
+	stub := &agentStub{remediationStatus: "resolved"}
+	srv := httptest.NewServer(stub)
+	t.Cleanup(srv.Close)
+
+	cfg := config.Defaults()
+	cfg.Memory.Directory = os.TempDir()
+	r := New(cfg)
+	r.AddCFOperatorInteractive(cfoperator.New(srv.URL, "test-token", 5*time.Second))
+
+	res := r.Execute(context.Background(), "cfoperator", map[string]any{
+		"action": "approve_remediation", "id": float64(7),
+	})
+	errMsg, _ := res["error"].(string)
+	if !strings.Contains(errMsg, "already resolved") {
+		t.Fatalf("approve of a closed row = %+v", res)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	for _, m := range stub.methods {
+		if m == http.MethodPost {
+			t.Fatal("a closed row must not be re-queued")
 		}
 	}
 }

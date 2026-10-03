@@ -135,6 +135,11 @@ func run(cmd *cobra.Command, args []string) error {
 
 	presence := <-presenceCh
 
+	// A pipe is content the operator did not type. It must not be able to
+	// authorize a write. A one-shot question on a terminal is the operator
+	// asking, so it keeps the actions.
+	isPiped := !term.IsTerminal(int(os.Stdin.Fd()))
+
 	// Create tool registry
 	toolReg := tools.New(cfg)
 	// The playbooks, for the model as well as for /skill. Loaded here rather
@@ -150,7 +155,13 @@ func run(cmd *cobra.Command, args []string) error {
 		)
 		api := cfoperator.New(url, token, timeout)
 		api.URLFrom = cfoperator.AgentURLSource(cfg.CFOperator.URL, os.Getenv)
-		toolReg.AddCFOperator(api)
+		// Writes stay off attach, and off a pipe. A terminal session — TUI or a
+		// question the operator typed — can close a row when they ask.
+		if isPiped {
+			toolReg.AddCFOperator(api)
+		} else {
+			toolReg.AddCFOperatorInteractive(api)
+		}
 	}
 
 	// Load context files
@@ -170,13 +181,14 @@ func run(cmd *cobra.Command, args []string) error {
 	// the identity half says what the *word* means, and on a machine with no
 	// agent the right answer is still "no CFOperator is answering here" rather
 	// than "there is no such user".
-	systemPrompt += "\n\n--- CFOperator ---\n" + presence.PromptSection()
+	if isPiped {
+		systemPrompt += "\n\n--- CFOperator ---\n" + presence.PromptSectionReadOnly()
+	} else {
+		systemPrompt += "\n\n--- CFOperator ---\n" + presence.PromptSection()
+	}
 
 	// Join question args
 	question := strings.Join(args, " ")
-
-	// Detect pipe mode
-	isPiped := !term.IsTerminal(int(os.Stdin.Fd()))
 
 	// --- Pipe mode ---
 	if isPiped {

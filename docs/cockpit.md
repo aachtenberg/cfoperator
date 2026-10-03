@@ -1017,7 +1017,7 @@ Three outcomes, three different things said:
 
 | Probe | What the session is told |
 |-------|--------------------------|
-| Reachable | Where it is, what version, whether it is investigating right now, that the `cfoperator` tool reads it, and that access is read-only |
+| Reachable | Where it is, what version, whether it is investigating right now, and that this terminal session can close or act on a row when the operator asks |
 | Reachable, no usable token | The same, plus: reads are failing, the fix is a token, say so rather than working around it |
 | Configured but silent | That *this address* did not answer — not that the fleet's agent is down, and not a reason to go hunting for a local process |
 
@@ -1038,10 +1038,22 @@ teaches a model to route around it.
 | `list_remediations` | The queue, optionally filtered by status |
 | `get_remediation` | One row in full — payload, result, PR URL |
 | `search_knowledge` | Learnings, hybrid or FTS |
+| `approve_remediation` | Sends the row to the executor (`queued`). Plain session only |
+| `reject_remediation` | Closes the row as unwanted. A note is required. Plain session only |
+| `resolve_remediation` | Closes the row as done. A note is required. Does not triage the investigation. Plain session only |
+| `triage_investigation` | Records the operator's verdict (`resolved` or `ack`) plus a note. Plain session only |
 
-It runs on the same client `attach` uses, so the GET-only transport guard
-applies unchanged: approving, rejecting and queueing remain console or MCP
-actions, and the tool cannot grow a write by accident. Long free-text fields are
+A plain `cfassist` — the TUI, or a one-shot question the operator typed — can
+take those four actions, because that is the person asking. A pipe cannot:
+that input was not typed as the question, so it gets the read-only tool.
+They go through a
+separate client whose allowlist is exactly those POSTs, not through `Client`,
+so `allowedMethods` stays GET-only. `cfassist attach` does not register them:
+an attached session is still the read-only handoff, and a model there cannot
+reach approve, reject, resolve or triage. A row the executor still holds
+(`claimed`, `executing`) is refused when the read still shows that status. The
+reject and resolve routes do not re-check, so a claim that lands between the
+GET and the POST still goes through. Long free-text fields are
 clipped per value rather than rows being dropped, because a queue dump that
 crowds an incident out of an 8k context is not a favour — and `limit` is a
 ceiling (50 rows, 25 learnings), not a suggestion, since neither
