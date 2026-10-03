@@ -586,3 +586,115 @@ func TestRunKeepsToolResultsWhenCancelledMidRound(t *testing.T) {
 		t.Fatalf("second result should be the cancelled filler, got %+v", toolMsgs[1])
 	}
 }
+
+// --- Announced-step nudge ---
+
+func TestAnnouncesStep(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		// The screenshot that prompted this: narration, then a promise, then stop.
+		{"The logs show successful executions.\n\nI'll check the Kubernetes events in the `data` namespace.", true},
+		{"Let me look at the pod logs.", true},
+		{"Found nothing yet. Next, I will run kubectl describe.", true},
+		{"I’ll query the events now.", true},
+		{"I'm going to inspect the node.", true},
+
+		{"", false},
+		{"The job is healthy; no action needed.", false},
+		{"Let me know if you want me to dig further.", false},
+		{"I'll keep an eye on it.", false},
+		{"Should I check the events next?", false},
+		{"If you want, I'll check the events next.", false},
+		// Earlier paragraphs are reasoning; only the close decides.
+		{"I'll check the logs.\n\nThe logs were clean, so the failure was transient.", false},
+	}
+	for _, c := range cases {
+		if got := announcesStep(c.text); got != c.want {
+			t.Errorf("announcesStep(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
+
+func newNudgeRun(t *testing.T, responses []mockOllamaResponse) (Result, []client.Message, *mockOutput) {
+	t.Helper()
+	server := newMockOllamaServer(t, responses)
+	t.Cleanup(server.Close)
+	llm := client.New("ollama", server.URL, "test-model", 0.7, "")
+	cfg := config.Defaults()
+	cfg.Memory.Directory = t.TempDir()
+	output := &mockOutput{}
+	result, msgs := Run(context.Background(), llm, tools.New(cfg), output,
+		[]client.Message{{Role: "user", Content: "why did the job fail?"}}, "sys", 10)
+	return result, msgs, output
+}
+
+func bashCall(cmd string) *client.ToolCall {
+	return &client.ToolCall{Function: client.ToolCallFunction{Name: "bash", Arguments: map[string]any{"command": cmd}}}
+}
+
+// The turn carries on after an announced step instead of handing the operator
+// a promise and a prompt.
+func TestRunNudgesAnnouncedStep(t *testing.T) {
+	result, msgs, output := newNudgeRun(t, []mockOllamaResponse{
+		{toolCall: bashCall("echo logs"), done: true},
+		{content: "Logs look fine.\n\nI'll check the events.", done: true},
+		{toolCall: bashCall("echo events"), done: true},
+		{content: "No failing events; the failure was transient.", done: true},
+	})
+	if result.Error != "" {
+		t.Fatalf("unexpected error: %s", result.Error)
+	}
+	if result.ToolCalls != 2 {
+		t.Errorf("ToolCalls = %d, want 2 — the announced step never ran", result.ToolCalls)
+	}
+	if result.Response != "No failing events; the failure was transient." {
+		t.Errorf("Response = %q", result.Response)
+	}
+	if len(output.warnings) != 1 {
+		t.Errorf("warnings = %v, want one nudge notice", output.warnings)
+	}
+	nudges := 0
+	for _, m := range msgs {
+		if m.Role == "user" && m.Content == AnnouncedStepNudge {
+			nudges++
+		}
+	}
+	if nudges != 1 {
+		t.Errorf("transcript holds %d nudges, want 1", nudges)
+	}
+}
+
+// A model that narrates again after being nudged is answering; nudging forever
+// on a heuristic would burn the iteration budget for nothing.
+func TestRunNudgesAtMostOnceInARow(t *testing.T) {
+	result, _, output := newNudgeRun(t, []mockOllamaResponse{
+		{content: "I'll check the events.", done: true},
+		{content: "Let me look at the events.", done: true},
+	})
+	if result.Response != "Let me look at the events." {
+		t.Errorf("Response = %q, want the second reply taken as final", result.Response)
+	}
+	if len(output.warnings) != 1 {
+		t.Errorf("warnings = %v, want exactly one nudge", output.warnings)
+	}
+}
+
+// After a tool round the model has acted, so a later narrated step is a new
+// one and earns its own nudge.
+func TestRunNudgeResetsAfterToolRound(t *testing.T) {
+	result, _, output := newNudgeRun(t, []mockOllamaResponse{
+		{content: "I'll check the logs.", done: true},
+		{toolCall: bashCall("echo logs"), done: true},
+		{content: "I'll check the events.", done: true},
+		{toolCall: bashCall("echo events"), done: true},
+		{content: "Done: transient upstream timeout.", done: true},
+	})
+	if result.ToolCalls != 2 || result.Response != "Done: transient upstream timeout." {
+		t.Errorf("ToolCalls = %d, Response = %q", result.ToolCalls, result.Response)
+	}
+	if len(output.warnings) != 2 {
+		t.Errorf("warnings = %v, want two nudges", output.warnings)
+	}
+}

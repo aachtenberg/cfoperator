@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -71,6 +73,7 @@ func Run(
 	toolSchemas := toolReg.GetSchemas()
 	result := Result{}
 	start := time.Now()
+	nudged := false // the previous round was an announced-step nudge
 
 	for i := 0; i < maxIterations; i++ {
 		// Checked at the top of every iteration, not only around the calls that
@@ -150,11 +153,29 @@ func Run(
 			if ctx.Err() != nil {
 				return cancelled(&result, start), transcript(fullMessages)
 			}
+			nudged = false
+			continue
+		}
+
+		text := resp.Content
+
+		// A reply that ends by announcing a tool call it never made is not an
+		// answer, but without tool calls it ends the turn — and the operator has
+		// to type "continue". gemma4 does this on most multi-step turns. Ask
+		// once; if the next reply narrates again, take it as the answer rather
+		// than loop on a heuristic.
+		if !nudged && announcesStep(text) {
+			nudged = true
+			output.ShowResponse(text)
+			output.ShowWarning("Model described its next step without taking it — asking it to continue.")
+			fullMessages = append(fullMessages,
+				client.Message{Role: "assistant", Content: text},
+				client.Message{Role: "user", Content: AnnouncedStepNudge},
+			)
 			continue
 		}
 
 		// No tool calls — final response
-		text := resp.Content
 		if text != "" {
 			output.ShowResponse(text)
 			fullMessages = append(fullMessages, client.Message{Role: "assistant", Content: text})
@@ -175,6 +196,35 @@ func Run(
 	output.ShowWarning(fmt.Sprintf("Reached maximum tool iterations (%d).", maxIterations))
 	result.Latency = time.Since(start)
 	return result, transcript(fullMessages)
+}
+
+// AnnouncedStepNudge is sent when a reply announces a step without calling a
+// tool. It offers both exits, so a reply the heuristic misread as unfinished
+// costs one round, not a tool call nobody wanted.
+const AnnouncedStepNudge = "You described your next step but did not call a tool, so nothing ran. " +
+	"If that step is still needed, call the tool now. If you are finished, give your final answer."
+
+// announcedStep matches a sentence that opens by committing to an action:
+// "I'll check the events", "Let me look at the logs", "Next, I will run …".
+// The verb list is what keeps "I'll keep an eye on it" and "Let me know" out.
+var announcedStep = regexp.MustCompile(`(?:^|[.!:]\s+)` +
+	`(?:i'll|i will|i'm going to|i am going to|let me|let's|(?:next|now|first),? i(?:'ll| will))\s+` +
+	`(?:now\s+|also\s+|first\s+|then\s+)?` +
+	`(?:check|look|run|inspect|query|examine|investigate|search|read|list|get|fetch|see|verify|try|use|call|describe|grep|review|pull|dig|confirm|start|test|compare|tail)\b`)
+
+// announcesStep reports whether a tool-less reply ends by promising work it
+// did not do. Only the last paragraph counts — earlier ones are reasoning the
+// model may have acted on — and a closing question is a hand-back to the
+// operator, which is a legitimate place to stop.
+func announcesStep(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || strings.HasSuffix(text, "?") {
+		return false
+	}
+	paras := strings.Split(text, "\n\n")
+	last := strings.ToLower(strings.TrimSpace(paras[len(paras)-1]))
+	last = strings.ReplaceAll(last, "\u2019", "'")
+	return announcedStep.MatchString(last)
 }
 
 // transcript is the session history callers persist: everything Run appended,
