@@ -73,9 +73,8 @@ func TestDetectReachableAndReadable(t *testing.T) {
 	}
 }
 
-// A reachable agent with no usable credential is a *different* situation from
-// an unreachable one, and the difference has to survive into the prompt: the
-// fix is a token, not a restart.
+// CFOP-147: over SSH with no token, the token was not forwarded. Fleet hosts
+// store none, so the reason and the prompt must say forward it, not mint one.
 func TestDetectWithoutTokenOverSSHSaysNotForwarded(t *testing.T) {
 	withSSH(t, true)
 	srv := probeServer(t, healthy, http.StatusOK)
@@ -90,6 +89,9 @@ func TestDetectWithoutTokenOverSSHSaysNotForwarded(t *testing.T) {
 	}
 }
 
+// A reachable agent with no usable credential is a *different* situation from
+// an unreachable one, and the difference has to survive into the prompt: the
+// fix is a token, not a restart.
 func TestDetectReachableWithoutToken(t *testing.T) {
 	withSSH(t, false)
 	srv := probeServer(t, healthy, http.StatusOK)

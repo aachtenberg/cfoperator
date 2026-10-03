@@ -93,8 +93,10 @@ func unauthorizedHint(agentURL, token string) string {
 			"then reconnect. `sudo cfassist` drops it. Otherwise: %s",
 			EnvAPIToken, EnvAPIToken, EnvAPIToken, mint)
 	}
-	return fmt.Sprintf("The token in use was rejected. If it came from your workstation "+
-		"over SSH (SendEnv), it may be revoked or expired. %s", mint)
+	return fmt.Sprintf("The token in use was rejected. If it was forwarded from your "+
+		"workstation (SendEnv), it may be revoked or expired there; if this host's "+
+		"~/.cfassist/config.yaml sets cfoperator.token, that one is used instead and is "+
+		"the one to check. %s", mint)
 }
 
 // Where a resolved agent URL came from. Only the unreachable hint reads this,
