@@ -103,7 +103,11 @@ def test_every_registered_compat_provider_lists_models_from_its_base_url(server,
         def fake_get(url, headers=None, timeout=None):
             calls.append((url, headers))
             resp = MagicMock()
-            resp.json.return_value = {"data": [{"id": "b-model"}, {"id": "a-model"}]}
+            # Both can call tools, so a models_require_tools row keeps them;
+            # the filter has its own test below.
+            resp.json.return_value = {"data": [
+                {"id": "b-model", "supported_parameters": ["tools"]},
+                {"id": "a-model", "supported_parameters": ["tools"]}]}
             return resp
 
         monkeypatch.setattr(web_server.requests, "get", fake_get)
@@ -119,6 +123,37 @@ def test_every_registered_compat_provider_lists_models_from_its_base_url(server,
     # base_url is what the agent chats through, and the listing follows it.
     assert OPENAI_COMPAT_PROVIDERS["gemini"]["base_url"] + "/models" == \
         "https://generativelanguage.googleapis.com/v1beta/openai/models"
+
+
+def test_a_tools_required_row_lists_only_models_that_can_call_tools(server, monkeypatch):
+    """OpenRouter lists ~470 ids and ~70 cannot call tools (CFOP-259). The
+    investigation loop is a tool loop, so a pick from those would fail on its
+    first turn. A row that sets models_require_tools drops them; a row that
+    does not keeps listing everything, since its vendor omits the field.
+    """
+    import web_server
+
+    listing = {"data": [
+        {"id": "vendor/with-tools", "supported_parameters": ["tools", "temperature"]},
+        {"id": "vendor/no-tools", "supported_parameters": ["temperature"]},
+        {"id": "vendor/undeclared"},
+    ]}
+
+    def fake_get(url, headers=None, timeout=None):
+        resp = MagicMock()
+        resp.json.return_value = listing
+        return resp
+
+    monkeypatch.setattr(web_server.requests, "get", fake_get)
+    gated = {b for b, cfg in OPENAI_COMPAT_PROVIDERS.items() if cfg.get("models_require_tools")}
+    assert "openrouter" in gated
+    for backend, cfg in OPENAI_COMPAT_PROVIDERS.items():
+        monkeypatch.setenv(cfg["key_env"], "k")
+        models = server.app.test_client().get(f"/api/models/{backend}").get_json()["models"]
+        if backend in gated:
+            assert models == ["vendor/with-tools"], backend
+        else:
+            assert models == ["vendor/no-tools", "vendor/undeclared", "vendor/with-tools"], backend
 
 
 def test_agent_resolves_every_registered_compat_provider(server):

@@ -2255,10 +2255,48 @@ def test_a_differently_reported_row_still_uses_the_first_peer():
     "DeepSeek/DeepSeek-V4-Pro",          # case is not significant
     "deepseek",                          # _llm_provider_tag's backend-only form
     "deepseek/models/deepseek-v4-pro",   # a vendor listing id with an infix
+    "openrouter/deepseek/deepseek-v4-pro",  # the same vendor behind a router
 ])
 def test_self_review_is_matched_on_the_vendor_whatever_shape_the_tag_takes(reporter):
     assert agent_mod._judge_is_self_review(reporter, "deepseek", "deepseek-v4-pro")
     assert not agent_mod._judge_is_self_review(reporter, "anthropic", "claude-opus-4-8")
+
+
+@pytest.mark.parametrize("reporter,judge", [
+    ("openrouter/x-ai/grok-4.5", "xai"),
+    ("openrouter/google/gemini-3.1-pro-preview", "gemini"),
+    ("openrouter/anthropic/claude-opus-5", "anthropic"),
+    ("openrouter/deepseek/deepseek-v4-pro", "deepseek"),
+])
+def test_self_review_sees_through_a_router_to_the_vendor(reporter, judge):
+    # CFOP-259: the router is the tag's head, the vendor is the next segment,
+    # and OpenRouter spells two vendors differently from our backend names.
+    # Without unwrapping, every judge peer would review its own vendor's work
+    # whenever the investigation reached the openrouter rung.
+    assert agent_mod._judge_is_self_review(reporter, judge, agent_mod._JUDGE_MODEL_FLOOR[judge])
+    for other in set(agent_mod._JUDGE_MODEL_FLOOR) - {judge}:
+        assert not agent_mod._judge_is_self_review(
+            reporter, other, agent_mod._JUDGE_MODEL_FLOOR[other]), (reporter, other)
+
+
+def test_a_router_tag_for_a_non_judge_vendor_is_no_peers_own_work():
+    for judge, model in agent_mod._JUDGE_MODEL_FLOOR.items():
+        assert not agent_mod._judge_is_self_review("openrouter/qwen/qwen3.7-plus", judge, model)
+        assert not agent_mod._judge_is_self_review("openrouter", judge, model)
+
+
+def test_judge_skips_deepseek_for_a_row_deepseek_wrote_through_openrouter():
+    calls = []
+
+    def complete(system, user, backend, model):
+        calls.append((backend, model))
+        return '{"verdict": "confirm", "reason": "independent look"}'
+
+    op = _judging_op(complete, providers=("deepseek", "anthropic"))
+    details = dict(_IMMICH_KIOSK_DETAILS, provider="openrouter/deepseek/deepseek-v4-pro")
+    out = CFOperator._judge_mutation_remediation(op, details, "gitops-patch", "low", 1.0)
+    assert calls == [("anthropic", "claude-opus-4-8")]   # deepseek never asked
+    assert out["backend"] == "anthropic"
 
 
 def test_self_review_catches_a_bare_model_tag_with_no_backend():
@@ -3012,6 +3050,10 @@ def test_gemini_is_not_in_the_investigation_fallback_chain():
     # automatic escalate.
     assert "deepseek" not in line, line
     assert "anthropic" in line and "xai" in line
+    # OpenRouter IS in the chain (CFOP-259), and only after Anthropic: it is
+    # the rung for "every other rung failed", never a substitute for Opus.
+    order = line.split("[", 1)[1]
+    assert "openrouter" in order and order.index("openrouter") > order.index("anthropic"), line
     # ...but they ARE registered providers, so the judge and the admin picker
     # can still select them by name
     assert "gemini" in agent_mod.OPENAI_COMPAT_PROVIDERS

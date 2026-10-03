@@ -25,7 +25,7 @@ def test_registry_has_the_openai_compatible_providers():
     # gemini joined groq and xai: it was named in config.yaml, config.yaml.example
     # and docs/config-reference.md as shipped, but existed in no code path, so a
     # gemini entry in the fallback chain was silently inert.
-    assert set(OPENAI_COMPAT_PROVIDERS) == {"groq", "xai", "gemini", "deepseek"}
+    assert set(OPENAI_COMPAT_PROVIDERS) == {"groq", "xai", "gemini", "deepseek", "openrouter"}
     for cfg in OPENAI_COMPAT_PROVIDERS.values():
         assert cfg["base_url"].startswith("https://")
         assert cfg["key_env"] and cfg["label"]
@@ -46,6 +46,45 @@ def test_deepseek_resolves_to_v4_pro_with_no_config_and_no_console_choice():
     op.kb = _StubKB()
     op.config = {"llm": {}}
     assert op._resolve_provider(backend="deepseek", model=None) == ("deepseek", None, "deepseek-v4-pro")
+
+
+def test_openrouter_registry_points_at_openrouter_api():
+    orr = OPENAI_COMPAT_PROVIDERS["openrouter"]
+    assert orr["base_url"] == "https://openrouter.ai/api/v1"
+    assert orr["key_env"] == "OPENROUTER_API_KEY"
+
+
+def test_openrouter_resolves_to_deepseek_v4_pro_on_a_key_alone():
+    # It is the last fallback rung (CFOP-259), and a rung is only callable
+    # with a model, so the key alone has to be enough.
+    op = CFOperator.__new__(CFOperator)
+    op.kb = _StubKB()
+    op.config = {"llm": {}}
+    assert op._resolve_provider(backend="openrouter", model=None) == \
+        ("openrouter", None, "deepseek/deepseek-v4-pro")
+
+
+def test_openrouter_pins_host_routing_to_cheapest_fp8_or_better():
+    # Unpinned, OpenRouter sent deepseek-v4-pro to an fp4 host at ~6x the
+    # cheapest host's output price (measured 2026-10-03). The routing object
+    # rides every request through request_params.
+    routing = CFOperator._openai_compat_request_params("openrouter")["provider"]
+    assert routing["sort"] == "price"
+    assert not any(q.startswith(("fp4", "int", "fp6")) for q in routing["quantizations"])
+    # Closed-model hosts declare their quantization as 'unknown'. Leave it out
+    # and every Anthropic/OpenAI/xAI model 404s at OpenRouter's quantization
+    # filter (measured 2026-10-03), so a console pick of one would fail.
+    assert "unknown" in routing["quantizations"]
+    # Prompts carry alert text, logs and metrics; route only to hosts that
+    # say they do not store or train on them.
+    assert routing["data_collection"] == "deny"
+
+
+def test_request_params_are_a_copy_down_to_the_nested_routing():
+    # A request site that adjusts its payload must not edit the registry.
+    params = CFOperator._openai_compat_request_params("openrouter")
+    params["provider"]["quantizations"].append("fp4")
+    assert "fp4" not in OPENAI_COMPAT_PROVIDERS["openrouter"]["request_params"]["provider"]["quantizations"]
 
 
 def test_registry_default_model_loses_to_config_and_console():

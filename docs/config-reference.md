@@ -200,16 +200,24 @@ llm:
     - provider: anthropic
       model: claude-3-5-sonnet-20241022
       api_key: ${ANTHROPIC_API_KEY}
+    - provider: openrouter   # LAST rung of the escalation chain — see note
+      model: deepseek/deepseek-v4-pro  # also the registry default
+      api_key: ${OPENROUTER_API_KEY}
 
-  # Escalation order is fixed in code (ollama → groq → xai → anthropic); a
-  # fallback entry supplies the model and key for its provider, not a
-  # position. Gemini and DeepSeek are deliberately excluded from that chain
-  # so a paid escalation that used to reach Anthropic cannot land on them —
-  # an entry here is the model the selected backend (Admin → LLM
-  # selected_backend, or ask_sre(backend=...)) resolves to when no model is
-  # chosen in the console. DeepSeek alone has a registry default
-  # (deepseek-v4-pro), so its entry is optional; the key is enough. The mutation judge (remediation.judge below) does NOT read this
-  # list: it pins its own floor model per provider in code. (CFOP-104)
+  # Escalation order is fixed in code (ollama → groq → xai → anthropic →
+  # openrouter); a fallback entry supplies the model and key for its
+  # provider, not a position. OpenRouter is last, so it only answers when
+  # every rung above it has failed; its registry row pins OpenRouter's host
+  # routing to the cheapest host that does not declare below fp8 (CFOP-259). Gemini and
+  # DeepSeek are deliberately excluded from that chain so a paid escalation
+  # that used to reach Anthropic cannot land on them — an entry here is the
+  # model the selected backend (Admin → LLM selected_backend, or
+  # ask_sre(backend=...)) resolves to when no model is chosen in the console.
+  # DeepSeek and OpenRouter have registry defaults (deepseek-v4-pro,
+  # deepseek/deepseek-v4-pro), so their entries are optional; the key is
+  # enough. The mutation judge (remediation.judge below) does NOT read this
+  # list: it pins its own floor model per provider in code, and OpenRouter
+  # is not a judge peer. (CFOP-104)
 
   # Optional dedicated triage classifier (an ollama model tag, served from
   # the triage host — llm.triage_url below, which defaults to llm.primary.url).
@@ -682,7 +690,7 @@ cockpit:
   # The cfassist release tiers 3/3b deliver to the host. Pinned so a session is
   # reproducible; it must be a tag that exists, and a spawn says so loudly if
   # it does not. Defaults to cfassist-go's own Version.
-  # cfassist_version: 0.13.5
+  # cfassist_version: 0.13.6
   # release_base: https://github.com/aachtenberg/cfoperator/releases/download
   #
   # ---- the browser bridge (CFOP-75) ----------------------------------------

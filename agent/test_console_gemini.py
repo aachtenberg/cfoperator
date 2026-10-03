@@ -172,6 +172,23 @@ def test_chain_skips_a_selected_backend_with_no_model_and_says_why(no_keys):
     assert 'no model selected' in events[0][1]['reason']
 
 
+def test_openrouter_is_the_last_rung_on_a_key_alone(no_keys):
+    # CFOP-259: with every hosted key present, the investigation chain ends
+    # anthropic -> openrouter, and openrouter needs no llm.fallback entry or
+    # console pick to be a rung (its registry default supplies the model).
+    for env in ('GROQ_API_KEY', 'XAI_API_KEY', 'ANTHROPIC_API_KEY',
+                'OPENROUTER_API_KEY', 'GEMINI_API_KEY', 'DEEPSEEK_API_KEY'):
+        no_keys.setenv(env, 'k')
+    op = _operator(groq_selected_model='g', xai_selected_model='x',
+                   anthropic_selected_model='claude-opus-5')
+    names = [p[0] for p in op._get_provider_chain('auto')]
+    assert names[-2:] == ['anthropic', 'openrouter'], names
+    assert op._get_provider_chain('auto')[-1] == ('openrouter', None, 'deepseek/deepseek-v4-pro')
+    # The key is still the gate: without it the rung is absent, not broken.
+    no_keys.delenv('OPENROUTER_API_KEY')
+    assert all(p[0] != 'openrouter' for p in op._get_provider_chain('auto'))
+
+
 def test_chain_skips_a_selected_backend_with_no_key_and_names_the_variable(no_keys):
     op = _operator(selected_backend='gemini', gemini_selected_model='gemini-3.6-flash')
     _, events = _events_of(op)
@@ -238,11 +255,15 @@ def test_registry_params_split_wire_params_from_the_loop_budget():
     assert MEASURED_REASONING <= set(REASONING_BACKENDS), (
         f'a measured reasoning backend lost its budget: '
         f'{sorted(MEASURED_REASONING - set(REASONING_BACKENDS))}')
+    # Rows may carry other wire params beside the effort (OpenRouter's host
+    # routing, CFOP-259), so the split is asserted, not the exact dict: the
+    # effort rides every request, the raised cap only the loop's.
     for backend in REASONING_BACKENDS:
-        assert CFOperator._openai_compat_request_params(backend) == \
-            {'reasoning_effort': 'low'}, backend
+        wire = CFOperator._openai_compat_request_params(backend)
+        assert wire.get('reasoning_effort') == 'low', backend
+        assert 'max_tokens' not in wire, backend
         assert CFOperator._openai_compat_tool_loop_params(backend) == \
-            {'reasoning_effort': 'low', 'max_tokens': 16384}, backend
+            {**wire, 'max_tokens': 16384}, backend
     for other in PLAIN_BACKENDS:
         assert CFOperator._openai_compat_request_params(other) == {}, other
         assert CFOperator._openai_compat_tool_loop_params(other) == {}, other

@@ -48,7 +48,7 @@ func SaveState(provider, model string) {
 	os.WriteFile(statePath(), data, 0644)
 }
 
-var Version = "0.13.5"
+var Version = "0.13.6"
 
 type LLMConfig struct {
 	Provider      string  `yaml:"provider"`
@@ -382,6 +382,16 @@ providers:
   #   temperature: 0.7
   #   api_key: ${DEEPSEEK_API_KEY}
   #   context_window: 1048576
+  # openrouter:
+  #   provider: openai           # same wire as groq; /v1 is added back after the strip
+  #   url: https://openrouter.ai/api/v1
+  #   model: deepseek/deepseek-v4-pro
+  #   temperature: 0.7
+  #   api_key: ${OPENROUTER_API_KEY}
+  #   context_window: 1048576
+  #   # OpenRouter picks the serving host per request. The agent pins it to the
+  #   # cheapest fp8-or-better host; cfassist cannot send that, so set it in
+  #   # OpenRouter's account settings if the default routing matters.
   # claude:
   #   provider: anthropic
   #   url: https://api.anthropic.com

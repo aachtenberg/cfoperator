@@ -41,6 +41,7 @@ llm:
   xaiApiKey: ""
   geminiApiKey: ""
   deepseekApiKey: ""
+  openrouterApiKey: ""
 
 prometheus:
   url: ""            # REQUIRED

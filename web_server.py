@@ -131,6 +131,7 @@ _PROVIDER_DESCRIPTIONS = {
     'xai': 'Grok models',
     'gemini': 'Gemini models',
     'deepseek': 'DeepSeek models',
+    'openrouter': 'Many vendors behind one key',
 }
 
 # A tool result stored in the transcript. The live event is already cut at
@@ -563,7 +564,9 @@ class WebServer:
                     # groq, xai, gemini, …: one branch for every OpenAI-compat
                     # provider the agent registers, listing from the same
                     # base_url the agent chats through. Groq marks retired
-                    # models active=false; the others omit the field.
+                    # models active=false; the others omit the field. A
+                    # models_require_tools row lists only ids that can run
+                    # the tool loop (OpenRouter: ~70 of ~470 cannot).
                     cfg = _openai_compat_providers()[backend]
                     api_key = os.getenv(cfg['key_env'], '')
                     if not api_key:
@@ -575,8 +578,11 @@ class WebServer:
                     )
                     resp.raise_for_status()
                     data = resp.json()
+                    need_tools = cfg.get('models_require_tools', False)
                     models = sorted({_normalize_model_id(backend, m['id'])
-                                     for m in data.get('data', []) if m.get('active', True)})
+                                     for m in data.get('data', []) if m.get('active', True)
+                                     and (not need_tools
+                                          or 'tools' in (m.get('supported_parameters') or []))})
                     selected = _normalize_model_id(
                         backend, self.operator.kb.get_setting(f'{backend}_selected_model', ''))
                     return jsonify({'models': models, 'selected': selected})

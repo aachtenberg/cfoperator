@@ -89,6 +89,7 @@ services:
       XAI_API_KEY: ${XAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       # Notify — a blank webhook leaves that sink off rather than half-configured.
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
