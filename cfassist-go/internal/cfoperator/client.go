@@ -59,6 +59,10 @@ var allowedMethods = map[string]bool{http.MethodGet: true}
 type Error struct {
 	Message string
 	Hint    string
+	// Status is the HTTP status that produced the error, or 0 when there was
+	// none (connection failures, unreadable bodies). Lets a caller tell a
+	// rejected credential from a server that is merely failing.
+	Status int
 }
 
 func (e *Error) Error() string { return e.Message }
@@ -222,9 +226,11 @@ func (c *Client) do(method, path string, params url.Values) ([]byte, error) {
 
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return nil, newError(unauthorizedHint(c.URL, c.Token),
+		e := newError(unauthorizedHint(c.URL, c.Token),
 			"CFOperator rejected the API token (HTTP %d)", resp.StatusCode,
 		)
+		e.Status = resp.StatusCode
+		return nil, e
 	case resp.StatusCode == http.StatusNotFound:
 		return nil, newError("", "Not found: %s", path)
 	case resp.StatusCode >= 400:

@@ -89,21 +89,42 @@ func TestDetectWithoutTokenOverSSHSaysNotForwarded(t *testing.T) {
 	}
 }
 
-// The SSH wording is chosen, not appended: off SSH there is nothing to
-// forward, and a rejected token over SSH is a different message.
-func TestThePromptsSSHWordingFollowsTheSession(t *testing.T) {
-	srv := probeServer(t, healthy, http.StatusOK)
-
-	withSSH(t, false)
-	if prompt := Detect(srv.URL, false, "", 2*time.Second).PromptSection(); strings.Contains(prompt, "SendEnv") || strings.Contains(prompt, "over SSH") {
-		t.Errorf("off SSH the prompt must not talk about forwarding:\n%s", prompt)
+// The fix is chosen, not appended: one instruction per situation, and a
+// failure that is not about the credential is not blamed on it.
+func TestThePromptsFixFollowsTheFailure(t *testing.T) {
+	cases := []struct {
+		name             string
+		ssh              bool
+		token            string
+		status           int
+		want, wantAbsent []string
+	}{
+		{"ssh, no token", true, "", http.StatusOK,
+			[]string{"SendEnv CFOP_API_TOKEN", "do not suggest putting a token here"},
+			[]string{"set as CFOP_API_TOKEN or cfoperator.token"}},
+		{"ssh, refused token", true, "stale", http.StatusUnauthorized,
+			[]string{"was refused", "investigate"}, []string{"no token reached it"}},
+		{"ssh, server failing", true, "fine", http.StatusInternalServerError,
+			[]string{"not a credential problem"}, []string{"refused", "SendEnv", "revoked"}},
+		{"off ssh, no token", false, "", http.StatusOK,
+			[]string{"set as CFOP_API_TOKEN or cfoperator.token"}, []string{"SendEnv", "over SSH"}},
 	}
-
-	withSSH(t, true)
-	rejected := probeServer(t, healthy, http.StatusUnauthorized)
-	prompt := Detect(rejected.URL, true, "stale-token", 2*time.Second).PromptSection()
-	if !strings.Contains(prompt, "its token was rejected") || strings.Contains(prompt, "no token reached it") {
-		t.Errorf("over SSH with a rejected token the prompt should say rejected, not missing:\n%s", prompt)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withSSH(t, tc.ssh)
+			srv := probeServer(t, healthy, tc.status)
+			prompt := Detect(srv.URL, tc.token != "", tc.token, 2*time.Second).PromptSection()
+			for _, w := range tc.want {
+				if !strings.Contains(prompt, w) {
+					t.Errorf("want %q in:\n%s", w, prompt)
+				}
+			}
+			for _, w := range tc.wantAbsent {
+				if strings.Contains(prompt, w) {
+					t.Errorf("did not want %q in:\n%s", w, prompt)
+				}
+			}
+		})
 	}
 }
 

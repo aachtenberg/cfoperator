@@ -14,6 +14,7 @@
 package cfoperator
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -52,6 +53,9 @@ type Presence struct {
 	// from an unreachable agent, and the model should not conflate them.
 	HasToken bool
 	CanRead  bool
+	// AuthRejected is set when reads failed because the agent refused the
+	// credential (HTTP 401/403), as opposed to any other failure.
+	AuthRejected bool
 
 	// Reason explains the negative cases in operator language: why it is not
 	// reachable, or why reads do not work.
@@ -107,6 +111,10 @@ func Detect(rawURL string, configured bool, token string, timeout time.Duration)
 	}
 	if _, err := c.ListInvestigations(1); err != nil {
 		p.Reason = err.Error()
+		var apiErr *Error
+		if errors.As(err, &apiErr) && (apiErr.Status == 401 || apiErr.Status == 403) {
+			p.AuthRejected = true
+		}
 		return p
 	}
 	p.CanRead = true
@@ -164,9 +172,7 @@ func (p Presence) PromptSection() string {
 		if !p.CanRead {
 			b.WriteString(fmt.Sprintf("\n\nOnly its health endpoint answers without credentials, "+
 				"and reads are currently failing: %s. The `cfoperator` tool will report the same. "+
-				"The fix is an API token — minted at %s/admin?tab=tokens, then set as CFOP_API_TOKEN "+
-				"or cfoperator.token in ~/.cfassist/config.yaml.%s Tell the operator that "+
-				"rather than working around it.", p.Reason, p.URL, sshTokenNote(p.HasToken)))
+				"%s Tell the operator that rather than working around it.", p.Reason, p.readFix()))
 		}
 		b.WriteString("\n\nYour access to it is read-only. Approving, rejecting or queueing a " +
 			"remediation happens in the console or through the MCP server — recommend those " +
@@ -238,18 +244,29 @@ func shortDuration(d time.Duration) string {
 	}
 }
 
-// sshTokenNote is the prompt's SSH-specific sentence, chosen the way
-// unauthorizedHint chooses the hint (CFOP-147). Off SSH there is nothing to
-// forward, so it says nothing.
-func sshTokenNote(hasToken bool) string {
-	if !underSSH() {
-		return ""
+// readFix is the prompt's one instruction for failing reads, chosen whole
+// rather than appended to, so a small model is never handed two fixes that
+// contradict each other (CFOP-147). Over SSH with no token, the fix is to
+// forward the operator's own; fleet hosts store none, so "set a token here"
+// would be exactly the wrong advice. A refused token is a credential problem;
+// any other failure is not one, and must not be blamed on the token.
+func (p Presence) readFix() string {
+	mint := fmt.Sprintf("The fix is an API token — minted at %s/admin?tab=tokens, then set as "+
+		"CFOP_API_TOKEN or cfoperator.token in ~/.cfassist/config.yaml.", p.URL)
+	switch {
+	case !p.HasToken && underSSH():
+		return "This session is over SSH and no token reached it. On fleet hosts the token is " +
+			"the operator's own, forwarded from their workstation with `SendEnv CFOP_API_TOKEN`; " +
+			"nothing is stored on the host, so do not suggest putting a token here."
+	case !p.HasToken:
+		return mint
+	case p.AuthRejected && underSSH():
+		return "The token reached this session but was refused: if it was forwarded from the " +
+			"operator's workstation, it may be revoked or expired there, or lack the investigate " +
+			"scope. A new one is minted at " + p.URL + "/admin?tab=tokens."
+	case p.AuthRejected:
+		return "The token was refused (revoked, expired, or missing a scope). " + mint
+	default:
+		return "That is not a credential problem; report the error as it is."
 	}
-	if !hasToken {
-		return " This session is over SSH and no token reached it: on fleet hosts the token is " +
-			"the operator's own, forwarded from their workstation with `SendEnv CFOP_API_TOKEN`, " +
-			"and nothing is stored on the host."
-	}
-	return " This session is over SSH and its token was rejected: if it was forwarded from the " +
-		"operator's workstation, it may be revoked or expired there."
 }
