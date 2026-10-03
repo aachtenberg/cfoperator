@@ -89,6 +89,24 @@ func TestDetectWithoutTokenOverSSHSaysNotForwarded(t *testing.T) {
 	}
 }
 
+// The SSH wording is chosen, not appended: off SSH there is nothing to
+// forward, and a rejected token over SSH is a different message.
+func TestThePromptsSSHWordingFollowsTheSession(t *testing.T) {
+	srv := probeServer(t, healthy, http.StatusOK)
+
+	withSSH(t, false)
+	if prompt := Detect(srv.URL, false, "", 2*time.Second).PromptSection(); strings.Contains(prompt, "SendEnv") || strings.Contains(prompt, "over SSH") {
+		t.Errorf("off SSH the prompt must not talk about forwarding:\n%s", prompt)
+	}
+
+	withSSH(t, true)
+	rejected := probeServer(t, healthy, http.StatusUnauthorized)
+	prompt := Detect(rejected.URL, true, "stale-token", 2*time.Second).PromptSection()
+	if !strings.Contains(prompt, "its token was rejected") || strings.Contains(prompt, "no token reached it") {
+		t.Errorf("over SSH with a rejected token the prompt should say rejected, not missing:\n%s", prompt)
+	}
+}
+
 // A reachable agent with no usable credential is a *different* situation from
 // an unreachable one, and the difference has to survive into the prompt: the
 // fix is a token, not a restart.

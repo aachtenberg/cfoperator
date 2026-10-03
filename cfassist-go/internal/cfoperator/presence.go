@@ -165,10 +165,8 @@ func (p Presence) PromptSection() string {
 			b.WriteString(fmt.Sprintf("\n\nOnly its health endpoint answers without credentials, "+
 				"and reads are currently failing: %s. The `cfoperator` tool will report the same. "+
 				"The fix is an API token — minted at %s/admin?tab=tokens, then set as CFOP_API_TOKEN "+
-				"or cfoperator.token in ~/.cfassist/config.yaml. On a fleet host reached over SSH, "+
-				"the token is the operator's own, forwarded from their workstation with "+
-				"`SendEnv CFOP_API_TOKEN`; nothing is stored on the host. Tell the operator that "+
-				"rather than working around it.", p.Reason, p.URL))
+				"or cfoperator.token in ~/.cfassist/config.yaml.%s Tell the operator that "+
+				"rather than working around it.", p.Reason, p.URL, sshTokenNote(p.HasToken)))
 		}
 		b.WriteString("\n\nYour access to it is read-only. Approving, rejecting or queueing a " +
 			"remediation happens in the console or through the MCP server — recommend those " +
@@ -238,4 +236,20 @@ func shortDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
+}
+
+// sshTokenNote is the prompt's SSH-specific sentence, chosen the way
+// unauthorizedHint chooses the hint (CFOP-147). Off SSH there is nothing to
+// forward, so it says nothing.
+func sshTokenNote(hasToken bool) string {
+	if !underSSH() {
+		return ""
+	}
+	if !hasToken {
+		return " This session is over SSH and no token reached it: on fleet hosts the token is " +
+			"the operator's own, forwarded from their workstation with `SendEnv CFOP_API_TOKEN`, " +
+			"and nothing is stored on the host."
+	}
+	return " This session is over SSH and its token was rejected: if it was forwarded from the " +
+		"operator's workstation, it may be revoked or expired there."
 }
