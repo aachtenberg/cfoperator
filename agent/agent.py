@@ -1658,7 +1658,10 @@ OPENAI_COMPAT_PROVIDERS = {
     # #301 review). An allowlist is the only shape OpenRouter offers.
     #
     # Same model as the direct DeepSeek row, so the same thinking budget
-    # (CFOP-134). The last rung of _get_provider_chain's fallback_order.
+    # (CFOP-134). reasoning_effort goes to whatever model is selected here,
+    # not just the default; sent with it, claude-haiku-4.5, gpt-5.4-nano and
+    # grok-4.5 all answered 200 (2026-10-03). The last rung of
+    # _get_provider_chain's fallback_order.
     'openrouter': {
         'label': 'OpenRouter',
         'base_url': 'https://openrouter.ai/api/v1',
@@ -9188,9 +9191,13 @@ Only return the JSON array, no other text."""
         CFOP-112 for Gemini, CFOP-134 for DeepSeek) is one
         registry row rather than a branch per call site. Providers that
         declare nothing send exactly what they sent before.
+
+        A deep copy: OpenRouter's row nests its host routing in a dict, and a
+        shallow copy would hand every request the registry's own object.
         """
+        import copy
         params = OPENAI_COMPAT_PROVIDERS.get(provider_type, {}).get('request_params') or {}
-        return dict(params)
+        return copy.deepcopy(params)
 
     @staticmethod
     def _openai_compat_tool_loop_params(provider_type: str) -> Dict[str, Any]:

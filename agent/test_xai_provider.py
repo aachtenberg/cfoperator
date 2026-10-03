@@ -77,6 +77,13 @@ def test_openrouter_pins_host_routing_to_cheapest_fp8_or_better():
     assert "unknown" in routing["quantizations"]
 
 
+def test_request_params_are_a_copy_down_to_the_nested_routing():
+    # A request site that adjusts its payload must not edit the registry.
+    params = CFOperator._openai_compat_request_params("openrouter")
+    params["provider"]["quantizations"].append("fp4")
+    assert "fp4" not in OPENAI_COMPAT_PROVIDERS["openrouter"]["request_params"]["provider"]["quantizations"]
+
+
 def test_registry_default_model_loses_to_config_and_console():
     class _KB:
         def get_setting(self, name, default=""):
