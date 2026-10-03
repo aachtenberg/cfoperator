@@ -94,7 +94,8 @@ func unauthorizedHint(agentURL, token string) string {
 			EnvAPIToken, EnvAPIToken, EnvAPIToken, mint)
 	}
 	return fmt.Sprintf("The token in use was rejected. If it was forwarded from your "+
-		"workstation (SendEnv), it may be revoked or expired there; if this host's "+
+		"workstation (SendEnv), it may be revoked or expired there, or (on a 403) lack the "+
+		"scope this call needs; attach needs investigate. If this host's "+
 		"~/.cfassist/config.yaml sets cfoperator.token, that one is used instead and is "+
 		"the one to check. %s", mint)
 }
