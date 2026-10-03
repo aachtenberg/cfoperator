@@ -66,7 +66,9 @@ tool with that pitch should not quietly make an exception for itself.
 **Where your data does go:** wherever you point it. Telemetry stays in your
 Prometheus/Loki/Postgres. The one outbound path is your configured LLM — if you
 run Ollama locally (the default and the tested path), nothing leaves your
-network at all. If you configure a cloud fallback (Anthropic, Groq, Gemini, DeepSeek),
-then investigation prompts containing your alert text, log excerpts and metric
-values go to that provider under their terms. That is your choice to make, and
+network at all. If you configure a cloud fallback (Anthropic, Groq, Gemini, DeepSeek,
+OpenRouter), then investigation prompts containing your alert text, log excerpts
+and metric values go to that provider under their terms. OpenRouter is a router:
+a prompt sent to it goes on to whichever third-party host it picks for the
+request, under that host's terms as well. That is your choice to make, and
 it is why the local path is the default.

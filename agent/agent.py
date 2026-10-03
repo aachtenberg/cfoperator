@@ -285,6 +285,15 @@ def _judge_is_self_review(reporter: str, backend: str, model: str) -> bool:
     tag = str(reporter or '').strip().lower()
     if not tag:
         return False
+    # A router's tag names the router, not the vendor that wrote the work:
+    # 'openrouter/deepseek/deepseek-v4-pro' is DeepSeek's recommendation, and
+    # the head split alone would let the DeepSeek peer judge it (CFOP-259).
+    # Unwrap to the vendor segment, renamed to our backend's name.
+    head, _, rest = tag.partition('/')
+    vendors = OPENAI_COMPAT_PROVIDERS.get(head, {}).get('routes_vendors')
+    if vendors is not None and '/' in rest:
+        vendor, _, model_part = rest.partition('/')
+        tag = f"{vendors.get(vendor, vendor)}/{model_part}"
     if tag.split('/', 1)[0] == str(backend or '').strip().lower():
         return True
     # No backend recorded: the tag IS the model, so compare against ours.
@@ -1629,6 +1638,39 @@ OPENAI_COMPAT_PROVIDERS = {
         # chat that spins for minutes and never answers.
         'request_params': {'reasoning_effort': 'low'},
         'tool_loop_max_tokens': 16384,
+    },
+    # OpenRouter is a router, not a vendor: one key, ~470 models, each served
+    # by whichever of several hosts OpenRouter picks per request. Same wire as
+    # Groq/xAI/DeepSeek under /api/v1 (CFOP-259, confirmed live 2026-10-03).
+    #
+    # default_model is the cheapest frontier-class model on the list, and it
+    # is cheap at ONE host of sixteen: $0.42/Mtok out at StreamLake (fp8),
+    # $2.70-3.83 elsewhere. Unpinned, OpenRouter sent both test calls to an
+    # fp4 host at $2.70, so the headline price was not what got billed. The
+    # 'provider' object sorts hosts by price and refuses anything below fp8;
+    # with it both calls landed on StreamLake at ~1/5 the cost. The sort
+    # re-picks on its own if prices move.
+    #
+    # Same model as the direct DeepSeek row, so the same thinking budget
+    # (CFOP-134). The last rung of _get_provider_chain's fallback_order.
+    'openrouter': {
+        'label': 'OpenRouter',
+        'base_url': 'https://openrouter.ai/api/v1',
+        'key_env': 'OPENROUTER_API_KEY',
+        'default_model': 'deepseek/deepseek-v4-pro',
+        'request_params': {
+            'reasoning_effort': 'low',
+            'provider': {'sort': 'price', 'quantizations': ['fp8', 'bf16', 'fp16']},
+        },
+        'tool_loop_max_tokens': 16384,
+        # /models lists ~470 ids and ~70 cannot call tools, which the tool
+        # loop needs. The console's model list keeps only ids that declare
+        # 'tools' in supported_parameters.
+        'models_require_tools': True,
+        # Model ids are '<vendor>/<model>'. Where OpenRouter's vendor slug is
+        # not our backend name, this maps it, so the judge's vendor-level
+        # self-review check sees through the router (_judge_is_self_review).
+        'routes_vendors': {'x-ai': 'xai', 'google': 'gemini'},
     },
 }
 
@@ -9248,7 +9290,11 @@ Only return the JSON array, no other text."""
         if allow_fallback == 'false':
             return providers
 
-        # Define fallback order: ollama -> groq -> xai -> anthropic
+        # Define fallback order: ollama -> groq -> xai -> anthropic -> openrouter
+        # OpenRouter is the LAST rung (CFOP-259), after Anthropic, so it only
+        # changes the outcome when every rung above it has failed — before it,
+        # that investigation simply failed. Behind it is deepseek-v4-pro at
+        # roughly a cent per investigation.
         # Gemini (and DeepSeek, for the same reason) is deliberately ABSENT
         # here even though it is a registered provider and selectable by name. Adding it would have put it between
         # xAI and Anthropic for every INVESTIGATION fallback, so a paid
@@ -9256,7 +9302,7 @@ Only return the JSON array, no other text."""
         # gemini entry names instead. That is a quality change to the
         # investigation path, not the judge-gate change this was; the judge
         # reaches Gemini through _JUDGE_MODEL_FLOOR, which pins its own model.
-        fallback_order = ['ollama', 'groq', 'xai', 'anthropic']
+        fallback_order = ['ollama', 'groq', 'xai', 'anthropic', 'openrouter']
 
         # Add other providers as fallbacks (skip the primary)
         primary_type = primary[0] if primary else None
