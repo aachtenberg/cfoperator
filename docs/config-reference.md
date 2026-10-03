@@ -208,7 +208,7 @@ llm:
   # openrouter); a fallback entry supplies the model and key for its
   # provider, not a position. OpenRouter is last, so it only answers when
   # every rung above it has failed; its registry row pins OpenRouter's host
-  # routing to the cheapest fp8-or-better host (CFOP-259). Gemini and
+  # routing to the cheapest host that does not declare below fp8 (CFOP-259). Gemini and
   # DeepSeek are deliberately excluded from that chain so a paid escalation
   # that used to reach Anthropic cannot land on them — an entry here is the
   # model the selected backend (Admin → LLM selected_backend, or

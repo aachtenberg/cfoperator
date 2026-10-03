@@ -1647,9 +1647,15 @@ OPENAI_COMPAT_PROVIDERS = {
     # is cheap at ONE host of sixteen: $0.42/Mtok out at StreamLake (fp8),
     # $2.70-3.83 elsewhere. Unpinned, OpenRouter sent both test calls to an
     # fp4 host at $2.70, so the headline price was not what got billed. The
-    # 'provider' object sorts hosts by price and refuses anything below fp8;
-    # with it both calls landed on StreamLake at ~1/5 the cost. The sort
-    # re-picks on its own if prices move.
+    # 'provider' object sorts hosts by price and refuses any host that
+    # DECLARES less than fp8; with it both calls landed on StreamLake at ~1/5
+    # the cost. The sort re-picks on its own if prices move.
+    #
+    # 'unknown' is in the allowlist on purpose: every closed-model host
+    # (Anthropic, OpenAI, xAI, Azure, Bedrock) reports its quantization as
+    # unknown, and without it any closed model picked in the console 404s at
+    # OpenRouter's "Filter by Quantization" step (measured 2026-10-03, PR
+    # #301 review). An allowlist is the only shape OpenRouter offers.
     #
     # Same model as the direct DeepSeek row, so the same thinking budget
     # (CFOP-134). The last rung of _get_provider_chain's fallback_order.
@@ -1660,7 +1666,8 @@ OPENAI_COMPAT_PROVIDERS = {
         'default_model': 'deepseek/deepseek-v4-pro',
         'request_params': {
             'reasoning_effort': 'low',
-            'provider': {'sort': 'price', 'quantizations': ['fp8', 'bf16', 'fp16']},
+            'provider': {'sort': 'price',
+                         'quantizations': ['fp8', 'bf16', 'fp16', 'fp32', 'unknown']},
         },
         'tool_loop_max_tokens': 16384,
         # /models lists ~470 ids and ~70 cannot call tools, which the tool

@@ -70,8 +70,11 @@ def test_openrouter_pins_host_routing_to_cheapest_fp8_or_better():
     # rides every request through request_params.
     routing = CFOperator._openai_compat_request_params("openrouter")["provider"]
     assert routing["sort"] == "price"
-    assert set(routing["quantizations"]) <= {"fp8", "bf16", "fp16", "fp32"}
     assert not any(q.startswith(("fp4", "int", "fp6")) for q in routing["quantizations"])
+    # Closed-model hosts declare their quantization as 'unknown'. Leave it out
+    # and every Anthropic/OpenAI/xAI model 404s at OpenRouter's quantization
+    # filter (measured 2026-10-03), so a console pick of one would fail.
+    assert "unknown" in routing["quantizations"]
 
 
 def test_registry_default_model_loses_to_config_and_console():
