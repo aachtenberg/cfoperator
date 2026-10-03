@@ -131,7 +131,10 @@ func (t TimescaleConfig) Configured() bool {
 // CFOP_AGENT_URL / CFOP_API_TOKEN environment variables that mcp_server/client.py
 // already reads, so a workstation set up for the MCP server needs nothing here.
 // The token is the console's database-backed bearer (minted at
-// /admin?tab=tokens); `read` scope is enough, since attach only makes GETs.
+// /admin?tab=tokens). Mint it with `investigate` scope: attach's data reads
+// are GETs, but an interactive session also mints its own investigate-scoped
+// session token from it. On a fleet host this field stays empty and the token
+// is the operator's own, forwarded over SSH (CFOP-147, docs/cockpit.md).
 type CFOperatorConfig struct {
 	URL     string  `yaml:"url"`
 	Token   string  `yaml:"token"`

@@ -16,6 +16,7 @@ package cfoperator
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -112,7 +113,7 @@ func Detect(rawURL string, configured bool, token string, timeout time.Duration)
 	if _, err := c.ListInvestigations(1); err != nil {
 		p.Reason = err.Error()
 		var apiErr *Error
-		if errors.As(err, &apiErr) && (apiErr.Status == 401 || apiErr.Status == 403) {
+		if errors.As(err, &apiErr) && (apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden) {
 			p.AuthRejected = true
 		}
 		return p
