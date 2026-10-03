@@ -18,6 +18,7 @@ import json
 import uuid
 import yaml
 import logging
+import copy
 import hashlib
 import subprocess
 from dataclasses import dataclass, field
@@ -1657,6 +1658,11 @@ OPENAI_COMPAT_PROVIDERS = {
     # OpenRouter's "Filter by Quantization" step (measured 2026-10-03, PR
     # #301 review). An allowlist is the only shape OpenRouter offers.
     #
+    # data_collection='deny' limits routing to hosts whose policy is not to
+    # store or train on prompts, which here carry alert text, logs and
+    # metrics. It cost nothing when measured: the default stayed on
+    # StreamLake at the same price, and the closed models still routed.
+    #
     # Same model as the direct DeepSeek row, so the same thinking budget
     # (CFOP-134). reasoning_effort goes to whatever model is selected here,
     # not just the default; sent with it, claude-haiku-4.5, gpt-5.4-nano and
@@ -1669,7 +1675,7 @@ OPENAI_COMPAT_PROVIDERS = {
         'default_model': 'deepseek/deepseek-v4-pro',
         'request_params': {
             'reasoning_effort': 'low',
-            'provider': {'sort': 'price',
+            'provider': {'sort': 'price', 'data_collection': 'deny',
                          'quantizations': ['fp8', 'bf16', 'fp16', 'fp32', 'unknown']},
         },
         'tool_loop_max_tokens': 16384,
@@ -9195,7 +9201,6 @@ Only return the JSON array, no other text."""
         A deep copy: OpenRouter's row nests its host routing in a dict, and a
         shallow copy would hand every request the registry's own object.
         """
-        import copy
         params = OPENAI_COMPAT_PROVIDERS.get(provider_type, {}).get('request_params') or {}
         return copy.deepcopy(params)
 

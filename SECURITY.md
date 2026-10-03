@@ -70,5 +70,8 @@ network at all. If you configure a cloud fallback (Anthropic, Groq, Gemini, Deep
 OpenRouter), then investigation prompts containing your alert text, log excerpts
 and metric values go to that provider under their terms. OpenRouter is a router:
 a prompt sent to it goes on to whichever third-party host it picks for the
-request, under that host's terms as well. That is your choice to make, and
+request, under that host's terms as well. The agent asks OpenRouter to use only
+hosts whose stated policy is not to store or train on prompts
+(`data_collection: deny`); cfassist does not send that, so set it in your
+OpenRouter account if you use cfassist with it. That is your choice to make, and
 it is why the local path is the default.
