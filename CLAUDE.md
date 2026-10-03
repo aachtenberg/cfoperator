@@ -114,9 +114,11 @@ shared header, not to assert today's markup. Mutation-check a new guard once
   push, and the local LLM review (`local-llm-review`, CFOP-236) runs on the
   homelab runner. Both skip drafts: a draft gets no review until it is
   marked ready. **Do not request a Copilot review**: its credit is spent,
-  and a request comes back as a "quota limit" comment, not a review. An
-  `@claude` mention reaches `claude.yml`, for ad-hoc tasks; it does not
-  request the review. Subscribe to the PR.
+  and a request comes back as a "quota limit" comment, not a review. **Do
+  not post `@claude review` either.** The review already started when the PR
+  opened; the mention reaches `claude.yml`, which runs a second, duplicate
+  review in parallel (PR #296 got two within 30 seconds). Keep `@claude` for
+  ad-hoc tasks. Subscribe to the PR.
 - Drive CI to green. A failure on your own PR ends with either a pushed fix or
   a reply explaining the blocker.
 - **Do not merge until the review comment is in and triaged.** The
