@@ -1191,6 +1191,11 @@ def test_store_deep_investigation_stamps_provider_and_pr_attempt():
     # Use the real queue helper so provider lands in the payload.
     op._maybe_queue_remediation = lambda inv_id, details: CFOperator._maybe_queue_remediation(
         op, inv_id, details)
+    # store_deep_investigation is split into begin + report (CFOP-216); with a
+    # MagicMock self those would be mocks too, so bind the real ones.
+    op.begin_deep_investigation = lambda a: CFOperator.begin_deep_investigation(op, a)
+    op._store_deep_report = lambda a, r, i, st: CFOperator._store_deep_report(op, a, r, i, st)
+    op._deep_trigger = CFOperator._deep_trigger
     _no_node_incident(op)
 
     alert = {"summary": "CIFS mount failed"}

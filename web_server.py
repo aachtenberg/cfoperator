@@ -383,13 +383,17 @@ class WebServer:
             }), 202
 
         # Deep-investigation report ingest — called (best-effort) by the
-        # ephemeral worker Job after it posts its completion to the event
+        # ephemeral worker Job *before* it posts its completion to the event
         # runtime. Stores the report in the KB with embeddings so future
         # triage retrieves it, and optionally routes a proposed diff through
         # the remediation PR gates. Auth: same X-CFOP-Token shared secret as
-        # the completion endpoint. Storage runs in a background thread (KB +
-        # embedding + possible GitHub round-trips would block the worker's
-        # short post timeout).
+        # the completion endpoint.
+        #
+        # The row is created here, synchronously, and its id returned: the
+        # worker stamps it onto the completion, which is the only way the
+        # Events page and the Slack attach line learn it (CFOP-216). The rest
+        # (embedding, possible GitHub round-trips) runs in a background thread
+        # so the answer fits the worker's short ingest timeout.
         @self.app.route('/v1/deep-investigations', methods=['POST'])
         def deep_investigations():
             from event_runtime.http_actions import COMPLETION_AUTH_HEADER, verify_completion_auth
@@ -404,14 +408,28 @@ class WebServer:
             if not isinstance(alert, dict) or not isinstance(result, dict):
                 return jsonify({'error': "Body must contain 'alert' and 'result' objects"}), 400
 
+            try:
+                inv_id = self.operator.begin_deep_investigation(alert)
+            except Exception as e:
+                # Not fatal: storage still gets its chance below, and the
+                # worker posts the completion without an id, as before.
+                logger.warning(f"Deep-investigation row not created up front: {e}")
+                inv_id = None
+
             def _store():
                 try:
-                    self.operator.store_deep_investigation(alert, result)
+                    self.operator.store_deep_investigation(alert, result, inv_id=inv_id)
                 except Exception as e:
                     logger.error(f"Deep-investigation ingest failed: {e}", exc_info=True)
 
             threading.Thread(target=_store, daemon=True, name="deep-ingest").start()
-            return jsonify({'status': 'accepted'}), 202
+            body = {'status': 'accepted'}
+            # Offline, ResilientKB hands back a negative placeholder that
+            # matches no row. Publishing it would print an attach line and an
+            # Events link to an investigation that does not exist.
+            if isinstance(inv_id, int) and not isinstance(inv_id, bool) and inv_id > 0:
+                body['investigation_id'] = inv_id
+            return jsonify(body), 202
 
         # Remediation executor completion. The executor Job posts here to drive
         # its RemediationQueue row's state machine (pr-open / needs-human /

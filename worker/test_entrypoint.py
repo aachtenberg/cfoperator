@@ -4,6 +4,8 @@ import io
 import json
 from unittest.mock import patch
 
+import pytest
+
 import entrypoint
 from entrypoint import (
     ClaudeRun,
@@ -401,3 +403,99 @@ def test_main_refuses_without_an_ssh_user_before_spending_a_claude_run(monkeypat
     msg = json.dumps(posted["result"])
     assert "no SSH user configured" in msg
     assert "CFOP_DEEP_SSH_USER" in msg
+
+
+# ---- CFOP-216: the completion carries the investigation the agent created ----
+
+_AGENT_INGEST = "http://agent:8083/v1/deep-investigations"
+
+
+def _run_main(monkeypatch, *, run_ok=True, agent_answer=None, env=None):
+    """Drive main() through a real run, faking only the network and claude.
+
+    ``agent_answer`` is the ingest response body as bytes, or an exception
+    the ingest raises on every attempt. Returns the URLs posted, in order,
+    and the completion body.
+    """
+    from pathlib import Path
+    templates = str(Path(entrypoint.__file__).resolve().parent / "templates")
+    monkeypatch.setattr(entrypoint, "load_inputs",
+                        lambda: _inputs(CFOP_TEMPLATES_DIR=templates, **(env or {})))
+    monkeypatch.setattr(entrypoint, "prepare_ssh", lambda *a, **k: None)
+    monkeypatch.setattr(entrypoint, "run_claude",
+                        lambda *a, **k: ClaudeRun(run_ok, _REPORT if run_ok else "", "" if run_ok else "boom", 1.0))
+    monkeypatch.setattr(entrypoint.time, "sleep", lambda _s: None)
+    posted, bodies = [], {}
+
+    def fake_urlopen(request, timeout=0):
+        posted.append(request.full_url)
+        bodies[request.full_url] = json.loads(request.data.decode("utf-8"))
+        if request.full_url == _AGENT_INGEST:
+            if isinstance(agent_answer, Exception):
+                raise agent_answer
+            return _FakeResponse(agent_answer if agent_answer is not None else b"{}")
+        return _FakeResponse(b"{}")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        rc = entrypoint.main()
+    completion = next(v for k, v in bodies.items() if k.endswith("/complete"))
+    return rc, posted, completion
+
+
+def test_main_ingests_first_and_stamps_the_investigation_id(monkeypatch):
+    """The Events page links an event to its investigation, and Slack prints
+    the attach line, only from result.details.investigation_id on the
+    completion. So the ingest must answer before the completion goes, and its
+    id must ride on it. Mutation check: post the completion first again and
+    both assertions fail."""
+    rc, posted, completion = _run_main(
+        monkeypatch, agent_answer=b'{"status": "accepted", "investigation_id": 4242}')
+    assert rc == 0
+    assert posted[0] == _AGENT_INGEST and posted[-1].endswith("/complete"), posted
+    assert completion["result"]["details"]["investigation_id"] == 4242
+
+
+import urllib.error  # noqa: E402  (grouped with the tests that need it)
+
+
+# Exceptions are built per test, not at collection: an HTTPError with no fp
+# raises KeyError when pytest probes it for an id on Python 3.11.
+@pytest.mark.parametrize("answer", [
+    lambda: urllib.error.URLError("connection refused"),  # agent down
+    lambda: urllib.error.HTTPError(_AGENT_INGEST, 500, "boom", {}, None),
+    b'{"status": "accepted"}',                             # older agent, no id
+    b'{"investigation_id": -3}',                           # offline placeholder
+    b'{"investigation_id": true}',
+    b'{"investigation_id": "12"}',
+    b"not json",
+], ids=["agent-down", "http-500", "no-id", "negative", "bool", "string", "not-json"])
+def test_an_ingest_without_a_usable_id_still_posts_the_completion(monkeypatch, answer):
+    """The agent being down or answering oddly must cost the link, never the
+    completion: the operator's notification is the point of the run. A
+    negative id is ResilientKB's offline placeholder and matches no row."""
+    rc, posted, completion = _run_main(monkeypatch, agent_answer=answer() if callable(answer) else answer)
+    assert rc == 0
+    assert posted[-1].endswith("/complete")
+    assert "investigation_id" not in completion["result"]["details"]
+
+
+def test_a_failed_run_is_not_ingested(monkeypatch):
+    rc, posted, completion = _run_main(monkeypatch, run_ok=False)
+    assert _AGENT_INGEST not in posted
+    assert "investigation_id" not in completion["result"]["details"]
+
+
+def test_the_ingest_is_bounded_before_the_completion(monkeypatch):
+    """It now delays the notification, so it gets fewer, shorter attempts
+    than the completion does."""
+    timeouts = []
+
+    def fake_urlopen(request, timeout=0):
+        timeouts.append((request.full_url, timeout))
+        raise urllib.error.URLError("down")
+
+    monkeypatch.setattr(entrypoint.time, "sleep", lambda _s: None)
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        assert entrypoint.post_kb_ingest(_inputs(), {"details": {}}) is None
+    assert [t for u, t in timeouts] == [entrypoint.INGEST_TIMEOUT_S] * entrypoint.INGEST_ATTEMPTS
+    assert entrypoint.INGEST_TIMEOUT_S < 15

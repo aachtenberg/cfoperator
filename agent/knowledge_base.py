@@ -418,6 +418,11 @@ class Investigation(Base):
     outcome = Column(String(50), nullable=False)  # one of VALID_OUTCOMES
     duration_seconds = Column(Float)
     tool_calls_count = Column(Integer, default=0)
+    # The event_runtime alert this investigation answers, so the console can
+    # link back to /events#<alert_id> (CFOP-216). NULL for investigations no
+    # event_runtime alert started (the reactive Alertmanager loop, chat).
+    # Added to existing databases by _ensure_investigation_alert_id_column.
+    alert_id = Column(Text, nullable=True)
     # Triage fields
     parent_investigation_id = Column(Integer, nullable=True)  # For reinvestigations/deep dives
     operator_notes = Column(Text, nullable=True)  # Notes from operator triage
@@ -1595,6 +1600,10 @@ class KnowledgeBase:
         # the hand-built production DB — fresh installs lost the persistent
         # cache silently because the read/write failures are debug-level.
         self._ensure_embedding_cache_table()
+        # create_all never adds a column to an existing table, and every ORM
+        # read of Investigation selects alert_id — so this must succeed before
+        # the first one, or report failure so ResilientKB retries.
+        alert_col_ok = self._ensure_investigation_alert_id_column()
         # Widen investigations.outcome CHECK if the vocabulary grew since this
         # database was created (create_all never alters an existing table)
         outcome_ok = self._ensure_outcome_constraint()
@@ -1607,8 +1616,27 @@ class KnowledgeBase:
         event_ok = self._ensure_event_type_constraint()
         _log("info", "Knowledge base schema initialized",
              outcome_constraint_ok=outcome_ok, remediation_class_constraint_ok=class_ok,
-             remediation_status_constraint_ok=status_ok, event_type_constraint_ok=event_ok)
-        return outcome_ok and class_ok and status_ok and event_ok
+             remediation_status_constraint_ok=status_ok, event_type_constraint_ok=event_ok,
+             alert_id_column_ok=alert_col_ok)
+        return outcome_ok and class_ok and status_ok and event_ok and alert_col_ok
+
+    def _ensure_investigation_alert_id_column(self) -> bool:
+        """Add investigations.alert_id to a database created before CFOP-216.
+
+        Nullable with no default, so on an existing table this is a catalog
+        change rather than a rewrite — the same shape event_runtime used for
+        its own alert_id column (CFOP-215).
+        """
+        try:
+            with self.session_scope() as session:
+                session.execute(text(
+                    "ALTER TABLE investigations ADD COLUMN IF NOT EXISTS alert_id TEXT"
+                ))
+            return True
+        except Exception as e:
+            _log("error", "Could not add investigations.alert_id; investigation reads will fail "
+                          "until it exists", error=str(e))
+            return False
 
     def _ensure_outcome_constraint(self) -> bool:
         """Rebuild investigations.valid_outcome to match VALID_OUTCOMES.
@@ -2524,12 +2552,16 @@ class KnowledgeBase:
 
     # ============================= Investigations =============================
 
-    def start_investigation(self, trigger: str) -> int:
-        """Start an investigation and return its ID for event tracking (scoped to this host)."""
+    def start_investigation(self, trigger: str, alert_id: Optional[str] = None) -> int:
+        """Start an investigation and return its ID for event tracking (scoped to this host).
+
+        ``alert_id`` is the event_runtime alert that started it, when one did.
+        """
         with self.session_scope() as session:
             investigation = Investigation(
                 host_id=self.host_id,
                 trigger=trigger,
+                alert_id=str(alert_id) if alert_id else None,
                 findings={},  # Empty until completion
                 outcome='in_progress',  # Will be updated when complete
             )
@@ -4794,6 +4826,7 @@ class KnowledgeBase:
                     "operator_notes": inv.operator_notes,
                     "triage_action": inv.triage_action,
                     "host_id": inv.host_id,
+                    "alert_id": inv.alert_id,
                     # What humans worked out in a cockpit against this
                     # investigation (CFOP-37). Read here rather than through a
                     # second endpoint because every consumer that wants the
@@ -5838,7 +5871,7 @@ class ResilientKnowledgeBase:
         data = event.data
 
         if event.event_type == 'start_investigation':
-            db_id = self._kb.start_investigation(data['trigger'])
+            db_id = self._kb.start_investigation(data['trigger'], alert_id=data.get('alert_id'))
             # Map local ID to DB ID for future reference
             if 'local_id' in data:
                 self._local_to_db_id_map[data['local_id']] = db_id
@@ -5914,11 +5947,16 @@ class ResilientKnowledgeBase:
             "health": self._health_monitor.get_status()
         }
 
-    def start_investigation(self, trigger: str) -> int:
-        """Start investigation - buffers if offline."""
+    def start_investigation(self, trigger: str, alert_id: Optional[str] = None) -> int:
+        """Start investigation - buffers if offline.
+
+        Offline, the id returned is a negative local placeholder that matches
+        no row. Callers that publish the id beyond this process must check it
+        is positive (CFOP-216).
+        """
         if self._health_monitor.is_healthy():
             try:
-                return self._kb.start_investigation(trigger)
+                return self._kb.start_investigation(trigger, alert_id=alert_id)
             except Exception as e:
                 self._health_monitor.mark_unhealthy()
                 _log("warn", "start_investigation failed, buffering", error=str(e))
@@ -5927,6 +5965,7 @@ class ResilientKnowledgeBase:
         local_id = self._get_local_id()
         self._buffer.buffer_event('start_investigation', {
             'trigger': trigger,
+            'alert_id': alert_id,
             'local_id': local_id
         })
         return local_id

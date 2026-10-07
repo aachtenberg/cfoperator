@@ -92,6 +92,16 @@ def check_knowledge_base(url):
     kb = KnowledgeBase(db_url=url.render_as_string(hide_password=False), host_id="db-smoke")
     try:
         assert kb.initialize_schema() is True, "initialize_schema() reported a constraint it could not apply"
+        # CFOP-216: create_all never adds a column to an existing table, and
+        # every ORM read of an investigation selects alert_id. Stand in for a
+        # database created before the column by dropping it, then require
+        # initialize_schema to put it back and the value to round-trip.
+        with kb.engine.begin() as conn:
+            conn.execute(text("ALTER TABLE investigations DROP COLUMN alert_id"))
+        assert kb.initialize_schema() is True, "initialize_schema() did not add investigations.alert_id"
+        linked = kb.start_investigation("db smoke alert link", alert_id="db-smoke/alert 1")
+        assert (kb.get_investigation(linked) or {}).get("alert_id") == "db-smoke/alert 1", \
+            "investigations.alert_id did not round-trip"
         kb.set_setting("db_smoke", "ok")
         assert kb.get_setting("db_smoke") == "ok", "setting did not round-trip"
         inv_id = kb.start_investigation("db smoke")

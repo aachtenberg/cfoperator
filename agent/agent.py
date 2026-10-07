@@ -2942,8 +2942,11 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         trigger = context.get('trigger', 'Unknown trigger')
         logger.info(f"Starting investigation: {trigger[:100]}")
 
-        # Create investigation record
-        inv_id = self.kb.start_investigation(trigger=trigger)
+        # Create investigation record. The alert's event_runtime id lets the
+        # console link the row back to its Events entry (CFOP-216); the
+        # reactive Alertmanager path has none and stores NULL.
+        alert = context.get('alert') if isinstance(context.get('alert'), dict) else {}
+        inv_id = self.kb.start_investigation(trigger=trigger, alert_id=alert.get('alert_id'))
         INVESTIGATIONS_STARTED.inc()
         self.current_investigation = inv_id
         start_time = time.time()
@@ -4671,7 +4674,29 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             logger.warning(f"Could not init GitHub client for remediation: {e}")
             return None
 
-    def store_deep_investigation(self, alert: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    @staticmethod
+    def _deep_trigger(alert: Dict[str, Any]) -> str:
+        return f"[deep] {str(alert.get('summary') or '(no summary)')}"
+
+    def begin_deep_investigation(self, alert: Dict[str, Any]) -> int:
+        """Create the investigation row for a deep-investigation report.
+
+        Split from the storage tail so the ingest route can return the id
+        before it answers (CFOP-216): the worker stamps it onto the completion
+        it posts to event_runtime, which is what gives the Events page its
+        link and Slack its attach line. One INSERT, so it fits inside the
+        worker's short ingest budget; embedding and the PR gates do not.
+
+        Offline, ResilientKB returns a negative placeholder that matches no
+        row. Callers must not publish that.
+        """
+        inv_id = self.kb.start_investigation(trigger=self._deep_trigger(alert),
+                                             alert_id=alert.get('alert_id'))
+        INVESTIGATIONS_STARTED.inc()
+        return inv_id
+
+    def store_deep_investigation(self, alert: Dict[str, Any], result: Dict[str, Any],
+                                 inv_id: Optional[int] = None) -> Dict[str, Any]:
         """Ingest a deep-investigation worker's report into the knowledge base.
 
         Mirrors the storage tail of ``_act`` (start/update investigation +
@@ -4679,18 +4704,39 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         similar-investigation lookups. If the report carries a proposed diff
         and ``remediation.deep_open_prs`` is enabled, route it through the
         existing PR gates — never a parallel path.
+
+        ``inv_id`` is the row ``begin_deep_investigation`` already created;
+        without it the row is created here.
         """
+        if inv_id is None:
+            inv_id = self.begin_deep_investigation(alert)
+        state = {'stored': False}
+        try:
+            return self._store_deep_report(alert, result, inv_id, state)
+        finally:
+            if not state['stored'] and inv_id and inv_id > 0:
+                # The id was already handed to event_runtime, so a report that
+                # never landed must not leave the row in_progress forever
+                # behind a live Events link and attach line. Once the report
+                # is stored, a later failure (queue, PR gate) leaves the
+                # outcome alone — it is right.
+                try:
+                    self.kb.update_investigation(
+                        investigation_id=inv_id, completed_at=datetime.now(),
+                        findings={'deep': True, 'error': 'deep-investigation report ingest failed'},
+                        outcome='failed')
+                except Exception as e:
+                    logger.warning(f"Could not mark deep investigation #{inv_id} failed: {e}")
+
+    def _store_deep_report(self, alert: Dict[str, Any], result: Dict[str, Any], inv_id: int,
+                           state: Dict[str, bool]) -> Dict[str, Any]:
         details = result.get('details') if isinstance(result.get('details'), dict) else {}
-        summary = str(alert.get('summary') or '(no summary)')
-        trigger = f"[deep] {summary}"
+        trigger = self._deep_trigger(alert)
         # The worker reports outcome "escalated" (the engine ledger's exact
         # match string); the KB convention from STATUS parsing is "escalate".
         outcome = str(details.get('outcome') or 'needs_action')
         kb_outcome = 'escalate' if outcome == 'escalated' else outcome
 
-        inv_id = self.kb.start_investigation(trigger=trigger)
-
-        INVESTIGATIONS_STARTED.inc()
         provider = f"anthropic/{details.get('model') or 'unknown'}"
         findings = {
             'response': str(details.get('report') or '')[:5000],
@@ -4706,6 +4752,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             outcome=kb_outcome,
             duration_seconds=float(details.get('duration_s') or 0.0),
         )
+        state['stored'] = True
         # The deep worker's result is a terminal outcome too: count it and
         # observe its duration, or started/outcome/duration stop reconciling
         # for every investigation the deep tier ran (review of CFOP-163).

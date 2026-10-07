@@ -355,6 +355,14 @@ applyMax();
 // drawer repaints by innerHTML, so nothing bound to a button would survive.
 bindCopyIcons(document);
 
+// The event_runtime alert this investigation answers (CFOP-216). Absent for
+// investigations no alert started — the reactive loop, chat — so no row then.
+// events.html opens its drawer from the decoded hash.
+function eventLine(r){
+  const a=String(r.alert_id||'').trim();
+  if(!a) return '';
+  return `<div class="kv"><b>event</b> <a class="mono" href="/events#${encodeURIComponent(a)}">${esc(a)}</a></div>`;
+}
 async function detail(id){
   // Tear any open terminal down FIRST, unconditionally. detail() replaces the
   // drawer's innerHTML below, which orphans the xterm node; and a same-id
@@ -394,6 +402,7 @@ async function detail(id){
     <div class="kv"><b>trigger</b> <span id="trigger-text">${esc(r.trigger)}</span>${copyIcon('trigger',{from:'trigger-text'})}</div>
     <div class="kv"><b>started</b> ${fmtTs(r.started_at)}${r.completed_at?' · <b>completed</b> '+fmtTs(r.completed_at, r.started_at):''}</div>
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
+    ${eventLine(r)}
     ${attachBlock(r)}
     ${askBlock(r)}
     <div id="cockpit"></div>

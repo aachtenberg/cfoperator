@@ -112,7 +112,7 @@ def _investigating_operator(seen):
     op.config = {}
     op.tools = registry
     op.kb = SimpleNamespace(
-        start_investigation=lambda trigger: 2558,
+        start_investigation=lambda trigger, alert_id=None: 2558,
         update_investigation=lambda **kw: True,
     )
     op._noise_config = lambda: {'enabled': False}
