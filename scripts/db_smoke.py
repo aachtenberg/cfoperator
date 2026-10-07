@@ -111,6 +111,14 @@ def check_knowledge_base(url):
             (linked, "monitoring"), "a finished investigation was not found with its outcome"
         assert kb.find_recent_investigation_for_alert("db-smoke/alert 1", "another trigger") is None, \
             "an investigation matched a different trigger"
+        # Host-scoped like the KB's other reads: another agent sharing the
+        # database must not adopt this host's row.
+        other = KnowledgeBase(db_url=url.render_as_string(hide_password=False), host_id="db-smoke-other")
+        try:
+            assert other.find_recent_investigation_for_alert("db-smoke/alert 1", "db smoke alert link") is None, \
+                "another host's investigation matched"
+        finally:
+            other.engine.dispose()
         kb.set_setting("db_smoke", "ok")
         assert kb.get_setting("db_smoke") == "ok", "setting did not round-trip"
         inv_id = kb.start_investigation("db smoke")

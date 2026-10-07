@@ -2575,7 +2575,8 @@ class KnowledgeBase:
         since = datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
         with self.session_scope() as session:
             row = (session.query(Investigation.id, Investigation.outcome)
-                   .filter(Investigation.alert_id == str(alert_id),
+                   .filter(Investigation.host_id == self.host_id,
+                           Investigation.alert_id == str(alert_id),
                            Investigation.trigger == trigger,
                            Investigation.started_at >= since)
                    .order_by(Investigation.id.desc())
