@@ -60,6 +60,7 @@ This is the section to read when something is lost.
 | Modelfile | `benchmarks/Modelfile.cfop-triage` (this repo) | Reconstructed from `ollama show --modelfile` |
 | Eval results | `benchmarks/triage_eval_cfop_triage_ministral3_v1*.json` | Committed |
 | **Training run** (adapter, checkpoints, args) | NAS `/mnt/nas-backup/cfoperator-finetune/training-run-1787248524/` | 668MB. Archived 2026-09-02 off the training box |
+| **Hugging Face mirror (v5)** | published by [`hf/publish.sh`](../hf/publish.sh) from the NAS v5 folder (CFOP-274) | Q4 + Q8 GGUFs, the v5 Modelfile, the card in [`hf/README.md`](../hf/README.md), and the adapter when `ADAPTER_DIR` is given. The upload is gated on [`hf/scan_dataset.py`](../hf/scan_dataset.py) finding nothing secret-shaped in the v5 train/val set. The dataset itself is never published. |
 
 ### The training run archive
 
