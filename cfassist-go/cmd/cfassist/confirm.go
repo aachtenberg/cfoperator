@@ -8,10 +8,38 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 )
+
+// applyShellPolicy is what every entry point calls once it knows whether
+// stdin is a terminal: no shell and the prompt note on a pipe, the gate with
+// the terminal asker otherwise. The TUI installs its own asker on top.
+func applyShellPolicy(reg *tools.Registry, systemPrompt *string, piped bool) {
+	if piped {
+		shellPolicy(reg, true, nil)
+		*systemPrompt += pipedShellNote
+		return
+	}
+	shellPolicy(reg, false, stdinAsk())
+}
+
+// stdinAsk is the terminal asker, or a refusal when stdin is not a terminal:
+// a pipe must never be able to type the `y` (review of #310 found attach
+// reading its answer from redirected stdin).
+func stdinAsk() tools.Asker {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return func(ctx context.Context, command, reason string) tools.Decision {
+			fmt.Fprintf(os.Stderr, "\ncfassist: not run: `%s` %s, and stdin is not a terminal, so nobody here can confirm it\n", command, reason)
+			return tools.Deny
+		}
+	}
+	return terminalAsk(os.Stdin, os.Stderr)
+}
 
 // shellPolicy applies the surface's rule to the registry: no shell at all on
 // piped input, and on a terminal one-shot the gate asks on the terminal.

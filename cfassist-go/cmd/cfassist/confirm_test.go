@@ -96,6 +96,38 @@ func TestTerminalAskHonoursACancelledTurn(t *testing.T) {
 	}
 }
 
+// TestStdinAskRefusesWhenStdinIsNotATerminal: under go test stdin is not a
+// terminal, which is exactly the case to pin — a pipe must not be able to
+// type the y.
+func TestStdinAskRefusesWhenStdinIsNotATerminal(t *testing.T) {
+	ask := stdinAsk()
+	if got := ask(context.Background(), "reboot", "reboot takes the host down"); got != tools.Deny {
+		t.Fatalf("stdin is not a terminal here; got %v, want Deny", got)
+	}
+}
+
+// TestApplyShellPolicy covers both entry points' shared call.
+func TestApplyShellPolicy(t *testing.T) {
+	reg := registry(t)
+	prompt := "base"
+	applyShellPolicy(reg, &prompt, true)
+	if hasBash(reg) || !strings.Contains(prompt, "no shell on piped input") {
+		t.Fatal("a pipe must remove bash and say so in the prompt")
+	}
+	reg = registry(t)
+	prompt = "base"
+	applyShellPolicy(reg, &prompt, false)
+	if !hasBash(reg) || prompt != "base" {
+		t.Fatal("a terminal keeps bash and the prompt")
+	}
+	// The asker installed is stdinAsk, which under go test refuses: the write
+	// must not run.
+	res := reg.Execute(context.Background(), "bash", map[string]any{"command": "touch " + t.TempDir() + "/x"})
+	if msg, _ := res["error"].(string); !strings.Contains(msg, "not run") {
+		t.Fatalf("got %v", res)
+	}
+}
+
 type blockingReader struct{ ch chan struct{} }
 
 // newBlockingReader is a reader that never delivers a line until released.
