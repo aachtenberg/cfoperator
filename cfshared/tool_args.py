@@ -67,8 +67,9 @@ def redact_tool_args(value: Any, limit: int = LOG_ARG_LIMIT) -> Any:
 # key=value rule: the key has to END with a secret word, so `token_count: 512`,
 # `tokens_total 9`, `password_reset: requested` and `TOKEN_FILE=/run/x` survive,
 # while `GITHUB_TOKEN=ghp_…`, `"api_key": "sk-…"` and `secret: hunter2` do not.
-# The value is a quoted string, or runs to the end of the line, so
-# `password: my long phrase` and `password: abc,def` lose the whole value.
+# The value is a quoted string, or runs to the end of the line (or the next
+# `KEY=`), so `password: my long phrase` and `password: abc,def` lose the whole
+# value and `PASSWORD=x user=bob` keeps `user=bob`.
 
 _SECRET_WORD = (r'(?:passw(?:or)?d|secret|token|api[_-]?key|apikey|private[_-]?key'
                 r'|access[_-]?key|credentials?|authorization)')
@@ -87,7 +88,14 @@ _KEY_VALUE = re.compile(
     # and which keeps the scheme visible to the model.
     r'(?![ \t]*["\']?(?:(?:bearer|basic)[ \t]+)?\*\*\*)'
     r'(?P<ws>[ \t]*)'
-    r'(?:(?P<q>["\'])(?P<qval>[^"\'\n]*)(?P=q)|(?P<val>[^"\'\n]+))',
+    # A quoted value, escape-aware, so `"abc\"suffix"` is one value (CodeRabbit
+    # on #309); a quote that never closes takes the rest of the line, so it
+    # fails closed rather than leaving the value in place (claude-review); a
+    # bare value runs to the end of the line, or to the next `KEY=` so one-line
+    # env output keeps its other fields.
+    r'(?:(?P<q>["\'])(?P<qval>(?:(?!(?P=q))[^\\\n]|\\.)*)(?P=q)'
+    r'|(?P<uq>["\'])(?P<tail>[^\n]*)'
+    r'|(?P<val>(?:(?![ \t]+[A-Za-z_][A-Za-z0-9_]*=)[^"\'\n])+))',
     re.IGNORECASE)
 _BEARER = re.compile(r'(?i)\b(bearer|basic)[ \t]+(?!\*\*\*)[A-Za-z0-9._~+/=-]{8,}')
 _PEM = re.compile(r'-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----')
@@ -113,8 +121,25 @@ _YAML_ITEM = re.compile(r'^([ \t]+[^:\s][^:\n]*:)[ \t]*(?!\*\*\*)\S.*$', re.M)
 #: string, and `-o yaml` carries the whole object again as one-line JSON in the
 #: kubectl.kubernetes.io/last-applied-configuration annotation (review of #309).
 _JSON_SECRET_KIND = re.compile(r'"kind"\s*:\s*"Secret"')
-_JSON_DATA_OBJECT = re.compile(r'("(?:data|stringData)"\s*:\s*\{)([^{}]*)(\})')
+_JSON_STRING = r'"(?:[^"\\]|\\.)*"'
+#: The object body as a run of JSON pairs with string-aware tokens, not
+#: `[^{}]*`: a stringData value holding serialized JSON has braces inside its
+#: quotes (CodeRabbit on #309).
+_JSON_DATA_OBJECT = re.compile(
+    r'("(?:data|stringData)"\s*:\s*\{)'
+    r'(\s*(?:' + _JSON_STRING + r'\s*:\s*(?:' + _JSON_STRING + r'|[^,}\s"]+)\s*,?\s*)*)'
+    r'(\})')
 _JSON_PAIR_VALUE = re.compile(r'("(?:[^"\\]|\\.)*"\s*:\s*)(?!"?\*\*\*)("(?:[^"\\]|\\.)*"|[^,}\s]+)')
+
+
+def _key_value_replacement(m) -> str:
+    """The matched key, separator and whitespace, then *** in the value's own quoting."""
+    head = f"{m.group('key')}{m.group('sep')}{m.group('ws')}"
+    if m.group('q'):
+        return f"{head}{m.group('q')}{PLACEHOLDER}{m.group('q')}"
+    if m.group('uq'):
+        return f"{head}{m.group('uq')}{PLACEHOLDER}"
+    return head + PLACEHOLDER
 
 
 def _redact_text(text: str) -> Tuple[str, int]:
@@ -159,10 +184,7 @@ def _redact_text(text: str) -> Tuple[str, int]:
             return f'{m.group(1)}{body}{m.group(3)}'
         text = _JSON_DATA_OBJECT.sub(scrub_json, text)
     text = counted(_BEARER, lambda m: f'{m.group(1)} {PLACEHOLDER}', text)
-    text = counted(
-        _KEY_VALUE,
-        lambda m: f"{m.group('key')}{m.group('sep')}{m.group('ws')}{m.group('q') or ''}{PLACEHOLDER}{m.group('q') or ''}",
-        text)
+    text = counted(_KEY_VALUE, _key_value_replacement, text)
     text = counted(_URL_USERINFO, lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(3)}', text)
     text = counted(_WEBHOOK, lambda m: f'{m.group(1)}{PLACEHOLDER}', text)
     text = counted(
@@ -188,18 +210,29 @@ def redact_tool_result(value: Any) -> Tuple[Any, int]:
             out = {}
             for key, item in v.items():
                 if in_secret_data or _key_is_secret(key):
-                    if item not in (None, '', PLACEHOLDER):
+                    # A flag is not a credential: `secret: false` stays, and
+                    # stays out of the count (claude-review on #309). A number
+                    # does not: a PIN or an OTP is a secret.
+                    if isinstance(item, bool) or item in (None, '', PLACEHOLDER):
+                        out[key] = item
+                    else:
                         count += 1
                         out[key] = PLACEHOLDER
-                    else:
-                        out[key] = item
                 elif secret_kind and key in ('data', 'stringData') and isinstance(item, dict):
                     out[key] = walk(item, in_secret_data=True)
                 else:
                     out[key] = walk(item)
             return out
         if isinstance(v, (list, tuple)):
-            return type(v)(walk(item, in_secret_data) for item in v)
+            items = [walk(item, in_secret_data) for item in v]
+            if isinstance(v, list):
+                return items
+            if hasattr(v, '_fields'):  # a namedtuple takes its fields positionally
+                return type(v)(*items)
+            try:
+                return type(v)(items)
+            except TypeError:
+                return tuple(items)
         if isinstance(v, str):
             text, n = _redact_text(v)
             count += n

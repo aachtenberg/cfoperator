@@ -228,3 +228,54 @@ def test_args_and_results_agree_on_which_keys_are_secret():
         assert redact_tool_args({key: "v"}) == {key: PLACEHOLDER}, key
         assert redact_tool_result({key: "v"})[0] == {key: PLACEHOLDER}, key
     assert redact_tool_args({"token_count": 5}) == {"token_count": 5}
+
+
+# --- second review round on #309 ---------------------------------------------------
+
+
+def test_an_escaped_quote_inside_a_quoted_value_does_not_end_it():
+    """`"abc\\"secretSuffix"` is one value; the escaped quote used to close it
+    and leave the suffix (CodeRabbit)."""
+    out, _ = _redacted('{"password":"abc\\"secretSuffix","user":"bob"}')
+    assert out == '{"password":"' + PLACEHOLDER + '","user":"bob"}'
+    out, _ = _redacted("""password='it"s' user=bob""")
+    assert out == f"password='{PLACEHOLDER}' user=bob"
+
+
+def test_an_unterminated_quote_still_redacts_the_rest_of_the_line():
+    """Neither the quoted nor the bare branch matched, so the value stayed:
+    fail-open (claude-review). A quote that never closes takes the line."""
+    out, _ = _redacted('password="abc def\nuser=bob\n')
+    assert out == f'password="{PLACEHOLDER}\nuser=bob\n'
+
+
+def test_one_line_env_output_keeps_the_other_assignments():
+    """`cat /proc/1/environ | tr '\\0' ' '` style output: the value ends at the
+    next KEY=, so the model keeps the other fields (claude-review)."""
+    out, _ = _redacted("PASSWORD=abc user=bob host=x TOKEN=cfop_abcdefghij PATH=/bin")
+    assert out == f"PASSWORD={PLACEHOLDER} user=bob host=x TOKEN={PLACEHOLDER} PATH=/bin"
+
+
+def test_a_secret_data_value_containing_braces_is_still_scrubbed():
+    """A stringData value holding serialized JSON has braces inside its quotes;
+    a brace-excluding object match stopped short of it (CodeRabbit)."""
+    text = '{"kind":"Secret","stringData":{"config":"{\\"nested\\":1,\\"pw\\":\\"hunter2\\"}","k":"v"},"metadata":{"name":"x"}}'
+    out, count = _redacted(text)
+    assert "hunter2" not in out and '"k":"' + PLACEHOLDER + '"' in out and '"config":"' + PLACEHOLDER + '"' in out
+    assert '"name":"x"' in out and count == 2
+
+
+def test_booleans_under_a_secret_key_are_not_secrets_but_numbers_are():
+    """`secret: false` is a flag and stays, uncounted; a numeric token is a PIN."""
+    out, count = _redacted({"secret": False, "token": 1234, "ok": True})
+    assert out == {"secret": False, "token": PLACEHOLDER, "ok": True} and count == 1
+
+
+def test_namedtuples_survive_the_walk():
+    """`type(v)(iterable)` raises for a namedtuple; it takes its fields positionally."""
+    from collections import namedtuple
+    Row = namedtuple("Row", "name token")
+    out, count = _redacted(Row("x", "cfop_abcdefghij"))
+    # No key name travels with a tuple field, so the text rule does the work
+    # and the token keeps its prefix, as it would in any string.
+    assert isinstance(out, Row) and out.name == "x" and out.token == f"cfop_{PLACEHOLDER}" and count == 1

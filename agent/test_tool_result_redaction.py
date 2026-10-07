@@ -16,6 +16,7 @@ import re
 import sys
 from types import SimpleNamespace
 
+import pytest
 from prometheus_client import REGISTRY
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -164,3 +165,17 @@ def test_every_provider_branch_appends_only_what_dispatch_handed_back():
         assert 'self.tools.execute(' not in inspect.getsource(fn), \
             f"{fn.__name__} executes a tool itself; only _cached_tool_exec may"
     assert 'self._redact_result(' in inspect.getsource(CFOperator._cached_tool_exec)
+
+
+def test_a_redactor_failure_fails_closed(monkeypatch):
+    """If the redactor raises, the tool call fails rather than handing the raw
+    result on (claude-review on #309 asked for the choice to be pinned)."""
+    import importlib
+    agent_module = importlib.import_module(CFOperator.__module__)  # agent/agent.py, not the package
+
+    def boom(value):
+        raise RuntimeError("redactor broke")
+    monkeypatch.setattr(agent_module, 'redact_tool_result', boom)
+    op = _operator()
+    with pytest.raises(RuntimeError, match="redactor broke"):
+        op._cached_tool_exec('ssh_execute', {}, {}, 6000)
