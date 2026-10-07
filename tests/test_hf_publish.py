@@ -28,7 +28,7 @@ import pytest
 from repo_paths import REPO_ROOT
 
 HF_DIR = REPO_ROOT / "hf"
-GATED_MODELFILE = REPO_ROOT / "benchmarks" / "Modelfile.cfop-triage-v5"
+GATED_MODELFILE = REPO_ROOT / "benchmarks" / "Modelfile.cfop-triage-v6"
 
 
 def _load_scanner():
@@ -167,7 +167,7 @@ def _run_stage(tmp_path: Path, extra_env: dict[str, str] | None = None) -> subpr
     stage = tmp_path / "stage"
     env = dict(
         os.environ,
-        HF_REPO="someone/cfop-triage-ministral3-14b-v5",
+        HF_REPO="someone/cfop-triage-ministral3-14b-v6",
         DATASET_DIR=str(dataset),
         MANIFEST=str(manifest),
         STAGE_DIR=str(stage),
@@ -198,7 +198,7 @@ def test_staged_card_has_repo_id_filled_in_and_no_placeholder(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     card = (tmp_path / "stage" / "README.md").read_text(encoding="utf-8")
     assert "REPO_ID" not in card
-    assert "hf.co/someone/cfop-triage-ministral3-14b-v5:Q4_K_M" in card
+    assert "hf.co/someone/cfop-triage-ministral3-14b-v6:Q4_K_M" in card
     # Frontmatter the Hub needs to file it correctly.
     assert card.startswith("---\nlicense: apache-2.0\n")
     assert "base_model: mistralai/Ministral-3-14B-Instruct-2512" in card
@@ -237,11 +237,14 @@ def test_stage_refuses_a_dataset_that_is_not_the_pinned_one(tmp_path: Path):
     assert "scanning training data" not in proc.stderr
 
 
-def test_committed_manifest_pins_the_documented_v5_dataset():
-    # docs/triage-fine-tune.md records the v5 fingerprints as sha256 prefixes.
-    lines = dict(reversed(l.split()) for l in (HF_DIR / "v5.sha256").read_text(encoding="utf-8").splitlines() if l.strip())
-    assert lines["triage_train.jsonl"].startswith("5e44b0ae1746dfa7")
+def test_committed_manifest_pins_the_documented_v6_dataset():
+    # docs/triage-fine-tune.md records the v6 fingerprints as sha256 prefixes.
+    # v6 val is v5 val untouched (the scrub found nothing there), so its hash
+    # is the documented v5/v4 one; train is the scrubbed file.
+    lines = dict(reversed(l.split()) for l in (HF_DIR / "v6.sha256").read_text(encoding="utf-8").splitlines() if l.strip())
     assert lines["triage_val.jsonl"].startswith("ec7441d1f08596eb")
+    assert not lines["triage_train.jsonl"].startswith("5e44b0ae1746dfa7"), "v6 train must differ from v5 train"
+    assert len(lines["triage_train.jsonl"]) == 64
 
 
 def test_stage_without_adapter_dir_says_so(tmp_path: Path):
@@ -303,7 +306,7 @@ def _run_dry(tmp_path: Path, src: Path, manifest: Path, extra_env: dict[str, str
     dataset = tmp_path / "dataset"
     env = dict(
         os.environ,
-        HF_REPO="someone/cfop-triage-ministral3-14b-v5",
+        HF_REPO="someone/cfop-triage-ministral3-14b-v6",
         DATASET_DIR=str(dataset),
         STAGE_DIR=str(tmp_path / stage),
         SRC_DIR=str(src),

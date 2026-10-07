@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publish the v5 triage fine-tune to Hugging Face (CFOP-274).
+# Publish the triage fine-tune to Hugging Face (CFOP-274, CFOP-277).
 #
 # Run on the host with the NAS mounted (ubuntu-llm-01). Nothing here needs
 # the GPU. The upload is gated twice: the training data is scanned for
@@ -7,27 +7,30 @@
 # match the sha256 manifest in hf/v5.sha256. The script refuses to continue
 # on either.
 #
-#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh              # scan, stage, verify, upload
-#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh --dry-run    # everything except the upload
-#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh --stage-only # scan and stage only; nothing verified, nothing uploaded
+#   HF_REPO=<user>/cfop-triage-ministral3-14b-v6 hf/publish.sh              # scan, stage, verify, upload
+#   HF_REPO=<user>/cfop-triage-ministral3-14b-v6 hf/publish.sh --dry-run    # everything except the upload
+#   HF_REPO=<user>/cfop-triage-ministral3-14b-v6 hf/publish.sh --stage-only # scan and stage only; nothing verified, nothing uploaded
 #
 # Environment:
 #   HF_REPO       required. The model repo id to create or update.
-#   SRC_DIR       directory holding the two v5 GGUFs.
-#                 default /mnt/nas-backup/unsloth/cfoperator-v6/cfop-triage-v5-gguf
+#   VERSION       which generation ships, vN. default v6. Picks the Modelfile
+#                 (benchmarks/Modelfile.cfop-triage-$VERSION), the manifest
+#                 (hf/$VERSION.sha256) and the NAS folder defaults below.
+#   SRC_DIR       directory holding the two GGUFs.
+#                 default /mnt/nas-backup/unsloth/cfoperator-v<N+1>/cfop-triage-$VERSION-gguf
 #   DATASET_DIR   directory holding triage_train.jsonl and triage_val.jsonl (the
-#                 v5 set the weights were trained on). default /mnt/nas-backup/unsloth/cfoperator-v6
+#                 set the weights were trained on). default /mnt/nas-backup/unsloth/cfoperator-v<N+1>
 #   ADAPTER_DIR   optional. A directory with adapter_model.safetensors and
 #                 adapter_config.json; published under adapter/ when set.
 #   MANIFEST      sha256sum-format file naming the dataset the weights were
 #                 trained on and every artifact that may be uploaded (GGUFs,
 #                 and the adapter files when ADAPTER_DIR is set). default
-#                 hf/v5.sha256. The dataset lines are committed: they pin WHICH
+#                 hf/$VERSION.sha256. The dataset lines are committed: they pin WHICH
 #                 train/val set the scan gate is passing judgement on. The
 #                 artifact lines are appended ONCE on the NAS host from the
 #                 gated files and committed:
-#                   (cd "$SRC_DIR" && sha256sum *.gguf) >> hf/v5.sha256
-#                   (cd "$ADAPTER_DIR" && sha256sum adapter_model.safetensors adapter_config.json) >> hf/v5.sha256
+#                   (cd "$SRC_DIR" && sha256sum *.gguf) >> hf/$VERSION.sha256
+#                   (cd "$ADAPTER_DIR" && sha256sum adapter_model.safetensors adapter_config.json) >> hf/$VERSION.sha256
 #                 That glob hashes every GGUF in the folder (an mmproj side
 #                 file, say); harmless, since only the two names above are
 #                 ever looked up, but trim the file if you want it exact.
@@ -50,10 +53,16 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/.." && pwd)"
 
-SRC_DIR="${SRC_DIR:-/mnt/nas-backup/unsloth/cfoperator-v6/cfop-triage-v5-gguf}"
-DATASET_DIR="${DATASET_DIR:-/mnt/nas-backup/unsloth/cfoperator-v6}"
+# Which generation ships. The NAS folder numbering runs one ahead of the data
+# generation (cfoperator-v7/ holds the v6 data and export), so the defaults
+# below are derived from VERSION rather than typed twice.
+VERSION="${VERSION:-v6}"
+[[ "$VERSION" =~ ^v[0-9]+$ ]] || { echo "VERSION '$VERSION' is not vN" >&2; exit 2; }
+NAS_FOLDER="cfoperator-v$(( ${VERSION#v} + 1 ))"
+SRC_DIR="${SRC_DIR:-/mnt/nas-backup/unsloth/$NAS_FOLDER/cfop-triage-$VERSION-gguf}"
+DATASET_DIR="${DATASET_DIR:-/mnt/nas-backup/unsloth/$NAS_FOLDER}"
 ADAPTER_DIR="${ADAPTER_DIR:-}"
-MANIFEST="${MANIFEST:-$HERE/v5.sha256}"
+MANIFEST="${MANIFEST:-$HERE/$VERSION.sha256}"
 GGUF_STAGE_DIR="${GGUF_STAGE_DIR:-}"
 MODE=upload
 case "${1:-}" in
@@ -71,7 +80,8 @@ esac
 Q4="ministral-3-14b-instruct-2512.Q4_K_M.gguf"
 Q8="ministral-3-14b-instruct-2512.Q8_0.gguf"
 
-MODELFILE_SRC="$REPO_ROOT/benchmarks/Modelfile.cfop-triage-v5"
+MODELFILE_SRC="$REPO_ROOT/benchmarks/Modelfile.cfop-triage-$VERSION"
+[ -f "$MODELFILE_SRC" ] || { echo "no gated Modelfile for $VERSION at $MODELFILE_SRC" >&2; exit 2; }
 CARD_SRC="$HERE/README.md"
 
 log() { printf '%s\n' "$*" >&2; }
@@ -82,7 +92,7 @@ verify() {  # verify <dir> <file>: the file's sha256 must appear in the manifest
   [ -n "$want" ] || { log "$f is not in $MANIFEST: not a gated artifact"; exit 1; }
   [ -f "$dir/$f" ] || { log "missing $dir/$f"; exit 1; }
   have=$(sha256sum "$dir/$f" | awk '{print $1}')
-  [ "$have" = "$want" ] || { log "$f sha256 $have does not match manifest $want: not the gated v5 export"; exit 1; }
+  [ "$have" = "$want" ] || { log "$f sha256 $have does not match manifest $want: not the gated $VERSION export"; exit 1; }
   log "   ok  $f  $have"
 }
 [ -f "$MANIFEST" ] || { log "manifest $MANIFEST missing (the dataset lines are committed with the repo; see the header)"; exit 1; }
@@ -146,8 +156,8 @@ fi
 # ---- 3. gate: every artifact must match the manifest ----------------------
 # The manifest is computed once from the gated files on the NAS host and
 # committed. A file that is not in it, or does not match it, does not ship.
-# (Size alone is not a check: the v5 export is byte-for-byte the same size as
-# v1's, same base and same quant, so only the hash tells them apart.)
+# (Size alone is not a check: every generation's export is byte-for-byte the
+# same size, same base and same quant, so only the hash tells them apart.)
 grep -q 'gguf$' "$MANIFEST" || {
   log "$MANIFEST has no GGUF lines yet. Append them on the NAS host from the gated files and commit:"
   log "  (cd \"$SRC_DIR\" && sha256sum *.gguf) >> $MANIFEST"
@@ -194,10 +204,10 @@ log "== creating $HF_REPO (no-op if it exists)"
 hf repo create "$HF_REPO" --repo-type model --exist-ok >/dev/null
 
 log "== uploading small files"
-hf upload "$HF_REPO" "$STAGE_DIR" . --repo-type model --commit-message "cfop-triage-ministral3 v5: card, Modelfile, adapter (CFOP-274)"
+hf upload "$HF_REPO" "$STAGE_DIR" . --repo-type model --commit-message "cfop-triage-ministral3 $VERSION: card, Modelfile, adapter (CFOP-274)"
 
 log "== uploading GGUFs from $GGUF_STAGE_DIR (large; resumable)"
-hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q4" "$Q4" --repo-type model --commit-message "v5 Q4_K_M, the deployed quant (CFOP-274)"
-hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q8" "$Q8" --repo-type model --commit-message "v5 Q8_0, reference quant (CFOP-274)"
+hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q4" "$Q4" --repo-type model --commit-message "$VERSION Q4_K_M, the deployed quant (CFOP-274)"
+hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q8" "$Q8" --repo-type model --commit-message "$VERSION Q8_0, reference quant (CFOP-274)"
 
 log "== done: https://huggingface.co/$HF_REPO"

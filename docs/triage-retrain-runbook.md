@@ -130,6 +130,25 @@ held-out.
 **The output is gitignored** — real homelab data, public repo. It is
 hand-carried to the training box and never committed.
 
+### 1.5 Scrubbing instead of rebuilding
+
+When the only reason to retrain is something *in* the data rather than a
+lack of it — v6's reason was an operator hostname in 5 rows — do not
+rebuild from the database: weeks of new history make the result a different
+dataset, and the A/B against the previous generation stops meaning anything.
+Edit the previous generation's exact files instead:
+
+```bash
+.venv/bin/python scripts/scrub_triage_dataset.py --domain <operator-domain> \
+  --in-dir /mnt/nas-backup/unsloth/cfoperator-v<N> --out-dir /mnt/nas-backup/unsloth/cfoperator-v<N+1>
+```
+
+It prints the sha256 of each output; those lines go into `hf/v<gen>.sha256`
+verbatim. Untouched rows are copied byte for byte, so `diff` shows only the
+edit, and the script exits non-zero if any occurrence survives or if nothing
+matched at all (a misspelt domain must not look like success). The domain is
+never written anywhere; keep it out of commit messages and docs too.
+
 ## 2. Pre-flight: check you have the file you think you have
 
 ```bash
