@@ -132,7 +132,8 @@ fi
 # `curl … | sh`, "could not check" and "checked, fine" must never look the same.
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT INT TERM
+lock=""
+trap 'rm -rf "$tmp"; [ -z "$lock" ] || rmdir "$lock" 2>/dev/null' EXIT INT TERM
 
 echo "Downloading the CFOperator stack (${TAG})…"
 fetch "$url" "$tmp/$ASSET" || die "could not download ${url}
@@ -173,28 +174,58 @@ mkdir -p "$INSTALL_DIR"
 # name as a named volume, so init would write .env where nothing looks for it.
 INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
 
+# One installer at a time per directory: two interleaving would mix files from
+# two releases under one manifest. mkdir is atomic; the trap removes it.
+mkdir "$INSTALL_DIR/.install.lock" 2>/dev/null || die "another install is running in ${INSTALL_DIR}
+  (or one was killed: remove ${INSTALL_DIR}/.install.lock if nothing is running)"
+lock="$INSTALL_DIR/.install.lock"
+
+# Pull before anything in the install directory changes, so a release whose
+# image cannot be pulled here leaves the running install exactly as it was.
+echo "Pulling ${image}…"
+docker pull "$image" >/dev/null || die "could not pull ${image}; nothing was changed.
+  An arm64 or amd64 build is published for each release; another
+  architecture is not supported."
+
 # .env is never in the bundle, so an upgrade cannot overwrite it. Bundled files
 # can be edited too (deploy/compose/config.yaml is mounted into the services),
-# and a release's copy replaces them — so the checksums of what was installed
-# are recorded, and a file that no longer matches them was edited here and is
-# kept as <name>.bak instead of being lost silently. A file that merely changed
-# between releases is not an edit and gets no .bak.
+# and a release's copy replaces them. So the checksums of what was installed
+# are recorded, and on the next run a file that no longer matches was edited
+# here: it is copied to <name>.bak-<time> (never overwriting an earlier one),
+# and the stack is NOT restarted, because restarting would silently drop the
+# edit from what is running — a console the operator bound to 127.0.0.1 would
+# come back published (CodeRabbit on #305). A file that only changed between
+# releases is not an edit. One the release dropped, unedited, is removed.
 manifest="$INSTALL_DIR/.cfoperator-bundle.sha256"
+stamp="$(date +%Y%m%d%H%M%S)"
 kept=""
 if [ -f "$manifest" ]; then
 	while read -r recorded name; do
+		# The manifest is a file in the install directory, so it is read as
+		# data: only plain relative names inside it are ever copied or removed.
+		case "$name" in ''|/*|..|../*|*/..|*/../*) continue ;; esac
 		[ -f "$INSTALL_DIR/$name" ] || continue
 		if [ "$(sum "$INSTALL_DIR/$name")" != "$recorded" ]; then
-			cp -p "$INSTALL_DIR/$name" "$INSTALL_DIR/$name.bak"
-			kept="${kept}    ${name} -> ${name}.bak
+			bak="$INSTALL_DIR/$name.bak-$stamp"
+			[ -e "$bak" ] && bak="$bak.$$"
+			cp -p "$INSTALL_DIR/$name" "$bak"
+			kept="${kept}    ${name} -> ${bak#"$INSTALL_DIR"/}
 "
+		elif [ ! -e "$tmp/stage/$name" ]; then
+			rm -f "$INSTALL_DIR/$name"
 		fi
 	done < "$manifest"
 fi
-cp -R "$tmp/stage/." "$INSTALL_DIR/"
+
+# The new manifest describes the staged files and lands BEFORE they are copied.
+# Interrupted between the two, a retry sees old files that do not match it and
+# backs them up again under a new name — redundant, never lossy. The other
+# order could record release copies as the operator's and lose a .bak.
 (cd "$tmp/stage" && find . -type f | sed 's|^\./||' | sort) | while read -r name; do
-	echo "$(sum "$INSTALL_DIR/$name") $name"
-done > "$manifest"
+	echo "$(sum "$tmp/stage/$name") $name"
+done > "$tmp/manifest"
+mv "$tmp/manifest" "$manifest"
+cp -R "$tmp/stage/." "$INSTALL_DIR/"
 
 if [ "$fresh" = 1 ]; then
 	echo "Installed ${image} into ${INSTALL_DIR}"
@@ -202,13 +233,15 @@ else
 	echo "Upgraded ${INSTALL_DIR} to ${image} (your .env is unchanged)"
 fi
 if [ -n "$kept" ]; then
-	printf '  These had local edits; the release replaced them and your versions are kept:\n%s' "$kept"
+	printf '  These had local edits. The release replaced them; yours are kept as:\n%s' "$kept"
+	if [ "$fresh" = 0 ]; then
+		echo
+		echo "Not restarted, so what is running still has your edits. Carry them into the"
+		echo "new files — or into docker-compose.override.yml, which upgrades never touch —"
+		echo "then:  cd \"${INSTALL_DIR}\" && docker compose up -d"
+		exit 0
+	fi
 fi
-
-echo "Pulling ${image}…"
-docker pull "$image" >/dev/null || die "could not pull ${image}
-  An arm64 or amd64 build is published for each release; another
-  architecture is not supported."
 
 # --- configure -----------------------------------------------------------------
 #

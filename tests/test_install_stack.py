@@ -45,7 +45,7 @@ IMAGE = "ghcr.io/aachtenberg/cfoperator:v9.9.9"
 #: What the script needs besides docker. Linked into a private bin dir so the
 #: test controls exactly which docker exists.
 TOOLS = ("sh", "curl", "sha256sum", "tar", "gzip", "sed", "grep", "cut", "mktemp",
-         "rm", "mkdir", "cp", "head", "tail", "id", "cat", "dirname", "find", "sort")
+         "rm", "mkdir", "cp", "head", "tail", "id", "cat", "dirname", "find", "sort", "date", "mv", "rmdir")
 
 STUB_DOCKER = r"""#!/bin/sh
 # Records argv, one line per call; behaves like enough of docker for install.sh.
@@ -55,7 +55,7 @@ case "$1" in
 	info)
 		if [ -n "${DOCKER_INFO_ERR:-}" ]; then echo "$DOCKER_INFO_ERR" >&2; exit 1; fi
 		exit 0 ;;
-	pull) exit 0 ;;
+	pull) exit "${DOCKER_PULL_EXIT:-0}" ;;
 	run)
 		# Play the wizard: write .env into whatever is mounted at /out.
 		prev=""
@@ -263,7 +263,7 @@ def test_a_second_run_keeps_env_skips_init_and_restores_compose_files(machine, r
     env_file = machine["dir"] / ".env"
     env_file.write_text("CFOP_ADMIN_PASSWORD=edited-by-the-operator\n")
     compose = machine["dir"] / "docker-compose.yml"
-    compose.write_text("services: {}\n")
+    compose.unlink()  # gone, not edited: an edit would (rightly) stop the restart
     machine["log"].write_text("")
 
     proc = run(machine, base_url=base_url)
@@ -415,11 +415,97 @@ def test_an_upgrade_keeps_local_edits_to_bundled_files_as_bak(machine, release):
     digest = hashlib.sha256((pointer / release_bundle.ASSET).read_bytes()).hexdigest()
     (pointer / "checksums.txt").write_text(f"{digest}  {release_bundle.ASSET}\n")
 
+    machine["log"].write_text("")
     proc = run(machine, base_url=base_url)
     assert proc.returncode == 0, proc.stderr
     assert config.read_text() == shipped, "the release's copy is installed"
-    assert (config.parent / "config.yaml.bak").read_text().endswith("# tuned here\n")
-    assert "config.yaml.bak" in proc.stdout, proc.stdout
-    assert not (machine["dir"] / "docker-compose.yml.bak").exists(), \
+    [bak] = config.parent.glob("config.yaml.bak-*")
+    assert bak.read_text().endswith("# tuned here\n")
+    assert bak.name in proc.stdout, proc.stdout
+    assert not list(machine["dir"].glob("docker-compose.yml.bak*")), \
         "a file that changed between releases was not edited here and needs no .bak"
     assert newer in (machine["dir"] / "docker-compose.yml").read_text()
+    # Restarting would drop the edit from what is running (CodeRabbit on #305).
+    assert "compose up -d" not in docker_calls(machine), "an edited install must not be restarted"
+    assert "docker-compose.override.yml" in proc.stdout
+
+
+def _republish(pointer, image):
+    release_bundle.build(image, pointer)
+    digest = hashlib.sha256((pointer / release_bundle.ASSET).read_bytes()).hexdigest()
+    (pointer / "checksums.txt").write_text(f"{digest}  {release_bundle.ASSET}\n")
+
+
+def test_an_image_that_cannot_be_pulled_changes_nothing(machine, release):
+    _with_docker(machine)
+    pointer, base_url = release
+    assert run(machine, base_url=base_url).returncode == 0
+    before = (machine["dir"] / "docker-compose.yml").read_text()
+    _republish(pointer, IMAGE.replace("v9.9.9", "v9.9.10"))
+    proc = run(machine, base_url=base_url, DOCKER_PULL_EXIT="1")
+    assert proc.returncode != 0 and "nothing was changed" in proc.stderr, proc.stderr
+    assert (machine["dir"] / "docker-compose.yml").read_text() == before, \
+        "the running install's files must be untouched when its replacement cannot be pulled"
+
+
+def test_a_second_installer_in_the_same_directory_is_refused(machine, release):
+    _with_docker(machine)
+    _, base_url = release
+    (machine["dir"] / ".install.lock").mkdir(parents=True)
+    proc = run(machine, base_url=base_url)
+    assert proc.returncode != 0 and "another install is running" in proc.stderr, proc.stderr
+    assert (machine["dir"] / ".install.lock").is_dir(), "someone else's lock is not ours to remove"
+
+
+def test_the_lock_is_released_after_a_run(machine, release):
+    _with_docker(machine)
+    _, base_url = release
+    assert run(machine, base_url=base_url).returncode == 0
+    assert not (machine["dir"] / ".install.lock").exists()
+
+
+def test_a_file_the_release_dropped_is_pruned_unless_edited(machine, release):
+    _with_docker(machine)
+    _, base_url = release
+    assert run(machine, base_url=base_url).returncode == 0
+    manifest = machine["dir"] / ".cfoperator-bundle.sha256"
+    for name, body in (("old-unedited.yaml", "a: 1\n"), ("old-edited.yaml", "b: 1\n")):
+        (machine["dir"] / name).write_text(body)
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        manifest.write_text(manifest.read_text() + f"{digest} {name}\n")
+    (machine["dir"] / "old-edited.yaml").write_text("b: 2  # mine\n")
+
+    run(machine, base_url=base_url)
+    assert not (machine["dir"] / "old-unedited.yaml").exists(), "an unedited file the release dropped is stale"
+    assert (machine["dir"] / "old-edited.yaml").read_text() == "b: 2  # mine\n", \
+        "an edited one is the operator's, release or not"
+
+
+def test_an_earlier_backup_is_never_overwritten(machine, release):
+    _with_docker(machine)
+    _, base_url = release
+    assert run(machine, base_url=base_url).returncode == 0
+    config = machine["dir"] / "deploy" / "compose" / "config.yaml"
+    shipped = config.read_text()
+    for edit in ("# first\n", "# second\n"):
+        config.write_text(shipped + edit)
+        assert run(machine, base_url=base_url).returncode == 0
+    kept = sorted(b.read_text() for b in config.parent.glob("config.yaml.bak-*"))
+    assert kept == sorted([shipped + "# first\n", shipped + "# second\n"]), \
+        "two backups in the same second must both survive"
+
+
+def test_a_tampered_manifest_cannot_reach_outside_the_install_dir(machine, release):
+    """The manifest is a file anyone with the directory can edit; a name in it
+    must never make the pruning step touch a path outside the install."""
+    _with_docker(machine)
+    _, base_url = release
+    assert run(machine, base_url=base_url).returncode == 0
+    outside = machine["home"] / "precious.txt"
+    outside.write_text("keep me\n")
+    digest = hashlib.sha256(b"keep me\n").hexdigest()
+    manifest = machine["dir"] / ".cfoperator-bundle.sha256"
+    manifest.write_text(manifest.read_text()
+                        + f"{digest} ../precious.txt\n{digest} {outside}\n")
+    assert run(machine, base_url=base_url).returncode == 0
+    assert outside.read_text() == "keep me\n"

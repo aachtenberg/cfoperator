@@ -321,9 +321,24 @@ refuses it unless the SHA-256 matches that release's `checksums.txt`, unpacks it
 into `~/cfoperator`, runs `cfoperator init` inside the release image (as the
 invoking user, with the compose services' `host-gateway` entry, so every probe
 runs from the stack's own network) and then `docker compose up -d`. Re-running
-it upgrades: compose files are replaced, `.env` and the database volume are
-kept, and a bundled file you edited (say `deploy/compose/config.yaml`) is kept
-beside the release's copy as `.bak`. `--dry-run` and `--no-start` are there; `--help` lists the knobs.
+it upgrades: compose files are replaced and `.env` and the database volume are
+kept. The image is pulled before any file changes, and one install runs per
+directory at a time.
+
+**Customise in `docker-compose.override.yml`** (compose loads it automatically,
+and upgrades never touch it). If you edit a bundled file instead — say
+`deploy/compose/config.yaml`, or the console's port binding in
+`docker-compose.yml` — the next upgrade notices (it records the checksums of
+what it installed), keeps your copy as `<name>.bak-<time>`, installs the
+release's, and **does not restart**, so what is running keeps your edit until
+you carry it over and run `docker compose up -d` yourself.
+
+**What the checksum does and does not prove.** `checksums.txt` comes from the
+same release as the bundle, so it catches a corrupt or truncated download, not
+a compromised release; it is not a signature. What limits a bad release is that
+the bundle pins the image by digest (`…:vX.Y.Z@sha256:…`), so the code an
+install runs is the code that release was built with, even if the tag is
+pushed again later. `--dry-run` and `--no-start` are there; `--help` lists the knobs.
 
 **Where the bundle comes from.** A `v*` tag push runs `build-cfoperator-main.yml`,
 which on a tag (and only then) builds the agent image for `linux/amd64` *and*
