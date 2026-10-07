@@ -20,6 +20,8 @@ All manifests live in the private **cfoperator-deploy** repo, which ArgoCD's sta
 
 `build-cfoperator-main.yml` builds all six images per run, each pushed as floating `:main` and immutable `:main-<sha7>`. **Only the agent tag auto-bumps**; worker/executor/changerecord/tracker/cockpit track `:main`, so wait for the build job — there is nothing to merge for them either. The cockpit build `needs:` worker — it derives from it.
 
+**The agent must stay at one replica.** Some state is held in process memory and is only correct while one pod serves everything. The deep-investigation ingest (`/v1/deep-investigations`) is one example: it dedupes worker retries and resumes abandoned rows using an in-memory record of which rows are being stored, with find-or-create under a process lock (CFOP-216). With two replicas, a retry could land on the other pod and make a second row, or resume a row that is still being stored. Scaling the agent out needs that ownership moved into the database first, for example as a lease column or a unique ingest key.
+
 Per-workload config: [mcp-server.md](mcp-server.md), [slack-bridge.md](slack-bridge.md), [REMEDIATION.md](REMEDIATION.md).
 
 ## Cockpit: deploy-repo changes
