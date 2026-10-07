@@ -54,8 +54,8 @@ has given identical verdicts in practice.
 # Option A: direct pull
 ollama run hf.co/REPO_ID:Q4_K_M
 
-# Option B: exact production setup
-hf download REPO_ID --local-dir cfop-triage
+# Option B: exact production setup (fetches the Q4 file and the Modelfile, ~8 GB, not the Q8)
+hf download REPO_ID --include "*.Q4_K_M.gguf" Modelfile --local-dir cfop-triage
 cd cfop-triage && ollama create cfop-triage-ministral3:v5-q4 -f Modelfile
 ```
 

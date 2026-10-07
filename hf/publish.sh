@@ -2,11 +2,14 @@
 # Publish the v5 triage fine-tune to Hugging Face (CFOP-274).
 #
 # Run on the host with the NAS mounted (ubuntu-llm-01). Nothing here needs
-# the GPU. The upload is gated: the training data is scanned for anything
-# secret-shaped first, and the script refuses to continue on a finding.
+# the GPU. The upload is gated twice: the training data is scanned for
+# anything secret-shaped, and every artifact that leaves the machine must
+# match the sha256 manifest in hf/v5.sha256. The script refuses to continue
+# on either.
 #
-#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh            # stage, scan, upload
-#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh --stage-only  # stage and scan, no network
+#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh              # scan, stage, verify, upload
+#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh --dry-run    # everything except the upload
+#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh --stage-only # scan and stage only, no artifacts touched
 #
 # Environment:
 #   HF_REPO       required. The model repo id to create or update.
@@ -16,7 +19,16 @@
 #                 v5 set the weights were trained on). default /mnt/nas-backup/unsloth/cfoperator-v6
 #   ADAPTER_DIR   optional. A directory with adapter_model.safetensors and
 #                 adapter_config.json; published under adapter/ when set.
-#   STAGE_DIR     where the small files are assembled. default: a fresh mktemp dir.
+#   MANIFEST      sha256sum-format file naming every artifact that may be
+#                 uploaded (GGUFs, and the adapter files when ADAPTER_DIR is
+#                 set). default hf/v5.sha256. Generate it ONCE on the NAS host
+#                 from the gated files and commit it:
+#                   (cd "$SRC_DIR" && sha256sum *.gguf) > hf/v5.sha256
+#                   (cd "$ADAPTER_DIR" && sha256sum adapter_model.safetensors adapter_config.json) >> hf/v5.sha256
+#   STAGE_DIR     where the small files are assembled. default: a fresh mktemp
+#                 dir. A pre-existing non-empty directory is refused: whatever
+#                 is in the stage gets uploaded, so leftovers from an earlier
+#                 run would ship too.
 #
 # Authentication is whatever `hf auth login` left behind, or HF_TOKEN in the
 # environment. The token is never written anywhere by this script.
@@ -28,18 +40,22 @@ REPO_ROOT="$(cd "$HERE/.." && pwd)"
 SRC_DIR="${SRC_DIR:-/mnt/nas-backup/unsloth/cfoperator-v6/cfop-triage-v5-gguf}"
 DATASET_DIR="${DATASET_DIR:-/mnt/nas-backup/unsloth/cfoperator-v6}"
 ADAPTER_DIR="${ADAPTER_DIR:-}"
-STAGE_DIR="${STAGE_DIR:-$(mktemp -d -t cfop-hf-stage.XXXXXX)}"
-STAGE_ONLY=0
-[ "${1:-}" = "--stage-only" ] && STAGE_ONLY=1
+MANIFEST="${MANIFEST:-$HERE/v5.sha256}"
+MODE=upload
+case "${1:-}" in
+  "") ;;
+  --stage-only) MODE=stage ;;
+  --dry-run) MODE=dry ;;
+  *) echo "unknown argument: $1 (expected --stage-only or --dry-run)" >&2; exit 2 ;;
+esac
 
 : "${HF_REPO:?set HF_REPO to <user>/<repo>}"
+# A Hub repo id is <namespace>/<name>, each a run of [A-Za-z0-9._-]. Anything
+# else is a typo, and the id is interpolated into sed below.
+[[ "$HF_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "HF_REPO '$HF_REPO' is not <user>/<repo>" >&2; exit 2; }
 
 Q4="ministral-3-14b-instruct-2512.Q4_K_M.gguf"
 Q8="ministral-3-14b-instruct-2512.Q8_0.gguf"
-# Byte sizes recorded in docs/triage-fine-tune.md for the v5 export. A file of
-# another size is a different export, and the gate results do not apply to it.
-Q4_BYTES=8239067360
-Q8_BYTES=14359310560
 
 MODELFILE_SRC="$REPO_ROOT/benchmarks/Modelfile.cfop-triage-v5"
 CARD_SRC="$HERE/README.md"
@@ -51,6 +67,12 @@ log "== scanning training data in $DATASET_DIR"
 python3 "$HERE/scan_dataset.py" "$DATASET_DIR/triage_train.jsonl" "$DATASET_DIR/triage_val.jsonl"
 
 # ---- 2. stage the small files ---------------------------------------------
+if [ -z "${STAGE_DIR:-}" ]; then
+  STAGE_DIR="$(mktemp -d -t cfop-hf-stage.XXXXXX)"
+elif [ -e "$STAGE_DIR" ] && [ -n "$(ls -A "$STAGE_DIR" 2>/dev/null)" ]; then
+  log "STAGE_DIR $STAGE_DIR is not empty: refusing, everything in the stage gets uploaded"
+  exit 1
+fi
 log "== staging into $STAGE_DIR"
 mkdir -p "$STAGE_DIR"
 
@@ -74,18 +96,42 @@ fi
 
 log "   staged:"; (cd "$STAGE_DIR" && find . -type f | sort | sed 's/^/     /') >&2
 
-if [ "$STAGE_ONLY" = 1 ]; then
-  log "== --stage-only: stopping before any network access"
+if [ "$MODE" = stage ]; then
+  log "== --stage-only: stopping before the artifact check"
   exit 0
 fi
 
-# ---- 3. the GGUFs must be the gated export --------------------------------
-for pair in "$Q4:$Q4_BYTES" "$Q8:$Q8_BYTES"; do
-  f="${pair%%:*}"; want="${pair##*:}"
-  [ -f "$SRC_DIR/$f" ] || { log "missing $SRC_DIR/$f"; exit 1; }
-  have=$(stat -c %s "$SRC_DIR/$f")
-  [ "$have" = "$want" ] || { log "$f is $have bytes, expected $want: not the gated v5 export"; exit 1; }
-done
+# ---- 3. gate: every artifact must match the manifest ----------------------
+# The manifest is computed once from the gated files on the NAS host and
+# committed. A file that is not in it, or does not match it, does not ship.
+# (Size alone is not a check: the v5 export is byte-for-byte the same size as
+# v1's, same base and same quant, so only the hash tells them apart.)
+[ -f "$MANIFEST" ] || {
+  log "manifest $MANIFEST missing. Generate it on the NAS host from the gated files and commit it:"
+  log "  (cd \"$SRC_DIR\" && sha256sum *.gguf) > $MANIFEST"
+  exit 1
+}
+verify() {  # verify <dir> <file>: the file's sha256 must appear in the manifest under that name
+  local dir="$1" f="$2" want have
+  want=$(awk -v f="$f" '$2 == f || $2 == "*" f {print $1}' "$MANIFEST")
+  [ -n "$want" ] || { log "$f is not in $MANIFEST: not a gated artifact"; exit 1; }
+  [ -f "$dir/$f" ] || { log "missing $dir/$f"; exit 1; }
+  have=$(sha256sum "$dir/$f" | awk '{print $1}')
+  [ "$have" = "$want" ] || { log "$f sha256 $have does not match manifest $want: not the gated v5 export"; exit 1; }
+  log "   ok  $f  $have"
+}
+log "== verifying artifacts against $MANIFEST"
+verify "$SRC_DIR" "$Q4"
+verify "$SRC_DIR" "$Q8"
+if [ -n "$ADAPTER_DIR" ]; then
+  verify "$STAGE_DIR/adapter" adapter_model.safetensors
+  verify "$STAGE_DIR/adapter" adapter_config.json
+fi
+
+if [ "$MODE" = dry ]; then
+  log "== --dry-run: everything checked, nothing uploaded"
+  exit 0
+fi
 
 # ---- 4. upload -------------------------------------------------------------
 command -v hf >/dev/null || { log "hf CLI not found (pip install -U huggingface_hub)"; exit 1; }

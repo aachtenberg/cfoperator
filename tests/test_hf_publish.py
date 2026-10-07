@@ -190,3 +190,111 @@ def test_stage_with_adapter_dir_copies_both_files(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "stage" / "adapter" / "adapter_model.safetensors").exists()
     assert (tmp_path / "stage" / "adapter" / "adapter_config.json").exists()
+
+
+def test_stage_refuses_a_non_empty_stage_dir(tmp_path: Path):
+    # Everything in the stage is uploaded, so a leftover from an earlier run
+    # (say, an adapter that is no longer meant to ship) would go public.
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "adapter").mkdir()
+    (stage / "adapter" / "leftover.bin").write_bytes(b"\0")
+    proc = _run_stage(tmp_path)
+    assert proc.returncode != 0
+    assert "not empty" in proc.stderr
+    assert not (stage / "Modelfile").exists()
+
+
+@pytest.mark.parametrize("bad", ["nouser", "user/repo/extra", "user/re po", "user/re#po", "user/re&po"])
+def test_publish_rejects_malformed_repo_id(tmp_path: Path, bad: str):
+    proc = _run_stage(tmp_path, {"HF_REPO": bad})
+    assert proc.returncode == 2, proc.stderr
+    assert "not <user>/<repo>" in proc.stderr
+
+
+# --- the artifact gate: --dry-run runs everything but the upload -------------
+
+Q4 = "ministral-3-14b-instruct-2512.Q4_K_M.gguf"
+Q8 = "ministral-3-14b-instruct-2512.Q8_0.gguf"
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _fake_src(tmp_path: Path) -> tuple[Path, Path]:
+    """Two small stand-in GGUFs and a manifest that matches them."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / Q4).write_bytes(b"q4 " * 100)
+    (src / Q8).write_bytes(b"q8 " * 100)
+    manifest = tmp_path / "v5.sha256"
+    manifest.write_text(f"{_sha256(src / Q4)}  {Q4}\n{_sha256(src / Q8)}  {Q8}\n", encoding="utf-8")
+    return src, manifest
+
+
+def _run_dry(tmp_path: Path, src: Path, manifest: Path, extra_env: dict[str, str] | None = None, stage: str = "stage"):
+    dataset = tmp_path / "dataset"
+    dataset.mkdir(exist_ok=True)
+    for name in ("triage_train.jsonl", "triage_val.jsonl"):
+        (dataset / name).write_text(_row("clean row"), encoding="utf-8")
+    env = dict(
+        os.environ,
+        HF_REPO="someone/cfop-triage-ministral3-14b-v5",
+        DATASET_DIR=str(dataset),
+        STAGE_DIR=str(tmp_path / stage),
+        SRC_DIR=str(src),
+        MANIFEST=str(manifest),
+    )
+    env.update(extra_env or {})
+    return subprocess.run(
+        ["bash", str(HF_DIR / "publish.sh"), "--dry-run"],
+        capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+    )
+
+
+def test_dry_run_passes_when_every_artifact_matches_the_manifest(tmp_path: Path):
+    src, manifest = _fake_src(tmp_path)
+    proc = _run_dry(tmp_path, src, manifest)
+    assert proc.returncode == 0, proc.stderr
+    assert "nothing uploaded" in proc.stderr
+    assert f"ok  {Q4}" in proc.stderr and f"ok  {Q8}" in proc.stderr
+
+
+def test_dry_run_fails_on_a_gguf_that_does_not_match_the_manifest(tmp_path: Path):
+    src, manifest = _fake_src(tmp_path)
+    # Same size, different bytes: exactly the case a size check cannot see.
+    (src / Q4).write_bytes(b"Q4 " * 100)
+    proc = _run_dry(tmp_path, src, manifest)
+    assert proc.returncode != 0
+    assert "does not match manifest" in proc.stderr
+    assert "nothing uploaded" not in proc.stderr
+
+
+def test_dry_run_fails_without_a_manifest(tmp_path: Path):
+    src, manifest = _fake_src(tmp_path)
+    manifest.unlink()
+    proc = _run_dry(tmp_path, src, manifest)
+    assert proc.returncode != 0
+    assert "manifest" in proc.stderr and "missing" in proc.stderr
+
+
+def test_dry_run_requires_the_adapter_in_the_manifest_too(tmp_path: Path):
+    src, manifest = _fake_src(tmp_path)
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_model.safetensors").write_bytes(b"\0" * 16)
+    (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
+    # Not in the manifest: refused.
+    proc = _run_dry(tmp_path, src, manifest, {"ADAPTER_DIR": str(adapter)})
+    assert proc.returncode != 0
+    assert "adapter_model.safetensors is not in" in proc.stderr
+    # In the manifest: passes (fresh stage, the first run's is non-empty and refused).
+    with manifest.open("a", encoding="utf-8") as fh:
+        fh.write(f"{_sha256(adapter / 'adapter_model.safetensors')}  adapter_model.safetensors\n")
+        fh.write(f"{_sha256(adapter / 'adapter_config.json')}  adapter_config.json\n")
+    proc = _run_dry(tmp_path, src, manifest, {"ADAPTER_DIR": str(adapter)}, stage="stage2")
+    assert proc.returncode == 0, proc.stderr
+    assert "ok  adapter_model.safetensors" in proc.stderr
