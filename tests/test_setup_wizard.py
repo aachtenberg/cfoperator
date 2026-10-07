@@ -379,3 +379,52 @@ def test_cfoperator_wrapper_rejects_unknown_verbs():
     )
     assert result.returncode == 2
     assert "frobnicate" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Reachability from the compose trial (CFOP-273)
+# ---------------------------------------------------------------------------
+# The trial is bridged, so a loopback URL that probes fine from this shell is
+# the agent's own container once it is in .env. The wizard used to say "ok"
+# and write a trial that could reach nothing.
+
+
+@pytest.mark.parametrize("url", [
+    "http://localhost:11434", "http://127.0.0.1:9090", "http://127.1.2.3:3100",
+    "http://[::1]:9093", "http://0.0.0.0:9090",
+])
+def test_a_loopback_url_gets_the_bridged_network_note(url):
+    note = wiz.reachability_note(url, True)
+    assert "host.docker.internal" in note, (url, note)
+    assert wiz.reachability_note(url, False) == note, "the same explanation when its probe fails"
+
+
+def test_a_reachable_address_gets_no_note():
+    assert wiz.reachability_note("http://10.0.0.10:9090", True) == ""
+    assert wiz.reachability_note("http://10.0.0.10:9090", False) == "", \
+        "a dead LAN address is the probe's message to give, not a networking lecture"
+    assert wiz.reachability_note("http://host.docker.internal:9090", True) == ""
+
+
+def test_a_dead_host_gateway_url_explains_the_listen_address():
+    note = wiz.reachability_note("http://host.docker.internal:11434", False)
+    assert "OLLAMA_HOST=0.0.0.0" in note, note
+
+
+def test_a_loopback_answer_is_flagged_in_the_summary(monkeypatch, tmp_path, stub, capsys):
+    """The stub listens on 127.0.0.1, so every answer here is loopback."""
+    _noninteractive_env(monkeypatch, stub)
+    assert wiz.main(["--non-interactive", "--dir", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "Check before starting" in out and "host.docker.internal" in out, out
+    # Warn only: the answer is written as given, because config.yaml also
+    # serves deployments where loopback is right.
+    assert f"PROMETHEUS_URL={stub}" in (tmp_path / ".env").read_text()
+
+
+def test_a_dead_loopback_answer_fails_with_the_hint(monkeypatch, tmp_path, stub, capsys):
+    _noninteractive_env(monkeypatch, stub)
+    monkeypatch.setenv("PROMETHEUS_URL", _dead_url())
+    assert wiz.main(["--non-interactive", "--dir", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "prometheus" in err and "hint:" in err and "host.docker.internal" in err, err

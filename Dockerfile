@@ -9,8 +9,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install kubectl for K8s tools
-RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" \
+# Install kubectl for K8s tools. For the architecture being built, not amd64:
+# release tags build arm64 too (CFOP-273), and an amd64 kubectl in an arm64
+# image fails only when a k8s tool first runs.
+#
+# TARGETARCH is set by BuildKit only. The legacy builder — what `docker compose
+# build` falls back to on a machine without buildx — leaves it empty, and the
+# URL became .../linux//kubectl. dpkg answers the same question from inside the
+# image, which is always the target architecture. -f, because without it that
+# 404 page was saved as the kubectl binary and the build passed.
+ARG TARGETARCH
+RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && curl -fLO "https://dl.k8s.io/release/$(curl -fsSL https://dl.k8s.io/release/stable.txt)/bin/linux/${arch}/kubectl" \
     && chmod +x kubectl \
     && mv kubectl /usr/local/bin/
 
