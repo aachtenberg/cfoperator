@@ -33,6 +33,18 @@
 #   --no-start         install and configure, but do not start the stack
 set -eu
 
+# Everything below is inside main(), called on the last line, so that sh has
+# to read the whole script before any of it runs. sh executes a script as it
+# streams in, and under `curl … | sh` a download cut off halfway would run
+# whatever complete lines had arrived; a function body is parsed to its
+# closing brace first, so a truncated copy is a syntax error that does
+# nothing (CFOP-280; tests/test_installer_streaming.py feeds sh the cut-off
+# copies). The body is deliberately not re-indented. The call passes
+# --complete as its last argument: a stream that ended a few bytes early, at
+# a bare `main`, would otherwise run it with no arguments and turn a
+# --dry-run into an install, so main refuses to start without the marker.
+main() {
+
 REPO="aachtenberg/cfoperator"
 BASE_URL="${CFOP_BASE_URL:-https://github.com/${REPO}/releases/download}"
 INSTALL_DIR="${CFOP_INSTALL_DIR:-$HOME/cfoperator}"
@@ -73,12 +85,19 @@ for arg in "$@"; do
 	case "$arg" in
 		--dry-run) DRY_RUN=1 ;;
 		--no-start) NO_START=1 ;;
+		--complete) ;;  # appended by the last line; see main() above
 		-h|--help) usage; exit 0 ;;
 		*) echo "install: unknown argument: $arg" >&2; exit 2 ;;
 	esac
 done
 
 die() { echo "install: $*" >&2; exit 1; }
+
+# The last line of this file appends --complete after the caller's arguments.
+# A download that ended exactly at `main` would call this with none, a
+# --dry-run turned into an install, so nothing proceeds without the marker.
+eval "last=\${$#}"
+[ "$last" = --complete ] || die "truncated download: the script did not arrive whole; run the one-liner again"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -322,3 +341,6 @@ echo "  Reconfigure: ${init_cmd}"
 echo "               then: cd \"${INSTALL_DIR}\" && docker compose up -d"
 echo "  Upgrade:     re-run this installer (CFOP_VERSION=x.y.z to pin)"
 echo "  CLI:         curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install-cfassist.sh | sh"
+}
+
+main "$@" --complete

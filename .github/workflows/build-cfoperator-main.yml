@@ -438,6 +438,10 @@ jobs:
         id: version
         run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      # The one release the repo's landing page shows is the Latest-badged
+      # one, and a repo has one badge. This is the product, so this release
+      # keeps it; release-cfassist.yml sets make_latest: false, and
+      # tests/test_workflows.py allows exactly one claimant (CFOP-281).
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -456,6 +460,8 @@ jobs:
             Needs Docker with the compose plugin. Verifies the bundle's SHA-256, asks the setup questions from inside the stack's own network, and starts Postgres, the agent, the event runtime and the console on :8083. Re-running it upgrades and keeps your `.env`.
 
             Pin this exact release with `CFOP_VERSION=${{ steps.version.outputs.number }}`. Helm: `helm install cfoperator oci://ghcr.io/${{ github.repository_owner }}/charts/cfoperator --version ${{ steps.version.outputs.number }}`.
+
+            The `cfassist` CLI installs separately, with or without this stack: `curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install-cfassist.sh | sh`.
           files: |
             dist/cfoperator-compose.tar.gz
             dist/checksums.txt

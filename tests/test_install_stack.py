@@ -574,3 +574,12 @@ def test_the_pending_marker_survives_an_upgrade_interrupted_after_the_copy(machi
     marker = next(i for i, ln in enumerate(live) if '>> "$pending"' in ln)
     copy = next(i for i, ln in enumerate(live) if ln.startswith('cp -R "$tmp/stage/."'))
     assert marker < copy, "the pending marker must be on disk before the release replaces the edits"
+
+
+def test_the_stack_release_body_also_points_at_the_cli_installer():
+    """The stack release is the one page the landing page shows (CFOP-281);
+    it has to cover the CLI install too, or that one-liner becomes a
+    releases-list treasure hunt."""
+    [create] = [s for s in _jobs()["release-stack"]["steps"]
+                if s.get("uses", "").startswith("softprops/action-gh-release")]
+    assert "install-cfassist.sh" in create["with"]["body"]

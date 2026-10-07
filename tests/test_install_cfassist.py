@@ -173,9 +173,10 @@ def live_lines(text: str) -> list[str]:
 def _versioned_release_half() -> str:
     """Everything in the workflow before the pointer refresh.
 
-    The numbered tag is what GitHub badges Latest (`--latest=false` on the
-    pointer is load-bearing). Install instructions that only exist on
-    cfassist-latest never appear on the page people land on.
+    The numbered release is the page a pin or the releases list opens, so
+    the install instructions have to be on it; cfassist-latest is only the
+    download pointer. (It no longer takes the Latest badge: the stack's v*
+    release owns that, CFOP-281.)
     """
     text = RELEASE_WORKFLOW.read_text()
     versioned, sep, _ = text.partition("Refresh the cfassist-latest pointer")
@@ -184,9 +185,9 @@ def _versioned_release_half() -> str:
 
 
 def test_the_versioned_release_notes_include_the_install_one_liner():
-    """generate_release_notes alone is a changelog with no install — that is
-    the current Latest page. The body is prepended to the generated notes, so
-    both have to be present; dropping the body is how this regresses."""
+    """generate_release_notes alone is a changelog with no install. The body
+    is prepended to the generated notes, so both have to be present; dropping
+    the body is how this regresses."""
     live = _versioned_release_half()
 
     assert "generate_release_notes: true" in live, (
@@ -199,11 +200,11 @@ def test_the_versioned_release_notes_include_the_install_one_liner():
     create_step = create[1].split("- name:", 1)[0]
     assert "body:" in create_step, (
         "the numbered release must set `body:` (prepended to generated notes); "
-        "a comment or the pointer-only NOTES does not reach the Latest page"
+        "a comment or the pointer-only NOTES does not reach the release page"
     )
     assert "install-cfassist.sh" in create_step, (
-        "the Latest-badged page has to carry the install one-liner, not just "
-        "a changelog of PRs"
+        "the numbered release page has to carry the install one-liner, not "
+        "just a changelog of PRs"
     )
     assert "CFASSIST_VERSION=" in create_step, (
         "someone who opened this tag rather than latest needs a pin, not only "
@@ -418,3 +419,12 @@ def test_an_older_binary_without_init_is_not_invoked_as_a_prompt(stub_release, t
     assert not (home / "init-was-called").exists(), proc.stdout + proc.stderr
     assert "Wrote" not in proc.stdout
     assert not (home / ".cfassist" / "config.yaml").exists()
+
+
+def test_help_works_through_the_pipe():
+    """`curl … | sh -s -- --help`: $0 is "sh" there, so help cannot be read
+    back from the script file (CFOP-280)."""
+    proc = subprocess.run(["sh", "-s", "--", "--help"], input=SCRIPT.read_text(),
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "CFASSIST_VERSION" in proc.stdout and "--dry-run" in proc.stdout, proc.stdout

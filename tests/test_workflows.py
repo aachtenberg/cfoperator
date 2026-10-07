@@ -391,3 +391,73 @@ def test_the_pr_review_posts_in_this_session():
         assert banned not in allow, f"{banned} is back on the review allowlist"
     assert "Bash(gh pr comment:*)" in allow
     assert "issues: write" in text
+
+
+# ---------------------------------------------------------------------------
+# One Latest badge (CFOP-281)
+# ---------------------------------------------------------------------------
+# GitHub shows one release on the repo's landing page: the one badged Latest.
+# Three products release from this repo, and two of them created releases with
+# the default "make latest", so the badge moved to whichever was tagged last
+# (cfassist-v0.13.6 held it until the stack's v1.0.9 took it). The stack is the
+# product and owns the badge; every other release says so explicitly.
+
+RELEASE_ACTION = "softprops/action-gh-release"
+#: The one (workflow, step name) allowed to take the badge.
+BADGE_OWNER = ("build-cfoperator-main.yml", "Create release")
+
+
+def release_steps():
+    """Every (workflow name, step) that publishes a GitHub release through the action."""
+    for wf in WORKFLOWS:
+        doc = yaml.safe_load(read(wf))
+        for job in (doc.get("jobs") or {}).values():
+            for step in job.get("steps") or []:
+                if str(step.get("uses", "")).startswith(RELEASE_ACTION):
+                    yield wf.name, step
+
+
+def claims_latest(step):
+    """Anything but an explicit false can end up Latest: unset is the GitHub
+    default, and `legacy` is latest-by-date unless pre-release."""
+    flag = (step.get("with") or {}).get("make_latest")
+    return str(flag).lower() != "false"
+
+
+def shell_commands(text):
+    """Logical lines of the workflow's run blocks: continuation lines joined,
+    comments dropped, so a flag on the next line still counts."""
+    joined, pending = [], ""
+    for line in code(text).splitlines():
+        stripped = line.strip()
+        if stripped.endswith("\\"):
+            pending += stripped[:-1] + " "
+            continue
+        joined.append(pending + stripped)
+        pending = ""
+    return joined
+
+
+def test_exactly_one_release_step_may_take_the_latest_badge():
+    """The stack's release is the one the landing page shows; nothing else may claim the badge."""
+    claimants = sorted((wf, step.get("name")) for wf, step in release_steps() if claims_latest(step))
+    assert claimants == [BADGE_OWNER], (
+        f"release steps that can take the Latest badge: {claimants}. Only "
+        f"{BADGE_OWNER} may; every other release sets `make_latest: false`, or the "
+        "landing page flips between products with every tag.")
+
+
+@pytest.mark.parametrize("wf", WORKFLOWS, ids=lambda p: p.name)
+def test_gh_release_commands_never_take_the_latest_badge(wf):
+    """The moving pointers are made with the gh CLI, which also defaults to
+    claiming Latest; both pass --latest=false and must keep doing so."""
+    offenders = [cmd for cmd in shell_commands(read(wf))
+                 if re.search(r"\bgh release (create|edit)\b", cmd) and "--latest=false" not in cmd]
+    assert not offenders, offenders
+
+
+def test_the_badge_guard_reads_a_flag_on_a_continuation_line():
+    """The pointer blocks put --latest=false on its own line; the joiner must see it."""
+    text = "jobs:\n  j:\n    steps:\n      - run: |\n          gh release create x \\\n            --latest=false \\\n            --title t\n"
+    [cmd] = [c for c in shell_commands(text) if "gh release create" in c]
+    assert "--latest=false" in cmd
