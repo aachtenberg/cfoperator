@@ -104,7 +104,7 @@ _KEY_VALUE = re.compile(
 #: A space-separated value must not start with `-`: `--password --help` is two
 #: flags. `--token-file /x` and `--password-stdin` do not end in a secret word.
 _FLAG_VALUE = re.compile(
-    r'(?<![A-Za-z0-9_.-])(?P<flag>--?[A-Za-z][A-Za-z0-9_.-]*?' + _SECRET_WORD + r')'
+    r'(?<![A-Za-z0-9_.-])(?P<flag>--?(?:[A-Za-z][A-Za-z0-9_.-]*?)?' + _SECRET_WORD + r')'
     r'(?P<sep>=|[ \t]+(?!-))'
     r'(?!["\']?\*\*\*)'
     r'(?P<val>"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|\S+)',
