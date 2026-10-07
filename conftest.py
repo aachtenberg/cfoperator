@@ -123,10 +123,15 @@ def _snapshot_ssh_dir(directory: Path) -> Dict[str, Tuple[int, int]]:
     test run would get the test blamed for it. Key material and ``config`` are
     what the guard exists for.
     """
+    # Fail closed: a directory that cannot be listed would snapshot the same
+    # (empty) way before and after, and a write would pass unseen. A missing
+    # directory is the CI runner, not a failure.
     try:
         entries = list(directory.iterdir())
-    except OSError:
+    except FileNotFoundError:
         return {}
+    except OSError as exc:
+        pytest.fail(f"cannot snapshot {directory}: {exc}", pytrace=False)
     out: Dict[str, Tuple[int, int]] = {}
     for entry in entries:
         if entry.name.startswith("known_hosts"):
@@ -135,8 +140,11 @@ def _snapshot_ssh_dir(directory: Path) -> Dict[str, Tuple[int, int]]:
             if entry.is_file():
                 st = entry.stat()
                 out[entry.name] = (st.st_size, st.st_mtime_ns)
-        except OSError:
-            continue
+        except FileNotFoundError:
+            continue  # vanished between listing and stat: a temp file, not ours
+        except OSError as exc:
+            pytest.fail(f"cannot inspect {entry} while snapshotting {directory}: {exc}",
+                        pytrace=False)
     return out
 
 
