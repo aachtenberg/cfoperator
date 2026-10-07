@@ -32,6 +32,7 @@ TOOL_SCHEMA = {
 
 
 def _operator(redact=None):
+    """A CFOperator with a stub tool that returns a secret in two shapes."""
     op = CFOperator.__new__(CFOperator)
     chat = {'max_tool_iterations': 4}
     if redact is not None:
@@ -52,6 +53,7 @@ def _operator(redact=None):
 
 
 def _ollama_msg(content='', tool_calls=None):
+    """One scripted Ollama assistant message."""
     message = {'role': 'assistant', 'content': content}
     if tool_calls:
         message['tool_calls'] = [{'function': {'name': n, 'arguments': {}}} for n in tool_calls]
@@ -59,6 +61,8 @@ def _ollama_msg(content='', tool_calls=None):
 
 
 class _FakePost:
+    """Scripted Ollama /api/chat responses; records each request payload."""
+
     def __init__(self, messages):
         self.script = list(messages)
         self.payloads = []
@@ -70,6 +74,7 @@ class _FakePost:
 
 
 def _run(op, monkeypatch, events):
+    """One tool-calling turn through the real loop; returns the fake transport."""
     fake = _FakePost([_ollama_msg(tool_calls=['ssh_execute']),
                       _ollama_msg(content='Fine.\nSTATUS: resolved\nRECOMMENDATION: No action needed')])
     monkeypatch.setattr('requests.post', fake)
@@ -82,10 +87,12 @@ def _run(op, monkeypatch, events):
 
 
 def _tool_messages(fake):
+    """The role=tool messages across every request the loop sent."""
     return [m for p in fake.payloads for m in p['messages'] if m.get('role') == 'tool']
 
 
 def test_the_prompt_carries_the_key_but_never_the_value(monkeypatch):
+    """The Ollama payload carries POSTGRES_PASSWORD=*** and never the value."""
     fake = _run(_operator(), monkeypatch, [])
     sent = json.dumps(_tool_messages(fake))
     assert _tool_messages(fake), "the scripted turn must have produced a tool result"
@@ -94,6 +101,7 @@ def test_the_prompt_carries_the_key_but_never_the_value(monkeypatch):
 
 
 def test_the_transcript_event_carries_the_same_redacted_copy(monkeypatch):
+    """The tool_result event the console stores is the redacted copy."""
     events = []
     _run(_operator(), monkeypatch, events)
     results = json.dumps([d for k, d in events if k == 'tool_result'])
@@ -102,6 +110,7 @@ def test_the_transcript_event_carries_the_same_redacted_copy(monkeypatch):
 
 
 def test_the_knob_restores_raw_results(monkeypatch):
+    """chat.redact_tool_results: false restores raw values everywhere."""
     events = []
     fake = _run(_operator(redact=False), monkeypatch, events)
     assert SECRET in json.dumps(_tool_messages(fake))
@@ -119,6 +128,7 @@ def test_an_operator_built_without_config_still_redacts():
 
 
 def test_redactions_are_counted_per_value_and_tool(monkeypatch):
+    """The counter adds one per value replaced, labelled by tool."""
     before = REGISTRY.get_sample_value('cfoperator_tool_result_redactions_total',
                                        {'tool_name': 'ssh_execute'}) or 0.0
     _run(_operator(), monkeypatch, [])
@@ -129,6 +139,7 @@ def test_redactions_are_counted_per_value_and_tool(monkeypatch):
 
 
 def test_the_memo_cache_holds_the_redacted_copy():
+    """A cache hit hands back the redacted copy, never the raw result."""
     op = _operator()
     cache = {}
     first, obj, cached = op._cached_tool_exec('ssh_execute', {}, cache, 6000)

@@ -21,6 +21,7 @@ from cfshared.tool_args import PLACEHOLDER, redact_tool_args, redact_tool_result
 
 
 def _redacted(value):
+    """The redacted copy and the count, as a pair."""
     out, count = redact_tool_result(value)
     return out, count
 
@@ -29,6 +30,7 @@ def _redacted(value):
 
 
 def test_env_and_dotenv_lines_keep_the_key_and_lose_the_value():
+    """`env`, `.env`, `export`: the key says it is set, the value is gone."""
     text = ("POSTGRES_PASSWORD=hunter2\nOLLAMA_URL=http://ollama:11434\n"
             "GROQ_API_KEY=gsk_abcdefghijklmnopqrstuvwxyz\nexport GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789\n")
     out, count = _redacted(text)
@@ -39,6 +41,7 @@ def test_env_and_dotenv_lines_keep_the_key_and_lose_the_value():
 
 
 def test_docker_inspect_env_array_is_scrubbed_structurally_and_in_text():
+    """`docker inspect` Env, both parsed and as the CLI prints it."""
     inspect = [{"Config": {"Env": ["POSTGRES_PASSWORD=hunter2", "PATH=/usr/bin", "ANTHROPIC_API_KEY=sk-ant-abcdefghijklmnopqrstuvwxyz"]},
                 "Name": "/cfoperator-agent-1"}]
     out, _ = _redacted(inspect)
@@ -52,6 +55,7 @@ def test_docker_inspect_env_array_is_scrubbed_structurally_and_in_text():
 
 
 def test_kubectl_secret_yaml_loses_every_data_value_whatever_the_key():
+    """`kubectl get secret -o yaml`: arbitrary key names under data:/stringData:."""
     yaml_text = ("apiVersion: v1\nkind: Secret\nmetadata:\n  name: cfoperator-db\n  namespace: apps\n"
                  "type: Opaque\ndata:\n  postgres-password: aHVudGVyMg==\n  some-random-name: c2VjcmV0\n"
                  "stringData:\n  url: postgresql://cfop:hunter2@db:5432/kb\n")
@@ -63,6 +67,7 @@ def test_kubectl_secret_yaml_loses_every_data_value_whatever_the_key():
 
 
 def test_kubectl_secret_json_is_scrubbed_structurally():
+    """A parsed Secret: every data/stringData value goes, metadata stays."""
     secret = {"kind": "Secret", "metadata": {"name": "x"}, "data": {"anything": "aHVudGVyMg=="},
               "stringData": {"url": "postgresql://u:p@h/db"}}
     out, _ = _redacted(secret)
@@ -70,13 +75,77 @@ def test_kubectl_secret_json_is_scrubbed_structurally():
     assert out["metadata"]["name"] == "x"
 
 
+def test_kubectl_secret_json_arriving_as_ssh_stdout_is_scrubbed_as_text():
+    """`ssh host kubectl get secret x -o json` returns stdout as one string;
+    the structural rule never sees a dict (review of #309)."""
+    stdout = json.dumps({"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "cfoperator-db"},
+                         "data": {"postgres-password": "aHVudGVyMg==", "random-name": "c2VjcmV0"},
+                         "stringData": {"url": "postgresql://u:hunter2@h/db"}}, indent=2)
+    out, count = _redacted({"stdout": stdout, "exit_code": 0})
+    assert "aHVudGVyMg==" not in out["stdout"] and "c2VjcmV0" not in out["stdout"] and "hunter2" not in out["stdout"]
+    assert '"name": "cfoperator-db"' in out["stdout"]
+    assert count >= 3
+
+
+def test_the_last_applied_configuration_annotation_is_scrubbed_too():
+    """`kubectl apply`'d Secrets carry themselves again as one-line JSON in an
+    annotation inside the YAML output; the YAML block rule does not reach it."""
+    yaml_text = ("apiVersion: v1\nkind: Secret\nmetadata:\n  annotations:\n"
+                 "    kubectl.kubernetes.io/last-applied-configuration: |\n"
+                 '      {"apiVersion":"v1","data":{"k":"aHVudGVyMg=="},"kind":"Secret","metadata":{"name":"x"}}\n'
+                 "  name: x\ndata:\n  k: aHVudGVyMg==\n")
+    out, _ = _redacted(yaml_text)
+    assert "aHVudGVyMg==" not in out
+    assert '"name":"x"' in out and "name: x" in out
+
+
+def test_a_block_scalar_under_stringdata_loses_every_line():
+    """`conf: |` followed by indented lines: the continuation lines are the
+    value, not new items (review of #309)."""
+    yaml_text = ("kind: Secret\nstringData:\n  conf: |\n    user = admin\n    password = hunter2\n\n"
+                 "    token = cfop_abcdefghij\n  plain: simple\ntype: Opaque\n")
+    out, _ = _redacted(yaml_text)
+    assert "hunter2" not in out and "cfop_abcdefghij" not in out and "user = admin" not in out
+    assert f"conf: {PLACEHOLDER}" in out and f"plain: {PLACEHOLDER}" in out
+    assert "type: Opaque" in out, "the next top-level key is outside the block"
+
+
+def test_an_unquoted_value_runs_to_the_end_of_the_line():
+    """`password: abc,def` used to keep `def` (review of #309)."""
+    out, _ = _redacted("password: abc,def;ghi}jkl\nnext: fine\n")
+    assert out == f"password: {PLACEHOLDER}\nnext: fine\n"
+    out, _ = _redacted("POSTGRES_PASSWORD=ab,cd;ef\n")
+    assert out == f"POSTGRES_PASSWORD={PLACEHOLDER}\n"
+
+
+def test_a_long_identifier_run_is_redacted_in_linear_time():
+    """Redaction runs before the size cap, on the raw result. A hex dump or a
+    base64 blob is one long identifier run; the key rule must not be retried
+    from every character of it."""
+    import time
+    blob = "deadbeef" * 50_000  # 400 KB, no secret in it
+    start = time.perf_counter()
+    out, count = _redacted(blob + "\nPOSTGRES_PASSWORD=hunter2\n")
+    elapsed = time.perf_counter() - start
+    assert "hunter2" not in out and count == 1
+    assert elapsed < 1.0, f"took {elapsed:.2f}s"
+
+
+def test_tuples_are_walked_like_lists():
+    """A tuple result is walked and comes back as a tuple."""
+    out, count = _redacted(("POSTGRES_PASSWORD=hunter2", {"token": "x"}))
+    assert isinstance(out, tuple) and "hunter2" not in out[0] and out[1]["token"] == PLACEHOLDER and count == 2
+
+
 def test_a_configmap_with_a_data_block_is_not_a_secret():
+    """A ConfigMap has a data: block too and must survive untouched."""
     yaml_text = "kind: ConfigMap\ndata:\n  prometheus_url: http://prom:9090\n  loki_url: http://loki:3100\n"
     out, count = _redacted(yaml_text)
     assert out == yaml_text and count == 0
 
 
 def test_pem_private_key_body_is_replaced():
+    """A key file read with cat: the armour stays, the body goes."""
     pem = ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n"
            "QyNTUxOQAAACB\n-----END OPENSSH PRIVATE KEY-----\n")
     out, count = _redacted(f"$ cat ~/.ssh/id_ed25519\n{pem}")
@@ -86,6 +155,7 @@ def test_pem_private_key_body_is_replaced():
 
 
 def test_connection_string_password_and_webhook_paths_are_hidden():
+    """URL userinfo passwords and webhook URL paths."""
     text = ("DATABASE_URL=postgresql://cfop:hunter2@db:5432/kb\n"
             "slack: https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX\n"
             "discord: https://discord.com/api/webhooks/1234567890/abcdefGHIJKL\n")
@@ -95,6 +165,7 @@ def test_connection_string_password_and_webhook_paths_are_hidden():
 
 
 def test_bearer_headers_and_known_token_prefixes_keep_only_the_prefix():
+    """Bearer headers and token shapes keep a recognisable prefix."""
     text = ("curl -H 'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc'\n"
             "x-api-key: xai-abcdefghijklmnopqrstuvwxyz0123456789\n"
             "token cfop_bZqLYUXNabcdefghij minted\n"
@@ -106,6 +177,7 @@ def test_bearer_headers_and_known_token_prefixes_keep_only_the_prefix():
 
 
 def test_yaml_and_json_quoted_values_keep_their_quotes():
+    """A quoted value is replaced inside its quotes, so the document still parses."""
     out, _ = _redacted('{"api_key": "sk-abcdefghijklmnopqrstuvwxyz", "model": "gemma4:26b"}')
     assert out == f'{{"api_key": "{PLACEHOLDER}", "model": "gemma4:26b"}}'
     out, _ = _redacted("llm:\n  api_key: 'sk-abcdefghijklmnopqrstuvwxyz'\n  model: gemma4:26b\n")
@@ -125,6 +197,7 @@ def test_yaml_and_json_quoted_values_keep_their_quotes():
     "POSTGRES_PASSWORD=***",
 ])
 def test_metric_names_log_lines_and_prose_are_untouched(text):
+    """False-positive pins: what an investigation reads all day must survive."""
     out, count = _redacted(text)
     assert out == text, out
     assert count == 0
@@ -141,6 +214,7 @@ def test_structures_keep_shape_and_ids_the_loop_reads():
 
 
 def test_non_string_scalars_and_empty_values_pass_through():
+    """Numbers, booleans, None and empty strings are not secrets."""
     out, count = _redacted({"password": "", "token": None, "count": 3, "ok": True, "ratio": 0.5})
     assert out == {"password": "", "token": None, "count": 3, "ok": True, "ratio": 0.5}
     assert count == 0

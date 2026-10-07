@@ -67,23 +67,27 @@ def redact_tool_args(value: Any, limit: int = LOG_ARG_LIMIT) -> Any:
 # key=value rule: the key has to END with a secret word, so `token_count: 512`,
 # `tokens_total 9`, `password_reset: requested` and `TOKEN_FILE=/run/x` survive,
 # while `GITHUB_TOKEN=ghp_…`, `"api_key": "sk-…"` and `secret: hunter2` do not.
-# The value is a quoted string, or runs to the end of the line / the next
-# delimiter, so `password: my long phrase` loses the whole phrase, not one word.
+# The value is a quoted string, or runs to the end of the line, so
+# `password: my long phrase` and `password: abc,def` lose the whole value.
 
 _SECRET_WORD = (r'(?:passw(?:or)?d|secret|token|api[_-]?key|apikey|private[_-]?key'
                 r'|access[_-]?key|credentials?|authorization)')
 # The prefix before the secret word is optional, or a bare `api_key:` / `token=`
-# would never match. The already-redacted lookahead sits before the trailing
+# would never match. The lookbehind anchors the key at the start of an
+# identifier run: without it the lazy prefix is retried from every character
+# of a long run, which is quadratic on a hex dump or a base64 blob, and this
+# runs before the size cap (CodeRabbit on #309 pointed at the regex). The already-redacted lookahead sits before the trailing
 # whitespace, or the engine backtracks into that whitespace and redacts `***`
 # a second time, eating the space (`password:***`).
 _KEY_VALUE = re.compile(
+    r'(?<![A-Za-z0-9_.-])'
     r'(?P<key>(?P<kq>["\']?)(?:[A-Za-z_][A-Za-z0-9_.-]*?)?' + _SECRET_WORD + r'(?P=kq))'
     r'(?P<sep>[ \t]*[=:])'
     # …or `Authorization: Bearer ***`, which the bearer rule already handled
     # and which keeps the scheme visible to the model.
     r'(?![ \t]*["\']?(?:(?:bearer|basic)[ \t]+)?\*\*\*)'
     r'(?P<ws>[ \t]*)'
-    r'(?:(?P<q>["\'])(?P<qval>[^"\'\n]*)(?P=q)|(?P<val>[^"\'\n,;}\]]+))',
+    r'(?:(?P<q>["\'])(?P<qval>[^"\'\n]*)(?P=q)|(?P<val>[^"\'\n]+))',
     re.IGNORECASE)
 _BEARER = re.compile(r'(?i)\b(bearer|basic)[ \t]+(?!\*\*\*)[A-Za-z0-9._~+/=-]{8,}')
 _PEM = re.compile(r'-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----')
@@ -99,16 +103,26 @@ _TOKEN_SHAPES = re.compile(
     r'|cfop_[A-Za-z0-9_-]{8,})')
 _TOKEN_PREFIX = re.compile(r'^[A-Za-z]+[-_]?')
 #: `kubectl get secret -o yaml`: every value under data:/stringData: is a secret,
-#: whatever its key is called. Matched only when the text says kind: Secret.
+#: whatever its key is called. Matched only when the text says kind: Secret. The
+#: body takes blank lines too, so a block scalar (`conf: |`) with an empty line
+#: in it is one body, not two halves with the second one outside the rule.
 _SECRET_DATA_BLOCK = re.compile(
-    r'^(?P<ind>[ \t]*)(data|stringData):[ \t]*\n(?P<body>(?:(?P=ind)[ \t]+\S.*\n?)+)', re.M)
+    r'^(?P<ind>[ \t]*)(data|stringData):[ \t]*\n(?P<body>(?:(?:(?P=ind)[ \t]+\S.*|[ \t]*)\n?)+)', re.M)
 _YAML_ITEM = re.compile(r'^([ \t]+[^:\s][^:\n]*:)[ \t]*(?!\*\*\*)\S.*$', re.M)
+#: The same Secret as JSON — `kubectl get secret -o json` arrives over ssh as a
+#: string, and `-o yaml` carries the whole object again as one-line JSON in the
+#: kubectl.kubernetes.io/last-applied-configuration annotation (review of #309).
+_JSON_SECRET_KIND = re.compile(r'"kind"\s*:\s*"Secret"')
+_JSON_DATA_OBJECT = re.compile(r'("(?:data|stringData)"\s*:\s*\{)([^{}]*)(\})')
+_JSON_PAIR_VALUE = re.compile(r'("(?:[^"\\]|\\.)*"\s*:\s*)(?!"?\*\*\*)("(?:[^"\\]|\\.)*"|[^,}\s]+)')
 
 
 def _redact_text(text: str) -> Tuple[str, int]:
+    """One string with every pattern above applied; returns it and the count."""
     count = 0
 
     def counted(pattern, repl, s):
+        """Apply one pattern and add its substitutions to the running count."""
         nonlocal count
         s, n = pattern.subn(repl, s)
         count += n
@@ -118,11 +132,32 @@ def _redact_text(text: str) -> Tuple[str, int]:
         _PEM, lambda m: f'-----BEGIN {m.group(1)}-----\n{PLACEHOLDER}\n-----END {m.group(1)}-----', text)
     if 'kind: Secret' in text:
         def scrub_block(m):
+            """Every item under data:/stringData: loses its value, and a block
+            scalar's continuation lines (`conf: |` …) go with it."""
             nonlocal count
-            body, n = _YAML_ITEM.subn(lambda i: f'{i.group(1)} {PLACEHOLDER}', m.group('body'))
-            count += n
-            return f"{m.group('ind')}{m.group(2)}:\n{body}"
+            out, item_indent = [], None
+            for line in m.group('body').splitlines(keepends=True):
+                stripped = line.lstrip(' \t')
+                indent = len(line) - len(stripped)
+                if not stripped.strip():
+                    continue  # a blank inside a block scalar: part of the value
+                if item_indent is None:
+                    item_indent = indent
+                if indent > item_indent:
+                    continue  # deeper than the key: a continuation of its value
+                new, n = _YAML_ITEM.subn(lambda i: f'{i.group(1)} {PLACEHOLDER}', line)
+                count += n
+                out.append(new)
+            return f"{m.group('ind')}{m.group(2)}:\n{''.join(out)}"
         text = _SECRET_DATA_BLOCK.sub(scrub_block, text)
+    if _JSON_SECRET_KIND.search(text):
+        def scrub_json(m):
+            """Every pair inside "data": {…} / "stringData": {…} loses its value."""
+            nonlocal count
+            body, n = _JSON_PAIR_VALUE.subn(lambda i: f'{i.group(1)}"{PLACEHOLDER}"', m.group(2))
+            count += n
+            return f'{m.group(1)}{body}{m.group(3)}'
+        text = _JSON_DATA_OBJECT.sub(scrub_json, text)
     text = counted(_BEARER, lambda m: f'{m.group(1)} {PLACEHOLDER}', text)
     text = counted(
         _KEY_VALUE,
@@ -146,6 +181,7 @@ def redact_tool_result(value: Any) -> Tuple[Any, int]:
     count = 0
 
     def walk(v, in_secret_data=False):
+        """Copy one value; in_secret_data marks the inside of a Secret's data."""
         nonlocal count
         if isinstance(v, dict):
             secret_kind = str(v.get('kind', '')) == 'Secret'
@@ -162,8 +198,8 @@ def redact_tool_result(value: Any) -> Tuple[Any, int]:
                 else:
                     out[key] = walk(item)
             return out
-        if isinstance(v, list):
-            return [walk(item, in_secret_data) for item in v]
+        if isinstance(v, (list, tuple)):
+            return type(v)(walk(item, in_secret_data) for item in v)
         if isinstance(v, str):
             text, n = _redact_text(v)
             count += n
