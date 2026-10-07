@@ -365,6 +365,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 
+	case confirmCancelMsg:
+		m.withdrawConfirm(msg)
+		return m, nil
+
 	case appendOutputMsg:
 		m.outputLines = append(m.outputLines, msg.text)
 		if m.ready {

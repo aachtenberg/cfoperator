@@ -24,6 +24,14 @@ type confirmRequestMsg struct {
 	reply   chan<- tools.Decision
 }
 
+// confirmCancelMsg withdraws a question whose turn ended before it was
+// answered (a timeout, a cancel that was not a key here). Without it the
+// question stayed open: the next unrelated key was swallowed, and a `y`
+// printed "running" for a command already denied (claude-review on #310).
+type confirmCancelMsg struct {
+	reply chan<- tools.Decision
+}
+
 // askConfirm is the tools.Asker the TUI installs on its registry.
 func (m *model) askConfirm(ctx context.Context, command, reason string) tools.Decision {
 	reply := make(chan tools.Decision, 1)
@@ -32,8 +40,20 @@ func (m *model) askConfirm(ctx context.Context, command, reason string) tools.De
 	case d := <-reply:
 		return d
 	case <-ctx.Done():
+		m.program.Send(confirmCancelMsg{reply: reply})
 		return tools.Deny
 	}
+}
+
+// withdrawConfirm clears the open question if it is the one that was
+// cancelled; a question asked later keeps its turn.
+func (m *model) withdrawConfirm(msg confirmCancelMsg) {
+	if m.pendingConfirm == nil || m.pendingConfirm.reply != msg.reply {
+		return
+	}
+	m.pendingConfirm = nil
+	m.outputLines = append(m.outputLines, dimStyle.Render("    not run; the turn ended before you answered"))
+	m.refreshViewport()
 }
 
 // confirmPromptLines is what the operator sees above the input.

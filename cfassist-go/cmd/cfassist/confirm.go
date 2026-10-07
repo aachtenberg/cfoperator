@@ -55,8 +55,10 @@ func shellPolicy(reg *tools.Registry, piped bool, ask tools.Asker) {
 }
 
 // terminalAsk reads one line from the terminal for each write-shaped command.
-// A cancelled context (Ctrl+C during the question) is a Deny; the reader
-// goroutine it leaves behind ends with the process.
+// A cancelled context (Ctrl+C during the question) is a Deny. The reader
+// goroutine it leaves behind stays blocked on the shared reader and would
+// take the next question's line if the process went on asking; one-shot
+// mode ends with the process, which is the only place this asker is used.
 func terminalAsk(in io.Reader, out io.Writer) tools.Asker {
 	reader := bufio.NewReader(in)
 	return func(ctx context.Context, command, reason string) tools.Decision {

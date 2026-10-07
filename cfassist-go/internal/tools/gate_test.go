@@ -174,3 +174,24 @@ func TestTheGatedToolTellsTheModelAboutTheGate(t *testing.T) {
 		}
 	}
 }
+
+// TestThePipeRegistryOffersExactlyTheToolsThatCannotReachTheNetwork pins
+// what is left after WithoutBash on a default registry. Adding a tool that
+// can egress — an HTTP fetch, say — must fail here, so its author decides
+// about piped input on purpose (claude-review on #310).
+func TestThePipeRegistryOffersExactlyTheToolsThatCannotReachTheNetwork(t *testing.T) {
+	r := newTestRegistry()
+	r.WithoutBash()
+	got := toolNames(r)
+	want := map[string]bool{"read_file": true, "search_memory": true, "list_tools": true}
+	for name := range got {
+		if !want[name] {
+			t.Errorf("tool %q is offered on piped input; decide whether it can reach the network, then add it here", name)
+		}
+	}
+	for name := range want {
+		if !got[name] {
+			t.Errorf("expected %q to survive WithoutBash", name)
+		}
+	}
+}

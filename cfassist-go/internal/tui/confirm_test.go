@@ -13,7 +13,9 @@ import (
 // pendingModel is a busy model with one question open.
 func pendingModel(t *testing.T) (*model, chan tools.Decision) {
 	t.Helper()
-	m := &model{busy: true, textarea: textarea.New()}
+	ta := textarea.New()
+	ta.Focus() // as New() does: an unfocused textarea ignores keys
+	m := &model{busy: true, textarea: ta}
 	reply := make(chan tools.Decision, 1)
 	m.Update(confirmRequestMsg{command: "sudo systemctl restart nginx", reason: "systemctl restart changes service state", reply: reply})
 	return m, reply
@@ -92,5 +94,38 @@ func TestNoQuestionOpenMeansKeysBehaveAsBefore(t *testing.T) {
 	m := &model{busy: false, textarea: textarea.New()}
 	if m.answerConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}) {
 		t.Fatal("answerConfirm consumed a key with nothing pending")
+	}
+}
+
+// TestACancelledTurnWithdrawsTheQuestion: the next key must reach the input
+// box, not answer a question whose command was already denied.
+func TestACancelledTurnWithdrawsTheQuestion(t *testing.T) {
+	m, reply := pendingModel(t)
+	m.Update(confirmCancelMsg{reply: reply})
+	if m.pendingConfirm != nil {
+		t.Fatal("the question is still open after its turn was cancelled")
+	}
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	select {
+	case d := <-reply:
+		t.Fatalf("a key after the cancel answered the dead question with %v", d)
+	default:
+	}
+	if m.textarea.Value() != "y" {
+		t.Fatalf("the key did not reach the input box: %q", m.textarea.Value())
+	}
+	if joined := strings.Join(m.outputLines, "\n"); !strings.Contains(joined, "turn ended") {
+		t.Fatalf("the operator is not told the question was withdrawn:\n%s", joined)
+	}
+}
+
+// TestACancelForAnotherQuestionIsIgnored: only the cancelled question is
+// withdrawn; one asked afterwards keeps its turn.
+func TestACancelForAnotherQuestionIsIgnored(t *testing.T) {
+	m, _ := pendingModel(t)
+	other := make(chan tools.Decision, 1)
+	m.Update(confirmCancelMsg{reply: other})
+	if m.pendingConfirm == nil {
+		t.Fatal("a cancel for a different question withdrew the open one")
 	}
 }
