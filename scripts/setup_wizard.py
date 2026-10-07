@@ -261,6 +261,48 @@ def probe_notify(backend: str, values: Dict[str, str]) -> Tuple[bool, str]:
 # has no discoverer rather than breaking the loop.
 
 
+#: Hosts that mean "this container" once a URL is used inside the compose
+#: trial, however they resolve where the wizard itself runs.
+_LOOPBACK_HOSTS = frozenset({"localhost", "::1", "0.0.0.0"})
+#: How the trial's containers reach the machine running Docker (every service
+#: in docker-compose.yml maps it to host-gateway).
+_DOCKER_HOST = "host.docker.internal"
+
+
+def reachability_note(url: str, ok: bool) -> str:
+    """Why ``url`` may not work from the compose trial's containers, or "".
+
+    The trial is bridged (test_compose_trial.py forbids host networking), so a
+    loopback URL that probed fine from this shell names the agent's own
+    container once it is in .env — the wizard used to report "ok" and write a
+    trial that could reach nothing (CFOP-273). Run by scripts/install.sh, the
+    wizard probes from inside that network instead, and a loopback answer
+    fails there; this says why in both places. Warns only: config.yaml also
+    serves deployments where loopback is right.
+    """
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if host in _LOOPBACK_HOSTS or host.startswith("127."):
+        try:
+            port = f":{parts.port}" if parts.port else ""
+        except ValueError:  # "host:abc", ":99999" — a typo must stay a FAIL, not a traceback
+            port = ""
+        return (f"{url} is loopback. The docker-compose trial's containers are bridged: "
+                f"there localhost is the container itself, and a service on this machine is "
+                f"{parts.scheme or 'http'}://{_DOCKER_HOST}{port}")
+    if host == _DOCKER_HOST and not ok:
+        return (f"nothing answered on {_DOCKER_HOST}. A service on this machine has to listen "
+                "on an address containers can reach, not only 127.0.0.1 — Ollama listens on "
+                "127.0.0.1 unless its service sets OLLAMA_HOST=0.0.0.0")
+    return ""
+
+
+def _final_url_notes(answers: Dict[str, Any]) -> List[str]:
+    """Reachability notes for the URLs the run is about to write."""
+    urls = [answers["llm"].get("url", "")] + list(answers["backends"].values())
+    return [note for note in (reachability_note(u, True) for u in urls if u) if note]
+
+
 def discover_alertmanager(prom_url: str) -> str:
     data, _ = _fetch_json(f"{prom_url.rstrip('/')}/api/v1/alertmanagers")
     if data is None:
@@ -320,6 +362,12 @@ def _report(ok: bool, name: str, message: str) -> None:
     _say(f"  {'ok' if ok else 'FAIL'} [{name}] {message}")
 
 
+def _hint_failed(url: str) -> None:
+    note = reachability_note(url, False)
+    if note:
+        _say(f"       hint: {note}")
+
+
 def _collect_llm_interactive(spec: Dict[str, Any], environ: Dict[str, str]) -> Dict[str, str]:
     _say("\n-- LLM (the model that runs triage and investigations)")
     provider = _ask("provider " + "/".join(_PROVIDERS), default="ollama").lower()
@@ -332,6 +380,8 @@ def _collect_llm_interactive(spec: Dict[str, Any], environ: Dict[str, str]) -> D
             url = _ask("ollama url", default=answer["url"] or environ.get("OLLAMA_URL", "") or _OLLAMA_DEFAULT_URL)
             ok, message, models = probe_ollama(url)
             _report(ok, "llm", message)
+            if not ok:
+                _hint_failed(url)
             if ok:
                 answer["url"] = url
                 default_model = environ.get("OLLAMA_MODEL", "") or (models[0] if models else "")
@@ -379,6 +429,7 @@ def _collect_backend_interactive(spec: Dict[str, Any], answers: Dict[str, Any]) 
         _report(ok, alias, message)
         if ok:
             return url
+        _hint_failed(url)
         default = url
 
 
@@ -447,6 +498,11 @@ def collect_interactive(plan: List[Dict[str, Any]], environ: Dict[str, str]) -> 
     return answers
 
 
+def _with_hint(failure: str, url: str) -> str:
+    note = reachability_note(url, False)
+    return f"{failure}\n    hint: {note}" if note else failure
+
+
 def collect_noninteractive(plan: List[Dict[str, Any]], environ: Dict[str, str],
                            profile_flag: str = "") -> Dict[str, Any]:
     """Same interview, answered from the env names ``.env.example`` documents.
@@ -471,7 +527,7 @@ def collect_noninteractive(plan: List[Dict[str, Any]], environ: Dict[str, str],
         if llm["url"]:
             ok, message, models = probe_ollama(llm["url"])
             if not ok:
-                failures.append(f"llm: {message}")
+                failures.append(_with_hint(f"llm: {message}", llm["url"]))
             elif llm["model"] and models and llm["model"] not in models:
                 failures.append(f"llm: model {llm['model']!r} is not pulled "
                                 f"(available: {', '.join(models[:6])})")
@@ -491,7 +547,7 @@ def collect_noninteractive(plan: List[Dict[str, Any]], environ: Dict[str, str],
             continue
         ok, message = probe_backend(spec["backend"], url)
         if not ok:
-            failures.append(f"{spec['alias']}: {message}")
+            failures.append(_with_hint(f"{spec['alias']}: {message}", url))
         answers["backends"][spec["alias"]] = url
 
     notify_spec = next(s for s in plan if s["kind"] == "notify")
@@ -732,6 +788,11 @@ def print_summary(directory: Path, config_text: str,
     for name, value, secret in lines:
         _say(f"+ {name}={'********' if secret else value}")
 
+    if answers.get("warnings"):
+        _say("\nCheck before starting:")
+        for note in answers["warnings"]:
+            _say(f"  ! {note}")
+
     llm_spec = next(s for s in plan if s["kind"] == "llm")
     _say("\nNext steps:")
     _say("  1. Commit config.yaml to your deploy repo — the merge button is the deploy")
@@ -794,6 +855,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             answers = collect_interactive(plan, dict(os.environ))
 
+        answers.setdefault("warnings", []).extend(_final_url_notes(answers))
         mapping = emit_config_mapping(plan, answers)
         lines = env_lines(plan, answers)
         config_text = render_config(mapping)

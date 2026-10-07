@@ -14,8 +14,10 @@ name: Build cfoperator on main
 # Requires repo secret DEPLOY_PAT: a token with contents:write on
 # aachtenberg/cfoperator-deploy.
 #
-# The cfoperator pod is pinned to headless-gpu (amd64); single-arch build.
-# Add arm64 if scheduling ever changes.
+# The cfoperator pod is pinned to headless-gpu (amd64), so main builds are
+# single-arch. v* tag builds add arm64 (CFOP-273): a release is what
+# scripts/install.sh installs, and the trial is often run on a Pi. QEMU makes
+# that build slow, which a release can afford and every merge cannot.
 #
 # v* tag pushes also build here (CFOP-56): they publish the version as the
 # image tag so the Helm chart can pin a release instead of floating :main.
@@ -51,8 +53,16 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image-tag: ${{ steps.tag.outputs.tag }}
+      # The pushed manifest's digest (the multi-arch index on a tag). The
+      # release bundle pins it beside the tag, so a re-pushed tag cannot change
+      # what a checksum-verified install runs (CFOP-273, CodeRabbit).
+      image-digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
+
+      # Only a tag build is multi-arch (see the header), so only it needs QEMU.
+      - uses: docker/setup-qemu-action@v3
+        if: github.ref_type == 'tag'
 
       - uses: docker/setup-buildx-action@v3
 
@@ -87,11 +97,12 @@ jobs:
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          platforms: linux/amd64
+          platforms: ${{ github.ref_type == 'tag' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           build-args: |
             CFOP_VERSION=${{ steps.tag.outputs.version }}
           cache-from: type=gha
@@ -378,6 +389,125 @@ jobs:
         run: |
           docker run --rm --network host "$IMAGE" \
             python scripts/db_smoke.py postgresql://postgres:cfop-smoke@localhost:5432/cfop_smoke
+
+      # A tag's image is also arm64, and release-stack publishes it to every
+      # Pi install once this job passes — so the arm64 variant has to pass the
+      # same smoke, under emulation (CFOP-273). Main builds are amd64-only.
+      - uses: docker/setup-qemu-action@v3
+        if: github.ref_type == 'tag'
+
+      - name: Run the database smoke inside the arm64 image
+        if: github.ref_type == 'tag'
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator:${{ needs.build-and-push.outputs.image-tag }}
+        run: |
+          docker run --rm --platform linux/arm64 --network host "$IMAGE" \
+            python scripts/db_smoke.py postgresql://postgres:cfop-smoke@localhost:5432/cfop_smoke
+
+  # The compose bundle scripts/install.sh downloads (CFOP-273). Tag builds
+  # only, and only after the image is pushed AND has passed db-smoke: the
+  # bundle pins this tag's image, so publishing earlier could hand out a
+  # compose file that cannot pull, or one whose agent cannot reach its
+  # database. tests/test_install_stack.py pins both the `needs` and the order
+  # of the pointer refresh below.
+  release-stack:
+    needs: [build-and-push, db-smoke]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Tags too: the pointer step compares this tag against every v* tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build the bundle
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator:${{ needs.build-and-push.outputs.image-tag }}@${{ needs.build-and-push.outputs.image-digest }}
+        run: |
+          pip install pyyaml
+          python scripts/release_bundle.py --image "$IMAGE" --out dist
+          cd dist && sha256sum cfoperator-compose.tar.gz > checksums.txt
+
+      - name: Version number for the pin
+        id: version
+        run: echo "number=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "cfoperator ${{ github.ref_name }}"
+          # v1.3.0-rc1 and friends: published for whoever pins them, never
+          # badged Latest and never behind the pointer below.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            ```
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | sh
+            ```
+
+            Needs Docker with the compose plugin. Verifies the bundle's SHA-256, asks the setup questions from inside the stack's own network, and starts Postgres, the agent, the event runtime and the console on :8083. Re-running it upgrades and keeps your `.env`.
+
+            Pin this exact release with `CFOP_VERSION=${{ steps.version.outputs.number }}`. Helm: `helm install cfoperator oci://ghcr.io/${{ github.repository_owner }}/charts/cfoperator --version ${{ steps.version.outputs.number }}`.
+          files: |
+            dist/cfoperator-compose.tar.gz
+            dist/checksums.txt
+
+      # The moving pointer scripts/install.sh downloads from, so the one-liner
+      # carries no version. Same reasoning and same order as cfassist-latest in
+      # release-cfassist.yml: never delete first — ensure it exists, move the
+      # tag, clobber the assets, rewrite the notes — so a failed refresh leaves
+      # a stale pointer rather than a 404. The bundle inside always names its
+      # real image tag; only the release tag says "latest".
+      - name: Refresh the cfoperator-latest pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Only the newest final release moves the pointer: a pre-release
+          # (v1.3.0-rc1) would make the one-liner install a candidate, and a
+          # re-run of an older tag would move it backwards (claude-review).
+          if ! python scripts/release_bundle.py --should-move-pointer "${GITHUB_REF_NAME}"; then
+            echo "cfoperator-latest stays where it is: ${GITHUB_REF_NAME} is not the newest final release"
+            exit 0
+          fi
+          NOTES="Moving pointer to **${GITHUB_REF_NAME}**, for the install one-liner:
+
+          \`\`\`
+          curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/scripts/install.sh | sh
+          \`\`\`
+
+          The bundle here is the one built by ${GITHUB_REF_NAME} and pins that image. Pin an exact release with \`CFOP_VERSION=x.y.z\`."
+
+          if ! gh release view cfoperator-latest --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create cfoperator-latest \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --latest=false \
+              --title "cfoperator latest (${GITHUB_REF_NAME})" \
+              --notes "${NOTES}"
+          fi
+
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/cfoperator-latest" \
+            -f sha="${GITHUB_SHA}" -F force=true >/dev/null || \
+            echo "warning: could not move the cfoperator-latest tag; assets below are still current"
+
+          gh release upload cfoperator-latest \
+            dist/cfoperator-compose.tar.gz dist/checksums.txt \
+            --clobber --repo "${GITHUB_REPOSITORY}"
+
+          gh release edit cfoperator-latest \
+            --repo "${GITHUB_REPOSITORY}" \
+            --latest=false \
+            --title "cfoperator latest (${GITHUB_REF_NAME})" \
+            --notes "${NOTES}"
 
   bump-deploy-repo:
     # db-smoke gates the deploy: an image that cannot talk to its database is

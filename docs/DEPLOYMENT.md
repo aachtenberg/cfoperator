@@ -310,6 +310,63 @@ decided the console may open pod terminals.
 
 ## Local / Non-Production
 
+The docker-compose trial, without a clone (CFOP-273):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aachtenberg/cfoperator/main/scripts/install.sh | sh
+```
+
+`scripts/install.sh` downloads `cfoperator-compose.tar.gz` from a release,
+refuses it unless the SHA-256 matches that release's `checksums.txt`, unpacks it
+into `~/cfoperator`, runs `cfoperator init` inside the release image (as the
+invoking user, with the compose services' `host-gateway` entry, so every probe
+runs from the stack's own network) and then `docker compose up -d`. Re-running
+it upgrades: compose files are replaced and `.env` and the database volume are
+kept. The image is pulled before any file changes, and one install runs per
+directory at a time.
+
+**Customise in `docker-compose.override.yml`** (compose loads it automatically,
+and upgrades never touch it). If you edit a bundled file instead — say
+`deploy/compose/config.yaml`, or the console's port binding in
+`docker-compose.yml` — the next upgrade notices (it records the checksums of
+what it installed), keeps your copy as `<name>.bak-<time>`, installs the
+release's, and **does not restart**, so what is running keeps your edit. Later
+runs stay hands-off too, until you have carried the edit over and deleted
+`.cfoperator-edits-pending`, which lists what was kept; then
+`docker compose up -d`. A directory configured without the installer (no
+manifest, say a clone) is treated the same way: any bundled file that differs
+from the release is presumed to be yours.
+
+**Not on SELinux-enforcing hosts (Fedora, RHEL) yet.** The trial's bind mounts,
+and the installer's for init, carry no `:z` relabel, so the containers are
+denied the files. Run it with SELinux permissive, or from a clone with `:z`
+added, until that is handled.
+
+**What the checksum does and does not prove.** `checksums.txt` comes from the
+same release as the bundle, so it catches a corrupt or truncated download, not
+a compromised release; it is not a signature. What limits a bad release is that
+the bundle pins the image by digest (`…:vX.Y.Z@sha256:…`), so the code an
+install runs is the code that release was built with, even if the tag is
+pushed again later. `--dry-run` and `--no-start` are there; `--help` lists the knobs.
+
+**Where the bundle comes from.** A `v*` tag push runs `build-cfoperator-main.yml`,
+which on a tag (and only then) builds the agent image for `linux/amd64` *and*
+`linux/arm64`, then — after `db-smoke` passes on it — the `release-stack` job:
+
+1. `scripts/release_bundle.py` renders `docker-compose.yml` with every
+   `build: .` replaced by that tag's image, ships it with the extras overlay,
+   `.env.example` and every relative bind-mount source the compose files name,
+   and writes a reproducible tarball;
+2. creates the GitHub release `vX.Y.Z` with the bundle and `checksums.txt`;
+3. refreshes the moving `cfoperator-latest` release the one-liner reads by
+   default (never deleted first — the same order as `cfassist-latest`).
+
+Main pushes are unchanged: amd64 only, no release. **Nothing is installable
+until the first tag after CFOP-273 is cut**; until then the one-liner reports
+that `cfoperator-latest` is missing.
+
+From a clone:
+
 ```bash
 docker compose up -d                                    # local agent
 python3 -m event_runtime --host 0.0.0.0 --port 8080     # event runtime only

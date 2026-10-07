@@ -188,8 +188,21 @@ Sweep models sometimes hallucinate findings — e.g., reporting "immich-ml conta
 
 ## Quick Start
 
-From clone to a completed investigation. You need Docker, a Prometheus, and an
-LLM — Ollama locally, or an API key.
+To a completed investigation. You need Docker (with the compose plugin), a
+Prometheus, and an LLM — Ollama locally, or an API key.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aachtenberg/cfoperator/main/scripts/install.sh | sh
+```
+
+That installs the latest release into `~/cfoperator` without a clone: it
+verifies the bundle's SHA-256, asks the setup questions below from *inside* the
+stack's network (so a URL that passes will work for the agent — this machine is
+`host.docker.internal` there, not `localhost`), and starts the stack. The
+images are pinned to the release; re-run it to upgrade, `CFOP_VERSION=x.y.z` to
+pin. amd64 and arm64 (Raspberry Pi) are published.
+
+From a clone instead (to run your own changes):
 
 ```bash
 ./cfoperator init             # probes each answer as you give it, writes .env + config.yaml

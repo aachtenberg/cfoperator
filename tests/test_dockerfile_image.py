@@ -365,3 +365,69 @@ def test_a_stage_scoped_arg_does_not_count_for_a_later_from():
         "FROM ${WORKER_IMAGE}\n"
     )
     assert undeclared_from_variables(text) == {"WORKER_IMAGE"}
+
+
+# ---------------------------------------------------------------------------
+# Architecture (CFOP-273)
+# ---------------------------------------------------------------------------
+# Release tags build the agent for arm64 as well as amd64, and worker/executor/
+# cockpit/changerecord/tracker are multi-arch on every push. A download that
+# names an architecture outright ships that binary into every variant: an
+# amd64 kubectl in an arm64 image builds fine and fails only when a k8s tool
+# first runs on a Pi. Downloads go through ${TARGETARCH}.
+
+_HARDCODED_ARCH = re.compile(r"(?:linux|darwin)[/_-](?:amd64|arm64|x86_64|aarch64)\b")
+
+
+def hardcoded_arch_lines(text: str) -> list[str]:
+    """Non-comment Dockerfile lines that name a CPU architecture literally."""
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+            and _HARDCODED_ARCH.search(line)]
+
+
+def test_no_dockerfile_downloads_for_a_fixed_architecture():
+    offenders = {
+        str(path.relative_to(ROOT)): hardcoded_arch_lines(path.read_text())
+        for path in sorted(ROOT.rglob("Dockerfile*"))
+        if "node_modules" not in path.parts
+    }
+    offenders = {k: v for k, v in offenders.items() if v}
+    assert not offenders, (
+        f"Dockerfiles naming an architecture: {offenders}. Use ARG TARGETARCH "
+        "(see worker/Dockerfile): a multi-arch build would otherwise ship the "
+        "wrong binary into one of its variants."
+    )
+
+
+def test_the_arch_guard_catches_the_line_the_agent_image_used_to_have():
+    old = ('RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s '
+           'https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"\n')
+    assert hardcoded_arch_lines(old)
+    assert not hardcoded_arch_lines(old.replace("linux/amd64", "linux/${TARGETARCH}"))
+    assert not hardcoded_arch_lines("# linux/amd64 was the old default\n")
+
+
+def bare_targetarch_lines(text: str) -> list[str]:
+    """Non-comment lines using TARGETARCH with no fallback for its absence."""
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+            and not line.strip().startswith("ARG ")
+            and re.search(r"\$\{?TARGETARCH(?!:-)", line)]
+
+
+def test_the_trial_image_builds_without_buildkit():
+    """`docker compose build` builds the root Dockerfile, and on a machine
+    without buildx that is the legacy builder, which never sets TARGETARCH.
+    Bare, it made the kubectl URL .../linux//kubectl and saved the 404 page as
+    the binary (found by building it, CFOP-273). The CI-only images may rely
+    on BuildKit; this one may not."""
+    offenders = bare_targetarch_lines(DOCKERFILE.read_text())
+    assert not offenders, f"give TARGETARCH a fallback (${{TARGETARCH:-$(dpkg --print-architecture)}}): {offenders}"
+
+
+def test_the_buildkit_guard_catches_the_bare_form():
+    assert bare_targetarch_lines('RUN curl ".../bin/linux/${TARGETARCH}/kubectl"\n')
+    assert bare_targetarch_lines("RUN echo $TARGETARCH\n")
+    assert not bare_targetarch_lines('RUN arch="${TARGETARCH:-$(dpkg --print-architecture)}"\n')
+    assert not bare_targetarch_lines("ARG TARGETARCH\n")
