@@ -107,7 +107,9 @@ _FLAG_VALUE = re.compile(
     r'(?<![A-Za-z0-9_.-])(?P<flag>--?(?:[A-Za-z][A-Za-z0-9_.-]*?)?' + _SECRET_WORD + r')'
     r'(?P<sep>=|[ \t]+(?!-))'
     r'(?!["\']?\*\*\*)'
-    r'(?P<val>"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|\S+)',
+    # A closed quoted value, a quote that never closes (the rest of the line,
+    # so `--password "pa ssword` fails closed — CodeRabbit on #309), or a word.
+    r'(?P<val>"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|["\'][^\n]*|\S+)',
     re.IGNORECASE)
 _BEARER = re.compile(r'(?i)\b(bearer|basic)[ \t]+(?!\*\*\*)[A-Za-z0-9._~+/=-]{8,}')
 _PEM = re.compile(r'-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----')
@@ -157,8 +159,10 @@ def _key_value_replacement(m) -> str:
 def _flag_replacement(m) -> str:
     """The flag and its separator, then *** in the value's own quoting."""
     val = m.group('val')
-    q = val[0] if val[:1] in ('"', "'") and val[-1:] == val[:1] and len(val) > 1 else ''
-    return f"{m.group('flag')}{m.group('sep')}{q}{PLACEHOLDER}{q}"
+    if val[:1] in ('"', "'"):
+        closed = len(val) > 1 and val[-1:] == val[:1]
+        return f"{m.group('flag')}{m.group('sep')}{val[0]}{PLACEHOLDER}{val[0] if closed else ''}"
+    return f"{m.group('flag')}{m.group('sep')}{PLACEHOLDER}"
 
 
 def _redact_text(text: str) -> Tuple[str, int]:

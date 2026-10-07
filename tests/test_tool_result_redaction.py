@@ -299,3 +299,10 @@ def test_command_line_flags_are_redacted_in_both_forms():
     assert f'--password "{PLACEHOLDER}"' in out and f"--db-password {PLACEHOLDER}" in out
     inspect_args = {"Args": ["--password=hunter2", "--user=root"]}
     assert _redacted(inspect_args)[0]["Args"] == [f"--password={PLACEHOLDER}", "--user=root"]
+
+
+def test_an_unterminated_quoted_flag_value_takes_the_rest_of_the_line():
+    """`--password "pa ssword` matched the bare-word branch and kept ` ssword`
+    (CodeRabbit on #309); like the key rule, an open quote takes the line."""
+    out, _ = _redacted('svc --password "pa ssword\nnext --user=bob\n')
+    assert out == f'svc --password "{PLACEHOLDER}\nnext --user=bob\n'
