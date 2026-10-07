@@ -159,6 +159,28 @@ func Run(
 
 		text := resp.Content
 
+		// A tool call the transport could not parse arrives as plain content,
+		// and rendered as an answer it looks exactly like an action that ran
+		// (CFOP-64: an operator mid-incident believed a kubectl create job had
+		// executed). Say loudly that nothing ran. Not a nudge: the same model
+		// through the same parser would produce the same miss.
+		if call, ok := leakedToolCall(text); ok {
+			output.ShowError(
+				"Nothing ran: the model wrote a tool call as text and the provider did not parse it.\n  attempted: "+call,
+				"This model cannot call tools on this backend. Switch with /model or in ~/.cfassist/config.yaml, or run the command yourself.")
+			// The transcript records what happened rather than the raw call: it
+			// keeps user/assistant alternation for the next turn, and a model
+			// asked "did that work?" reads that nothing ran instead of its own
+			// call text.
+			fullMessages = append(fullMessages, client.Message{
+				Role:    "assistant",
+				Content: "[cfassist] My previous reply was a tool call written as text (" + call + "). The provider could not parse it, so it did not run and there is no result.",
+			})
+			result.Error = "the model's tool call was not parsed by the provider; nothing ran"
+			result.Latency = time.Since(start)
+			return result, transcript(fullMessages)
+		}
+
 		// A reply that ends by announcing a tool call it never made is not an
 		// answer, but without tool calls it ends the turn — and the operator has
 		// to type "continue". gemma4 does this on most multi-step turns. Ask
@@ -228,6 +250,33 @@ func announcesStep(text string) bool {
 	last := strings.ToLower(strings.TrimSpace(paras[len(paras)-1]))
 	last = strings.ReplaceAll(last, "\u2019", "'")
 	return announcedStep.MatchString(last)
+}
+
+// leakedToolCallPattern matches the in-band tool-call markers a model emits
+// when the transport fails to lift them into structured tool_calls: Mistral's
+// "[TOOL_CALLS]" and "name[ARGS]{", Hermes/Qwen's "<tool_call>", and Llama
+// 3.x's "<|python_tag|>". Ollama cannot parse Ministral's format at all
+// (benchmarks/ministral-3-14b-baseline.md), and any model/backend pair can
+// fail the same way.
+var leakedToolCallPattern = regexp.MustCompile(
+	`\[TOOL_CALLS\]|\b[A-Za-z_][\w.-]*\[ARGS\]\s*\{|<tool_call>|<\|python_tag\|>`)
+
+// maxLeakedCallShown caps the attempted call quoted back to the operator; a
+// heredoc in a bash argument should not flood the terminal.
+const maxLeakedCallShown = 300
+
+// leakedToolCall reports whether a tool-less reply is really a tool call the
+// provider did not parse, returning the text from the first marker on.
+func leakedToolCall(text string) (string, bool) {
+	loc := leakedToolCallPattern.FindStringIndex(text)
+	if loc == nil {
+		return "", false
+	}
+	call := strings.TrimSpace(text[loc[0]:])
+	if r := []rune(call); len(r) > maxLeakedCallShown {
+		call = string(r[:maxLeakedCallShown]) + "…"
+	}
+	return call, true
 }
 
 // transcript is the session history callers persist: everything Run appended,
