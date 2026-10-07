@@ -431,9 +431,12 @@ def _run_main(monkeypatch, *, run_ok=True, agent_answer=None, env=None):
         posted.append(request.full_url)
         bodies[request.full_url] = json.loads(request.data.decode("utf-8"))
         if request.full_url == _AGENT_INGEST:
-            if isinstance(agent_answer, Exception):
-                raise agent_answer
-            return _FakeResponse(agent_answer if agent_answer is not None else b"{}")
+            answer = agent_answer() if callable(agent_answer) else agent_answer
+            if isinstance(answer, Exception):
+                raise answer
+            if isinstance(answer, io.BytesIO):
+                return answer
+            return _FakeResponse(answer if answer is not None else b"{}")
         return _FakeResponse(b"{}")
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
@@ -473,7 +476,7 @@ def test_an_ingest_without_a_usable_id_still_posts_the_completion(monkeypatch, a
     """The agent being down or answering oddly must cost the link, never the
     completion: the operator's notification is the point of the run. A
     negative id is ResilientKB's offline placeholder and matches no row."""
-    rc, posted, completion = _run_main(monkeypatch, agent_answer=answer() if callable(answer) else answer)
+    rc, posted, completion = _run_main(monkeypatch, agent_answer=answer)
     assert rc == 0
     assert posted[-1].endswith("/complete")
     assert "investigation_id" not in completion["result"]["details"]
@@ -499,3 +502,52 @@ def test_the_ingest_is_bounded_before_the_completion(monkeypatch):
         assert entrypoint.post_kb_ingest(_inputs(), {"details": {}}) is None
     assert [t for u, t in timeouts] == [entrypoint.INGEST_TIMEOUT_S] * entrypoint.INGEST_ATTEMPTS
     assert entrypoint.INGEST_TIMEOUT_S < 15
+
+
+
+def test_a_truncated_ingest_answer_still_posts_the_completion(monkeypatch):
+    """An agent that closes the response early raises IncompleteRead, which
+    is an HTTPException, not an OSError (review of #303). End to end, the
+    completion still goes; the next test pins which layer handles it."""
+    import http.client
+
+    class _Truncated(_FakeResponse):
+        def read(self, *a):
+            raise http.client.IncompleteRead(b'{"investigation_', 20)
+
+    monkeypatch.setattr(entrypoint.time, "sleep", lambda _s: None)
+    rc, posted, completion = _run_main(monkeypatch, agent_answer=lambda: _Truncated(b""))
+    assert rc == 0 and posted[-1].endswith("/complete")
+    assert "investigation_id" not in completion["result"]["details"]
+
+
+def test_any_ingest_exception_still_posts_the_completion(monkeypatch):
+    def boom(inputs, result):
+        raise ValueError("something nobody anticipated")
+
+    monkeypatch.setattr(entrypoint, "post_kb_ingest", boom)
+    rc, posted, completion = _run_main(monkeypatch, agent_answer=b"{}")
+    assert rc == 0 and posted[-1].endswith("/complete")
+
+
+
+def test_a_truncated_ingest_answer_is_a_failed_attempt_not_an_exception(monkeypatch):
+    """post_kb_ingest treats IncompleteRead like any transport failure:
+    retried, then None. main's catch-all is the backstop, not the handler.
+    Mutation check: drop HTTPException from _post's except and this raises."""
+    import http.client
+
+    calls = []
+
+    class _Truncated(_FakeResponse):
+        def read(self, *a):
+            raise http.client.IncompleteRead(b'{"investigation_', 20)
+
+    def fake_urlopen(request, timeout=0):
+        calls.append(request.full_url)
+        return _Truncated(b"")
+
+    monkeypatch.setattr(entrypoint.time, "sleep", lambda _s: None)
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        assert entrypoint.post_kb_ingest(_inputs(), {"details": {}}) is None
+    assert len(calls) == entrypoint.INGEST_ATTEMPTS

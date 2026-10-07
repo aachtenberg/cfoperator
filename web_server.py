@@ -408,6 +408,16 @@ class WebServer:
             if not isinstance(alert, dict) or not isinstance(result, dict):
                 return jsonify({'error': "Body must contain 'alert' and 'result' objects"}), 400
 
+            # A retry of an attempt that landed but answered too slowly: hand
+            # back that row and leave its storage thread to finish the job.
+            try:
+                existing = self.operator.existing_deep_investigation(alert)
+            except Exception as e:
+                logger.warning(f"Deep-investigation duplicate check failed; treating as new: {e}")
+                existing = None
+            if isinstance(existing, int) and not isinstance(existing, bool) and existing > 0:
+                return jsonify({'status': 'duplicate', 'investigation_id': existing}), 202
+
             try:
                 inv_id = self.operator.begin_deep_investigation(alert)
             except Exception as e:

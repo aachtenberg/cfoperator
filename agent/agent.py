@@ -4695,6 +4695,19 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         INVESTIGATIONS_STARTED.inc()
         return inv_id
 
+    def existing_deep_investigation(self, alert: Dict[str, Any]) -> Optional[int]:
+        """The row a timed-out earlier attempt of this ingest already created.
+
+        The worker retries an ingest whose answer it did not get in time; the
+        first attempt may still have landed. Returning its row keeps one
+        investigation per report rather than two, each with its own storage
+        thread (review of #303). None when the alert has no id to match on.
+        """
+        alert_id = alert.get('alert_id')
+        if not alert_id:
+            return None
+        return self.kb.find_open_investigation_for_alert(str(alert_id), self._deep_trigger(alert))
+
     def store_deep_investigation(self, alert: Dict[str, Any], result: Dict[str, Any],
                                  inv_id: Optional[int] = None) -> Dict[str, Any]:
         """Ingest a deep-investigation worker's report into the knowledge base.

@@ -356,7 +356,7 @@ def test_an_offline_placeholder_is_never_marked():
 # ---- the route answers with the id -------------------------------------------
 
 
-def _deep_client(monkeypatch, begin):
+def _deep_client(monkeypatch, begin, existing=lambda alert: None):
     import threading
     from types import SimpleNamespace
 
@@ -367,6 +367,7 @@ def _deep_client(monkeypatch, begin):
     stored = threading.Event()
     op = SimpleNamespace(current_investigation=None, start_time=0.0, store_calls=[])
     op.begin_deep_investigation = begin
+    op.existing_deep_investigation = existing
 
     def store(alert, result, inv_id=None):
         op.store_calls.append(inv_id)
@@ -465,3 +466,78 @@ def test_an_offline_start_keeps_its_alert_through_the_buffer():
     rkb._replay_event(SimpleNamespace(event_type=kind, data=data))
     rkb._kb.start_investigation.assert_called_once_with("[deep] node gone", alert_id="aid-9")
     assert rkb._local_to_db_id_map[local] == 501
+
+
+
+# ---- review of #303: a retried ingest reuses the row, not a second one --------
+
+
+def test_a_retried_ingest_gets_the_row_its_first_attempt_made(monkeypatch):
+    """The worker retries an ingest whose answer took longer than its 10s
+    timeout; the first attempt may have landed. Answering with that row and
+    starting no second storage thread keeps one investigation per report.
+    Mutation check: drop the duplicate short-circuit and begin is called."""
+    began = []
+    client, op, stored = _deep_client(monkeypatch, lambda a: began.append(a) or 999,
+                                      existing=lambda a: 2301)
+    resp = _ingest(client)
+    assert resp.status_code == 202
+    assert resp.get_json() == {"status": "duplicate", "investigation_id": 2301}
+    assert began == [] and not stored.wait(0.2), "a duplicate must not create or store again"
+
+
+def test_a_failed_duplicate_check_falls_through_to_a_new_row(monkeypatch):
+    def boom(alert):
+        raise RuntimeError("db down")
+
+    client, op, stored = _deep_client(monkeypatch, lambda a: 2302, existing=boom)
+    resp = _ingest(client)
+    assert resp.get_json()["investigation_id"] == 2302
+    assert stored.wait(2)
+
+
+def test_the_duplicate_lookup_matches_on_alert_and_deep_trigger():
+    op = _operator()
+    op.kb.find_open_investigation_for_alert.return_value = 77
+    assert op.existing_deep_investigation(_ALERT) == 77
+    op.kb.find_open_investigation_for_alert.assert_called_once_with(
+        "abc-123", "[deep] NodeUnreachable raspberrypi3")
+    op.kb.find_open_investigation_for_alert.reset_mock()
+    assert op.existing_deep_investigation({"summary": "no id"}) is None
+    op.kb.find_open_investigation_for_alert.assert_not_called()
+
+
+# ---- review of #303: buffered starts wait for the schema ---------------------
+
+
+def _sync_kb(schema_ok):
+    import threading
+    from types import SimpleNamespace
+
+    from knowledge_base import ResilientKnowledgeBase
+
+    rkb = ResilientKnowledgeBase.__new__(ResilientKnowledgeBase)
+    rkb._health_monitor = SimpleNamespace(is_healthy=lambda: True)
+    rkb._buffer = SimpleNamespace(has_pending_events=lambda: True)
+    rkb._schema_initialized = False
+    rkb._kb = MagicMock()
+    rkb._kb.initialize_schema.return_value = schema_ok
+    rkb._schema_lock = threading.Lock()
+    replayed = []
+    rkb._sync_buffered_events = lambda: replayed.append(1)
+    return rkb, replayed
+
+
+def test_buffered_events_are_held_while_the_schema_is_incomplete():
+    """A failed replay is skipped and marked synced, so replaying a buffered
+    start into a table still missing alert_id would lose it for good.
+    Mutation check: drop the _schema_initialized gate and this replays."""
+    rkb, replayed = _sync_kb(schema_ok=False)
+    rkb._sync_tick()
+    assert replayed == []
+
+
+def test_buffered_events_replay_once_the_schema_is_complete():
+    rkb, replayed = _sync_kb(schema_ok=True)
+    rkb._sync_tick()
+    assert replayed == [1]

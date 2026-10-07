@@ -1625,10 +1625,18 @@ class KnowledgeBase:
 
         Nullable with no default, so on an existing table this is a catalog
         change rather than a rewrite — the same shape event_runtime used for
-        its own alert_id column (CFOP-215).
+        its own alert_id column (CFOP-215). Checked first: even a no-op ALTER
+        takes an ACCESS EXCLUSIVE lock, and this runs on every start.
         """
         try:
             with self.session_scope() as session:
+                present = session.execute(text("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'investigations' AND column_name = 'alert_id'
+                """)).fetchone()
+                if present:
+                    return True
+                _log("info", "Adding investigations.alert_id")
                 session.execute(text(
                     "ALTER TABLE investigations ADD COLUMN IF NOT EXISTS alert_id TEXT"
                 ))
@@ -2551,6 +2559,27 @@ class KnowledgeBase:
             return responses
 
     # ============================= Investigations =============================
+
+    def find_open_investigation_for_alert(self, alert_id: str, trigger: str,
+                                          within_seconds: int = 900) -> Optional[int]:
+        """The newest still-in_progress investigation for this alert and
+        trigger, started within the window, or None.
+
+        Lets a retried deep-investigation ingest find the row its timed-out
+        first attempt created instead of making a second (CFOP-216). The
+        window covers the worker's retries with room to spare, and is short
+        enough that a row orphaned by a killed process stops matching.
+        """
+        since = datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
+        with self.session_scope() as session:
+            row = (session.query(Investigation.id)
+                   .filter(Investigation.alert_id == str(alert_id),
+                           Investigation.trigger == trigger,
+                           Investigation.outcome == 'in_progress',
+                           Investigation.started_at >= since)
+                   .order_by(Investigation.id.desc())
+                   .first())
+            return row[0] if row else None
 
     def start_investigation(self, trigger: str, alert_id: Optional[str] = None) -> int:
         """Start an investigation and return its ID for event tracking (scoped to this host).
@@ -5822,15 +5851,27 @@ class ResilientKnowledgeBase:
         while not self._stop_sync.is_set():
             try:
                 # Retry schema creation if it was deferred (DB down at startup).
-                if not self._schema_initialized and self._health_monitor.is_healthy():
-                    if self.initialize_schema():
-                        _log("info", "Schema init completed after database recovered")
-                if self._health_monitor.is_healthy() and self._buffer.has_pending_events():
-                    self._sync_buffered_events()
+                self._sync_tick()
             except Exception as e:
                 _log("error", "Sync loop error", error=str(e))
 
             self._stop_sync.wait(timeout=sync_interval)
+
+    def _sync_tick(self):
+        """One pass of the sync loop: finish schema init, then replay.
+
+        Replay waits for the schema. _sync_buffered_events skips an event that
+        fails and marks it synced, so replaying a buffered start into a table
+        still missing investigations.alert_id would drop it for good; held
+        back, it replays once the retry succeeds (CFOP-216).
+        """
+        # Retry schema creation if it was deferred (DB down at startup).
+        if not self._schema_initialized and self._health_monitor.is_healthy():
+            if self.initialize_schema():
+                _log("info", "Schema init completed after database recovered")
+        if (self._schema_initialized and self._health_monitor.is_healthy()
+                and self._buffer.has_pending_events()):
+            self._sync_buffered_events()
 
     def _sync_buffered_events(self):
         """Replay buffered events to PostgreSQL."""

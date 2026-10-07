@@ -17,6 +17,7 @@ visible for the operator.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -417,7 +418,10 @@ def _post(url: str, payload: Dict[str, Any], *, token: str = "", retries: int = 
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 return response.read()
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+        # http.client.HTTPException covers a body cut short (IncompleteRead) or
+        # a garbled status line; neither is an OSError on Python 3.11.
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError,
+                http.client.HTTPException) as exc:
             logger.warning("POST %s failed (attempt %d/%d): %s", url, attempt, retries, exc)
             if attempt < retries:
                 time.sleep(2 ** attempt)
@@ -508,7 +512,11 @@ def main() -> int:
     # the completion is the only place event_runtime can learn it — it gives
     # the Events page its link and Slack its attach line (CFOP-216).
     if run.success:
-        inv_id = post_kb_ingest(inputs, result)
+        try:
+            inv_id = post_kb_ingest(inputs, result)
+        except Exception:  # noqa: BLE001 - the ingest must never cost the completion
+            logger.exception("KB ingest raised; completion goes without an investigation id")
+            inv_id = None
         if inv_id is not None:
             result["details"]["investigation_id"] = inv_id
     delivered = post_completion(inputs, result)
