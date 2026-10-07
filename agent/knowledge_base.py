@@ -5870,9 +5870,20 @@ class ResilientKnowledgeBase:
         if not self._schema_initialized and self._health_monitor.is_healthy():
             if self.initialize_schema():
                 _log("info", "Schema init completed after database recovered")
-        if (self._schema_initialized and self._health_monitor.is_healthy()
-                and self._buffer.has_pending_events()):
+        if not (self._health_monitor.is_healthy() and self._buffer.has_pending_events()):
+            return
+        if self._schema_initialized:
             self._sync_buffered_events()
+            return
+        # Held, not dropped — but a schema step that keeps failing would hold
+        # replay indefinitely, so say so, at most every 10 minutes.
+        now = time.monotonic()
+        # Read from __dict__: __getattr__ delegates unknown names to the wrapped
+        # KnowledgeBase, so getattr() with a default would ask the wrong object.
+        if now - self.__dict__.get('_replay_held_logged_at', float('-inf')) >= 600:
+            self._replay_held_logged_at = now
+            _log("warning", "Buffered events held: schema init is incomplete, so replay "
+                            "waits rather than risk dropping them; see the schema warnings above")
 
     def _sync_buffered_events(self):
         """Replay buffered events to PostgreSQL."""

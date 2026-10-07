@@ -611,8 +611,18 @@ def test_buffered_events_are_held_while_the_schema_is_incomplete():
     start into a table still missing alert_id would lose it for good.
     Mutation check: drop the _schema_initialized gate and this replays."""
     rkb, replayed = _sync_kb(schema_ok=False)
-    rkb._sync_tick()
+    import knowledge_base as kbmod
+    logged = []
+    orig = kbmod._log
+    kbmod._log = lambda level, msg, **kw: logged.append((level, msg))
+    try:
+        rkb._sync_tick()
+        rkb._sync_tick()
+    finally:
+        kbmod._log = orig
     assert replayed == []
+    held = [m for lvl, m in logged if lvl == "warning" and "Buffered events held" in m]
+    assert len(held) == 1, f"a held replay must be said once per interval, not silent or every tick: {logged}"
 
 
 def test_buffered_events_replay_once_the_schema_is_complete():
