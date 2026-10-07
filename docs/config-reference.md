@@ -227,8 +227,9 @@ llm:
   # unaffected. The console Admin -> LLM tab can override this live (DB over
   # config; 'off' there disables despite this key). (CFOP-57/58)
   # The shipped value below is a local fine-tune; see docs/triage-fine-tune.md
-  # for what it is, how it was trained, and how to rebuild it. The v5 GGUFs
-  # are published on Hugging Face (hf/README.md is the card, CFOP-274), so a
+  # for what it is, how it was trained, and how to rebuild it. Publishing the
+  # v5 GGUFs on Hugging Face is in progress (CFOP-274; hf/README.md is the
+  # card, hf/publish.sh the upload). Once the repo id is recorded there, a
   # chart user can `ollama pull hf.co/<repo>:Q4_K_M` instead of training one.
   # NOTE (raw-manifest deploys only): a config-only commit syncs the ConfigMap
   # but restarts nothing, so changing this key needs a manual rollout restart.

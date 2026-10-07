@@ -29,6 +29,11 @@
 #                 dir. A pre-existing non-empty directory is refused: whatever
 #                 is in the stage gets uploaded, so leftovers from an earlier
 #                 run would ship too.
+#   GGUF_STAGE_DIR where the GGUFs are copied before they are hashed and
+#                 uploaded (~23 GB for v5). default: a fresh 0700 mktemp dir
+#                 under ${TMPDIR:-/var/tmp}. The copy is what gets verified and
+#                 what gets uploaded, so a NAS file changing between the two
+#                 cannot ship unverified bytes. Removed when the run ends, however it ends.
 #
 # Authentication is whatever `hf auth login` left behind, or HF_TOKEN in the
 # environment. The token is never written anywhere by this script.
@@ -41,6 +46,7 @@ SRC_DIR="${SRC_DIR:-/mnt/nas-backup/unsloth/cfoperator-v6/cfop-triage-v5-gguf}"
 DATASET_DIR="${DATASET_DIR:-/mnt/nas-backup/unsloth/cfoperator-v6}"
 ADAPTER_DIR="${ADAPTER_DIR:-}"
 MANIFEST="${MANIFEST:-$HERE/v5.sha256}"
+GGUF_STAGE_DIR="${GGUF_STAGE_DIR:-}"
 MODE=upload
 case "${1:-}" in
   "") ;;
@@ -120,9 +126,29 @@ verify() {  # verify <dir> <file>: the file's sha256 must appear in the manifest
   [ "$have" = "$want" ] || { log "$f sha256 $have does not match manifest $want: not the gated v5 export"; exit 1; }
   log "   ok  $f  $have"
 }
+# The GGUFs are copied to a private local directory first and the COPY is
+# what gets hashed and uploaded. Hashing the NAS file and then letting
+# `hf upload` reopen the NAS path would leave a window in which the file
+# could change after it was verified.
+for f in "$Q4" "$Q8"; do [ -f "$SRC_DIR/$f" ] || { log "missing $SRC_DIR/$f"; exit 1; }; done
+need=$(( $(stat -c %s "$SRC_DIR/$Q4") + $(stat -c %s "$SRC_DIR/$Q8") ))
+if [ -z "$GGUF_STAGE_DIR" ]; then
+  GGUF_STAGE_DIR="$(mktemp -d -p "${TMPDIR:-/var/tmp}" cfop-hf-gguf.XXXXXX)"
+elif [ -e "$GGUF_STAGE_DIR" ] && [ -n "$(ls -A "$GGUF_STAGE_DIR" 2>/dev/null)" ]; then
+  log "GGUF_STAGE_DIR $GGUF_STAGE_DIR is not empty: refusing"
+  exit 1
+fi
+mkdir -p "$GGUF_STAGE_DIR" && chmod 700 "$GGUF_STAGE_DIR"
+# The copies never outlive the run, on success or on any failure after this point.
+trap 'rm -rf "$GGUF_STAGE_DIR"' EXIT
+avail=$(df --output=avail -B1 "$GGUF_STAGE_DIR" | tail -1)
+[ "$avail" -gt "$need" ] || { log "$GGUF_STAGE_DIR has $avail bytes free, need $need for the GGUF copies (set GGUF_STAGE_DIR)"; exit 1; }
+log "== copying GGUFs to $GGUF_STAGE_DIR"
+cp "$SRC_DIR/$Q4" "$SRC_DIR/$Q8" "$GGUF_STAGE_DIR/"
+
 log "== verifying artifacts against $MANIFEST"
-verify "$SRC_DIR" "$Q4"
-verify "$SRC_DIR" "$Q8"
+verify "$GGUF_STAGE_DIR" "$Q4"
+verify "$GGUF_STAGE_DIR" "$Q8"
 if [ -n "$ADAPTER_DIR" ]; then
   verify "$STAGE_DIR/adapter" adapter_model.safetensors
   verify "$STAGE_DIR/adapter" adapter_config.json
@@ -143,8 +169,8 @@ hf repo create "$HF_REPO" --repo-type model --exist-ok >/dev/null
 log "== uploading small files"
 hf upload "$HF_REPO" "$STAGE_DIR" . --repo-type model --commit-message "cfop-triage-ministral3 v5: card, Modelfile, adapter (CFOP-274)"
 
-log "== uploading GGUFs (large; resumable)"
-hf upload "$HF_REPO" "$SRC_DIR/$Q4" "$Q4" --repo-type model --commit-message "v5 Q4_K_M, the deployed quant (CFOP-274)"
-hf upload "$HF_REPO" "$SRC_DIR/$Q8" "$Q8" --repo-type model --commit-message "v5 Q8_0, reference quant (CFOP-274)"
+log "== uploading GGUFs from $GGUF_STAGE_DIR (large; resumable)"
+hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q4" "$Q4" --repo-type model --commit-message "v5 Q4_K_M, the deployed quant (CFOP-274)"
+hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q8" "$Q8" --repo-type model --commit-message "v5 Q8_0, reference quant (CFOP-274)"
 
 log "== done: https://huggingface.co/$HF_REPO"

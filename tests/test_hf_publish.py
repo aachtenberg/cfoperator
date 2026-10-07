@@ -133,6 +133,7 @@ def _run_stage(tmp_path: Path, extra_env: dict[str, str] | None = None) -> subpr
         DATASET_DIR=str(dataset),
         STAGE_DIR=str(stage),
         SRC_DIR=str(tmp_path / "nonexistent-src"),  # must not be touched in --stage-only
+        ADAPTER_DIR="",  # never inherit an operator's export; tests opt in explicitly
     )
     env.update(extra_env or {})
     return subprocess.run(
@@ -250,6 +251,8 @@ def _run_dry(tmp_path: Path, src: Path, manifest: Path, extra_env: dict[str, str
         STAGE_DIR=str(tmp_path / stage),
         SRC_DIR=str(src),
         MANIFEST=str(manifest),
+        ADAPTER_DIR="",
+        GGUF_STAGE_DIR=str(tmp_path / "gguf-stage"),
     )
     env.update(extra_env or {})
     return subprocess.run(
@@ -264,6 +267,18 @@ def test_dry_run_passes_when_every_artifact_matches_the_manifest(tmp_path: Path)
     assert proc.returncode == 0, proc.stderr
     assert "nothing uploaded" in proc.stderr
     assert f"ok  {Q4}" in proc.stderr and f"ok  {Q8}" in proc.stderr
+    # The copies, not the NAS files, are what got verified, and they are gone afterwards.
+    assert f"copying GGUFs to {tmp_path / 'gguf-stage'}" in proc.stderr
+    assert not (tmp_path / "gguf-stage").exists()
+
+
+def test_dry_run_refuses_a_non_empty_gguf_stage(tmp_path: Path):
+    src, manifest = _fake_src(tmp_path)
+    (tmp_path / "gguf-stage").mkdir()
+    (tmp_path / "gguf-stage" / "stale.gguf").write_bytes(b"\0")
+    proc = _run_dry(tmp_path, src, manifest)
+    assert proc.returncode != 0
+    assert "GGUF_STAGE_DIR" in proc.stderr and "not empty" in proc.stderr
 
 
 def test_dry_run_fails_on_a_gguf_that_does_not_match_the_manifest(tmp_path: Path):
