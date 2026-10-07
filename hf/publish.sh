@@ -19,15 +19,18 @@
 #                 v5 set the weights were trained on). default /mnt/nas-backup/unsloth/cfoperator-v6
 #   ADAPTER_DIR   optional. A directory with adapter_model.safetensors and
 #                 adapter_config.json; published under adapter/ when set.
-#   MANIFEST      sha256sum-format file naming every artifact that may be
-#                 uploaded (GGUFs, and the adapter files when ADAPTER_DIR is
-#                 set). default hf/v5.sha256. Generate it ONCE on the NAS host
-#                 from the gated files and commit it:
-#                   (cd "$SRC_DIR" && sha256sum *.gguf) > hf/v5.sha256
+#   MANIFEST      sha256sum-format file naming the dataset the weights were
+#                 trained on and every artifact that may be uploaded (GGUFs,
+#                 and the adapter files when ADAPTER_DIR is set). default
+#                 hf/v5.sha256. The dataset lines are committed: they pin WHICH
+#                 train/val set the scan gate is passing judgement on. The
+#                 artifact lines are appended ONCE on the NAS host from the
+#                 gated files and committed:
+#                   (cd "$SRC_DIR" && sha256sum *.gguf) >> hf/v5.sha256
+#                   (cd "$ADAPTER_DIR" && sha256sum adapter_model.safetensors adapter_config.json) >> hf/v5.sha256
 #                 That glob hashes every GGUF in the folder (an mmproj side
 #                 file, say); harmless, since only the two names above are
 #                 ever looked up, but trim the file if you want it exact.
-#                   (cd "$ADAPTER_DIR" && sha256sum adapter_model.safetensors adapter_config.json) >> hf/v5.sha256
 #   STAGE_DIR     where the small files are assembled. default: a fresh mktemp
 #                 dir, removed when the run ends. A pre-existing non-empty
 #                 directory is refused: whatever is in the stage gets uploaded,
@@ -73,7 +76,23 @@ CARD_SRC="$HERE/README.md"
 
 log() { printf '%s\n' "$*" >&2; }
 
-# ---- 1. gate: the training data must be clean -----------------------------
+verify() {  # verify <dir> <file>: the file's sha256 must appear in the manifest under that name
+  local dir="$1" f="$2" want have
+  want=$(awk -v f="$f" '$2 == f || $2 == "*" f {print $1}' "$MANIFEST")
+  [ -n "$want" ] || { log "$f is not in $MANIFEST: not a gated artifact"; exit 1; }
+  [ -f "$dir/$f" ] || { log "missing $dir/$f"; exit 1; }
+  have=$(sha256sum "$dir/$f" | awk '{print $1}')
+  [ "$have" = "$want" ] || { log "$f sha256 $have does not match manifest $want: not the gated v5 export"; exit 1; }
+  log "   ok  $f  $have"
+}
+[ -f "$MANIFEST" ] || { log "manifest $MANIFEST missing (the dataset lines are committed with the repo; see the header)"; exit 1; }
+
+# ---- 1. gate: the training data must be the v5 set, and clean -------------
+# A clean scan of the wrong files proves nothing, so the files are pinned
+# first: these must be the train/val set the weights were trained on.
+log "== verifying dataset identity against $MANIFEST"
+verify "$DATASET_DIR" triage_train.jsonl
+verify "$DATASET_DIR" triage_val.jsonl
 log "== scanning training data in $DATASET_DIR"
 python3 "$HERE/scan_dataset.py" "$DATASET_DIR/triage_train.jsonl" "$DATASET_DIR/triage_val.jsonl"
 
@@ -129,19 +148,10 @@ fi
 # committed. A file that is not in it, or does not match it, does not ship.
 # (Size alone is not a check: the v5 export is byte-for-byte the same size as
 # v1's, same base and same quant, so only the hash tells them apart.)
-[ -f "$MANIFEST" ] || {
-  log "manifest $MANIFEST missing. Generate it on the NAS host from the gated files and commit it:"
-  log "  (cd \"$SRC_DIR\" && sha256sum *.gguf) > $MANIFEST"
+grep -q 'gguf$' "$MANIFEST" || {
+  log "$MANIFEST has no GGUF lines yet. Append them on the NAS host from the gated files and commit:"
+  log "  (cd \"$SRC_DIR\" && sha256sum *.gguf) >> $MANIFEST"
   exit 1
-}
-verify() {  # verify <dir> <file>: the file's sha256 must appear in the manifest under that name
-  local dir="$1" f="$2" want have
-  want=$(awk -v f="$f" '$2 == f || $2 == "*" f {print $1}' "$MANIFEST")
-  [ -n "$want" ] || { log "$f is not in $MANIFEST: not a gated artifact"; exit 1; }
-  [ -f "$dir/$f" ] || { log "missing $dir/$f"; exit 1; }
-  have=$(sha256sum "$dir/$f" | awk '{print $1}')
-  [ "$have" = "$want" ] || { log "$f sha256 $have does not match manifest $want: not the gated v5 export"; exit 1; }
-  log "   ok  $f  $have"
 }
 # The GGUFs are copied to a private local directory first and the COPY is
 # what gets hashed and uploaded. Hashing the NAS file and then letting

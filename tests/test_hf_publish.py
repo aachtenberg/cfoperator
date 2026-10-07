@@ -141,16 +141,35 @@ def test_scanner_redacts_what_it_reports(tmp_path: Path):
     assert "hf-token" in out
 
 
-def _run_stage(tmp_path: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _dataset_with_manifest(tmp_path: Path, train_text: str = _row("clean row")) -> tuple[Path, Path]:
+    """A fake train/val pair and a manifest pinning exactly those two files."""
     dataset = tmp_path / "dataset"
-    dataset.mkdir()
-    for name in ("triage_train.jsonl", "triage_val.jsonl"):
-        (dataset / name).write_text(_row("clean row"), encoding="utf-8")
+    dataset.mkdir(exist_ok=True)
+    (dataset / "triage_train.jsonl").write_text(train_text, encoding="utf-8")
+    (dataset / "triage_val.jsonl").write_text(_row("clean val row"), encoding="utf-8")
+    manifest = tmp_path / "v5.sha256"
+    manifest.write_text(
+        f"{_sha256(dataset / 'triage_train.jsonl')}  triage_train.jsonl\n"
+        f"{_sha256(dataset / 'triage_val.jsonl')}  triage_val.jsonl\n",
+        encoding="utf-8",
+    )
+    return dataset, manifest
+
+
+def _run_stage(tmp_path: Path, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    dataset, manifest = _dataset_with_manifest(tmp_path)
     stage = tmp_path / "stage"
     env = dict(
         os.environ,
         HF_REPO="someone/cfop-triage-ministral3-14b-v5",
         DATASET_DIR=str(dataset),
+        MANIFEST=str(manifest),
         STAGE_DIR=str(stage),
         SRC_DIR=str(tmp_path / "nonexistent-src"),  # must not be touched in --stage-only
         ADAPTER_DIR="",  # never inherit an operator's export; tests opt in explicitly
@@ -193,17 +212,36 @@ def test_stage_scans_the_staged_text_files(tmp_path: Path):
 
 
 def test_stage_refuses_dirty_dataset(tmp_path: Path):
-    dataset = tmp_path / "dataset"
-    dataset.mkdir()
-    (dataset / "triage_train.jsonl").write_text(_row("POSTGRES_PASSWORD=hunter2hunter2"), encoding="utf-8")
-    (dataset / "triage_val.jsonl").write_text(_row("clean"), encoding="utf-8")
-    env = dict(os.environ, HF_REPO="someone/x", DATASET_DIR=str(dataset), STAGE_DIR=str(tmp_path / "stage"))
+    dataset, manifest = _dataset_with_manifest(tmp_path, _row("POSTGRES_PASSWORD=hunter2hunter2"))
+    env = dict(os.environ, HF_REPO="someone/x", DATASET_DIR=str(dataset), MANIFEST=str(manifest), STAGE_DIR=str(tmp_path / "stage"), ADAPTER_DIR="")
     proc = subprocess.run(
         ["bash", str(HF_DIR / "publish.sh"), "--stage-only"],
         capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
     )
     assert proc.returncode != 0
     assert not (tmp_path / "stage" / "Modelfile").exists()
+
+
+def test_stage_refuses_a_dataset_that_is_not_the_pinned_one(tmp_path: Path):
+    # Clean, but not the files the manifest names: a clean scan of the wrong
+    # set must not count.
+    dataset, manifest = _dataset_with_manifest(tmp_path)
+    (dataset / "triage_train.jsonl").write_text(_row("a different clean row"), encoding="utf-8")
+    env = dict(os.environ, HF_REPO="someone/x", DATASET_DIR=str(dataset), MANIFEST=str(manifest), STAGE_DIR=str(tmp_path / "stage"), ADAPTER_DIR="")
+    proc = subprocess.run(
+        ["bash", str(HF_DIR / "publish.sh"), "--stage-only"],
+        capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
+    )
+    assert proc.returncode != 0
+    assert "triage_train.jsonl sha256" in proc.stderr and "does not match manifest" in proc.stderr
+    assert "scanning training data" not in proc.stderr
+
+
+def test_committed_manifest_pins_the_documented_v5_dataset():
+    # docs/triage-fine-tune.md records the v5 fingerprints as sha256 prefixes.
+    lines = dict(reversed(l.split()) for l in (HF_DIR / "v5.sha256").read_text(encoding="utf-8").splitlines() if l.strip())
+    assert lines["triage_train.jsonl"].startswith("5e44b0ae1746dfa7")
+    assert lines["triage_val.jsonl"].startswith("ec7441d1f08596eb")
 
 
 def test_stage_without_adapter_dir_says_so(tmp_path: Path):
@@ -249,28 +287,20 @@ Q4 = "ministral-3-14b-instruct-2512.Q4_K_M.gguf"
 Q8 = "ministral-3-14b-instruct-2512.Q8_0.gguf"
 
 
-def _sha256(path: Path) -> str:
-    import hashlib
-
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def _fake_src(tmp_path: Path) -> tuple[Path, Path]:
-    """Two small stand-in GGUFs and a manifest that matches them."""
+    """Two small stand-in GGUFs, plus a manifest naming them and the fake dataset."""
     src = tmp_path / "src"
     src.mkdir()
     (src / Q4).write_bytes(b"q4 " * 100)
     (src / Q8).write_bytes(b"q8 " * 100)
-    manifest = tmp_path / "v5.sha256"
-    manifest.write_text(f"{_sha256(src / Q4)}  {Q4}\n{_sha256(src / Q8)}  {Q8}\n", encoding="utf-8")
+    _, manifest = _dataset_with_manifest(tmp_path)
+    with manifest.open("a", encoding="utf-8") as fh:
+        fh.write(f"{_sha256(src / Q4)}  {Q4}\n{_sha256(src / Q8)}  {Q8}\n")
     return src, manifest
 
 
 def _run_dry(tmp_path: Path, src: Path, manifest: Path, extra_env: dict[str, str] | None = None, stage: str = "stage"):
     dataset = tmp_path / "dataset"
-    dataset.mkdir(exist_ok=True)
-    for name in ("triage_train.jsonl", "triage_val.jsonl"):
-        (dataset / name).write_text(_row("clean row"), encoding="utf-8")
     env = dict(
         os.environ,
         HF_REPO="someone/cfop-triage-ministral3-14b-v5",
@@ -328,6 +358,16 @@ def test_dry_run_fails_without_a_manifest(tmp_path: Path):
     proc = _run_dry(tmp_path, src, manifest)
     assert proc.returncode != 0
     assert "manifest" in proc.stderr and "missing" in proc.stderr
+
+
+def test_dry_run_fails_when_the_manifest_has_no_gguf_lines_yet(tmp_path: Path):
+    # The committed manifest state: dataset pinned, artifacts not yet appended.
+    src, manifest = _fake_src(tmp_path)
+    kept = [l for l in manifest.read_text(encoding="utf-8").splitlines(True) if not l.rstrip().endswith(".gguf")]
+    manifest.write_text("".join(kept), encoding="utf-8")
+    proc = _run_dry(tmp_path, src, manifest)
+    assert proc.returncode != 0
+    assert "no GGUF lines yet" in proc.stderr
 
 
 def test_dry_run_requires_the_adapter_in_the_manifest_too(tmp_path: Path):

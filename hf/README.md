@@ -80,7 +80,7 @@ Alert summary: The faster-whisper deployment in the ai namespace has a pod with 
 Labels: {"namespace": "ai"}
 
 Similar past investigations:
-- [resolved  ] monitoring_cycle: Stopped containers detected without error logs (similarity: 0.71)
+- [monitoring] monitoring_cycle: Stopped containers detected without error logs (similarity: 0.71)
 
 Classify.
 ```
@@ -88,7 +88,7 @@ Classify.
 and expect:
 
 ```json
-{"action": "investigate", "reason": "faster-whisper: the closest earlier investigation (0.71) ended resolved — no resolved precedent to lean on", "confidence": 0.58}
+{"action": "investigate", "reason": "faster-whisper: the closest earlier investigation (0.71) ended monitoring — no resolved precedent to lean on", "confidence": 0.58}
 ```
 
 `action` is one of `log_only`, `notify`, `investigate`, `escalate`.
