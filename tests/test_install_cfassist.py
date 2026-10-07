@@ -418,3 +418,12 @@ def test_an_older_binary_without_init_is_not_invoked_as_a_prompt(stub_release, t
     assert not (home / "init-was-called").exists(), proc.stdout + proc.stderr
     assert "Wrote" not in proc.stdout
     assert not (home / ".cfassist" / "config.yaml").exists()
+
+
+def test_help_works_through_the_pipe():
+    """`curl … | sh -s -- --help`: $0 is "sh" there, so help cannot be read
+    back from the script file (CFOP-280)."""
+    proc = subprocess.run(["sh", "-s", "--", "--help"], input=SCRIPT.read_text(),
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "CFASSIST_VERSION" in proc.stdout and "--dry-run" in proc.stdout, proc.stdout

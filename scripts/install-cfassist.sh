@@ -1,5 +1,7 @@
 #!/bin/sh
-# Install cfassist, the CFOperator CLI, on this machine.
+# Install cfassist, the SRE command-line assistant, on this machine. It runs
+# standalone with only an LLM; where a CFOperator agent is running, the
+# session notices it and gains its tools.
 #
 #   curl -fsSL https://raw.githubusercontent.com/aachtenberg/cfoperator/main/scripts/install-cfassist.sh | sh
 #
@@ -20,6 +22,15 @@
 #   --dry-run             print what would happen and exit
 set -eu
 
+# Everything below is inside main(), called on the last line, so that sh has
+# to read the whole script before any of it runs. sh executes a script as it
+# streams in, and under `curl … | sh` a download cut off halfway would run
+# whatever complete lines had arrived; a function body is parsed to its
+# closing brace first, so a truncated copy is a syntax error that does
+# nothing (CFOP-280; tests/test_installer_streaming.py feeds sh the cut-off
+# copies). The body is deliberately not re-indented.
+main() {
+
 REPO="aachtenberg/cfoperator"
 BASE_URL="${CFASSIST_BASE_URL:-https://github.com/${REPO}/releases/download}"
 INSTALL_DIR="${CFASSIST_INSTALL_DIR:-/usr/local/bin}"
@@ -35,11 +46,32 @@ version="${CFASSIST_VERSION:-}"
 version="${version#v}"
 TAG="cfassist-${version:+v}${version:-latest}"
 
+# Inline, not read back from "$0": under `curl … | sh -s -- --help`, $0 is
+# "sh" and there is no file to read (CFOP-280; install.sh had the same bug).
+usage() {
+	cat <<'EOF'
+Install cfassist, the SRE command-line assistant, on this machine.
+
+  curl -fsSL https://raw.githubusercontent.com/aachtenberg/cfoperator/main/scripts/install-cfassist.sh | sh
+  curl -fsSL .../install-cfassist.sh | sh -s -- [--dry-run]
+
+Detects OS and CPU, verifies the SHA-256, installs to /usr/local/bin (or
+~/.local/bin without sudo). cfassist runs standalone with only an LLM; where
+a CFOperator agent is running, the session notices it.
+
+Environment, all optional:
+  CFASSIST_VERSION      pin a release (0.10.0 or v0.10.0); default cfassist-latest
+  CFASSIST_INSTALL_DIR  where the binary goes (default /usr/local/bin)
+  CFASSIST_OS           override uname -s (linux|darwin)
+  CFASSIST_ARCH         override uname -m (amd64|arm64|arm)
+EOF
+}
+
 DRY_RUN=0
 for arg in "$@"; do
 	case "$arg" in
 		--dry-run) DRY_RUN=1 ;;
-		-h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) usage; exit 0 ;;
 		*) echo "install-cfassist: unknown argument: $arg" >&2; exit 2 ;;
 	esac
 done
@@ -175,3 +207,6 @@ echo "  cfassist attach <id>        # brief a session on a CFOperator investigat
 echo
 echo "Set your LLM in ~/.cfassist/config.yaml. If CFOperator runs here, the session"
 echo "notices it automatically; add cfoperator.token to let it read investigations."
+}
+
+main "$@"

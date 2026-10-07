@@ -33,6 +33,15 @@
 #   --no-start         install and configure, but do not start the stack
 set -eu
 
+# Everything below is inside main(), called on the last line, so that sh has
+# to read the whole script before any of it runs. sh executes a script as it
+# streams in, and under `curl … | sh` a download cut off halfway would run
+# whatever complete lines had arrived; a function body is parsed to its
+# closing brace first, so a truncated copy is a syntax error that does
+# nothing (CFOP-280; tests/test_installer_streaming.py feeds sh the cut-off
+# copies). The body is deliberately not re-indented.
+main() {
+
 REPO="aachtenberg/cfoperator"
 BASE_URL="${CFOP_BASE_URL:-https://github.com/${REPO}/releases/download}"
 INSTALL_DIR="${CFOP_INSTALL_DIR:-$HOME/cfoperator}"
@@ -322,3 +331,6 @@ echo "  Reconfigure: ${init_cmd}"
 echo "               then: cd \"${INSTALL_DIR}\" && docker compose up -d"
 echo "  Upgrade:     re-run this installer (CFOP_VERSION=x.y.z to pin)"
 echo "  CLI:         curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install-cfassist.sh | sh"
+}
+
+main "$@"
