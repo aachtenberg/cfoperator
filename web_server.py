@@ -473,15 +473,25 @@ class WebServer:
                     deep_storing.add(inv_id)
 
             def _store():
+                own = inv_id
                 try:
-                    self.operator.store_deep_investigation(alert, result, inv_id=inv_id)
+                    if own is None:
+                        # The up-front INSERT failed. Retry it here, claimed
+                        # under the lock like the route's own, so a retried
+                        # ingest sees this storage as running rather than
+                        # adopting the row as abandoned (review of #303).
+                        with deep_storing_lock:
+                            own = self.operator.begin_deep_investigation(alert)
+                            if _positive(own):
+                                deep_storing.add(own)
+                    self.operator.store_deep_investigation(alert, result, inv_id=own)
                 except Exception as e:
                     logger.error(f"Deep-investigation ingest failed: {e}", exc_info=True)
                 finally:
                     # Only after store returns: by then the row has an outcome,
                     # so a later lookup no longer finds it in_progress.
                     with deep_storing_lock:
-                        deep_storing.discard(inv_id)
+                        deep_storing.discard(own)
 
             threading.Thread(target=_store, daemon=True, name="deep-ingest").start()
             body = {'status': status}

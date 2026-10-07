@@ -406,13 +406,53 @@ def test_the_ingest_route_never_publishes_an_offline_placeholder(monkeypatch):
 
 
 def test_the_ingest_route_still_stores_when_the_row_could_not_be_made(monkeypatch):
-    def boom(alert):
-        raise RuntimeError("db down")
+    """The up-front INSERT failing costs the id in the answer, not the
+    report: storage retries the row itself and stores onto it."""
+    calls = []
 
-    client, op, stored = _deep_client(monkeypatch, boom)
+    def flaky_begin(alert):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("db hiccup")
+        return 2501
+
+    client, op, stored = _deep_client(monkeypatch, flaky_begin)
     resp = _ingest(client)
     assert resp.status_code == 202 and "investigation_id" not in resp.get_json()
-    assert stored.wait(2) and op.store_calls == [None]
+    assert stored.wait(2) and op.store_calls == [2501]
+
+
+def test_a_row_made_by_the_fallback_is_owned_while_it_stores(monkeypatch):
+    """When storage has to create the row itself, a retry arriving during
+    that storage must see it as running (duplicate), not as abandoned
+    (resumed, a second writer). Mutation check: create the row in the
+    thread without claiming it and the retry is answered resumed."""
+    import threading
+
+    release = threading.Event()
+    calls = []
+
+    def flaky_begin(alert):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("db hiccup")
+        return 2501
+
+    lookups = iter([None, (2501, "in_progress")])
+    client, op, stored = _deep_client(monkeypatch, flaky_begin, existing=lambda a: next(lookups))
+
+    def slow_store(alert, result, inv_id=None):
+        op.store_calls.append(inv_id)
+        stored.set()
+        release.wait(2)
+    op.store_deep_investigation = slow_store
+
+    _ingest(client)
+    assert stored.wait(2)
+    retry = _ingest(client)
+    release.set()
+    assert retry.get_json() == {"status": "duplicate", "investigation_id": 2501}
+    assert op.store_calls == [2501]
 
 
 # ---- the in-process path links its alert too ---------------------------------
