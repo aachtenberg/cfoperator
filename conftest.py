@@ -117,6 +117,11 @@ def _snapshot_ssh_dir(directory: Path) -> Dict[str, Tuple[int, int]]:
     around every test, it is where ssh looks for a default identity, and an
     overwrite that keeps size and mtime identical is not a thing
     ``shutil.copyfile`` can do.
+
+    ``known_hosts*`` is left out: ssh itself rewrites those files whenever a
+    developer's own session learns a host key, so a parallel ``ssh`` during a
+    test run would get the test blamed for it. Key material and ``config`` are
+    what the guard exists for.
     """
     try:
         entries = list(directory.iterdir())
@@ -124,6 +129,8 @@ def _snapshot_ssh_dir(directory: Path) -> Dict[str, Tuple[int, int]]:
         return {}
     out: Dict[str, Tuple[int, int]] = {}
     for entry in entries:
+        if entry.name.startswith("known_hosts"):
+            continue
         try:
             if entry.is_file():
                 st = entry.stat()
