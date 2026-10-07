@@ -236,6 +236,11 @@ elif [ -f "$manifest" ]; then
 	done < "$manifest"
 fi
 
+# The pending marker is written before anything is replaced: interrupted after
+# the copy, a retry sees release-matching files, so a marker written later would
+# be lost and the retry would restart onto the defaults (CodeRabbit on #305).
+[ "$fresh" = 1 ] || [ -z "$kept" ] || printf '%s' "$kept" >> "$pending"
+
 # The new manifest describes the staged files and lands BEFORE they are copied.
 # Interrupted between the two, a retry sees old files that do not match it and
 # backs them up again under a new name — redundant, never lossy. The other
@@ -253,10 +258,6 @@ else
 fi
 if [ -n "$kept" ]; then
 	printf '  These had local edits. The release replaced them; yours are kept as:\n%s' "$kept"
-	# Recorded on disk, not in a variable: the next run sees release-matching
-	# files and would otherwise restart onto the defaults the edits replaced
-	# (CodeRabbit on #305). Only the operator clears it.
-	[ "$fresh" = 1 ] || printf '%s' "$kept" >> "$pending"
 fi
 if [ "$fresh" = 0 ] && [ -f "$pending" ]; then
 	echo

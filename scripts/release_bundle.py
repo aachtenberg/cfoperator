@@ -166,6 +166,7 @@ def build(image: str, out: Path, root: Path = ROOT) -> Path:
     return target
 
 
+_DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 _RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -198,6 +199,11 @@ def main(argv=None) -> int:
         return 0 if should_move_pointer(args.should_move_pointer, tags) else 1
     if not args.image:
         parser.error("--image is required")
+    if "@" in args.image and not _DIGEST.search(args.image):
+        # An empty build output would give "repo:tag@", and that must fail the
+        # release rather than ship a bundle no install can pull.
+        print(f"error: --image digest is not @sha256:<64 hex>: {args.image!r}", file=sys.stderr)
+        return 2
     if ":" not in args.image.rsplit("/", 1)[-1]:
         print("error: --image needs an explicit tag; a bundle must not float", file=sys.stderr)
         return 2

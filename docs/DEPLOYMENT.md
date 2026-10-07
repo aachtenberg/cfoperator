@@ -337,6 +337,11 @@ runs stay hands-off too, until you have carried the edit over and deleted
 manifest, say a clone) is treated the same way: any bundled file that differs
 from the release is presumed to be yours.
 
+**Not on SELinux-enforcing hosts (Fedora, RHEL) yet.** The trial's bind mounts,
+and the installer's for init, carry no `:z` relabel, so the containers are
+denied the files. Run it with SELinux permissive, or from a clone with `:z`
+added, until that is handled.
+
 **What the checksum does and does not prove.** `checksums.txt` comes from the
 same release as the bundle, so it catches a corrupt or truncated download, not
 a compromised release; it is not a signature. What limits a bad release is that

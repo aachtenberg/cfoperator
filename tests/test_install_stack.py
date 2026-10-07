@@ -562,3 +562,15 @@ def test_a_configured_dir_without_a_manifest_presumes_differences_are_edits(mach
     [bak] = machine["dir"].glob("docker-compose.yml.bak-*")
     assert "hand-made" in bak.read_text()
     assert "compose up -d" not in docker_calls(machine)
+
+
+def test_the_pending_marker_survives_an_upgrade_interrupted_after_the_copy(machine, release):
+    """Written after the copy, an interruption between the two lost it, and the
+    retry saw release-matching files and restarted (CodeRabbit on #305). The
+    stub's `pull` cannot reach that window, so this checks the order the script
+    acts in: the marker is written before anything is copied over."""
+    text = SCRIPT.read_text()
+    live = [ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    marker = next(i for i, ln in enumerate(live) if '>> "$pending"' in ln)
+    copy = next(i for i, ln in enumerate(live) if ln.startswith('cp -R "$tmp/stage/."'))
+    assert marker < copy, "the pending marker must be on disk before the release replaces the edits"

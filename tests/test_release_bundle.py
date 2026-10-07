@@ -135,3 +135,11 @@ def test_a_digest_pinned_image_renders_whole():
     pinned = IMAGE + "@sha256:" + "ab" * 32
     rendered = rb.render((REPO_ROOT / rb.COMPOSE).read_text(), pinned)
     assert f"image: {pinned}\n" in rendered
+
+
+@pytest.mark.parametrize("image", [IMAGE + "@", IMAGE + "@sha256:", IMAGE + "@sha256:abc"])
+def test_an_empty_or_short_digest_fails_the_release(image, capsys, tmp_path):
+    """build-push's digest output, if ever empty, would give "repo:tag@"."""
+    assert rb.main(["--image", image, "--out", str(tmp_path)]) == 2
+    assert "sha256" in capsys.readouterr().err
+    assert not (tmp_path / rb.ASSET).exists()
