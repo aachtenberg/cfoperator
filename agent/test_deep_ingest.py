@@ -472,18 +472,44 @@ def test_an_offline_start_keeps_its_alert_through_the_buffer():
 # ---- review of #303: a retried ingest reuses the row, not a second one --------
 
 
-def test_a_retried_ingest_gets_the_row_its_first_attempt_made(monkeypatch):
+def test_a_retry_while_storage_runs_gets_the_same_row_and_no_second_writer(monkeypatch):
     """The worker retries an ingest whose answer took longer than its 10s
-    timeout; the first attempt may have landed. Answering with that row and
-    starting no second storage thread keeps one investigation per report.
-    Mutation check: drop the duplicate short-circuit and begin is called."""
+    timeout; the first attempt may have landed and still be storing. The
+    retry gets that row and starts no second storage thread. Mutation check:
+    drop the duplicate short-circuit and a second store starts."""
+    import threading
+
+    release = threading.Event()
+    lookups = iter([None, 2301])
+    client, op, stored = _deep_client(monkeypatch, lambda a: 2301,
+                                      existing=lambda a: next(lookups))
+    def slow_store(alert, result, inv_id=None):
+        op.store_calls.append(inv_id)
+        stored.set()
+        release.wait(2)
+    op.store_deep_investigation = slow_store
+
+    first = _ingest(client)
+    assert stored.wait(2)
+    retry = _ingest(client)
+    release.set()
+    assert first.get_json()["investigation_id"] == 2301
+    assert retry.get_json() == {"status": "duplicate", "investigation_id": 2301}
+    assert op.store_calls == [2301], "a duplicate must not start a second writer"
+
+
+def test_a_retry_resumes_a_row_whose_storage_was_lost(monkeypatch):
+    """An in_progress row with no storage running in this process was left
+    by a restart between its INSERT and its report. Returning it as a
+    duplicate would link the completion to a row that stays empty forever;
+    the retry resumes storage on it instead (review of #303)."""
     began = []
     client, op, stored = _deep_client(monkeypatch, lambda a: began.append(a) or 999,
                                       existing=lambda a: 2301)
     resp = _ingest(client)
-    assert resp.status_code == 202
-    assert resp.get_json() == {"status": "duplicate", "investigation_id": 2301}
-    assert began == [] and not stored.wait(0.2), "a duplicate must not create or store again"
+    assert resp.get_json() == {"status": "resumed", "investigation_id": 2301}
+    assert stored.wait(2) and op.store_calls == [2301]
+    assert began == [], "resuming must not create a second row"
 
 
 def test_a_failed_duplicate_check_falls_through_to_a_new_row(monkeypatch):

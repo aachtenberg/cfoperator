@@ -1632,7 +1632,8 @@ class KnowledgeBase:
             with self.session_scope() as session:
                 present = session.execute(text("""
                     SELECT 1 FROM information_schema.columns
-                    WHERE table_name = 'investigations' AND column_name = 'alert_id'
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'investigations' AND column_name = 'alert_id'
                 """)).fetchone()
                 if present:
                     return True

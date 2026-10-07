@@ -394,6 +394,21 @@ class WebServer:
         # Events page and the Slack attach line learn it (CFOP-216). The rest
         # (embedding, possible GitHub round-trips) runs in a background thread
         # so the answer fits the worker's short ingest timeout.
+        #
+        # Rows whose storage thread is running in *this* process. The agent is
+        # a single replica, so a row that is in_progress but not in this set
+        # was abandoned by a restart between its INSERT and its report; a
+        # retry claims it and resumes storage instead of returning a row that
+        # would stay empty forever (review of #303).
+        deep_storing: set = set()
+        deep_storing_lock = threading.Lock()
+
+        def _positive(value) -> bool:
+            # Offline, ResilientKB hands back a negative placeholder that
+            # matches no row. Publishing it would print an attach line and an
+            # Events link to an investigation that does not exist.
+            return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
         @self.app.route('/v1/deep-investigations', methods=['POST'])
         def deep_investigations():
             from event_runtime.http_actions import COMPLETION_AUTH_HEADER, verify_completion_auth
@@ -408,36 +423,54 @@ class WebServer:
             if not isinstance(alert, dict) or not isinstance(result, dict):
                 return jsonify({'error': "Body must contain 'alert' and 'result' objects"}), 400
 
-            # A retry of an attempt that landed but answered too slowly: hand
-            # back that row and leave its storage thread to finish the job.
+            # A retry of an attempt that landed but answered too slowly gets
+            # that row back. The trade-off: a genuinely second report for the
+            # same alert, arriving while the first is still being stored, is
+            # also answered with the first row. One deep Job runs per alert
+            # (fingerprint dedupe) and storage takes seconds, so that second
+            # report is the rarer case by far.
             try:
                 existing = self.operator.existing_deep_investigation(alert)
             except Exception as e:
                 logger.warning(f"Deep-investigation duplicate check failed; treating as new: {e}")
                 existing = None
-            if isinstance(existing, int) and not isinstance(existing, bool) and existing > 0:
-                return jsonify({'status': 'duplicate', 'investigation_id': existing}), 202
-
-            try:
-                inv_id = self.operator.begin_deep_investigation(alert)
-            except Exception as e:
-                # Not fatal: storage still gets its chance below, and the
-                # worker posts the completion without an id, as before.
-                logger.warning(f"Deep-investigation row not created up front: {e}")
-                inv_id = None
+            status = 'accepted'
+            if _positive(existing):
+                with deep_storing_lock:
+                    running = existing in deep_storing
+                    if not running:
+                        deep_storing.add(existing)  # claimed: resume it below
+                if running:
+                    return jsonify({'status': 'duplicate', 'investigation_id': existing}), 202
+                logger.warning(f"Deep investigation #{existing} was left in_progress with no "
+                               f"storage running (agent restarted?); resuming it")
+                inv_id, status = existing, 'resumed'
+            else:
+                try:
+                    inv_id = self.operator.begin_deep_investigation(alert)
+                except Exception as e:
+                    # Not fatal: storage still gets its chance below, and the
+                    # worker posts the completion without an id, as before.
+                    logger.warning(f"Deep-investigation row not created up front: {e}")
+                    inv_id = None
+                if _positive(inv_id):
+                    with deep_storing_lock:
+                        deep_storing.add(inv_id)
 
             def _store():
                 try:
                     self.operator.store_deep_investigation(alert, result, inv_id=inv_id)
                 except Exception as e:
                     logger.error(f"Deep-investigation ingest failed: {e}", exc_info=True)
+                finally:
+                    # Only after store returns: by then the row has an outcome,
+                    # so a later lookup no longer finds it in_progress.
+                    with deep_storing_lock:
+                        deep_storing.discard(inv_id)
 
             threading.Thread(target=_store, daemon=True, name="deep-ingest").start()
-            body = {'status': 'accepted'}
-            # Offline, ResilientKB hands back a negative placeholder that
-            # matches no row. Publishing it would print an attach line and an
-            # Events link to an investigation that does not exist.
-            if isinstance(inv_id, int) and not isinstance(inv_id, bool) and inv_id > 0:
+            body = {'status': status}
+            if _positive(inv_id):
                 body['investigation_id'] = inv_id
             return jsonify(body), 202
 
