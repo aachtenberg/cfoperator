@@ -279,6 +279,15 @@ def test_publish_refuses_a_generation_whose_modelfile_is_not_yet_gated(tmp_path:
     assert not (tmp_path / "stage").exists()
 
 
+def test_version_with_a_leading_zero_is_decimal(tmp_path: Path):
+    # v08 has no Modelfile, so the expected failure is that message, not a
+    # bash arithmetic error from reading 08 as octal.
+    proc = _run_stage(tmp_path, {"VERSION": "v08"})
+    assert proc.returncode == 2
+    assert "no Modelfile for v08" in proc.stderr
+    assert "octal" not in proc.stderr and "arithmetic" not in proc.stderr
+
+
 def test_leak_gate_redacts_forbidden_strings_completely():
     spec = importlib.util.spec_from_file_location("check_model_text", HF_DIR / "check_model_text.py")
     mod = importlib.util.module_from_spec(spec)

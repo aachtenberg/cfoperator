@@ -172,13 +172,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{label} run {run}: model error: {err}", file=sys.stderr)
                 return 2
             low = text.lower()
+            leaked = any(f in low for f in forbidden)
             for f in forbidden:
                 if f in low:
                     hits += 1
                     print(f"HIT {label} run {run}: forbidden string {_redact(f)} in output")
             for name, hit in scanner.scan_text(text):
                 hits += 1
-                print(f"HIT {label} run {run}: scanner {name}: {hit}")
+                # The scanner's own hits are only partly redacted (first and
+                # last four characters), which is enough for a credential and
+                # too much for a hostname under the forbidden domain. If the
+                # output holds a forbidden string anywhere, show nothing of it.
+                print(f"HIT {label} run {run}: scanner {name}: {_redact(hit) if leaked else hit}")
     elapsed = time.monotonic() - started
     print(f"{calls} completions in {elapsed:.0f}s: {'CLEAN' if hits == 0 else f'{hits} hit(s)'}")
     return 1 if hits else 0

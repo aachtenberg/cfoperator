@@ -58,7 +58,7 @@ REPO_ROOT="$(cd "$HERE/.." && pwd)"
 # below are derived from VERSION rather than typed twice.
 VERSION="${VERSION:-v6}"
 [[ "$VERSION" =~ ^v[0-9]+$ ]] || { echo "VERSION '$VERSION' is not vN" >&2; exit 2; }
-NAS_FOLDER="cfoperator-v$(( ${VERSION#v} + 1 ))"
+NAS_FOLDER="cfoperator-v$(( 10#${VERSION#v} + 1 ))"  # 10#: a leading zero must not read as octal
 SRC_DIR="${SRC_DIR:-/mnt/nas-backup/unsloth/$NAS_FOLDER/cfop-triage-$VERSION-gguf}"
 DATASET_DIR="${DATASET_DIR:-/mnt/nas-backup/unsloth/$NAS_FOLDER}"
 ADAPTER_DIR="${ADAPTER_DIR:-}"
