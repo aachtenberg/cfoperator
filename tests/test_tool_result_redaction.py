@@ -306,3 +306,15 @@ def test_an_unterminated_quoted_flag_value_takes_the_rest_of_the_line():
     (CodeRabbit on #309); like the key rule, an open quote takes the line."""
     out, _ = _redacted('svc --password "pa ssword\nnext --user=bob\n')
     assert out == f'svc --password "{PLACEHOLDER}\nnext --user=bob\n'
+
+
+def test_a_bare_value_stops_at_an_embedded_quote_by_design():
+    """Pinned on purpose, not endorsed: `password: abc"def` keeps `"def`.
+    The quote stop is what keeps `"POSTGRES_PASSWORD=x", "PATH=/usr/bin"` on
+    a JSON line from eating the rest of the line, and an unquoted value that
+    contains a quote is rare; quoted values have their own branches. If this
+    changes, the docker-inspect text fixture above is the one to keep green."""
+    out, _ = _redacted('password: abc"def\n')
+    assert out == f'password: {PLACEHOLDER}"def\n'
+    out, _ = _redacted('["POSTGRES_PASSWORD=secret", "PATH=/usr/bin"]')
+    assert out == f'["POSTGRES_PASSWORD={PLACEHOLDER}", "PATH=/usr/bin"]'
