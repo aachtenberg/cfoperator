@@ -744,6 +744,8 @@ func TestLeakedToolCall(t *testing.T) {
 		{`<tool_call>{"name": "bash", "arguments": {"command": "ls"}}</tool_call>`, true},
 		{`<|python_tag|>{"name": "bash", "parameters": {"command": "ls"}}`, true},
 		{`<|python_tag|>brave_search.call(query="ollama tool parsing")`, true},
+		{"<|python_tag|>def is_prime(n):\n    return n > 1", true},
+		{"Checking primes.\n<|python_tag|>import math\nprint(math.isqrt(97))", true},
 
 		{"", false},
 		{"The job ran and completed in 12s.", false},

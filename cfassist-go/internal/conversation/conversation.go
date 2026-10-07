@@ -268,11 +268,18 @@ func announcesStep(text string) bool {
 //
 // Each marker must be followed by a call-shaped payload. A bare marker is an
 // answer that mentions the format, and treating it as a failed call would
-// throw away a correct reply and fail the turn.
+// throw away a correct reply and fail the turn. An answer that quotes a full
+// example call (`<tool_call>{…`) still trips it; that is the accepted cost,
+// since missing a real leaked call is the failure this exists to prevent.
+//
+// <|python_tag|> at the start of a line may carry raw Python (Llama 3.1's
+// code-interpreter form, `<|python_tag|>def f(n):`), so any payload counts
+// there; mid-sentence it needs a JSON or call shape like the others.
 var leakedToolCallPattern = regexp.MustCompile(
 	`\[TOOL_CALLS\]\s*(?:[\[{]|[A-Za-z_][\w.-]*\[ARGS\])` +
 		`|\b[A-Za-z_][\w.-]*\[ARGS\]\s*\{` +
 		`|<tool_call>\s*\{` +
+		`|(?m:^[ \t]*<\|python_tag\|>[ \t]*\S)` +
 		`|<\|python_tag\|>\s*(?:\{|[A-Za-z_][\w.]*\()`)
 
 // maxLeakedCallShown caps the attempted call quoted back to the operator; a
