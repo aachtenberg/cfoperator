@@ -453,6 +453,10 @@ class WebServer:
                 ex_id, ex_outcome = existing if isinstance(existing, tuple) and len(existing) == 2 else (None, None)
                 if _positive(ex_id):
                     if ex_outcome not in _DEEP_RESUMABLE or ex_id in deep_storing:
+                        # Diagnosable if a genuine second report for the alert
+                        # is ever folded into the first (see the trade-off above).
+                        logger.info(f"Deep ingest for alert {alert.get('alert_id')} answered as a "
+                                    f"duplicate of #{ex_id} ({ex_outcome}); not storing it again")
                         return jsonify({'status': 'duplicate', 'investigation_id': ex_id}), 202
                     logger.warning(f"Deep investigation #{ex_id} is {ex_outcome} with no storage "
                                    f"running; resuming it")
