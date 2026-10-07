@@ -402,6 +402,8 @@ class WebServer:
         # would stay empty forever (review of #303).
         deep_storing: set = set()
         deep_storing_lock = threading.Lock()
+        # Outcomes of a row that holds no stored report.
+        _DEEP_RESUMABLE = ('in_progress', 'failed')
 
         def _positive(value) -> bool:
             # Offline, ResilientKB hands back a negative placeholder that
@@ -425,12 +427,19 @@ class WebServer:
 
             # A retry of an attempt that landed but answered too slowly gets
             # that row back:
-            #   finished (any outcome)        -> duplicate, nothing to do
-            #   in_progress, storing here     -> duplicate, its thread finishes
+            #   stored (any report outcome)   -> duplicate, nothing to do
+            #   storing here                  -> duplicate, its thread finishes
             #   in_progress, storing nowhere  -> abandoned by a restart; resume
+            #   failed, storing nowhere       -> its storage failed; retry it
+            # 'failed' on a deep row only ever comes from store_deep_
+            # investigation's own marker (a report never lands as failed), so
+            # the row holds no report and there is nothing to protect.
             # Lookup, decision and INSERT run under one lock. Every ingest
             # reaches this one process, so that makes find-or-create atomic
             # without a database constraint (deep ingests are a few a day).
+            # A hung database holds the lock, but callers stay bounded: the
+            # worker gives up after its 10s ingest timeout and posts the
+            # completion without an id.
             # The trade-off: a genuinely second report for the same alert
             # within the lookup window is answered with the first row. One
             # deep Job runs per alert (fingerprint dedupe), so that is rare.
@@ -443,10 +452,10 @@ class WebServer:
                     existing = None
                 ex_id, ex_outcome = existing if isinstance(existing, tuple) and len(existing) == 2 else (None, None)
                 if _positive(ex_id):
-                    if ex_outcome != 'in_progress' or ex_id in deep_storing:
+                    if ex_outcome not in _DEEP_RESUMABLE or ex_id in deep_storing:
                         return jsonify({'status': 'duplicate', 'investigation_id': ex_id}), 202
-                    logger.warning(f"Deep investigation #{ex_id} was left in_progress with no "
-                                   f"storage running (agent restarted?); resuming it")
+                    logger.warning(f"Deep investigation #{ex_id} is {ex_outcome} with no storage "
+                                   f"running; resuming it")
                     inv_id, status = ex_id, 'resumed'
                 else:
                     try:

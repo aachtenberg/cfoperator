@@ -526,6 +526,20 @@ def test_a_retry_resumes_a_row_whose_storage_was_lost(monkeypatch):
     assert began == [], "resuming must not create a second row"
 
 
+def test_a_retry_after_storage_failed_tries_storage_again(monkeypatch):
+    """A row storage marked failed holds no report. Answering duplicate
+    would link the completion to it and never retry; the retry resumes
+    storage on that row instead (third review of #303). Mutation check:
+    resume only in_progress and this is answered duplicate."""
+    began = []
+    client, op, stored = _deep_client(monkeypatch, lambda a: began.append(a) or 999,
+                                      existing=lambda a: (2301, "failed"))
+    resp = _ingest(client)
+    assert resp.get_json() == {"status": "resumed", "investigation_id": 2301}
+    assert stored.wait(2) and op.store_calls == [2301]
+    assert began == []
+
+
 def test_concurrent_ingests_for_one_alert_make_one_row(monkeypatch):
     """Lookup, decision and INSERT share one lock, so two overlapping
     ingests cannot both see no row and both insert. Mutation check: release
