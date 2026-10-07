@@ -41,6 +41,10 @@ type Asker func(ctx context.Context, command, reason string) Decision
 
 // WithoutBash drops the bash tool, for piped input. The schema list and
 // list_tools no longer mention it, so the model has nothing to route around.
+// read_file, the playbooks, memory and the read-only cfoperator tool stay,
+// and that is safe only because none of them can reach the network: a tool
+// that can (an HTTP fetch, say) reopens the exfiltration route from piped
+// content and must be dropped here too (claude-review on #310).
 func (r *Registry) WithoutBash() {
 	delete(r.tools, "bash")
 }

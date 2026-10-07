@@ -354,7 +354,9 @@ cfassist's shell runs as you, on this machine. Reads run as the model asks —
 A command that changes state — restart, stop, delete, install, edit a file,
 redirect output to a file — is shown to you first and runs only if you say so
 (`y` once, `a` for the rest of the session). Declined, the model is told it did
-not run. `tools.bash.confirm_writes: false` turns the question off; that is the
+not run. The classification is a denylist of write shapes, not a proof: an
+interpreter one-liner (`python -c …`), a database client or a script run by
+its path counts as a read and runs unasked. `tools.bash.confirm_writes: false` turns the question off; that is the
 shell with your permissions in the model's hands, so it is not the default.
 
 On piped input (`journalctl -u nginx | cfassist "summarize errors"`) there is

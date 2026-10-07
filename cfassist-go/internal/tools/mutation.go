@@ -757,7 +757,15 @@ func redirectsToFile(seg string) bool {
 		for k < len(plain) && plain[k] != ' ' && plain[k] != '\t' {
 			k++
 		}
-		if !isDevSink(plain[j:k]) {
+		target := plain[j:k]
+		// `> >(cmd)`: process substitution, not a file. The segment scanner
+		// has already cut at the `(`, leaving a bare `>` here, and the body is
+		// its own segment, classified on its own (tee is a write, cat a read).
+		if target == ">" || strings.HasPrefix(target, ">(") {
+			i = k
+			continue
+		}
+		if !isDevSink(target) {
 			return true
 		}
 		i = k

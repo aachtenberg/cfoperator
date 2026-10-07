@@ -77,6 +77,9 @@ var verifyReads = []string{
 	"cat /proc/meminfo | head -5",
 	"tail -n 100 /var/log/syslog",
 	"curl -fsS http://localhost:8083/api/health",
+	// Process substitution with a read-only body is a read.
+	"echo x > >(cat)",
+	"diff <(sort a) <(sort b)",
 }
 
 // launcherPrefixes: every launcher the classifier unwraps. The matrix below
@@ -161,6 +164,10 @@ var verifyWrites = []struct{ command, fragment string }{
 	{"bash -c 'cat a' >> ~/.bashrc", "redirected"},
 	{"ssh pi2 'cat /etc/hosts' > /etc/hosts", "redirected"},
 	{"watch -n1 'uptime' > /tmp/x", "redirected"},
+	// Process substitution is skipped by the redirect check on purpose; it is
+	// safe only because the body is its own segment (claude-review on #310).
+	{"echo x > >(tee /etc/motd)", "tee writes"},
+	{"echo x > >(sed -i s/a/b/ /etc/f)", "sed -i"},
 }
 
 // TestReadsAreNotMutations holds every pinned read as read-only.
