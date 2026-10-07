@@ -322,7 +322,8 @@ into `~/cfoperator`, runs `cfoperator init` inside the release image (as the
 invoking user, with the compose services' `host-gateway` entry, so every probe
 runs from the stack's own network) and then `docker compose up -d`. Re-running
 it upgrades: compose files are replaced, `.env` and the database volume are
-kept. `--dry-run` and `--no-start` are there; `--help` lists the knobs.
+kept, and a bundled file you edited (say `deploy/compose/config.yaml`) is kept
+beside the release's copy as `.bak`. `--dry-run` and `--no-start` are there; `--help` lists the knobs.
 
 **Where the bundle comes from.** A `v*` tag push runs `build-cfoperator-main.yml`,
 which on a tag (and only then) builds the agent image for `linux/amd64` *and*

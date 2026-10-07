@@ -15,7 +15,8 @@
 #   5. starts the stack with `docker compose up -d`.
 #
 # Re-running it upgrades: the compose files are replaced, .env and the database
-# volume are kept, and init is skipped. The images are pinned by the bundle; no
+# volume are kept, init is skipped, and a bundled file edited here is kept as
+# <name>.bak. The images are pinned by the bundle; no
 # container ever fetches code when it starts.
 #
 # POSIX sh, not bash: /bin/sh on Debian and Raspberry Pi OS is dash.
@@ -168,12 +169,40 @@ fresh=1
 [ -f "$INSTALL_DIR/.env" ] && fresh=0
 
 mkdir -p "$INSTALL_DIR"
-# .env is never in the bundle, so an upgrade cannot overwrite it.
+# Absolute from here on: `docker run -v cfoperator:/out` reads a bare relative
+# name as a named volume, so init would write .env where nothing looks for it.
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
+
+# .env is never in the bundle, so an upgrade cannot overwrite it. Bundled files
+# can be edited too (deploy/compose/config.yaml is mounted into the services),
+# and a release's copy replaces them — so the checksums of what was installed
+# are recorded, and a file that no longer matches them was edited here and is
+# kept as <name>.bak instead of being lost silently. A file that merely changed
+# between releases is not an edit and gets no .bak.
+manifest="$INSTALL_DIR/.cfoperator-bundle.sha256"
+kept=""
+if [ -f "$manifest" ]; then
+	while read -r recorded name; do
+		[ -f "$INSTALL_DIR/$name" ] || continue
+		if [ "$(sum "$INSTALL_DIR/$name")" != "$recorded" ]; then
+			cp -p "$INSTALL_DIR/$name" "$INSTALL_DIR/$name.bak"
+			kept="${kept}    ${name} -> ${name}.bak
+"
+		fi
+	done < "$manifest"
+fi
 cp -R "$tmp/stage/." "$INSTALL_DIR/"
+(cd "$tmp/stage" && find . -type f | sed 's|^\./||' | sort) | while read -r name; do
+	echo "$(sum "$INSTALL_DIR/$name") $name"
+done > "$manifest"
+
 if [ "$fresh" = 1 ]; then
 	echo "Installed ${image} into ${INSTALL_DIR}"
 else
 	echo "Upgraded ${INSTALL_DIR} to ${image} (your .env is unchanged)"
+fi
+if [ -n "$kept" ]; then
+	printf '  These had local edits; the release replaced them and your versions are kept:\n%s' "$kept"
 fi
 
 echo "Pulling ${image}…"

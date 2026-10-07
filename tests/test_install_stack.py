@@ -45,7 +45,7 @@ IMAGE = "ghcr.io/aachtenberg/cfoperator:v9.9.9"
 #: What the script needs besides docker. Linked into a private bin dir so the
 #: test controls exactly which docker exists.
 TOOLS = ("sh", "curl", "sha256sum", "tar", "gzip", "sed", "grep", "cut", "mktemp",
-         "rm", "mkdir", "cp", "head", "tail", "id", "cat", "dirname")
+         "rm", "mkdir", "cp", "head", "tail", "id", "cat", "dirname", "find", "sort")
 
 STUB_DOCKER = r"""#!/bin/sh
 # Records argv, one line per call; behaves like enough of docker for install.sh.
@@ -122,10 +122,10 @@ def _with_docker(machine):
     stub.chmod(0o755)
 
 
-def run(machine, *args, base_url="http://127.0.0.1:9", **env_extra):
+def run(machine, *args, base_url="http://127.0.0.1:9", cwd=None, **env_extra):
     env = dict(machine["env"], CFOP_BASE_URL=base_url, **env_extra)
     return subprocess.run([str(machine["bin"] / "sh"), str(SCRIPT), *args],
-                          capture_output=True, text=True, env=env)
+                          capture_output=True, text=True, env=env, cwd=cwd)
 
 
 def docker_calls(machine):
@@ -385,3 +385,41 @@ def test_the_arm64_variant_passes_db_smoke_before_it_is_published():
     assert arm and "scripts/db_smoke.py" in arm[0]["run"], "the arm64 image needs the same smoke"
     assert arm[0].get("if") == "github.ref_type == 'tag'", "main builds have no arm64 variant"
     assert any(s.get("uses", "").startswith("docker/setup-qemu-action") for s in steps)
+
+
+def test_a_relative_install_dir_is_mounted_as_a_path_not_a_named_volume(machine, release):
+    """`-v cfoperator:/out` is a named volume to Docker: init would write .env
+    into it and the installer would find none (claude-review on #305)."""
+    _with_docker(machine)
+    _, base_url = release
+    proc = run(machine, base_url=base_url, cwd=machine["home"], CFOP_INSTALL_DIR="cfoperator")
+    assert proc.returncode == 0, proc.stderr
+    [init] = [c for c in docker_calls(machine) if c.startswith("run ")]
+    assert f"-v {machine['dir']}:/out" in init, init
+
+
+def test_an_upgrade_keeps_local_edits_to_bundled_files_as_bak(machine, release):
+    """A release's copy replaces a bundled file; one the operator edited is
+    kept as .bak. One that only changed between releases is not an edit."""
+    _with_docker(machine)
+    pointer, base_url = release
+    assert run(machine, base_url=base_url).returncode == 0
+    config = machine["dir"] / "deploy" / "compose" / "config.yaml"
+    shipped = config.read_text()
+    config.write_text(shipped + "# tuned here\n")
+
+    # The next release pins a different image, so docker-compose.yml changes
+    # without anyone having edited it.
+    newer = IMAGE.replace("v9.9.9", "v9.9.10")
+    release_bundle.build(newer, pointer)
+    digest = hashlib.sha256((pointer / release_bundle.ASSET).read_bytes()).hexdigest()
+    (pointer / "checksums.txt").write_text(f"{digest}  {release_bundle.ASSET}\n")
+
+    proc = run(machine, base_url=base_url)
+    assert proc.returncode == 0, proc.stderr
+    assert config.read_text() == shipped, "the release's copy is installed"
+    assert (config.parent / "config.yaml.bak").read_text().endswith("# tuned here\n")
+    assert "config.yaml.bak" in proc.stdout, proc.stdout
+    assert not (machine["dir"] / "docker-compose.yml.bak").exists(), \
+        "a file that changed between releases was not edited here and needs no .bak"
+    assert newer in (machine["dir"] / "docker-compose.yml").read_text()
