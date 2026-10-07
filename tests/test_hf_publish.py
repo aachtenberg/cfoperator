@@ -28,7 +28,11 @@ import pytest
 from repo_paths import REPO_ROOT
 
 HF_DIR = REPO_ROOT / "hf"
-GATED_MODELFILE = REPO_ROOT / "benchmarks" / "Modelfile.cfop-triage-v6"
+# The staging tests run against the last GATED generation. v6's Modelfile is
+# committed ahead of its gate with a NOT YET GATED marker, which publish.sh
+# refuses (pinned below); flip both to v6 once the gate is recorded.
+GATED_VERSION = "v5"
+GATED_MODELFILE = REPO_ROOT / "benchmarks" / f"Modelfile.cfop-triage-{GATED_VERSION}"
 
 
 def _load_scanner():
@@ -153,7 +157,7 @@ def _dataset_with_manifest(tmp_path: Path, train_text: str = _row("clean row")) 
     dataset.mkdir(exist_ok=True)
     (dataset / "triage_train.jsonl").write_text(train_text, encoding="utf-8")
     (dataset / "triage_val.jsonl").write_text(_row("clean val row"), encoding="utf-8")
-    manifest = tmp_path / "v5.sha256"
+    manifest = tmp_path / "manifest.sha256"
     manifest.write_text(
         f"{_sha256(dataset / 'triage_train.jsonl')}  triage_train.jsonl\n"
         f"{_sha256(dataset / 'triage_val.jsonl')}  triage_val.jsonl\n",
@@ -168,6 +172,7 @@ def _run_stage(tmp_path: Path, extra_env: dict[str, str] | None = None) -> subpr
     env = dict(
         os.environ,
         HF_REPO="someone/cfop-triage-ministral3-14b-v6",
+        VERSION=GATED_VERSION,
         DATASET_DIR=str(dataset),
         MANIFEST=str(manifest),
         STAGE_DIR=str(stage),
@@ -213,7 +218,7 @@ def test_stage_scans_the_staged_text_files(tmp_path: Path):
 
 def test_stage_refuses_dirty_dataset(tmp_path: Path):
     dataset, manifest = _dataset_with_manifest(tmp_path, _row("POSTGRES_PASSWORD=hunter2hunter2"))
-    env = dict(os.environ, HF_REPO="someone/x", DATASET_DIR=str(dataset), MANIFEST=str(manifest), STAGE_DIR=str(tmp_path / "stage"), ADAPTER_DIR="")
+    env = dict(os.environ, HF_REPO="someone/x", VERSION=GATED_VERSION, DATASET_DIR=str(dataset), MANIFEST=str(manifest), STAGE_DIR=str(tmp_path / "stage"), ADAPTER_DIR="")
     proc = subprocess.run(
         ["bash", str(HF_DIR / "publish.sh"), "--stage-only"],
         capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
@@ -227,7 +232,7 @@ def test_stage_refuses_a_dataset_that_is_not_the_pinned_one(tmp_path: Path):
     # set must not count.
     dataset, manifest = _dataset_with_manifest(tmp_path)
     (dataset / "triage_train.jsonl").write_text(_row("a different clean row"), encoding="utf-8")
-    env = dict(os.environ, HF_REPO="someone/x", DATASET_DIR=str(dataset), MANIFEST=str(manifest), STAGE_DIR=str(tmp_path / "stage"), ADAPTER_DIR="")
+    env = dict(os.environ, HF_REPO="someone/x", VERSION=GATED_VERSION, DATASET_DIR=str(dataset), MANIFEST=str(manifest), STAGE_DIR=str(tmp_path / "stage"), ADAPTER_DIR="")
     proc = subprocess.run(
         ["bash", str(HF_DIR / "publish.sh"), "--stage-only"],
         capture_output=True, text=True, env=env, cwd=str(REPO_ROOT),
@@ -262,6 +267,24 @@ def test_stage_with_adapter_dir_copies_both_files(tmp_path: Path):
     assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "stage" / "adapter" / "adapter_model.safetensors").exists()
     assert (tmp_path / "stage" / "adapter" / "adapter_config.json").exists()
+
+
+def test_publish_refuses_a_generation_whose_modelfile_is_not_yet_gated(tmp_path: Path):
+    # v6's Modelfile is committed with the marker so the ollama import can use
+    # it; publish.sh must stop on the marker before it touches anything.
+    assert "NOT YET GATED" in (REPO_ROOT / "benchmarks" / "Modelfile.cfop-triage-v6").read_text(encoding="utf-8")
+    proc = _run_stage(tmp_path, {"VERSION": "v6"})
+    assert proc.returncode == 2
+    assert "NOT YET GATED" in proc.stderr
+    assert not (tmp_path / "stage").exists()
+
+
+def test_leak_gate_redacts_forbidden_strings_completely():
+    spec = importlib.util.spec_from_file_location("check_model_text", HF_DIR / "check_model_text.py")
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    assert mod._redact("operator-example.net") == "<20 chars>"
 
 
 def test_stage_refuses_a_non_empty_stage_dir(tmp_path: Path):
@@ -329,6 +352,7 @@ def _run_dry(tmp_path: Path, src: Path, manifest: Path, extra_env: dict[str, str
     env = dict(
         os.environ,
         HF_REPO="someone/cfop-triage-ministral3-14b-v6",
+        VERSION=GATED_VERSION,
         DATASET_DIR=str(dataset),
         STAGE_DIR=str(tmp_path / stage),
         SRC_DIR=str(src),

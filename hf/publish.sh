@@ -81,7 +81,11 @@ Q4="ministral-3-14b-instruct-2512.Q4_K_M.gguf"
 Q8="ministral-3-14b-instruct-2512.Q8_0.gguf"
 
 MODELFILE_SRC="$REPO_ROOT/benchmarks/Modelfile.cfop-triage-$VERSION"
-[ -f "$MODELFILE_SRC" ] || { echo "no gated Modelfile for $VERSION at $MODELFILE_SRC" >&2; exit 2; }
+[ -f "$MODELFILE_SRC" ] || { echo "no Modelfile for $VERSION at $MODELFILE_SRC" >&2; exit 2; }
+# A generation's Modelfile is committed before its gate runs (the import on
+# the ollama host needs it) and carries this marker until the gate is recorded
+# in its header. Nothing ships while the marker is there.
+grep -q 'NOT YET GATED' "$MODELFILE_SRC" && { echo "$MODELFILE_SRC is marked NOT YET GATED: run the gate and record it in the header before publishing" >&2; exit 2; }
 CARD_SRC="$HERE/README.md"
 
 log() { printf '%s\n' "$*" >&2; }

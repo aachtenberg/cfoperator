@@ -119,7 +119,9 @@ def eval_prompts() -> list[tuple[str, str, str]]:
 
 
 def _redact(s: str) -> str:
-    return "*" * len(s) if len(s) <= 8 else f"{s[:2]}…{s[-2:]}"
+    # Nothing of the string itself: the forbidden strings are exactly what must
+    # not land in a log. Length is enough to tell two of them apart.
+    return f"<{len(s)} chars>"
 
 
 def main(argv: list[str] | None = None) -> int:
