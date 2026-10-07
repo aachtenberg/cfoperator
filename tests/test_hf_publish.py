@@ -80,6 +80,18 @@ def test_scanner_catches_each_planted_secret(tmp_path: Path, expected: str, plan
     assert any(name == expected for _, name, _ in findings), findings
 
 
+def test_scanner_scans_dict_keys_too(tmp_path: Path):
+    f = tmp_path / "key.jsonl"
+    f.write_text(json.dumps({"POSTGRES_PASSWORD=hunter2hunter2": "x"}) + "\n", encoding="utf-8")
+    assert any(name == "password-assignment" for _, name, _ in scan.scan_file(f))
+
+
+def test_scanner_cli_exit_2_on_undecodable_bytes(tmp_path: Path):
+    f = tmp_path / "bad.jsonl"
+    f.write_bytes(b'{"messages": "\xff\xfe"}\n')
+    assert subprocess.run([sys.executable, str(HF_DIR / "scan_dataset.py"), str(f)]).returncode == 2
+
+
 def test_scanner_passes_a_real_shaped_clean_row(tmp_path: Path):
     f = tmp_path / "clean.jsonl"
     f.write_text(
@@ -267,9 +279,13 @@ def test_dry_run_passes_when_every_artifact_matches_the_manifest(tmp_path: Path)
     assert proc.returncode == 0, proc.stderr
     assert "nothing uploaded" in proc.stderr
     assert f"ok  {Q4}" in proc.stderr and f"ok  {Q8}" in proc.stderr
-    # The copies, not the NAS files, are what got verified, and they are gone afterwards.
+    # The copies, not the NAS files, are what got verified, and they are gone
+    # afterwards. The caller-supplied directory itself stays.
     assert f"copying GGUFs to {tmp_path / 'gguf-stage'}" in proc.stderr
-    assert not (tmp_path / "gguf-stage").exists()
+    assert (tmp_path / "gguf-stage").is_dir()
+    assert list((tmp_path / "gguf-stage").iterdir()) == []
+    # Likewise the caller-supplied small-file stage is kept, with its contents.
+    assert (tmp_path / "stage" / "Modelfile").exists()
 
 
 def test_dry_run_refuses_a_non_empty_gguf_stage(tmp_path: Path):

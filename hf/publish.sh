@@ -26,14 +26,16 @@
 #                   (cd "$SRC_DIR" && sha256sum *.gguf) > hf/v5.sha256
 #                   (cd "$ADAPTER_DIR" && sha256sum adapter_model.safetensors adapter_config.json) >> hf/v5.sha256
 #   STAGE_DIR     where the small files are assembled. default: a fresh mktemp
-#                 dir. A pre-existing non-empty directory is refused: whatever
-#                 is in the stage gets uploaded, so leftovers from an earlier
-#                 run would ship too.
+#                 dir, removed when the run ends. A pre-existing non-empty
+#                 directory is refused: whatever is in the stage gets uploaded,
+#                 so leftovers from an earlier run would ship too. A caller-
+#                 supplied directory is kept.
 #   GGUF_STAGE_DIR where the GGUFs are copied before they are hashed and
 #                 uploaded (~23 GB for v5). default: a fresh 0700 mktemp dir
 #                 under ${TMPDIR:-/var/tmp}. The copy is what gets verified and
 #                 what gets uploaded, so a NAS file changing between the two
-#                 cannot ship unverified bytes. Removed when the run ends, however it ends.
+#                 cannot ship unverified bytes. The copies are removed when the
+#                 run ends, however it ends; a caller-supplied directory is kept.
 #
 # Authentication is whatever `hf auth login` left behind, or HF_TOKEN in the
 # environment. The token is never written anywhere by this script.
@@ -73,8 +75,14 @@ log "== scanning training data in $DATASET_DIR"
 python3 "$HERE/scan_dataset.py" "$DATASET_DIR/triage_train.jsonl" "$DATASET_DIR/triage_val.jsonl"
 
 # ---- 2. stage the small files ---------------------------------------------
+# Directories this run created with mktemp are removed when it ends, however
+# it ends. A caller-supplied directory is left in place (only the copies the
+# script put there are removed), so pointing GGUF_STAGE_DIR at a mount point
+# cannot remove the mount point.
+CLEANUP=()
+trap 'for d in "${CLEANUP[@]}"; do rm -rf "$d"; done' EXIT
 if [ -z "${STAGE_DIR:-}" ]; then
-  STAGE_DIR="$(mktemp -d -t cfop-hf-stage.XXXXXX)"
+  STAGE_DIR="$(mktemp -d -t cfop-hf-stage.XXXXXX)"; CLEANUP+=("$STAGE_DIR")
 elif [ -e "$STAGE_DIR" ] && [ -n "$(ls -A "$STAGE_DIR" 2>/dev/null)" ]; then
   log "STAGE_DIR $STAGE_DIR is not empty: refusing, everything in the stage gets uploaded"
   exit 1
@@ -133,14 +141,14 @@ verify() {  # verify <dir> <file>: the file's sha256 must appear in the manifest
 for f in "$Q4" "$Q8"; do [ -f "$SRC_DIR/$f" ] || { log "missing $SRC_DIR/$f"; exit 1; }; done
 need=$(( $(stat -c %s "$SRC_DIR/$Q4") + $(stat -c %s "$SRC_DIR/$Q8") ))
 if [ -z "$GGUF_STAGE_DIR" ]; then
-  GGUF_STAGE_DIR="$(mktemp -d -p "${TMPDIR:-/var/tmp}" cfop-hf-gguf.XXXXXX)"
+  GGUF_STAGE_DIR="$(mktemp -d -p "${TMPDIR:-/var/tmp}" cfop-hf-gguf.XXXXXX)"; CLEANUP+=("$GGUF_STAGE_DIR")
 elif [ -e "$GGUF_STAGE_DIR" ] && [ -n "$(ls -A "$GGUF_STAGE_DIR" 2>/dev/null)" ]; then
   log "GGUF_STAGE_DIR $GGUF_STAGE_DIR is not empty: refusing"
   exit 1
 fi
 mkdir -p "$GGUF_STAGE_DIR" && chmod 700 "$GGUF_STAGE_DIR"
-# The copies never outlive the run, on success or on any failure after this point.
-trap 'rm -rf "$GGUF_STAGE_DIR"' EXIT
+# The copies never outlive the run, whichever directory they were put in.
+CLEANUP+=("$GGUF_STAGE_DIR/$Q4" "$GGUF_STAGE_DIR/$Q8")
 avail=$(df --output=avail -B1 "$GGUF_STAGE_DIR" | tail -1)
 [ "$avail" -gt "$need" ] || { log "$GGUF_STAGE_DIR has $avail bytes free, need $need for the GGUF copies (set GGUF_STAGE_DIR)"; exit 1; }
 log "== copying GGUFs to $GGUF_STAGE_DIR"

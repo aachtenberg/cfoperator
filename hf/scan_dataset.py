@@ -21,7 +21,7 @@ Usage:
 
 Exit status 0 means clean; 1 means at least one finding (listed on stdout,
 with the matched text redacted to its first and last four characters); 2
-means a file could not be read or parsed.
+means a file could not be read, decoded or parsed.
 """
 
 from __future__ import annotations
@@ -84,12 +84,13 @@ def _redact(s: str) -> str:
 
 
 def _strings(obj) -> list[str]:
-    """Every string leaf in a JSON value, depth-first."""
+    """Every string in a JSON value, depth-first: leaves and dict keys alike."""
     out: list[str] = []
     if isinstance(obj, str):
         out.append(obj)
     elif isinstance(obj, dict):
-        for v in obj.values():
+        for k, v in obj.items():
+            out.append(k)
             out.extend(_strings(v))
     elif isinstance(obj, list):
         for v in obj:
@@ -133,10 +134,11 @@ def main(argv: list[str]) -> int:
         path = Path(arg)
         try:
             findings = scan_file(path)
-        except (OSError, json.JSONDecodeError) as exc:
+            with path.open(encoding="utf-8") as fh:
+                rows = sum(1 for line in fh if line.strip())
+        except (OSError, ValueError) as exc:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
             print(f"{path}: cannot scan: {exc}")
             return 2
-        rows = sum(1 for line in path.open(encoding="utf-8") if line.strip())
         if findings:
             print(f"{path}: {len(findings)} finding(s) in {rows} rows")
             for lineno, name, hit in findings:
