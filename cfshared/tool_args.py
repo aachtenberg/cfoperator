@@ -220,8 +220,10 @@ def redact_tool_result(value: Any) -> Tuple[Any, int]:
     """A copy of a tool result with secret-shaped values replaced, and how many.
 
     Dicts and lists are walked: a secret-shaped key loses its value whatever
-    its type, a ``kind: Secret`` object loses every value under ``data`` and
-    ``stringData``, and every string is run through the text patterns above.
+    its type — a whole ``credentials: {...}`` object goes, non-secret subkeys
+    included, which is the safe side — a ``kind: Secret`` object loses every
+    value under ``data`` and ``stringData``, and every string is run through
+    the text patterns above. Flags (``true``/``false``) under a secret key stay.
     Nothing is truncated here; the caller's size cap does that.
     """
     count = 0
