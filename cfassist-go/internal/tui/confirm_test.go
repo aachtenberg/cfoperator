@@ -10,6 +10,7 @@ import (
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 )
 
+// pendingModel is a busy model with one question open.
 func pendingModel(t *testing.T) (*model, chan tools.Decision) {
 	t.Helper()
 	m := &model{busy: true, textarea: textarea.New()}
@@ -18,6 +19,7 @@ func pendingModel(t *testing.T) (*model, chan tools.Decision) {
 	return m, reply
 }
 
+// TestTheQuestionIsRenderedWithTheCommandAndReason checks the prompt lines.
 func TestTheQuestionIsRenderedWithTheCommandAndReason(t *testing.T) {
 	m, _ := pendingModel(t)
 	if m.pendingConfirm == nil {
@@ -31,6 +33,7 @@ func TestTheQuestionIsRenderedWithTheCommandAndReason(t *testing.T) {
 	}
 }
 
+// TestKeysAnswerTheQuestion maps each key to its decision.
 func TestKeysAnswerTheQuestion(t *testing.T) {
 	cases := []struct {
 		key  tea.KeyMsg
@@ -61,6 +64,7 @@ func TestKeysAnswerTheQuestion(t *testing.T) {
 	}
 }
 
+// TestTheAnswerKeyDoesNotReachTheInputBox checks the key is consumed by the question.
 func TestTheAnswerKeyDoesNotReachTheInputBox(t *testing.T) {
 	m, _ := pendingModel(t)
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
@@ -69,6 +73,7 @@ func TestTheAnswerKeyDoesNotReachTheInputBox(t *testing.T) {
 	}
 }
 
+// TestCtrlCDeniesAndStillCancelsTheTurn checks Ctrl+C answers no and cancels.
 func TestCtrlCDeniesAndStillCancelsTheTurn(t *testing.T) {
 	m, reply := pendingModel(t)
 	cancelled := false
@@ -82,6 +87,7 @@ func TestCtrlCDeniesAndStillCancelsTheTurn(t *testing.T) {
 	}
 }
 
+// TestNoQuestionOpenMeansKeysBehaveAsBefore checks answerConfirm is inert with nothing pending.
 func TestNoQuestionOpenMeansKeysBehaveAsBefore(t *testing.T) {
 	m := &model{busy: false, textarea: textarea.New()}
 	if m.answerConfirm(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}) {

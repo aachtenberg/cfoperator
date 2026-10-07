@@ -11,6 +11,7 @@ import (
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 )
 
+// registry is a default registry with a scratch memory directory.
 func registry(t *testing.T) *tools.Registry {
 	t.Helper()
 	cfg := config.Defaults()
@@ -18,6 +19,7 @@ func registry(t *testing.T) *tools.Registry {
 	return tools.New(cfg)
 }
 
+// hasBash reports whether the registry offers bash.
 func hasBash(reg *tools.Registry) bool {
 	for _, s := range reg.GetSchemas() {
 		if s.Function.Name == "bash" {
@@ -27,6 +29,7 @@ func hasBash(reg *tools.Registry) bool {
 	return false
 }
 
+// TestPipedInputGetsNoShell checks a pipe removes bash.
 func TestPipedInputGetsNoShell(t *testing.T) {
 	reg := registry(t)
 	shellPolicy(reg, true, nil)
@@ -35,6 +38,7 @@ func TestPipedInputGetsNoShell(t *testing.T) {
 	}
 }
 
+// TestATerminalKeepsBashBehindTheGate checks a terminal keeps bash and a write asks.
 func TestATerminalKeepsBashBehindTheGate(t *testing.T) {
 	reg := registry(t)
 	asked := 0
@@ -54,6 +58,7 @@ func TestATerminalKeepsBashBehindTheGate(t *testing.T) {
 	}
 }
 
+// TestTerminalAskReadsOneLine maps each typed line to its decision.
 func TestTerminalAskReadsOneLine(t *testing.T) {
 	cases := map[string]tools.Decision{
 		"y\n": tools.Allow, "yes\n": tools.Allow, "Y\n": tools.Allow,
@@ -73,6 +78,7 @@ func TestTerminalAskReadsOneLine(t *testing.T) {
 	}
 }
 
+// TestTerminalAskHonoursACancelledTurn returns Deny when the context is cancelled.
 func TestTerminalAskHonoursACancelledTurn(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -92,6 +98,7 @@ func TestTerminalAskHonoursACancelledTurn(t *testing.T) {
 
 type blockingReader struct{ ch chan struct{} }
 
+// newBlockingReader is a reader that never delivers a line until released.
 func newBlockingReader() (*blockingReader, func()) {
 	r := &blockingReader{ch: make(chan struct{})}
 	return r, func() { close(r.ch) }

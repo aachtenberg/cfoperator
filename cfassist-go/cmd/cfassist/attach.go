@@ -240,6 +240,9 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	fmt.Println(briefing)
 
 	if question != "" {
+		// The operator is at this terminal, so a write-shaped command asks here, as
+		// a plain one-shot does (CFOP-282). The TUI path below installs its own.
+		shellPolicy(toolReg, false, terminalAsk(os.Stdin, os.Stderr))
 		return runNonInteractive(cmd.Context(), cfg, llm, toolReg, systemPrompt, question)
 	}
 

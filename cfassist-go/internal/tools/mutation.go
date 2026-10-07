@@ -49,6 +49,13 @@ func mutationReason(command string, depth int) string {
 		if len(words) == 0 {
 			continue
 		}
+		// The segment's own redirect first: `sh -c 'echo x' > /etc/fstab`
+		// writes the file whatever the body does, and checking it after the
+		// body meant the `continue` below skipped it (CodeRabbit on #310).
+		// Quotes are blanked, so a redirect inside the body is the body's.
+		if redirectsToFile(raw) {
+			return "output is redirected to a file"
+		}
 		// A command handed over as a string runs its body; the body is what
 		// gets classified.
 		if body, ok := shellBody(words); ok {
@@ -59,9 +66,6 @@ func mutationReason(command string, depth int) string {
 		}
 		if reason := matchMutator(words); reason != "" {
 			return reason
-		}
-		if redirectsToFile(raw) {
-			return "output is redirected to a file"
 		}
 	}
 	return ""
@@ -281,6 +285,7 @@ var shellLaunchers = map[string]bool{
 	"su": true, "runuser": true, "flock": true,
 }
 
+// isEnvAssign reports a leading NAME=value word.
 func isEnvAssign(s string) bool {
 	eq := strings.IndexByte(s, '=')
 	if eq < 1 {
@@ -394,6 +399,7 @@ func shellBody(words []word) (string, bool) {
 // Mutators: the program word and its arguments
 // ---------------------------------------------------------------------------
 
+// set builds a membership set from its arguments.
 func set(items ...string) map[string]bool {
 	m := make(map[string]bool, len(items))
 	for _, s := range items {
@@ -431,6 +437,7 @@ var (
 	devSinks = []string{"/dev/null", "/dev/stdout", "/dev/stderr", "/dev/stdin", "/dev/fd/", "/dev/tcp/", "/dev/udp/"}
 )
 
+// texts is the words' text, quoting dropped.
 func texts(words []word) []string {
 	out := make([]string, len(words))
 	for i, w := range words {
@@ -440,6 +447,7 @@ func texts(words []word) []string {
 }
 
 // firstBare is the first argument that is not an option (`-x`, `--x`).
+// firstBare is the first argument that is not an option.
 func firstBare(args []string) string {
 	for _, a := range args {
 		if !strings.HasPrefix(a, "-") {
@@ -449,6 +457,7 @@ func firstBare(args []string) string {
 	return ""
 }
 
+// anyArg is the first argument found in want, or "".
 func anyArg(args []string, want map[string]bool) string {
 	for _, a := range args {
 		if want[a] {
@@ -458,6 +467,7 @@ func anyArg(args []string, want map[string]bool) string {
 	return ""
 }
 
+// hasPrefixAny reports whether s starts with any of the prefixes.
 func hasPrefixAny(s string, prefixes ...string) bool {
 	for _, p := range prefixes {
 		if strings.HasPrefix(s, p) {
@@ -467,6 +477,7 @@ func hasPrefixAny(s string, prefixes ...string) bool {
 	return false
 }
 
+// isDevSink reports a redirect target that is not a file: the bit bucket, the standard streams, a /dev/tcp probe, stdout as `-`.
 func isDevSink(target string) bool {
 	if target == "" || target == "-" {
 		return true
@@ -479,6 +490,7 @@ func isDevSink(target string) bool {
 	return false
 }
 
+// matchMutator is the mutator table: the program word and its arguments, to a reason or "".
 func matchMutator(words []word) string {
 	prog := words[0].text
 	args := texts(words[1:])
@@ -645,6 +657,7 @@ func matchMutator(words []word) string {
 	return ""
 }
 
+// bareArgs is the arguments that are not options, in order.
 func bareArgs(args []string) []string {
 	var out []string
 	for _, a := range args {
@@ -696,6 +709,7 @@ func curlWrites(args []string) bool {
 	return false
 }
 
+// isMutatingMethod reports an HTTP method that changes something.
 func isMutatingMethod(m string) bool {
 	switch strings.ToUpper(strings.TrimSpace(m)) {
 	case "POST", "PUT", "DELETE", "PATCH":

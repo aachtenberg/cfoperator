@@ -155,8 +155,15 @@ var verifyWrites = []struct{ command, fragment string }{
 	{"mkfs.ext4 /dev/sdb1", "changes the filesystem"},
 	{"iptables -A INPUT -j DROP", "firewall rules"},
 	{"touch /tmp/x", "changes the filesystem"},
+	// The outer process's redirect, around a body that is itself a read
+	// (CodeRabbit on #310): the file is written whatever the body does.
+	{"sh -c 'echo x' > /etc/fstab", "redirected"},
+	{"bash -c 'cat a' >> ~/.bashrc", "redirected"},
+	{"ssh pi2 'cat /etc/hosts' > /etc/hosts", "redirected"},
+	{"watch -n1 'uptime' > /tmp/x", "redirected"},
 }
 
+// TestReadsAreNotMutations holds every pinned read as read-only.
 func TestReadsAreNotMutations(t *testing.T) {
 	for _, cmd := range verifyReads {
 		if reason := MutationReason(cmd); reason != "" {
@@ -165,6 +172,7 @@ func TestReadsAreNotMutations(t *testing.T) {
 	}
 }
 
+// TestWritesAreRefusedWithTheirReason holds every pinned write, with the Python wording of its reason.
 func TestWritesAreRefusedWithTheirReason(t *testing.T) {
 	for _, tc := range verifyWrites {
 		reason := MutationReason(tc.command)
@@ -174,6 +182,7 @@ func TestWritesAreRefusedWithTheirReason(t *testing.T) {
 	}
 }
 
+// TestAWriteStaysAWriteUnderEveryLauncher puts every launcher in front of every write, quoted too where the launcher runs a quoted body.
 func TestAWriteStaysAWriteUnderEveryLauncher(t *testing.T) {
 	for _, prefix := range launcherPrefixes {
 		for _, w := range matrixWrites {
@@ -194,6 +203,7 @@ func TestAWriteStaysAWriteUnderEveryLauncher(t *testing.T) {
 	}
 }
 
+// TestNestingIsCappedNotRecursedForever refuses a command nested past the cap instead of recursing.
 func TestNestingIsCappedNotRecursedForever(t *testing.T) {
 	cmd := "x"
 	for i := 0; i < 12; i++ {
@@ -204,6 +214,7 @@ func TestNestingIsCappedNotRecursedForever(t *testing.T) {
 	}
 }
 
+// TestSegmentsSplitLikeAShell pins the quote-aware segment scanner.
 func TestSegmentsSplitLikeAShell(t *testing.T) {
 	cases := map[string][]string{
 		"a | b":                  {"a", "b"},
@@ -225,6 +236,7 @@ func TestSegmentsSplitLikeAShell(t *testing.T) {
 	}
 }
 
+// TestShellWordsKeepQuotingKnowledge pins the tokenizer, including which words were wholly quoted.
 func TestShellWordsKeepQuotingKnowledge(t *testing.T) {
 	words := shellWords(`su postgres -c 'psql -c "select 1"'`)
 	if len(words) != 4 || words[3].text != `psql -c "select 1"` || !words[3].quoted {

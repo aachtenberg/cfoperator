@@ -21,6 +21,7 @@ func (a *recordingAsker) ask(ctx context.Context, command, reason string) Decisi
 	return a.decision
 }
 
+// gatedRegistry is a default registry with a recording asker installed.
 func gatedRegistry(t *testing.T, decision Decision) (*Registry, *recordingAsker) {
 	t.Helper()
 	cfg := config.Defaults()
@@ -31,6 +32,7 @@ func gatedRegistry(t *testing.T, decision Decision) (*Registry, *recordingAsker)
 	return r, a
 }
 
+// toolNames is the set of tool names the registry offers.
 func toolNames(r *Registry) map[string]bool {
 	names := map[string]bool{}
 	for _, s := range r.GetSchemas() {
@@ -39,6 +41,7 @@ func toolNames(r *Registry) map[string]bool {
 	return names
 }
 
+// TestWithoutBashRemovesTheToolEverywhereTheModelCouldSeeIt checks the schemas, Execute and list_tools.
 func TestWithoutBashRemovesTheToolEverywhereTheModelCouldSeeIt(t *testing.T) {
 	r := newTestRegistry()
 	r.WithoutBash()
@@ -60,6 +63,7 @@ func TestWithoutBashRemovesTheToolEverywhereTheModelCouldSeeIt(t *testing.T) {
 	}
 }
 
+// TestAReadRunsWithoutAsking runs a read-only command without consulting the asker.
 func TestAReadRunsWithoutAsking(t *testing.T) {
 	r, a := gatedRegistry(t, Deny)
 	res := r.Execute(context.Background(), "bash", map[string]any{"command": "echo hello"})
@@ -71,6 +75,7 @@ func TestAReadRunsWithoutAsking(t *testing.T) {
 	}
 }
 
+// TestADeclinedWriteDoesNotRunAndSaysSo checks that a declined command did not execute and the model is told.
 func TestADeclinedWriteDoesNotRunAndSaysSo(t *testing.T) {
 	r, a := gatedRegistry(t, Deny)
 	marker := filepath.Join(t.TempDir(), "touched")
@@ -87,6 +92,7 @@ func TestADeclinedWriteDoesNotRunAndSaysSo(t *testing.T) {
 	}
 }
 
+// TestAnAllowedWriteRuns runs the command the operator allowed.
 func TestAnAllowedWriteRuns(t *testing.T) {
 	r, _ := gatedRegistry(t, Allow)
 	marker := filepath.Join(t.TempDir(), "touched")
@@ -96,6 +102,7 @@ func TestAnAllowedWriteRuns(t *testing.T) {
 	}
 }
 
+// TestAllowAllStopsAskingForTheSession asks once when the answer is all.
 func TestAllowAllStopsAskingForTheSession(t *testing.T) {
 	r, a := gatedRegistry(t, AllowAll)
 	dir := t.TempDir()
@@ -109,6 +116,7 @@ func TestAllowAllStopsAskingForTheSession(t *testing.T) {
 	}
 }
 
+// TestNoAskerMeansNoOperatorAndTheWriteIsRefused refuses a write on a headless path.
 func TestNoAskerMeansNoOperatorAndTheWriteIsRefused(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Memory.Directory = t.TempDir()
@@ -123,6 +131,7 @@ func TestNoAskerMeansNoOperatorAndTheWriteIsRefused(t *testing.T) {
 	}
 }
 
+// TestTheLatestAskerWinsAndNothingIsWrappedTwice installs a second asker without double prompting.
 func TestTheLatestAskerWinsAndNothingIsWrappedTwice(t *testing.T) {
 	r, first := gatedRegistry(t, Deny)
 	second := &recordingAsker{decision: Allow}
@@ -137,6 +146,7 @@ func TestTheLatestAskerWinsAndNothingIsWrappedTwice(t *testing.T) {
 	}
 }
 
+// TestConfirmWritesOffRestoresTheOldBehaviour runs writes unasked when the knob is off.
 func TestConfirmWritesOffRestoresTheOldBehaviour(t *testing.T) {
 	off := false
 	cfg := config.Defaults()
@@ -155,6 +165,7 @@ func TestConfirmWritesOffRestoresTheOldBehaviour(t *testing.T) {
 	}
 }
 
+// TestTheGatedToolTellsTheModelAboutTheGate checks the bash description mentions the confirmation.
 func TestTheGatedToolTellsTheModelAboutTheGate(t *testing.T) {
 	r := newTestRegistry()
 	for _, s := range r.GetSchemas() {
