@@ -60,7 +60,7 @@ This is the section to read when something is lost.
 | Modelfile | `benchmarks/Modelfile.cfop-triage` (this repo) | Reconstructed from `ollama show --modelfile` |
 | Eval results | `benchmarks/triage_eval_cfop_triage_ministral3_v1*.json` | Committed |
 | **Training run** (adapter, checkpoints, args) | NAS `/mnt/nas-backup/cfoperator-finetune/training-run-1787248524/` | 668MB. Archived 2026-09-02 off the training box |
-| **Hugging Face mirror (v5)** | **pending** — uploaded by [`hf/publish.sh`](../hf/publish.sh) from the NAS v5 folder (CFOP-274); the repo id goes here once the first upload lands | Q4 + Q8 GGUFs, the v5 Modelfile, the card in [`hf/README.md`](../hf/README.md), and the adapter when `ADAPTER_DIR` is given. Gated twice: [`hf/scan_dataset.py`](../hf/scan_dataset.py) must find nothing secret-shaped in the v5 train/val set, and every artifact must match `hf/v5.sha256`, computed once on the NAS host from the gated files (size is no check: the v5 GGUFs are byte-for-byte the same size as v1's). The dataset itself is never published. |
+| **Hugging Face mirror** | **pending** — uploaded by [`hf/publish.sh`](../hf/publish.sh) with `VERSION=v6` from the NAS `cfoperator-v7/` folder (CFOP-274, CFOP-277); the repo id goes here once the first upload lands. v5 is never published. | Q4 + Q8 GGUFs, the generation's Modelfile, the card in [`hf/README.md`](../hf/README.md), and the adapter when `ADAPTER_DIR` is given. Gated three ways: [`hf/scan_dataset.py`](../hf/scan_dataset.py) must find nothing secret-shaped in the train/val set, which must itself match the dataset lines of `hf/v6.sha256`; every artifact must match that manifest, computed once on the NAS host from the gated files (size is no check: every generation's GGUFs are byte-for-byte the same size); and the Modelfile must not carry the `NOT YET GATED` marker. The dataset itself is never published. |
 
 ### The training run archive
 
@@ -847,6 +847,33 @@ is grounded and fine. **This is the first candidate to clear the fabrication
 rule**, and it clears the rest of the bar with it: 504/504, 100/100 soak, JSON
 100%, Q4/Q8 agreement. It ships as `cfop-triage-ministral3:v5-q4` through
 `cfoperator-deploy`; `v1-q4` stays registered as the rollback.
+
+#### v6 (CFOP-277): the same data with the operator's domain scrubbed — candidate
+
+v5 is the model that ships, and it is not the model that gets published.
+Preparing the Hugging Face release (CFOP-274) turned up one identifier in the
+v5 training set that is not already in this public repo: an ingress hostname
+under the operator's own domain: 17 occurrences across the 5 rows built from
+one recurring "unreachable through the public ingress" alert, in both the prompt
+and the target of each. Weights trained
+to produce those targets hold that hostname. Everything else the set names
+(node names, private addresses, app names) is already here.
+
+v6 is **v5 with that one edit**: [`scripts/scrub_triage_dataset.py`](../scripts/scrub_triage_dataset.py)
+rewrites `<label>.<domain>` to `<label>.homelab.example` (RFC 2606) across the
+exact v5 files, marks the touched rows with `meta.scrub`, and refuses to
+finish if any occurrence is left. Validation came out byte-identical to v5's.
+Same YAML, same seed, so the comparison is clean. Staged at
+`/mnt/nas-backup/unsloth/cfoperator-v7/`; fingerprints in `hf/v6.sha256`.
+The domain itself is a command-line argument and appears nowhere in the repo.
+
+**Not yet gated.** v6 clears the same bar as v5 (§8 of the runbook: 504/504,
+0 fabricated, Q4/Q8 agreement, ×50 soak) **plus a leak gate**,
+[`hf/check_model_text.py`](../hf/check_model_text.py), which replays the 5
+scrubbed prompts and the 14 eval cases through the served model and fails on
+any output containing the domain or anything the dataset scanner flags. If v6
+clears both, it is what goes to the Hub and, optionally, to production. If it
+does not, production stays on v5 and nothing is published until a v7 does.
 
 ---
 

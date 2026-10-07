@@ -171,7 +171,9 @@ The 14 synthetic rows cover one shape the history cannot supply (severity
 never investigated. The dataset is not released: it is real operational data
 from a private network. It was scanned for credentials, email addresses,
 public IP addresses and URL-embedded secrets before these weights were
-published, and found clean.
+published, and found clean. One ingress hostname under the operator's own
+domain was replaced with `<label>.homelab.example` across the 5 rows that
+carried it before training, so the weights never saw it.
 
 ## Provenance and license
 
