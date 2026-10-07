@@ -424,38 +424,40 @@ class WebServer:
                 return jsonify({'error': "Body must contain 'alert' and 'result' objects"}), 400
 
             # A retry of an attempt that landed but answered too slowly gets
-            # that row back. The trade-off: a genuinely second report for the
-            # same alert, arriving while the first is still being stored, is
-            # also answered with the first row. One deep Job runs per alert
-            # (fingerprint dedupe) and storage takes seconds, so that second
-            # report is the rarer case by far.
-            try:
-                existing = self.operator.existing_deep_investigation(alert)
-            except Exception as e:
-                logger.warning(f"Deep-investigation duplicate check failed; treating as new: {e}")
-                existing = None
+            # that row back:
+            #   finished (any outcome)        -> duplicate, nothing to do
+            #   in_progress, storing here     -> duplicate, its thread finishes
+            #   in_progress, storing nowhere  -> abandoned by a restart; resume
+            # Lookup, decision and INSERT run under one lock. Every ingest
+            # reaches this one process, so that makes find-or-create atomic
+            # without a database constraint (deep ingests are a few a day).
+            # The trade-off: a genuinely second report for the same alert
+            # within the lookup window is answered with the first row. One
+            # deep Job runs per alert (fingerprint dedupe), so that is rare.
             status = 'accepted'
-            if _positive(existing):
-                with deep_storing_lock:
-                    running = existing in deep_storing
-                    if not running:
-                        deep_storing.add(existing)  # claimed: resume it below
-                if running:
-                    return jsonify({'status': 'duplicate', 'investigation_id': existing}), 202
-                logger.warning(f"Deep investigation #{existing} was left in_progress with no "
-                               f"storage running (agent restarted?); resuming it")
-                inv_id, status = existing, 'resumed'
-            else:
+            with deep_storing_lock:
                 try:
-                    inv_id = self.operator.begin_deep_investigation(alert)
+                    existing = self.operator.existing_deep_investigation(alert)
                 except Exception as e:
-                    # Not fatal: storage still gets its chance below, and the
-                    # worker posts the completion without an id, as before.
-                    logger.warning(f"Deep-investigation row not created up front: {e}")
-                    inv_id = None
+                    logger.warning(f"Deep-investigation duplicate check failed; treating as new: {e}")
+                    existing = None
+                ex_id, ex_outcome = existing if isinstance(existing, tuple) and len(existing) == 2 else (None, None)
+                if _positive(ex_id):
+                    if ex_outcome != 'in_progress' or ex_id in deep_storing:
+                        return jsonify({'status': 'duplicate', 'investigation_id': ex_id}), 202
+                    logger.warning(f"Deep investigation #{ex_id} was left in_progress with no "
+                                   f"storage running (agent restarted?); resuming it")
+                    inv_id, status = ex_id, 'resumed'
+                else:
+                    try:
+                        inv_id = self.operator.begin_deep_investigation(alert)
+                    except Exception as e:
+                        # Not fatal: storage still gets its chance below, and the
+                        # worker posts the completion without an id, as before.
+                        logger.warning(f"Deep-investigation row not created up front: {e}")
+                        inv_id = None
                 if _positive(inv_id):
-                    with deep_storing_lock:
-                        deep_storing.add(inv_id)
+                    deep_storing.add(inv_id)
 
             def _store():
                 try:

@@ -102,13 +102,15 @@ def check_knowledge_base(url):
         linked = kb.start_investigation("db smoke alert link", alert_id="db-smoke/alert 1")
         assert (kb.get_investigation(linked) or {}).get("alert_id") == "db-smoke/alert 1", \
             "investigations.alert_id did not round-trip"
-        # A retried deep ingest finds the row its first attempt made, and
-        # stops matching once that row has an outcome.
-        assert kb.find_open_investigation_for_alert("db-smoke/alert 1", "db smoke alert link") == linked, \
-            "the open investigation for an alert was not found"
+        # A retried deep ingest finds the row its first attempt made, with its
+        # current outcome, and only for the same alert and trigger.
+        assert kb.find_recent_investigation_for_alert("db-smoke/alert 1", "db smoke alert link") == \
+            (linked, "in_progress"), "the open investigation for an alert was not found"
         kb.update_investigation(linked, findings={"response": "done"}, outcome="monitoring")
-        assert kb.find_open_investigation_for_alert("db-smoke/alert 1", "db smoke alert link") is None, \
-            "a finished investigation still matched as open"
+        assert kb.find_recent_investigation_for_alert("db-smoke/alert 1", "db smoke alert link") == \
+            (linked, "monitoring"), "a finished investigation was not found with its outcome"
+        assert kb.find_recent_investigation_for_alert("db-smoke/alert 1", "another trigger") is None, \
+            "an investigation matched a different trigger"
         kb.set_setting("db_smoke", "ok")
         assert kb.get_setting("db_smoke") == "ok", "setting did not round-trip"
         inv_id = kb.start_investigation("db smoke")

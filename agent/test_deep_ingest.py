@@ -476,11 +476,12 @@ def test_a_retry_while_storage_runs_gets_the_same_row_and_no_second_writer(monke
     """The worker retries an ingest whose answer took longer than its 10s
     timeout; the first attempt may have landed and still be storing. The
     retry gets that row and starts no second storage thread. Mutation check:
-    drop the duplicate short-circuit and a second store starts."""
+    treat an in_progress row as abandoned regardless of the set and a second
+    store starts."""
     import threading
 
     release = threading.Event()
-    lookups = iter([None, 2301])
+    lookups = iter([None, (2301, "in_progress")])
     client, op, stored = _deep_client(monkeypatch, lambda a: 2301,
                                       existing=lambda a: next(lookups))
     def slow_store(alert, result, inv_id=None):
@@ -498,6 +499,19 @@ def test_a_retry_while_storage_runs_gets_the_same_row_and_no_second_writer(monke
     assert op.store_calls == [2301], "a duplicate must not start a second writer"
 
 
+def test_a_retry_after_storage_finished_gets_the_same_row(monkeypatch):
+    """The common retry: the first answer was slow, but its storage finished
+    before the retry arrived, so the row already has an outcome. Matching
+    only in_progress rows missed this and made a second row (second review
+    of #303). Mutation check: only match in_progress and begin is called."""
+    began = []
+    client, op, stored = _deep_client(monkeypatch, lambda a: began.append(a) or 999,
+                                      existing=lambda a: (2301, "needs_action"))
+    resp = _ingest(client)
+    assert resp.get_json() == {"status": "duplicate", "investigation_id": 2301}
+    assert began == [] and not stored.wait(0.2)
+
+
 def test_a_retry_resumes_a_row_whose_storage_was_lost(monkeypatch):
     """An in_progress row with no storage running in this process was left
     by a restart between its INSERT and its report. Returning it as a
@@ -505,11 +519,35 @@ def test_a_retry_resumes_a_row_whose_storage_was_lost(monkeypatch):
     the retry resumes storage on it instead (review of #303)."""
     began = []
     client, op, stored = _deep_client(monkeypatch, lambda a: began.append(a) or 999,
-                                      existing=lambda a: 2301)
+                                      existing=lambda a: (2301, "in_progress"))
     resp = _ingest(client)
     assert resp.get_json() == {"status": "resumed", "investigation_id": 2301}
     assert stored.wait(2) and op.store_calls == [2301]
     assert began == [], "resuming must not create a second row"
+
+
+def test_concurrent_ingests_for_one_alert_make_one_row(monkeypatch):
+    """Lookup, decision and INSERT share one lock, so two overlapping
+    ingests cannot both see no row and both insert. Mutation check: release
+    the lock before begin and two rows are made."""
+    import threading
+    import time
+
+    rows = {}
+    def existing(alert):
+        return (rows["id"], "in_progress") if rows else None
+    def begin(alert):
+        time.sleep(0.05)  # widen the window between lookup and insert
+        rows["id"] = 2400 + len(rows)
+        return rows["id"]
+    client, op, stored = _deep_client(monkeypatch, begin, existing=existing)
+    answers = []
+    threads = [threading.Thread(target=lambda: answers.append(_ingest(client).get_json()))
+               for _ in range(2)]
+    for t in threads: t.start()
+    for t in threads: t.join(5)
+    assert sorted(a["investigation_id"] for a in answers) == [2400, 2400], answers
+    assert sorted(a["status"] for a in answers) == ["accepted", "duplicate"], answers
 
 
 def test_a_failed_duplicate_check_falls_through_to_a_new_row(monkeypatch):
@@ -524,13 +562,13 @@ def test_a_failed_duplicate_check_falls_through_to_a_new_row(monkeypatch):
 
 def test_the_duplicate_lookup_matches_on_alert_and_deep_trigger():
     op = _operator()
-    op.kb.find_open_investigation_for_alert.return_value = 77
-    assert op.existing_deep_investigation(_ALERT) == 77
-    op.kb.find_open_investigation_for_alert.assert_called_once_with(
+    op.kb.find_recent_investigation_for_alert.return_value = (77, "in_progress")
+    assert op.existing_deep_investigation(_ALERT) == (77, "in_progress")
+    op.kb.find_recent_investigation_for_alert.assert_called_once_with(
         "abc-123", "[deep] NodeUnreachable raspberrypi3")
-    op.kb.find_open_investigation_for_alert.reset_mock()
+    op.kb.find_recent_investigation_for_alert.reset_mock()
     assert op.existing_deep_investigation({"summary": "no id"}) is None
-    op.kb.find_open_investigation_for_alert.assert_not_called()
+    op.kb.find_recent_investigation_for_alert.assert_not_called()
 
 
 # ---- review of #303: buffered starts wait for the schema ---------------------

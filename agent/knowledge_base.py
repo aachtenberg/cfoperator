@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, Iterable, List, NamedTuple, Optional
+from typing import Any, Dict, Iterable, List, NamedTuple, Optional, Tuple
 from contextlib import contextmanager
 
 from sqlalchemy import (
@@ -2561,26 +2561,26 @@ class KnowledgeBase:
 
     # ============================= Investigations =============================
 
-    def find_open_investigation_for_alert(self, alert_id: str, trigger: str,
-                                          within_seconds: int = 900) -> Optional[int]:
-        """The newest still-in_progress investigation for this alert and
-        trigger, started within the window, or None.
+    def find_recent_investigation_for_alert(self, alert_id: str, trigger: str,
+                                            within_seconds: int = 900) -> Optional[Tuple[int, str]]:
+        """``(id, outcome)`` of the newest investigation for this alert and
+        trigger started within the window, or None.
 
         Lets a retried deep-investigation ingest find the row its timed-out
-        first attempt created instead of making a second (CFOP-216). The
-        window covers the worker's retries with room to spare, and is short
-        enough that a row orphaned by a killed process stops matching.
+        first attempt created instead of making a second (CFOP-216). Any
+        outcome matches: storage usually finishes before a retry arrives,
+        so an in_progress-only match would miss the common case. The window
+        covers the worker's retries with room to spare.
         """
         since = datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
         with self.session_scope() as session:
-            row = (session.query(Investigation.id)
+            row = (session.query(Investigation.id, Investigation.outcome)
                    .filter(Investigation.alert_id == str(alert_id),
                            Investigation.trigger == trigger,
-                           Investigation.outcome == 'in_progress',
                            Investigation.started_at >= since)
                    .order_by(Investigation.id.desc())
                    .first())
-            return row[0] if row else None
+            return (row[0], row[1]) if row else None
 
     def start_investigation(self, trigger: str, alert_id: Optional[str] = None) -> int:
         """Start an investigation and return its ID for event tracking (scoped to this host).
