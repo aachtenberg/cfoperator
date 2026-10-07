@@ -743,12 +743,17 @@ func TestLeakedToolCall(t *testing.T) {
 		{"Creating the job now.\n\n" + leakedMinistralCall, true},
 		{`<tool_call>{"name": "bash", "arguments": {"command": "ls"}}</tool_call>`, true},
 		{`<|python_tag|>{"name": "bash", "parameters": {"command": "ls"}}`, true},
+		{`<|python_tag|>brave_search.call(query="ollama tool parsing")`, true},
 
 		{"", false},
 		{"The job ran and completed in 12s.", false},
 		{"Run `kubectl create job --from=cronjob/reservoir-ingest test-run -n data` to retry.", false},
 		{"args := map[string]any{\"command\": \"ls\"}", false},
 		{"See [ARGS] in the docs.", false},
+		// An answer that only mentions a marker is still an answer.
+		{"The string [TOOL_CALLS] identifies a Mistral tool-call marker.", false},
+		{"Hermes wraps calls in <tool_call> tags, which Ollama strips.", false},
+		{"Llama emits <|python_tag|> before a call.", false},
 	}
 	for _, c := range cases {
 		if _, got := leakedToolCall(c.text); got != c.want {
@@ -791,6 +796,25 @@ func TestRunSurfacesLeakedToolCallAsNothingRan(t *testing.T) {
 	last := msgs[len(msgs)-1]
 	if last.Role != "assistant" || !strings.Contains(last.Content, "did not run") {
 		t.Errorf("last transcript message = %+v, want an assistant note that the call did not run", last)
+	}
+	if strings.Contains(last.Content, "[ARGS]") {
+		t.Errorf("transcript note quotes the raw call, which the model may copy: %q", last.Content)
+	}
+}
+
+// Calls the provider parsed earlier in the turn did run. Saying "nothing ran"
+// after them could send an operator to repeat a mutation that happened.
+func TestRunLeakedToolCallAfterRealCallSaysOnlyThatOneFailed(t *testing.T) {
+	result, _, output := newNudgeRun(t, []mockOllamaResponse{
+		{toolCall: bashCall("echo first"), done: true},
+		{content: leakedMinistralCall, done: true},
+	})
+	if result.ToolCalls != 1 || result.Error == "" {
+		t.Errorf("result = %+v, want one tool call and an error", result)
+	}
+	if len(output.errors) != 1 || strings.Contains(output.errors[0], "Nothing ran") ||
+		!strings.Contains(output.errors[0], "the 1 before it did") {
+		t.Errorf("errors = %q, want only the leaked call reported as not run", output.errors)
 	}
 }
 

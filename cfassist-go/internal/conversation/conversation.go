@@ -162,21 +162,28 @@ func Run(
 		// A tool call the transport could not parse arrives as plain content,
 		// and rendered as an answer it looks exactly like an action that ran
 		// (CFOP-64: an operator mid-incident believed a kubectl create job had
-		// executed). Say loudly that nothing ran. Not a nudge: the same model
+		// executed). Say loudly that it did not run. Not a nudge: the same model
 		// through the same parser would produce the same miss.
 		if call, ok := leakedToolCall(text); ok {
+			// "Nothing ran" only when it is true: calls the provider did parse
+			// earlier in this turn really executed, and an operator told
+			// otherwise might repeat a mutation that already happened.
+			what := "Nothing ran"
+			if result.ToolCalls > 0 {
+				what = fmt.Sprintf("This call did not run (the %d before it did)", result.ToolCalls)
+			}
 			output.ShowError(
-				"Nothing ran: the model wrote a tool call as text and the provider did not parse it.\n  attempted: "+call,
-				"This model cannot call tools on this backend. Switch with /model or in ~/.cfassist/config.yaml, or run the command yourself.")
-			// The transcript records what happened rather than the raw call: it
-			// keeps user/assistant alternation for the next turn, and a model
-			// asked "did that work?" reads that nothing ran instead of its own
-			// call text.
+				what+": the model wrote a tool call as text and the provider did not parse it.\n  attempted: "+call,
+				"The provider did not parse this model's tool call. Switch with /model or in ~/.cfassist/config.yaml, or run the command yourself.")
+			// The transcript records that the call failed, not the call itself:
+			// the note keeps user/assistant alternation for the next turn, and
+			// a model asked "did that work?" reads that it did not run instead
+			// of its own call text — which it might also copy.
 			fullMessages = append(fullMessages, client.Message{
 				Role:    "assistant",
-				Content: "[cfassist] My previous reply was a tool call written as text (" + call + "). The provider could not parse it, so it did not run and there is no result.",
+				Content: "[cfassist] My previous reply was a tool call written as text. The provider could not parse it, so it did not run and there is no result.",
 			})
-			result.Error = "the model's tool call was not parsed by the provider; nothing ran"
+			result.Error = "the model's tool call was not parsed by the provider and did not run"
 			result.Latency = time.Since(start)
 			return result, transcript(fullMessages)
 		}
@@ -258,8 +265,15 @@ func announcesStep(text string) bool {
 // 3.x's "<|python_tag|>". Ollama cannot parse Ministral's format at all
 // (benchmarks/ministral-3-14b-baseline.md), and any model/backend pair can
 // fail the same way.
+//
+// Each marker must be followed by a call-shaped payload. A bare marker is an
+// answer that mentions the format, and treating it as a failed call would
+// throw away a correct reply and fail the turn.
 var leakedToolCallPattern = regexp.MustCompile(
-	`\[TOOL_CALLS\]|\b[A-Za-z_][\w.-]*\[ARGS\]\s*\{|<tool_call>|<\|python_tag\|>`)
+	`\[TOOL_CALLS\]\s*(?:[\[{]|[A-Za-z_][\w.-]*\[ARGS\])` +
+		`|\b[A-Za-z_][\w.-]*\[ARGS\]\s*\{` +
+		`|<tool_call>\s*\{` +
+		`|<\|python_tag\|>\s*(?:\{|[A-Za-z_][\w.]*\()`)
 
 // maxLeakedCallShown caps the attempted call quoted back to the operator; a
 // heredoc in a bash argument should not flood the terminal.
