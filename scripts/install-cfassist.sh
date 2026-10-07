@@ -28,7 +28,10 @@ set -eu
 # whatever complete lines had arrived; a function body is parsed to its
 # closing brace first, so a truncated copy is a syntax error that does
 # nothing (CFOP-280; tests/test_installer_streaming.py feeds sh the cut-off
-# copies). The body is deliberately not re-indented.
+# copies). The body is deliberately not re-indented. The call passes
+# --complete as its last argument: a stream that ended a few bytes early, at
+# a bare `main`, would otherwise run it with no arguments and turn a
+# --dry-run into an install, so main refuses to start without the marker.
 main() {
 
 REPO="aachtenberg/cfoperator"
@@ -71,12 +74,19 @@ DRY_RUN=0
 for arg in "$@"; do
 	case "$arg" in
 		--dry-run) DRY_RUN=1 ;;
+		--complete) ;;  # appended by the last line; see main() above
 		-h|--help) usage; exit 0 ;;
 		*) echo "install-cfassist: unknown argument: $arg" >&2; exit 2 ;;
 	esac
 done
 
 die() { echo "install-cfassist: $*" >&2; exit 1; }
+
+# The last line of this file appends --complete after the caller's arguments.
+# A download that ended exactly at `main` would call this with none, a
+# --dry-run turned into an install, so nothing proceeds without the marker.
+eval "last=\${$#}"
+[ "$last" = --complete ] || die "truncated download: the script did not arrive whole; run the one-liner again"
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -209,4 +219,4 @@ echo "Set your LLM in ~/.cfassist/config.yaml. If CFOperator runs here, the sess
 echo "notices it automatically; add cfoperator.token to let it read investigations."
 }
 
-main "$@"
+main "$@" --complete

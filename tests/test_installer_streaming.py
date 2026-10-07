@@ -51,11 +51,13 @@ def bare_machine(tmp_path):
 
 
 def _pipe(script_text, env, *args):
+    """Feed the text to sh on stdin, the way `curl … | sh -s -- ARGS` does."""
     return subprocess.run([f"{env['PATH']}/sh", "-s", "--", *args], input=script_text,
                           capture_output=True, text=True, env=env, timeout=60)
 
 
 def _nothing_ran(script, proc):
+    """Assert the run produced no output and never reached the script's own die()."""
     prefix = f"{script.stem}: "  # both scripts prefix die() with their own name
     assert proc.stdout == "", f"{script.name}: a truncated copy printed:\n{proc.stdout}"
     reached = [ln for ln in proc.stderr.splitlines() if ln.startswith(prefix)]
@@ -65,6 +67,7 @@ def _nothing_ran(script, proc):
 @pytest.mark.parametrize("cut", CUTS)
 @pytest.mark.parametrize("script", INSTALLERS, ids=lambda p: p.name)
 def test_a_truncated_download_is_a_syntax_error_not_a_partial_install(script, cut, bare_machine):
+    """Cut inside main(): sh must refuse to parse it, not run the lines before the cut."""
     lines = script.read_text().splitlines(keepends=True)
     truncated = "".join(lines[: int(len(lines) * cut)])
     proc = _pipe(truncated, bare_machine)
@@ -77,11 +80,11 @@ def test_a_truncated_download_is_a_syntax_error_not_a_partial_install(script, cu
 
 @pytest.mark.parametrize("script", INSTALLERS, ids=lambda p: p.name)
 def test_everything_but_the_final_call_does_nothing(script, bare_machine):
-    """The last line is `main "$@"`. A copy missing only that line is a
-    complete script that does nothing, which is the proof that nothing above
-    it has an effect of its own."""
+    """The last line is `main "$@" --complete`. A copy missing only that line
+    is a complete script that does nothing, which is the proof that nothing
+    above it has an effect of its own."""
     lines = script.read_text().splitlines(keepends=True)
-    assert lines[-1].strip() == 'main "$@"', f"{script.name} must end by calling main"
+    assert lines[-1].strip() == 'main "$@" --complete', f"{script.name} must end by calling main"
     proc = _pipe("".join(lines[:-1]), bare_machine)
     _nothing_ran(script, proc)
     assert proc.returncode == 0 and proc.stderr == "", proc.stderr
@@ -93,3 +96,20 @@ def test_the_whole_script_still_runs_through_the_pipe(script, bare_machine):
     proc = _pipe(script.read_text(), bare_machine, "--dry-run")
     assert proc.returncode == 0, proc.stderr
     assert "url:" in proc.stdout, proc.stdout
+
+
+@pytest.mark.parametrize("tail", ["main", "main\n", 'main "$@"', 'main "$@"\n'])
+@pytest.mark.parametrize("script", INSTALLERS, ids=lambda p: p.name)
+def test_a_cut_inside_the_final_line_cannot_drop_the_callers_arguments(script, tail, bare_machine):
+    """A stream that ends at a bare `main` is a complete script that calls main
+    with no arguments: the caller's --dry-run is gone and an install begins
+    (CodeRabbit and claude-review on #308). The last line appends --complete
+    after the arguments, and main refuses to start without it, so every cut
+    inside that line is either a parse error or a refusal."""
+    text = script.read_text()
+    body = text[: text.rindex('main "$@" --complete')]
+    proc = _pipe(body + tail, bare_machine, "--dry-run")
+    assert proc.returncode != 0
+    assert proc.stdout == "", f"{script.name}: a cut at {tail!r} ran something:\n{proc.stdout}"
+    assert "truncated download" in proc.stderr or "syntax error" in proc.stderr.lower(), (
+        f"{script.name}: a cut at {tail!r} called main without the marker and it went on:\n{proc.stderr}")

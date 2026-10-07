@@ -408,6 +408,7 @@ BADGE_OWNER = ("build-cfoperator-main.yml", "Create release")
 
 
 def release_steps():
+    """Every (workflow name, step) that publishes a GitHub release through the action."""
     for wf in WORKFLOWS:
         doc = yaml.safe_load(read(wf))
         for job in (doc.get("jobs") or {}).values():
@@ -438,6 +439,7 @@ def shell_commands(text):
 
 
 def test_exactly_one_release_step_may_take_the_latest_badge():
+    """The stack's release is the one the landing page shows; nothing else may claim the badge."""
     claimants = sorted((wf, step.get("name")) for wf, step in release_steps() if claims_latest(step))
     assert claimants == [BADGE_OWNER], (
         f"release steps that can take the Latest badge: {claimants}. Only "
@@ -455,6 +457,7 @@ def test_gh_release_commands_never_take_the_latest_badge(wf):
 
 
 def test_the_badge_guard_reads_a_flag_on_a_continuation_line():
+    """The pointer blocks put --latest=false on its own line; the joiner must see it."""
     text = "jobs:\n  j:\n    steps:\n      - run: |\n          gh release create x \\\n            --latest=false \\\n            --title t\n"
     [cmd] = [c for c in shell_commands(text) if "gh release create" in c]
     assert "--latest=false" in cmd
