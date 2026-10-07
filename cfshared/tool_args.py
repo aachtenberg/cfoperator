@@ -97,6 +97,18 @@ _KEY_VALUE = re.compile(
     r'|(?P<uq>["\'])(?P<tail>[^\n]*)'
     r'|(?P<val>(?:(?![ \t]+[A-Za-z_][A-Za-z0-9_]*=)[^"\'\n])+))',
     re.IGNORECASE)
+#: Command-line flags — `--password=x`, `--password x`, `--db-password x` —
+#: the shape of ps, docker inspect Args and systemctl status output. The key
+#: rule's lookbehind rejects a key after `-` on purpose (it anchors identifier
+#: runs for linear time), so flags get their own rule (claude-review on #309).
+#: A space-separated value must not start with `-`: `--password --help` is two
+#: flags. `--token-file /x` and `--password-stdin` do not end in a secret word.
+_FLAG_VALUE = re.compile(
+    r'(?<![A-Za-z0-9_.-])(?P<flag>--?[A-Za-z][A-Za-z0-9_.-]*?' + _SECRET_WORD + r')'
+    r'(?P<sep>=|[ \t]+(?!-))'
+    r'(?!["\']?\*\*\*)'
+    r'(?P<val>"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|\S+)',
+    re.IGNORECASE)
 _BEARER = re.compile(r'(?i)\b(bearer|basic)[ \t]+(?!\*\*\*)[A-Za-z0-9._~+/=-]{8,}')
 _PEM = re.compile(r'-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----')
 _URL_USERINFO = re.compile(r'(://[^/\s:@]+:)(?!\*\*\*)([^@\s/]+)(@)')
@@ -142,6 +154,13 @@ def _key_value_replacement(m) -> str:
     return head + PLACEHOLDER
 
 
+def _flag_replacement(m) -> str:
+    """The flag and its separator, then *** in the value's own quoting."""
+    val = m.group('val')
+    q = val[0] if val[:1] in ('"', "'") and val[-1:] == val[:1] and len(val) > 1 else ''
+    return f"{m.group('flag')}{m.group('sep')}{q}{PLACEHOLDER}{q}"
+
+
 def _redact_text(text: str) -> Tuple[str, int]:
     """One string with every pattern above applied; returns it and the count."""
     count = 0
@@ -184,6 +203,7 @@ def _redact_text(text: str) -> Tuple[str, int]:
             return f'{m.group(1)}{body}{m.group(3)}'
         text = _JSON_DATA_OBJECT.sub(scrub_json, text)
     text = counted(_BEARER, lambda m: f'{m.group(1)} {PLACEHOLDER}', text)
+    text = counted(_FLAG_VALUE, _flag_replacement, text)
     text = counted(_KEY_VALUE, _key_value_replacement, text)
     text = counted(_URL_USERINFO, lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(3)}', text)
     text = counted(_WEBHOOK, lambda m: f'{m.group(1)}{PLACEHOLDER}', text)

@@ -168,8 +168,9 @@ def test_every_provider_branch_appends_only_what_dispatch_handed_back():
 
 
 def test_a_redactor_failure_fails_closed(monkeypatch):
-    """If the redactor raises, the tool call fails rather than handing the raw
-    result on (claude-review on #309 asked for the choice to be pinned)."""
+    """If the redactor raises, the raw result never leaves: the tool call
+    returns an error result the model can read, and the turn goes on
+    (claude-review on #309 asked for the choice to be pinned)."""
     import importlib
     agent_module = importlib.import_module(CFOperator.__module__)  # agent/agent.py, not the package
 
@@ -177,5 +178,6 @@ def test_a_redactor_failure_fails_closed(monkeypatch):
         raise RuntimeError("redactor broke")
     monkeypatch.setattr(agent_module, 'redact_tool_result', boom)
     op = _operator()
-    with pytest.raises(RuntimeError, match="redactor broke"):
-        op._cached_tool_exec('ssh_execute', {}, {}, 6000)
+    content, obj, _ = op._cached_tool_exec('ssh_execute', {}, {}, 6000)
+    assert SECRET not in content and SECRET not in json.dumps(obj)
+    assert 'withheld' in obj.get('error', ''), obj

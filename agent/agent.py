@@ -9136,7 +9136,16 @@ Only return the JSON array, no other text."""
         chat = (cfg.get('chat') or {}) if isinstance(cfg, dict) else {}
         if not chat.get('redact_tool_results', True):
             return result
-        redacted, count = redact_tool_result(result)
+        try:
+            redacted, count = redact_tool_result(result)
+        except Exception as e:
+            # Fail closed, per tool: the raw result never leaves, and the turn
+            # goes on with an error result the model can read, rather than
+            # the whole investigation failing on a redactor bug (review of
+            # #309 asked which it was).
+            logger.error(f"[REDACT] {tool_name}: redaction failed, result withheld: {e}", exc_info=True)
+            return {'error': (f"tool result withheld: redaction failed ({type(e).__name__}). "
+                              "The tool ran, but its output cannot be shown.")}
         if count:
             TOOL_RESULT_REDACTIONS.labels(tool_name=tool_name).inc(count)
         return redacted

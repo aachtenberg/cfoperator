@@ -279,3 +279,23 @@ def test_namedtuples_survive_the_walk():
     # No key name travels with a tuple field, so the text rule does the work
     # and the token keeps its prefix, as it would in any string.
     assert isinstance(out, Row) and out.name == "x" and out.token == f"cfop_{PLACEHOLDER}" and count == 1
+
+
+def test_command_line_flags_are_redacted_in_both_forms():
+    """`--password=x` and `--password x`: the shape of ps, docker inspect Args
+    and systemctl status output. The key rule's lookbehind rejects a key after
+    `-`, so these have their own rule (claude-review on #309)."""
+    text = ("mysqld --password=hunter2 --user=root\n"
+            "psql --password hunter2 -h db\n"
+            "tool --db-password x --api-key=sk-abcdefghijklmnopqrstuvwxyz --token-file /run/t\n"
+            "docker login --password-stdin\n"
+            'svc --password "two words" --password --help\n')
+    out, _ = _redacted(text)
+    for gone in ("hunter2", "sk-abcdef", "two words"):
+        assert gone not in out, gone
+    for kept in ("--user=root", "-h db", "--token-file /run/t", "--password-stdin", "--password --help"):
+        assert kept in out, kept
+    assert f"--password={PLACEHOLDER}" in out and f"--password {PLACEHOLDER}" in out
+    assert f'--password "{PLACEHOLDER}"' in out and f"--db-password {PLACEHOLDER}" in out
+    inspect_args = {"Args": ["--password=hunter2", "--user=root"]}
+    assert _redacted(inspect_args)[0]["Args"] == [f"--password={PLACEHOLDER}", "--user=root"]
