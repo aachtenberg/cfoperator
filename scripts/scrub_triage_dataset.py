@@ -49,8 +49,12 @@ DEFAULT_PLACEHOLDER = "homelab.example"
 
 
 def _pattern(domain: str) -> re.Pattern[str]:
-    # Optional leading labels, then the domain, bounded so that
-    # "notxgrunt.com" and "xgrunt.com.evil" are not touched.
+    # Optional leading labels, then the domain. The left boundary stops
+    # "not<domain>" from matching (a different name); the right boundary stops
+    # "<domain>evil" but deliberately allows "." so a domain at the end of a
+    # sentence, or as the parent of a longer name ("<domain>.evil" becomes
+    # "<placeholder>.evil"), is still rewritten. Anything left over is caught
+    # by the residual check, which is the real guarantee.
     d = re.escape(domain)
     return re.compile(rf"(?<![A-Za-z0-9.-])((?:[A-Za-z0-9-]+\.)*){d}(?![A-Za-z0-9-])", re.IGNORECASE)
 
@@ -97,9 +101,9 @@ def scrub_file(src: Path, dst: Path, domain: str, placeholder: str) -> tuple[int
                 continue
             touched += 1
             replacements += n
-            meta = new_row.setdefault("meta", {})
-            if isinstance(meta, dict):
-                meta["scrub"] = {"replacements": n, "placeholder": placeholder}
+            if not isinstance(new_row.get("meta"), dict):
+                new_row["meta"] = {}  # null or a stray scalar: the marker still has to land
+            new_row["meta"]["scrub"] = {"replacements": n, "placeholder": placeholder}
             fout.write(json.dumps(new_row) + "\n")
     return rows, touched, replacements
 
@@ -148,7 +152,11 @@ def main(argv: list[str] | None = None) -> int:
         try:
             rows, touched, n = scrub_file(src, dst, domain, args.placeholder)
         except (OSError, ValueError) as exc:
+            # A half-written output may hold unscrubbed text and would pass a
+            # casual glance; remove it and everything this run produced so far.
             print(f"{src}: {exc}", file=sys.stderr)
+            for done in outputs + [dst]:
+                done.unlink(missing_ok=True)
             return 2
         outputs.append(dst)
         total_replacements += n

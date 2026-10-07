@@ -158,6 +158,39 @@ def test_refuses_in_place(tmp_path: Path):
     assert "must differ" in proc.stderr
 
 
+def test_parent_of_a_longer_name_is_rewritten_too():
+    # "<domain>.evil" is rewritten to "<placeholder>.evil": the right boundary
+    # allows "." on purpose, and the residual check is what guarantees nothing
+    # is left. Pinned so the comment and the regex cannot drift apart again.
+    rx = scrub._pattern(DOMAIN)
+    out, n = scrub.scrub_value(f"see {DOMAIN}.evil and {DOMAIN}.", rx, "homelab.example")
+    assert n == 2
+    assert out == "see homelab.example.evil and homelab.example."
+
+
+def test_marker_lands_even_when_meta_is_not_a_dict(tmp_path: Path):
+    in_dir, out_dir = tmp_path / "in", tmp_path / "out"
+    in_dir.mkdir()
+    rows = [_row(f"freshet.{DOMAIN} down", json.dumps({"action": "investigate", "reason": "x", "confidence": 0.5}))]
+    rows[0]["meta"] = None
+    _write(in_dir / "triage_train.jsonl", rows)
+    _write(in_dir / "triage_val.jsonl", [_row("clean", json.dumps({"action": "notify", "reason": "y", "confidence": 0.5}))])
+    proc = _run(in_dir, out_dir)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads((out_dir / "triage_train.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert out["meta"]["scrub"]["replacements"] == 1
+
+
+def test_unparseable_input_leaves_no_partial_output(tmp_path: Path):
+    in_dir, out_dir = _dataset(tmp_path)
+    with (in_dir / "triage_val.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write("{not json\n")
+    proc = _run(in_dir, out_dir)
+    assert proc.returncode == 2
+    assert not (out_dir / "triage_val.jsonl").exists()
+    assert not (out_dir / "triage_train.jsonl").exists(), "earlier outputs of the same run must be removed too"
+
+
 def test_scrub_value_handles_keys_lists_and_case():
     rx = scrub._pattern(DOMAIN)
     obj = {f"host.{DOMAIN}": [f"A.{DOMAIN.upper()}", {"x": f"{DOMAIN}"}], "plain": "untouched"}

@@ -284,6 +284,28 @@ def test_publish_rejects_malformed_repo_id(tmp_path: Path, bad: str):
     assert "not <user>/<repo>" in proc.stderr
 
 
+def test_leak_gate_payload_puts_temperature_where_ollama_reads_it():
+    spec = importlib.util.spec_from_file_location("check_model_text", HF_DIR / "check_model_text.py")
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    default = mod.build_payload("m", "s", "u", None)
+    assert "options" not in default and default["temperature"] == 0.7  # mirrors production's default path
+    hot = mod.build_payload("m", "s", "u", 0.7)
+    assert hot["options"] == {"temperature": 0.7}
+
+
+def test_leak_gate_refuses_to_check_nothing(tmp_path: Path):
+    # No --forbid, or zero runs, must not be a CLEAN result.
+    script = HF_DIR / "check_model_text.py"
+    ds = tmp_path / "train.jsonl"
+    ds.write_text(json.dumps({"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}], "meta": {"scrub": {}}}) + "\n", encoding="utf-8")
+    r = subprocess.run([sys.executable, str(script), "--model", "x", "--dataset", str(ds)], capture_output=True, text=True)
+    assert r.returncode == 2 and "check nothing" in r.stderr
+    r = subprocess.run([sys.executable, str(script), "--model", "x", "--forbid", "example.org", "--runs", "0", "--dataset", str(ds)], capture_output=True, text=True)
+    assert r.returncode == 2 and "--runs" in r.stderr
+
+
 # --- the artifact gate: --dry-run runs everything but the upload -------------
 
 Q4 = "ministral-3-14b-instruct-2512.Q4_K_M.gguf"

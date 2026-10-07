@@ -16,8 +16,12 @@
 # rollback target and must stay buildable.
 #
 # The TEMPLATE below is byte for byte the v5 one, which is byte for byte the
-# base model's. PARSER ministral and temperature 0.15 likewise unchanged; the
-# production path and triage_eval.py send temperature 0.7 explicitly.
+# base model's. PARSER ministral and temperature 0.15 likewise unchanged.
+# Note on 0.15: production's default path and triage_eval.py send temperature
+# 0.7 at the TOP LEVEL of the /api/chat body, which ollama ignores (it reads
+# sampling options from `options` only; see _ollama_chat_payload in
+# agent/agent.py), so 0.15 is what applies to both unless llm.num_ctx is
+# configured, in which case production sends 0.7 in `options`.
 
 FROM /mnt/nas-backup/unsloth/cfoperator-v7/cfop-triage-v6-gguf/ministral-3-14b-instruct-2512.Q8_0.gguf
 

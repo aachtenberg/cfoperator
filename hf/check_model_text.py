@@ -17,8 +17,15 @@ Which prompts:
                       production system prompt. Needs PYTHONPATH=agent:. like
                       the eval itself.
 
-Each prompt runs --runs times at the production temperature (0.7), because a
-leak that surfaces one time in ten is still a leak.
+Each prompt runs --runs times, because a leak that surfaces one time in ten
+is still a leak. Temperature: by default the request mirrors production's
+default path and triage_eval.py, which send ``temperature`` at the top level
+of the /api/chat body. Ollama reads sampling options only from ``options``,
+so what actually applies is the Modelfile's value (0.15 for the triage
+tags). ``--temperature 0.7`` puts the value in ``options`` instead, which is
+what production sends when ``llm.num_ctx`` is configured, and is the
+stricter setting for a leak gate: hotter sampling surfaces more of what the
+weights hold. Run both.
 
 Usage (on the ollama host, after `ollama create`):
     PYTHONPATH=agent:. .venv/bin/python hf/check_model_text.py \\
@@ -27,7 +34,8 @@ Usage (on the ollama host, after `ollama create`):
         --eval-cases --runs 10
 
 Exit status: 0 clean; 1 at least one hit (listed, with the forbidden string
-itself redacted); 2 bad arguments, unreachable model or no prompts.
+itself redacted); 2 bad arguments (no --forbid, --runs < 1), unreachable
+model, or no prompts. A gate that checks nothing does not report CLEAN.
 """
 
 from __future__ import annotations
@@ -53,8 +61,11 @@ def _load_scanner():
     return mod
 
 
-def call_ollama(url: str, model: str, system_prompt: str, user_msg: str, timeout: int) -> tuple[str, str | None]:
-    """(response_text, error). Same request shape as triage_eval.call_ollama."""
+def build_payload(model: str, system_prompt: str, user_msg: str, temperature: float | None) -> dict:
+    """The /api/chat body. With ``temperature`` None this is byte-for-byte the
+    shape triage_eval.call_ollama and production's default path send (top-level
+    ``temperature``, which ollama ignores); with a value it goes in ``options``,
+    the only place ollama reads it, as production does on its num_ctx path."""
     payload = {
         "model": model,
         "messages": [
@@ -64,6 +75,14 @@ def call_ollama(url: str, model: str, system_prompt: str, user_msg: str, timeout
         "stream": False,
         "temperature": 0.7,
     }
+    if temperature is not None:
+        payload["options"] = {"temperature": temperature}
+    return payload
+
+
+def call_ollama(url: str, model: str, system_prompt: str, user_msg: str, timeout: int, temperature: float | None = None) -> tuple[str, str | None]:
+    """(response_text, error)."""
+    payload = build_payload(model, system_prompt, user_msg, temperature)
     req = urllib.request.Request(f"{url}/api/chat", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -113,10 +132,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--eval-cases", action="store_true")
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--timeout", type=int, default=120)
+    ap.add_argument("--temperature", type=float, default=None,
+                    help="send this sampling temperature in options (ollama honours it there); default: the Modelfile's value applies")
     args = ap.parse_args(argv)
 
     scanner = _load_scanner()
     forbidden = [f.strip().lower() for f in args.forbid if f.strip()]
+    if not forbidden:
+        print("no --forbid string given: the gate would check nothing and report CLEAN", file=sys.stderr)
+        return 2
+    if args.runs < 1:
+        print("--runs must be at least 1", file=sys.stderr)
+        return 2
 
     prompts: list[tuple[str, str, str]] = []
     try:
@@ -133,10 +160,11 @@ def main(argv: list[str] | None = None) -> int:
     hits = 0
     calls = 0
     started = time.monotonic()
-    print(f"model {args.model}: {len(prompts)} prompts x {args.runs} runs, {len(forbidden)} forbidden string(s)")
+    temp = "Modelfile default" if args.temperature is None else f"options.temperature={args.temperature}"
+    print(f"model {args.model}: {len(prompts)} prompts x {args.runs} runs, {len(forbidden)} forbidden string(s), {temp}")
     for label, system_prompt, user_msg in prompts:
         for run in range(1, args.runs + 1):
-            text, err = call_ollama(args.url, args.model, system_prompt, user_msg, args.timeout)
+            text, err = call_ollama(args.url, args.model, system_prompt, user_msg, args.timeout, args.temperature)
             calls += 1
             if err:
                 print(f"{label} run {run}: model error: {err}", file=sys.stderr)

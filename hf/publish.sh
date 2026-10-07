@@ -4,7 +4,7 @@
 # Run on the host with the NAS mounted (ubuntu-llm-01). Nothing here needs
 # the GPU. The upload is gated twice: the training data is scanned for
 # anything secret-shaped, and every artifact that leaves the machine must
-# match the sha256 manifest in hf/v5.sha256. The script refuses to continue
+# match the sha256 manifest in hf/$VERSION.sha256. The script refuses to continue
 # on either.
 #
 #   HF_REPO=<user>/cfop-triage-ministral3-14b-v6 hf/publish.sh              # scan, stage, verify, upload
@@ -40,7 +40,7 @@
 #                 so leftovers from an earlier run would ship too. A caller-
 #                 supplied directory is kept.
 #   GGUF_STAGE_DIR where the GGUFs are copied before they are hashed and
-#                 uploaded (~23 GB for v5). default: a fresh 0700 mktemp dir
+#                 uploaded (~23 GB for a 14B Q4+Q8 pair). default: a fresh 0700 mktemp dir
 #                 under ${TMPDIR:-/var/tmp}. The copy is what gets verified and
 #                 what gets uploaded, so a NAS file changing between the two
 #                 cannot ship unverified bytes. The copies are removed when the
@@ -97,7 +97,7 @@ verify() {  # verify <dir> <file>: the file's sha256 must appear in the manifest
 }
 [ -f "$MANIFEST" ] || { log "manifest $MANIFEST missing (the dataset lines are committed with the repo; see the header)"; exit 1; }
 
-# ---- 1. gate: the training data must be the v5 set, and clean -------------
+# ---- 1. gate: the training data must be the pinned set, and clean ----------
 # A clean scan of the wrong files proves nothing, so the files are pinned
 # first: these must be the train/val set the weights were trained on.
 log "== verifying dataset identity against $MANIFEST"
