@@ -19,6 +19,10 @@ Usage:
     python3 hf/scan_dataset.py /mnt/nas-backup/unsloth/cfoperator-v6/triage_train.jsonl \
                                /mnt/nas-backup/unsloth/cfoperator-v6/triage_val.jsonl
 
+A file whose name does not end in .jsonl is scanned as one plain-text row
+(the staged model card and Modelfile go through the same patterns before
+they are uploaded).
+
 Exit status 0 means clean; 1 means at least one finding (listed on stdout,
 with the matched text redacted to its first and last four characters); 2
 means a file could not be read, decoded or parsed.
@@ -111,8 +115,18 @@ def scan_text(text: str) -> list[tuple[str, str]]:
 
 
 def scan_file(path: Path) -> list[tuple[int, str, str]]:
-    """Findings in a JSONL file as (line-number, pattern-name, redacted-match)."""
+    """Findings in a file as (line-number, pattern-name, redacted-match).
+
+    ``.jsonl`` is scanned row by row, every string in every row. Anything
+    else is scanned as plain text, line by line.
+    """
     findings: list[tuple[int, str, str]] = []
+    if path.suffix != ".jsonl":
+        with path.open(encoding="utf-8") as fh:
+            for lineno, line in enumerate(fh, start=1):
+                for name, hit in scan_text(line):
+                    findings.append((lineno, name, hit))
+        return findings
     with path.open(encoding="utf-8") as fh:
         for lineno, line in enumerate(fh, start=1):
             line = line.strip()

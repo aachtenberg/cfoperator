@@ -92,6 +92,14 @@ def test_scanner_cli_exit_2_on_undecodable_bytes(tmp_path: Path):
     assert subprocess.run([sys.executable, str(HF_DIR / "scan_dataset.py"), str(f)]).returncode == 2
 
 
+def test_scanner_treats_non_jsonl_as_plain_text(tmp_path: Path):
+    f = tmp_path / "Modelfile"
+    f.write_text("# exported with HF_TOKEN=hf_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123\nFROM ./x.gguf\n", encoding="utf-8")
+    findings = scan.scan_file(f)
+    assert any(name == "hf-token" for _, name, _ in findings)
+    assert findings[0][0] == 1
+
+
 def test_scanner_passes_a_real_shaped_clean_row(tmp_path: Path):
     f = tmp_path / "clean.jsonl"
     f.write_text(
@@ -175,6 +183,13 @@ def test_staged_card_has_repo_id_filled_in_and_no_placeholder(tmp_path: Path):
     # Frontmatter the Hub needs to file it correctly.
     assert card.startswith("---\nlicense: apache-2.0\n")
     assert "base_model: mistralai/Ministral-3-14B-Instruct-2512" in card
+
+
+def test_stage_scans_the_staged_text_files(tmp_path: Path):
+    proc = _run_stage(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "scanning staged text files" in proc.stderr
+    assert "README.md: clean" in proc.stdout and "Modelfile: clean" in proc.stdout
 
 
 def test_stage_refuses_dirty_dataset(tmp_path: Path):

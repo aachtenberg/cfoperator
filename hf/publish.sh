@@ -24,6 +24,9 @@
 #                 set). default hf/v5.sha256. Generate it ONCE on the NAS host
 #                 from the gated files and commit it:
 #                   (cd "$SRC_DIR" && sha256sum *.gguf) > hf/v5.sha256
+#                 That glob hashes every GGUF in the folder (an mmproj side
+#                 file, say); harmless, since only the two names above are
+#                 ever looked up, but trim the file if you want it exact.
 #                   (cd "$ADAPTER_DIR" && sha256sum adapter_model.safetensors adapter_config.json) >> hf/v5.sha256
 #   STAGE_DIR     where the small files are assembled. default: a fresh mktemp
 #                 dir, removed when the run ends. A pre-existing non-empty
@@ -80,7 +83,7 @@ python3 "$HERE/scan_dataset.py" "$DATASET_DIR/triage_train.jsonl" "$DATASET_DIR/
 # script put there are removed), so pointing GGUF_STAGE_DIR at a mount point
 # cannot remove the mount point.
 CLEANUP=()
-trap 'for d in "${CLEANUP[@]}"; do rm -rf "$d"; done' EXIT
+trap 'for d in ${CLEANUP[@]+"${CLEANUP[@]}"}; do rm -rf "$d"; done' EXIT  # empty-array-safe under set -u on bash < 4.4
 if [ -z "${STAGE_DIR:-}" ]; then
   STAGE_DIR="$(mktemp -d -t cfop-hf-stage.XXXXXX)"; CLEANUP+=("$STAGE_DIR")
 elif [ -e "$STAGE_DIR" ] && [ -n "$(ls -A "$STAGE_DIR" 2>/dev/null)" ]; then
@@ -109,6 +112,12 @@ else
 fi
 
 log "   staged:"; (cd "$STAGE_DIR" && find . -type f | sort | sed 's/^/     /') >&2
+
+# The card and the Modelfile are text that ships verbatim, so they go through
+# the same patterns as the dataset. The Modelfile is clean today; this is for
+# the day someone pastes a log line into its header comment.
+log "== scanning staged text files"
+python3 "$HERE/scan_dataset.py" "$STAGE_DIR/README.md" "$STAGE_DIR/Modelfile"
 
 if [ "$MODE" = stage ]; then
   log "== --stage-only: stopping before the artifact check"
