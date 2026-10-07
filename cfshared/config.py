@@ -226,6 +226,7 @@ DEFAULT_CONFIG: dict = {
         "websocket": True,
         "max_tool_iterations": 10,
         "max_tool_result_chars": 6000,
+        "redact_tool_results": True,
     },
 
     "event_runtime": {
