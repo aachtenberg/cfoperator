@@ -324,3 +324,64 @@ def test_the_pointer_is_refreshed_in_place_never_deleted_first():
     assert creates and uploads and creates[0] < uploads[0], "ensure the pointer exists, then clobber its assets"
     assert any("--clobber" in ln for ln in lines)
     assert "cfoperator-latest" in SCRIPT.read_text(), "the script's default must be the pointer the job maintains"
+
+
+# --- review follow-ups on #305 ----------------------------------------------------------
+
+
+def test_help_works_through_the_pipe():
+    """`curl … | sh -s -- --help`: $0 is "sh" there, so help cannot be read
+    back from the script file."""
+    proc = subprocess.run(["sh", "-s", "--", "--help"], input=SCRIPT.read_text(),
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "CFOP_VERSION" in proc.stdout and "--no-start" in proc.stdout, proc.stdout
+
+
+def test_a_digest_pinned_bundle_is_installed_by_digest(machine, release):
+    """The bundle pins tag@digest, so a re-pushed tag cannot change what a
+    checksum-verified install runs; the installer must carry the whole ref."""
+    _with_docker(machine)
+    pointer, base_url = release
+    pinned = IMAGE + "@sha256:" + "ab" * 32
+    release_bundle.build(pinned, pointer)
+    digest = hashlib.sha256((pointer / release_bundle.ASSET).read_bytes()).hexdigest()
+    (pointer / "checksums.txt").write_text(f"{digest}  {release_bundle.ASSET}\n")
+    proc = run(machine, base_url=base_url)
+    assert proc.returncode == 0, proc.stderr
+    calls = docker_calls(machine)
+    assert f"pull {pinned}" in calls, calls
+    assert any(f" {pinned} python scripts/setup_wizard.py" in c for c in calls), calls
+
+
+def test_the_bundle_pins_the_pushed_digest_not_just_the_tag():
+    jobs = _jobs()
+    outputs = jobs["build-and-push"]["outputs"]
+    assert "steps.build.outputs.digest" in outputs.get("image-digest", ""), outputs
+    assert [s for s in jobs["build-and-push"]["steps"] if s.get("id") == "build"], \
+        "the digest output reads the build step by id"
+    [bundle] = [s for s in jobs["release-stack"]["steps"] if s.get("name") == "Build the bundle"]
+    image = bundle["env"]["IMAGE"]
+    assert image.endswith("@${{ needs.build-and-push.outputs.image-digest }}"), image
+
+
+def test_only_the_newest_final_release_moves_the_pointer():
+    job = _jobs()["release-stack"]
+    [pointer] = [s for s in job["steps"] if "cfoperator-latest" in s.get("run", "")]
+    lines = _live(pointer["run"])
+    guard = [i for i, ln in enumerate(lines) if "--should-move-pointer" in ln]
+    releases = [i for i, ln in enumerate(lines) if "gh release" in ln or "gh api" in ln]
+    assert guard and guard[0] < min(releases), "ask before touching the pointer, not after"
+    [create] = [s for s in job["steps"] if s.get("uses", "").startswith("softprops/action-gh-release")]
+    assert "contains(github.ref_name, '-')" in str(create["with"].get("prerelease", "")), \
+        "a v1.3.0-rc1 release must be marked pre-release"
+    checkout = next(s for s in job["steps"] if s.get("uses", "").startswith("actions/checkout"))
+    assert checkout.get("with", {}).get("fetch-depth") == 0, "the guard compares against every v* tag"
+
+
+def test_the_arm64_variant_passes_db_smoke_before_it_is_published():
+    steps = _jobs()["db-smoke"]["steps"]
+    arm = [s for s in steps if "--platform linux/arm64" in s.get("run", "")]
+    assert arm and "scripts/db_smoke.py" in arm[0]["run"], "the arm64 image needs the same smoke"
+    assert arm[0].get("if") == "github.ref_type == 'tag'", "main builds have no arm64 variant"
+    assert any(s.get("uses", "").startswith("docker/setup-qemu-action") for s in steps)

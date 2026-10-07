@@ -29,6 +29,7 @@ import copy
 import gzip
 import io
 import re
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -165,12 +166,38 @@ def build(image: str, out: Path, root: Path = ROOT) -> Path:
     return target
 
 
+_RELEASE_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+
+def should_move_pointer(tag: str, tags: Iterable[str]) -> bool:
+    """True when ``tag`` is the newest final ``vX.Y.Z`` among ``tags``.
+
+    The release-stack job asks this before moving ``cfoperator-latest``. A
+    pre-release (anything that is not plain vX.Y.Z, e.g. v1.3.0-rc1) never
+    moves it, and neither does a re-run of an older tag.
+    """
+    mine = _RELEASE_TAG.match(tag)
+    if not mine:
+        return False
+    version = tuple(map(int, mine.groups()))
+    finals = [tuple(map(int, m.groups())) for m in map(_RELEASE_TAG.match, tags) if m]
+    return all(version >= other for other in finals)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--image", required=True,
+    parser.add_argument("--image",
                         help="the release image every built service pulls, e.g. ghcr.io/OWNER/cfoperator:v1.2.3")
     parser.add_argument("--out", default="dist", help="directory to write the bundle into")
+    parser.add_argument("--should-move-pointer", metavar="TAG",
+                        help="exit 0 if TAG is the newest final v* tag in this checkout, else 1")
     args = parser.parse_args(argv)
+    if args.should_move_pointer:
+        tags = subprocess.run(["git", "tag", "-l", "v*"], capture_output=True, text=True,
+                              check=True, cwd=ROOT).stdout.split()
+        return 0 if should_move_pointer(args.should_move_pointer, tags) else 1
+    if not args.image:
+        parser.error("--image is required")
     if ":" not in args.image.rsplit("/", 1)[-1]:
         print("error: --image needs an explicit tag; a bundle must not float", file=sys.stderr)
         return 2

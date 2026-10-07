@@ -117,3 +117,21 @@ def test_the_bundle_is_reproducible_and_pulls_only(tmp_path):
 def test_a_floating_image_is_refused(capsys):
     assert rb.main(["--image", "ghcr.io/aachtenberg/cfoperator", "--out", "unused"]) == 2
     assert "explicit tag" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("tag,expected", [
+    ("v1.10.0", True),       # newest, compared numerically (1.10 > 1.2)
+    ("v1.2.0", False),       # a re-run of an older tag
+    ("v1.3.0-rc1", False),   # a pre-release never moves it
+    ("v1.11.0", True),       # first build of a new tag
+    ("1.11.0", False),       # not a release tag at all
+])
+def test_the_pointer_moves_only_for_the_newest_final_release(tag, expected):
+    existing = ["v0.1.0", "v1.2.0", "v1.10.0", "v1.3.0-rc1", "cfassist-v9.0.0"]
+    assert rb.should_move_pointer(tag, existing + [tag]) is expected
+
+
+def test_a_digest_pinned_image_renders_whole():
+    pinned = IMAGE + "@sha256:" + "ab" * 32
+    rendered = rb.render((REPO_ROOT / rb.COMPOSE).read_text(), pinned)
+    assert f"image: {pinned}\n" in rendered

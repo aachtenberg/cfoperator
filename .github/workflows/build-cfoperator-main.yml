@@ -53,6 +53,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       image-tag: ${{ steps.tag.outputs.tag }}
+      # The pushed manifest's digest (the multi-arch index on a tag). The
+      # release bundle pins it beside the tag, so a re-pushed tag cannot change
+      # what a checksum-verified install runs (CFOP-273, CodeRabbit).
+      image-digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -93,6 +97,7 @@ jobs:
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -385,6 +390,20 @@ jobs:
           docker run --rm --network host "$IMAGE" \
             python scripts/db_smoke.py postgresql://postgres:cfop-smoke@localhost:5432/cfop_smoke
 
+      # A tag's image is also arm64, and release-stack publishes it to every
+      # Pi install once this job passes — so the arm64 variant has to pass the
+      # same smoke, under emulation (CFOP-273). Main builds are amd64-only.
+      - uses: docker/setup-qemu-action@v3
+        if: github.ref_type == 'tag'
+
+      - name: Run the database smoke inside the arm64 image
+        if: github.ref_type == 'tag'
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator:${{ needs.build-and-push.outputs.image-tag }}
+        run: |
+          docker run --rm --platform linux/arm64 --network host "$IMAGE" \
+            python scripts/db_smoke.py postgresql://postgres:cfop-smoke@localhost:5432/cfop_smoke
+
   # The compose bundle scripts/install.sh downloads (CFOP-273). Tag builds
   # only, and only after the image is pushed AND has passed db-smoke: the
   # bundle pins this tag's image, so publishing earlier could hand out a
@@ -398,7 +417,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Tags too: the pointer step compares this tag against every v* tag.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -406,7 +428,7 @@ jobs:
 
       - name: Build the bundle
         env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator:${{ needs.build-and-push.outputs.image-tag }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator:${{ needs.build-and-push.outputs.image-tag }}@${{ needs.build-and-push.outputs.image-digest }}
         run: |
           pip install pyyaml
           python scripts/release_bundle.py --image "$IMAGE" --out dist
@@ -420,6 +442,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: "cfoperator ${{ github.ref_name }}"
+          # v1.3.0-rc1 and friends: published for whoever pins them, never
+          # badged Latest and never behind the pointer below.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generate_release_notes: true
           body: |
             ## Install
@@ -446,6 +471,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Only the newest final release moves the pointer: a pre-release
+          # (v1.3.0-rc1) would make the one-liner install a candidate, and a
+          # re-run of an older tag would move it backwards (claude-review).
+          if ! python scripts/release_bundle.py --should-move-pointer "${GITHUB_REF_NAME}"; then
+            echo "cfoperator-latest stays where it is: ${GITHUB_REF_NAME} is not the newest final release"
+            exit 0
+          fi
           NOTES="Moving pointer to **${GITHUB_REF_NAME}**, for the install one-liner:
 
           \`\`\`

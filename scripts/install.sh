@@ -46,13 +46,33 @@ version="${CFOP_VERSION:-}"
 version="${version#v}"
 if [ -n "$version" ]; then TAG="v${version}"; else TAG="cfoperator-latest"; fi
 
+# Inline, not read back from "$0": under `curl … | sh -s -- --help`, $0 is
+# "sh" and there is no file to read (claude-review).
+usage() {
+	cat <<'EOF'
+Install the CFOperator trial stack with Docker as the only prerequisite.
+
+  curl -fsSL https://raw.githubusercontent.com/aachtenberg/cfoperator/main/scripts/install.sh | sh
+  curl -fsSL .../install.sh | sh -s -- [--dry-run] [--no-start]
+
+Re-running it upgrades: compose files are replaced, .env and the database
+volume are kept, and setup is not asked again.
+
+Environment, all optional:
+  CFOP_VERSION      pin a release (1.2.3 or v1.2.3); default cfoperator-latest
+  CFOP_INSTALL_DIR  where the stack lives (default ~/cfoperator)
+  OLLAMA_URL        setup defaults; both default to this machine as the
+  PROMETHEUS_URL    containers see it, host.docker.internal
+EOF
+}
+
 DRY_RUN=0
 NO_START=0
 for arg in "$@"; do
 	case "$arg" in
 		--dry-run) DRY_RUN=1 ;;
 		--no-start) NO_START=1 ;;
-		-h|--help) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) usage; exit 0 ;;
 		*) echo "install: unknown argument: $arg" >&2; exit 2 ;;
 	esac
 done
