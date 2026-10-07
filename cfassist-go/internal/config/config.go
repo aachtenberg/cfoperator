@@ -93,6 +93,10 @@ type MemoryConfig struct {
 type BashToolConfig struct {
 	Enabled bool `yaml:"enabled"`
 	Timeout int  `yaml:"timeout"`
+	// ConfirmWrites: write-shaped commands are shown to the operator before
+	// they run (CFOP-282). A pointer so a config file written before the key
+	// existed keeps the gate on: nil means true.
+	ConfirmWrites *bool `yaml:"confirm_writes"`
 }
 
 type ReadFileToolConfig struct {
@@ -417,6 +421,13 @@ tools:
   bash:
     enabled: true
     timeout: 30                 # seconds
+    # Reads run as the model asks. A command that changes state — restart,
+    # stop, delete, install, edit a file, redirect to a file — is shown first
+    # and runs only if you say so (y once, a for the session). false runs
+    # everything unasked, which is the shell with your permissions in the
+    # model's hands; not the default on purpose. On piped input there is no
+    # shell at all, whatever this says: the text did not come from you.
+    confirm_writes: true
   read_file:
     enabled: true
     max_lines: 500

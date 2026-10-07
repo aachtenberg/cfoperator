@@ -27,6 +27,7 @@ fi`
 // Registry holds available tools and their execution functions.
 type Registry struct {
 	tools map[string]tool
+	gateState
 }
 
 type tool struct {
@@ -71,6 +72,11 @@ func New(cfg *config.Config) *Registry {
 				return bashExecute(ctx, args, bashTimeout)
 			},
 			timeout: bashTimeout,
+		}
+		// Write-shaped commands ask the operator first (CFOP-282, gate.go).
+		// Installed here, once; the surface installs the asker it has.
+		if cfg.Tools.Bash.ConfirmWrites == nil || *cfg.Tools.Bash.ConfirmWrites {
+			r.gateBash()
 		}
 	}
 

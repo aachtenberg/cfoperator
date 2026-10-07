@@ -347,6 +347,21 @@ while Gemini is its own `provider: gemini` because Google's OpenAI-compatible
 surface lives at `…/v1beta/openai` with no `/v1` segment; copying the groq stub
 onto it would 404.
 
+### What it may run
+
+cfassist's shell runs as you, on this machine. Reads run as the model asks —
+`journalctl`, `systemctl status`, `kubectl get`, `curl` to a metrics endpoint.
+A command that changes state — restart, stop, delete, install, edit a file,
+redirect output to a file — is shown to you first and runs only if you say so
+(`y` once, `a` for the rest of the session). Declined, the model is told it did
+not run. `tools.bash.confirm_writes: false` turns the question off; that is the
+shell with your permissions in the model's hands, so it is not the default.
+
+On piped input (`journalctl -u nginx | cfassist "summarize errors"`) there is
+no shell at all: the text came from a pipe, not from you, and whatever is in
+it must not be able to run commands. `read_file`, the playbooks, memory and the
+read-only CFOperator tool stay.
+
 ### Usage
 
 ```bash
