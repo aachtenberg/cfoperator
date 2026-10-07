@@ -119,7 +119,7 @@ def _staging_dir() -> str:
 
 
 def spawner(ssh, *, revoked=None, minted=None, binary=b"ELF-cfassist",
-            **overrides) -> HostCockpitSpawner:
+            ssh_dir=None, **overrides) -> HostCockpitSpawner:
     cfg = HostLadderConfig(**{
         "image": "ghcr.io/aachtenberg/cfoperator-cockpit:main",
         # The realistic pair: tier 1's URL is cluster DNS (it is what the pod
@@ -136,7 +136,7 @@ def spawner(ssh, *, revoked=None, minted=None, binary=b"ELF-cfassist",
         fetcher=lambda url: binary,
         token_minter=minter(minted),
         token_revoker=(revoked.append if revoked is not None else None),
-        ssh_dir=_staging_dir(),
+        ssh_dir=ssh_dir or _staging_dir(),
     )
 
 
@@ -803,8 +803,8 @@ def test_the_identity_is_staged_where_the_spawner_is_told(tmp_path):
     (secret / "id_rsa").write_text("SESSION KEY\n")
     staged = tmp_path / "elsewhere"
     ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes"), "")))
-    s = spawner(ssh, ssh_secret_dir=str(secret))
-    s._ssh_dir = str(staged)  # not the helper's default: the point is the plumbing
+    # Not the helper's default directory: the point is the plumbing.
+    s = spawner(ssh, ssh_secret_dir=str(secret), ssh_dir=str(staged))
     s.spawn(1889, host="raspberrypi5", tier=TIER_HOST, ttl_seconds=14400)
     key = staged / "id_rsa"
     assert key.read_text() == "SESSION KEY\n"
