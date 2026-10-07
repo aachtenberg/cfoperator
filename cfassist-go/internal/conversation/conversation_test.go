@@ -726,3 +726,108 @@ func TestRunNudgeResetsAfterToolRound(t *testing.T) {
 		t.Errorf("warnings = %v, want two nudges", output.warnings)
 	}
 }
+
+// The exact string cfassist rendered as an answer on 2026-08-21 (CFOP-64):
+// Ministral's tool-call wire format, which Ollama did not parse, so the
+// kubectl create job it describes never ran.
+const leakedMinistralCall = `bash[ARGS]{"command": "kubectl create job --from=cronjob/reservoir-ingest test-run -n data"}`
+
+func TestLeakedToolCall(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{leakedMinistralCall, true},
+		{"[TOOL_CALLS]" + leakedMinistralCall, true},
+		{`[TOOL_CALLS][{"name": "bash", "arguments": {"command": "ls"}}]`, true},
+		{"Creating the job now.\n\n" + leakedMinistralCall, true},
+		{`<tool_call>{"name": "bash", "arguments": {"command": "ls"}}</tool_call>`, true},
+		{`<|python_tag|>{"name": "bash", "parameters": {"command": "ls"}}`, true},
+		{`<|python_tag|>brave_search.call(query="ollama tool parsing")`, true},
+		{"<|python_tag|>def is_prime(n):\n    return n > 1", true},
+		{"Checking primes.\n<|python_tag|>import math\nprint(math.isqrt(97))", true},
+
+		{"", false},
+		{"The job ran and completed in 12s.", false},
+		{"Run `kubectl create job --from=cronjob/reservoir-ingest test-run -n data` to retry.", false},
+		{"args := map[string]any{\"command\": \"ls\"}", false},
+		{"See [ARGS] in the docs.", false},
+		// An answer that only mentions a marker is still an answer.
+		{"The string [TOOL_CALLS] identifies a Mistral tool-call marker.", false},
+		{"Hermes wraps calls in <tool_call> tags, which Ollama strips.", false},
+		{"Llama emits <|python_tag|> before a call.", false},
+	}
+	for _, c := range cases {
+		if _, got := leakedToolCall(c.text); got != c.want {
+			t.Errorf("leakedToolCall(%q) = %v, want %v", c.text, got, c.want)
+		}
+	}
+}
+
+func TestLeakedToolCallQuotesFromTheMarkerAndCaps(t *testing.T) {
+	call, _ := leakedToolCall("Creating the job now.\n\n" + leakedMinistralCall)
+	if call != leakedMinistralCall {
+		t.Errorf("call = %q, want the prose before the marker dropped", call)
+	}
+	long, _ := leakedToolCall(`bash[ARGS]{"command": "` + strings.Repeat("x", 1000) + `"}`)
+	if n := len([]rune(long)); n != maxLeakedCallShown+1 {
+		t.Errorf("quoted call is %d runes, want capped at %d plus an ellipsis", n, maxLeakedCallShown)
+	}
+}
+
+// An unparsed tool call must never read as an answer: no response, an error
+// that says nothing ran, a failed Result (so `cfassist -p … && next` stops),
+// and a transcript that tells the next turn the call did not execute.
+func TestRunSurfacesLeakedToolCallAsNothingRan(t *testing.T) {
+	result, msgs, output := newNudgeRun(t, []mockOllamaResponse{
+		{content: leakedMinistralCall, done: true},
+	})
+	if len(output.responses) != 0 {
+		t.Errorf("responses = %q, want none — the raw call was rendered as an answer", output.responses)
+	}
+	if len(output.errors) != 1 || !strings.Contains(output.errors[0], "Nothing ran") ||
+		!strings.Contains(output.errors[0], "reservoir-ingest") {
+		t.Errorf("errors = %q, want one saying nothing ran and quoting the call", output.errors)
+	}
+	if result.Error == "" || result.Response != "" || result.ToolCalls != 0 {
+		t.Errorf("result = %+v, want an error, no response, no tool calls", result)
+	}
+	if len(output.warnings) != 0 {
+		t.Errorf("warnings = %v, want no announced-step nudge", output.warnings)
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != "assistant" || !strings.Contains(last.Content, "did not run") {
+		t.Errorf("last transcript message = %+v, want an assistant note that the call did not run", last)
+	}
+	if strings.Contains(last.Content, "[ARGS]") {
+		t.Errorf("transcript note quotes the raw call, which the model may copy: %q", last.Content)
+	}
+}
+
+// Calls the provider parsed earlier in the turn did run. Saying "nothing ran"
+// after them could send an operator to repeat a mutation that happened.
+func TestRunLeakedToolCallAfterRealCallSaysOnlyThatOneFailed(t *testing.T) {
+	result, _, output := newNudgeRun(t, []mockOllamaResponse{
+		{toolCall: bashCall("echo first"), done: true},
+		{content: leakedMinistralCall, done: true},
+	})
+	if result.ToolCalls != 1 || result.Error == "" {
+		t.Errorf("result = %+v, want one tool call and an error", result)
+	}
+	if len(output.errors) != 1 || strings.Contains(output.errors[0], "Nothing ran") ||
+		!strings.Contains(output.errors[0], "the 1 before it did") {
+		t.Errorf("errors = %q, want only the leaked call reported as not run", output.errors)
+	}
+}
+
+// Structured tool calls still run when the content also carries a marker; the
+// guard is for replies where the provider lifted nothing.
+func TestRunIgnoresMarkerWhenToolCallsParsed(t *testing.T) {
+	result, _, output := newNudgeRun(t, []mockOllamaResponse{
+		{content: "[TOOL_CALLS]", toolCall: bashCall("echo ok"), done: true},
+		{content: "All good.", done: true},
+	})
+	if result.Error != "" || result.ToolCalls != 1 || result.Response != "All good." {
+		t.Errorf("result = %+v, errors = %v", result, output.errors)
+	}
+}

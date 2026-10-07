@@ -159,6 +159,35 @@ func Run(
 
 		text := resp.Content
 
+		// A tool call the transport could not parse arrives as plain content,
+		// and rendered as an answer it looks exactly like an action that ran
+		// (CFOP-64: an operator mid-incident believed a kubectl create job had
+		// executed). Say loudly that it did not run. Not a nudge: the same model
+		// through the same parser would produce the same miss.
+		if call, ok := leakedToolCall(text); ok {
+			// "Nothing ran" only when it is true: calls the provider did parse
+			// earlier in this turn really executed, and an operator told
+			// otherwise might repeat a mutation that already happened.
+			what := "Nothing ran"
+			if result.ToolCalls > 0 {
+				what = fmt.Sprintf("This call did not run (the %d before it did)", result.ToolCalls)
+			}
+			output.ShowError(
+				what+": the model wrote a tool call as text and the provider did not parse it.\n  attempted: "+call,
+				"The provider did not parse this model's tool call. Switch with /model or in ~/.cfassist/config.yaml, or run the command yourself.")
+			// The transcript records that the call failed, not the call itself:
+			// the note keeps user/assistant alternation for the next turn, and
+			// a model asked "did that work?" reads that it did not run instead
+			// of its own call text — which it might also copy.
+			fullMessages = append(fullMessages, client.Message{
+				Role:    "assistant",
+				Content: "[cfassist] My previous reply was a tool call written as text. The provider could not parse it, so it did not run and there is no result.",
+			})
+			result.Error = "the model's tool call was not parsed by the provider and did not run"
+			result.Latency = time.Since(start)
+			return result, transcript(fullMessages)
+		}
+
 		// A reply that ends by announcing a tool call it never made is not an
 		// answer, but without tool calls it ends the turn — and the operator has
 		// to type "continue". gemma4 does this on most multi-step turns. Ask
@@ -228,6 +257,47 @@ func announcesStep(text string) bool {
 	last := strings.ToLower(strings.TrimSpace(paras[len(paras)-1]))
 	last = strings.ReplaceAll(last, "\u2019", "'")
 	return announcedStep.MatchString(last)
+}
+
+// leakedToolCallPattern matches the in-band tool-call markers a model emits
+// when the transport fails to lift them into structured tool_calls: Mistral's
+// "[TOOL_CALLS]" and "name[ARGS]{", Hermes/Qwen's "<tool_call>", and Llama
+// 3.x's "<|python_tag|>". Ollama cannot parse Ministral's format at all
+// (benchmarks/ministral-3-14b-baseline.md), and any model/backend pair can
+// fail the same way.
+//
+// Each marker must be followed by a call-shaped payload. A bare marker is an
+// answer that mentions the format, and treating it as a failed call would
+// throw away a correct reply and fail the turn. An answer that quotes a full
+// example call (`<tool_call>{…`) still trips it; that is the accepted cost,
+// since missing a real leaked call is the failure this exists to prevent.
+//
+// <|python_tag|> at the start of a line may carry raw Python (Llama 3.1's
+// code-interpreter form, `<|python_tag|>def f(n):`), so any payload counts
+// there; mid-sentence it needs a JSON or call shape like the others.
+var leakedToolCallPattern = regexp.MustCompile(
+	`\[TOOL_CALLS\]\s*(?:[\[{]|[A-Za-z_][\w.-]*\[ARGS\])` +
+		`|\b[A-Za-z_][\w.-]*\[ARGS\]\s*\{` +
+		`|<tool_call>\s*\{` +
+		`|(?m:^[ \t]*<\|python_tag\|>[ \t]*\S)` +
+		`|<\|python_tag\|>\s*(?:\{|[A-Za-z_][\w.]*\()`)
+
+// maxLeakedCallShown caps the attempted call quoted back to the operator; a
+// heredoc in a bash argument should not flood the terminal.
+const maxLeakedCallShown = 300
+
+// leakedToolCall reports whether a tool-less reply is really a tool call the
+// provider did not parse, returning the text from the first marker on.
+func leakedToolCall(text string) (string, bool) {
+	loc := leakedToolCallPattern.FindStringIndex(text)
+	if loc == nil {
+		return "", false
+	}
+	call := strings.TrimSpace(text[loc[0]:])
+	if r := []rune(call); len(r) > maxLeakedCallShown {
+		call = string(r[:maxLeakedCallShown]) + "…"
+	}
+	return call, true
 }
 
 // transcript is the session history callers persist: everything Run appended,
