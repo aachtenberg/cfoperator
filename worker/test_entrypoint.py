@@ -551,3 +551,22 @@ def test_a_truncated_ingest_answer_is_a_failed_attempt_not_an_exception(monkeypa
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
         assert entrypoint.post_kb_ingest(_inputs(), {"details": {}}) is None
     assert len(calls) == entrypoint.INGEST_ATTEMPTS
+
+
+def test_an_ingested_report_never_carries_the_outcome_failed():
+    """The agent's ingest route treats a deep row whose outcome is 'failed'
+    as holding no report, and resumes storage on it when a retry arrives
+    (web_server.py _DEEP_RESUMABLE). That is safe only while a report the
+    worker ingests can never itself be 'failed': otherwise a retry would
+    overwrite a genuine report. Only successful runs are ingested
+    (test_a_failed_run_is_not_ingested), and their outcome comes from
+    _STATUS_TO_OUTCOME, so pin both halves here. Adding 'failed' to the
+    vocabulary has to fail this and send someone to the route first.
+    Mutation check: add "failed" to _VALID_STATUSES and _STATUS_TO_OUTCOME
+    and this fails."""
+    assert "failed" not in entrypoint._STATUS_TO_OUTCOME.values()
+    assert set(entrypoint._VALID_STATUSES) == set(entrypoint._STATUS_TO_OUTCOME)
+    # A model writing STATUS: failed gets the safe default, not 'failed'.
+    inputs = _inputs()
+    result = build_action_result(ClaudeRun(True, "Report.\n\nSTATUS: failed", "", 1.0), inputs)
+    assert result["details"]["outcome"] != "failed"
