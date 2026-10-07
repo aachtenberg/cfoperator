@@ -133,7 +133,13 @@ fi
 
 tmp="$(mktemp -d)"
 lock=""
-trap 'rm -rf "$tmp"; [ -z "$lock" ] || rmdir "$lock" 2>/dev/null' EXIT INT TERM
+# Cleanup on EXIT only. A trapped INT/TERM in POSIX sh runs its handler and
+# then RESUMES the script, so the signals just exit — which runs the cleanup
+# once — rather than cleaning up and carrying on into the next step without
+# the staging directory or the lock (claude-review, CodeRabbit on #305).
+trap 'rm -rf "$tmp"; [ -z "$lock" ] || rmdir "$lock" 2>/dev/null' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "Downloading the CFOperator stack (${TAG})…"
 fetch "$url" "$tmp/$ASSET" || die "could not download ${url}
@@ -197,20 +203,33 @@ docker pull "$image" >/dev/null || die "could not pull ${image}; nothing was cha
 # come back published (CodeRabbit on #305). A file that only changed between
 # releases is not an edit. One the release dropped, unedited, is removed.
 manifest="$INSTALL_DIR/.cfoperator-bundle.sha256"
+pending="$INSTALL_DIR/.cfoperator-edits-pending"
 stamp="$(date +%Y%m%d%H%M%S)"
 kept=""
-if [ -f "$manifest" ]; then
+keep_edit() {
+	bak="$INSTALL_DIR/$1.bak-$stamp"
+	[ -e "$bak" ] && bak="$bak.$$"
+	cp -p "$INSTALL_DIR/$1" "$bak"
+	kept="${kept}    ${1} -> ${bak#"$INSTALL_DIR"/}
+"
+}
+if [ ! -f "$manifest" ] && [ "$fresh" = 0 ]; then
+	# Configured, but not by this installer (or before it kept a manifest):
+	# nothing records what was shipped, so any bundled file that differs from
+	# this release is presumed to be the operator's.
+	for name in $(cd "$tmp/stage" && find . -type f | sed 's|^\./||'); do
+		if [ -f "$INSTALL_DIR/$name" ] && [ "$(sum "$INSTALL_DIR/$name")" != "$(sum "$tmp/stage/$name")" ]; then
+			keep_edit "$name"
+		fi
+	done
+elif [ -f "$manifest" ]; then
 	while read -r recorded name; do
 		# The manifest is a file in the install directory, so it is read as
 		# data: only plain relative names inside it are ever copied or removed.
 		case "$name" in ''|/*|..|../*|*/..|*/../*) continue ;; esac
 		[ -f "$INSTALL_DIR/$name" ] || continue
 		if [ "$(sum "$INSTALL_DIR/$name")" != "$recorded" ]; then
-			bak="$INSTALL_DIR/$name.bak-$stamp"
-			[ -e "$bak" ] && bak="$bak.$$"
-			cp -p "$INSTALL_DIR/$name" "$bak"
-			kept="${kept}    ${name} -> ${bak#"$INSTALL_DIR"/}
-"
+			keep_edit "$name"
 		elif [ ! -e "$tmp/stage/$name" ]; then
 			rm -f "$INSTALL_DIR/$name"
 		fi
@@ -234,13 +253,18 @@ else
 fi
 if [ -n "$kept" ]; then
 	printf '  These had local edits. The release replaced them; yours are kept as:\n%s' "$kept"
-	if [ "$fresh" = 0 ]; then
-		echo
-		echo "Not restarted, so what is running still has your edits. Carry them into the"
-		echo "new files — or into docker-compose.override.yml, which upgrades never touch —"
-		echo "then:  cd \"${INSTALL_DIR}\" && docker compose up -d"
-		exit 0
-	fi
+	# Recorded on disk, not in a variable: the next run sees release-matching
+	# files and would otherwise restart onto the defaults the edits replaced
+	# (CodeRabbit on #305). Only the operator clears it.
+	[ "$fresh" = 1 ] || printf '%s' "$kept" >> "$pending"
+fi
+if [ "$fresh" = 0 ] && [ -f "$pending" ]; then
+	echo
+	echo "Not restarted: local edits from an upgrade have not been carried over yet"
+	echo "(listed in ${pending}). What is running still has them. Move them into the"
+	echo "new files, or into docker-compose.override.yml, which upgrades never touch;"
+	echo "then delete that file and run:  cd \"${INSTALL_DIR}\" && docker compose up -d"
+	exit 0
 fi
 
 # --- configure -----------------------------------------------------------------

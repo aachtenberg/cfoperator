@@ -283,7 +283,10 @@ def reachability_note(url: str, ok: bool) -> str:
     parts = urllib.parse.urlsplit(url)
     host = (parts.hostname or "").lower()
     if host in _LOOPBACK_HOSTS or host.startswith("127."):
-        port = f":{parts.port}" if parts.port else ""
+        try:
+            port = f":{parts.port}" if parts.port else ""
+        except ValueError:  # "host:abc", ":99999" — a typo must stay a FAIL, not a traceback
+            port = ""
         return (f"{url} is loopback. The docker-compose trial's containers are bridged: "
                 f"there localhost is the container itself, and a service on this machine is "
                 f"{parts.scheme or 'http'}://{_DOCKER_HOST}{port}")

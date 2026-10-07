@@ -428,3 +428,12 @@ def test_a_dead_loopback_answer_fails_with_the_hint(monkeypatch, tmp_path, stub,
     assert wiz.main(["--non-interactive", "--dir", str(tmp_path)]) == 1
     err = capsys.readouterr().err
     assert "prometheus" in err and "hint:" in err and "host.docker.internal" in err, err
+
+
+@pytest.mark.parametrize("url", ["http://localhost:abc", "http://127.0.0.1:99999",
+                                 "http://host.docker.internal:abc"])
+def test_a_malformed_port_is_a_note_not_a_traceback(url):
+    """urlsplit().port raises on these; the note runs on answers that are
+    already wrong, so it must not turn a typo into a crash (claude-review)."""
+    wiz.reachability_note(url, False)
+    wiz.reachability_note(url, True)

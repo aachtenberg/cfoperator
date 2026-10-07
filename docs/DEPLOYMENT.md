@@ -330,8 +330,12 @@ and upgrades never touch it). If you edit a bundled file instead — say
 `deploy/compose/config.yaml`, or the console's port binding in
 `docker-compose.yml` — the next upgrade notices (it records the checksums of
 what it installed), keeps your copy as `<name>.bak-<time>`, installs the
-release's, and **does not restart**, so what is running keeps your edit until
-you carry it over and run `docker compose up -d` yourself.
+release's, and **does not restart**, so what is running keeps your edit. Later
+runs stay hands-off too, until you have carried the edit over and deleted
+`.cfoperator-edits-pending`, which lists what was kept; then
+`docker compose up -d`. A directory configured without the installer (no
+manifest, say a clone) is treated the same way: any bundled file that differs
+from the release is presumed to be yours.
 
 **What the checksum does and does not prove.** `checksums.txt` comes from the
 same release as the bundle, so it catches a corrupt or truncated download, not

@@ -55,7 +55,10 @@ case "$1" in
 	info)
 		if [ -n "${DOCKER_INFO_ERR:-}" ]; then echo "$DOCKER_INFO_ERR" >&2; exit 1; fi
 		exit 0 ;;
-	pull) exit "${DOCKER_PULL_EXIT:-0}" ;;
+	pull)
+		# Ctrl-C arriving while a step succeeds: the installer must stop there.
+		[ -z "${DOCKER_PULL_SIGNAL:-}" ] || kill -INT "$PPID"
+		exit "${DOCKER_PULL_EXIT:-0}" ;;
 	run)
 		# Play the wizard: write .env into whatever is mounted at /out.
 		prev=""
@@ -509,3 +512,53 @@ def test_a_tampered_manifest_cannot_reach_outside_the_install_dir(machine, relea
                         + f"{digest} ../precious.txt\n{digest} {outside}\n")
     assert run(machine, base_url=base_url).returncode == 0
     assert outside.read_text() == "keep me\n"
+
+
+def test_ctrl_c_stops_the_installer_instead_of_resuming_it(machine, release):
+    """A trapped INT in POSIX sh resumes the script after the handler. The
+    handler used to clean up without exiting, so the run carried on without its
+    staging directory or its lock (claude-review, CodeRabbit on #305)."""
+    _with_docker(machine)
+    _, base_url = release
+    proc = run(machine, base_url=base_url, DOCKER_PULL_SIGNAL="1")
+    assert proc.returncode == 130, (proc.returncode, proc.stderr)
+    assert not (machine["dir"] / "docker-compose.yml").exists(), "nothing after the interrupted step may run"
+    assert not (machine["dir"] / ".install.lock").exists(), "an interrupted run still releases its lock"
+    assert not [c for c in docker_calls(machine) if c.startswith(("run ", "compose up"))]
+
+
+def test_unreconciled_edits_keep_the_stack_down_across_runs(machine, release):
+    """The not-restarted state is on disk: a second run sees release-matching
+    files, and used to restart onto the defaults the edits replaced."""
+    _with_docker(machine)
+    _, base_url = release
+    assert run(machine, base_url=base_url).returncode == 0
+    config = machine["dir"] / "deploy" / "compose" / "config.yaml"
+    config.write_text(config.read_text() + "# console bound to loopback here\n")
+    assert run(machine, base_url=base_url).returncode == 0
+
+    machine["log"].write_text("")
+    proc = run(machine, base_url=base_url)
+    assert proc.returncode == 0, proc.stderr
+    assert "compose up -d" not in docker_calls(machine), "still unreconciled: must not restart"
+    assert ".cfoperator-edits-pending" in proc.stdout
+
+    (machine["dir"] / ".cfoperator-edits-pending").unlink()
+    machine["log"].write_text("")
+    assert run(machine, base_url=base_url).returncode == 0
+    assert "compose up -d" in docker_calls(machine), "the operator cleared it; upgrades start again"
+
+
+def test_a_configured_dir_without_a_manifest_presumes_differences_are_edits(machine, release):
+    """Say CFOP_INSTALL_DIR names a clone, or a directory set up by hand:
+    nothing records what was shipped, so a differing file is the operator's."""
+    _with_docker(machine)
+    _, base_url = release
+    machine["dir"].mkdir()
+    (machine["dir"] / ".env").write_text("CFOP_ADMIN_PASSWORD=x\n")
+    (machine["dir"] / "docker-compose.yml").write_text("services: {}  # hand-made\n")
+    proc = run(machine, base_url=base_url)
+    assert proc.returncode == 0, proc.stderr
+    [bak] = machine["dir"].glob("docker-compose.yml.bak-*")
+    assert "hand-made" in bak.read_text()
+    assert "compose up -d" not in docker_calls(machine)
