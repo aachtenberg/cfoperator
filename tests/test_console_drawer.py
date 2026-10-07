@@ -375,8 +375,11 @@ const box={console,JSON,Math,Date,Number,String,Array,Object,URL,Promise,
              rejected:[{alternative:'delete the pod',why_not:'node is gone'}]},
         // The protocol tail the agent parses; TAILJSON is the tell.
         response:'# Report\n\nThe node is **gone**.\n\nSTATUS: needs_action\nRECOMMENDATION: Power-cycle the node.\nFIX: {"marker":"TAILJSON"}\n\nNotes: kubectl describe showed\nStatus: Running'}:{};
+      // 2272 answers an event_runtime alert whose id needs encoding in a
+      // URL; the bare ids answer none (CFOP-216).
       const res={ok:true,json:()=>Promise.resolve({id:id,trigger:'backup failed',
-        outcome:'monitoring',attach_command:'cfassist attach '+id,findings:findings})};
+        outcome:'monitoring',attach_command:'cfassist attach '+id,findings:findings,
+        alert_id:id===2272?'am:Node Down/1':null})};
       return slow.has(id) ? new Promise(r=>setTimeout(()=>r(res),40))
                           : Promise.resolve(res);
     }
@@ -433,6 +436,7 @@ const tick=()=>new Promise(r=>setImmediate(r));
   const report=(opened.match(/<summary>Full report[\s\S]*?<div class="md">([\s\S]*?)<\/div><\/details>/)||['',''])[1];
   out.reportRendered=/<strong>gone<\/strong>/.test(report) && !/\*\*gone\*\*/.test(report);
   out.asksConsole=opened.indexOf('href="/?investigation=2272"')>=0;
+  out.linksEvent=opened.indexOf('href="/events#am%3ANode%20Down%2F1"')>=0;
   // The maximize toggle (CFOP-113): drawn off, flips the page's state, and
   // its accessible name follows the state.
   out.maxDrawnOff=opened.indexOf('id="detail-max"')>=0 && opened.indexOf('aria-pressed="false"')>=0
@@ -455,6 +459,8 @@ const tick=()=>new Promise(r=>setImmediate(r));
   box.openFromHash();
   await tick();
   out.openedFromHash=detailFetches[detailFetches.length-1];
+  await tick();
+  out.bareRowLinksEvent=box.document.getElementById('detail').innerHTML.indexOf('/events#')>=0;
 
   // Two clicks, the first one slow: the row you left must not paint over the
   // row you moved to.
@@ -543,6 +549,17 @@ def test_the_report_is_rendered_markdown_not_escaped_text(drawer_behaviour):
     this is the one for the second consumer."""
     assert drawer_behaviour["reportRendered"], (
         "the full report is not rendered markdown — is /vendor/marked.min.js still loaded?")
+
+
+def test_the_drawer_links_the_investigation_to_its_event(drawer_behaviour):
+    """CFOP-216. An investigation an event_runtime alert started links back to
+    that alert on the Events page, URI-encoded because alert ids are free
+    text. One no alert started (the reactive loop, chat) shows no link
+    rather than a dead one. Mutation check: drop eventLine from the drawer
+    and linksEvent flips; render it unconditionally and bareRowLinksEvent does.
+    """
+    assert drawer_behaviour["linksEvent"], "the drawer did not link /events#<encoded alert_id>"
+    assert not drawer_behaviour["bareRowLinksEvent"], "a row with no alert_id rendered an event link"
 
 
 def test_closing_the_drawer_clears_the_url(drawer_behaviour):

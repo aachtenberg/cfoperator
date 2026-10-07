@@ -17,6 +17,7 @@ visible for the operator.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import os
@@ -405,7 +406,9 @@ def build_action_result(run: ClaudeRun, inputs: WorkerInputs) -> Dict[str, Any]:
     }
 
 
-def post_json(url: str, payload: Dict[str, Any], *, token: str = "", retries: int = 3) -> bool:
+def _post(url: str, payload: Dict[str, Any], *, token: str = "", retries: int = 3,
+          timeout: float = 15) -> Optional[bytes]:
+    """POST JSON with retries. Returns the response body, or None on failure."""
     body = json.dumps(payload, default=str).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     if token:
@@ -413,14 +416,20 @@ def post_json(url: str, payload: Dict[str, Any], *, token: str = "", retries: in
     for attempt in range(1, retries + 1):
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                response.read()
-            return True
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                return response.read()
+        # http.client.HTTPException covers a body cut short (IncompleteRead) or
+        # a garbled status line; neither is an OSError on Python 3.11.
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError,
+                http.client.HTTPException) as exc:
             logger.warning("POST %s failed (attempt %d/%d): %s", url, attempt, retries, exc)
             if attempt < retries:
                 time.sleep(2 ** attempt)
-    return False
+    return None
+
+
+def post_json(url: str, payload: Dict[str, Any], *, token: str = "", retries: int = 3) -> bool:
+    return _post(url, payload, token=token, retries=retries) is not None
 
 
 def post_completion(inputs: WorkerInputs, result: Dict[str, Any]) -> bool:
@@ -431,15 +440,40 @@ def post_completion(inputs: WorkerInputs, result: Dict[str, Any]) -> bool:
     return post_json(inputs.completion_url, payload, token=inputs.completion_token)
 
 
-def post_kb_ingest(inputs: WorkerInputs, result: Dict[str, Any]) -> None:
+# The ingest now runs before the completion is posted (CFOP-216), so its budget
+# is a delay on the operator's notification: at most two 10s attempts and one
+# 2s backoff. The completion keeps the longer post_json budget.
+INGEST_TIMEOUT_S = 10
+INGEST_ATTEMPTS = 2
+
+
+def post_kb_ingest(inputs: WorkerInputs, result: Dict[str, Any]) -> Optional[int]:
     """Best-effort: hand the report to the agent so it lands in the KB with
-    embeddings and (optionally) flows through the remediation PR gates."""
+    embeddings and (optionally) flows through the remediation PR gates.
+
+    Returns the investigation id the agent created, or None when there is
+    none to trust — agent unset or down, an error, or a body without a
+    positive integer id. None is not a failure of the run: the completion
+    still posts, just without the link.
+    """
     if not inputs.agent_url:
-        return
+        return None
     url = f"{inputs.agent_url.rstrip('/')}/v1/deep-investigations"
     payload = {"alert": inputs.alert, "result": result}
-    if not post_json(url, payload, token=inputs.completion_token, retries=2):
-        logger.warning("KB ingest post failed (non-fatal)")
+    body = _post(url, payload, token=inputs.completion_token,
+                 retries=INGEST_ATTEMPTS, timeout=INGEST_TIMEOUT_S)
+    if body is None:
+        logger.warning("KB ingest post failed (non-fatal); completion goes without an investigation id")
+        return None
+    try:
+        inv_id = json.loads(body.decode("utf-8")).get("investigation_id")
+    except (ValueError, AttributeError, UnicodeDecodeError):
+        logger.warning("KB ingest answered with an unreadable body; completion goes without an investigation id")
+        return None
+    # bool is an int; a negative id is the agent's offline placeholder.
+    if isinstance(inv_id, bool) or not isinstance(inv_id, int) or inv_id <= 0:
+        return None
+    return inv_id
 
 
 def main() -> int:
@@ -474,9 +508,18 @@ def main() -> int:
         run = ClaudeRun(False, "", f"worker error: {type(exc).__name__}: {exc}", 0.0)
 
     result = build_action_result(run, inputs)
-    delivered = post_completion(inputs, result)
+    # Ingest first: the agent answers with the investigation it created, and
+    # the completion is the only place event_runtime can learn it — it gives
+    # the Events page its link and Slack its attach line (CFOP-216).
     if run.success:
-        post_kb_ingest(inputs, result)
+        try:
+            inv_id = post_kb_ingest(inputs, result)
+        except Exception:  # noqa: BLE001 - the ingest must never cost the completion
+            logger.exception("KB ingest raised; completion goes without an investigation id")
+            inv_id = None
+        if inv_id is not None:
+            result["details"]["investigation_id"] = inv_id
+    delivered = post_completion(inputs, result)
     logger.info(
         "Deep investigation finished: success=%s outcome=%s delivered=%s",
         run.success, result["details"].get("outcome"), delivered,

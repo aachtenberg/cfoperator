@@ -30,9 +30,18 @@ Alertmanager → event_runtime engine
             ▼
   Job pod (ghcr.io/aachtenberg/cfoperator-worker)
        worker/entrypoint.py: template → claude -p (read-only allowlist)
-       ├─ POST /v1/investigations/{alert_id}/complete   (loud notification)
-       └─ POST agent /v1/deep-investigations            (KB + embeddings + PR gates)
+       ├─ POST agent /v1/deep-investigations            (row now → investigation_id;
+       │                                                 KB + embeddings + PR gates after)
+       └─ POST /v1/investigations/{alert_id}/complete   (loud notification,
+                                                         details.investigation_id)
 ```
+
+The ingest goes first so the completion can carry the investigation the agent
+created: that id is what gives the Events page its link and Slack its
+`cfassist attach` line (CFOP-216). It gets a short budget (2 × 10s) because it
+now delays the notification, and any failure, including an agent that is down,
+posts the completion without the id rather than not at all. The investigation
+row stores the alert's `alert_id`, so its drawer links back to `/events#<id>`.
 
 Key modules: `event_runtime/deep_investigation.py` (routing + handler),
 `worker/` (image + entrypoint + templates),

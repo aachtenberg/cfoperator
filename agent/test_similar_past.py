@@ -25,7 +25,7 @@ def _operator(captured):
     op = CFOperator.__new__(CFOperator)
     op.config = {}
     op.kb = SimpleNamespace(
-        start_investigation=lambda trigger: 77,
+        start_investigation=lambda trigger, alert_id=None: 77,
         update_investigation=lambda **kw: captured.update(kw) or True,
     )
     op._noise_config = lambda: {'enabled': False}

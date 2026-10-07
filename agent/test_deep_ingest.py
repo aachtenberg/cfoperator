@@ -243,7 +243,8 @@ def test_store_deep_investigation_stores_kb_trio():
 
     assert out["investigation_id"] == 11
     assert out["outcome"] == "needs_action"
-    op.kb.start_investigation.assert_called_once_with(trigger="[deep] NodeUnreachable raspberrypi3")
+    op.kb.start_investigation.assert_called_once_with(
+        trigger="[deep] NodeUnreachable raspberrypi3", alert_id="abc-123")
     kwargs = op.kb.update_investigation.call_args.kwargs
     assert kwargs["investigation_id"] == 11
     assert kwargs["outcome"] == "needs_action"
@@ -297,3 +298,374 @@ def test_store_deep_investigation_counts_the_outcome_and_observes_the_duration()
     assert M.INVESTIGATIONS.labels(outcome="needs_action")._value.get() == outcome + 1
     assert sum(b.get() for b in dur._buckets) == dur_n + 1
     assert dur._sum.get() == dur_sum + 42.5
+
+
+# ---- CFOP-216: the row exists before the worker's completion goes ------------
+
+
+def test_begin_creates_the_row_with_its_alert_and_store_reuses_it():
+    """The route creates the row up front and hands its id to the background
+    storage, which must not create a second one."""
+    op = _operator()
+    inv_id = op.begin_deep_investigation(_ALERT)
+    assert inv_id == 11
+    op.store_deep_investigation(_ALERT, _result(), inv_id=inv_id)
+    op.kb.start_investigation.assert_called_once_with(
+        trigger="[deep] NodeUnreachable raspberrypi3", alert_id="abc-123")
+    assert op.kb.update_investigation.call_args.kwargs["investigation_id"] == 11
+
+
+def test_a_report_that_never_landed_marks_the_published_row_failed():
+    """Event_runtime already holds this id (Events link, attach line), so a
+    storage failure before the report is written must not leave the row
+    in_progress forever. Mutation check: drop the finally and this fails."""
+    op = _operator()
+    op.kb.update_investigation.side_effect = [RuntimeError("db hiccup"), True]
+    try:
+        op.store_deep_investigation(_ALERT, _result(), inv_id=11)
+    except RuntimeError:
+        pass
+    last = op.kb.update_investigation.call_args.kwargs
+    assert last["investigation_id"] == 11 and last["outcome"] == "failed"
+
+
+def test_a_failure_after_the_report_landed_keeps_its_outcome():
+    """The queue or PR gate failing afterwards does not make the
+    investigation wrong; overwriting needs_action with failed would."""
+    op = _operator()
+    op._maybe_queue_remediation = MagicMock(side_effect=RuntimeError("queue down"))
+    try:
+        op.store_deep_investigation(_ALERT, _result(), inv_id=11)
+    except RuntimeError:
+        pass
+    outcomes = [c.kwargs.get("outcome") for c in op.kb.update_investigation.call_args_list]
+    assert outcomes == ["needs_action"], outcomes
+
+
+def test_an_offline_placeholder_is_never_marked():
+    """A negative id is ResilientKB's local placeholder: no row to mark."""
+    op = _operator()
+    op.kb.update_investigation.side_effect = RuntimeError("offline")
+    try:
+        op.store_deep_investigation(_ALERT, _result(), inv_id=-4)
+    except RuntimeError:
+        pass
+    assert op.kb.update_investigation.call_count == 1
+
+
+# ---- the route answers with the id -------------------------------------------
+
+
+def _deep_client(monkeypatch, begin, existing=lambda alert: None):
+    import threading
+    from types import SimpleNamespace
+
+    from flask import Flask
+    from web_server import WebServer
+
+    monkeypatch.delenv("CFOP_COMPLETION_SHARED_SECRET", raising=False)
+    stored = threading.Event()
+    op = SimpleNamespace(current_investigation=None, start_time=0.0, store_calls=[])
+    op.begin_deep_investigation = begin
+    op.existing_deep_investigation = existing
+
+    def store(alert, result, inv_id=None):
+        op.store_calls.append(inv_id)
+        stored.set()
+
+    op.store_deep_investigation = store
+    server = WebServer.__new__(WebServer)
+    server.operator, server.host, server.port = op, "localhost", 0
+    server.app = Flask(__name__)
+    server._chat_sessions = {}
+    server._sessions_lock = threading.Lock()
+    server._setup_routes()
+    return server.app.test_client(), op, stored
+
+
+def _ingest(client):
+    return client.post("/v1/deep-investigations", json={"alert": _ALERT, "result": _result()})
+
+
+def test_the_ingest_route_answers_with_the_investigation_id(monkeypatch):
+    client, op, stored = _deep_client(monkeypatch, lambda alert: 2301)
+    resp = _ingest(client)
+    assert resp.status_code == 202
+    assert resp.get_json()["investigation_id"] == 2301
+    assert stored.wait(2) and op.store_calls == [2301]
+
+
+def test_the_ingest_route_never_publishes_an_offline_placeholder(monkeypatch):
+    """Mutation check: drop the > 0 guard and the -7 goes out, which the
+    worker would stamp onto Slack as an attach line to no row."""
+    client, op, stored = _deep_client(monkeypatch, lambda alert: -7)
+    resp = _ingest(client)
+    assert resp.status_code == 202
+    assert "investigation_id" not in resp.get_json()
+    assert stored.wait(2)
+
+
+def test_the_ingest_route_still_stores_when_the_row_could_not_be_made(monkeypatch):
+    """The up-front INSERT failing costs the id in the answer, not the
+    report: storage retries the row itself and stores onto it."""
+    calls = []
+
+    def flaky_begin(alert):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("db hiccup")
+        return 2501
+
+    client, op, stored = _deep_client(monkeypatch, flaky_begin)
+    resp = _ingest(client)
+    assert resp.status_code == 202 and "investigation_id" not in resp.get_json()
+    assert stored.wait(2) and op.store_calls == [2501]
+
+
+def test_a_row_made_by_the_fallback_is_owned_while_it_stores(monkeypatch):
+    """When storage has to create the row itself, a retry arriving during
+    that storage must see it as running (duplicate), not as abandoned
+    (resumed, a second writer). Mutation check: create the row in the
+    thread without claiming it and the retry is answered resumed."""
+    import threading
+
+    release = threading.Event()
+    calls = []
+
+    def flaky_begin(alert):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("db hiccup")
+        return 2501
+
+    lookups = iter([None, (2501, "in_progress")])
+    client, op, stored = _deep_client(monkeypatch, flaky_begin, existing=lambda a: next(lookups))
+
+    def slow_store(alert, result, inv_id=None):
+        op.store_calls.append(inv_id)
+        stored.set()
+        release.wait(2)
+    op.store_deep_investigation = slow_store
+
+    _ingest(client)
+    assert stored.wait(2)
+    retry = _ingest(client)
+    release.set()
+    assert retry.get_json() == {"status": "duplicate", "investigation_id": 2501}
+    assert op.store_calls == [2501]
+
+
+# ---- the in-process path links its alert too ---------------------------------
+
+
+def test_act_records_the_alert_it_answers():
+    """_act creates the row for HTTP-triggered investigations; it carries
+    the event_runtime alert_id so the drawer can link to /events."""
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def start(trigger, alert_id=None):
+        seen["alert_id"] = alert_id
+        raise _Stop()
+
+    op = _operator()
+    op.kb.start_investigation.side_effect = start
+    try:
+        op._act({"trigger": "Pod foo not ready", "alert": {"alert_id": "aid-77"}})
+    except _Stop:
+        pass
+    assert seen["alert_id"] == "aid-77"
+
+
+def test_an_offline_start_keeps_its_alert_through_the_buffer():
+    """Offline, ResilientKB buffers the start and replays it later; the
+    alert link must survive that round trip, or every investigation begun
+    during an outage loses its Events link for good."""
+    import threading
+    from types import SimpleNamespace
+
+    from knowledge_base import ResilientKnowledgeBase
+
+    rkb = ResilientKnowledgeBase.__new__(ResilientKnowledgeBase)
+    rkb._health_monitor = SimpleNamespace(is_healthy=lambda: False)
+    buffered = []
+    rkb._buffer = SimpleNamespace(buffer_event=lambda kind, data: buffered.append((kind, data)))
+    rkb._local_id_lock = threading.Lock()
+    rkb._local_inv_id_counter = 0
+    rkb._local_to_db_id_map = {}
+
+    local = rkb.start_investigation("[deep] node gone", alert_id="aid-9")
+    assert local < 0, "offline ids are negative placeholders"
+    kind, data = buffered[0]
+    assert kind == "start_investigation" and data["alert_id"] == "aid-9"
+
+    rkb._kb = MagicMock()
+    rkb._kb.start_investigation.return_value = 501
+    rkb._replay_event(SimpleNamespace(event_type=kind, data=data))
+    rkb._kb.start_investigation.assert_called_once_with("[deep] node gone", alert_id="aid-9")
+    assert rkb._local_to_db_id_map[local] == 501
+
+
+
+# ---- review of #303: a retried ingest reuses the row, not a second one --------
+
+
+def test_a_retry_while_storage_runs_gets_the_same_row_and_no_second_writer(monkeypatch):
+    """The worker retries an ingest whose answer took longer than its 10s
+    timeout; the first attempt may have landed and still be storing. The
+    retry gets that row and starts no second storage thread. Mutation check:
+    treat an in_progress row as abandoned regardless of the set and a second
+    store starts."""
+    import threading
+
+    release = threading.Event()
+    lookups = iter([None, (2301, "in_progress")])
+    client, op, stored = _deep_client(monkeypatch, lambda a: 2301,
+                                      existing=lambda a: next(lookups))
+    def slow_store(alert, result, inv_id=None):
+        op.store_calls.append(inv_id)
+        stored.set()
+        release.wait(2)
+    op.store_deep_investigation = slow_store
+
+    first = _ingest(client)
+    assert stored.wait(2)
+    retry = _ingest(client)
+    release.set()
+    assert first.get_json()["investigation_id"] == 2301
+    assert retry.get_json() == {"status": "duplicate", "investigation_id": 2301}
+    assert op.store_calls == [2301], "a duplicate must not start a second writer"
+
+
+def test_a_retry_after_storage_finished_gets_the_same_row(monkeypatch):
+    """The common retry: the first answer was slow, but its storage finished
+    before the retry arrived, so the row already has an outcome. Matching
+    only in_progress rows missed this and made a second row (second review
+    of #303). Mutation check: only match in_progress and begin is called."""
+    began = []
+    client, op, stored = _deep_client(monkeypatch, lambda a: began.append(a) or 999,
+                                      existing=lambda a: (2301, "needs_action"))
+    resp = _ingest(client)
+    assert resp.get_json() == {"status": "duplicate", "investigation_id": 2301}
+    assert began == [] and not stored.wait(0.2)
+
+
+def test_a_retry_resumes_a_row_whose_storage_was_lost(monkeypatch):
+    """An in_progress row with no storage running in this process was left
+    by a restart between its INSERT and its report. Returning it as a
+    duplicate would link the completion to a row that stays empty forever;
+    the retry resumes storage on it instead (review of #303)."""
+    began = []
+    client, op, stored = _deep_client(monkeypatch, lambda a: began.append(a) or 999,
+                                      existing=lambda a: (2301, "in_progress"))
+    resp = _ingest(client)
+    assert resp.get_json() == {"status": "resumed", "investigation_id": 2301}
+    assert stored.wait(2) and op.store_calls == [2301]
+    assert began == [], "resuming must not create a second row"
+
+
+def test_a_retry_after_storage_failed_tries_storage_again(monkeypatch):
+    """A row storage marked failed holds no report. Answering duplicate
+    would link the completion to it and never retry; the retry resumes
+    storage on that row instead (third review of #303). Mutation check:
+    resume only in_progress and this is answered duplicate."""
+    began = []
+    client, op, stored = _deep_client(monkeypatch, lambda a: began.append(a) or 999,
+                                      existing=lambda a: (2301, "failed"))
+    resp = _ingest(client)
+    assert resp.get_json() == {"status": "resumed", "investigation_id": 2301}
+    assert stored.wait(2) and op.store_calls == [2301]
+    assert began == []
+
+
+def test_concurrent_ingests_for_one_alert_make_one_row(monkeypatch):
+    """Lookup, decision and INSERT share one lock, so two overlapping
+    ingests cannot both see no row and both insert. Mutation check: release
+    the lock before begin and two rows are made."""
+    import threading
+    import time
+
+    rows = {}
+    def existing(alert):
+        return (rows["id"], "in_progress") if rows else None
+    def begin(alert):
+        time.sleep(0.05)  # widen the window between lookup and insert
+        rows["id"] = 2400 + len(rows)
+        return rows["id"]
+    client, op, stored = _deep_client(monkeypatch, begin, existing=existing)
+    answers = []
+    threads = [threading.Thread(target=lambda: answers.append(_ingest(client).get_json()))
+               for _ in range(2)]
+    for t in threads: t.start()
+    for t in threads: t.join(5)
+    assert sorted(a["investigation_id"] for a in answers) == [2400, 2400], answers
+    assert sorted(a["status"] for a in answers) == ["accepted", "duplicate"], answers
+
+
+def test_a_failed_duplicate_check_falls_through_to_a_new_row(monkeypatch):
+    def boom(alert):
+        raise RuntimeError("db down")
+
+    client, op, stored = _deep_client(monkeypatch, lambda a: 2302, existing=boom)
+    resp = _ingest(client)
+    assert resp.get_json()["investigation_id"] == 2302
+    assert stored.wait(2)
+
+
+def test_the_duplicate_lookup_matches_on_alert_and_deep_trigger():
+    op = _operator()
+    op.kb.find_recent_investigation_for_alert.return_value = (77, "in_progress")
+    assert op.existing_deep_investigation(_ALERT) == (77, "in_progress")
+    op.kb.find_recent_investigation_for_alert.assert_called_once_with(
+        "abc-123", "[deep] NodeUnreachable raspberrypi3")
+    op.kb.find_recent_investigation_for_alert.reset_mock()
+    assert op.existing_deep_investigation({"summary": "no id"}) is None
+    op.kb.find_recent_investigation_for_alert.assert_not_called()
+
+
+# ---- review of #303: buffered starts wait for the schema ---------------------
+
+
+def _sync_kb(schema_ok):
+    import threading
+    from types import SimpleNamespace
+
+    from knowledge_base import ResilientKnowledgeBase
+
+    rkb = ResilientKnowledgeBase.__new__(ResilientKnowledgeBase)
+    rkb._health_monitor = SimpleNamespace(is_healthy=lambda: True)
+    rkb._buffer = SimpleNamespace(has_pending_events=lambda: True)
+    rkb._schema_initialized = False
+    rkb._kb = MagicMock()
+    rkb._kb.initialize_schema.return_value = schema_ok
+    rkb._schema_lock = threading.Lock()
+    replayed = []
+    rkb._sync_buffered_events = lambda: replayed.append(1)
+    return rkb, replayed
+
+
+def test_buffered_events_are_held_while_the_schema_is_incomplete():
+    """A failed replay is skipped and marked synced, so replaying a buffered
+    start into a table still missing alert_id would lose it for good.
+    Mutation check: drop the _schema_initialized gate and this replays."""
+    rkb, replayed = _sync_kb(schema_ok=False)
+    import knowledge_base as kbmod
+    logged = []
+    orig = kbmod._log
+    kbmod._log = lambda level, msg, **kw: logged.append((level, msg))
+    try:
+        rkb._sync_tick()
+        rkb._sync_tick()
+    finally:
+        kbmod._log = orig
+    assert replayed == []
+    held = [m for lvl, m in logged if lvl == "warning" and "Buffered events held" in m]
+    assert len(held) == 1, f"a held replay must be said once per interval, not silent or every tick: {logged}"
+
+
+def test_buffered_events_replay_once_the_schema_is_complete():
+    rkb, replayed = _sync_kb(schema_ok=True)
+    rkb._sync_tick()
+    assert replayed == [1]
