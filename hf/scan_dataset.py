@@ -48,8 +48,11 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     # key=value style assignments and HTTP auth headers.
     # No leading \b: POSTGRES_PASSWORD=... has a word character before the
     # keyword, and that is the common shape in env dumps and log lines.
-    ("password-assignment", re.compile(r"(?i)(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?key|auth[_-]?token)\w*\s*[:=]\s*['\"]?[^\s'\",]{6,}")),
+    # "token" is in the group on purpose: it over-matches (token counts, token
+    # budgets) and that is the strict side to err on.
+    ("password-assignment", re.compile(r"(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\w*\s*[:=]\s*['\"]?[^\s'\",]{6,}")),
     ("bearer-header", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{16,}")),
+    ("token-header", re.compile(r"(?i)\bauthorization:\s*token\s+[A-Za-z0-9._~+/=-]{16,}")),
     ("basic-auth-header", re.compile(r"(?i)\bbasic\s+[A-Za-z0-9+/=]{16,}")),
     # Private key material.
     ("private-key-block", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),

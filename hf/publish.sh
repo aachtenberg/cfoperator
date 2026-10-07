@@ -9,7 +9,7 @@
 #
 #   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh              # scan, stage, verify, upload
 #   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh --dry-run    # everything except the upload
-#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh --stage-only # scan and stage only, no artifacts touched
+#   HF_REPO=<user>/cfop-triage-ministral3-14b-v5 hf/publish.sh --stage-only # scan and stage only; nothing verified, nothing uploaded
 #
 # Environment:
 #   HF_REPO       required. The model repo id to create or update.
