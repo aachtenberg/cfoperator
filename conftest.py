@@ -37,11 +37,27 @@ intentionally configure a fake webhook continue to work unchanged. Tests
 that are *about* ``.env`` resolution opt back in with
 ``monkeypatch.delenv("CFOP_NO_DOTENV")`` — and must ``chdir`` to a tmp
 dir when they do, because ``load_env_file`` also walks ``Path.cwd()``.
+
+The same principle runs the other way — the suite must not *write to* the
+machine either — and that is the fixture at the bottom. Three places stage
+a mounted ssh secret into ``Path.home() / ".ssh"`` so ssh finds it as a
+default identity (``cockpit.ladder``, ``worker.entrypoint``,
+``executor.nodeaction``). A test that reaches one of them with a fake ssh
+runner isolates the network but not that write; a cockpit test did, and
+replaced the developer's real ``~/.ssh/id_rsa`` with "SESSION KEY"
+(CFOP-275). The fixture does not prevent the write — the code fix does —
+it makes the *class* of regression fail loudly, by test name, on the first
+machine where it would have mattered. It lives here rather than in
+``tests/`` because every per-directory invocation loads this file.
 """
 
 import atexit
 import os
 import tempfile
+from pathlib import Path
+from typing import Dict, Tuple
+
+import pytest
 
 
 # Do not read the developer's .env at all. Blanking named variables (as the
@@ -81,3 +97,69 @@ _EMPTY_CONFIG = tempfile.NamedTemporaryFile(  # noqa: SIM115 - lives for the ses
 _EMPTY_CONFIG.close()
 os.environ["CONFIG_PATH"] = _EMPTY_CONFIG.name
 atexit.register(lambda: os.path.exists(_EMPTY_CONFIG.name) and os.unlink(_EMPTY_CONFIG.name))
+
+
+# ---------------------------------------------------------------------------
+# The suite must not write to the machine either (CFOP-275).
+# ---------------------------------------------------------------------------
+
+#: Captured at import, before any test can ``monkeypatch.setenv("HOME", ...)``.
+#: A test that redirects HOME is still measured against the real directory,
+#: because the real directory is the one a stray write would damage.
+_REAL_SSH_DIR = Path(os.environ.get("HOME") or os.path.expanduser("~")) / ".ssh"
+
+
+def _snapshot_ssh_dir(directory: Path) -> Dict[str, Tuple[int, int]]:
+    """``{name: (size, mtime_ns)}`` for the regular files directly in ``directory``.
+
+    Shallow on purpose: regular files (and symlinks to them) directly in the
+    directory, no subdirectories, no content hash. That is cheap enough to run
+    around every test, it is where ssh looks for a default identity, and an
+    overwrite that keeps size and mtime identical is not a thing
+    ``shutil.copyfile`` can do.
+
+    ``known_hosts*`` is left out: ssh itself rewrites those files whenever a
+    developer's own session learns a host key, so a parallel ``ssh`` during a
+    test run would get the test blamed for it. Key material and ``config`` are
+    what the guard exists for.
+    """
+    # Fail closed: a directory that cannot be listed would snapshot the same
+    # (empty) way before and after, and a write would pass unseen. A missing
+    # directory is the CI runner, not a failure.
+    try:
+        entries = list(directory.iterdir())
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        pytest.fail(f"cannot snapshot {directory}: {exc}", pytrace=False)
+    out: Dict[str, Tuple[int, int]] = {}
+    for entry in entries:
+        if entry.name.startswith("known_hosts"):
+            continue
+        try:
+            if entry.is_file():
+                st = entry.stat()
+                out[entry.name] = (st.st_size, st.st_mtime_ns)
+        except FileNotFoundError:
+            continue  # vanished between listing and stat: a temp file, not ours
+        except OSError as exc:
+            pytest.fail(f"cannot inspect {entry} while snapshotting {directory}: {exc}",
+                        pytrace=False)
+    return out
+
+
+@pytest.fixture(autouse=True)
+def _the_real_ssh_dir_is_untouched(request):
+    """Fail any test that adds, removes or rewrites a file in the real ``~/.ssh``."""
+    before = _snapshot_ssh_dir(_REAL_SSH_DIR)
+    yield
+    after = _snapshot_ssh_dir(_REAL_SSH_DIR)
+    if after == before:
+        return
+    changed = sorted(
+        name for name in set(before) | set(after) if before.get(name) != after.get(name))
+    pytest.fail(
+        f"{request.node.nodeid} modified the real {_REAL_SSH_DIR} ({', '.join(changed)}). "
+        f"Code under test must stage ssh material into a directory the test owns "
+        f"(see cockpit.ladder.HostCockpitSpawner(ssh_dir=...), CFOP-275).",
+        pytrace=False)

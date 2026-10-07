@@ -15,6 +15,7 @@ so the tests assert the exact commands rather than the runner's environment.
 """
 
 from repo_paths import REPO_ROOT
+import os
 import re
 import time
 from pathlib import Path
@@ -103,8 +104,22 @@ HOSTS = {
 }
 
 
+def _staging_dir() -> str:
+    """Where this test's spawners stage the ssh identity (CFOP-275).
+
+    ``HostCockpitSpawner`` stages ``ssh_secret_dir`` into the login home unless
+    told otherwise, and a FakeSSH runner does nothing to stop that write — it
+    once replaced a developer's real ``~/.ssh/id_rsa`` with "SESSION KEY".
+    ``tests/conftest.py`` sets the variable per test for every suite, including
+    the ones that import these helpers.
+    """
+    path = os.environ.get("CFOP_TEST_COCKPIT_SSH_DIR")
+    assert path, "tests/conftest.py must set CFOP_TEST_COCKPIT_SSH_DIR per test"
+    return path
+
+
 def spawner(ssh, *, revoked=None, minted=None, binary=b"ELF-cfassist",
-            **overrides) -> HostCockpitSpawner:
+            ssh_dir=None, **overrides) -> HostCockpitSpawner:
     cfg = HostLadderConfig(**{
         "image": "ghcr.io/aachtenberg/cfoperator-cockpit:main",
         # The realistic pair: tier 1's URL is cluster DNS (it is what the pod
@@ -121,6 +136,7 @@ def spawner(ssh, *, revoked=None, minted=None, binary=b"ELF-cfassist",
         fetcher=lambda url: binary,
         token_minter=minter(minted),
         token_revoker=(revoked.append if revoked is not None else None),
+        ssh_dir=ssh_dir or _staging_dir(),
     )
 
 
@@ -773,6 +789,27 @@ def test_the_host_session_receives_the_ssh_identity(tmp_path):
     assert delivered, f"no ssh identity delivery in {ssh.commands}"
     for command in ssh.commands:
         assert "SESSION KEY" not in command
+
+
+def test_the_identity_is_staged_where_the_spawner_is_told(tmp_path):
+    """MUTATION GUARD (CFOP-275). The spawner copies ``ssh_secret_dir`` into a
+    directory so ssh finds it as a default identity. That directory is the
+    login home by default — production — and whatever ``ssh_dir`` says
+    otherwise. Drop the argument from ``_ssh_host`` and this fails; drop it
+    from the ``spawner()`` helper and ``tests/conftest.py`` fails instead,
+    naming the test that reached the real ``~/.ssh``."""
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "id_rsa").write_text("SESSION KEY\n")
+    staged = tmp_path / "elsewhere"
+    ssh = FakeSSH(("uname", (0, probe_reply(systemd_run="yes", user_systemd="yes"), "")))
+    # Not the helper's default directory: the point is the plumbing.
+    s = spawner(ssh, ssh_secret_dir=str(secret), ssh_dir=str(staged))
+    s.spawn(1889, host="raspberrypi5", tier=TIER_HOST, ttl_seconds=14400)
+    key = staged / "id_rsa"
+    assert key.read_text() == "SESSION KEY\n"
+    assert oct(key.stat().st_mode & 0o777) == "0o600"
+    assert not (Path(_staging_dir()) / "id_rsa").exists()
 
 
 def test_the_host_env_does_not_export_the_ssh_bundle(tmp_path):

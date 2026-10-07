@@ -664,9 +664,18 @@ class HostCockpitSpawner:
         fetcher: Optional[_Fetcher] = None,
         token_minter: Optional[_TokenMinter] = None,
         token_revoker: Optional[_TokenRevoker] = None,
+        ssh_dir: Optional[str] = None,
     ):
         self._config = config
         self._ssh = ssh_runner or _run_ssh
+        #: Where ``ssh_secret_dir`` is staged so ssh finds it as a default
+        #: identity. ``None`` is the login home — the production shape, since
+        #: the agent's ssh client looks nowhere else. Tests MUST pass a
+        #: directory they own: a fake ``ssh_runner`` isolates the network but
+        #: not this write, and the default once replaced a developer's real
+        #: ``~/.ssh/id_rsa`` with fixture text (CFOP-275). ``tests/conftest.py``
+        #: fails any test that lets it happen again.
+        self._ssh_dir = ssh_dir
         self._fetch = fetcher or _fetch_url
         self._mint = token_minter
         self._revoke = token_revoker
@@ -1553,7 +1562,7 @@ class HostCockpitSpawner:
             # Once per process, and lazily: an install with no host inventory
             # never has a secret mounted, and should not log about one.
             self._identity_staged = True
-            if prepare_ssh_identity(cfg.ssh_secret_dir):
+            if prepare_ssh_identity(cfg.ssh_secret_dir, self._ssh_dir):
                 logger.info("cockpit: staged the ssh identity from %s", cfg.ssh_secret_dir)
             else:
                 logger.warning("cockpit: ssh secret dir %s is missing or empty; "
