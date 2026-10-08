@@ -20,9 +20,9 @@
 #                 default /mnt/nas-backup/unsloth/cfoperator-v<N+1>/cfop-triage-$VERSION-gguf
 #   DATASET_DIR   directory holding triage_train.jsonl and triage_val.jsonl (the
 #                 set the weights were trained on). default /mnt/nas-backup/unsloth/cfoperator-v<N+1>
-#   MODELFILE     the gated Modelfile to publish. default
-#                 benchmarks/Modelfile.cfop-triage-$VERSION. Only the tests
-#                 have a reason to point it elsewhere.
+#   MODELFILE     the Modelfile to stage, honoured only with --stage-only
+#                 (the tests use it). A publish always ships
+#                 benchmarks/Modelfile.cfop-triage-$VERSION.
 #   ADAPTER_DIR   optional. A directory with adapter_model.safetensors and
 #                 adapter_config.json; published under adapter/ when set.
 #   MANIFEST      sha256sum-format file naming the dataset the weights were
@@ -85,6 +85,8 @@ Q8="ministral-3-14b-instruct-2512.Q8_0.gguf"
 
 MODELFILE_SRC="${MODELFILE:-$REPO_ROOT/benchmarks/Modelfile.cfop-triage-$VERSION}"
 [ -f "$MODELFILE_SRC" ] || { echo "no Modelfile for $VERSION at $MODELFILE_SRC" >&2; exit 2; }
+# The override exists for the tests; a real publish ships the committed file.
+[ -z "${MODELFILE:-}" ] || [ "$MODE" = stage ] || { echo "MODELFILE is only honoured with --stage-only; a publish ships benchmarks/Modelfile.cfop-triage-$VERSION" >&2; exit 2; }
 # A generation's Modelfile is committed before its gate runs (the import on
 # the ollama host needs it) and carries this marker until the gate is recorded
 # in its header. Nothing ships while the marker is there.
@@ -214,7 +216,7 @@ log "== uploading small files"
 hf upload "$HF_REPO" "$STAGE_DIR" . --repo-type model --commit-message "cfop-triage-ministral3 $VERSION: card, Modelfile, adapter (CFOP-274)"
 
 log "== uploading GGUFs from $GGUF_STAGE_DIR (large; resumable)"
-hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q4" "$Q4" --repo-type model --commit-message "$VERSION Q4_K_M, the deployed quant (CFOP-274)"
+hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q4" "$Q4" --repo-type model --commit-message "$VERSION Q4_K_M, the recommended quant (CFOP-274)"
 hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q8" "$Q8" --repo-type model --commit-message "$VERSION Q8_0, reference quant (CFOP-274)"
 
 log "== done: https://huggingface.co/$HF_REPO"

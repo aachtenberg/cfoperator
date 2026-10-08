@@ -283,6 +283,13 @@ def test_publish_refuses_a_generation_whose_modelfile_is_not_yet_gated(tmp_path:
     assert not (tmp_path / "stage").exists()
 
 
+def test_modelfile_override_is_refused_outside_stage_only(tmp_path: Path):
+    src, manifest = _fake_src(tmp_path)
+    proc = _run_dry(tmp_path, src, manifest, {"MODELFILE": str(GATED_MODELFILE)})
+    assert proc.returncode == 2
+    assert "only honoured with --stage-only" in proc.stderr
+
+
 def test_version_with_a_leading_zero_is_decimal(tmp_path: Path):
     # v08 has no Modelfile, so the expected failure is that message, not a
     # bash arithmetic error from reading 08 as octal.

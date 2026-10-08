@@ -37,7 +37,7 @@ downloading 8 GB.
 |---|---|---|
 | `ministral-3-14b-instruct-2512.Q4_K_M.gguf` | The quant that shipped the gate (14 cases × 36, soak, leak gate). | 8.2 GB |
 | `ministral-3-14b-instruct-2512.Q8_0.gguf` | Reference quant. Agrees with Q4 on every gated case. | 14.4 GB |
-| `Modelfile` | The exact ollama Modelfile production runs, with `FROM` pointing at the Q4 file above. | |
+| `Modelfile` | The ollama Modelfile the gate ran against, with `FROM` pointing at the Q4 file above. | |
 | `adapter/` | The LoRA adapter (`adapter_model.safetensors`, `adapter_config.json`). Resume a retrain from here instead of from base. | 79 MB |
 
 The vision projector (`mmproj`) is not included. Triage is text-only and the
@@ -46,20 +46,22 @@ training run never exercised the vision layers.
 ## Use it
 
 With ollama, either pull straight from the Hub or build from the Modelfile.
-The Modelfile is the production configuration; the direct pull uses the chat
-template embedded in the GGUF, which reproduces the base model's template and
-has given identical verdicts in practice.
+The Modelfile is the configuration the gate numbers below were measured
+with; the direct pull uses the chat template embedded in the GGUF, which
+reproduces the base model's template and has given identical verdicts in
+practice.
 
 ```bash
 # Option A: direct pull
 ollama run hf.co/REPO_ID:Q4_K_M
 
-# Option B: exact production setup (fetches the Q4 file and the Modelfile, ~8 GB, not the Q8)
+# Option B: the exact tag the gate ran against (fetches the Q4 file and the Modelfile, ~8 GB, not the Q8)
 hf download REPO_ID --include "*.Q4_K_M.gguf" Modelfile --local-dir cfop-triage
 cd cfop-triage && ollama create cfop-triage-ministral3:v6-q4 -f Modelfile
 ```
 
-In cfoperator, point triage at it and leave investigations on the primary model:
+In your cfoperator, point triage at it and leave investigations on the primary
+model:
 
 ```yaml
 llm:
@@ -116,14 +118,15 @@ and expect:
 
 Measured with cfoperator's `benchmarks/triage_eval.py` on the production
 prompt. Latency is per alert on an AMD RX 7900 XTX with the model resident in
-VRAM; the v6 rows are on ollama 0.40, the two reference rows on 0.32.
+VRAM. The ollama version differs between the reference rows and this model's
+rows, so the latencies are indicative, not a controlled comparison.
 
 | Model | Action correct (14 cases x 36) | Fabricated citations | JSON valid | Mean latency |
 |---|---:|---:|---:|---:|
-| gemma4:26b (previous incumbent) | 42/42 (x3) | n/a | 100% | 5.53 s |
-| Ministral-3-14B-Instruct base | 37/42 (x3) | n/a | 100% | 0.93 s |
-| **this model, Q4_K_M** | **504/504** | **0/504** | **100%** | **0.84 s** |
-| this model, Q8_0 | 504/504 | 0/504 | 100% | 1.21 s |
+| gemma4:26b (previous incumbent), ollama 0.32 | 42/42 (x3) | n/a | 100% | 5.53 s |
+| Ministral-3-14B-Instruct base, ollama 0.32 | 37/42 (x3) | n/a | 100% | 0.93 s |
+| **this model, Q4_K_M, ollama 0.40** | **504/504** | **0/504** | **100%** | **0.84 s** |
+| this model, Q8_0, ollama 0.40 | 504/504 | 0/504 | 100% | 1.21 s |
 
 Hard-case soak, 50 runs each on the two cases the base model fails most:
 100/100, zero fabricated citations.
