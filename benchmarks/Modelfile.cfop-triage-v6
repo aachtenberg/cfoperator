@@ -9,10 +9,17 @@
 # /mnt/nas-backup/unsloth/cfoperator-v7/ (folder numbering runs one ahead of
 # the data generation); fingerprints in hf/v6.sha256.
 #
-# NOT YET GATED. Until the gate in docs/triage-retrain-runbook.md §8 and the
-# leak check (hf/check_model_text.py) have run, v5-q4 stays in production and
-# nothing is published. Modelfile.cfop-triage-v5 is untouched: it is the
-# rollback target and must stay buildable.
+# Trained 2026-10-07 on the RTX 5060 Ti (studio job_20261007_145013_eea318b7,
+# outputs ..._1791399054, checkpoint-123): 123 steps, final loss 0.0174.
+#
+# GATED 2026-10-08 on ubuntu-llm-01, ollama 0.40.0, quiet card
+# (benchmarks/triage_eval_cfop_triage_ministral3_v6_q4.json): 504/504 on
+# action, JSON 504/504, Fabricated cites 0/504, 0.84 s mean. Soak x50 on
+# precedent-monitoring + critical-narrow: 100/100, 0 fabricated
+# (..._v6_q4_soak.json). Leak gate (hf/check_model_text.py, 5 scrubbed prompts
+# + 14 eval cases x10, Modelfile temperature and options.temperature 0.7):
+# 380/380 clean. Modelfile.cfop-triage-v5 is untouched: v5-q4 is the rollback
+# target and must stay buildable.
 #
 # The TEMPLATE below is byte for byte the v5 one, which is byte for byte the
 # base model's. PARSER ministral and temperature 0.15 likewise unchanged.

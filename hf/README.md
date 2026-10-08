@@ -17,7 +17,7 @@ tags:
   - cfoperator
 ---
 
-# cfop-triage-ministral3 (14B, v5)
+# cfop-triage-ministral3 (14B, v6)
 
 A QLoRA fine-tune of [Ministral 3 14B Instruct](https://huggingface.co/mistralai/Ministral-3-14B-Instruct-2512)
 that does one job: classify an infrastructure alert into one of four actions
@@ -35,10 +35,11 @@ downloading 8 GB.
 
 | File | What | Size |
 |---|---|---|
-| `ministral-3-14b-instruct-2512.Q4_K_M.gguf` | The deployed quant. Gated and in production since 2026-09-03. | 8.2 GB |
+| `ministral-3-14b-instruct-2512.Q4_K_M.gguf` | The quant that shipped the gate (14 cases × 36, soak, leak gate). | 8.2 GB |
 | `ministral-3-14b-instruct-2512.Q8_0.gguf` | Reference quant. Agrees with Q4 on every gated case. | 14.4 GB |
-| `Modelfile` | The exact ollama Modelfile production runs, with `FROM` pointing at the Q4 file above. | |
-| `adapter/` | The LoRA adapter (`adapter_model.safetensors`, `adapter_config.json`), when present. Resume a retrain from here instead of from base. | 79 MB |
+| `Modelfile` | The ollama Modelfile the gate ran against, with `FROM` pointing at the Q4 file above. | |
+| `adapter/` | The LoRA adapter (`adapter_model.safetensors`, `adapter_config.json`). Resume a retrain from here instead of from base. | 79 MB |
+| `SHA256SUMS` | sha256 of every file above as gated, in `sha256sum -c` format (`cd` to the download and run `sha256sum -c --ignore-missing SHA256SUMS`). The two `triage_*.jsonl` lines name the private training set and will report missing. | |
 
 The vision projector (`mmproj`) is not included. Triage is text-only and the
 training run never exercised the vision layers.
@@ -46,24 +47,26 @@ training run never exercised the vision layers.
 ## Use it
 
 With ollama, either pull straight from the Hub or build from the Modelfile.
-The Modelfile is the production configuration; the direct pull uses the chat
-template embedded in the GGUF, which reproduces the base model's template and
-has given identical verdicts in practice.
+The Modelfile is the configuration the gate numbers below were measured
+with; the direct pull uses the chat template embedded in the GGUF, which
+reproduces the base model's template and has given identical verdicts in
+practice.
 
 ```bash
 # Option A: direct pull
 ollama run hf.co/REPO_ID:Q4_K_M
 
-# Option B: exact production setup (fetches the Q4 file and the Modelfile, ~8 GB, not the Q8)
+# Option B: the exact tag the gate ran against (fetches the Q4 file and the Modelfile, ~8 GB, not the Q8)
 hf download REPO_ID --include "*.Q4_K_M.gguf" Modelfile --local-dir cfop-triage
-cd cfop-triage && ollama create cfop-triage-ministral3:v5-q4 -f Modelfile
+cd cfop-triage && ollama create cfop-triage-ministral3:v6-q4 -f Modelfile
 ```
 
-In cfoperator, point triage at it and leave investigations on the primary model:
+In your cfoperator, point triage at it and leave investigations on the primary
+model:
 
 ```yaml
 llm:
-  triage_model: cfop-triage-ministral3:v5-q4
+  triage_model: cfop-triage-ministral3:v6-q4
 ```
 
 Unparseable output falls back to the normal chain, so a wrong tag costs
@@ -115,22 +118,30 @@ and expect:
 ## Results
 
 Measured with cfoperator's `benchmarks/triage_eval.py` on the production
-prompt. Latency is per alert on an AMD RX 7900 XTX under ollama 0.32, with
-the model resident in VRAM.
+prompt. Latency is per alert on an AMD RX 7900 XTX with the model resident in
+VRAM. The ollama version differs between the reference rows and this model's
+rows, so the latencies are indicative, not a controlled comparison.
 
 | Model | Action correct (14 cases x 36) | Fabricated citations | JSON valid | Mean latency |
 |---|---:|---:|---:|---:|
-| gemma4:26b (previous incumbent) | 42/42 (x3) | n/a | 100% | 5.53 s |
-| Ministral-3-14B-Instruct base | 37/42 (x3) | n/a | 100% | 0.93 s |
-| **this model, Q4_K_M** | **504/504** | **0/504** | **100%** | **1.04 s** |
-| this model, Q8_0 | 504/504 | 0/504 | 100% | 1.53 s (contended run) |
+| gemma4:26b (previous incumbent), ollama 0.32 | 42/42 (x3) | n/a | 100% | 5.53 s |
+| Ministral-3-14B-Instruct base, ollama 0.32 | 37/42 (x3) | n/a | 100% | 0.93 s |
+| **this model, Q4_K_M, ollama 0.40** | **504/504** | **0/504** | **100%** | **0.84 s** |
+| this model, Q8_0, ollama 0.40 | 504/504 | 0/504 | 100% | 1.21 s |
 
 Hard-case soak, 50 runs each on the two cases the base model fails most:
 100/100, zero fabricated citations.
 
+Leak gate (`hf/check_model_text.py`): the five training prompts whose
+original targets named the operator's domain, plus the 14 eval cases, ten
+runs each, once at the Modelfile temperature and once at 0.7: 380
+completions, none containing the domain or anything the dataset scanner
+flags.
+
 "Fabricated citation" means the `reason` named a pod, node or precedent that
 was not in the prompt. Earlier generations of this fine-tune passed the
-action check and failed this one; v5 is the first that clears both. The full
+action check and failed this one; v5 was the first to clear both, and v6 is
+v5 retrained on the same data with one hostname scrubbed (see Data). The full
 history, including the rejected v2, v3 and v4 runs and why, is in
 [docs/triage-fine-tune.md](https://github.com/aachtenberg/cfoperator/blob/main/docs/triage-fine-tune.md).
 
@@ -140,13 +151,13 @@ history, including the rejected v2, v3 and v4 runs and why, is in
 |---|---|
 | Base | `unsloth/Ministral-3-14B-Instruct-2512-unsloth-bnb-4bit` (4-bit repack of Mistral's release) |
 | Method | QLoRA, r=16, alpha=16, dropout 0.05, on `q_proj k_proj v_proj o_proj` |
-| Data | 324 train rows (310 historical, 14 synthetic), 34 validation rows |
+| Data | 324 train rows (310 historical, 14 synthetic; 5 rewritten by the scrub), 34 validation rows |
 | Loss | On assistant tokens only (`train_on_completions`) |
 | Schedule | 3 epochs, 123 steps, batch 1 x 8 accumulation, LR 1e-4 linear, 10 warmup steps |
 | Optimizer | `adamw_8bit`, weight decay 0.001, grad clip 1.0, seed 3407 |
 | Sequence | max 768 tokens (longest row 643) |
-| Hardware | One RTX 5060, [unsloth](https://unsloth.ai) studio, 2026-09-03 |
-| Final loss | 0.0199 |
+| Hardware | One RTX 5060 Ti 16 GB, [unsloth](https://unsloth.ai) studio (unsloth 2026.10.2), 2026-10-07, 25 min |
+| Final loss | 0.0174 (v5 on the unscrubbed data: 0.0199, same curve) |
 | Export | Merged to fp16, converted with llama.cpp, quantized Q4_K_M and Q8_0 |
 
 ### Data

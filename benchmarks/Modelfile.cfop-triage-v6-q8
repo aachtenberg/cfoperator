@@ -10,10 +10,13 @@
 # the data generation); fingerprints in hf/v6.sha256.
 #
 # Q8_0 of the same export, for the runbook's Q4/Q8-agreement check.
-# NOT YET GATED. Until the gate in docs/triage-retrain-runbook.md §8 and the
-# leak check (hf/check_model_text.py) have run, v5-q4 stays in production and
-# nothing is published. Modelfile.cfop-triage-v5 is untouched: it is the
-# rollback target and must stay buildable.
+# GATED 2026-10-08 (benchmarks/triage_eval_cfop_triage_ministral3_v6_q8.json,
+# ollama 0.40.0, quiet card): 504/504 on action, JSON 504/504, Fabricated
+# cites 0/504, agrees with the Q4 on every case, 1.21 s mean (median 1.18 s;
+# one 14.9 s run is the load). The first Q8 file on the NAS was a Windows copy
+# that came out the right size and the wrong bytes and scored 0/504 with
+# HTTP 500s (model card gotcha 6); this header describes the re-copied file,
+# sha256 8816f463... in hf/v6.sha256. The Q4 is what ships; this is the archive.
 #
 # The TEMPLATE below is byte for byte the v5 one, which is byte for byte the
 # base model's. PARSER ministral and temperature 0.15 likewise unchanged.

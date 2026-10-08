@@ -20,6 +20,9 @@
 #                 default /mnt/nas-backup/unsloth/cfoperator-v<N+1>/cfop-triage-$VERSION-gguf
 #   DATASET_DIR   directory holding triage_train.jsonl and triage_val.jsonl (the
 #                 set the weights were trained on). default /mnt/nas-backup/unsloth/cfoperator-v<N+1>
+#   MODELFILE     the Modelfile to stage, honoured only with --stage-only
+#                 (the tests use it). A publish always ships
+#                 benchmarks/Modelfile.cfop-triage-$VERSION.
 #   ADAPTER_DIR   optional. A directory with adapter_model.safetensors and
 #                 adapter_config.json; published under adapter/ when set.
 #   MANIFEST      sha256sum-format file naming the dataset the weights were
@@ -80,8 +83,10 @@ esac
 Q4="ministral-3-14b-instruct-2512.Q4_K_M.gguf"
 Q8="ministral-3-14b-instruct-2512.Q8_0.gguf"
 
-MODELFILE_SRC="$REPO_ROOT/benchmarks/Modelfile.cfop-triage-$VERSION"
+MODELFILE_SRC="${MODELFILE:-$REPO_ROOT/benchmarks/Modelfile.cfop-triage-$VERSION}"
 [ -f "$MODELFILE_SRC" ] || { echo "no Modelfile for $VERSION at $MODELFILE_SRC" >&2; exit 2; }
+# The override exists for the tests; a real publish ships the committed file.
+[ -z "${MODELFILE:-}" ] || [ "$MODE" = stage ] || { echo "MODELFILE is only honoured with --stage-only; a publish ships benchmarks/Modelfile.cfop-triage-$VERSION" >&2; exit 2; }
 # A generation's Modelfile is committed before its gate runs (the import on
 # the ollama host needs it) and carries this marker until the gate is recorded
 # in its header. Nothing ships while the marker is there.
@@ -133,6 +138,12 @@ sed "s#REPO_ID#${HF_REPO}#g" "$CARD_SRC" > "$STAGE_DIR/README.md"
 # FROM points at the sibling GGUF instead of the NAS path. Anything else
 # (TEMPLATE, PARSER, PARAMETER) must not drift from what was gated.
 sed "s#^FROM .*#FROM ./${Q4}#" "$MODELFILE_SRC" > "$STAGE_DIR/Modelfile"
+
+# The manifest ships too, as SHA256SUMS, so a downloader can check bytes
+# against what was gated without trusting the Hub's own listing. It names
+# the training files as well; those are not published, and a hash of a file
+# nobody can fetch gives nothing away.
+[ -f "$MANIFEST" ] && cp "$MANIFEST" "$STAGE_DIR/SHA256SUMS"
 
 if [ -n "$ADAPTER_DIR" ]; then
   for f in adapter_model.safetensors adapter_config.json; do
@@ -211,7 +222,7 @@ log "== uploading small files"
 hf upload "$HF_REPO" "$STAGE_DIR" . --repo-type model --commit-message "cfop-triage-ministral3 $VERSION: card, Modelfile, adapter (CFOP-274)"
 
 log "== uploading GGUFs from $GGUF_STAGE_DIR (large; resumable)"
-hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q4" "$Q4" --repo-type model --commit-message "$VERSION Q4_K_M, the deployed quant (CFOP-274)"
+hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q4" "$Q4" --repo-type model --commit-message "$VERSION Q4_K_M, the recommended quant (CFOP-274)"
 hf upload "$HF_REPO" "$GGUF_STAGE_DIR/$Q8" "$Q8" --repo-type model --commit-message "$VERSION Q8_0, reference quant (CFOP-274)"
 
 log "== done: https://huggingface.co/$HF_REPO"

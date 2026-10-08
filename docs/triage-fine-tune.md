@@ -294,6 +294,34 @@ consumer-GPU training run.
    restart is required between runs. 14B on 16GB is borderline — close desktop
    apps.
 
+5. **`No or negligible GPU memory available for fused cross entropy` with the
+   two variables set and nothing loaded in studio (v6, 2026-10-07, 5060 Ti).**
+   Three runs died at start. Studio showed no inference model and an empty
+   export worker, yet `/api/train/hardware` reported 3.5 to 9 GB in use idle.
+   It was **ollama running inside WSL2** on the same box, holding VRAM that
+   neither studio's bookkeeping nor Windows' own tools attribute clearly. Stop
+   it (or `wsl --shutdown`) before training. Studio's estimate for the 14B
+   QLoRA run on unsloth 2026.10 is 14.9 GB of 16, so anything else on the card
+   breaks it. Read `/api/train/hardware` before pressing start: idle should be
+   under 1 GB.
+6. **The export can come out with an ACL nobody can read, and a Windows copy
+   can corrupt a GGUF without changing its size (v6).** The Q4 export landed
+   with an ACL of SYSTEM / Administrators / OWNER RIGHTS and owner
+   `BUILTIN\Administrators`; so did the whole `.unsloth\llama.cpp` tree, which
+   meant studio's own unelevated worker could neither read the file nor run
+   its converter (`PermissionError: conversion\base.py` on the re-export). Fix
+   from an elevated prompt: `takeown /F %USERPROFILE%\.unsloth /R /D Y` then
+   `icacls %USERPROFILE%\.unsloth /reset /T /C` (minutes; it walks the venv).
+   Separately, Explorer's copy of the 14 GB Q8 to the share produced a file of
+   the **same size and different bytes**, and ollama served it as a model that
+   returned empty content and HTTP 500s while loading and logging nothing
+   wrong. **Hash every copy against its source before `ollama create`**; the
+   manifest gate in `hf/publish.sh` exists for the same reason. The copy that
+   worked was a pull: a read-only Windows share of the export folder,
+   mounted on `ubuntu-llm-01` with `mount.cifs`, then `cp`. Studio cannot
+   export to a UNC path itself (its process has no share credentials:
+   `WinError 1326`).
+
 Also: unsloth studio's API is token-authed and was reachable over the LAN
 (**`http://192.168.0.110:8888`** as of 2026-09-02 — this document previously
 said `.115`; verify before trusting it, the box is DHCP. Token in
@@ -867,13 +895,49 @@ Same YAML, same seed, so the comparison is clean. Staged at
 `/mnt/nas-backup/unsloth/cfoperator-v7/`; fingerprints in `hf/v6.sha256`.
 The domain itself is a command-line argument and appears nowhere in the repo.
 
-**Not yet gated.** v6 clears the same bar as v5 (§8 of the runbook: 504/504,
-0 fabricated, Q4/Q8 agreement, ×50 soak) **plus a leak gate**,
-[`hf/check_model_text.py`](../hf/check_model_text.py), which replays the 5
-scrubbed prompts and the 14 eval cases through the served model and fails on
-any output containing the domain or anything the dataset scanner flags. If v6
-clears both, it is what goes to the Hub and, optionally, to production. If it
-does not, production stays on v5 and nothing is published until a v7 does.
+**Trained 2026-10-07** on the RTX 5060 Ti in 25 minutes (123 steps, final
+loss **0.0174** against v5's 0.0199, loss curve matching v5's point for
+point, which is what a one-edit A/B should look like). Getting there took
+three failed starts and an afternoon of Windows file handling; gotchas 5 and
+6 above are the record.
+
+#### v6 results (2026-10-08): clears the whole bar, plus the leak gate
+
+Gated on ubuntu-llm-01 under **ollama 0.40.0** (v5 was gated on 0.32.13;
+same rubric, same harness, the ollama version is the one thing not held
+constant):
+
+| | v5 14B Q4_K_M (0.32) | **v6 14B Q4_K_M (0.40)** | v6 14B Q8_0 (0.40) |
+|---|---:|---:|---:|
+| action, 14 cases × 36 | 504/504 | **504/504** | 504/504 |
+| JSON valid | 504/504 | 504/504 | 504/504 |
+| fabricated cites | 0/504 | **0/504** | 0/504 |
+| hard-case soak ×50 | 100/100 | **100/100**, 0 fabricated | — |
+| latency, mean | 1.04 s | **0.84 s** | 1.21 s (median 1.18; one 14.9 s load) |
+| leak gate, Modelfile temp, 19 prompts × 10 | — | **190/190 clean** | — |
+| leak gate, options.temperature 0.7 | — | **190/190 clean** | — |
+
+The leak gate is [`hf/check_model_text.py`](../hf/check_model_text.py): the
+5 scrubbed training prompts plus the 14 eval cases, replayed through the
+served model, failing on any output that contains the operator's domain or
+anything the dataset scanner flags. (For the record, the same gate against
+v5-q4 before the retrain was also clean at 50/50 on the 5 prompts; the
+weights held the string but did not say it back at that sample size. The
+retrain was the principled fix, not a necessary one.)
+
+Q4 and Q8 agree on every case. The Q8 number is the second attempt: the
+first Q8 file on the NAS was a Windows copy of the right size and the wrong
+bytes, which ollama served as 0/504 with HTTP 500s and an empty log; gotcha 6.
+
+Files on the NAS: `cfoperator-v7/cfop-triage-v6-gguf/` (Q4 `e2949e86…`,
+Q8 `8816f463…`) and `cfoperator-v7/cfop-triage-v6-adapter/`
+(`adapter_model.safetensors` `5c07caf5…`, exported from checkpoint-123 through
+studio's LoRA export, r=16, alpha 16, dropout 0.05, q/k/v/o). The adapter is
+on the NAS this time, which the open follow-ups have asked for since v1.
+
+v6 is what goes to the Hub. Production stays on `v5-q4` until someone decides
+otherwise: v6 is not better at triage, it is the same model minus one
+hostname, and a config change is a rollout of both workloads.
 
 ---
 

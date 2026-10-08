@@ -28,10 +28,10 @@ import pytest
 from repo_paths import REPO_ROOT
 
 HF_DIR = REPO_ROOT / "hf"
-# The staging tests run against the last GATED generation. v6's Modelfile is
-# committed ahead of its gate with a NOT YET GATED marker, which publish.sh
-# refuses (pinned below); flip both to v6 once the gate is recorded.
-GATED_VERSION = "v5"
+# The staging tests run against the last GATED generation. A generation's
+# Modelfile is committed ahead of its gate with a NOT YET GATED marker, which
+# publish.sh refuses (pinned below with a synthetic Modelfile).
+GATED_VERSION = "v6"
 GATED_MODELFILE = REPO_ROOT / "benchmarks" / f"Modelfile.cfop-triage-{GATED_VERSION}"
 
 
@@ -198,6 +198,14 @@ def test_staged_modelfile_is_the_gated_one_with_only_from_rewritten(tmp_path: Pa
     assert diffs[0][1] == "FROM ./ministral-3-14b-instruct-2512.Q4_K_M.gguf"
 
 
+def test_staged_manifest_ships_as_sha256sums(tmp_path: Path):
+    proc = _run_stage(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    staged = (tmp_path / "stage" / "SHA256SUMS").read_text(encoding="utf-8")
+    assert staged == (tmp_path / "manifest.sha256").read_text(encoding="utf-8")
+    assert "triage_train.jsonl" in staged
+
+
 def test_staged_card_has_repo_id_filled_in_and_no_placeholder(tmp_path: Path):
     proc = _run_stage(tmp_path)
     assert proc.returncode == 0, proc.stderr
@@ -270,13 +278,24 @@ def test_stage_with_adapter_dir_copies_both_files(tmp_path: Path):
 
 
 def test_publish_refuses_a_generation_whose_modelfile_is_not_yet_gated(tmp_path: Path):
-    # v6's Modelfile is committed with the marker so the ollama import can use
-    # it; publish.sh must stop on the marker before it touches anything.
-    assert "NOT YET GATED" in (REPO_ROOT / "benchmarks" / "Modelfile.cfop-triage-v6").read_text(encoding="utf-8")
-    proc = _run_stage(tmp_path, {"VERSION": "v6"})
+    # A Modelfile is committed with the marker before its gate runs so the
+    # ollama import can use it; publish.sh must stop on the marker before it
+    # touches anything. The gated v6 Modelfile no longer carries it, so the
+    # guard is exercised on a copy that does.
+    assert "NOT YET GATED" not in GATED_MODELFILE.read_text(encoding="utf-8")
+    ungated = tmp_path / "Modelfile.ungated"
+    ungated.write_text("# NOT YET GATED\n" + GATED_MODELFILE.read_text(encoding="utf-8"), encoding="utf-8")
+    proc = _run_stage(tmp_path, {"MODELFILE": str(ungated)})
     assert proc.returncode == 2
     assert "NOT YET GATED" in proc.stderr
     assert not (tmp_path / "stage").exists()
+
+
+def test_modelfile_override_is_refused_outside_stage_only(tmp_path: Path):
+    src, manifest = _fake_src(tmp_path)
+    proc = _run_dry(tmp_path, src, manifest, {"MODELFILE": str(GATED_MODELFILE)})
+    assert proc.returncode == 2
+    assert "only honoured with --stage-only" in proc.stderr
 
 
 def test_version_with_a_leading_zero_is_decimal(tmp_path: Path):
