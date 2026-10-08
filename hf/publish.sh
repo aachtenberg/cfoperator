@@ -216,7 +216,13 @@ command -v hf >/dev/null || { log "hf CLI not found (pip install -U huggingface_
 hf auth whoami >/dev/null 2>&1 || { log "not logged in to Hugging Face: run 'hf auth login' or export HF_TOKEN"; exit 1; }
 
 log "== creating $HF_REPO (no-op if it exists)"
-hf repo create "$HF_REPO" --repo-type model --exist-ok >/dev/null
+# huggingface_hub 2.x renamed the command group from `repo` to `repos`
+# (`hf repos create`); 1.x and 0.36 have `hf repo create`. Same flags.
+if hf repos --help >/dev/null 2>&1; then
+  hf repos create "$HF_REPO" --repo-type model --exist-ok >/dev/null
+else
+  hf repo create "$HF_REPO" --repo-type model --exist-ok >/dev/null
+fi
 
 log "== uploading small files"
 hf upload "$HF_REPO" "$STAGE_DIR" . --repo-type model --commit-message "cfop-triage-ministral3 $VERSION: card, Modelfile, adapter (CFOP-274)"
