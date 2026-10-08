@@ -306,20 +306,26 @@ def _stub_hf(tmp_path: Path, repos_group: bool) -> tuple[Path, Path]:
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "hf-calls.log"
-    script = bindir / "hf"
-    script.write_text(
-        "#!/usr/bin/env bash\n"
-        f"printf '%s\\n' \"$*\" >> '{log}'\n"
-        "case \"$1 $2\" in\n"
-        f"  'repos --help') exit {0 if repos_group else 1} ;;\n"
-        f"  'repos create') {'exit 0' if repos_group else 'echo \"No such command repos\" >&2; exit 2'} ;;\n"
-        f"  'repo create') {'echo \"No such command repo\" >&2; exit 2' if repos_group else 'exit 0'} ;;\n"
-        "  'auth whoami') echo someone; exit 0 ;;\n"
-        "  'upload '*) exit 0 ;;\n"
-        "esac\n"
-        "exit 0\n",
-        encoding="utf-8",
+    template = """#!/usr/bin/env bash
+printf '%s\\n' "$*" >> '__LOG__'
+case "$1 $2" in
+  'repos --help') exit __REPOS_HELP__ ;;
+  'repos create') __REPOS_CREATE__ ;;
+  'repo create') __REPO_CREATE__ ;;
+  'auth whoami') echo someone; exit 0 ;;
+  'upload '*) exit 0 ;;
+esac
+exit 0
+"""
+    refuse = 'echo "No such command" >&2; exit 2'
+    body = (
+        template.replace("__LOG__", str(log))
+        .replace("__REPOS_HELP__", "0" if repos_group else "1")
+        .replace("__REPOS_CREATE__", "exit 0" if repos_group else refuse)
+        .replace("__REPO_CREATE__", refuse if repos_group else "exit 0")
     )
+    script = bindir / "hf"
+    script.write_text(body, encoding="utf-8")
     script.chmod(0o755)
     return bindir, log
 
