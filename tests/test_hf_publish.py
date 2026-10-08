@@ -28,10 +28,10 @@ import pytest
 from repo_paths import REPO_ROOT
 
 HF_DIR = REPO_ROOT / "hf"
-# The staging tests run against the last GATED generation. v6's Modelfile is
-# committed ahead of its gate with a NOT YET GATED marker, which publish.sh
-# refuses (pinned below); flip both to v6 once the gate is recorded.
-GATED_VERSION = "v5"
+# The staging tests run against the last GATED generation. A generation's
+# Modelfile is committed ahead of its gate with a NOT YET GATED marker, which
+# publish.sh refuses (pinned below with a synthetic Modelfile).
+GATED_VERSION = "v6"
 GATED_MODELFILE = REPO_ROOT / "benchmarks" / f"Modelfile.cfop-triage-{GATED_VERSION}"
 
 
@@ -270,10 +270,14 @@ def test_stage_with_adapter_dir_copies_both_files(tmp_path: Path):
 
 
 def test_publish_refuses_a_generation_whose_modelfile_is_not_yet_gated(tmp_path: Path):
-    # v6's Modelfile is committed with the marker so the ollama import can use
-    # it; publish.sh must stop on the marker before it touches anything.
-    assert "NOT YET GATED" in (REPO_ROOT / "benchmarks" / "Modelfile.cfop-triage-v6").read_text(encoding="utf-8")
-    proc = _run_stage(tmp_path, {"VERSION": "v6"})
+    # A Modelfile is committed with the marker before its gate runs so the
+    # ollama import can use it; publish.sh must stop on the marker before it
+    # touches anything. The gated v6 Modelfile no longer carries it, so the
+    # guard is exercised on a copy that does.
+    assert "NOT YET GATED" not in GATED_MODELFILE.read_text(encoding="utf-8")
+    ungated = tmp_path / "Modelfile.ungated"
+    ungated.write_text("# NOT YET GATED\n" + GATED_MODELFILE.read_text(encoding="utf-8"), encoding="utf-8")
+    proc = _run_stage(tmp_path, {"MODELFILE": str(ungated)})
     assert proc.returncode == 2
     assert "NOT YET GATED" in proc.stderr
     assert not (tmp_path / "stage").exists()

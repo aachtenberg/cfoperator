@@ -197,6 +197,16 @@ training boxes cannot write to it, so every transfer in either direction is a
 manual copy. Copies preserve source mtimes, which gives a clean completion
 signal in §6.
 
+**Prefer pulling to pushing (v6 lesson).** Share the export folder read-only
+from the Windows box (`net share v6exports="C:\...\exports\cfop-triage-v<N>-gguf" /GRANT:<user>,READ`),
+mount it on `ubuntu-llm-01` (`sudo mount -t cifs //<box>/v6exports /mnt/v6exports -o username=<user>,vers=3.0,ro,uid=$(id -u)`)
+and `cp` from there. Explorer's push to the share once delivered a 14 GB file
+of the right size and the wrong bytes, and Explorer also tries to copy ACLs
+the exFAT share cannot hold. Whatever the route, **`sha256sum` the copy and
+the source and compare before anything reads the copy** (§7). The model card's
+Windows gotchas 5 and 6 have the full story, including the ACL reset that was
+needed before the export folder could be read at all.
+
 ---
 
 ## 4. Configure the run
@@ -368,6 +378,13 @@ saying so — the 8B Q8_0 was kicked off unannounced and it surprised them.
 ---
 
 ## 7. Import on `ubuntu-llm-01`
+
+**Hash before you import.** `sha256sum` the file on the NAS and the file on
+the training box (over the mounted share, §3) and compare. `ollama create`
+accepts a corrupted GGUF without complaint, the metadata still parses, and
+the result is a model that returns empty content and HTTP 500s with nothing
+useful in the log (v6 Q8, 2026-10-08). Record the source hash in
+`hf/v<N>.sha256` while you have it.
 
 **Wait for the copy to close, not for the size.** A Windows/SMB copy onto the
 backup disk preallocates the file to its final size at the start; the 14B v4
