@@ -198,6 +198,14 @@ def test_staged_modelfile_is_the_gated_one_with_only_from_rewritten(tmp_path: Pa
     assert diffs[0][1] == "FROM ./ministral-3-14b-instruct-2512.Q4_K_M.gguf"
 
 
+def test_staged_manifest_ships_as_sha256sums(tmp_path: Path):
+    proc = _run_stage(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    staged = (tmp_path / "stage" / "SHA256SUMS").read_text(encoding="utf-8")
+    assert staged == (tmp_path / "v5.sha256").read_text(encoding="utf-8") if (tmp_path / "v5.sha256").exists() else staged == (tmp_path / "manifest.sha256").read_text(encoding="utf-8")
+    assert "triage_train.jsonl" in staged
+
+
 def test_staged_card_has_repo_id_filled_in_and_no_placeholder(tmp_path: Path):
     proc = _run_stage(tmp_path)
     assert proc.returncode == 0, proc.stderr

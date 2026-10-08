@@ -139,6 +139,12 @@ sed "s#REPO_ID#${HF_REPO}#g" "$CARD_SRC" > "$STAGE_DIR/README.md"
 # (TEMPLATE, PARSER, PARAMETER) must not drift from what was gated.
 sed "s#^FROM .*#FROM ./${Q4}#" "$MODELFILE_SRC" > "$STAGE_DIR/Modelfile"
 
+# The manifest ships too, as SHA256SUMS, so a downloader can check bytes
+# against what was gated without trusting the Hub's own listing. It names
+# the training files as well; those are not published, and a hash of a file
+# nobody can fetch gives nothing away.
+[ -f "$MANIFEST" ] && cp "$MANIFEST" "$STAGE_DIR/SHA256SUMS"
+
 if [ -n "$ADAPTER_DIR" ]; then
   for f in adapter_model.safetensors adapter_config.json; do
     [ -f "$ADAPTER_DIR/$f" ] || { log "ADAPTER_DIR set but $f missing"; exit 1; }

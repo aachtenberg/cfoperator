@@ -39,6 +39,7 @@ downloading 8 GB.
 | `ministral-3-14b-instruct-2512.Q8_0.gguf` | Reference quant. Agrees with Q4 on every gated case. | 14.4 GB |
 | `Modelfile` | The ollama Modelfile the gate ran against, with `FROM` pointing at the Q4 file above. | |
 | `adapter/` | The LoRA adapter (`adapter_model.safetensors`, `adapter_config.json`). Resume a retrain from here instead of from base. | 79 MB |
+| `SHA256SUMS` | sha256 of every file above as gated, in `sha256sum -c` format (`cd` to the download and run `sha256sum -c --ignore-missing SHA256SUMS`). The two `triage_*.jsonl` lines name the private training set and will report missing. | |
 
 The vision projector (`mmproj`) is not included. Triage is text-only and the
 training run never exercised the vision layers.
