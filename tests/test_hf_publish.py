@@ -298,6 +298,62 @@ def test_modelfile_override_is_refused_outside_stage_only(tmp_path: Path):
     assert "only honoured with --stage-only" in proc.stderr
 
 
+# --- the upload step, against a stub `hf` on PATH ------------------------------
+
+def _stub_hf(tmp_path: Path, repos_group: bool) -> tuple[Path, Path]:
+    """A fake `hf` that logs every invocation and mimics one CLI shape:
+    huggingface_hub 2.x has `hf repos ...`, earlier versions only `hf repo ...`."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    log = tmp_path / "hf-calls.log"
+    script = bindir / "hf"
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' \"$*\" >> '{log}'\n"
+        "case \"$1 $2\" in\n"
+        f"  'repos --help') exit {0 if repos_group else 1} ;;\n"
+        f"  'repos create') {'exit 0' if repos_group else 'echo \"No such command repos\" >&2; exit 2'} ;;\n"
+        f"  'repo create') {'echo \"No such command repo\" >&2; exit 2' if repos_group else 'exit 0'} ;;\n"
+        "  'auth whoami') echo someone; exit 0 ;;\n"
+        "  'upload '*) exit 0 ;;\n"
+        "esac\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    return bindir, log
+
+
+@pytest.mark.parametrize("repos_group", [True, False], ids=["hub-2.x-repos", "hub-1.x-repo"])
+def test_upload_step_uses_whichever_create_command_the_cli_has(tmp_path: Path, repos_group: bool):
+    src, manifest = _fake_src(tmp_path)
+    bindir, log = _stub_hf(tmp_path, repos_group)
+    dataset = tmp_path / "dataset"
+    env = dict(
+        os.environ,
+        PATH=f"{bindir}{os.pathsep}{os.environ.get('PATH', '')}",
+        HF_REPO="someone/cfop-triage-ministral3-14b-v6",
+        VERSION=GATED_VERSION,
+        DATASET_DIR=str(dataset),
+        STAGE_DIR=str(tmp_path / "stage"),
+        SRC_DIR=str(src),
+        MANIFEST=str(manifest),
+        ADAPTER_DIR="",
+        GGUF_STAGE_DIR=str(tmp_path / "gguf-stage"),
+    )
+    proc = subprocess.run(["bash", str(HF_DIR / "publish.sh")], capture_output=True, text=True, env=env, cwd=str(REPO_ROOT))
+    assert proc.returncode == 0, proc.stderr
+    calls = log.read_text(encoding="utf-8").splitlines()
+    create = [c for c in calls if " create " in c]
+    assert len(create) == 1, calls
+    assert create[0].startswith("repos create " if repos_group else "repo create ")
+    assert "--exist-ok" in create[0] and "--repo-type model" in create[0]
+    uploads = [c for c in calls if c.startswith("upload ")]
+    assert len(uploads) == 3, calls  # small files, Q4, Q8
+    assert any(Q4 in u for u in uploads) and any(Q8 in u for u in uploads)
+    assert "== done: https://huggingface.co/someone/cfop-triage-ministral3-14b-v6" in proc.stderr
+
+
 def test_version_with_a_leading_zero_is_decimal(tmp_path: Path):
     # v08 has no Modelfile, so the expected failure is that message, not a
     # bash arithmetic error from reading 08 as octal.
