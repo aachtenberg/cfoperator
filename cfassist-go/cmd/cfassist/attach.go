@@ -16,6 +16,7 @@ import (
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tools"
 	"github.com/aachtenberg/cfoperator/cfassist-go/internal/tui"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var (
@@ -238,6 +239,13 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// hides it until exit. The copy that does the work there is the one seeded
 	// into the scrollback via tui.Attachment below (CFOP-63).
 	fmt.Println(briefing)
+
+	// Same rule as a plain session (CFOP-282): no shell when stdin is a pipe,
+	// and the gate's answer comes from the terminal or not at all. A
+	// hard-coded "not piped" here let `printf y | cfassist attach …` approve
+	// a write (review of #310).
+	isPiped := !term.IsTerminal(int(os.Stdin.Fd()))
+	applyShellPolicy(toolReg, &systemPrompt, isPiped)
 
 	if question != "" {
 		return runNonInteractive(cmd.Context(), cfg, llm, toolReg, systemPrompt, question)

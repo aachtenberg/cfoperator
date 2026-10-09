@@ -97,6 +97,9 @@ type model struct {
 	// modelCache holds the list of available models per provider name,
 	// populated lazily on first /model tab completion.
 	modelCache map[string][]string
+	// pendingConfirm is the gate's open question, if any (confirm.go). While
+	// it is set, the next key answers it and never reaches the input box.
+	pendingConfirm *confirmRequestMsg
 }
 
 // New creates a new TUI model. attachment is nil for a plain session, and
@@ -267,6 +270,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// An open question from the bash gate takes the key first (CFOP-282).
+		// Ctrl+C answers it no and then falls through to cancel the turn.
+		if m.answerConfirm(msg) {
+			return m, nil
+		}
 		// An open menu gets first refusal on the keys that drive it; what it
 		// does not take falls through and keeps narrowing the rows.
 		if m.menu.open {
@@ -350,6 +358,16 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ready = true
 		}
 		m.layout()
+
+	case confirmRequestMsg:
+		m.pendingConfirm = &msg
+		m.outputLines = append(m.outputLines, confirmPromptLines(msg.command, msg.reason)...)
+		m.refreshViewport()
+		return m, nil
+
+	case confirmCancelMsg:
+		m.withdrawConfirm(msg)
+		return m, nil
 
 	case appendOutputMsg:
 		m.outputLines = append(m.outputLines, msg.text)
@@ -633,6 +651,9 @@ func Run(ctx context.Context, cfg *config.Config, llm *client.LLMClient, toolReg
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	m.program = p
+	// The gate's question is answered in this key loop (confirm.go). Installed
+	// here rather than by main, because the asker needs the program.
+	toolReg.ConfirmBashWrites(m.askConfirm)
 
 	finalModel, err := p.Run()
 

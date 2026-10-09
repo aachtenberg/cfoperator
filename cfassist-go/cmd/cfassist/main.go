@@ -190,6 +190,10 @@ func run(cmd *cobra.Command, args []string) error {
 	// Join question args
 	question := strings.Join(args, " ")
 
+	// Which shell the model gets (CFOP-282): none on a pipe; otherwise the
+	// gate asks on this terminal. The TUI installs its own prompt in tui.Run.
+	applyShellPolicy(toolReg, &systemPrompt, isPiped)
+
 	// --- Pipe mode ---
 	if isPiped {
 		pipedData, err := io.ReadAll(os.Stdin)
