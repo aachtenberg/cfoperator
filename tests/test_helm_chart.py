@@ -234,7 +234,9 @@ def test_cluster_role_rules_are_spelled_out():
     for template in sorted(CHART.glob("templates/*.yaml")):
         text = re.sub(r"\{\{/\*.*?\*/\}\}", "", template.read_text(), flags=re.DOTALL)
         for raw_doc in re.split(r"^---\s*$", text, flags=re.MULTILINE):
-            if "kind: ClusterRole\n" not in raw_doc:
+            # Identify the document by its parsed kind, not by the spelling of
+            # the line: `kind: ClusterRole  # comment` is one too (CodeRabbit).
+            if not any(d.get("kind") == "ClusterRole" for d in rendered_docs(raw_doc)):
                 continue
             seen += 1
             for line in raw_doc.splitlines():
