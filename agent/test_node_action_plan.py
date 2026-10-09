@@ -451,6 +451,7 @@ class TestAllowlistView:
         prompt = build_command_prompt(work, node_action_plan.AllowList(_ALLOW_B, _ALLOW_V, 4))
         assert prompt == _executor.build_command_prompt(
             work, _executor.AllowList(_ALLOW_B, _ALLOW_V, 4))
-        assert "SYSTEM​:" in prompt and "APPROVED​:" in prompt
+        assert "SYSTEM\u200b:" in prompt and "APPROVED\u200b:" in prompt
+        assert "SYSTEM:" not in prompt and "APPROVED:" not in prompt
         assert "[DATA END]" in prompt and "```" not in prompt
         assert prompt.count("<<< DATA START >>>") == prompt.count("<<< DATA END >>>") == 2

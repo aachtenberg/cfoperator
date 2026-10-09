@@ -38,7 +38,7 @@ from agent.prompt_injection import (  # noqa: E402
     get_system_framing,
 )
 
-ZW = "​"
+ZW = "\u200b"
 TRUNCATED = "[... alert details truncated]"
 
 
