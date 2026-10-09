@@ -220,7 +220,7 @@ def test_the_rbac_renderer_is_not_vacuous():
 #: the loader keeps the last value and a forbidden first branch goes unseen.
 #: Use two ``if`` blocks instead.
 _RBAC_EXPRESSIONS_ALLOWED = (
-    r"\{\{-?\s*(if|end)\b.*\}\}",
+    r"\{\{-?\s*(if|end)\b[^{}]*\}\}",  # one expression; `.*` would let `}}{{ toYaml }}` ride along
     r"\{\{\s*include \"cfoperator\.labels\" \. \| indent 4 \}\}",
 )
 
