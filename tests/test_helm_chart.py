@@ -174,27 +174,33 @@ def rendered_docs(template: str) -> list:
     """Every document of a template as YAML, Helm directives stripped.
 
     No helm binary here (see the module docstring), and the templates are plain
-    YAML once the ``{{ }}`` is gone: comment blocks go, control lines
-    (``if``/``end``) go -- so every opt-in block is KEPT and checked -- a
-    ``{{ include ... | indent N }}`` line goes (a labels block, never RBAC), and
-    any other expression becomes a placeholder scalar.
+    YAML once the ``{{ }}`` is gone: comment blocks go; a line that is nothing
+    but an expression goes (``if``/``end`` control lines -- so every opt-in
+    block is KEPT and checked -- and ``include``/``toYaml`` lines, which render
+    a labels or resources block, never RBAC); an expression inside a line
+    becomes the scalar ``PLACEHOLDER``, which the RBAC guard refuses to see in
+    a resources list.
     """
     text = re.sub(r"\{\{/\*.*?\*/\}\}", "", template, flags=re.DOTALL)
     kept = []
     for line in text.splitlines():
-        stripped = line.strip()
-        if re.match(r"\{\{-?\s*(if|else|end|range|with)\b", stripped):
-            continue
-        if re.fullmatch(r"\{\{.*\|\s*indent\s+\d+\s*\}\}", stripped):
+        if re.fullmatch(r"\{\{.*\}\}", line.strip()):
             continue
         kept.append(re.sub(r"\{\{.*?\}\}", "PLACEHOLDER", line))
     return [d for d in yaml.safe_load_all("\n".join(kept)) if d]
 
 
+def rendered_chart_docs() -> list:
+    """Every document of every chart template, so a ClusterRole added to any
+    template, not only rbac.yaml, is seen (CodeRabbit on #313)."""
+    return [doc for template in sorted(CHART.glob("templates/*.yaml"))
+            for doc in rendered_docs(template.read_text())]
+
+
 def test_the_rbac_renderer_is_not_vacuous():
     """A renderer that lost the ClusterRoles, or their rules, would make the
     guard below pass on any chart at all."""
-    docs = rendered_docs((CHART / "templates" / "rbac.yaml").read_text())
+    docs = rendered_chart_docs()
     cluster_roles = [d for d in docs if d.get("kind") == "ClusterRole"]
     assert len(cluster_roles) >= 2, [d.get("kind") for d in docs]  # -read, -cockpit-readonly
     for role in cluster_roles:
@@ -207,18 +213,24 @@ def test_the_rbac_renderer_is_not_vacuous():
 def test_cluster_roles_never_grant_secrets_access():
     """CFOP-312: no ClusterRole in the chart may name secrets, configmaps or a
     wildcard in any rule's resources -- whatever the verbs, whichever opt-in
-    block it sits in. Cluster-wide secrets read is exactly the latent exposure
-    docs/DEPLOYMENT.md "Agent secrets read" describes on the homelab deploy,
-    and the chart's claim is that it never had it. Roles are namespaced and out
-    of scope here; the cockpit-spawn Role's create-only grant has its own test
-    above."""
-    docs = rendered_docs((CHART / "templates" / "rbac.yaml").read_text())
-    cluster_roles = [d for d in docs if d.get("kind") == "ClusterRole"]
+    block or template it sits in. Cluster-wide secrets read is exactly the
+    latent exposure docs/DEPLOYMENT.md "Agent secrets read" describes on the
+    homelab deploy, and the chart's claim is that it never had it. A resource
+    the guard cannot read (a templated value) is refused too, rather than
+    waved through. Roles are namespaced and out of scope here; the
+    cockpit-spawn Role's create-only grant has its own test above."""
+    cluster_roles = [d for d in rendered_chart_docs() if d.get("kind") == "ClusterRole"]
     assert cluster_roles, "no ClusterRole rendered -- the guard would check nothing"
     for role in cluster_roles:
         name = role["metadata"]["name"]
         for rule in role["rules"]:
-            resources = [str(r).lower().split("/", 1)[0] for r in rule.get("resources", [])]
+            resources = rule.get("resources", [])
+            assert isinstance(resources, list), (
+                f"ClusterRole {name} has an opaque resources value in {rule!r}")
+            assert not any("PLACEHOLDER" in str(r) for r in resources), (
+                f"ClusterRole {name} names a templated resource in {rule!r} -- "
+                "the guard cannot see through it; spell the resource out")
+            resources = [str(r).lower().split("/", 1)[0] for r in resources]
             for forbidden in ("secrets", "configmaps", "*"):
                 assert forbidden not in resources, (
                     f"ClusterRole {name} grants {forbidden!r} cluster-wide via "
