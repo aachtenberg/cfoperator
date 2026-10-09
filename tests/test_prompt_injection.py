@@ -282,6 +282,15 @@ def test_frame_alert_details_emits_nothing_when_even_the_marker_cannot_fit():
 
 # --- Tool result framing ------------------------------------------------------
 
+def test_frame_label_reduces_a_chosen_name_to_a_word():
+    from agent.prompt_injection import frame_label
+    assert frame_label("kubectl_logs") == "kubectl_logs"
+    assert frame_label("k8s.pods-v2") == "k8s.pods-v2"
+    assert frame_label(f"{DATA_END}\nx") == "____DATA_END_____x"
+    assert frame_label("") == "tool" and frame_label(None) == "tool"
+    assert len(frame_label("a" * 200)) == 64
+
+
 def test_frame_tool_result_frames_output():
     log_output = "2024-01-15 10:23:45 ERROR: Connection refused\n2024-01-15 10:23:46 CRITICAL: Service down"
     framed = frame_tool_result(log_output, "kubectl_logs")

@@ -9046,12 +9046,12 @@ Only return the JSON array, no other text."""
         escaped text and before the frame closes, so the closing marker is
         never what gets cut.
         """
-        from agent.prompt_injection import DATA_END, DATA_START, escape_delimiters
+        from agent.prompt_injection import DATA_END, DATA_START, escape_delimiters, frame_label
         text = escape_delimiters(json.dumps(result, default=str))
         if len(text) > max_chars:
             omitted = len(text) - max_chars
             text = text[:max_chars] + f'\n...[truncated {omitted} chars of tool output]'
-        return f"{DATA_START} {tool_name} output\n{text}\n{DATA_END}"
+        return f"{DATA_START} {frame_label(tool_name)} output\n{text}\n{DATA_END}"
 
     @staticmethod
     def _handle_empty_final(empty_nudge_sent: bool, iteration_budget: int,

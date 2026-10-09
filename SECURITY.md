@@ -55,7 +55,10 @@ Particularly interesting:
   logs may still craft prompts that confuse the model into bad recommendations.
   The gate remains the pull request: a human reviews the diff before it merges.
   Models are probabilistic and can be steered; framing raises the bar but is
-  not a semantic firewall. The real guarantee is that the agent never mutates
+  not a semantic firewall. Marker neutralization is deliberately narrow: only
+  an upper-case marker at the start of a line is defused, so a mixed-case
+  `Verdict:` or `Approved:` in a log line is left as data, and the framing and
+  system guidance are what cover it. The real guarantee is that the agent never mutates
   the cluster directly — only via a reviewed PR.
 - **SSH / node-action lane** (`node_action.enabled`) — the one place the agent
   touches hosts directly. Schema default is off; the remediate-profile chart

@@ -197,9 +197,24 @@ def _within_budget(frames, max_total: int) -> str:
     return "\n".join(kept)
 
 
+_LABEL_SAFE = re.compile(r"[^\w.-]")
+
+
+def frame_label(name: Any, fallback: str = "tool") -> str:
+    """A frame label built from text the model chose, such as a tool name.
+
+    The name in a tool call is the model's own output, and a model steered by
+    injected data could emit one that closes the frame early (a newline, a
+    delimiter). A label is a word: anything else becomes ``_``, and it is
+    cut at 64 characters.
+    """
+    label = _LABEL_SAFE.sub("_", str(name or ""))[:64]
+    return label or fallback
+
+
 def frame_tool_result(result: str, tool_name: str, max_chars: int = 4000) -> str:
     """Frame a tool result (logs, kubectl output, etc.)."""
-    return frame_untrusted_data(result, f"{tool_name} output", max_chars)
+    return frame_untrusted_data(result, f"{frame_label(tool_name)} output", max_chars)
 
 
 def get_system_framing() -> str:
