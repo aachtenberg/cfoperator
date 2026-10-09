@@ -176,6 +176,22 @@ def test_bearer_headers_and_known_token_prefixes_keep_only_the_prefix():
     assert f"Bearer {PLACEHOLDER}" in out
 
 
+
+def test_basic_and_bearer_need_a_credential_shaped_value_outside_a_header():
+    """"basic" and "bearer" are words. Outside an Authorization header only a
+    credential-shaped value goes; inside one, any value does, including a
+    base64 pair with no digit in it."""
+    for prose in ("Basic authentication is enabled", "basic configuration.\nbearer tokens rotate nightly",
+                  "Usage: --auth basic|bearer  Basic installation instructions follow"):
+        out, count = _redacted(prose)
+        assert out == prose and count == 0, out
+    out, count = _redacted("Authorization: Basic dXNlcjpwYXNz\n"
+                           "curl -H \"authorization: bearer abcdefghij\" http://x\n"
+                           "proxy said: basic Zm9vOmJhcg== rejected\n")
+    assert "dXNlcjpwYXNz" not in out and "abcdefghij" not in out and "Zm9vOmJhcg" not in out
+    assert f"Authorization: Basic {PLACEHOLDER}" in out and f"bearer {PLACEHOLDER}" in out
+    assert count == 3
+
 def test_yaml_and_json_quoted_values_keep_their_quotes():
     """A quoted value is replaced inside its quotes, so the document still parses."""
     out, _ = _redacted('{"api_key": "sk-abcdefghijklmnopqrstuvwxyz", "model": "gemma4:26b"}')

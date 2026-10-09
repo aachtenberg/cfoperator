@@ -111,7 +111,14 @@ _FLAG_VALUE = re.compile(
     # so `--password "pa ssword` fails closed — CodeRabbit on #309), or a word.
     r'(?P<val>"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'|["\'][^\n]*|\S+)',
     re.IGNORECASE)
-_BEARER = re.compile(r'(?i)\b(bearer|basic)[ \t]+(?!\*\*\*)[A-Za-z0-9._~+/=-]{8,}')
+#: `Bearer <token>` / `Basic <b64>`. After an `Authorization` header any value
+#: goes; elsewhere the value must look like a credential (a digit, `+`, `/` or
+#: `=` in it), because "basic" and "bearer" are English words and `Basic
+#: configuration` in a --help or a README is not a secret (claude-review on #309).
+_BEARER = re.compile(
+    r'(?i)(?P<ctx>authorization["\']?[ \t]*[:=][ \t]*["\']?)(?P<hs>bearer|basic)[ \t]+(?!\*\*\*)'
+    r'[A-Za-z0-9._~+/=-]+'
+    r'|\b(?P<s>bearer|basic)[ \t]+(?!\*\*\*)(?=[A-Za-z._~-]*[0-9+/=])[A-Za-z0-9._~+/=-]{8,}')
 _PEM = re.compile(r'-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----')
 _URL_USERINFO = re.compile(r'(://[^/\s:@]+:)(?!\*\*\*)([^@\s/]+)(@)')
 _WEBHOOK = re.compile(
@@ -206,7 +213,8 @@ def _redact_text(text: str) -> Tuple[str, int]:
             count += n
             return f'{m.group(1)}{body}{m.group(3)}'
         text = _JSON_DATA_OBJECT.sub(scrub_json, text)
-    text = counted(_BEARER, lambda m: f'{m.group(1)} {PLACEHOLDER}', text)
+    text = counted(
+        _BEARER, lambda m: f"{m.group('ctx') or ''}{m.group('hs') or m.group('s')} {PLACEHOLDER}", text)
     text = counted(_FLAG_VALUE, _flag_replacement, text)
     text = counted(_KEY_VALUE, _key_value_replacement, text)
     text = counted(_URL_USERINFO, lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(3)}', text)
