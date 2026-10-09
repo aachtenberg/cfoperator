@@ -31,6 +31,26 @@ Particularly interesting:
   design intent is that no amount of injected text can cause a cluster mutation
   — the worst outcome should be a bad pull request that a human then declines.
   A path that beats that is a real finding.
+  
+  **Defenses (CFOP-313)**: Untrusted data (alert summaries, labels, pod names,
+  logs, tool outputs) is framed with explicit delimiters (`<<< DATA START >>>`
+  / `<<< DATA END >>>`) and system prompts instruct models to treat delimited
+  content as data, not instructions. Delimiter tokens, markdown code fences,
+  fake role markers (ASSISTANT:, SYSTEM:), and fake verdict/status markers
+  (STATUS:, VERDICT:, APPROVED:, RECOMMENDATION:, FIX:) are neutralized with
+  zero-width joiners before they reach prompts. Log excerpts and alert fields
+  are capped (alert summaries: 800 chars, logs: 2000-4000 chars, tool results:
+  4000 chars per the existing `chat.max_tool_result_chars` config). The
+  mutation judge, investigation, triage, and node-action (deep-tier SSH)
+  prompts all apply these defenses.
+  
+  **Limits**: These are prompt-level defenses; they make injection harder but
+  do not eliminate the attack surface. An adversary who controls alert text or
+  logs may still craft prompts that confuse the model into bad recommendations.
+  The gate remains the pull request: a human reviews the diff before it merges.
+  Models are probabilistic and can be steered; framing raises the bar but is
+  not a semantic firewall. The real guarantee is that the agent never mutates
+  the cluster directly — only via a reviewed PR.
 - **SSH / node-action lane** (`node_action.enabled`) — the one place the agent
   touches hosts directly. Schema default is off; the remediate-profile chart
   flips it on (CFOP-131). Still gated on the change-record PR, the allowlist,

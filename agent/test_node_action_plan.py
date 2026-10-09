@@ -261,7 +261,10 @@ class TestBuildCommandPrompt:
         assert "x" * 4001 not in prompt
 
     def test_tolerates_missing_payload(self):
-        assert "Recommendation:" in build_command_prompt({}, _ALLOW)
+        """CFOP-313: Prompt now uses framed format."""
+        prompt = build_command_prompt({}, _ALLOW)
+        assert "<<< DATA START >>>" in prompt
+        assert "recommendation" in prompt
 
 
 # ---- parity with the executor ------------------------------------------------

@@ -113,17 +113,25 @@ def _prompt_block(alert_info):
 
 
 def test_without_evidence_the_prompt_block_is_unchanged():
+    """CFOP-313: Alert block now uses framed format, not raw JSON."""
     alert = _alert().to_dict()
-    assert _prompt_block(alert) == f"Alert details: {json.dumps(alert, default=str)[:1000]}"
+    block = _prompt_block(alert)
+    assert "<<< DATA START >>>" in block
+    assert "<<< DATA END >>>" in block
+    assert "alert summary" in block
+    assert alert["summary"] in block
 
 
 def test_evidence_leaves_the_1000_character_json_and_gets_its_own_section():
+    """CFOP-313: Alert fields now framed separately, evidence section still present."""
     alert = _alert().to_dict()
     alert[EVIDENCE_KEY] = {"dynatrace": "Logs from dt-chaos/crashloop:\n- x5 cfop-201: deliberate crash for Davis"}
     block = _prompt_block(alert)
     head, _, rest = block.partition("\n\nEvidence gathered")
-    assert head == f"Alert details: {json.dumps(_alert_without(alert), default=str)[:1000]}"
-    assert EVIDENCE_KEY not in head.split("Alert details: ", 1)[1]
+    assert "<<< DATA START >>>" in head
+    assert "alert summary" in head
+    assert alert["summary"] in head
+    assert EVIDENCE_KEY not in head
     assert "--- dynatrace ---" in rest and "deliberate crash for Davis" in rest
 
 
