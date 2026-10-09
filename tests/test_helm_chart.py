@@ -172,8 +172,9 @@ def test_the_agents_cockpit_grant_can_create_secrets_but_never_read_them():
 
 def test_cluster_roles_never_grant_secrets_access():
     """CFOP-312: cluster-wide secrets access is a latent exposure. No ClusterRole
-    may grant get/list/watch on secrets. The only allowed secrets access is the
-    namespaced cockpit-spawn Role's create-only grant for token Secrets."""
+    may grant get/list/watch on secrets or wildcard resources (which include secrets).
+    The only allowed secrets access is the namespaced cockpit-spawn Role's create-only
+    grant for token Secrets."""
     rbac = (CHART / "templates" / "rbac.yaml").read_text()
     
     for doc in rbac.split("---"):
@@ -185,11 +186,11 @@ def test_cluster_roles_never_grant_secrets_access():
         lines = [l.strip() for l in doc.splitlines()]
         for i, line in enumerate(lines):
             if line.startswith("resources:"):
-                assert "secrets" not in line.lower(), (
-                    "ClusterRole grants cluster-wide access to secrets — "
+                assert "secrets" not in line.lower() and "*" not in line, (
+                    "ClusterRole grants cluster-wide access to secrets or wildcard resources — "
                     "this must never be granted (CFOP-312)")
                 
                 if i + 1 < len(lines) and not lines[i+1].startswith(("verbs:", "apiGroups:")):
                     next_lines = "\n".join(lines[i:min(i+5, len(lines))])
-                    assert "secret" not in next_lines.lower(), (
-                        f"ClusterRole appears to reference secrets:\n{next_lines}")
+                    assert "secret" not in next_lines.lower() and "*" not in next_lines, (
+                        f"ClusterRole appears to reference secrets or wildcard resources:\n{next_lines}")
