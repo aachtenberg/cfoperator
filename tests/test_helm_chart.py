@@ -204,7 +204,9 @@ def test_the_rbac_renderer_is_not_vacuous():
     cluster_roles = [d for d in docs if d.get("kind") == "ClusterRole"]
     assert len(cluster_roles) >= 2, [d.get("kind") for d in docs]  # -read, -cockpit-readonly
     for role in cluster_roles:
-        assert role["rules"] and all(r.get("resources") for r in role["rules"]), role
+        # every rule names resources, or non-resource URLs (/metrics, /healthz)
+        assert role["rules"] and all(
+            r.get("resources") or r.get("nonResourceURLs") for r in role["rules"]), role
     # and it reads the opt-in blocks too: the cockpit-spawn Role is behind cockpit.enabled
     assert any(d.get("kind") == "Role" and
                any("secrets" in r.get("resources", []) for r in d["rules"]) for d in docs)
