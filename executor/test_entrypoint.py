@@ -289,3 +289,32 @@ def test_pr_dedupe_key_falls_back_for_rows_without_one(work_order, expected):
     # Rows queued before CFOP-71, and the manual-reclassify path, carry no key.
     from entrypoint import _pr_dedupe_key
     assert _pr_dedupe_key(work_order) == expected
+
+
+def test_run_gitops_records_which_model_answered():
+    """The completion's result carries the chain's account of who wrote the diff."""
+    class _DescribingLLM(_SeqLLM):
+        def describe(self):
+            return {"backend": "openai", "model": "anthropic/claude-opus-4.8", "rung": 1,
+                    "rungs": 2, "attempts": [{"rung": 0, "error": "HTTP 400: no credit"}]}
+
+    llm = _DescribingLLM(["k8s/base/apps/ollama.yaml", _DIFF_REPORT])
+    with patch.object(entrypoint, "make_llm", return_value=llm), \
+         patch.object(entrypoint, "list_repo_files", return_value=["k8s/base/apps/ollama.yaml"]), \
+         patch.object(entrypoint, "get_file", return_value="a\nb\nc\n"), \
+         patch.object(entrypoint, "open_pr_from_diff",
+                      return_value={"status": "opened", "html_url": "http://pr/1", "pr_number": 1}):
+        out = run(_env())
+    assert out["result"]["llm"]["rung"] == 1
+    assert out["result"]["llm"]["attempts"][0]["error"] == "HTTP 400: no credit"
+
+
+def test_run_gitops_tolerates_an_llm_without_describe():
+    llm = _SeqLLM(["k8s/base/apps/ollama.yaml", _DIFF_REPORT])
+    with patch.object(entrypoint, "make_llm", return_value=llm), \
+         patch.object(entrypoint, "list_repo_files", return_value=["k8s/base/apps/ollama.yaml"]), \
+         patch.object(entrypoint, "get_file", return_value="a\nb\nc\n"), \
+         patch.object(entrypoint, "open_pr_from_diff",
+                      return_value={"status": "opened", "html_url": "http://pr/1", "pr_number": 1}):
+        out = run(_env())
+    assert out["result"]["llm"] is None

@@ -200,6 +200,46 @@ REMEDIATION_REAPED = Counter('cfoperator_remediation_reaped_total', 'Remediation
 # surely as a shell command, only with ArgoCD holding the knife.
 _ANTHROPIC_DEFAULT_EXEC_MODEL = "claude-opus-4-8"
 
+# Executor LLM chain (remediation.executor.llm.chain): the ordered rungs the
+# executor tries until one answers. Each rung is {backend, model, base_url,
+# api_key_env, extra_body}; the key is read inside the Job from the env var
+# the rung names, so the chain carries no secret. Backend defaults for the
+# key env mirror executor/llm.py.
+_EXEC_LLM_DEFAULT_KEY_ENV = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def _normalize_exec_llm_chain(chain: Any) -> List[Dict[str, Any]]:
+    """Config rungs -> the JSON rungs the executor reads. Unknown keys are dropped."""
+    out: List[Dict[str, Any]] = []
+    for rung in chain if isinstance(chain, list) else []:
+        if not isinstance(rung, dict):
+            continue
+        backend = str(rung.get('backend') or 'anthropic').strip().lower()
+        norm: Dict[str, Any] = {
+            "backend": backend,
+            "model": str(rung.get('model') or '').strip(),
+            "base_url": str(rung.get('base_url') or '').strip(),
+            "api_key_env": str(rung.get('api_key_env') or _EXEC_LLM_DEFAULT_KEY_ENV.get(backend, '')).strip(),
+        }
+        if isinstance(rung.get('extra_body'), dict) and rung['extra_body']:
+            norm["extra_body"] = rung['extra_body']
+        out.append(norm)
+    return out
+
+
+def _exec_llm_chain_env(rungs: List[Dict[str, Any]], secrets_name: str,
+                        present: set) -> List[Dict[str, Any]]:
+    """The CFOP_EXEC_LLM_CHAIN env plus one optional secretKeyRef per key env
+    the rungs name that the Job does not already carry."""
+    env = [{"name": "CFOP_EXEC_LLM_CHAIN", "value": json.dumps(rungs)}]
+    for key in sorted({r["api_key_env"] for r in rungs if r.get("api_key_env")}):
+        if key in present:
+            continue
+        present.add(key)
+        env.append({"name": key, "valueFrom": {"secretKeyRef": {
+            "name": secrets_name, "key": key, "optional": True}}})
+    return env
+
 # One pinned model per judge backend. Not config-overridable, for the same
 # reason node-action pins its own — the model holding the veto must not inherit
 # a cost downgrade.
@@ -4546,6 +4586,26 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             volumes.append({"name": "ssh", "secret": {
                 "secretName": ssh_secret, "defaultMode": 0o440}})
             volume_mounts.append({"name": "ssh", "mountPath": "/ssh-secret", "readOnly": True})
+            node_action_job = True
+        else:
+            node_action_job = False
+        # The LLM chain this Job gets (remediation.executor.llm.chain), tried in
+        # order by the executor. A node-action never inherits it: the model
+        # deciding what runs on a host is the floor pinned above, so it gets a
+        # one-rung chain there unless node_action.llm_chain says, explicitly,
+        # that host actions may fall back and to what.
+        chain_rungs = _normalize_exec_llm_chain(llm.get('chain'))
+        if node_action_job:
+            na_chain = _normalize_exec_llm_chain(na.get('llm_chain'))
+            if na_chain:
+                chain_rungs = na_chain
+            elif chain_rungs:
+                backend = str(llm.get('backend', 'anthropic')).strip().lower()
+                chain_rungs = [{"backend": backend, "model": na_model,
+                                "base_url": str(llm.get('base_url', '')),
+                                "api_key_env": _EXEC_LLM_DEFAULT_KEY_ENV.get(backend, '')}]
+        if chain_rungs:
+            env += _exec_llm_chain_env(chain_rungs, secrets_name, {e["name"] for e in env})
         labels = {
             "app.kubernetes.io/managed-by": "cfoperator",
             "cfop.dev/role": "remediation-executor",

@@ -108,6 +108,21 @@ def build_completion_payload(work_order: Dict[str, Any], status: str,
     }
 
 
+def llm_info(llm: Any) -> Optional[Dict[str, Any]]:
+    """Which model answered, and for a chain which rungs did not (and why).
+
+    Lands in the completion's ``result["llm"]`` so the row says who wrote the
+    change. Tolerates backends (and test fakes) without ``describe``.
+    """
+    describe = getattr(llm, "describe", None)
+    if not callable(describe):
+        return None
+    try:
+        return describe()
+    except Exception:  # noqa: BLE001 - reporting must never fail the run
+        return None
+
+
 def post_completion(url: str, payload: Dict[str, Any], *, token: str = "", retries: int = 3) -> bool:
     body = json.dumps(payload, default=str).encode("utf-8")
     headers = {"Content-Type": "application/json"}
@@ -286,12 +301,15 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
         }
         logger.info("using approved_plan (%d command(s)); skipping LLM planning",
                     len(plan["commands"]))
+        planned_by = None
     else:
         llm = make_llm(env)
         plan = parse_command_plan(llm.complete(build_command_prompt(work_order, allow)))
         if not plan:
             return build_completion_payload(work_order, "needs-human", None,
-                                            "model produced no parseable command plan", None)
+                                            "model produced no parseable command plan",
+                                            {"llm": llm_info(llm)})
+        planned_by = llm_info(llm)
     commands = plan.get("commands") or []
     ok, reason = validate_plan(commands, allow)
     if not ok:
@@ -322,6 +340,8 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
         "executed": results,
         "explanation": plan.get("explanation", ""),
     }
+    if planned_by:
+        result["llm"] = planned_by
     if approval:
         result["approval"] = {
             "identity": approval.get("identity"),
@@ -394,7 +414,8 @@ def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any
     path = parse_selected_path(llm.complete(build_select_prompt(work_order, repo, files)), files)
     if not path:
         return build_completion_payload(work_order, "needs-human", None,
-                                        "model could not pick a target file", None)
+                                        "model could not pick a target file",
+                                        {"llm": llm_info(llm)})
 
     # Fetch the real file so the diff applies with exact context.
     content = get_file(client, repo, path, base)
@@ -440,6 +461,7 @@ def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any
         result["file_window"] = {"file_chars": len(content), "cap": cap, "anchor": anchor}
     if diff:
         result["proposed_diff"] = diff[:6000]
+    result["llm"] = llm_info(llm)
     return build_completion_payload(work_order, status, pr_url, detail, result)
 
 
