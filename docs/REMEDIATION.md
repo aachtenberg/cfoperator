@@ -344,10 +344,17 @@ Approve gate read the column only.
   `tracker_sync` tick hands parked rows to it and mirrors the outcome back. See
   [Tracker hand-off](#tracker-hand-off-issue-trackers).
 - **Executor Job** (`executor/`) — portable, stdlib-only, model-swappable
-  (`CFOP_EXEC_LLM_BACKEND` = anthropic | openai-compat | claude-cli). **File-aware
-  two-pass**: list repo manifests → LLM picks the file → fetch real content → LLM
-  diffs against it → `open_pr_from_diff`. Per-item target repo (`payload.repo`).
-  Read-only toward the cluster; slim image (~43 MB).
+  (`CFOP_EXEC_LLM_BACKEND` = anthropic | openai-compat | claude-cli), or a
+  **chain** of such backends tried in order (`CFOP_EXEC_LLM_CHAIN`, from
+  `remediation.executor.llm.chain`): a rung is skipped on an HTTP error (body
+  kept, so an exhausted credit balance reads as one), an unreachable endpoint, a
+  timeout or a bad response, and the completion's `result.llm` says which rung
+  answered and why the earlier ones did not. Host actions do not inherit the
+  chain: `node_action.llm_chain` is a separate, explicit list, otherwise one rung
+  at the node-action floor model. **File-aware two-pass**: list repo manifests →
+  LLM picks the file → fetch real content → LLM diffs against it →
+  `open_pr_from_diff`. Per-item target repo (`payload.repo`). Read-only toward
+  the cluster; slim image (~43 MB).
 - **Callback** — executor → `POST /v1/remediations/<id>/complete` → drives the row.
 - **Console + read APIs** — see [OBSERVABILITY.md](OBSERVABILITY.md).
 

@@ -5,6 +5,7 @@ Pure policy functions, no DB — the gate decides which recommendations may run
 unattended, so it gets the same scrutiny as the worker-side classification.
 """
 
+import json
 import os
 import re
 import sys
@@ -3971,3 +3972,99 @@ def test_status_constraint_widening_is_vocabulary_aware():
                 "'needs-human'::character varying, 'rejected'::character varying])::text[])))")
     assert constraint_admits_outcomes(old_nine, set(_REMEDIATION_STATUSES)) is False
     assert constraint_admits_outcomes(old_nine + " 'filed'", set(_REMEDIATION_STATUSES)) is True
+
+
+# --- executor LLM chain (remediation.executor.llm.chain) ---------------------
+
+_CHAIN_CFG = [
+    {"backend": "anthropic", "model": "claude-opus-4-8"},
+    {"backend": "openai", "model": "anthropic/claude-opus-4.8",
+     "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY",
+     "extra_body": {"provider": {"sort": "price"}}},
+]
+
+
+def _env_of(spec):
+    return spec["containers"][0]["env"]
+
+
+def test_build_executor_manifest_chain_env_and_secret_refs():
+    op = MagicMock()
+    op._executor_config.return_value = {"llm": {"backend": "anthropic", "chain": _CHAIN_CFG}}
+    work = {"id": 30, "remediation_class": "gitops-patch", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-c", work)["spec"]["template"]["spec"]
+    env = {e["name"]: e for e in _env_of(spec)}
+    rungs = json.loads(env["CFOP_EXEC_LLM_CHAIN"]["value"])
+    assert [r["backend"] for r in rungs] == ["anthropic", "openai"]
+    # a rung without api_key_env gets the backend default; extra_body rides along
+    assert rungs[0]["api_key_env"] == "ANTHROPIC_API_KEY"
+    assert rungs[1]["extra_body"] == {"provider": {"sort": "price"}}
+    # the Job carries the key the second rung names, as an optional secretKeyRef...
+    ref = env["OPENROUTER_API_KEY"]["valueFrom"]["secretKeyRef"]
+    assert ref == {"name": "cfoperator-secrets", "key": "OPENROUTER_API_KEY", "optional": True}
+    # ...and the key the first rung names only once (it was already there)
+    assert sum(1 for e in _env_of(spec) if e["name"] == "ANTHROPIC_API_KEY") == 1
+    # no secret value is ever inline in the chain
+    assert "sk-" not in env["CFOP_EXEC_LLM_CHAIN"]["value"]
+
+
+def test_build_executor_manifest_no_chain_means_no_chain_env():
+    op = MagicMock()
+    op._executor_config.return_value = {"llm": {"backend": "anthropic", "model": "claude-opus-4-8"}}
+    work = {"id": 31, "remediation_class": "gitops-patch", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-n", work)["spec"]["template"]["spec"]
+    assert "CFOP_EXEC_LLM_CHAIN" not in {e["name"] for e in _env_of(spec)}
+
+
+def test_build_executor_manifest_node_action_chain_is_floor_only_by_default():
+    """The gitops chain must not reach host actions: node-action gets one rung at
+    its floor model unless node_action.llm_chain says otherwise."""
+    op = MagicMock()
+    op._executor_config.return_value = {
+        "llm": {"backend": "anthropic", "chain": _CHAIN_CFG},
+        "node_action": {"enabled": True, "model": "claude-opus-4-8"},
+    }
+    work = {"id": 32, "remediation_class": "node-action", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-na", work)["spec"]["template"]["spec"]
+    chains = [e for e in _env_of(spec) if e["name"] == "CFOP_EXEC_LLM_CHAIN"]
+    assert len(chains) == 1
+    rungs = json.loads(chains[0]["value"])
+    assert rungs == [{"backend": "anthropic", "model": "claude-opus-4-8", "base_url": "",
+                      "api_key_env": "ANTHROPIC_API_KEY"}]
+    # the second rung's key is not handed to a Job that cannot use it
+    assert "OPENROUTER_API_KEY" not in {e["name"] for e in _env_of(spec)}
+
+
+def test_build_executor_manifest_node_action_chain_when_configured():
+    """An explicit node_action.llm_chain is the operator saying host actions may
+    fall back, and to what."""
+    na_chain = [{"backend": "anthropic", "model": "claude-opus-4-8"},
+                {"backend": "openai", "model": "anthropic/claude-opus-4.8",
+                 "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"}]
+    op = MagicMock()
+    op._executor_config.return_value = {
+        "llm": {"backend": "anthropic", "chain": _CHAIN_CFG},
+        "node_action": {"enabled": True, "model": "claude-opus-4-8", "llm_chain": na_chain},
+    }
+    work = {"id": 33, "remediation_class": "node-action", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-nb", work)["spec"]["template"]["spec"]
+    chains = [e for e in _env_of(spec) if e["name"] == "CFOP_EXEC_LLM_CHAIN"]
+    assert len(chains) == 1
+    assert [r["model"] for r in json.loads(chains[0]["value"])] == ["claude-opus-4-8", "anthropic/claude-opus-4.8"]
+    assert "OPENROUTER_API_KEY" in {e["name"] for e in _env_of(spec)}
+
+
+def test_build_executor_manifest_node_action_default_rung_follows_an_openai_primary():
+    """With an openai primary (a gateway), the node-action one-rung chain copies its
+    backend and base_url and names the openai key, at the floor model."""
+    op = MagicMock()
+    op._executor_config.return_value = {
+        "llm": {"backend": "openai", "base_url": "http://llm-gateway.ai:4000/v1",
+                "chain": [{"backend": "openai", "model": "m", "base_url": "http://llm-gateway.ai:4000/v1"}]},
+        "node_action": {"enabled": True, "model": "claude-opus-4-8"},
+    }
+    work = {"id": 34, "remediation_class": "node-action", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "cfop-executor-nc", work)["spec"]["template"]["spec"]
+    rungs = json.loads([e for e in _env_of(spec) if e["name"] == "CFOP_EXEC_LLM_CHAIN"][0]["value"])
+    assert rungs == [{"backend": "openai", "model": "claude-opus-4-8",
+                      "base_url": "http://llm-gateway.ai:4000/v1", "api_key_env": "OPENAI_API_KEY"}]
