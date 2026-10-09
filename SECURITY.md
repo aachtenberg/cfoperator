@@ -31,7 +31,7 @@ Particularly interesting:
   design intent is that no amount of injected text can cause a cluster mutation
   — the worst outcome should be a bad pull request that a human then declines.
   A path that beats that is a real finding.
-  
+
   **Defenses (CFOP-313)**: Untrusted data (alert summaries, labels, pod names,
   logs, tool outputs) is framed with explicit delimiters (`<<< DATA START >>>`
   / `<<< DATA END >>>`) and system prompts instruct models to treat delimited
@@ -47,7 +47,7 @@ Particularly interesting:
   The mutation judge, investigation, triage, and node-action (deep-tier SSH)
   prompts all apply these defenses; the executor carries its own stdlib copy
   of the node-action framing, held to the agent's by a parity test.
-  
+
   **Limits**: These are prompt-level defenses; they make injection harder but
   do not eliminate the attack surface. An adversary who controls alert text or
   logs may still craft prompts that confuse the model into bad recommendations.
