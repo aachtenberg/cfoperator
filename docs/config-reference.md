@@ -335,6 +335,14 @@ chat:
   # output (kubectl dumps, Loki log floods) is clipped to the head plus a
   # marker, so one fat result can't inflate every later turn. Default 6000.
   max_tool_result_chars: 6000
+  # Replace secret-shaped values in tool results — env dumps, kubectl Secrets,
+  # key files, tokens, connection-string passwords, webhook URLs — with ***
+  # before the result reaches any model or the console transcript. The key is
+  # kept, so the model still sees that POSTGRES_PASSWORD is set. Applies to
+  # every provider, local Ollama included, because the transcript is readable
+  # by any member whatever the model was. Default true; false only for an
+  # all-local setup whose operator wants raw values (CFOP-272).
+  redact_tool_results: true
 
 # Event Runtime
 event_runtime:

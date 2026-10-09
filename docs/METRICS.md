@@ -200,6 +200,18 @@ and every `k8s_*` tool set `success` from the process exit code, and those
 payloads carry `exit_code` with no `error`. Cached repeats use the original
 result's label, not the stub.
 
+### Tool Result Redaction
+```promql
+# Secret-shaped values replaced in tool results before a model or the transcript saw them (CFOP-272)
+sum by (tool_name) (rate(cfoperator_tool_result_redactions_total[1h]))
+```
+
+Counted per value, not per call: one `docker inspect` whose env holds four
+credentials adds four. Zero is the normal reading. A steady rate from one tool
+is an investigation that keeps reading a Secret or an env dump, which is worth
+a look at what it is being asked. `chat.redact_tool_results: false` turns the
+redaction off and with it this counter.
+
 ### Investigation Tracking
 ```promql
 # Investigations by outcome (resolved/escalated/monitoring/failed/in_progress)
@@ -444,6 +456,7 @@ shipped several examples that could never match.
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |
 | `cfoperator_event_runtime_completion_requests_total` | `outcome` | `recorded`, `auth_missing`, `auth_invalid`, `bad_request`, `error` |
 | `cfoperator_tool_calls_total` | `result` | `success`, `error` |
+| `cfoperator_tool_result_redactions_total` | `tool_name` | the tool's registered name, as in `cfoperator_tool_calls_total` |
 | `cfoperator_llm_requests_total` | `result` | `success`, `error` |
 | `cfoperator_llm_tokens_total` | `type` | `input`, `output` |
 | `cfoperator_triage_decisions_total` | `served_by` | `triage_model`, `chain`, `short_circuit_resolution`, `short_circuit_info`, `short_circuit_noise`, `unparseable_default`, `llm_unavailable` |

@@ -79,6 +79,7 @@ from node_action_plan import (
 from cfshared import config as shared_config
 from cfshared import repos as shared_repos
 from cfshared.evidence import EVIDENCE_KEY, render as render_evidence
+from cfshared.tool_args import redact_tool_result
 
 # Configure logging
 logging.basicConfig(
@@ -91,6 +92,10 @@ logger = logging.getLogger("cfoperator")
 OODA_CYCLES = Counter('cfoperator_ooda_cycles_total', 'Total OODA cycles executed')
 SWEEPS = Counter('cfoperator_sweeps_total', 'Total sweeps executed', ['mode'])  # reactive/proactive
 TOOL_CALLS = Counter('cfoperator_tool_calls_total', 'Tool executions', ['tool_name', 'result'])
+TOOL_RESULT_REDACTIONS = Counter(
+    'cfoperator_tool_result_redactions_total',
+    'Secret-shaped values replaced in tool results before a model or the transcript saw them (CFOP-272)',
+    ['tool_name'])
 
 
 def _tool_call_result_label(result) -> str:
@@ -9213,9 +9218,44 @@ Only return the JSON array, no other text."""
             result = self.tools.execute(tool_name, tool_args)
         else:
             result = self.tools.execute(tool_name, tool_args, policy=policy)
+        # What leaves here is the redacted copy — the prompt content, the
+        # transcript event and the memo cache all come from it — and the raw
+        # result goes no further (CFOP-272). The two readers downstream
+        # (find_learnings ids, github_create_pr URL) are not secret-shaped.
+        result = self._redact_result(tool_name, result)
         if key is not None:
             cache[key] = result
         return self._serialize_tool_result(result, max_chars, tool_name), result, False
+
+    def _redact_result(self, tool_name: str, result: Any) -> Any:
+        """The copy of a tool result that leaves this process: secret-shaped
+        values replaced (CFOP-272).
+
+        Applied once, at the one tool-execution site, so every provider
+        branch and the transcript event get the same text and a new branch
+        cannot route around it. Every provider, not only hosted ones: the
+        transcript is readable by any member whatever the model was. Off only
+        by ``chat.redact_tool_results: false``, for an all-local setup whose
+        operator wants raw values. Counted per value and per tool, so a sweep
+        that keeps reading a Secret shows up.
+        """
+        cfg = getattr(self, 'config', None)
+        chat = (cfg.get('chat') or {}) if isinstance(cfg, dict) else {}
+        if not chat.get('redact_tool_results', True):
+            return result
+        try:
+            redacted, count = redact_tool_result(result)
+        except Exception as e:
+            # Fail closed, per tool: the raw result never leaves, and the turn
+            # goes on with an error result the model can read, rather than
+            # the whole investigation failing on a redactor bug (review of
+            # #309 asked which it was).
+            logger.error(f"[REDACT] {tool_name}: redaction failed, result withheld: {e}", exc_info=True)
+            return {'error': (f"tool result withheld: redaction failed ({type(e).__name__}). "
+                              "The tool ran, but its output cannot be shown.")}
+        if count:
+            TOOL_RESULT_REDACTIONS.labels(tool_name=tool_name).inc(count)
+        return redacted
 
     @staticmethod
     def _parse_tool_arguments(raw_args) -> dict:
@@ -9298,6 +9338,9 @@ Only return the JSON array, no other text."""
                 stats.opened_prs.append(opened)
 
         if event_callback:
+            # `result` is the redacted copy _cached_tool_exec handed back: the
+            # console stores this event in the member-readable transcript
+            # (web_server.py, chat_sessions), so it must see what the model saw.
             event_callback('tool_result', {
                 'tool': tool_name,
                 'result': json.dumps(result, default=str)[:500],
