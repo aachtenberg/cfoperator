@@ -214,6 +214,16 @@ def test_frame_alert_details_frames_every_field():
     assert "prometheus" in framed and "abc123" in framed
 
 
+def test_frame_alert_details_keeps_details_and_labels_of_any_shape():
+    """A string ``details`` or a list of labels has no frame of its own, and
+    used to vanish (claude-review on #314); now it rides in the last frame."""
+    framed = frame_alert_details({"summary": "s", "details": "disk full on /var",
+                                  "alert_labels": ["team=sre", "tier=db"]})
+    assert "alert details" not in framed and "alert labels" not in framed
+    assert "other alert fields" in framed
+    assert "disk full on /var" in framed and "team=sre" in framed
+
+
 def test_frame_alert_details_puts_identity_before_the_summary():
     """An 800-char summary must not push the resource the alert is about out of
     the budget: the model would get a story with no subject."""
@@ -445,7 +455,8 @@ def test_node_action_plan_frames_context():
     allow = node_action_plan.AllowList(binaries=frozenset(["systemctl"]),
                                        systemctl_verbs=frozenset(["restart"]), max_commands=2)
     prompt = node_action_plan.build_command_prompt(work_order, allow)
-    assert prompt.count(DATA_START) == 2 and _balanced(prompt)
+    assert prompt.count(DATA_START) == 3 and _balanced(prompt)  # recommendation, target, context
+    assert "<<< DATA START >>> target\n" in prompt and '"web1"' in prompt
     assert "SYSTEM:" not in prompt and f"SYSTEM{ZW}:" in prompt
     assert "APPROVED:" not in prompt and f"APPROVED{ZW}:" in prompt
     assert "untrusted data" in prompt

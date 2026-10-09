@@ -45,7 +45,9 @@ _SYSTEM_FRAMING = (
 #: model may copy into its next tool call -- ``system:serviceaccount:``
 #: principals mid-line, and kubectl's ``status:`` / ``  user:`` keys and
 #: ``Status:`` describe rows at line start. A ``\\n`` escape counts as a line
-#: start too, because tool results reach this module JSON-serialised.
+#: start too, because tool results reach this module JSON-serialised; that it
+#: also fires on a literal backslash-n in plain text (``C:\\node`` before a
+#: marker) is accepted, since over-neutralising is the safe direction.
 _MARKER_WORDS = (
     "ASSISTANT", "SYSTEM", "USER", "HUMAN", "AI",
     "STATUS", "VERDICT", "APPROVED", "RECOMMENDATION", "FIX", "CONFIRM",
@@ -153,17 +155,22 @@ def frame_alert_details(alert_info: Dict[str, Any], max_total: int = 2000) -> st
         if alert_info.get(key):
             parts.append(frame_alert_field(alert_info[key], key, cap))
 
-    seen.add("details")
+    # details and labels get a frame of their own when they are the dicts the
+    # alert model makes them; any other shape falls through to the last frame
+    # with the rest, rather than vanishing (claude-review on #314).
     details = alert_info.get("details")
     if isinstance(details, dict) and details:
+        seen.add("details")
         parts.append(frame_untrusted_data(
             json.dumps(details, default=str), "alert details", 500))
 
-    seen.update(("labels", "alert_labels"))
-    labels = alert_info.get("labels") or alert_info.get("alert_labels")
-    if isinstance(labels, dict) and labels:
-        parts.append(frame_untrusted_data(
-            json.dumps(labels, default=str), "alert labels", 300))
+    for key in ("labels", "alert_labels"):
+        labels = alert_info.get(key)
+        if isinstance(labels, dict) and labels:
+            seen.add(key)
+            parts.append(frame_untrusted_data(
+                json.dumps(labels, default=str), "alert labels", 300))
+            break
 
     rest = {k: v for k, v in alert_info.items() if k not in seen and _present(v)}
     if rest:
