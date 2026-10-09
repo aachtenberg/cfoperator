@@ -35,12 +35,14 @@ Particularly interesting:
   **Defenses (CFOP-313)**: Untrusted data (alert summaries, labels, pod names,
   logs, tool outputs) is framed with explicit delimiters (`<<< DATA START >>>`
   / `<<< DATA END >>>`) and system prompts instruct models to treat delimited
-  content as data, not instructions. Delimiter tokens, markdown code fences,
-  and fake role or verdict markers at the start of a line (ASSISTANT:,
-  SYSTEM:, STATUS:, VERDICT:, APPROVED:, RECOMMENDATION:, FIX:) are
-  neutralized with zero-width spaces (U+200B) before they reach prompts.
-  Mid-line matches such as `system:serviceaccount:` principals are left
-  intact: the model may need them verbatim in its next tool call. Log
+  content as data, not instructions. Delimiter tokens (and look-alikes that
+  differ in case or spacing), markdown code fences, and upper-case fake role
+  or verdict markers at the start of a line (ASSISTANT:, SYSTEM:, STATUS:,
+  VERDICT:, APPROVED:, RECOMMENDATION:, FIX:) are neutralized with
+  zero-width spaces (U+200B) before they reach prompts. Mid-line and
+  lower-case matches, such as `system:serviceaccount:` principals or
+  kubectl's `status:` and `user:` keys, are left intact: the model may need
+  them verbatim in its next tool call. Log
   excerpts and alert fields are capped (alert summaries: 800 chars, logs:
   2000-4000 chars, tool results: 4000 chars per the existing
   `chat.max_tool_result_chars` config).

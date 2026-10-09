@@ -106,15 +106,17 @@ _DATA_END = "<<< DATA END >>>"
 _FAKE_MARKER = re.compile(
     r"(^|\\n)([ \t]*)(ASSISTANT|SYSTEM|USER|HUMAN|AI|STATUS|VERDICT|APPROVED"
     r"|RECOMMENDATION|FIX|CONFIRM|REJECT|DOWNGRADE)[ \t]*:",
-    re.IGNORECASE | re.MULTILINE,
+    re.MULTILINE,
 )
+_DELIMITER = re.compile(r"<<<\s*DATA\s+(START|END)\s*>>>", re.IGNORECASE)
 
 
 def _frame_untrusted(text: Any, label: str, max_chars: int) -> str:
-    """Delimit ``text`` as data: defuse the delimiters, fences and line-leading
-    fake role/verdict markers it may carry, cap it, label it."""
+    """Delimit ``text`` as data: defuse the delimiters (and look-alikes), fences
+    and line-leading upper-case fake role/verdict markers it may carry, cap it,
+    label it."""
     text = str(text)
-    text = text.replace(_DATA_START, "[DATA START]").replace(_DATA_END, "[DATA END]")
+    text = _DELIMITER.sub(lambda m: f"[DATA {m.group(1).upper()}]", text)
     text = text.replace("```", "`\u200b``")
     text = _FAKE_MARKER.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}\u200b:", text)
     if max_chars > 0 and len(text) > max_chars:

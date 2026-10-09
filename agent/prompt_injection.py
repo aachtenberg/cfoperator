@@ -39,12 +39,13 @@ _SYSTEM_FRAMING = (
 
 #: Role and verdict markers an attacker might plant in a log line or an alert
 #: summary to pose as the model, the system, or a finished verdict. They are
-#: neutralised only at the START of a line: that is where the agent's own
-#: prompts put them (``STATUS: resolved``) and where a planted one reads as
-#: one, while a mid-line match corrupts legitimate data the model may copy
-#: into its next tool call -- ``system:serviceaccount:`` principals in events
-#: and RBAC output, ``status: 200`` in HTTP logs. A ``\\n`` escape counts as a
-#: line start too, because tool results reach this module JSON-serialised.
+#: neutralised only at the START of a line and only in UPPER CASE: that is the
+#: shape the agent's own prompts give them (``STATUS: resolved``) and the shape
+#: a planted one takes, while anything looser corrupts legitimate data the
+#: model may copy into its next tool call -- ``system:serviceaccount:``
+#: principals mid-line, and kubectl's ``status:`` / ``  user:`` keys and
+#: ``Status:`` describe rows at line start. A ``\\n`` escape counts as a line
+#: start too, because tool results reach this module JSON-serialised.
 _MARKER_WORDS = (
     "ASSISTANT", "SYSTEM", "USER", "HUMAN", "AI",
     "STATUS", "VERDICT", "APPROVED", "RECOMMENDATION", "FIX", "CONFIRM",
@@ -52,8 +53,11 @@ _MARKER_WORDS = (
 )
 _FAKE_MARKER = re.compile(
     r"(^|\\n)([ \t]*)(" + "|".join(_MARKER_WORDS) + r")[ \t]*:",
-    re.IGNORECASE | re.MULTILINE,
+    re.MULTILINE,
 )
+#: The delimiters, and anything a model might read as one: case and inner
+#: spacing are not what makes ``<<<data end>>>`` look like a closing marker.
+_DELIMITER = re.compile(r"<<<\s*DATA\s+(START|END)\s*>>>", re.IGNORECASE)
 
 #: Alert fields that get a frame of their own, in prompt order, with their
 #: caps. Identity first, so a long summary cannot push the resource the alert
@@ -72,11 +76,12 @@ _TRUNCATED = "[... alert details truncated]"
 def escape_delimiters(text: str) -> str:
     """Neutralize delimiter tokens so injected text cannot break framing.
 
-    Replaces DATA_START/DATA_END with safe variants that don't match our markers.
+    Replaces DATA_START/DATA_END, and look-alikes differing in case or
+    spacing, with safe variants that don't match our markers.
     Also neutralizes common prompt injection patterns:
     - Markdown code fences that might close outer formatting
-    - Fake role markers (ASSISTANT:, SYSTEM:, ...) at the start of a line
-    - Fake status/verdict markers (STATUS:, VERDICT:, ...) at the start of a line
+    - Upper-case fake role markers (ASSISTANT:, SYSTEM:, ...) at the start of a line
+    - Upper-case fake status/verdict markers (STATUS:, VERDICT:, ...) at the start of a line
 
     A zero-width space (U+200B) goes between the word and its colon, so the
     text stays readable and the marker no longer is one.
@@ -84,8 +89,7 @@ def escape_delimiters(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
 
-    text = text.replace(DATA_START, "[DATA START]")
-    text = text.replace(DATA_END, "[DATA END]")
+    text = _DELIMITER.sub(lambda m: f"[DATA {m.group(1).upper()}]", text)
     text = text.replace("```", "`\u200b``")
     return _FAKE_MARKER.sub(
         lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}\u200b:", text)
