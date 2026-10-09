@@ -169,8 +169,24 @@ standing between the agent and a secret. See [Agent secrets read](#agent-secrets
 
 ## Agent secrets read
 
-`cfoperator-role` grants the agent SA cluster-wide `get`/`list`/`watch` on
-`secrets` and `configmaps` — predating the cockpit and unrelated to it:
+Two installs, two answers. The paragraph above is about the second one.
+
+**The Helm chart grants no secrets read.** Its core-API rule lists pods,
+pods/log, services, endpoints, events, nodes, namespaces,
+persistentvolumeclaims and persistentvolumes; the apps, batch and metrics rules
+name workloads, jobs and metrics. No `secrets` and no `configmaps` in either
+ClusterRole (`cfoperator-read`, and `cfoperator-cockpit-readonly` when the
+cockpit is on). The only secrets grant anywhere in the chart is the
+cockpit-spawn Role's namespaced `create`, for the token Secret a cockpit Job
+reads its briefing with — not `get`/`list`/`watch`.
+`tests/test_helm_chart.py::test_cluster_roles_never_grant_secrets_access`
+parses every ClusterRole's rules and fails on `secrets`, `configmaps` or a `*`
+wildcard in `resources` (CFOP-312).
+
+**The homelab deployment does.** `cfoperator-role` in the private deploy repo
+(aachtenberg/cfoperator-deploy) grants the agent SA cluster-wide
+`get`/`list`/`watch` on `secrets` and `configmaps` — predating the cockpit and
+unrelated to it:
 
 ```yaml
 - apiGroups: [""]
@@ -184,11 +200,12 @@ names and byte counts, not contents. Every `-o json` call in `tools/k8s.py` is
 hardcoded to pods / deployments / services / ingresses / events / nodes /
 namespaces.
 
-So it is a **latent grant held by convention, not by RBAC**: one generically
-typed `-o json` tool away from being a live exposure. The Helm chart does not
-grant it. Narrowing means dropping `secrets` (and probably `configmaps`) from
-that rule and confirming nothing regresses — worth doing deliberately, not as a
-side effect of an unrelated change.
+So on that deployment it is a **latent grant held by convention, not by
+RBAC**: one generically typed `-o json` tool away from being a live exposure.
+Narrowing means dropping `secrets` (and probably `configmaps`) from that rule
+and confirming nothing regresses — worth doing deliberately, not as a side
+effect of an unrelated change. CFOP-312 is that deliberate change, on the
+deploy repo.
 
 ## What the image contains
 
