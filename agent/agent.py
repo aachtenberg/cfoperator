@@ -2691,10 +2691,13 @@ Action rubric:
 Prefer notify and log_only when there is a clear precedent. Prefer
 investigate when uncertain. Use escalate only for genuinely urgent."""
 
+        from agent.prompt_injection import frame_untrusted_data as _frame_triage
+        trigger_framed = _frame_triage(trigger, "alert summary", 500)
+        labels_framed = _frame_triage(json.dumps(labels, default=str)[:500], "labels", 500)
         user_msg = (
             f"Alert severity: {severity}\n"
-            f"Alert summary: {trigger}\n"
-            f"Labels: {json.dumps(labels, default=str)[:500]}"
+            f"{trigger_framed}\n"
+            f"{labels_framed}"
             f"{similar_context}\n\n"
             "Classify."
         )
@@ -3019,8 +3022,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # transient Ollama timeout (e.g. GPU cold-start) doesn't abort
             # the investigation.
             try:
+                trigger_user_msg = frame_untrusted_data(trigger, "investigation trigger", 500)
                 result = self._chat_with_tools_with_fallback(
-                    messages=[{'role': 'user', 'content': f'Investigate this alert: {trigger}'}],
+                    messages=[{'role': 'user', 'content': f'Investigate this alert:\n{trigger_user_msg}'}],
                     system_context=system_prompt,
                     tool_policy=UNATTENDED,
                 )

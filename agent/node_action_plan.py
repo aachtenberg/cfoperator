@@ -231,8 +231,21 @@ def build_command_prompt(work_order: Dict[str, Any], allow: AllowList) -> str:
             sys.path.insert(0, agent_dir)
         from prompt_injection import frame_untrusted_data
     except ImportError:
+        # Stdlib-only fallback: apply the same escaping without the full module
         def frame_untrusted_data(text, label, max_chars=0):
-            return f"[{label}]\n{text}"
+            text = str(text)
+            # Escape delimiters and fake markers (stdlib regex only)
+            text = text.replace("<<< DATA START >>>", "[DATA START]")
+            text = text.replace("<<< DATA END >>>", "[DATA END]")
+            text = text.replace("```", "`\u200b``")
+            # Escape fake role/verdict markers with zero-width space
+            for marker in ["ASSISTANT:", "SYSTEM:", "USER:", "STATUS:", "VERDICT:", 
+                          "APPROVED:", "RECOMMENDATION:", "FIX:", "CONFIRM:", "REJECT:"]:
+                text = text.replace(marker, marker.replace(":", "\u200b:"))
+                text = text.replace(marker.lower(), marker.lower().replace(":", "\u200b:"))
+            if max_chars > 0 and len(text) > max_chars:
+                text = text[:max_chars - 26] + "\n[... truncated for length]"
+            return f"<<< DATA START >>> {label}\n{text}\n<<< DATA END >>>"
     
     payload = work_order.get("payload") or {}
     target = payload.get("target") or {}

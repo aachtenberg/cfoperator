@@ -38,10 +38,10 @@ Particularly interesting:
   content as data, not instructions. Delimiter tokens, markdown code fences,
   fake role markers (ASSISTANT:, SYSTEM:), and fake verdict/status markers
   (STATUS:, VERDICT:, APPROVED:, RECOMMENDATION:, FIX:) are neutralized with
-  zero-width joiners before they reach prompts. Log excerpts and alert fields
-  are capped (alert summaries: 800 chars, logs: 2000-4000 chars, tool results:
-  4000 chars per the existing `chat.max_tool_result_chars` config). The
-  mutation judge, investigation, triage, and node-action (deep-tier SSH)
+  zero-width spaces (U+200B) before they reach prompts. Log excerpts and alert
+  fields are capped (alert summaries: 800 chars, logs: 2000-4000 chars, tool
+  results: 4000 chars per the existing `chat.max_tool_result_chars` config).
+  The mutation judge, investigation, triage, and node-action (deep-tier SSH)
   prompts all apply these defenses.
   
   **Limits**: These are prompt-level defenses; they make injection harder but

@@ -449,3 +449,47 @@ def test_colon_in_normal_context_unchanged():
     assert "web1" in escaped
     assert "8080" in escaped
     assert "connection timeout" in escaped
+
+
+def test_frame_alert_details_never_cuts_closing_delimiter():
+    """Budget enforcement drops whole frames, not mid-frame slices (CFOP-313 / CodeRabbit thread 4)."""
+    huge_alert = {
+        "summary": "x" * 800,
+        "namespace": "y" * 200,
+        "resource_name": "z" * 200,
+        "details": {"key": "w" * 400},
+        "alert_labels": {"app": "test", "severity": "critical"}
+    }
+    # With a tight budget, some frames will be dropped
+    framed = frame_alert_details(huge_alert, max_total=800)
+    
+    # Count delimiters - they must be balanced
+    starts = framed.count(DATA_START)
+    ends = framed.count(DATA_END)
+    assert starts == ends, f"Unbalanced delimiters: {starts} starts, {ends} ends"
+    
+    # If truncation marker is present, it's a complete string
+    if "[... alert details truncated]" in framed:
+        # Verify the truncation marker isn't cut off
+        assert framed.endswith("truncated]") or framed.count("truncated]") >= 1
+
+
+def test_legitimate_log_lines_with_status_context():
+    """Legitimate log lines mentioning status/verdict in descriptive text are preserved."""
+    log = """
+    2024-01-15 10:23:45 INFO: Checking pod status
+    2024-01-15 10:23:46 DEBUG: Current status is Running
+    2024-01-15 10:23:47 INFO: Verdict from health check: healthy
+    2024-01-15 10:23:48 INFO: Recommendation accepted by operator
+    """
+    escaped = escape_delimiters(log)
+    
+    # The log timestamps and content should be readable
+    assert "2024-01-15" in escaped
+    assert "INFO:" in escaped or "INFO\u200b:" in escaped  # INFO: is not a trigger
+    assert "DEBUG:" in escaped or "DEBUG\u200b:" in escaped
+    
+    # Status/verdict as complete words (not as markers) should be neutralized
+    assert "STATUS:" not in escaped or "STATUS\u200b:" in escaped
+    assert "Verdict" in escaped  # the word itself preserved
+    assert "Recommendation" in escaped

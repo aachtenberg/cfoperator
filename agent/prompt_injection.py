@@ -133,10 +133,15 @@ def frame_alert_details(alert_info: Dict[str, Any], max_total: int = 1000) -> st
         labels_json = json.dumps(labels, default=str)
         parts.append(frame_untrusted_data(labels_json, "alert labels", 300))
     
-    result = "\n".join(p for p in parts if p)
-    if len(result) > max_total:
-        result = result[:max_total - 30] + "\n[... alert details truncated]"
-    return result
+    # Enforce budget per frame: drop whole frames to avoid cutting closing delimiters
+    kept, used = [], 0
+    for p in (p for p in parts if p):
+        if used + len(p) + 1 > max_total:
+            kept.append("[... alert details truncated]")
+            break
+        kept.append(p)
+        used += len(p) + 1
+    return "\n".join(kept)
 
 
 def frame_tool_result(result: str, tool_name: str, max_chars: int = 4000) -> str:
