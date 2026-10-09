@@ -2666,6 +2666,8 @@ class CFOperator:
                 'model': None,
             }, 'short_circuit_info')
 
+        # CFOP-313: past triggers are past alert text, framed like the rest.
+        from agent.prompt_injection import frame_untrusted_data as _frame_triage
         similar_context = ""
         try:
             if self.embeddings.is_available():
@@ -2683,7 +2685,8 @@ class CFOperator:
                             f"- [{inv.get('outcome','?'):10}] "
                             f"{inv.get('trigger','')[:100]} (similarity: {sim:.2f})"
                         )
-                    similar_context = "\n\nSimilar past investigations:\n" + "\n".join(lines)
+                    similar_context = "\n\nSimilar past investigations:\n" + _frame_triage(
+                        "\n".join(lines), "similar past investigations", 1000)
         except Exception:
             pass  # Best-effort; missing context is not a triage blocker.
 
@@ -2721,7 +2724,6 @@ Action rubric:
 Prefer notify and log_only when there is a clear precedent. Prefer
 investigate when uncertain. Use escalate only for genuinely urgent."""
 
-        from agent.prompt_injection import frame_untrusted_data as _frame_triage
         trigger_framed = _frame_triage(trigger, "alert summary", 500)
         labels_framed = _frame_triage(json.dumps(labels, default=str)[:500], "labels", 500)
         user_msg = (

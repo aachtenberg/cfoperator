@@ -58,10 +58,10 @@ Particularly interesting:
   not a semantic firewall. Marker neutralization is deliberately narrow: only
   an upper-case marker at the start of a line is defused, so a mixed-case
   `Verdict:` or `Approved:` in a log line is left as data, and the framing and
-  system guidance are what cover it. The triage prompt's list of similar past
-  investigations is not framed either: its exact shape is the fine-tune
-  dataset format (CFOP-277), and its items are 100-character snippets of
-  alerts that were themselves triaged. The real guarantee is that the agent never mutates
+  system guidance are what cover it. The fine-tune dataset builder
+  (`scripts/build_triage_dataset.py`) still emits the pre-framing shape of the
+  triage prompt; training data for the next triage model should be
+  regenerated from the live shape (CFOP-277). The real guarantee is that the agent never mutates
   the cluster directly — only via a reviewed PR.
 - **SSH / node-action lane** (`node_action.enabled`) — the one place the agent
   touches hosts directly. Schema default is off; the remediate-profile chart
