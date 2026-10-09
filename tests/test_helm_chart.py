@@ -210,11 +210,15 @@ def test_the_rbac_renderer_is_not_vacuous():
                any("secrets" in r.get("resources", []) for r in d["rules"]) for d in docs)
 
 
-#: Expression-only lines a ClusterRole document may carry: the opt-in control
-#: lines, and the chart's labels block. Anything else -- a ``toYaml`` or an
-#: ``include`` inside ``rules`` -- would render rules the guard never sees.
+#: Expression-only lines a ClusterRole document may carry: ``if``/``end`` for
+#: the opt-in blocks, and the chart's labels block. Anything else would render
+#: rules the guard never sees: a ``toYaml`` or an ``include`` inside ``rules``,
+#: and ``else`` too -- the renderer keeps both branches, so an ``if``/``else``
+#: that sets the same key twice parses as one mapping in which the loader
+#: keeps the last value and a forbidden first branch goes unseen. Use two
+#: ``if`` blocks instead.
 _CLUSTER_ROLE_EXPRESSIONS_ALLOWED = (
-    r"\{\{-?\s*(if|else|end)\b.*\}\}",
+    r"\{\{-?\s*(if|end)\b.*\}\}",
     r"\{\{\s*include \"cfoperator\.labels\" \. \| indent 4 \}\}",
 )
 
