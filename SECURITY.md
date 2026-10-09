@@ -36,13 +36,17 @@ Particularly interesting:
   logs, tool outputs) is framed with explicit delimiters (`<<< DATA START >>>`
   / `<<< DATA END >>>`) and system prompts instruct models to treat delimited
   content as data, not instructions. Delimiter tokens, markdown code fences,
-  fake role markers (ASSISTANT:, SYSTEM:), and fake verdict/status markers
-  (STATUS:, VERDICT:, APPROVED:, RECOMMENDATION:, FIX:) are neutralized with
-  zero-width spaces (U+200B) before they reach prompts. Log excerpts and alert
-  fields are capped (alert summaries: 800 chars, logs: 2000-4000 chars, tool
-  results: 4000 chars per the existing `chat.max_tool_result_chars` config).
+  and fake role or verdict markers at the start of a line (ASSISTANT:,
+  SYSTEM:, STATUS:, VERDICT:, APPROVED:, RECOMMENDATION:, FIX:) are
+  neutralized with zero-width spaces (U+200B) before they reach prompts.
+  Mid-line matches such as `system:serviceaccount:` principals are left
+  intact: the model may need them verbatim in its next tool call. Log
+  excerpts and alert fields are capped (alert summaries: 800 chars, logs:
+  2000-4000 chars, tool results: 4000 chars per the existing
+  `chat.max_tool_result_chars` config).
   The mutation judge, investigation, triage, and node-action (deep-tier SSH)
-  prompts all apply these defenses.
+  prompts all apply these defenses; the executor carries its own stdlib copy
+  of the node-action framing, held to the agent's by a parity test.
   
   **Limits**: These are prompt-level defenses; they make injection harder but
   do not eliminate the attack surface. An adversary who controls alert text or

@@ -647,14 +647,16 @@ _DELIVERY_DIRECT = (
 def _alert_prompt_block(alert_info: Dict[str, Any]) -> str:
     """The alert as the investigation prompt shows it, plus forwarded evidence.
 
-    CFOP-313: Alert fields are attacker-influenceable and framed as untrusted
-    data with delimiters to prevent prompt injection. Evidence is already
-    framed by render_evidence with similar language.
+    CFOP-313: alert fields are attacker-influenceable, so each goes in its own
+    frame as untrusted data -- every field the alert carries, none dropped.
+    Evidence the event runtime forwarded (CFOP-211) is taken out first and
+    rendered as its own bounded section by render_evidence.
     """
     from agent.prompt_injection import frame_alert_details
     alert_info = alert_info if isinstance(alert_info, dict) else {}
+    shown = {k: v for k, v in alert_info.items() if k != EVIDENCE_KEY}
     return (
-        f"{frame_alert_details(alert_info)}"
+        f"Alert details:\n{frame_alert_details(shown)}"
         f"{render_evidence(alert_info.get(EVIDENCE_KEY))}"
     )
 
@@ -9029,24 +9031,27 @@ Only return the JSON array, no other text."""
         return collapsed
 
     @staticmethod
-    def _serialize_tool_result(result: Any, max_chars: int) -> str:
-        """JSON-serialize a tool result, truncating to max_chars.
+    def _serialize_tool_result(result: Any, max_chars: int, tool_name: str = "tool") -> str:
+        """JSON-serialize a tool result, truncated to max_chars, framed as data.
 
-        CFOP-313: Tool outputs (logs, kubectl output, etc.) are attacker-
-        influenceable. Escape delimiters and fake status markers to prevent
-        prompt injection.
+        CFOP-313: tool output (logs, kubectl output, etc.) is attacker-
+        influenceable. It reaches the model between DATA_START / DATA_END
+        markers labelled with the tool that produced it, with delimiter
+        tokens, fences and line-leading fake role/verdict markers neutralised
+        first.
 
         Truncation keeps the head (most tools put the salient summary first) and
         appends an explicit marker so the model knows output was clipped rather
-        than treating a cut-off payload as the whole picture.
+        than treating a cut-off payload as the whole picture. It runs on the
+        escaped text and before the frame closes, so the closing marker is
+        never what gets cut.
         """
-        from agent.prompt_injection import escape_delimiters
-        text = json.dumps(result, default=str)
-        text = escape_delimiters(text)
-        if len(text) <= max_chars:
-            return text
-        omitted = len(text) - max_chars
-        return text[:max_chars] + f'\n...[truncated {omitted} chars of tool output]'
+        from agent.prompt_injection import DATA_END, DATA_START, escape_delimiters
+        text = escape_delimiters(json.dumps(result, default=str))
+        if len(text) > max_chars:
+            omitted = len(text) - max_chars
+            text = text[:max_chars] + f'\n...[truncated {omitted} chars of tool output]'
+        return f"{DATA_START} {tool_name} output\n{text}\n{DATA_END}"
 
     @staticmethod
     def _handle_empty_final(empty_nudge_sent: bool, iteration_budget: int,
@@ -9132,7 +9137,7 @@ Only return the JSON array, no other text."""
             result = self.tools.execute(tool_name, tool_args, policy=policy)
         if key is not None:
             cache[key] = result
-        return self._serialize_tool_result(result, max_chars), result, False
+        return self._serialize_tool_result(result, max_chars, tool_name), result, False
 
     @staticmethod
     def _parse_tool_arguments(raw_args) -> dict:

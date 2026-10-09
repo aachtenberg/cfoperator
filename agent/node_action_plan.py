@@ -207,11 +207,41 @@ def allowlist_view(ceiling: Dict[str, Any],
     }
 
 
+# ---- untrusted text in the planning prompt (CFOP-313) -----------------------
+#
+# The recommendation and the investigation context come from alerts and logs,
+# so the model is told where they begin and end and to read them as data. This
+# is a stdlib copy of agent/prompt_injection.py's frame_untrusted_data (the
+# executor must not import the monolith). agent/test_node_action_plan.py holds
+# the two copies of this block to the same source, and
+# tests/test_prompt_injection.py holds it to the full module's behaviour.
+_DATA_START = "<<< DATA START >>>"
+_DATA_END = "<<< DATA END >>>"
+_FAKE_MARKER = re.compile(
+    r"(^|\\n)([ \t]*)(ASSISTANT|SYSTEM|USER|HUMAN|AI|STATUS|VERDICT|APPROVED"
+    r"|RECOMMENDATION|FIX|CONFIRM|REJECT|DOWNGRADE)[ \t]*:",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _frame_untrusted(text: Any, label: str, max_chars: int) -> str:
+    """Delimit ``text`` as data: defuse the delimiters, fences and line-leading
+    fake role/verdict markers it may carry, cap it, label it."""
+    text = str(text)
+    text = text.replace(_DATA_START, "[DATA START]").replace(_DATA_END, "[DATA END]")
+    text = text.replace("```", "`\u200b``")
+    text = _FAKE_MARKER.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}\u200b:", text)
+    if max_chars > 0 and len(text) > max_chars:
+        suffix = "\n[... truncated for length]"
+        text = text[:max(0, max_chars - len(suffix))] + suffix
+    return f"{_DATA_START} {label}\n{text}\n{_DATA_END}"
+
+
 def build_command_prompt(work_order: Dict[str, Any], allow: AllowList) -> str:
     """Ask the LLM to translate the recommendation into a concrete command plan.
 
-    CFOP-313: The recommendation and context can contain attacker-influenceable
-    text (logs, pod names, labels). Frame them as untrusted data.
+    CFOP-313: the recommendation and context can carry attacker-influenceable
+    text (logs, pod names, labels); they go in as framed, untrusted data.
 
     The rules are GENERATED from ``allow``, never written by hand (CFOP-133).
     Both copies of this prompt used to spell the list out, and both had drifted
@@ -221,40 +251,13 @@ def build_command_prompt(work_order: Dict[str, Any], allow: AllowList) -> str:
     added in the console would be accepted by the gate but never offered to the
     model, so the change would appear to do nothing.
     """
-    # CFOP-313: Import here to avoid circular dependency (node_action_plan is
-    # mirrored in the executor and must stay stdlib-only at the top level)
-    try:
-        import sys
-        import os
-        agent_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "agent")
-        if agent_dir not in sys.path:
-            sys.path.insert(0, agent_dir)
-        from prompt_injection import frame_untrusted_data
-    except ImportError:
-        # Stdlib-only fallback: apply the same escaping without the full module
-        def frame_untrusted_data(text, label, max_chars=0):
-            text = str(text)
-            # Escape delimiters and fake markers (stdlib regex only)
-            text = text.replace("<<< DATA START >>>", "[DATA START]")
-            text = text.replace("<<< DATA END >>>", "[DATA END]")
-            text = text.replace("```", "`\u200b``")
-            # Escape fake role/verdict markers with zero-width space
-            for marker in ["ASSISTANT:", "SYSTEM:", "USER:", "STATUS:", "VERDICT:", 
-                          "APPROVED:", "RECOMMENDATION:", "FIX:", "CONFIRM:", "REJECT:"]:
-                text = text.replace(marker, marker.replace(":", "\u200b:"))
-                text = text.replace(marker.lower(), marker.lower().replace(":", "\u200b:"))
-            if max_chars > 0 and len(text) > max_chars:
-                text = text[:max_chars - 26] + "\n[... truncated for length]"
-            return f"<<< DATA START >>> {label}\n{text}\n<<< DATA END >>>"
-    
     payload = work_order.get("payload") or {}
     target = payload.get("target") or {}
     binaries = ", ".join(sorted(allow.binaries)) or "(none — every command will be refused)"
     verbs = ", ".join(sorted(allow.systemctl_verbs)) or "(none)"
-    
-    rec_framed = frame_untrusted_data(payload.get('recommendation', ''), "recommendation", 800)
-    context_framed = frame_untrusted_data(str(payload.get('rendered_context', ''))[:4000], "investigation context", 4000)
-    
+    rec_framed = _frame_untrusted(payload.get("recommendation", ""), "recommendation", 800)
+    context_framed = _frame_untrusted(
+        str(payload.get("rendered_context", ""))[:4000], "investigation context", 4000)
     return (
         "You are a careful site-reliability operator translating a remediation "
         "recommendation into concrete shell commands to run on ONE host over SSH.\n\n"
