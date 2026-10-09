@@ -210,6 +210,40 @@ def test_the_rbac_renderer_is_not_vacuous():
                any("secrets" in r.get("resources", []) for r in d["rules"]) for d in docs)
 
 
+#: Expression-only lines a ClusterRole document may carry: the opt-in control
+#: lines, and the chart's labels block. Anything else -- a ``toYaml`` or an
+#: ``include`` inside ``rules`` -- would render rules the guard never sees.
+_CLUSTER_ROLE_EXPRESSIONS_ALLOWED = (
+    r"\{\{-?\s*(if|else|end)\b.*\}\}",
+    r"\{\{\s*include \"cfoperator\.labels\" \. \| indent 4 \}\}",
+)
+
+
+def test_cluster_role_rules_are_spelled_out():
+    """The renderer drops expression-only lines, so a ClusterRole whose rules
+    came from ``{{ toYaml .Values.x }}`` would parse as only its literal rules
+    and the guard below would pass on whatever Helm rendered (CodeRabbit and
+    claude-review on #313). Every ClusterRole document therefore has to carry
+    nothing but control lines and the labels block as standalone expressions;
+    an inline expression is caught by the PLACEHOLDER check instead."""
+    seen = 0
+    for template in sorted(CHART.glob("templates/*.yaml")):
+        text = re.sub(r"\{\{/\*.*?\*/\}\}", "", template.read_text(), flags=re.DOTALL)
+        for raw_doc in re.split(r"^---\s*$", text, flags=re.MULTILINE):
+            if "kind: ClusterRole\n" not in raw_doc:
+                continue
+            seen += 1
+            for line in raw_doc.splitlines():
+                stripped = line.strip()
+                if not re.fullmatch(r"\{\{.*\}\}", stripped):
+                    continue
+                assert any(re.fullmatch(pat, stripped) for pat in _CLUSTER_ROLE_EXPRESSIONS_ALLOWED), (
+                    f"{template.name}: a ClusterRole carries the standalone expression "
+                    f"{stripped!r}; the RBAC guard cannot see what it renders, so spell "
+                    "the rules out (CFOP-312)")
+    assert seen >= 2, "no ClusterRole document found -- the check would guard nothing"
+
+
 def test_cluster_roles_never_grant_secrets_access():
     """CFOP-312: no ClusterRole in the chart may name secrets, configmaps or a
     wildcard in any rule's resources -- whatever the verbs, whichever opt-in
