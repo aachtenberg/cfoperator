@@ -335,6 +335,13 @@ chat:
   # output (kubectl dumps, Loki log floods) is clipped to the head plus a
   # marker, so one fat result can't inflate every later turn. Default 6000.
   max_tool_result_chars: 6000
+  # End a tool loop early once this many calls in a row repeat a (tool, args)
+  # call already made in it: the next turn is the forced final answer, as at
+  # the iteration cap. "Already made" means anywhere earlier in the loop, not
+  # just the call before, so A,B,A,B,A counts as three repeats. Applies to
+  # sweeps, investigations and chat alike. 0 turns it off. Default 3
+  # (CFOP-271).
+  # stagnation_repeats: 3
   # Replace secret-shaped values in tool results — env dumps, kubectl Secrets,
   # key files, tokens, connection-string passwords, webhook URLs — with ***
   # before the result reaches any model or the console transcript. The key is

@@ -3337,6 +3337,10 @@ class KnowledgeBase:
                     LEFT JOIN investigation_embeddings ie ON i.id = ie.investigation_id
                     WHERE ie.investigation_id IS NULL
                     AND i.outcome IN ('resolved', 'escalated', 'failed')
+                    -- A run whose tool loop stopped before any verdict
+                    -- (CFOP-271) is skipped at write time; the backfill must
+                    -- not embed it on the next sweep either.
+                    AND NOT (i.outcome = 'failed' AND i.findings ? 'stop_reason')
                     ORDER BY i.started_at DESC
                     LIMIT :limit
                 """), {'limit': limit}).fetchall()

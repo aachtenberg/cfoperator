@@ -127,6 +127,17 @@ def check_knowledge_base(url):
         assert kb.store_investigation_embedding(
             inv_id, [0.001 * i for i in range(EMBEDDING_DIM)], "db-smoke", "db smoke") is True, \
             "the vector embedding was not stored"
+        # CFOP-271: a run that stopped with no verdict is not embedded when it
+        # completes, so the per-sweep backfill must not embed it either. An
+        # ordinary failed run still is (the query's existing behaviour).
+        no_verdict = kb.start_investigation("db smoke no verdict")
+        kb.update_investigation(no_verdict, outcome="failed", findings={
+            "response": "still looking", "stop_reason": "cap", "error": "no verdict"})
+        plain_failure = kb.start_investigation("db smoke exception")
+        kb.update_investigation(plain_failure, outcome="failed", findings={"error": "boom"})
+        unindexed = {row["id"] for row in kb.get_unindexed_investigations(limit=100)}
+        assert plain_failure in unindexed, "the backfill query returned nothing it should have"
+        assert no_verdict not in unindexed, "the backfill would embed a no-verdict investigation"
         learning_id = kb.store_learning({"learning_type": "insight", "title": "db smoke",
                                          "description": "the knowledge base round-trips a write"})
         assert learning_id, "store_learning returned no id"
