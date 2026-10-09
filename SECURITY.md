@@ -39,8 +39,10 @@ Particularly interesting:
   NO cluster-wide access to Kubernetes secrets or configmaps. The only secrets
   access is the namespaced cockpit-spawn Role's `create`-only grant for
   ephemeral token Secrets. No tool reads secret values, and
-  `tests/test_helm_chart.py` parses every ClusterRole's rules and refuses
-  `secrets`, `configmaps` and `*`. The homelab deploy repo
+  `tests/test_helm_chart.py` parses the rendered RBAC: every ClusterRole rule
+  is refused `secrets`, `configmaps` and `*`, every binding must name a role
+  the chart defines, and the only Role rule naming secrets must be
+  cockpit-spawn's create-only one. The homelab deploy repo
   (aachtenberg/cfoperator-deploy) is a separate install whose `cfoperator-role`
   still grants cluster-wide secrets read today; CFOP-312 narrows it there. See
   docs/DEPLOYMENT.md "Agent secrets read".
