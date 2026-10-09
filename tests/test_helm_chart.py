@@ -263,6 +263,9 @@ def test_cluster_roles_never_grant_secrets_access():
     assert cluster_roles, "no ClusterRole rendered -- the guard would check nothing"
     for role in cluster_roles:
         name = role["metadata"]["name"]
+        assert "aggregationRule" not in role, (
+            f"ClusterRole {name} aggregates other roles' rules -- the guard cannot "
+            "see what it ends up granting (CFOP-312)")
         for rule in role["rules"]:
             resources = rule.get("resources", [])
             assert isinstance(resources, list), (
@@ -275,3 +278,20 @@ def test_cluster_roles_never_grant_secrets_access():
                 assert forbidden not in resources, (
                     f"ClusterRole {name} grants {forbidden!r} cluster-wide via "
                     f"{rule!r} -- never, under any profile (CFOP-312)")
+
+
+def test_bindings_point_only_at_the_charts_own_roles():
+    """The guard above reads the chart's ClusterRoles; a binding to a built-in
+    role (`edit`, `admin`, `cluster-admin`) or to anything else the chart does
+    not define would grant secrets without a `secrets` rule anywhere in the
+    templates (claude-review on #313). Every binding's roleRef must name a
+    role rendered from the chart, of the kind it claims."""
+    docs = rendered_chart_docs()
+    own = {(d["kind"], d["metadata"]["name"]) for d in docs if d.get("kind") in ("ClusterRole", "Role")}
+    bindings = [d for d in docs if d.get("kind") in ("ClusterRoleBinding", "RoleBinding")]
+    assert bindings, "no binding rendered -- the check would guard nothing"
+    for binding in bindings:
+        ref = binding["roleRef"]
+        assert (ref["kind"], ref["name"]) in own, (
+            f"{binding['kind']} {binding['metadata']['name']} binds {ref['kind']} "
+            f"{ref['name']!r}, which this chart does not define (CFOP-312)")
