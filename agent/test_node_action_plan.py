@@ -463,4 +463,4 @@ class TestAllowlistView:
         assert "SYSTEM\u200b:" in prompt and "APPROVED\u200b:" in prompt
         assert "SYSTEM:" not in prompt and "APPROVED:" not in prompt
         assert "[DATA END]" in prompt and "```" not in prompt
-        assert prompt.count("<<< DATA START >>>") == prompt.count("<<< DATA END >>>") == 2
+        assert prompt.count("<<< DATA START >>>") == prompt.count("<<< DATA END >>>") == 3  # recommendation, target, context
