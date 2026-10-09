@@ -210,44 +210,45 @@ def test_the_rbac_renderer_is_not_vacuous():
                any("secrets" in r.get("resources", []) for r in d["rules"]) for d in docs)
 
 
-#: Expression-only lines a ClusterRole document may carry: ``if``/``end`` for
-#: the opt-in blocks, and the chart's labels block. Anything else would render
-#: rules the guard never sees: a ``toYaml`` or an ``include`` inside ``rules``,
-#: and ``else`` too -- the renderer keeps both branches, so an ``if``/``else``
-#: that sets the same key twice parses as one mapping in which the loader
-#: keeps the last value and a forbidden first branch goes unseen. Use two
-#: ``if`` blocks instead.
-_CLUSTER_ROLE_EXPRESSIONS_ALLOWED = (
+#: Expression-only lines an RBAC document (ClusterRole or Role) may carry:
+#: ``if``/``end`` for the opt-in blocks, and the chart's labels block. Anything
+#: else would render rules the guards never see: a ``toYaml`` or an ``include``
+#: inside ``rules``, and ``else`` too -- the renderer keeps both branches, so an
+#: ``if``/``else`` that sets the same key twice parses as one mapping in which
+#: the loader keeps the last value and a forbidden first branch goes unseen.
+#: Use two ``if`` blocks instead.
+_RBAC_EXPRESSIONS_ALLOWED = (
     r"\{\{-?\s*(if|end)\b.*\}\}",
     r"\{\{\s*include \"cfoperator\.labels\" \. \| indent 4 \}\}",
 )
 
 
-def test_cluster_role_rules_are_spelled_out():
-    """The renderer drops expression-only lines, so a ClusterRole whose rules
-    came from ``{{ toYaml .Values.x }}`` would parse as only its literal rules
-    and the guard below would pass on whatever Helm rendered (CodeRabbit and
-    claude-review on #313). Every ClusterRole document therefore has to carry
+def test_rbac_rules_are_spelled_out():
+    """The renderer drops expression-only lines, so a ClusterRole or Role whose
+    rules came from ``{{ toYaml .Values.x }}`` would parse as only its literal
+    rules and the guards below would pass on whatever Helm rendered (CodeRabbit
+    and claude-review on #313). Every RBAC document therefore has to carry
     nothing but control lines and the labels block as standalone expressions;
     an inline expression is caught by the PLACEHOLDER check instead."""
-    seen = 0
+    seen = set()
     for template in sorted(CHART.glob("templates/*.yaml")):
         text = re.sub(r"\{\{/\*.*?\*/\}\}", "", template.read_text(), flags=re.DOTALL)
         for raw_doc in re.split(r"^---\s*$", text, flags=re.MULTILINE):
             # Identify the document by its parsed kind, not by the spelling of
             # the line: `kind: ClusterRole  # comment` is one too (CodeRabbit).
-            if not any(d.get("kind") == "ClusterRole" for d in rendered_docs(raw_doc)):
+            kinds = {d.get("kind") for d in rendered_docs(raw_doc)} & {"ClusterRole", "Role"}
+            if not kinds:
                 continue
-            seen += 1
+            seen |= kinds
             for line in raw_doc.splitlines():
                 stripped = line.strip()
                 if not re.fullmatch(r"\{\{.*\}\}", stripped):
                     continue
-                assert any(re.fullmatch(pat, stripped) for pat in _CLUSTER_ROLE_EXPRESSIONS_ALLOWED), (
-                    f"{template.name}: a ClusterRole carries the standalone expression "
-                    f"{stripped!r}; the RBAC guard cannot see what it renders, so spell "
-                    "the rules out (CFOP-312)")
-    assert seen >= 2, "no ClusterRole document found -- the check would guard nothing"
+                assert any(re.fullmatch(pat, stripped) for pat in _RBAC_EXPRESSIONS_ALLOWED), (
+                    f"{template.name}: a {'/'.join(sorted(kinds))} carries the standalone "
+                    f"expression {stripped!r}; the RBAC guards cannot see what it renders, "
+                    "so spell the rules out (CFOP-312)")
+    assert seen == {"ClusterRole", "Role"}, f"saw only {seen} -- the check would guard too little"
 
 
 def test_cluster_roles_never_grant_secrets_access():
