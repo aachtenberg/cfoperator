@@ -295,6 +295,11 @@ def test_bindings_point_only_at_the_charts_own_roles():
     assert bindings, "no binding rendered -- the check would guard nothing"
     for binding in bindings:
         ref = binding["roleRef"]
+        # A fully templated name renders as the bare placeholder, which would
+        # match any fully templated role; the guard cannot see through it.
+        assert ref["name"] != "PLACEHOLDER", (
+            f"{binding['kind']} {binding['metadata']['name']} binds a role named only by "
+            "an expression; spell the name out (CFOP-312)")
         assert (ref["kind"], ref["name"]) in own, (
             f"{binding['kind']} {binding['metadata']['name']} binds {ref['kind']} "
             f"{ref['name']!r}, which this chart does not define (CFOP-312)")
