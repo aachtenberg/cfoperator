@@ -31,6 +31,40 @@ Particularly interesting:
   design intent is that no amount of injected text can cause a cluster mutation
   — the worst outcome should be a bad pull request that a human then declines.
   A path that beats that is a real finding.
+
+  **Defenses (CFOP-313)**: Untrusted data (alert summaries, labels, pod names,
+  logs, tool outputs) is framed with explicit delimiters (`<<< DATA START >>>`
+  / `<<< DATA END >>>`) and system prompts instruct models to treat delimited
+  content as data, not instructions. Delimiter tokens (and look-alikes that
+  differ in case or spacing), markdown code fences, and upper-case fake role
+  or verdict markers at the start of a line (ASSISTANT:, SYSTEM:, STATUS:,
+  VERDICT:, APPROVED:, RECOMMENDATION:, FIX:) are neutralized with
+  zero-width spaces (U+200B) before they reach prompts. Mid-line and
+  lower-case matches, such as `system:serviceaccount:` principals or
+  kubectl's `status:` and `user:` keys, are left intact: the model may need
+  them verbatim in its next tool call. Log
+  excerpts and alert fields are capped (alert summaries: 800 chars, logs:
+  2000-4000 chars, tool results: 4000 chars per the existing
+  `chat.max_tool_result_chars` config).
+  The mutation judge, investigation, triage, and node-action (deep-tier SSH)
+  prompts all apply these defenses; the executor carries its own stdlib copy
+  of the node-action framing, held to the agent's by a parity test.
+
+  **Limits**: These are prompt-level defenses; they make injection harder but
+  do not eliminate the attack surface. An adversary who controls alert text or
+  logs may still craft prompts that confuse the model into bad recommendations.
+  The gate remains the pull request: a human reviews the diff before it merges.
+  Models are probabilistic and can be steered; framing raises the bar but is
+  not a semantic firewall. Marker neutralization is deliberately narrow: only
+  an upper-case marker at the start of a line is defused, so a mixed-case
+  `Verdict:` or `Approved:` in a log line is left as data, as is a marker that
+  follows an opening quote inside a JSON-serialized tool result
+  (`{"msg": "APPROVED: ..."}`), and the framing and system guidance are what
+  cover them. The fine-tune dataset builder
+  (`scripts/build_triage_dataset.py`) still emits the pre-framing shape of the
+  triage prompt; training data for the next triage model should be
+  regenerated from the live shape (CFOP-277). The real guarantee is that the agent never mutates
+  the cluster directly — only via a reviewed PR.
 - **SSH / node-action lane** (`node_action.enabled`) — the one place the agent
   touches hosts directly. Schema default is off; the remediate-profile chart
   flips it on (CFOP-131). Still gated on the change-record PR, the allowlist,
