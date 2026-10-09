@@ -304,10 +304,12 @@ def test_the_only_secrets_grant_in_the_chart_is_cockpit_spawns_create():
     """docs/DEPLOYMENT.md says the cockpit-spawn Role's namespaced `create` is
     the only secrets grant anywhere in the chart. The ClusterRole guard above
     does not cover Roles, so this holds the claim for them too (claude-review
-    on #313): any Role rule naming secrets is cockpit-spawn's, and create-only."""
+    on #313): any Role rule naming secrets is cockpit-spawn's, and create-only.
+    A wildcard resource, or a secrets subresource, counts as naming secrets."""
     roles = [d for d in rendered_chart_docs() if d.get("kind") == "Role"]
     grants = [(d["metadata"]["name"], rule) for d in roles for rule in d["rules"]
-              if "secrets" in [str(r).lower() for r in rule.get("resources", [])]]
+              if {"secrets", "*"} & {str(r).lower().split("/", 1)[0]
+                                     for r in rule.get("resources", [])}]
     assert grants, "no Role grants secrets at all -- the cockpit token Secret could not be created"
     for name, rule in grants:
         assert name.endswith("-cockpit-spawn"), (
