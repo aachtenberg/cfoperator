@@ -168,3 +168,28 @@ def test_the_agents_cockpit_grant_can_create_secrets_but_never_read_them():
         verbs = next(l for l in lines[i:] if l.startswith("verbs:"))
         assert verbs == "verbs: [create]", (
             f"the agent's secret grant is {verbs!r}; it may only create")
+
+
+def test_cluster_roles_never_grant_secrets_access():
+    """CFOP-312: cluster-wide secrets access is a latent exposure. No ClusterRole
+    may grant get/list/watch on secrets. The only allowed secrets access is the
+    namespaced cockpit-spawn Role's create-only grant for token Secrets."""
+    rbac = (CHART / "templates" / "rbac.yaml").read_text()
+    
+    for doc in rbac.split("---"):
+        if "kind: ClusterRole" not in doc:
+            continue
+        if "resources:" not in doc:
+            continue
+        
+        lines = [l.strip() for l in doc.splitlines()]
+        for i, line in enumerate(lines):
+            if line.startswith("resources:"):
+                assert "secrets" not in line.lower(), (
+                    "ClusterRole grants cluster-wide access to secrets — "
+                    "this must never be granted (CFOP-312)")
+                
+                if i + 1 < len(lines) and not lines[i+1].startswith(("verbs:", "apiGroups:")):
+                    next_lines = "\n".join(lines[i:min(i+5, len(lines))])
+                    assert "secret" not in next_lines.lower(), (
+                        f"ClusterRole appears to reference secrets:\n{next_lines}")

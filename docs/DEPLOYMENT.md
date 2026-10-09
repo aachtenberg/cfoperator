@@ -167,28 +167,31 @@ the *chart's*, where the agent has no secrets read; it does not describe this
 deployment. `create` is still the minimal addition, it is just not the thing
 standing between the agent and a secret. See [Agent secrets read](#agent-secrets-read).
 
-## Agent secrets read
+## Agent secrets read (CFOP-312)
 
-`cfoperator-role` grants the agent SA cluster-wide `get`/`list`/`watch` on
-`secrets` and `configmaps` — predating the cockpit and unrelated to it:
+**The Helm chart does NOT grant cluster-wide secrets access.** The main
+`cfoperator-read` ClusterRole grants only:
 
 ```yaml
 - apiGroups: [""]
-  resources: ["pods", "pods/log", "services", "endpoints", "namespaces", "nodes", "events", "configmaps", "secrets", "persistentvolumeclaims"]
-  verbs: ["get", "list", "watch"]
+  resources: [pods, pods/log, services, endpoints, events, nodes, namespaces, 
+              persistentvolumeclaims, persistentvolumes]
+  verbs: [get, list, watch]
 ```
 
-**No tool currently reaches secret values.** The only tool taking an arbitrary
-resource type is `k8s_describe`, which runs `kubectl describe` — that prints key
-names and byte counts, not contents. Every `-o json` call in `tools/k8s.py` is
-hardcoded to pods / deployments / services / ingresses / events / nodes /
-namespaces.
+No `secrets`, no `configmaps`. The only secrets access is the cockpit-spawn Role's
+namespaced `create`-only grant for token Secrets — not `get`/`list`/`watch`, and
+scoped to the release namespace only.
 
-So it is a **latent grant held by convention, not by RBAC**: one generically
-typed `-o json` tool away from being a live exposure. The Helm chart does not
-grant it. Narrowing means dropping `secrets` (and probably `configmaps`) from
-that rule and confirming nothing regresses — worth doing deliberately, not as a
-side effect of an unrelated change.
+**No tool reads secret values.** `k8s_describe` runs `kubectl describe`, which
+prints key names and byte counts, not contents. Every `-o json` call in 
+`tools/k8s.py` is hardcoded to specific resource types (pods, deployments, services,
+etc.), none of which are secrets.
+
+This tight RBAC is enforced by `tests/test_helm_chart.py::test_cluster_roles_never_grant_secrets_access()`,
+which fails if `secrets` appears in any ClusterRole resources list. **The private
+deploy repo (aachtenberg/cfoperator-deploy) may still grant broader access** —
+that's a separate installation with different RBAC decisions.
 
 ## What the image contains
 
