@@ -36,12 +36,14 @@ Particularly interesting:
   flips it on (CFOP-131). Still gated on the change-record PR, the allowlist,
   and a console kill-switch.
 - **Cluster-wide secrets access** (CFOP-312) — CFOperator's Helm chart grants
-  NO cluster-wide access to Kubernetes secrets. The only secrets access is the
-  namespaced cockpit-spawn Role's `create`-only grant for ephemeral token
-  Secrets. No tool reads secret values, and `tests/test_helm_chart.py` enforces
-  that `secrets` never appears in any ClusterRole. The private deploy repo may
-  grant broader access for operational reasons, but that's a separate
-  installation with different RBAC decisions.
+  NO cluster-wide access to Kubernetes secrets or configmaps. The only secrets
+  access is the namespaced cockpit-spawn Role's `create`-only grant for
+  ephemeral token Secrets. No tool reads secret values, and
+  `tests/test_helm_chart.py` parses every ClusterRole's rules and refuses
+  `secrets`, `configmaps` and `*`. The homelab deploy repo
+  (aachtenberg/cfoperator-deploy) is a separate install whose `cfoperator-role`
+  still grants cluster-wide secrets read today; CFOP-312 narrows it there. See
+  docs/DEPLOYMENT.md "Agent secrets read".
 
 ## Design limits, not vulnerabilities
 

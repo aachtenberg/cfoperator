@@ -167,31 +167,45 @@ the *chart's*, where the agent has no secrets read; it does not describe this
 deployment. `create` is still the minimal addition, it is just not the thing
 standing between the agent and a secret. See [Agent secrets read](#agent-secrets-read).
 
-## Agent secrets read (CFOP-312)
+## Agent secrets read
 
-**The Helm chart does NOT grant cluster-wide secrets access.** The main
-`cfoperator-read` ClusterRole grants only:
+Two installs, two answers. The paragraph above is about the second one.
+
+**The Helm chart grants no secrets read.** Its core-API rule lists pods,
+pods/log, services, endpoints, events, nodes, namespaces,
+persistentvolumeclaims and persistentvolumes; the apps, batch and metrics rules
+name workloads, jobs and metrics. No `secrets` and no `configmaps` in either
+ClusterRole (`cfoperator-read`, and `cfoperator-cockpit-readonly` when the
+cockpit is on). The only secrets grant anywhere in the chart is the
+cockpit-spawn Role's namespaced `create`, for the token Secret a cockpit Job
+reads its briefing with — not `get`/`list`/`watch`.
+`tests/test_helm_chart.py::test_cluster_roles_never_grant_secrets_access`
+parses every ClusterRole's rules and fails on `secrets`, `configmaps` or a `*`
+wildcard in `resources` (CFOP-312).
+
+**The homelab deployment does.** `cfoperator-role` in the private deploy repo
+(aachtenberg/cfoperator-deploy) grants the agent SA cluster-wide
+`get`/`list`/`watch` on `secrets` and `configmaps` — predating the cockpit and
+unrelated to it:
 
 ```yaml
 - apiGroups: [""]
-  resources: [pods, pods/log, services, endpoints, events, nodes, namespaces, 
-              persistentvolumeclaims, persistentvolumes]
-  verbs: [get, list, watch]
+  resources: ["pods", "pods/log", "services", "endpoints", "namespaces", "nodes", "events", "configmaps", "secrets", "persistentvolumeclaims"]
+  verbs: ["get", "list", "watch"]
 ```
 
-No `secrets`, no `configmaps`. The only secrets access is the cockpit-spawn Role's
-namespaced `create`-only grant for token Secrets — not `get`/`list`/`watch`, and
-scoped to the release namespace only.
+**No tool currently reaches secret values.** The only tool taking an arbitrary
+resource type is `k8s_describe`, which runs `kubectl describe` — that prints key
+names and byte counts, not contents. Every `-o json` call in `tools/k8s.py` is
+hardcoded to pods / deployments / services / ingresses / events / nodes /
+namespaces.
 
-**No tool reads secret values.** `k8s_describe` runs `kubectl describe`, which
-prints key names and byte counts, not contents. Every `-o json` call in 
-`tools/k8s.py` is hardcoded to specific resource types (pods, deployments, services,
-etc.), none of which are secrets.
-
-This tight RBAC is enforced by `tests/test_helm_chart.py::test_cluster_roles_never_grant_secrets_access()`,
-which fails if `secrets` appears in any ClusterRole resources list. **The private
-deploy repo (aachtenberg/cfoperator-deploy) may still grant broader access** —
-that's a separate installation with different RBAC decisions.
+So on that deployment it is a **latent grant held by convention, not by
+RBAC**: one generically typed `-o json` tool away from being a live exposure.
+Narrowing means dropping `secrets` (and probably `configmaps`) from that rule
+and confirming nothing regresses — worth doing deliberately, not as a side
+effect of an unrelated change. CFOP-312 is that deliberate change, on the
+deploy repo.
 
 ## What the image contains
 

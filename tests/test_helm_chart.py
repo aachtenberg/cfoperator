@@ -170,27 +170,56 @@ def test_the_agents_cockpit_grant_can_create_secrets_but_never_read_them():
             f"the agent's secret grant is {verbs!r}; it may only create")
 
 
+def rendered_docs(template: str) -> list:
+    """Every document of a template as YAML, Helm directives stripped.
+
+    No helm binary here (see the module docstring), and the templates are plain
+    YAML once the ``{{ }}`` is gone: comment blocks go, control lines
+    (``if``/``end``) go -- so every opt-in block is KEPT and checked -- a
+    ``{{ include ... | indent N }}`` line goes (a labels block, never RBAC), and
+    any other expression becomes a placeholder scalar.
+    """
+    text = re.sub(r"\{\{/\*.*?\*/\}\}", "", template, flags=re.DOTALL)
+    kept = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"\{\{-?\s*(if|else|end|range|with)\b", stripped):
+            continue
+        if re.fullmatch(r"\{\{.*\|\s*indent\s+\d+\s*\}\}", stripped):
+            continue
+        kept.append(re.sub(r"\{\{.*?\}\}", "PLACEHOLDER", line))
+    return [d for d in yaml.safe_load_all("\n".join(kept)) if d]
+
+
+def test_the_rbac_renderer_is_not_vacuous():
+    """A renderer that lost the ClusterRoles, or their rules, would make the
+    guard below pass on any chart at all."""
+    docs = rendered_docs((CHART / "templates" / "rbac.yaml").read_text())
+    cluster_roles = [d for d in docs if d.get("kind") == "ClusterRole"]
+    assert len(cluster_roles) >= 2, [d.get("kind") for d in docs]  # -read, -cockpit-readonly
+    for role in cluster_roles:
+        assert role["rules"] and all(r.get("resources") for r in role["rules"]), role
+    # and it reads the opt-in blocks too: the cockpit-spawn Role is behind cockpit.enabled
+    assert any(d.get("kind") == "Role" and
+               any("secrets" in r.get("resources", []) for r in d["rules"]) for d in docs)
+
+
 def test_cluster_roles_never_grant_secrets_access():
-    """CFOP-312: cluster-wide secrets access is a latent exposure. No ClusterRole
-    may grant get/list/watch on secrets or wildcard resources (which include secrets).
-    The only allowed secrets access is the namespaced cockpit-spawn Role's create-only
-    grant for token Secrets."""
-    rbac = (CHART / "templates" / "rbac.yaml").read_text()
-    
-    for doc in rbac.split("---"):
-        if "kind: ClusterRole" not in doc:
-            continue
-        if "resources:" not in doc:
-            continue
-        
-        lines = [l.strip() for l in doc.splitlines()]
-        for i, line in enumerate(lines):
-            if line.startswith("resources:"):
-                assert "secrets" not in line.lower() and "*" not in line, (
-                    "ClusterRole grants cluster-wide access to secrets or wildcard resources — "
-                    "this must never be granted (CFOP-312)")
-                
-                if i + 1 < len(lines) and not lines[i+1].startswith(("verbs:", "apiGroups:")):
-                    next_lines = "\n".join(lines[i:min(i+5, len(lines))])
-                    assert "secret" not in next_lines.lower() and "*" not in next_lines, (
-                        f"ClusterRole appears to reference secrets or wildcard resources:\n{next_lines}")
+    """CFOP-312: no ClusterRole in the chart may name secrets, configmaps or a
+    wildcard in any rule's resources -- whatever the verbs, whichever opt-in
+    block it sits in. Cluster-wide secrets read is exactly the latent exposure
+    docs/DEPLOYMENT.md "Agent secrets read" describes on the homelab deploy,
+    and the chart's claim is that it never had it. Roles are namespaced and out
+    of scope here; the cockpit-spawn Role's create-only grant has its own test
+    above."""
+    docs = rendered_docs((CHART / "templates" / "rbac.yaml").read_text())
+    cluster_roles = [d for d in docs if d.get("kind") == "ClusterRole"]
+    assert cluster_roles, "no ClusterRole rendered -- the guard would check nothing"
+    for role in cluster_roles:
+        name = role["metadata"]["name"]
+        for rule in role["rules"]:
+            resources = [str(r).lower().split("/", 1)[0] for r in rule.get("resources", [])]
+            for forbidden in ("secrets", "configmaps", "*"):
+                assert forbidden not in resources, (
+                    f"ClusterRole {name} grants {forbidden!r} cluster-wide via "
+                    f"{rule!r} -- never, under any profile (CFOP-312)")
