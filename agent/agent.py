@@ -644,6 +644,34 @@ _DELIVERY_DIRECT = (
 )
 
 
+def _past_context_blocks(context: Dict[str, Any]) -> Tuple[str, str]:
+    """The past-learnings and similar-investigations sections of the
+    investigation prompt, each framed as untrusted data.
+
+    CFOP-313: both are built from earlier alerts and earlier model output
+    (learning titles and descriptions, past triggers), so they carry whatever
+    those alerts carried. Each section is one frame; an empty section is the
+    empty string, as before, so the prompt shape without context is unchanged.
+    """
+    from agent.prompt_injection import frame_untrusted_data
+    learnings_text = ""
+    if context.get('known_learnings'):
+        lines = "".join(
+            f"- [{l['learning_type']}] {l['title']}: {l['description'][:200]}\n"
+            for l in context['known_learnings'])
+        learnings_text = "\n\nRelevant past learnings:\n" + frame_untrusted_data(
+            lines.rstrip("\n"), "past learnings", 3000)
+    similar_text = ""
+    if context.get('similar_investigations'):
+        lines = ""
+        for inv in context['similar_investigations'][:3]:
+            sim_score = inv.get('similarity') or inv.get('vector_similarity', 0)
+            lines += f"- [{inv.get('outcome', '?')}] {inv.get('trigger', '')[:100]} (similarity: {sim_score})\n"
+        similar_text = "\n\nSimilar past investigations:\n" + frame_untrusted_data(
+            lines.rstrip("\n"), "similar past investigations", 1000)
+    return learnings_text, similar_text
+
+
 def _alert_prompt_block(alert_info: Dict[str, Any]) -> str:
     """The alert as the investigation prompt shows it, plus forwarded evidence.
 
@@ -2961,19 +2989,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         details: Dict[str, Any] = {'investigation_id': inv_id, 'outcome': outcome}
 
         try:
-            # Build investigation prompt with learnings and similar investigations context
-            learnings_text = ""
-            if context.get('known_learnings'):
-                learnings_text = "\n\nRelevant past learnings:\n"
-                for l in context['known_learnings']:
-                    learnings_text += f"- [{l['learning_type']}] {l['title']}: {l['description'][:200]}\n"
-
-            similar_text = ""
-            if context.get('similar_investigations'):
-                similar_text = "\n\nSimilar past investigations:\n"
-                for inv in context['similar_investigations'][:3]:
-                    sim_score = inv.get('similarity') or inv.get('vector_similarity', 0)
-                    similar_text += f"- [{inv.get('outcome', '?')}] {inv.get('trigger', '')[:100]} (similarity: {sim_score})\n"
+            learnings_text, similar_text = _past_context_blocks(context)
 
             alert_info = context.get('alert', {})
             forwarded = alert_info.get(EVIDENCE_KEY) if isinstance(alert_info, dict) else None
