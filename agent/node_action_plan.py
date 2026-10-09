@@ -222,7 +222,7 @@ _FAKE_MARKER = re.compile(
     r"|RECOMMENDATION|FIX|CONFIRM|REJECT|DOWNGRADE)[ \t]*:",
     re.MULTILINE,
 )
-_DELIMITER = re.compile(r"<<<\s*DATA\s+(START|END)\s*>>>", re.IGNORECASE)
+_DELIMITER = re.compile(r"<<<\s*DATA[\s_-]+(START|END)\s*>>>", re.IGNORECASE)
 
 
 def _frame_untrusted(text: Any, label: str, max_chars: int) -> str:

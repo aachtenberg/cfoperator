@@ -57,9 +57,10 @@ _FAKE_MARKER = re.compile(
     r"(^|\\n)([ \t]*)(" + "|".join(_MARKER_WORDS) + r")[ \t]*:",
     re.MULTILINE,
 )
-#: The delimiters, and anything a model might read as one: case and inner
-#: spacing are not what makes ``<<<data end>>>`` look like a closing marker.
-_DELIMITER = re.compile(r"<<<\s*DATA\s+(START|END)\s*>>>", re.IGNORECASE)
+#: The delimiters, and anything a model might read as one: case, spacing and
+#: the joiner are not what makes ``<<<data end>>>`` or ``<<<DATA_END>>>`` look
+#: like a closing marker.
+_DELIMITER = re.compile(r"<<<\s*DATA[\s_-]+(START|END)\s*>>>", re.IGNORECASE)
 
 #: Alert fields that get a frame of their own, in prompt order, with their
 #: caps. Identity first, so a long summary cannot push the resource the alert
@@ -175,7 +176,7 @@ def frame_alert_details(alert_info: Dict[str, Any], max_total: int = 2000) -> st
     rest = {k: v for k, v in alert_info.items() if k not in seen and _present(v)}
     if rest:
         parts.append(frame_untrusted_data(
-            json.dumps(rest, default=str), "other alert fields", 500))
+            json.dumps(rest, default=str), "other alert fields", 1000))
 
     return _within_budget(parts, max_total)
 

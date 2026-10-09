@@ -57,8 +57,10 @@ Particularly interesting:
   Models are probabilistic and can be steered; framing raises the bar but is
   not a semantic firewall. Marker neutralization is deliberately narrow: only
   an upper-case marker at the start of a line is defused, so a mixed-case
-  `Verdict:` or `Approved:` in a log line is left as data, and the framing and
-  system guidance are what cover it. The fine-tune dataset builder
+  `Verdict:` or `Approved:` in a log line is left as data, as is a marker that
+  follows an opening quote inside a JSON-serialized tool result
+  (`{"msg": "APPROVED: ..."}`), and the framing and system guidance are what
+  cover them. The fine-tune dataset builder
   (`scripts/build_triage_dataset.py`) still emits the pre-framing shape of the
   triage prompt; training data for the next triage model should be
   regenerated from the live shape (CFOP-277). The real guarantee is that the agent never mutates
