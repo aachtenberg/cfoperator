@@ -255,6 +255,15 @@ class TestBuildCommandPrompt:
         assert "every command will be refused" in prompt
         assert '"commands"' in prompt  # the requested reply shape
 
+    def test_a_long_recommendation_is_not_cut_short(self):
+        # A multi-step recommendation is the input a command plan is built
+        # from; cutting it drops a step (claude-review on #314). The cap is
+        # 2000, well above what an investigation's RECOMMENDATION runs to.
+        rec = "\n".join(f"{i}. sudo -n systemctl restart unit-{i}" for i in range(40))
+        assert len(rec) > 1000
+        prompt = build_command_prompt({"payload": {"recommendation": rec}}, _ALLOW)
+        assert rec in prompt and "[... truncated" not in prompt
+
     def test_context_truncated(self):
         prompt = build_command_prompt({"payload": {"rendered_context": "x" * 9000}}, _ALLOW)
         assert "x" * 4000 in prompt

@@ -257,7 +257,7 @@ def build_command_prompt(work_order: Dict[str, Any], allow: AllowList) -> str:
     target = payload.get("target") or {}
     binaries = ", ".join(sorted(allow.binaries)) or "(none — every command will be refused)"
     verbs = ", ".join(sorted(allow.systemctl_verbs)) or "(none)"
-    rec_framed = _frame_untrusted(payload.get("recommendation", ""), "recommendation", 800)
+    rec_framed = _frame_untrusted(payload.get("recommendation", ""), "recommendation", 2000)
     context_framed = _frame_untrusted(
         str(payload.get("rendered_context", ""))[:4000], "investigation context", 4000)
     return (
