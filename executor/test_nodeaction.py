@@ -167,6 +167,31 @@ def test_node_action_gate_rejects_dangerous_plan():
     assert payload["result"]["proposed_commands"] == ["rm -rf /root/.ssh"]
 
 
+def test_node_action_gate_reports_every_refused_command():
+    # CFOP-319: the detail names the first refusal; the result lists them all,
+    # with the kind the drawer and the agent's counter use.
+    reply = ('{"host": "controller", "commands": ["sudo -n chmod 600 /x", '
+             '"rm -rf /root/.ssh", "docker restart y"]}')
+    with patch.object(entrypoint, "make_llm", return_value=_FixedLLM(reply)):
+        payload = run(_env(_node_order()))
+    assert payload["status"] == "needs-human"
+    blocked = payload["result"]["blocked_commands"]
+    assert [(b["command"], b["kind"]) for b in blocked] == [
+        ("rm -rf /root/.ssh", "denied_binary"), ("docker restart y", "not_allowlisted")]
+    assert blocked[0]["reason"] in payload["detail"]
+
+
+def test_node_action_refused_plan_is_capped_on_the_row():
+    # The plan is as long as the model made it; the row keeps the agent's caps.
+    reply = json.dumps({"host": "controller", "commands": ["docker restart " + "y" * 2000] * 100})
+    with patch.object(entrypoint, "make_llm", return_value=_FixedLLM(reply)):
+        payload = run(_env(_node_order()))
+    result = payload["result"]
+    assert len(result["proposed_commands"]) == 20 and len(result["blocked_commands"]) == 20
+    assert max(len(c) for c in result["proposed_commands"]) == 500
+    assert max(len(b["command"]) for b in result["blocked_commands"]) == 500
+
+
 def test_node_action_success_marks_resolved():
     reply = ('{"host": "", "commands": ["sudo -n chmod 600 /root/.ssh/config", '
              '"sudo -n chown root:root /root/.ssh/config"], "explanation": "fix perms"}')

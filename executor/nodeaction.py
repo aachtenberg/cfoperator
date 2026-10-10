@@ -194,6 +194,55 @@ def parse_command_plan(reply: str) -> Optional[Dict[str, Any]]:
     return plan
 
 
+def _program(raw: str) -> str:
+    """Best-effort program name of a command, for the audit record only: the
+    word after an optional ``sudo -n``. Never used to decide anything."""
+    words = raw.split()
+    if words[:1] == ["sudo"]:
+        words = words[2:] if words[1:2] == ["-n"] else words[1:]
+    return words[0] if words else ""
+
+
+def _refusal(command: str, allow: AllowList) -> Optional[Dict[str, str]]:
+    """Why one command is refused, as {binary, kind, reason}, or None.
+
+    ``kind`` is a fixed vocabulary (a metric label, CFOP-319); ``reason`` is
+    the operator-facing sentence, unchanged from before kinds existed.
+    """
+    raw = (command or "").strip()
+
+    def refuse(kind: str, reason: str, binary: str = "") -> Dict[str, str]:
+        return {"binary": binary or _program(raw), "kind": kind, "reason": reason}
+
+    if not raw:
+        return refuse("empty", "empty command")
+    if not allow.configured:
+        return refuse("no_allowlist", "no allowlist configured for this Job — refusing every "
+                      "command (set remediation.executor.node_action.allow_binaries)")
+    if _METACHARS.search(raw):
+        return refuse("metachar", f"shell metacharacter in command: {raw!r}")
+    try:
+        tokens = shlex.split(raw)
+    except ValueError as e:
+        return refuse("unparseable", f"unparseable command ({e}): {raw!r}")
+    if not tokens:
+        return refuse("empty", "no command tokens")
+    if tokens[0] == "sudo":
+        if len(tokens) < 3 or tokens[1] != "-n":
+            return refuse("sudo_form", "sudo is only allowed as 'sudo -n <command>'")
+        tokens = tokens[2:]
+    binary = tokens[0]
+    if binary in _DENY_BINARIES:
+        return refuse("denied_binary", f"binary is explicitly denied: {binary}", binary)
+    if binary not in allow.binaries:
+        return refuse("not_allowlisted", f"binary not in allowlist: {binary}", binary)
+    if binary == "systemctl":
+        verb = tokens[1] if len(tokens) > 1 else ""
+        if verb not in allow.systemctl_verbs:
+            return refuse("systemctl_verb", f"systemctl verb not allowed: {verb!r}", binary)
+    return None
+
+
 def validate_command(command: str, allow: AllowList) -> Tuple[bool, str]:
     """Deterministic safety gate for one command. Returns (ok, reason).
 
@@ -204,50 +253,36 @@ def validate_command(command: str, allow: AllowList) -> Tuple[bool, str]:
     executor enforces the list it was handed and cannot widen it, and an
     unconfigured AllowList refuses everything rather than falling back.
     """
-    raw = (command or "").strip()
-    if not raw:
-        return False, "empty command"
-    if not allow.configured:
-        return False, ("no allowlist configured for this Job — refusing every "
-                       "command (set remediation.executor.node_action.allow_binaries)")
-    if _METACHARS.search(raw):
-        return False, f"shell metacharacter in command: {raw!r}"
-    try:
-        tokens = shlex.split(raw)
-    except ValueError as e:
-        return False, f"unparseable command ({e}): {raw!r}"
-    if not tokens:
-        return False, "no command tokens"
+    refused = _refusal(command, allow)
+    return (False, refused["reason"]) if refused else (True, "ok")
 
-    # Optional non-interactive sudo wrapper: 'sudo -n <real command>'.
-    if tokens[0] == "sudo":
-        if len(tokens) < 3 or tokens[1] != "-n":
-            return False, "sudo is only allowed as 'sudo -n <command>'"
-        tokens = tokens[2:]
 
-    binary = tokens[0]
-    if binary in _DENY_BINARIES:
-        return False, f"binary is explicitly denied: {binary}"
-    if binary not in allow.binaries:
-        return False, f"binary not in allowlist: {binary}"
-    if binary == "systemctl":
-        verb = tokens[1] if len(tokens) > 1 else ""
-        if verb not in allow.systemctl_verbs:
-            return False, f"systemctl verb not allowed: {verb!r}"
-    return True, "ok"
+def plan_refusals(commands: List[str], allow: AllowList) -> List[Dict[str, str]]:
+    """Every refusal in a plan, not only the first (CFOP-319).
+
+    One entry per refused command, ``{command, binary, kind, reason}``, plus a
+    plan-level entry (empty ``command``) for an empty or oversized plan. Empty
+    means the plan passes. The order is ``validate_plan``'s, so its message is
+    the first entry's reason.
+    """
+    if not commands:
+        return [{"command": "", "binary": "", "kind": "no_commands",
+                 "reason": "plan has no commands"}]
+    out: List[Dict[str, str]] = []
+    if len(commands) > allow.max_commands:
+        out.append({"command": "", "binary": "", "kind": "too_many",
+                    "reason": f"plan has too many commands ({len(commands)} > {allow.max_commands})"})
+    for cmd in commands:
+        refused = _refusal(cmd, allow)
+        if refused:
+            out.append({"command": str(cmd), **refused})
+    return out
 
 
 def validate_plan(commands: List[str], allow: AllowList) -> Tuple[bool, str]:
     """Validate the whole command plan; refuse the lot if any command fails."""
-    if not commands:
-        return False, "plan has no commands"
-    if len(commands) > allow.max_commands:
-        return False, f"plan has too many commands ({len(commands)} > {allow.max_commands})"
-    for cmd in commands:
-        ok, reason = validate_command(cmd, allow)
-        if not ok:
-            return False, reason
-    return True, "ok"
+    refusals = plan_refusals(commands, allow)
+    return (False, refusals[0]["reason"]) if refusals else (True, "ok")
 
 
 def command_is_query(command: str) -> bool:

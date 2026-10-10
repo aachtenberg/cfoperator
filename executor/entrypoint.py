@@ -36,8 +36,13 @@ from github import GitHubClient, get_file, list_repo_files, open_pr_from_diff
 from llm import make_llm
 from nodeaction import (
     allowlist_from_env, build_command_prompt, command_is_query, parse_command_plan,
-    run_ssh_plan, validate_plan,
+    plan_refusals, run_ssh_plan, validate_plan,
 )
+
+# How much of a refused plan goes back on the row (CFOP-319); the agent keeps
+# the same caps on its own copy.
+_STORED_COMMANDS = 20
+_STORED_COMMAND_CHARS = 500
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("cfop-executor")
@@ -313,9 +318,17 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
     commands = plan.get("commands") or []
     ok, reason = validate_plan(commands, allow)
     if not ok:
+        # Every refused command, not just the first, for the drawer (CFOP-319).
+        # The agent already gated this plan, so a refusal here is the two
+        # allowlists disagreeing. Capped like the agent's copy: the plan is
+        # as long as the model made it.
+        blocked = [{**r, "command": r["command"][:_STORED_COMMAND_CHARS]}
+                   for r in plan_refusals(commands, allow)[:_STORED_COMMANDS]]
         return build_completion_payload(work_order, "needs-human", None,
                                         f"command plan failed safety gate: {reason}",
-                                        {"proposed_commands": commands})
+                                        {"proposed_commands": [c[:_STORED_COMMAND_CHARS] for c in
+                                                               commands[:_STORED_COMMANDS]],
+                                         "blocked_commands": blocked})
 
     target = payload.get("target") or {}
     host = (str(plan.get("host") or "").strip() or str(target.get("host") or "").strip()

@@ -2538,6 +2538,20 @@ def test_classifier_identity_is_recorded_on_the_payload():
     assert decided["judge"]["verdict"] == "confirm"
 
 
+def test_every_judge_peer_tried_is_recorded_on_the_payload():
+    # CFOP-318: the drawer reads decided_by.judge.peers. A peer that was down
+    # before a later one decided used to survive only in the logs.
+    peers = [{"backend": "anthropic", "model": "claude-opus-4-8", "outcome": "unavailable",
+              "detail": "connection refused", "latency_ms": 5},
+             {"backend": "deepseek", "model": "deepseek-v4-pro", "outcome": "verdict",
+              "detail": "confirm", "latency_ms": 900}]
+    op = _judge_op({"verdict": "confirm", "backend": "deepseek", "model": "deepseek-v4-pro",
+                    "reason": "ok", "peers": peers})
+    CFOperator._maybe_queue_remediation(op, 2266, dict(_IMMICH_KIOSK_DETAILS))
+    decided = op.kb.queue_remediation.call_args.kwargs["payload"]["decided_by"]
+    assert decided["judge"]["peers"] == peers
+
+
 def test_classifier_stamps_the_model_that_answered():
     op = _classifier_op()
     op._chat_with_tools_with_fallback = MagicMock(return_value={

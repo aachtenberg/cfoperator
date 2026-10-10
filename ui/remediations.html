@@ -393,6 +393,7 @@ async function detail(id){
     ${trackerHtml(r)}
     ${r.last_error?`<div class="kv"><b>last error</b> ${esc(r.last_error)}</div>`:''}
     ${changeRecordHtml(r)}
+    ${blockedCommandsHtml(r)}
     ${resolutionHtml(r)}
     <h3>Recommendation</h3><pre>${esc(p.recommendation||p.title||'—')}</pre>
     ${p.targets?`<h3>Targets</h3><pre>${esc(JSON.stringify(p.targets,null,2))}</pre>`:''}
@@ -433,9 +434,30 @@ function decidedByHtml(d){
     const jm=[j.backend,j.model].filter(Boolean).join('/');
     rows.push(`<div class="kv"><b>mutation judge</b> ${j.verdict?badge(j.verdict,V[j.verdict]||'--text-muted'):''}
       ${jm?`<span class="mono">${esc(jm)}</span>`:''}
-      ${j.reason?`<div class="muted">${esc(j.reason)}</div>`:''}</div>`);
+      ${j.reason?`<div class="muted">${esc(j.reason)}</div>`:''}
+      ${judgePeersHtml(j.peers)}</div>`);
   }
   return rows.join('');
+}
+
+// CFOP-318: every judge provider tried, not only the one that decided. A row
+// parked as "judge unavailable" used to name the last vendor's error; an
+// earlier peer's refusal or outage was in the logs only (CFOP-117 deferred
+// this). Shown when anything other than one clean verdict happened.
+function judgePeersHtml(peers){
+  if(!Array.isArray(peers) || !peers.length) return '';
+  if(peers.length===1 && peers[0].outcome==='verdict') return '';
+  return `<ul style="margin:4px 0 0 18px;padding:0">${peers.map(x=>`<li class="muted"><span class="mono">${esc([x.backend,x.model].filter(Boolean).join('/'))}</span> ${esc(x.outcome||'')}${x.latency_ms!=null?` · ${esc(x.latency_ms)} ms`:''}${x.detail?` — ${esc(x.detail)}`:''}</li>`).join('')}</ul>`;
+}
+
+// CFOP-319: the commands the node-action allowlist refused, every one of them,
+// from either gate (the agent's before the change record, or the executor's).
+// last_error names only the first; this is what tuning the allowlist needs.
+function blockedCommandsHtml(r){
+  const b=(r.result||{}).blocked_commands;
+  if(!Array.isArray(b) || !b.length) return '';
+  return `<div class="kv"><b>blocked commands</b> <span class="muted">${b.length} refused by the node-action allowlist</span>
+    <ul style="margin:4px 0 0 18px;padding:0">${b.map(x=>`<li><span class="mono">${esc(x.command||'(plan)')}</span> <span class="muted">— ${esc(x.reason||x.kind||'')}</span></li>`).join('')}</ul></div>`;
 }
 
 function prAttemptHtml(attempt){
