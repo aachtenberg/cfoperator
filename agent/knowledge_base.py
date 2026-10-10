@@ -4591,12 +4591,15 @@ class KnowledgeBase:
             _log("info", "Remediation claim released", queue_id=remediation_id)
             return True
 
-    def fail_remediation(self, remediation_id: int, error: str) -> str:
+    def fail_remediation(self, remediation_id: int, error: str,
+                         result: Optional[Dict[str, Any]] = None) -> str:
         """Mark a remediation attempt failed; retry until the attempt cap.
 
         Increments attempts and re-queues (clearing the lease) while under
         the configured attempt cap, otherwise routes to 'needs-human'. Returns
-        the resulting status ('queued' | 'needs-human' | 'unknown').
+        the resulting status ('queued' | 'needs-human' | 'unknown'). Optionally
+        merges ``result`` into the row's result, as release_remediation_claim
+        does (the refused commands of a node-action plan, CFOP-319).
         """
         cap = self.remediation_policy().max_attempts
         with self.session_scope() as session:
@@ -4605,6 +4608,10 @@ class KnowledgeBase:
                 return 'unknown'
             item.attempts = (item.attempts or 0) + 1
             item.last_error = error
+            if result is not None:
+                existing = dict(item.result or {}) if isinstance(item.result, dict) else {}
+                existing.update(result)
+                item.result = existing
             if item.attempts >= cap:
                 item.status = 'needs-human'
                 item.completed_at = datetime.now(timezone.utc)

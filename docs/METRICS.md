@@ -424,6 +424,12 @@ cfoperator_remediation_classifier_total{result="ok"}
 cfoperator_remediation_folded_total{reason="repeat"}
 cfoperator_remediation_judge_total{verdict="confirm"}
 
+# Node-action commands the allowlist refused at plan time, per refused command
+# (CFOP-319). `binary` is the program when the config ceiling or the deny list
+# names it, else "other"; the commands themselves are on the row's
+# result.blocked_commands and in the drawer
+cfoperator_node_action_refused_total{binary="docker",reason="not_allowlisted"}
+
 # Execution and terminal state
 cfoperator_remediation_executor_spawned_total{result="ok"}
 cfoperator_remediation_reaped_total
@@ -468,6 +474,7 @@ shipped several examples that could never match.
 | `cfoperator_remediation_queue` | `status` | the ten queue states — `queued`, `claimed`, `executing`, `pr-open`, `verifying`, `resolved`, `failed`, `needs-human`, `filed`, `rejected` |
 | `cfoperator_remediation_classifier_total` | `result` | `ok`, `nudged`, `escalated`, `degraded` |
 | `cfoperator_remediation_folded_total` | `reason` | `repeat`, `fork_committed`, `fork_stuck`, `investigate_followup` |
+| `cfoperator_node_action_refused_total` | `reason` | `no_commands`, `too_many`, `empty`, `no_allowlist`, `metachar`, `unparseable`, `sudo_form`, `denied_binary`, `not_allowlisted`, `systemctl_verb` |
 | `cfoperator_remediation_judge_total` | `verdict` | `confirm`, `downgrade`, `reject`, `unavailable`, `unparseable`, `self-review-skipped` |
 | `cfoperator_remediation_executor_spawned_total` | `result` | `ok`, `capped`, `failed` |
 | `cfoperator_remediation_outcome_total` | `outcome` | `resolved`, `rejected` |
@@ -490,6 +497,10 @@ shipped several examples that could never match.
 | `cfoperator_event_runtime_deep_reroutes_total` | `from_action` | `escalate`, `investigate` |
 | `cfoperator_llm_empty_final_responses_total` | `disposition` | `nudged`, `exhausted` |
 | `cfoperator_tool_loop_stops_total` | `reason` | `answered`, `cap`, `stagnation`, `error` |
+
+`cfoperator_node_action_refused_total`'s `binary` is bounded but install-specific:
+the program's name when the config ceiling or the deny list names it, else
+`other`.
 
 Labels not listed here carry open-ended values — an instance name, a sink, a
 tool name, a scheduler class — and are not enumerable from the source.

@@ -72,7 +72,8 @@ from node_action_plan import (
     build_command_prompt as _na_build_command_prompt,
     normalize_plan as _na_normalize_plan,
     parse_command_plan as _na_parse_command_plan,
-    validate_plan as _na_validate_plan,
+    plan_refusals as _na_plan_refusals,
+    _DENY_BINARIES as _NA_DENY_BINARIES,
 )
 
 # Config semantics shared with event_runtime — one loader, one default schema.
@@ -185,6 +186,15 @@ REMEDIATION_FOLDED = Counter('cfoperator_remediation_folded_total',
 # that asserts this object can never clear the auto gate.
 _CLASSIFIER_SAFE_EXAMPLE = {"remediation_class": "manual", "risk": "high",
                             "confidence": 0.4, "host": "", "repo": ""}
+# Node-action commands the allowlist refused at plan time, one count per refused
+# command (CFOP-319). `binary` is bounded: a name on the config ceiling or the
+# hardcoded deny list, else "other" -- the model can type any word as a
+# program. `reason` is node_action_plan's fixed refusal vocabulary.
+NODE_ACTION_REFUSED = Counter('cfoperator_node_action_refused_total', 'Node-action commands refused by the allowlist at plan time', ['binary', 'reason'])
+# How much of a refused plan is kept on the row (CFOP-319). The executor keeps
+# the same caps on its own copy.
+_NA_STORED_COMMANDS = 20
+_NA_STORED_COMMAND_CHARS = 500
 # verdict: confirm | downgrade | reject | unavailable | unparseable (CFOP-70).
 # The judge only ever runs on rows that would otherwise auto-execute, so this
 # counter is also the denominator for "how often did we nearly open a wrong PR".
@@ -1879,6 +1889,20 @@ EMPTY_RESPONSE_NUDGE = (
 # 'monitoring' (CFOP-271). Every caller states its format in the system
 # prompt, which both paths keep, so no caller has to pass a format in.
 FINAL_ANSWER_NUDGE = "FINAL STEP — " + EMPTY_RESPONSE_NUDGE
+
+
+class NodeActionPlanRefused(RuntimeError):
+    """The allowlist refused a node-action plan (CFOP-319).
+
+    The message is the one the row has always shown ("command plan failed
+    safety gate: <first reason>"); ``plan`` and ``refusals`` carry the rest so
+    the handler can log, count and store every refused command.
+    """
+
+    def __init__(self, what: str, plan: Dict[str, Any], refusals: List[Dict[str, str]]):
+        super().__init__(f"{what} failed safety gate: {refusals[0]['reason']}")
+        self.plan = plan
+        self.refusals = refusals
 
 
 class EmptyLLMResponseError(RuntimeError):
@@ -4393,6 +4417,20 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             selected_binaries=self._node_action_setting('node_action_allow_binaries'),
             selected_verbs=self._node_action_setting('node_action_allow_systemctl_verbs'),
         )
+
+    def _node_action_refusal_label(self, binary: str) -> str:
+        """The metric label for a refused program: itself when the config
+        ceiling or the deny list names it, else "other" (CFOP-319). Never
+        raises: it is decoration on a failure path."""
+        try:
+            na = self._executor_config().get('node_action')
+            # '' is "the whole ceiling"; None would mean a failed read and refuse all.
+            ceiling = _na_allowlist_from_config(na if isinstance(na, dict) else {},
+                                                selected_binaries='', selected_verbs='').binaries
+        except Exception:  # noqa: BLE001
+            ceiling = frozenset()
+        return binary if binary and (binary in ceiling or binary in _NA_DENY_BINARIES) else 'other'
+
     def _generate_node_action_plan(self, work: Dict[str, Any]) -> Dict[str, Any]:
         """Produce a validated {host, commands, explanation} plan for open()/spawn.
 
@@ -4406,18 +4444,18 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                           (work.get('payload') or {}).get('plan') if isinstance(work.get('payload'), dict) else None):
             if isinstance(candidate, dict) and candidate.get('commands'):
                 plan = _na_normalize_plan(candidate)
-                ok, reason = _na_validate_plan(plan["commands"], allow)
-                if ok:
+                refusals = _na_plan_refusals(plan["commands"], allow)
+                if not refusals:
                     return plan
-                raise RuntimeError(f"persisted plan failed safety gate: {reason}")
+                raise NodeActionPlanRefused("persisted plan", plan, refusals)
         reply = self._complete_node_action_plan(_na_build_command_prompt(work, allow))
         parsed = _na_parse_command_plan(reply)
         if not parsed:
             raise RuntimeError("model produced no parseable command plan")
         plan = _na_normalize_plan(parsed)
-        ok, reason = _na_validate_plan(plan["commands"], allow)
-        if not ok:
-            raise RuntimeError(f"command plan failed safety gate: {reason}")
+        refusals = _na_plan_refusals(plan["commands"], allow)
+        if refusals:
+            raise NodeActionPlanRefused("command plan", plan, refusals)
         return plan
 
     def _prepare_node_action_change_record(self, work: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -4492,6 +4530,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             "change_record.url": base_url,
         }
 
+        # Every write below except a refusal clears the refusal keys: they
+        # describe one attempt, and a later attempt that passes the gate (or
+        # fails some other way) must not keep showing an old refusal in the
+        # drawer (claude-review on #318). The refusal handler sets them fresh.
+        cleared = {"blocked_commands": None, "proposed_commands": None}
         try:
             plan = self._generate_node_action_plan(work)
             cr = {**cr, "plan": plan}
@@ -4521,7 +4564,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 # Never spawn: unapproved records must not reach run_ssh_plan.
                 self.kb.release_remediation_claim(
                     work['id'],
-                    result={"change_record": cr},
+                    result={"change_record": cr, **cleared},
                     last_error="awaiting change-record approval",
                 )
                 return None
@@ -4530,18 +4573,40 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # Only closed-without-merge (HTTP 409) burns an attempt; transport/5xx
             # release and retry next tick so a recorder blip cannot needs-human.
             if e.status == 409:
-                self.kb.fail_remediation(work['id'], f"change record gate: {e}")
+                self.kb.fail_remediation(work['id'], f"change record gate: {e}", result=cleared)
             else:
                 self.kb.release_remediation_claim(
                     work['id'],
-                    result={"change_record": cr} if cr else None,
+                    result={"change_record": cr, **cleared} if cr else cleared,
                     last_error=f"change record transient: {e}",
                 )
+            return None
+        except NodeActionPlanRefused as e:
+            # The allowlist said no. Every refused command is kept on the row
+            # with the plan it came from, logged and counted, so tuning the
+            # allowlist is not guesswork (CFOP-319). Still a hard failure, and
+            # the row is written first: the log and the metric are decoration
+            # and must not be able to leave it claimed (claude-review on #318).
+            # Capped, because a too_many plan is as long as the model made it.
+            self.kb.fail_remediation(
+                work['id'], f"change record plan: {e}",
+                result={"proposed_commands": [str(c)[:_NA_STORED_COMMAND_CHARS] for c in
+                                              (e.plan.get('commands') or [])[:_NA_STORED_COMMANDS]],
+                        "blocked_commands": [{**r, "command": str(r.get('command') or '')[:_NA_STORED_COMMAND_CHARS]}
+                                             for r in e.refusals[:_NA_STORED_COMMANDS]]})
+            for r in e.refusals:
+                logger.warning(
+                    "Node-action command refused for remediation #%s on %s: %s (%s)",
+                    work['id'], e.plan.get('host') or target.get('host') or '?',
+                    r.get('binary') or '-', r.get('kind'))
+                NODE_ACTION_REFUSED.labels(
+                    binary=self._node_action_refusal_label(r.get('binary') or ''),
+                    reason=r.get('kind') or 'unknown').inc()
             return None
         except Exception as e:  # noqa: BLE001
             # Plan generation / validation failures are hard — burn an attempt.
             logger.error("Change-record plan failed for remediation #%s: %s", work['id'], e)
-            self.kb.fail_remediation(work['id'], f"change record plan: {e}")
+            self.kb.fail_remediation(work['id'], f"change record plan: {e}", result=cleared)
             return None
 
         # Approved — stamp ref + approval + approved_plan into the Job work order.
@@ -4553,7 +4618,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         try:
             self.kb.update_remediation_status(
                 work['id'], 'claimed',
-                result={"change_record": {**cr, "approval": approval, "plan": plan}},
+                result={"change_record": {**cr, "approval": approval, "plan": plan}, **cleared},
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("could not persist change-record approval: %s", e)
