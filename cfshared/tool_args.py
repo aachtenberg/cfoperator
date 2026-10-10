@@ -24,7 +24,8 @@ LOG_ARG_LIMIT = 1000
 PLACEHOLDER = '***'
 
 # Argument *names* that carry a credential. The value is redacted. Command
-# text is not — the point of writing the arguments down is to show what ran —
+# text keeps everything but secret-shaped spans (the text rules below, since
+# CFOP-286) — the point of writing the arguments down is to show what ran —
 # and none of the mutating tools pass these keys today. Shared with results,
 # so a key that is *** in the transcript's tool_call line is *** in its
 # tool_result line.
@@ -47,7 +48,14 @@ def _key_is_secret(key: Any) -> bool:
 
 
 def redact_tool_args(value: Any, limit: int = LOG_ARG_LIMIT) -> Any:
-    """A copy of tool arguments: secret-shaped keys replaced, long strings cut."""
+    """A copy of tool arguments: secret-shaped keys replaced, secret-shaped
+    text inside every string replaced, long strings cut.
+
+    The text rules are the ones results get. A command is stored to show what
+    ran, but ``mysql -pSECRET`` or a bearer header typed into ``ssh_execute``'s
+    ``command`` is a credential under a key that is not (CFOP-286). Redacted
+    before the clip, so a cut cannot leave half a secret no rule matches.
+    """
     if isinstance(value, dict):
         return {
             key: PLACEHOLDER if _key_is_secret(key) else redact_tool_args(item, limit)
@@ -55,8 +63,10 @@ def redact_tool_args(value: Any, limit: int = LOG_ARG_LIMIT) -> Any:
         }
     if isinstance(value, list):
         return [redact_tool_args(item, limit) for item in value]
-    if isinstance(value, str) and len(value) > limit:
-        return value[:limit] + '…'
+    if isinstance(value, str):
+        value = _redact_text(value)[0]
+        if len(value) > limit:
+            return value[:limit] + '…'
     return value
 
 
@@ -120,7 +130,44 @@ _BEARER = re.compile(
     r'[A-Za-z0-9._~+/=-]+'
     r'|\b(?P<s>bearer|basic)[ \t]+(?!\*\*\*)(?=[A-Za-z._~-]*[0-9+/=])[A-Za-z0-9._~+/=-]{8,}')
 _PEM = re.compile(r'-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?-----END \1-----')
-_URL_USERINFO = re.compile(r'(://[^/\s:@]+:)(?!\*\*\*)([^@\s/]+)(@)')
+# Password flags that are short options, so only recognisable after the
+# program that owns them: a bare `-p` is `ps -p`, `journalctl -p err`, `mkdir
+# -p`, `ssh -p 22`. mysql/mariadb take the password attached (`-pSECRET`); a
+# spaced `-p` prompts, and the next word is a database name, so it stays.
+# Anchored to the same command segment, so `mysql …; ps -p 1` keeps its pid;
+# a backslash line continuation stays inside the segment. A `;` `|` `&` inside
+# quotes also ends it (`mysql -e "a;b" -pX` keeps X): a known, rare miss. The
+# program name must be followed by a space, so `mysql-0` is a pod, not mysql.
+# Bounded: each program-name occurrence scans at most this far for its flag,
+# so a long line of `mysql mysql …` with no flag stays linear instead of
+# rescanning the rest of the line per occurrence -- and redaction runs before
+# any size cap (CodeRabbit on #317). A flag further out than this is missed.
+_SEGMENT_MAX = 300
+_SEGMENT = r'(?:[^\n;|&\\]|\\\n|\\.){0,%d}?' % _SEGMENT_MAX
+# The value is one shell word: every adjacent quoted or bare span, so
+# `-p'first part'TAIL` loses TAIL too (CodeRabbit on #317). Quoted spans are
+# escape-aware, and an unclosed quote takes the rest of the line (fail closed),
+# as _FLAG_VALUE's does. The span kinds start on different characters, so the
+# repetition cannot backtrack badly.
+# A backslash-newline inside the word is a line continuation: the shell joins
+# the two halves, so the value runs on (CodeRabbit on #317). Single quotes take
+# a newline literally.
+_WORD_SPAN = (r'(?:"(?:[^"\\]|\\[\s\S])*"|\'[^\']*\'|\\\n|[^\s\'";|&])')
+_FLAG_VALUE_Q = (r'(?P<val>(?!\*\*\*)' + _WORD_SPAN + r'+(?:["\'][^\n]*)?'
+                 r'|["\'][^\n]*)')
+# Before the flag: a space, or a line continuation with no indent after it.
+_FLAG_GAP = r'(?:[ \t]|\\\n)'
+_PROGRAM_PASSWORD_FLAGS = (
+    re.compile(r'(?P<head>(?<![\w.-])(?:mysql(?:dump|admin|check|import|show|slap)?'
+               r'|mariadb(?:-dump|-admin|-check|-import)?)(?=[ \t])' + _SEGMENT + _FLAG_GAP + r'-p)' + _FLAG_VALUE_Q),
+    re.compile(r'(?P<head>(?<![\w.-])redis-cli(?=[ \t])' + _SEGMENT + _FLAG_GAP + r'(?:-a|--pass)[ \t]+)' + _FLAG_VALUE_Q),
+    # sshpass's own options only (-f file, -d fd, -P prompt, -e[VAR], -v): the
+    # first other word is the wrapped program, and its `ssh -p 2222` is a port.
+    re.compile(r'(?P<head>(?<![\w.-])sshpass(?:[ \t]+-(?:[fdP][ \t]*\S+|e\S*|v+))*[ \t]+-p[ \t]*)'
+               + _FLAG_VALUE_Q),
+)
+#: The user may be empty: `redis://:pw@host` is how a password-only URL reads.
+_URL_USERINFO = re.compile(r'(://[^/\s:@]*:)(?!\*\*\*)([^@\s/]+)(@)')
 _WEBHOOK = re.compile(
     r'(https://(?:hooks\.slack\.com/services|discord(?:app)?\.com/api/webhooks)/)(?!\*\*\*)\S+')
 #: Token shapes with a recognisable prefix. The prefix is kept (`sk-***`,
@@ -216,6 +263,15 @@ def _redact_text(text: str) -> Tuple[str, int]:
     text = counted(
         _BEARER, lambda m: f"{m.group('ctx') or ''}{m.group('hs') or m.group('s')} {PLACEHOLDER}", text)
     text = counted(_FLAG_VALUE, _flag_replacement, text)
+    for pattern in _PROGRAM_PASSWORD_FLAGS:
+        # Again until it stops matching: each match consumes the program name,
+        # so `mysql -pa -pb` needs a second pass for -pb (CodeRabbit on #317).
+        # A redacted value is never matched again, so this ends.
+        while True:
+            before = count
+            text = counted(pattern, lambda m: m.group('head') + PLACEHOLDER, text)
+            if count == before:
+                break
     text = counted(_KEY_VALUE, _key_value_replacement, text)
     text = counted(_URL_USERINFO, lambda m: f'{m.group(1)}{PLACEHOLDER}{m.group(3)}', text)
     text = counted(_WEBHOOK, lambda m: f'{m.group(1)}{PLACEHOLDER}', text)

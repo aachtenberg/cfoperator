@@ -334,3 +334,104 @@ def test_a_bare_value_stops_at_an_embedded_quote_by_design():
     assert out == f'password: {PLACEHOLDER}"def\n'
     out, _ = _redacted('["POSTGRES_PASSWORD=secret", "PATH=/usr/bin"]')
     assert out == f'["POSTGRES_PASSWORD={PLACEHOLDER}", "PATH=/usr/bin"]'
+
+
+# --- arguments: command text is redacted like a result (CFOP-286) ------------
+
+
+@pytest.mark.parametrize("command, secret", [
+    ("mysql -u root -pSECRET123 -e 'show databases'", "SECRET123"),
+    ("mysqldump -h db -p'pa ss' app", "pa ss"),
+    ("mariadb -uapp -ps3cr3t -e 'select 1'", "s3cr3t"),
+    ("redis-cli -h redis -a hunter2 ping", "hunter2"),
+    ("redis-cli --user app --pass hunter2 get k", "hunter2"),
+    ("sshpass -p hunter2 ssh pi2 uptime", "hunter2"),
+    ("sshpass -e -f /dev/null -p hunter2 ssh pi2", "hunter2"),  # options before -p
+    ("mysql -u root \\\n  -pSECRET123 -e 'select 1'", "SECRET123"),  # line continuation
+    ("mysql -u root \\\n-pSECRET123 db", "SECRET123"),  # continuation, no indent
+    ('mysql -p"first\\"SECOND" db', "SECOND"),  # an escaped quote does not end the value
+    ('mysql -p"never closed SECOND', "SECOND"),  # an unclosed quote fails closed
+    ("mysql -pfirst -pSECOND db", "SECOND"),  # a repeated flag: every one goes
+    ("mysql -p mydb -pSECOND", "SECOND"),  # a spaced -p before an attached one
+    ("mysql " + "-uapp " * 40 + "-pSECOND db", "SECOND"),  # 240 chars out: in the window
+    ("mysql -p'first part'TAILSECRET db", "TAILSECRET"),  # one shell word, many spans
+    ('mysql -pabc"def ghi"SECOND db', "SECOND"),
+    ('mysql -pAAA"unclosed SECOND', "SECOND"),  # spans, then an unclosed quote
+    ("redis-cli -a 'pw'SECOND ping", "SECOND"),
+    ("mysql -pFIRST\\\nSECOND db", "SECOND"),  # a continuation inside the password
+    ('mysql -p"FIRST\\\nSECOND" db', "SECOND"),
+    ("redis-cli -a first --pass SECOND ping", "SECOND"),
+    ("curl -H 'Authorization: Bearer abc.def.ghi123' http://x/api", "abc.def.ghi123"),
+    ("psql postgresql://app:pw123@db:5432/app -c 'select 1'", "pw123"),
+    ("mysql --password=hunter2 db", "hunter2"),
+    ("redis-cli -u redis://:hunter2@redis:6379 ping", "hunter2"),  # empty user
+])
+def test_a_secret_typed_into_a_command_is_not_stored(command, secret):
+    """ssh_execute's `command` is not a secret key, so only the text rules can
+    catch what the model typed into it. The transcript and the pod log both
+    store this copy."""
+    out = redact_tool_args({"host": "pi2", "command": command})
+    assert secret not in out["command"], out
+    assert PLACEHOLDER in out["command"]
+    assert out["host"] == "pi2"
+
+
+@pytest.mark.parametrize("command", [
+    "grep -E 'restart|kill' /var/log/syslog",
+    "systemctl status x",
+    "ps -p 1234 -o pid,cmd",
+    "journalctl -u k3s -p err --since '1 hour ago'",
+    "mkdir -p /tmp/x",
+    "ssh -p 22 pi2 uptime",
+    "sshpass -e ssh -p 2222 pi2 uptime",  # the wrapped ssh's -p is a port
+    "sshpass -f /run/pw ssh -p 22 pi2",
+    "kubectl exec mysql-0 -- ps -p1234",  # mysql-0 is a pod name, not mysql
+    "mysql -u root -p mydb",  # a spaced -p prompts; mydb is a database name
+    "mysql -u root -p mydb; ps -p1234",  # the next command's -p is not mysql's
+    "mysql --protocol=tcp -P 3306 -e 'select 1'",
+    "kubectl get pods -n apps -o wide",
+])
+def test_ordinary_commands_are_stored_as_typed(command):
+    """The point of storing the arguments is to show what ran."""
+    assert redact_tool_args({"command": command}) == {"command": command}
+
+
+def test_a_program_flag_rule_stays_inside_its_own_command():
+    """`mysql …; ps -p 1234`: the pid is the next command's, not a password,
+    and the separator survives."""
+    out = redact_tool_args({"command": "mysql -uroot -psecret; ps -p 1234"})["command"]
+    assert out == f"mysql -uroot -p{PLACEHOLDER}; ps -p 1234"
+
+
+def test_process_listings_in_results_lose_a_mysql_password_too():
+    """The program-flag rules are text rules, so a `ps aux` result showing a
+    client's command line is scrubbed as well as the command that ran it."""
+    out, count = _redacted("  99 mysql -pXYZ123 -h db\n 100 mysqld --user=mysql")
+    assert "XYZ123" not in out and "mysqld --user=mysql" in out and count == 1
+
+
+def test_arguments_are_redacted_before_they_are_clipped():
+    """A clip landing inside a secret would leave a prefix no rule matches: a
+    GitHub token needs 20 characters after ghp_ to be recognised, and the clip
+    here leaves 10 of them."""
+    command = "x" * 985 + " ghp_" + "A" * 30
+    out = redact_tool_args({"command": command}, limit=1000)["command"]
+    assert "AAAAAAAAAA" not in out and "ghp_" in out
+
+
+def test_a_long_line_of_program_names_is_redacted_in_linear_time():
+    """Each mysql occurrence scans a bounded window for its flag; unbounded, a
+    line of `mysql mysql …` with no flag rescanned the rest of the line per
+    occurrence (CodeRabbit on #317). Redaction runs before any size cap."""
+    import time
+
+    def seconds(k):
+        start = time.monotonic()
+        redact_tool_result("mysql " * k)
+        return time.monotonic() - start
+
+    # Bounded: ~0.05 s for 5,000, and 4x the input costs ~4x. Unbounded: ~2 s,
+    # and 4x the input costs ~16x. The growth ratio is the part a loaded
+    # runner cannot fake, so either check passing is enough (claude-review).
+    small, large = seconds(5000), seconds(20000)
+    assert large < 1.0 or large / max(small, 1e-6) < 8, (small, large)
