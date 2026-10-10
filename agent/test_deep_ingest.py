@@ -589,12 +589,23 @@ def test_concurrent_ingests_for_one_alert_make_one_row(monkeypatch):
 
     rows = {}
     def existing(alert):
-        return (rows["id"], "in_progress") if rows else None
+        return (rows["id"], rows["outcome"]) if rows else None
     def begin(alert):
         time.sleep(0.05)  # widen the window between lookup and insert
         rows["id"] = 2400 + len(rows)
+        rows["outcome"] = "in_progress"
         return rows["id"]
     client, op, stored = _deep_client(monkeypatch, begin, existing=existing)
+    # The row leaves in_progress when its report is stored, as a real one
+    # does, and the route only drops it from deep_storing after the store
+    # returns. Without this the fake row stayed in_progress forever: a second
+    # ingest arriving after the first one's storage finished saw "in_progress,
+    # nothing storing" and correctly *resumed* it, ~5% of runs (CFOP-333).
+    fake_store = op.store_deep_investigation
+    def store(alert, result, inv_id=None):
+        fake_store(alert, result, inv_id=inv_id)
+        rows["outcome"] = "needs_action"
+    op.store_deep_investigation = store
     answers = []
     threads = [threading.Thread(target=lambda: answers.append(_ingest(client).get_json()))
                for _ in range(2)]
