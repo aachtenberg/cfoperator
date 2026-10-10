@@ -1,7 +1,9 @@
-"""The drawer shows every refused node-action command (CFOP-319).
+"""The drawer shows every refused node-action command and every judge peer.
 
-``last_error`` names the first command the allowlist refused; the row now
-carries all of them in ``result.blocked_commands``, from either gate.
+CFOP-319: ``last_error`` names the first command the allowlist refused; the row
+now carries all of them in ``result.blocked_commands``, from either gate. CFOP-318:
+``decided_by.judge.peers`` lists every judge provider tried, so a parked row
+shows which vendor did what rather than only the last one's error.
 
 Run under node like ``test_console_change_record.py``: what matters is what
 the page's own helpers render for a given row.
@@ -68,3 +70,28 @@ def test_rows_without_refusals_render_nothing():
 
 def test_the_drawer_shows_the_blocked_commands():
     assert "${blockedCommandsHtml(r)}" in (UI / "remediations.html").read_text("utf-8")
+
+
+# ---- CFOP-318: the judge peers --------------------------------------------------
+
+
+def test_the_drawer_shows_the_judge_peers():
+    assert "${judgePeersHtml(j.peers)}" in (UI / "remediations.html").read_text("utf-8")
+
+
+def test_judge_peers_are_listed_when_more_than_one_clean_verdict_happened():
+    peers = [{"backend": "anthropic", "model": "claude-opus-4-8", "outcome": "unavailable",
+              "detail": "connection refused", "latency_ms": 12},
+             {"backend": "deepseek", "model": "deepseek-v4-pro", "outcome": "verdict",
+              "detail": "confirm", "latency_ms": 900}]
+    html = _render("judgePeersHtml", peers)
+    for text in ("anthropic/claude-opus-4-8", "unavailable", "connection refused",
+                 "deepseek/deepseek-v4-pro", "900 ms"):
+        assert text in html, text
+
+
+def test_one_clean_verdict_adds_nothing_to_the_existing_judge_row():
+    peers = [{"backend": "anthropic", "model": "claude-opus-4-8", "outcome": "verdict",
+              "detail": "confirm", "latency_ms": 800}]
+    assert _render("judgePeersHtml", peers) == ""
+    assert _render("judgePeersHtml", None) == ""

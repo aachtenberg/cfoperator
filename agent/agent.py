@@ -5247,6 +5247,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                                    'model': verdict.get('model'),
                                    'verdict': verdict.get('verdict'),
                                    'reason': verdict.get('reason')}
+            if verdict.get('peers'):
+                decided_by['judge']['peers'] = verdict['peers']
             if verdict.get('verdict') != 'confirm':
                 # Null the confidence rather than inflate the risk: it is the
                 # one field that can never clear the gate (the eligibility test
@@ -5452,15 +5454,54 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             f"{self._judge_gitops_context(details)}\n"
             "Should this be done unattended?"
         )
+        # Every provider tried, in order, with what it did (CFOP-318). The
+        # reason string names only what decided or the failures that led to a
+        # park; a peer that was down before a later one confirmed was in the
+        # logs only. Every return goes through done(), which attaches this and
+        # writes the one summary line per judge call.
+        started = time.monotonic()
+        peers: List[Dict[str, Any]] = []
+
+        # detail is our note or the transport/HTTP exception text -- the same
+        # string the stored reason already carried for refused and unavailable
+        # peers (CFOP-117 put the vendor's error body there on purpose). Never
+        # the model's reply: that can quote the findings. Keys travel in
+        # headers, not URLs, but a vendor body could still echo one, so the
+        # text goes through the tool-result redactor before it is stored
+        # (claude-review on #318).
+        def peer(backend, model, outcome, detail='', t0=None):
+            text = str(detail or '')
+            # The redactor knows key *shapes*; the configured key itself may
+            # have none, so its literal value goes too (CodeRabbit on #318).
+            key = self._judge_api_key(backend)
+            if isinstance(key, str) and len(key) >= 8 and key in text:
+                text = text.replace(key, '***')
+            peers.append({'backend': backend, 'model': model, 'outcome': outcome,
+                          'detail': redact_tool_result(text)[0][:240],
+                          'latency_ms': (int((time.monotonic() - t0) * 1000)
+                                         if t0 is not None else None)})
+
+        def done(verdict):
+            verdict['peers'] = peers
+            logger.info(
+                "Mutation judge: verdict=%s by=%s class=%s risk=%s peers=%s ms=%d trigger=%r",
+                verdict.get('verdict'),
+                '/'.join(x for x in (verdict.get('backend'), verdict.get('model')) if x) or '-',
+                rclass, risk,
+                ','.join(f"{x['backend']}:{x['outcome']}" for x in peers) or '-',
+                int((time.monotonic() - started) * 1000),
+                str(details.get('trigger') or '')[:80])
+            return verdict
+
         providers = self._judge_providers()
         if not providers:
             logger.warning("No mutation judge provider is configured or keyed, "
                            "parking for human review")
             REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
-            return {'verdict': 'downgrade', 'backend': None, 'model': None,
-                    'reason': ("no frontier judge available (no API key for any of "
-                               + ', '.join(_JUDGE_DEFAULT_ORDER) +
-                               "); parked rather than executed unattended")}
+            return done({'verdict': 'downgrade', 'backend': None, 'model': None,
+                         'reason': ("no frontier judge available (no API key for any of "
+                                    + ', '.join(_JUDGE_DEFAULT_ORDER) +
+                                    "); parked rather than executed unattended")})
 
         # The vendor that WROTE this recommendation must not also rule on it.
         # CFOP-70 rejected letting the implementer hold the veto, and CFOP-121
@@ -5484,7 +5525,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                             f"the next peer")
                 REMEDIATION_JUDGE.labels(verdict='self-review-skipped').inc()
                 self_reviewed.append(f"{backend}/{model}")
+                peer(backend, model, 'self_review_skipped', f"wrote the recommendation ({reporter})")
                 continue
+            t0 = time.monotonic()
             try:
                 reply = self._complete_judge(self._JUDGE_SYSTEM_PROMPT, user_msg,
                                              backend, model)
@@ -5499,12 +5542,14 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                                  f"request: {e}")
                     REMEDIATION_JUDGE.labels(verdict='refused').inc()
                     refusals.append(note[:240])
+                    peer(backend, model, 'refused', note, t0)
                     continue
                 # AVAILABILITY failure — this vendor could not be reached, or
                 # said not now (408/429). Trying the next peer is failover,
                 # not answer-shopping.
                 logger.warning(f"Mutation judge {backend}/{model} unavailable: {e}")
                 unavailable.append(f"{backend}: {e}"[:240])
+                peer(backend, model, 'unavailable', e, t0)
                 continue
 
             parsed = self._parse_judge_verdict(reply)
@@ -5537,17 +5582,20 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 logger.warning(f"Mutation judge {backend}/{model} output unparseable, "
                                f"parking for human review: {str(reply)[:200]}")
                 REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
-                return {'verdict': 'downgrade', 'backend': backend, 'model': model,
-                        'reason': _stamp_judge_refusals(
-                            "judge verdict unparseable; parked rather than "
-                            "executed unattended", refusals)}
+                # The reply itself stays out: it can quote the findings.
+                peer(backend, model, 'unparseable', "reply was not a verdict, after one nudge", t0)
+                return done({'verdict': 'downgrade', 'backend': backend, 'model': model,
+                             'reason': _stamp_judge_refusals(
+                                 "judge verdict unparseable; parked rather than "
+                                 "executed unattended", refusals)})
 
             parsed['backend'] = backend
             parsed['model'] = model
             parsed['reason'] = _stamp_judge_refusals(
                 parsed.get('reason') or '', refusals, decided_by=backend)
             REMEDIATION_JUDGE.labels(verdict=parsed['verdict']).inc()
-            return parsed
+            peer(backend, model, 'verdict', parsed['verdict'], t0)
+            return done(parsed)
 
         # Every configured peer was unreachable, refused the request, or was
         # the reporter itself. Nothing judged the row.
@@ -5555,15 +5603,15 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         if self_reviewed and not unavailable and not refusals:
             logger.warning("Every eligible mutation judge wrote the recommendation "
                            "under review, parking for human review")
-            return {'verdict': 'downgrade', 'backend': None, 'model': None,
-                    'reason': ("the only available judge (" + ', '.join(self_reviewed) +
-                               ") is the model that wrote this recommendation; parked "
-                               "rather than letting it review its own work")}
+            return done({'verdict': 'downgrade', 'backend': None, 'model': None,
+                         'reason': ("the only available judge (" + ', '.join(self_reviewed) +
+                                    ") is the model that wrote this recommendation; parked "
+                                    "rather than letting it review its own work")})
         named = "; ".join(refusals + unavailable) or "unknown"
         logger.warning("Every mutation judge provider was unavailable, parking for human review")
-        return {'verdict': 'downgrade', 'backend': None, 'model': None,
-                'reason': f"judge unavailable ({named}); parked rather than "
-                          "executed unattended"}
+        return done({'verdict': 'downgrade', 'backend': None, 'model': None,
+                     'reason': f"judge unavailable ({named}); parked rather than "
+                               "executed unattended"})
 
     def _judge_providers(self) -> List[str]:
         """Judge backends to try, in order, that actually have a key present.
