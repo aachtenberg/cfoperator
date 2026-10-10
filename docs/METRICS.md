@@ -347,6 +347,29 @@ cfoperator_llm_empty_final_responses_total{provider="ollama", model="gemma4:26b"
 
 See `docs/llm-observability.md` for the per-model rate queries.
 
+### Tool Loop Stops
+```promql
+# How each tool loop (sweep phase, investigation, chat turn) ended (CFOP-271)
+cfoperator_tool_loop_stops_total{reason="answered"}
+cfoperator_tool_loop_stops_total{reason="cap"}
+
+# Share of loops whose answer was forced rather than given
+sum(rate(cfoperator_tool_loop_stops_total{reason=~"cap|stagnation"}[1h]))
+  / sum(rate(cfoperator_tool_loop_stops_total[1h]))
+```
+
+| Value | What happened |
+|---|---|
+| `answered` | The model stopped calling tools on its own. |
+| `cap` | The iteration budget ran out. The final turn withheld tools (or, for OpenAI-compatible providers, nudged), or a summary call followed the loop. |
+| `stagnation` | Repeated calls already made in this loop (`chat.stagnation_repeats` in a row, default 3), so the budget was cut short and the answer forced the same way. |
+| `error` | A mid-loop refusal or parse failure. The response is the error text. |
+
+An investigation that stops on anything but `answered` with no `STATUS:` line is
+stored as `failed` with `findings.stop_reason`, not as `monitoring`, and is not
+embedded. Counted once per `_chat_with_tools` call, so a fallback that rotates
+providers counts only the provider that returned.
+
 ### Triage Decisions
 ```promql
 # Every run_triage return, by what produced it (CFOP-163)
@@ -466,6 +489,7 @@ shipped several examples that could never match.
 | `cfoperator_remediation_human_decisions_total` | `decision` | `approve`, `reject` |
 | `cfoperator_event_runtime_deep_reroutes_total` | `from_action` | `escalate`, `investigate` |
 | `cfoperator_llm_empty_final_responses_total` | `disposition` | `nudged`, `exhausted` |
+| `cfoperator_tool_loop_stops_total` | `reason` | `answered`, `cap`, `stagnation`, `error` |
 
 Labels not listed here carry open-ended values — an instance name, a sink, a
 tool name, a scheduler class — and are not enumerable from the source.

@@ -491,6 +491,10 @@ VERIFY_WRITES = [
     ("sudo sed -i '/mnt\\/router-share/d' /etc/fstab", "sed -i"),
     ("echo x > /etc/fstab", "redirected"),
     ("cat a >> /etc/fstab", "redirected"),
+    # The outer process's redirect, around a body that is itself a read: the
+    # file is written whatever the body does (CFOP-285).
+    ("sh -c 'echo x' > /etc/fstab", "redirected"),
+    ("bash -c 'cat a' >> ~/.bashrc", "redirected"),
     ("sudo systemctl daemon-reload", "systemctl daemon-reload"),
     ("bash -c \"systemctl restart nginx\"", "systemctl restart"),
     ("docker restart immich", "docker restart"),

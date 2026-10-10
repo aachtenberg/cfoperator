@@ -286,6 +286,12 @@ def ssh_mutation_reason(command, _depth: int = 0) -> Optional[str]:
         seg = _unwrap(raw)
         if not seg:
             continue
+        # The segment's own redirect first: `sh -c 'echo x' > /etc/fstab`
+        # writes the file whatever the body does, and checking it after the
+        # body let the `continue` below skip it (CFOP-285). Quoted spans are
+        # blanked, so a redirect inside the body is still the body's.
+        if _REDIRECT.search(_QUOTED.sub("''", seg)):
+            return "output is redirected to a file"
         # A command handed over as a string (sh -c, su -c, ssh host '...',
         # watch '...') runs its body; the body is what gets classified.
         inner = _SHELL_C.match(seg) or _WHOLLY_QUOTED.match(seg)
@@ -298,8 +304,6 @@ def ssh_mutation_reason(command, _depth: int = 0) -> Optional[str]:
             m = pattern.match(seg)
             if m:
                 return reason.format(*[g or '' for g in m.groups()])
-        if _REDIRECT.search(_QUOTED.sub("''", seg)):
-            return "output is redirected to a file"
     return None
 
 

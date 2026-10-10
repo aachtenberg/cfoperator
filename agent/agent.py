@@ -1571,6 +1571,17 @@ LLM_FALLBACKS = Counter('cfoperator_llm_fallbacks_total', 'LLM fallback chain ac
 # cfoperator_llm_requests_total (incremented once per _chat_with_tools call,
 # success and error alike) for the per-model rate.
 LLM_EMPTY_FINALS = Counter('cfoperator_llm_empty_final_responses_total', 'Tool-loop turns that ended with an empty final message', ['provider', 'model', 'disposition'])
+# How each _chat_with_tools loop ended (CFOP-271). `reason`:
+#   answered   - the model stopped calling tools on its own
+#   cap        - the budget ran out and the answer was forced (tools withheld
+#                or nudged on the final turn, or the post-loop summary call)
+#   stagnation - the model kept repeating calls it had already made, so the
+#                budget was cut short and the answer forced the same way
+#   error      - a mid-loop refusal or parse failure; the response is the
+#                error text, not an answer
+# Before this, an investigation that ran out of budget looked exactly like
+# one the model judged "monitoring".
+TOOL_LOOP_STOPS = Counter('cfoperator_tool_loop_stops_total', 'Tool loops by how they ended', ['reason'])
 # result: success | error (retryable — timeout, down endpoint, missing
 # model) | truncated (input exceeded the model's context and was sent
 # head-first) | unembeddable (a deterministic input failure we now refuse
@@ -1861,6 +1872,14 @@ EMPTY_RESPONSE_NUDGE = (
     "final answer in exactly the format the instructions above require."
 )
 
+# The forced final turn and the post-loop summary call ask for the answer in
+# whatever format the caller's system prompt set, and name none themselves.
+# They used to ask for the sweep's findings array, so an investigation that
+# reached the cap was told to drop its STATUS line and was then stored as
+# 'monitoring' (CFOP-271). Every caller states its format in the system
+# prompt, which both paths keep, so no caller has to pass a format in.
+FINAL_ANSWER_NUDGE = "FINAL STEP — " + EMPTY_RESPONSE_NUDGE
+
 
 class EmptyLLMResponseError(RuntimeError):
     """Model returned an empty final message even after the nudge retry.
@@ -1896,6 +1915,25 @@ class _ToolLoopStats:
     # chain restarts the next provider from the caller's messages, and
     # replaying the conversation would run it again.
     mutating_ran: bool = False
+    # How the loop ended; see TOOL_LOOP_STOPS. Callers that store a verdict
+    # read it to tell an answer from a budget-forced one (CFOP-271).
+    stop_reason: str = 'answered'
+    # Every (tool, args) fingerprint called so far, and how many calls in a
+    # row repeated one of them. Memoized or not: a third identical
+    # ssh_execute is as much a loop as a third k8s_get_pods.
+    call_fingerprints: set = field(default_factory=set)
+    repeat_streak: int = 0
+
+    def note_call(self, tool_name: str, tool_args: Any) -> None:
+        try:
+            key = tool_name + '|' + json.dumps(tool_args, sort_keys=True, default=str)
+        except Exception:
+            key = tool_name + '|' + repr(tool_args)
+        if key in self.call_fingerprints:
+            self.repeat_streak += 1
+        else:
+            self.call_fingerprints.add(key)
+            self.repeat_streak = 0
 
     def result(self, response: str) -> Dict[str, Any]:
         return {
@@ -1906,6 +1944,7 @@ class _ToolLoopStats:
             'learning_ids': self.learning_ids,
             'cached_tool_hits': self.cached_hits,
             'opened_prs': list(self.opened_prs),
+            'stop_reason': self.stop_reason,
         }
 
 
@@ -3119,6 +3158,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
             response_text = result.get('response', '')
             tool_calls_count = result.get('tool_calls', 0)
+            stop_reason = result.get('stop_reason') or 'answered'
             duration = time.time() - start_time
 
             # Classify outcome from the model's explicit STATUS verdict rather
@@ -3127,6 +3167,16 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # investigation ("CPU is normal", "can be resolved by...") was
             # mislabeled resolved — even for a pod still stuck Pending.
             outcome = self._extract_status(response_text)
+            # A loop that ended on the budget, on stagnation or on an error,
+            # with no STATUS line, gave no verdict. The fallback above would
+            # call it 'monitoring' -- "worth watching" -- and it would be
+            # embedded and recalled as a similar past (CFOP-271; #3040 was
+            # a Groq 400's error text stored that way). A forced answer that
+            # does carry STATUS keeps it: that is a judgement on a full budget.
+            no_verdict = (stop_reason != 'answered'
+                          and self._explicit_status(response_text) is None)
+            if no_verdict:
+                outcome = 'failed'
 
             # B1: don't take "resolved" on faith — confirm against live cluster
             # state. If the alert pins to a pod that is still Pending/CrashLoop,
@@ -3190,6 +3240,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 'provider': f"{provider_type}/{model}",
                 'recommendation': recommendation,
             }
+            if stop_reason != 'answered':
+                findings['stop_reason'] = stop_reason
+            if no_verdict:
+                findings['error'] = (f"no verdict: the tool loop stopped on {stop_reason} "
+                                     f"before the model gave a STATUS")
             if structured_fix:
                 findings['fix'] = structured_fix
             if opened_prs:
@@ -3228,8 +3283,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             if outcome == 'resolved':
                 self._extract_learnings(inv_id, trigger, findings)
 
-            # Generate embedding for this investigation (async, non-blocking)
-            self._embed_investigation(inv_id, trigger, findings, outcome)
+            # Generate embedding for this investigation (async, non-blocking).
+            # Not for a run with no verdict: recalled as a similar past it
+            # would tell the next investigation something nobody concluded.
+            if not no_verdict:
+                self._embed_investigation(inv_id, trigger, findings, outcome)
 
             message = self._action_message(outcome, trigger, duration, tool_calls_count)
             details.update({
@@ -3360,6 +3418,24 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             return None
 
     @staticmethod
+    def _explicit_status(text: str) -> Optional[str]:
+        """The outcome named on the model's last STATUS: line, or None when
+        there is no such line or it names nothing recognisable."""
+        idx = text.lower().rfind('status:')
+        if idx == -1:
+            return None
+        line = text[idx + len('status:'):].split('\n', 1)[0].lower()
+        if any(k in line for k in ('needs_action', 'needs-action', 'needs action', 'unresolved', 'action needed')):
+            return 'needs_action'
+        if any(k in line for k in ('escalate', 'escalated', 'urgent')):
+            return 'escalated'
+        if 'monitor' in line:
+            return 'monitoring'
+        if any(k in line for k in ('resolved', 'fixed', 'healthy', 'no action', 'no issue')):
+            return 'resolved'
+        return None
+
+    @staticmethod
     def _extract_status(response_text: str) -> str:
         """Classify the investigation outcome from the model's explicit verdict.
 
@@ -3376,17 +3452,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         on loose keywords) when the model omits the line.
         """
         text = response_text or ""
-        idx = text.lower().rfind('status:')
-        if idx != -1:
-            line = text[idx + len('status:'):].split('\n', 1)[0].lower()
-            if any(k in line for k in ('needs_action', 'needs-action', 'needs action', 'unresolved', 'action needed')):
-                return 'needs_action'
-            if any(k in line for k in ('escalate', 'escalated', 'urgent')):
-                return 'escalated'
-            if 'monitor' in line:
-                return 'monitoring'
-            if any(k in line for k in ('resolved', 'fixed', 'healthy', 'no action', 'no issue')):
-                return 'resolved'
+        explicit = CFOperator._explicit_status(text)
+        if explicit:
+            return explicit
         # No usable STATUS line — be conservative. Escalation signals win;
         # otherwise default to monitoring. Never infer 'resolved' here.
         low = text.lower()
@@ -8907,6 +8975,20 @@ Only return the JSON array, no other text."""
             logger.debug(f"Invalid max_tool_iterations setting, using default: {e}")
         return self.config.get('chat', {}).get('max_tool_iterations', 10)
 
+    def _stagnation_repeats(self) -> int:
+        """Consecutive repeated tool calls that end a loop early (CFOP-271).
+
+        ``chat.stagnation_repeats``; 0 turns the check off. Absent from the
+        schema defaults, so an unset key and a written 3 are told apart here.
+        """
+        try:
+            val = (self.config.get('chat') or {}).get('stagnation_repeats')
+            if val is not None:
+                return max(0, int(val))
+        except Exception as e:
+            logger.debug(f"Invalid chat.stagnation_repeats, using default: {e}")
+        return 3
+
     def _get_sweep_max_iterations(self) -> int:
         """Iteration cap for sweep phases.
 
@@ -9320,6 +9402,7 @@ Only return the JSON array, no other text."""
             TOOL_CALLS.labels(tool_name=tool_name, result='error').inc()
             raise
         stats.tool_calls += 1
+        stats.note_call(tool_name, tool_args)
         if was_cached:
             stats.cached_hits += 1
             logger.info(f"Tool result reused from cache: {tool_name}")
@@ -9768,6 +9851,7 @@ Only return the JSON array, no other text."""
                 max_iterations, event_callback, tool_policy=tool_policy,
             )
             latency = time.time() - start
+            TOOL_LOOP_STOPS.labels(reason=result.get('stop_reason') or 'answered').inc()
             LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
             LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
             if result.get('input_tokens'):
@@ -9822,6 +9906,7 @@ Only return the JSON array, no other text."""
         }
         final_answer_forced = False  # final-iteration nudge sent only once
         empty_nudge_sent = False  # empty-final-response nudge sent only once
+        stagnation_limit = self._stagnation_repeats()
 
         # Get tool schemas, filtered by what this turn may do (CFOP-124).
         # Same shape as _cached_tool_exec: no kwarg unless a policy exists.
@@ -9841,6 +9926,16 @@ Only return the JSON array, no other text."""
         iteration_budget = max_iterations
         while iteration + 1 < iteration_budget:
             iteration += 1
+            # A model repeating calls it already made is going in circles:
+            # make this turn the final one, so it takes the forced-answer path
+            # below with its whole context instead of spending the budget
+            # (CFOP-271).
+            if (stagnation_limit and stats.repeat_streak >= stagnation_limit
+                    and stats.stop_reason != 'stagnation'):
+                stats.stop_reason = 'stagnation'
+                iteration_budget = iteration + 1
+                logger.info(f"[CHAT] {stats.repeat_streak} repeated tool calls in a row — "
+                            f"stopping early at iteration {iteration+1}/{max_iterations}")
             try:
                 logger.debug(f"[CHAT] iteration {iteration+1}/{max_iterations}, messages count: {len(full_messages)}")
                 # Force a final answer on the last iteration instead of falling
@@ -9854,13 +9949,13 @@ Only return the JSON array, no other text."""
                 offered_tools = [] if (is_final_iteration and not is_openai_compat) else tools
                 if is_final_iteration and not final_answer_forced:
                     final_answer_forced = True
+                    # A one-shot call (max_iterations=1) is final on its first
+                    # turn by design; only a loop that already ran tools was
+                    # cut off by the budget.
+                    if iteration > 0 and stats.stop_reason == 'answered':
+                        stats.stop_reason = 'cap'
                     if is_openai_compat:
-                        full_messages.append({
-                            'role': 'user',
-                            'content': ("FINAL STEP — you have gathered enough data. Do NOT "
-                                        "call any more tools. Respond now with your findings "
-                                        "as the JSON array described above."),
-                        })
+                        full_messages.append({'role': 'user', 'content': FINAL_ANSWER_NUDGE})
                     logger.info("[CHAT] final iteration — forcing an answer")
                 # Build payload for Ollama (OpenAI-compatible format)
                 if provider_type == 'ollama':
@@ -10126,11 +10221,14 @@ Only return the JSON array, no other text."""
                     raise
                 # A refusal (4xx) or a parse failure is this provider's answer
                 # to this request; report it rather than re-run it elsewhere.
+                stats.stop_reason = 'error'
                 return stats.result(f"Error during tool execution: {str(e)}")
 
         # Hit max iterations — do one final no-tools call to get a summary.
         # Extract tool results from conversation to provide as context.
         logger.info(f"Hit iteration limit ({max_iterations}), attempting summary call")
+        if stats.stop_reason != 'stagnation':
+            stats.stop_reason = 'cap'
         try:
             # Collect tool results from the conversation for context
             tool_summaries = []
@@ -10144,16 +10242,13 @@ Only return the JSON array, no other text."""
 
             tool_context = "\n---\n".join(tool_summaries[-6:])  # Last 6 tool results
 
-            summary_messages = [
-                {'role': 'system', 'content': system_context},
+            # The caller's own messages ride along so a chat question is not
+            # dropped; the format comes from system_context (CFOP-271).
+            summary_messages = [{'role': 'system', 'content': system_context}] + list(messages) + [
                 {'role': 'user', 'content': (
-                    f'You investigated the infrastructure using {stats.tool_calls} tool calls. '
+                    f'You used your tool budget ({stats.tool_calls} tool calls). '
                     f'Here are the key results from your tool calls:\n\n{tool_context}\n\n'
-                    f'Based on these results, provide your findings as a JSON array:\n'
-                    f'[{{"severity": "info|warning|critical", "finding": "description", '
-                    f'"remediation": "suggested fix"}}]\n'
-                    f'If everything looks healthy, return: []\n'
-                    f'Only return the JSON array, no other text.'
+                    f'{FINAL_ANSWER_NUDGE}'
                 )}
             ]
 
