@@ -7387,6 +7387,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
                 # tags, and CFOP-377 keeps rows out of investigation prompts
                 # by the `automated` tag, so a row without it would slip in.
                 own_tags = insight.get('tags') if isinstance(insight.get('tags'), list) else []
+                own_tags = [t for t in own_tags if isinstance(t, str)]
                 insight['tags'] = list(dict.fromkeys([*own_tags, 'correlation', 'automated']))
                 # root_cause is refused above. It is not in this set on purpose:
                 # co-occurrence from this pass must not be stored as a cause.
