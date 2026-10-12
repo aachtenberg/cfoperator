@@ -53,12 +53,14 @@ def provenance(learning: Dict[str, Any]) -> str:
     Read off the tags each writer sets: ``cfop-reverify`` from a re-verification
     that rejected a filed row (``reverify.store_learning``), ``source:<who>``
     from ``POST /api/learnings``. Anything else was extracted from a finished
-    investigation.
+    investigation. The route appends its ``source`` after the caller's own
+    tags, so when a caller also passed a ``source:`` tag, the last one is the
+    recorded one.
     """
     tags = _tags(learning)
     if 'cfop-reverify' in tags:
         return 'from a rejected remediation'
-    for tag in tags:
+    for tag in reversed(tags):
         source = tag[len('source:'):].strip()[:50] if tag.startswith('source:') else ''
         if source:
             return f"from {source}"

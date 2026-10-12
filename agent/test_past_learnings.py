@@ -89,6 +89,9 @@ def test_provenance_reads_each_writers_tags():
     assert provenance({'tags': ['plane', 'rabbitmq']}) == 'from a past investigation'
     assert provenance({'tags': None}) == 'from a past investigation'
     assert provenance({'tags': ['source:' + 'x' * 500]}) == 'from ' + 'x' * 50
+    # POST /api/learnings appends the recorded source after caller tags.
+    assert provenance({'tags': ['source:operator', 'confidence:0.90', 'source:discovery']}) \
+        == 'from discovery'
 
 
 def _orienting_operator(candidates, asked):
