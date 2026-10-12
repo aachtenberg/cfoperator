@@ -177,6 +177,10 @@ def test_analyze_correlations_stores_only_the_insight_that_survives():
             "description": "llama-server did not start while the daemon was up",
             "applies_when": "ollama load fails while the daemon is healthy",
             "services": ["ollama"],
+            # Volunteered by the model; it must not displace `automated`,
+            # which is what keeps the row out of investigation prompts (CFOP-377).
+            # A non-string tag is dropped rather than failing the pass.
+            "tags": ["ollama", {"nested": "tag"}],
             "category": "resource",
         },
         {
@@ -205,4 +209,4 @@ def test_analyze_correlations_stores_only_the_insight_that_survives():
         "ollama on ubuntu-llm-01 times out loading a model"
     ]
     assert stored[0]["learning_type"] == "pattern"
-    assert "automated" in stored[0]["tags"]
+    assert stored[0]["tags"] == ["ollama", "correlation", "automated"]
