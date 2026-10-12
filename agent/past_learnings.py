@@ -59,8 +59,9 @@ def provenance(learning: Dict[str, Any]) -> str:
     if 'cfop-reverify' in tags:
         return 'from a rejected remediation'
     for tag in tags:
-        if tag.startswith('source:') and tag[len('source:'):].strip():
-            return f"from {tag[len('source:'):].strip()}"
+        source = tag[len('source:'):].strip()[:50] if tag.startswith('source:') else ''
+        if source:
+            return f"from {source}"
     return 'from a past investigation'
 
 

@@ -88,6 +88,7 @@ def test_provenance_reads_each_writers_tags():
     assert provenance({'tags': ['cfop-reverify', 'remediation:275']}) == 'from a rejected remediation'
     assert provenance({'tags': ['plane', 'rabbitmq']}) == 'from a past investigation'
     assert provenance({'tags': None}) == 'from a past investigation'
+    assert provenance({'tags': ['source:' + 'x' * 500]}) == 'from ' + 'x' * 50
 
 
 def _orienting_operator(candidates, asked):

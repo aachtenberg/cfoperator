@@ -7383,7 +7383,11 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     logger.info(f"Skipping correlation insight ({reason}): {insight.get('title','')[:60]}")
                     continue
                 insight.setdefault('learning_type', 'insight')
-                insight.setdefault('tags', ['correlation', 'automated'])
+                # Always tag, never default: the model may volunteer its own
+                # tags, and CFOP-377 keeps rows out of investigation prompts
+                # by the `automated` tag, so a row without it would slip in.
+                own_tags = insight.get('tags') if isinstance(insight.get('tags'), list) else []
+                insight['tags'] = list(dict.fromkeys([*own_tags, 'correlation', 'automated']))
                 # root_cause is refused above. It is not in this set on purpose:
                 # co-occurrence from this pass must not be stored as a cause.
                 valid_types = {'pattern', 'solution', 'antipattern', 'insight'}
