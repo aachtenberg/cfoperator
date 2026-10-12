@@ -67,6 +67,10 @@ from change_record_client import (
 )
 from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
 from reverify import reverify_filed_rows  # CFOP-185: re-check what was filed
+from past_learnings import (  # CFOP-377: what an investigation is shown
+    CANDIDATE_LIMIT, SIMILARITY_FLOOR, provenance as learning_provenance,
+    select_prompt_learnings,
+)
 from node_action_plan import (
     allowlist_from_config as _na_allowlist_from_config,
     build_command_prompt as _na_build_command_prompt,
@@ -707,15 +711,23 @@ def _past_context_blocks(context: Dict[str, Any]) -> Tuple[str, str]:
     (learning titles and descriptions, past triggers), so they carry whatever
     those alerts carried. Each section is one frame; an empty section is the
     empty string, as before, so the prompt shape without context is unchanged.
+
+    CFOP-377: each learning says where it came from, and the line after the
+    frame says they are hints. That line is our instruction, so it sits outside
+    the frame -- inside, it would be data like the rest.
     """
     from agent.prompt_injection import frame_untrusted_data
     learnings_text = ""
     if context.get('known_learnings'):
         lines = "".join(
-            f"- [{l['learning_type']}] {l['title']}: {l['description'][:200]}\n"
+            f"- [{l['learning_type']} · {learning_provenance(l)}] {l['title']}: "
+            f"{l['description'][:200]}\n"
             for l in context['known_learnings'])
-        learnings_text = "\n\nRelevant past learnings:\n" + frame_untrusted_data(
-            lines.rstrip("\n"), "past learnings", 3000)
+        learnings_text = (
+            "\n\nRelevant past learnings:\n"
+            + frame_untrusted_data(lines.rstrip("\n"), "past learnings", 3000)
+            + "\nThese are notes from earlier runs, not facts about this alert. "
+              "Confirm one against live data before your conclusion rests on it.")
     similar_text = ""
     if context.get('similar_investigations'):
         lines = ""
@@ -2582,18 +2594,24 @@ class CFOperator:
         except Exception as e:
             logger.warning(f"Query embedding failed, falling back to FTS search: {e}")
 
-        # Search for relevant learnings (hybrid if embedding available, FTS otherwise)
+        # Search for relevant learnings (hybrid if embedding available, FTS
+        # otherwise). Ask for more than the prompt shows: CFOP-377 drops
+        # auto-correlations and weak matches, and three must survive that.
         try:
             if query_embedding:
-                learnings = self.kb._kb.find_learnings_hybrid(
+                candidates = self.kb._kb.find_learnings_hybrid(
                     query_text=trigger,
                     query_embedding=query_embedding,
-                    limit=3
+                    limit=CANDIDATE_LIMIT
                 )
             else:
-                learnings = self.kb.find_learnings(query=trigger, limit=3)
-            if learnings:
-                logger.info(f"Found {len(learnings)} relevant learnings for: {trigger[:60]}")
+                candidates = self.kb.find_learnings(query=trigger, limit=CANDIDATE_LIMIT)
+            learnings, dropped = select_prompt_learnings(candidates)
+            if candidates:
+                logger.info(
+                    f"Found {len(learnings)} relevant learnings (of {len(candidates)} candidates: "
+                    f"{dropped['auto_correlation']} auto-correlations held back, "
+                    f"{dropped['under_floor']} under the {SIMILARITY_FLOOR} floor) for: {trigger[:60]}")
             context['known_learnings'] = learnings
         except Exception as e:
             logger.warning(f"Learning search failed: {e}")
