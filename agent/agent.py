@@ -34,6 +34,7 @@ from prometheus_client import Counter, Gauge, Histogram, Info
 # Import core components
 from knowledge_base import ResilientKnowledgeBase, correlation_insight_keys, correlation_insight_rejection, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible, resolve_auto_policy, _SUMMARY_CONFIDENCE_CAP
 from llm_fallback import LLMFallbackManager as LLMFallback
+from singleton_lock import AgentSingletonLock, ACQUIRED as LOCK_ACQUIRED, HELD as LOCK_HELD
 from embedding_service import EmbeddingService, vector_literal
 
 # Import pluggable observability backends
@@ -2061,6 +2062,7 @@ class CFOperator:
             db_url=db_url,
             host_id='cfoperator'  # Single central agent
         )
+        self._db_url = db_url  # the single-agent lock's own session (CFOP-322)
         _install_kb_auto_policy(self)
 
         # Initialize database schema (creates tables if they don't exist)
@@ -2108,6 +2110,8 @@ class CFOperator:
         self.last_cockpit_reap = 0  # cockpit janitor tick (CFOP-36)
         self.last_tracker_sync = 0  # issue-tracker hand-off tick (CFOP-170)
         self.last_reverify = 0  # filed-row re-verification tick (CFOP-185)
+        self._singleton = None  # single-agent lock, taken in run() (CFOP-322)
+        self.last_singleton_check = 0
         self._tracker_url_warned = False
         self.start_time = time.time()
         # Initialized to start_time so the first heartbeat fires after the
@@ -2471,6 +2475,10 @@ class CFOperator:
         logger.info(f"Proactive: deep sweep every {sweep_interval}s ({sweep_interval//60} minutes)")
         logger.info("="*60)
 
+        # Before anything that does work: a second agent against this database
+        # must not start its workers (CFOP-322).
+        self._claim_singleton()
+
         # Start the HTTP investigation worker before the web server so the
         # POST /v1/investigate endpoint has something to drain into.
         self._start_investigation_worker()
@@ -2489,6 +2497,8 @@ class CFOperator:
                 # Update uptime metric
                 AGENT_UPTIME.set(time.time() - self.start_time)
                 OODA_CYCLES.inc()
+
+                self._check_singleton()
 
                 # Heartbeat — proves the loop is alive between events.
                 if time.time() - self.last_heartbeat >= self._get_heartbeat_interval():
@@ -2531,6 +2541,58 @@ class CFOperator:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
                 ERROR_RATE.inc()
                 time.sleep(30)  # Back off on errors
+
+    # Passive agents retry the lock this often; the holder re-checks its session
+    # at most this often from the loop.
+    SINGLETON_RETRY_SECONDS = 15
+    SINGLETON_CHECK_SECONDS = 60
+
+    def _claim_singleton(self, sleep=time.sleep) -> None:
+        """Take the single-agent lock, or wait passively until it is free.
+
+        Held by another agent: start nothing and retry, so that under a
+        Recreate rollout an old pod whose session has not closed yet costs the
+        new one a short wait rather than kubelet crash-backoff. Database
+        unreachable on the first try: start anyway. The agent runs through a
+        database outage today, and refusing to boot without one would turn the
+        guard into an outage of its own; the loop keeps trying.
+        """
+        self._singleton = AgentSingletonLock(self._db_url)
+        state = self._singleton.try_acquire()
+        if state == LOCK_HELD:
+            logger.error(
+                "Another CFOperator agent holds the single-agent lock on this database. "
+                "Staying passive: no investigations, no remediation worker, no console. "
+                f"Retrying every {self.SINGLETON_RETRY_SECONDS}s. Two agents on one database "
+                "produce duplicate investigations, remediation rows and PRs (CFOP-322).")
+            waited = 0
+            while state != LOCK_ACQUIRED:
+                sleep(self.SINGLETON_RETRY_SECONDS)
+                waited += self.SINGLETON_RETRY_SECONDS
+                state = self._singleton.try_acquire()
+                if state != LOCK_ACQUIRED and waited % 300 < self.SINGLETON_RETRY_SECONDS:
+                    logger.error(f"Still passive after {waited}s: the single-agent lock is {state}")
+        if state == LOCK_ACQUIRED:
+            logger.info("Single-agent lock acquired")
+        else:
+            logger.warning("Single-agent lock not taken (database unreachable); "
+                           "starting anyway and retrying from the loop")
+        self.last_singleton_check = time.time()
+
+    def _check_singleton(self) -> None:
+        """From the loop: keep the claim, and stop if another agent has it.
+
+        Workers are already running by now, so losing the lock to another agent
+        (this one started during a database outage, or its session dropped and
+        someone else got in first) ends this process rather than leaving two.
+        """
+        if self._singleton is None or time.time() - self.last_singleton_check < self.SINGLETON_CHECK_SECONDS:
+            return
+        self.last_singleton_check = time.time()
+        if self._singleton.check() == LOCK_HELD:
+            logger.critical("Another CFOperator agent took the single-agent lock on this "
+                            "database. Exiting so only one keeps running (CFOP-322).")
+            sys.exit(3)
 
     def _check_alerts(self) -> List[Dict[str, Any]]:
         """Check for firing alerts from Alertmanager."""

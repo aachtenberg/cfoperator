@@ -24,6 +24,18 @@ All manifests live in the private **cfoperator-deploy** repo, which ArgoCD's sta
 
 Per-workload config: [mcp-server.md](mcp-server.md), [slack-bridge.md](slack-bridge.md), [REMEDIATION.md](REMEDIATION.md).
 
+## One agent per database
+
+The agent's investigation lock, alert dedupe, remediation drainer and schedulers are all in memory, so two agents against one database produce duplicate investigations, remediation rows and PRs. Run the agent Deployment at `replicas: 1` with `strategy: Recreate` (the Helm chart pins both).
+
+The agent also enforces this itself (CFOP-322). At startup it takes a session-level Postgres advisory lock (`pg_try_advisory_lock(0x0CF1, 1)`) and holds it for its lifetime:
+
+- **Lock free:** it starts normally.
+- **Another agent holds it:** it logs `Another CFOperator agent holds the single-agent lock`, starts nothing (no workers, no console, so the pod never goes Ready) and retries every 15s. A Recreate rollout whose old session has not closed yet therefore costs a short wait, not crash-backoff.
+- **Database unreachable at boot:** it starts anyway, as it always has, and retries the lock from the loop. If another agent turns out to hold it, this one exits with status 3.
+
+The lock session sets server-side TCP keepalives, so a node that dies hard releases the lock in about a minute instead of the kernel's ~2h default. The lock is session-scoped, so the agent must reach Postgres directly or through a *session*-mode pooler. A transaction-mode pgbouncer would hand the lock to whichever client next gets that server connection.
+
 ## Cockpit: deploy-repo changes
 
 `cfassist attach --spawn` is inert until these land in **cfoperator-deploy**. Nothing else depends on them. (The Helm chart carries the equivalent behind `cockpit.enabled` / `cockpit.ssh.secretName`, for external installs — see [cockpit.md](cockpit.md).)
