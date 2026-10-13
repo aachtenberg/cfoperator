@@ -110,21 +110,23 @@ shared header, not to assert today's markup. Mutation-check a new guard once
 - Include a section for any deviation from what the issues asked for, with the
   reasoning. Reviewers should never have to discover a narrowed scope by reading
   the diff.
-- Reviews arrive on their own: the `claude-review` workflow runs on every
-  push, and the local LLM review (`local-llm-review`, CFOP-236) runs on the
-  homelab runner. Both skip drafts: a draft gets no review until it is
-  marked ready. **Do not request a Copilot review**: its credit is spent,
-  and a request comes back as a "quota limit" comment, not a review. **Do
-  not post `@claude review` either.** The review already started when the PR
-  opened; the mention reaches `claude.yml`, which runs a second, duplicate
-  review in parallel (PR #296 got two within 30 seconds). Keep `@claude` for
-  ad-hoc tasks. Subscribe to the PR.
+- Reviews arrive on their own: CodeRabbit reviews every PR (free on this
+  public repo), and the local LLM review (`local-llm-review`, CFOP-236) runs
+  on the homelab runner. Both skip drafts. There is no automatic Claude
+  review any more: it reviewed every push, and a PR with five review rounds
+  paid for five (#322). `tests/test_workflows.py` keeps it off push events.
+  For a second opinion on a PR that deserves one, comment `@claude review`
+  (`claude.yml`). **Do not request a Copilot review**: its credit is spent,
+  and a request comes back as a "quota limit" comment, not a review.
+  Subscribe to the PR.
 - Drive CI to green. A failure on your own PR ends with either a pushed fix or
   a reply explaining the blocker.
-- **Do not merge until the review comment is in and triaged.** The
-  `claude-review` check going green is the workflow finishing, not the
-  findings. Wait for the bot comment (CFOP-133's review sat unfixed until
-  someone asked). Then:
+- **Do not merge until the review is in and triaged.** CodeRabbit finishes
+  by editing its summary comment ("Currently processing" disappears) and
+  posting a review with inline comments; wait for that, not for a check to
+  go green (CFOP-133's review sat unfixed until someone asked). It allows
+  about 10 reviews an hour, so a burst of pushes can leave it rate-limited;
+  wait it out rather than merging past it. Then:
   - real finding → smallest fix, reply on the PR, wait for CI
   - nit you agree with → fix it; "non-blocking" is not skip
   - invalid / out of scope → reply dismissing with the concrete reason
