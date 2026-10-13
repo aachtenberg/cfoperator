@@ -9,6 +9,7 @@ from repo_paths import REPO_ROOT
 import os
 import sys
 
+import psycopg.sql  # noqa: F401  (psycopg.sql used below)
 import pytest
 
 sys.path.insert(0, str(REPO_ROOT / "agent"))
@@ -67,3 +68,32 @@ def test_the_lock_session_carries_the_keepalives(locks):
     assert idle in ("30", "30s", "0")
     if "localhost" in DSN or "127.0.0.1" in DSN:
         assert idle in ("30", "30s")
+
+
+def test_a_password_libpq_would_misparse_in_a_url_still_takes_the_lock(locks):
+    """Production's password broke the URL form: the lock read "unreachable"
+    and the agent ran unguarded (CFOP-383). The agent passes keywords."""
+    import psycopg
+    from psycopg.conninfo import conninfo_to_dict
+
+    assert DSN, "CFOP_TEST_PG_DSN is unset"
+    nasty = "p@ss/w:rd%1#x"
+    with psycopg.connect(DSN, autocommit=True) as admin:
+        admin.execute("DROP ROLE IF EXISTS cfop_lock_probe")
+        admin.execute(psycopg.sql.SQL("CREATE ROLE cfop_lock_probe LOGIN PASSWORD {}")
+                      .format(psycopg.sql.Literal(nasty)))
+    base = conninfo_to_dict(DSN)
+    params = {"host": base.get("host", "localhost"), "port": base.get("port", 5432),
+              "dbname": base["dbname"], "user": "cfop_lock_probe", "password": nasty}
+    try:
+        naive = AgentSingletonLock(
+            f"postgresql://{params['user']}:{nasty}@{params['host']}:{params['port']}/{params['dbname']}")
+        assert naive.try_acquire() != ACQUIRED, "the URL form is the bug this guards"
+        lock = AgentSingletonLock(params)
+        try:
+            assert lock.try_acquire() == ACQUIRED
+        finally:
+            lock.release()
+    finally:
+        with psycopg.connect(DSN, autocommit=True) as admin:
+            admin.execute("DROP ROLE IF EXISTS cfop_lock_probe")

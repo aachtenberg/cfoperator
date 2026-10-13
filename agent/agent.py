@@ -2068,7 +2068,11 @@ class CFOperator:
             db_url=db_url,
             host_id='cfoperator'  # Single central agent
         )
-        self._db_url = db_url  # the single-agent lock's own session (CFOP-322)
+        # The single-agent lock's own session (CFOP-322), as keywords: db_url
+        # above interpolates the password raw, which libpq misparses (CFOP-383).
+        db = self.config['database']
+        self._db_params = {'host': db['host'], 'port': db['port'], 'dbname': db['database'],
+                           'user': db['user'], 'password': db['password']}
         _install_kb_auto_policy(self)
 
         # Initialize database schema (creates tables if they don't exist)
@@ -2569,7 +2573,7 @@ class CFOperator:
         database outage today, and refusing to boot without one would turn the
         guard into an outage of its own; the loop keeps trying.
         """
-        self._singleton = AgentSingletonLock(self._db_url)
+        self._singleton = AgentSingletonLock(self._db_params)
         state = self._singleton.try_acquire()
         if state == LOCK_HELD:
             logger.error(
