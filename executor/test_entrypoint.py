@@ -318,3 +318,40 @@ def test_run_gitops_tolerates_an_llm_without_describe():
                       return_value={"status": "opened", "html_url": "http://pr/1", "pr_number": 1}):
         out = run(_env())
     assert out["result"]["llm"] is None
+
+
+def test_run_gitops_talks_to_the_github_api_it_is_given():
+    """GITHUB_API_URL points the executor at another API (Enterprise, or the
+    kind e2e's stub, CFOP-315); unset stays api.github.com."""
+    seen = []
+    real = entrypoint.GitHubClient
+
+    def capture(*a, **k):
+        client = real(*a, **k)
+        seen.append(client.api_url)
+        return client
+
+    llm = _SeqLLM(["k8s/base/apps/ollama.yaml", _DIFF_REPORT])
+    for extra, want in (({"GITHUB_API_URL": "http://stub:9000/",
+                          "CFOP_EXEC_GITHUB_ALLOW_HTTP": "true"}, "http://stub:9000"),
+                        ({"GITHUB_API_URL": "https://ghe.example/api/v3"}, "https://ghe.example/api/v3"),
+                        ({}, "https://api.github.com")):
+        llm = _SeqLLM(["k8s/base/apps/ollama.yaml", _DIFF_REPORT])
+        with patch.object(entrypoint, "GitHubClient", side_effect=capture), \
+             patch.object(entrypoint, "make_llm", return_value=llm), \
+             patch.object(entrypoint, "list_repo_files", return_value=["k8s/base/apps/ollama.yaml"]), \
+             patch.object(entrypoint, "get_file", return_value="a\nb\nc\n"), \
+             patch.object(entrypoint, "open_pr_from_diff",
+                          return_value={"status": "opened", "html_url": "http://pr/1", "pr_number": 1}):
+            run({**_env(), **extra})
+        assert seen[-1] == want
+
+
+def test_run_gitops_refuses_to_send_the_token_over_plain_http():
+    env = {**_env(), "GITHUB_API_URL": "http://ghe.example/api/v3"}
+    with patch.object(entrypoint, "make_llm") as make_llm, \
+         patch.object(entrypoint, "list_repo_files") as list_files:
+        with pytest.raises(RuntimeError, match="not https"):
+            run(env)
+    make_llm.assert_not_called()
+    list_files.assert_not_called()

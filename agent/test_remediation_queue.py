@@ -183,6 +183,46 @@ def test_build_executor_manifest_shape():
     assert env["CFOP_GIT_REPO"]["value"] == "aachtenberg/homelab-infra"  # config default
 
 
+def test_build_executor_manifest_pull_policy_and_github_api_are_configurable():
+    """The kind e2e runs a kind-loaded executor against a stub GitHub (CFOP-315).
+    Production omits both keys: Always, and no GITHUB_API_URL at all."""
+    op = MagicMock()
+    op._executor_config.return_value = {"image_pull_policy": "IfNotPresent",
+                                        "github_api_url": "http://stub:9000"}
+    work = {"id": 3, "remediation_class": "gitops-patch", "risk": "low"}
+    m = CFOperator._build_executor_manifest(op, "cfop-executor-e2e", work)
+    container = m["spec"]["template"]["spec"]["containers"][0]
+    assert container["imagePullPolicy"] == "IfNotPresent"
+    env = {e["name"]: e for e in container["env"]}
+    assert env["GITHUB_API_URL"]["value"] == "http://stub:9000"
+    assert "CFOP_EXEC_GITHUB_ALLOW_HTTP" not in env, "http is opt-in, not implied by the URL"
+
+    op._executor_config.return_value = {"github_api_url": "http://stub:9000",
+                                        "github_api_allow_http": True}
+    m = CFOperator._build_executor_manifest(op, "cfop-executor-e2e", work)
+    env = {e["name"]: e for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["CFOP_EXEC_GITHUB_ALLOW_HTTP"]["value"] == "true"
+
+    op._executor_config.return_value = {}
+    m = CFOperator._build_executor_manifest(op, "cfop-executor-prod", work)
+    names = {e["name"] for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert "GITHUB_API_URL" not in names
+
+
+def test_build_executor_manifest_carries_configured_tolerations():
+    """Every node of the kind demo is tainted by the very fault being fixed;
+    without a toleration the executor Job could never schedule (CFOP-315)."""
+    op = MagicMock()
+    tol = [{"key": "cfop-demo", "operator": "Exists", "effect": "NoSchedule"}]
+    op._executor_config.return_value = {"tolerations": tol}
+    work = {"id": 4, "remediation_class": "gitops-patch", "risk": "low"}
+    spec = CFOperator._build_executor_manifest(op, "j", work)["spec"]["template"]["spec"]
+    assert spec["tolerations"] == tol
+    op._executor_config.return_value = {}
+    spec = CFOperator._build_executor_manifest(op, "j", work)["spec"]["template"]["spec"]
+    assert "tolerations" not in spec
+
+
 def test_build_executor_manifest_per_item_repo():
     op = MagicMock()
     op._executor_config.return_value = {}

@@ -44,11 +44,13 @@ class GitHubClient:
         url = f"{self.api_url}{path}"
         data = json.dumps(body).encode("utf-8") if body is not None else None
         req = urllib.request.Request(url, data=data, method=method, headers={
-            "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
             "Content-Type": "application/json",
             "User-Agent": "cfoperator-executor",
         })
+        # Unredirected: urllib copies ordinary headers onto a redirect, which
+        # would hand the token to whatever host the API redirects to.
+        req.add_unredirected_header("Authorization", f"Bearer {self.token}")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:  # nosec
                 payload = resp.read().decode("utf-8")

@@ -610,6 +610,19 @@ remediation:
   summary_confidence_cap: 0.5   # morning-summary hunches; investigation-fed rows are not clamped
   lease_timeout_s: 1800         # reaper: in-flight executor Jobs older than this are presumed dead
   max_attempts: 3
+  # Where and how the drain runs executor Jobs. Only the keys below are new
+  # with CFOP-315; the Helm chart's ConfigMap fills in the rest (namespace,
+  # image, git_repo, completion_base_url, llm, ...).
+  # executor:
+  #   image_pull_policy: Always   # default. Never/IfNotPresent runs a locally
+  #                               # loaded image (the kind e2e builds its own)
+  #   github_api_url: ""          # unset = api.github.com; set for GitHub
+  #                               # Enterprise, or a stub (passed as GITHUB_API_URL)
+  #   github_api_allow_http: false  # true lets an http:// github_api_url carry
+  #                               # GITHUB_TOKEN in cleartext; local stubs only
+  #   tolerations: []             # verbatim onto the Job's pod spec. Needed
+  #                               # when every node carries a NoSchedule taint,
+  #                               # or the Job sits Pending until its deadline
   # The mutation judge (CFOP-70). Before a remediation that would auto-execute
   # is enqueued, a FRONTIER model is asked whether the change should be made
   # unattended at all — a different question from the one the classifier

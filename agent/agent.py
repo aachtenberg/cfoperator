@@ -4755,6 +4755,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         git_repo = payload_repo or ec.get('git_repo', os.getenv('CFOP_GIT_REPO', 'aachtenberg/homelab-infra'))
         git_base = ec.get('git_base', 'main')
         llm = ec.get('llm') if isinstance(ec.get('llm'), dict) else {}
+        # Both default to production's behaviour. The kind e2e (CFOP-315)
+        # runs the executor image it just built (kind-loaded, so never pulled)
+        # against a stub GitHub API.
+        pull_policy = str(ec.get('image_pull_policy') or 'Always')
+        github_api_url = str(ec.get('github_api_url') or '').strip()
         ttl = int(ec.get('ttl_seconds_after_finished', 3600))
         deadline = int(ec.get('active_deadline_seconds', 900))
 
@@ -4771,6 +4776,10 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             {"name": "CFOP_EXEC_LLM_MODEL", "value": str(llm.get('model', ''))},
             {"name": "CFOP_EXEC_LLM_BASE_URL", "value": str(llm.get('base_url', ''))},
         ]
+        if github_api_url:
+            env.append({"name": "GITHUB_API_URL", "value": github_api_url})
+            if ec.get('github_api_allow_http') is True:
+                env.append({"name": "CFOP_EXEC_GITHUB_ALLOW_HTTP", "value": "true"})
         # node-action only: opt in + mount the SSH key so the executor can run a
         # guarded command plan on a host. GitOps classes stay PR-only (no mount).
         volumes: List[Dict[str, Any]] = []
@@ -4858,7 +4867,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         container = {
             "name": "executor",
             "image": image,
-            "imagePullPolicy": "Always",
+            "imagePullPolicy": pull_policy,
             "env": env,
             "resources": {
                 "requests": {"cpu": "100m", "memory": "256Mi"},
@@ -4876,6 +4885,13 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         }
         if volumes:
             pod_spec["volumes"] = volumes
+        # Verbatim from config, none by default. A cluster whose every node
+        # carries a NoSchedule taint (the kind demo's taint fault, or a
+        # dedicated-node install) otherwise leaves the executor Job Pending
+        # until activeDeadlineSeconds kills it.
+        tolerations = ec.get('tolerations')
+        if isinstance(tolerations, list) and tolerations:
+            pod_spec["tolerations"] = [t for t in tolerations if isinstance(t, dict)]
         return {
             "apiVersion": "batch/v1",
             "kind": "Job",

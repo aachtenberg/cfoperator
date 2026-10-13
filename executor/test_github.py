@@ -1,6 +1,6 @@
 """Tests for the stdlib GitHub PR-from-diff client."""
 
-from github import get_file, list_repo_files, open_pr_from_diff
+from github import GitHubClient, get_file, list_repo_files, open_pr_from_diff
 
 _DIFF = """--- a/k3s/base/apps/ollama.yaml
 +++ b/k3s/base/apps/ollama.yaml
@@ -115,3 +115,25 @@ def test_open_pr_declines_on_drift():
     result = open_pr_from_diff(_FakeClient(file_text="x\ny\nz\n"), repo="o/r", base="main",
                               diff_text=_DIFF, title="t", body="b", dedupe_key="x")
     assert result["status"] == "declined"
+
+
+def test_the_token_is_never_copied_onto_a_redirect():
+    """urllib copies ordinary headers to a redirected request; an API that
+    redirects to another host must not receive GITHUB_TOKEN (CFOP-315 review)."""
+    import urllib.request
+    from unittest.mock import patch as _patch
+    seen = {}
+
+    def fake_urlopen(req, timeout=None):
+        seen["redirectable"] = dict(req.headers)
+        seen["unredirected"] = dict(req.unredirected_hdrs)
+        raise OSError("stop")
+
+    client = GitHubClient("tok", "https://ghe.example")
+    with _patch.object(urllib.request, "urlopen", fake_urlopen):
+        try:
+            client.request("GET", "/repos/o/r")
+        except OSError:
+            pass
+    assert "Authorization" not in seen["redirectable"]
+    assert seen["unredirected"].get("Authorization") == "Bearer tok"
