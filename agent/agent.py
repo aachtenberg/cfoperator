@@ -33,7 +33,7 @@ from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
 from knowledge_base import ResilientKnowledgeBase, correlation_insight_keys, correlation_insight_rejection, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible, resolve_auto_policy, _SUMMARY_CONFIDENCE_CAP
-from llm_fallback import LLMFallbackManager as LLMFallback
+from llm_fallback import LLMFallbackManager as LLMFallback, ChainCircuitBreaker, LLMCircuitOpen
 from singleton_lock import AgentSingletonLock, ACQUIRED as LOCK_ACQUIRED, HELD as LOCK_HELD
 from embedding_service import EmbeddingService, vector_literal
 
@@ -1581,6 +1581,12 @@ LLM_LATENCY = Histogram(
 )
 LLM_ERRORS = Counter('cfoperator_llm_errors_total', 'LLM errors by provider', ['provider', 'error_type'])
 LLM_FALLBACKS = Counter('cfoperator_llm_fallbacks_total', 'LLM fallback chain activations', ['from_provider', 'to_provider'])
+# Whole-chain circuit breaker (CFOP-321). State is set on every walk, so a
+# breaker that opened and then saw no calls still reads open until the next
+# call probes it.
+LLM_CIRCUIT_STATE = Gauge('cfoperator_llm_circuit_state', 'LLM chain circuit breaker state: 0 closed, 1 open, 2 half-open (probing)')
+LLM_CIRCUIT_OPENS = Counter('cfoperator_llm_circuit_opens_total', 'Times the LLM chain circuit breaker opened (fail fast) after repeated full-chain failures')
+_CIRCUIT_STATE_VALUE = {'closed': 0, 'open': 1, 'half_open': 2}
 # Empty final responses from the tool loop (see _handle_empty_final). The
 # `disposition` label keeps two very different signals apart:
 #   nudged    - first empty of the turn. EMPTY_RESPONSE_NUDGE sent, one bonus
@@ -2071,7 +2077,9 @@ class CFOperator:
         # Initialize LLM fallback chain
         self.llm = LLMFallback(
             db_session_factory=self.kb.session_scope,
-            settings_getter=self._get_agent_settings
+            settings_getter=self._get_agent_settings,
+            circuit=ChainCircuitBreaker.from_config(
+                self.config.get('llm', {}).get('circuit_breaker')),
         )
 
         # LLM request timeout (generous default for cold model loads)
@@ -3237,23 +3245,31 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     tool_policy=UNATTENDED,
                 )
             except RuntimeError as e:
-                if "No LLM providers available" not in str(e):
+                # An open circuit (CFOP-321) is the same answer as no provider:
+                # nothing was asked, so record a failure that says why rather
+                # than a verdict, and do not hold the investigation lock for a
+                # chain walk known to fail.
+                circuit_open = isinstance(e, LLMCircuitOpen)
+                if not circuit_open and "No LLM providers available" not in str(e):
                     raise
-                logger.error("No LLM provider available for investigation")
+                reason = str(e) if circuit_open else 'No LLM provider available'
+                logger.error(f"Investigation not run: {reason}")
                 duration = time.time() - start_time
                 self.kb.update_investigation(
                     investigation_id=inv_id,
                     completed_at=datetime.now(),
-                    findings={'error': 'No LLM provider available'},
+                    findings={'error': reason},
                     outcome='failed',
                     duration_seconds=duration
                 )
                 INVESTIGATIONS.labels(outcome='failed').inc()
                 INVESTIGATION_DURATION.labels(outcome='failed').observe(duration)
-                details.update({'duration_s': round(duration, 1), 'error': 'no_llm_provider'})
+                details.update({'duration_s': round(duration, 1),
+                                'error': 'llm_circuit_open' if circuit_open else 'no_llm_provider'})
                 return self._build_action_result(
                     success=False,
-                    message=f"Investigation failed (no LLM provider): {trigger[:200]}",
+                    message=(f"Investigation failed ({'LLM circuit open' if circuit_open else 'no LLM provider'}): "
+                             f"{trigger[:200]}"),
                     details=details,
                 )
 
@@ -7690,6 +7706,9 @@ Only return the JSON array, no other text."""
             # Parse findings from response
             return self._parse_sweep_findings(response_text)
 
+        except LLMCircuitOpen as e:
+            logger.warning(f"Sweep skipped: {e}")
+            return []
         except RuntimeError as e:
             if "No LLM providers available" in str(e):
                 logger.warning("No LLM provider available for sweep — skipping")
@@ -9977,61 +9996,107 @@ Only return the JSON array, no other text."""
                     'reason': skipped[1],
                 })
 
+        # Fail fast while the whole chain is known to be down (CFOP-321).
+        # After the empty-chain check on purpose: an unconfigured chain fails
+        # instantly already and is not evidence about provider health. Right
+        # before the walk, so nothing can raise between a half-open probe
+        # being granted and the try that settles it.
+        circuit = self._chain_circuit()
+        if circuit is not None:
+            try:
+                circuit.before_call()
+            finally:
+                LLM_CIRCUIT_STATE.set(_CIRCUIT_STATE_VALUE.get(circuit.state, 0))
+
         last_error = None
         prev_provider = None
-        for idx, (provider_type, url, model_name) in enumerate(provider_chain):
-            try:
-                if idx > 0 and prev_provider:
-                    # CFOP-163: this counter existed since the metric block was
-                    # written and was never incremented; the docs shipped an
-                    # alert on it that could not fire.
-                    LLM_FALLBACKS.labels(
-                        from_provider=prev_provider.split('/')[0],
-                        to_provider=provider_type).inc()
-                if idx > 0 and event_callback and prev_provider:
-                    event_callback('fallback', {
-                        'from': prev_provider,
-                        'to': f"{provider_type}/{model_name}",
-                        'reason': str(last_error)[:100] if last_error else 'unknown',
-                    })
-                logger.info(
-                    f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: "
-                    f"{provider_type}/{model_name}"
-                )
-                result = self._chat_with_tools(
-                    provider_type=provider_type, url=url, model=model_name,
-                    messages=messages, system_context=system_context,
-                    max_iterations=max_iterations, event_callback=event_callback,
-                    tool_policy=tool_policy,
-                )
-                provider_key = (
-                    f"{provider_type}/{url}/{model_name}" if url
-                    else f"{provider_type}/{model_name}"
-                )
-                self.llm.record_success(provider_key)
-                result['backend'] = provider_type
-                result['model'] = model_name
-                result['fallback_used'] = idx > 0
-                return result
-            except Exception as e:
-                last_error = e
-                prev_provider = f"{provider_type}/{model_name}"
-                provider_key = (
-                    f"{provider_type}/{url}/{model_name}" if url
-                    else f"{provider_type}/{model_name}"
-                )
-                logger.warning(
-                    f"[FALLBACK] Provider {provider_type}/{model_name} failed: "
-                    f"{type(e).__name__}: {e}"
-                )
-                self.llm.record_failure(provider_key, self.llm.classify_error(e))
-                continue
+        # Whether any rung failed for a reason other than rejecting this
+        # request. Exhaustion where every rung answered 4xx is about the
+        # request (oversized context, a payload bug), not provider health, and
+        # must not lock every other caller out (CFOP-321).
+        health_failure = False
+        settled = False
+        try:
+            for idx, (provider_type, url, model_name) in enumerate(provider_chain):
+                try:
+                    if idx > 0 and prev_provider:
+                        # CFOP-163: this counter existed since the metric block was
+                        # written and was never incremented; the docs shipped an
+                        # alert on it that could not fire.
+                        LLM_FALLBACKS.labels(
+                            from_provider=prev_provider.split('/')[0],
+                            to_provider=provider_type).inc()
+                    if idx > 0 and event_callback and prev_provider:
+                        event_callback('fallback', {
+                            'from': prev_provider,
+                            'to': f"{provider_type}/{model_name}",
+                            'reason': str(last_error)[:100] if last_error else 'unknown',
+                        })
+                    logger.info(
+                        f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: "
+                        f"{provider_type}/{model_name}"
+                    )
+                    result = self._chat_with_tools(
+                        provider_type=provider_type, url=url, model=model_name,
+                        messages=messages, system_context=system_context,
+                        max_iterations=max_iterations, event_callback=event_callback,
+                        tool_policy=tool_policy,
+                    )
+                    provider_key = (
+                        f"{provider_type}/{url}/{model_name}" if url
+                        else f"{provider_type}/{model_name}"
+                    )
+                    self.llm.record_success(provider_key)
+                    self._settle_circuit(circuit, chain_healthy=True)
+                    settled = True
+                    result['backend'] = provider_type
+                    result['model'] = model_name
+                    result['fallback_used'] = idx > 0
+                    return result
+                except Exception as e:
+                    last_error = e
+                    prev_provider = f"{provider_type}/{model_name}"
+                    provider_key = (
+                        f"{provider_type}/{url}/{model_name}" if url
+                        else f"{provider_type}/{model_name}"
+                    )
+                    logger.warning(
+                        f"[FALLBACK] Provider {provider_type}/{model_name} failed: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    kind = self.llm.classify_error(e)
+                    self.llm.record_failure(provider_key, kind)
+                    if kind != 'bad_request':
+                        health_failure = True
+                    continue
 
+            self._settle_circuit(circuit, chain_healthy=not health_failure)
+            settled = True
+        finally:
+            if not settled and circuit is not None:
+                # Left mid-walk with no verdict; never strand a half-open probe.
+                circuit.release_probe()
         logger.error(
             f"[FALLBACK] All {len(provider_chain)} providers failed. "
             f"Last error: {last_error}"
         )
         raise last_error or RuntimeError("All LLM providers exhausted")
+
+    def _chain_circuit(self) -> Optional[ChainCircuitBreaker]:
+        """The whole-chain breaker (CFOP-321), or None where there is none."""
+        circuit = getattr(getattr(self, 'llm', None), 'circuit', None)
+        return circuit if isinstance(circuit, ChainCircuitBreaker) else None
+
+    @staticmethod
+    def _settle_circuit(circuit: Optional[ChainCircuitBreaker], chain_healthy: bool) -> None:
+        """Report a finished walk to the breaker and the metrics."""
+        if circuit is None:
+            return
+        if chain_healthy:
+            circuit.record_success()
+        elif circuit.record_failure():
+            LLM_CIRCUIT_OPENS.inc()
+        LLM_CIRCUIT_STATE.set(_CIRCUIT_STATE_VALUE.get(circuit.state, 0))
 
     def _chat_with_tools(self, provider_type: str, url: str, model: str,
                          messages: List[Dict[str, str]], system_context: str,

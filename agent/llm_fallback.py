@@ -11,6 +11,9 @@ Inspired by OpenClaw's model-fallback architecture, simplified for homelab use.
 """
 import json
 import re
+import threading
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple, Callable
 import requests
@@ -46,6 +49,149 @@ def _status_code_of(error: Exception) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+class LLMCircuitOpen(RuntimeError):
+    """Raised instead of walking the chain while the circuit is open (CFOP-321)."""
+
+    def __init__(self, until: float, reason: str):
+        self.until = until
+        stamp = datetime.fromtimestamp(until, timezone.utc).isoformat(timespec="seconds")
+        super().__init__(f"LLM circuit open until {stamp}: {reason}")
+
+
+CIRCUIT_CLOSED = "closed"
+CIRCUIT_OPEN = "open"
+CIRCUIT_HALF_OPEN = "half_open"
+
+
+class ChainCircuitBreaker:
+    """Fail fast after the whole provider chain keeps failing (CFOP-321).
+
+    Per-provider cooldowns say nothing about the chain as a whole: when the
+    network is gone or every key is exhausted, each investigation still walks
+    every rung with its own timeout, holds the investigation lock while it
+    does, and hits every vendor again. After ``failure_threshold`` exhausted
+    walks within ``window_seconds`` the breaker opens and calls fail at once
+    for ``cooldown_seconds``. The next call after that is a single probe:
+    success closes the breaker, failure re-opens it. Callers arriving while
+    the probe is in flight fail fast too.
+
+    The window defaults to 30 minutes, not the few minutes a breaker usually
+    gets. A walk that ends in timeouts takes up to rungs x 180s, so a short
+    window could only ever trip on fast failures and never on the slow
+    pile-up this exists for.
+
+    State is in memory. One agent per database is enforced (CFOP-322), and a
+    restart closing the breaker costs at most one more walk.
+    """
+
+    DEFAULT_FAILURE_THRESHOLD = 3
+    DEFAULT_WINDOW_SECONDS = 1800
+    DEFAULT_COOLDOWN_SECONDS = 300
+
+    def __init__(self, failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
+                 window_seconds: float = DEFAULT_WINDOW_SECONDS,
+                 cooldown_seconds: float = DEFAULT_COOLDOWN_SECONDS,
+                 clock: Callable[[], float] = time.time):
+        self.failure_threshold = failure_threshold
+        self.window_seconds = window_seconds
+        self.cooldown_seconds = cooldown_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._failures: deque = deque()
+        self._state = CIRCUIT_CLOSED
+        self._open_until = 0.0
+        self._probing = False
+
+    @classmethod
+    def from_config(cls, cfg: Optional[Dict[str, Any]], **kwargs) -> "ChainCircuitBreaker":
+        """Build from ``llm.circuit_breaker``; absent keys take the defaults.
+
+        A value that is not a non-negative number falls back to its default
+        with a warning rather than failing the boot over a typo.
+        """
+        cfg = cfg if isinstance(cfg, dict) else {}
+        values = {}
+        for key, default in (("failure_threshold", cls.DEFAULT_FAILURE_THRESHOLD),
+                             ("window_seconds", cls.DEFAULT_WINDOW_SECONDS),
+                             ("cooldown_seconds", cls.DEFAULT_COOLDOWN_SECONDS)):
+            raw = cfg.get(key, default)
+            try:
+                value = int(raw) if key == "failure_threshold" else float(raw)
+                if isinstance(raw, bool) or value < 0:
+                    raise ValueError(raw)
+            except (TypeError, ValueError):
+                _log("warn", "Invalid llm.circuit_breaker value, using default",
+                     key=key, value=str(raw), default=default)
+                value = default
+            values[key] = value
+        return cls(**values, **kwargs)
+
+    @property
+    def enabled(self) -> bool:
+        return self.failure_threshold > 0
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    def before_call(self) -> None:
+        """Raise LLMCircuitOpen unless this caller may walk the chain."""
+        if not self.enabled:
+            return
+        with self._lock:
+            now = self._clock()
+            if self._state == CIRCUIT_OPEN:
+                if now < self._open_until:
+                    raise LLMCircuitOpen(self._open_until, "the provider chain kept failing")
+                self._state = CIRCUIT_HALF_OPEN
+                self._probing = False
+            if self._state == CIRCUIT_HALF_OPEN:
+                if self._probing:
+                    raise LLMCircuitOpen(now + self.cooldown_seconds,
+                                         "a probe call is already testing the chain")
+                self._probing = True
+
+    def record_success(self) -> None:
+        """The chain answered: close, and forget earlier failures."""
+        with self._lock:
+            self._state = CIRCUIT_CLOSED
+            self._failures.clear()
+            self._probing = False
+
+    def record_failure(self) -> bool:
+        """Every rung failed. Returns True when this failure opened the circuit."""
+        if not self.enabled:
+            return False
+        with self._lock:
+            now = self._clock()
+            if self._state == CIRCUIT_HALF_OPEN:
+                self._open(now)
+                return True
+            self._failures.append(now)
+            while self._failures and self._failures[0] <= now - self.window_seconds:
+                self._failures.popleft()
+            if len(self._failures) >= self.failure_threshold:
+                self._open(now)
+                return True
+            return False
+
+    def release_probe(self) -> None:
+        """A walk ended without a verdict on the chain (the caller raised
+        mid-walk). Let the next caller probe instead of failing fast forever."""
+        with self._lock:
+            if self._state == CIRCUIT_HALF_OPEN:
+                self._probing = False
+
+    def _open(self, now: float) -> None:
+        self._state = CIRCUIT_OPEN
+        self._open_until = now + self.cooldown_seconds
+        self._probing = False
+        self._failures.clear()
+        _log("warn", "LLM circuit opened",
+             until=datetime.fromtimestamp(self._open_until, timezone.utc).isoformat(),
+             cooldown_seconds=self.cooldown_seconds)
+
+
 class LLMFallbackManager:
     """
     Manages LLM provider selection with fallback and exponential backoff.
@@ -72,16 +218,20 @@ class LLMFallbackManager:
     BACKOFF_BASE = 5  # Multiplier for exponential backoff
     ERROR_COUNT_RESET_HOURS = 1  # Reset error count after this many hours of no failures
 
-    def __init__(self, db_session_factory: Callable, settings_getter: Callable):
+    def __init__(self, db_session_factory: Callable, settings_getter: Callable,
+                 circuit: Optional[ChainCircuitBreaker] = None):
         """
         Initialize fallback manager.
 
         Args:
             db_session_factory: Callable that returns a context manager for DB sessions
             settings_getter: Callable that returns current agent settings dict
+            circuit: Whole-chain breaker consulted by the agent's chain walk
+                (CFOP-321); defaults to one with the default thresholds
         """
         self.db_session_factory = db_session_factory
         self.get_settings = settings_getter
+        self.circuit = circuit or ChainCircuitBreaker()
         self._ensure_table()
 
     def _ensure_table(self) -> None:

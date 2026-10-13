@@ -255,6 +255,20 @@ llm:
   # same tags on both hosts.
   # triage_url: http://192.168.0.232:11434
 
+  # Whole-chain circuit breaker (CFOP-321). After failure_threshold walks of
+  # the provider chain in which every rung failed, within window_seconds, LLM
+  # calls fail at once ("LLM circuit open until ...") for cooldown_seconds;
+  # then one probe call decides whether it closes. Investigations refused
+  # meanwhile are recorded failed, not left holding the investigation lock
+  # through a walk known to fail. A walk where every rung answered 4xx is
+  # not counted (that is the request, not the providers). The window is long
+  # because a walk that ends in timeouts takes rungs x llm.primary.timeout.
+  # Optional; these are the defaults. failure_threshold: 0 disables it.
+  # circuit_breaker:
+  #   failure_threshold: 3
+  #   window_seconds: 1800
+  #   cooldown_seconds: 300
+
   # Embeddings (for semantic search)
   embeddings:
     provider: ollama
