@@ -352,3 +352,20 @@ def test_executor_completions_are_signed_with_a_secret_the_agent_holds():
     agent_env = _override()["services"]["agent"]["environment"]
     assert "CFOP_COMPLETION_SHARED_SECRET" in agent_env, \
         "the agent must hold the secret its completion gate checks"
+
+
+def test_the_secret_block_survives_set_e_with_and_without_optional_keys():
+    """up.sh runs under `set -euo pipefail`. A `[[ ]] && printf` as the last
+    line of the env-file group returned 1 with ANTHROPIC_API_KEY unset and
+    killed up.sh silently (fourth kind run). Run the block as up.sh does."""
+    import subprocess
+    up = (DEMO / "up.sh").read_text()
+    block = re.search(r"^  \{\n.*?^  \} \| kubectl[^\n]*", up, re.M | re.S)
+    assert block, "the cfoperator-secrets env-file block moved; update this test"
+    script = ("set -euo pipefail\nGITHUB_TOKEN=g\nCFOP_COMPLETION_SHARED_SECRET=c\n"
+              + re.sub(r"\| kubectl[^\n]*", "| cat", block.group(0)))
+    for key in ("", "sk-test"):
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                             env={"PATH": "/usr/bin:/bin", "ANTHROPIC_API_KEY": key})
+        assert out.returncode == 0, f"block exits {out.returncode} with ANTHROPIC_API_KEY={key!r}"
+        assert "CFOP_COMPLETION_SHARED_SECRET=c" in out.stdout

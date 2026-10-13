@@ -77,7 +77,9 @@ if [[ "$REMEDIATE" == 1 ]]; then
   {
     printf 'GITHUB_TOKEN=%s\n' "$GITHUB_TOKEN"
     printf 'CFOP_COMPLETION_SHARED_SECRET=%s\n' "$CFOP_COMPLETION_SHARED_SECRET"
-    [[ -n "${ANTHROPIC_API_KEY:-}" ]] && printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY"
+    # An if, not `[[ ]] &&`: with the key unset that returns 1, and as the
+    # group's last command it fails the pipeline under pipefail.
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then printf 'ANTHROPIC_API_KEY=%s\n' "$ANTHROPIC_API_KEY"; fi
   } | kubectl -n cfop-demo create secret generic cfoperator-secrets --from-env-file=/dev/stdin >/dev/null
   export CFOP_DEMO_CONFIG="${CFOP_DEMO_CONFIG:-./demo/config-remediate.yaml}"   # CI: demo/ci/config-e2e.yaml
   note "profile: remediate — executor Jobs run in kind ns cfop-demo, PRs target $CFOP_GIT_REPO"

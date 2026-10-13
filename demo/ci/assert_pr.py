@@ -24,7 +24,6 @@ http://127.0.0.1:9300).
 
 import http.cookiejar
 import json
-from datetime import datetime, timezone
 import os
 import sys
 import time
@@ -59,21 +58,19 @@ def login():
 
 
 # Rows from before this run (a reused local stack) are not this fault's.
-STARTED = datetime.now(timezone.utc)
-
-
-def _created(row):
-    raw = str(row.get("created_at") or "")
-    try:
-        when = datetime.fromisoformat(raw)
-    except ValueError:
-        return None
-    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+# Baseline on ids, not timestamps: the runner's clock and the database's
+# need not agree. The taint row cannot exist yet when this starts, because
+# DemoPodUnschedulable takes a minute or two to fire after fault.sh.
+BASELINE = None
 
 
 def all_rows():
+    global BASELINE
     rows = call("GET", f"{AGENT}/api/remediations?limit=100").get("remediations", [])
-    return [r for r in rows if (_created(r) or STARTED) >= STARTED]
+    if BASELINE is None:
+        BASELINE = max((int(r["id"]) for r in rows), default=0)
+        print(f"  ignoring remediation rows up to #{BASELINE} (they predate this run)", flush=True)
+    return [r for r in rows if int(r["id"]) > BASELINE]
 
 
 def scratch_rows(rows):
