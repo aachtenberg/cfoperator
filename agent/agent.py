@@ -2577,13 +2577,16 @@ class CFOperator:
                 "Staying passive: no investigations, no remediation worker, no console. "
                 f"Retrying every {self.SINGLETON_RETRY_SECONDS}s. Two agents on one database "
                 "produce duplicate investigations, remediation rows and PRs (CFOP-322).")
-            waited = 0
+            # Unreachable mid-wait keeps it passive: another agent has been
+            # seen, so a database outage is no permission to start.
+            waited, next_log = 0, 300
             while state != LOCK_ACQUIRED:
                 sleep(self.SINGLETON_RETRY_SECONDS)
                 waited += self.SINGLETON_RETRY_SECONDS
                 state = self._singleton.try_acquire()
-                if state != LOCK_ACQUIRED and waited % 300 < self.SINGLETON_RETRY_SECONDS:
+                if state != LOCK_ACQUIRED and waited >= next_log:
                     logger.error(f"Still passive after {waited}s: the single-agent lock is {state}")
+                    next_log += 300
         if state == LOCK_ACQUIRED:
             logger.info("Single-agent lock acquired")
         else:
@@ -10046,17 +10049,6 @@ Only return the JSON array, no other text."""
                         max_iterations=max_iterations, event_callback=event_callback,
                         tool_policy=tool_policy,
                     )
-                    provider_key = (
-                        f"{provider_type}/{url}/{model_name}" if url
-                        else f"{provider_type}/{model_name}"
-                    )
-                    self.llm.record_success(provider_key)
-                    self._settle_circuit(circuit, chain_healthy=True)
-                    settled = True
-                    result['backend'] = provider_type
-                    result['model'] = model_name
-                    result['fallback_used'] = idx > 0
-                    return result
                 except Exception as e:
                     last_error = e
                     prev_provider = f"{provider_type}/{model_name}"
@@ -10073,6 +10065,19 @@ Only return the JSON array, no other text."""
                     if kind != 'bad_request':
                         health_failure = True
                     continue
+                # Bookkeeping for an answer stays outside the except above, so
+                # a slip in it can never be counted as that provider failing.
+                provider_key = (
+                    f"{provider_type}/{url}/{model_name}" if url
+                    else f"{provider_type}/{model_name}"
+                )
+                self.llm.record_success(provider_key)
+                self._settle_circuit(circuit, chain_healthy=True)
+                settled = True
+                result['backend'] = provider_type
+                result['model'] = model_name
+                result['fallback_used'] = idx > 0
+                return result
 
             if health_failure:
                 self._settle_circuit(circuit, chain_healthy=False)
@@ -10814,6 +10819,9 @@ IMPORTANT:
                 event_callback=event_callback,
                 tool_policy=tool_policy,
             )
+        except LLMCircuitOpen as e:
+            # The fast-fail says when it lifts; show that, not a 500 (CFOP-321).
+            return {'response': str(e), 'backend': 'none', 'model': 'none', 'tool_calls': 0}
         except RuntimeError as e:
             if "No LLM providers available" in str(e):
                 return {'response': 'No LLM providers available', 'backend': 'none', 'model': 'none', 'tool_calls': 0}

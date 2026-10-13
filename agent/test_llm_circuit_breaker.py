@@ -298,3 +298,15 @@ def test_a_refused_investigation_is_recorded_failed_with_the_reason():
     assert captured['outcome'] == 'failed'
     assert captured['findings']['error'].startswith('LLM circuit open until ')
     assert result['details']['error'] == 'llm_circuit_open'
+
+
+def test_the_console_chat_shows_an_open_circuit_instead_of_failing():
+    op = CFOperator.__new__(CFOperator)
+    op._build_chat_system_context = lambda tool_policy=None: ''
+
+    def refused(**kw):
+        raise LLMCircuitOpen(2_000_000_000.0, "the provider chain kept failing")
+    op._chat_with_tools_with_fallback = refused
+    out = op._handle_chat_with_stream('hi', [], 'auto', None, None)
+    assert out['response'].startswith('LLM circuit open until ')
+    assert out['backend'] == 'none'
