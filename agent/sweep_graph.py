@@ -19,6 +19,7 @@ from typing import Annotated, Any, TypedDict
 from langgraph.constants import Send
 from langgraph.graph import StateGraph, END
 
+from cfshared import tracing
 from ollama_pool import OllamaPool, SWEEP_DURATION, SWEEP_PHASE_DURATION
 
 logger = logging.getLogger("cfoperator.sweep_graph")
@@ -104,6 +105,17 @@ def fan_out_sweeps(state: dict) -> list[Send]:
 
 
 def run_sweep_phase(state: dict) -> dict:
+    """One phase as a ``sweep.{phase}`` span under the caller's ``sweep``
+    (CFOP-385), the same name the sequential path uses. LangGraph runs these
+    on worker threads and copies contextvars into them, which is what keeps
+    the parent; agent/test_sweep_tracing.py fails if an upgrade stops it."""
+    with tracing.span(f"sweep.{state['phase_name']}"):
+        result = _run_sweep_phase(state)
+        tracing.annotate({'cfop.sweep.phase_findings': len(result.get('findings') or [])})
+        return result
+
+
+def _run_sweep_phase(state: dict) -> dict:
     """
     Execute a single sweep phase on a checked-out Ollama instance.
 

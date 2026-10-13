@@ -496,6 +496,27 @@ investigation                       cfop.alert.name / severity / summary (redact
 `served_by`. The `chat` spans follow the OpenTelemetry GenAI semantic
 conventions (`gen_ai.provider.name`, plus the older `gen_ai.system`).
 
+A proactive sweep is one trace too (CFOP-385), with a span per phase. On the
+parallel (Ollama pool) path, the phases run on LangGraph worker threads and keep
+`sweep` as their parent, and the `chat` spans hang directly under the phase.
+
+```
+sweep                               cfop.sweep.mode, findings_raw, findings
+├─ sweep.metrics                    cfop.sweep.phase_findings
+│  └─ llm_chain → chat → execute_tool …
+├─ sweep.logs                       (and sweep.containers / sweep.baseline_drift
+│  └─ llm_chain → …                  / sweep.consolidate_learnings when enabled)
+├─ sweep.embedding_backfill
+├─ sweep.verify_findings            findings the judge kept
+├─ sweep.publish                    post to event_runtime + resolutions
+├─ sweep.report
+├─ sweep.metric_snapshot
+└─ sweep.correlations
+```
+
+A sweep span carries counts, never finding text: findings are model output
+about the operator's systems. `agent/test_sweep_tracing.py` holds that line.
+
 **What a span never carries:** prompt text, completion text, tool arguments or
 tool output. These describe the operator's infrastructure, and a trace store is
 read by more people than the agent's own database. A failed span records the
@@ -505,10 +526,13 @@ through the same secret redaction as tool arguments and is clipped to 200
 characters. `agent/test_llm_tracing.py::test_llm_spans_never_contain_prompts`
 holds this line.
 
-Not traced yet: the direct one-shot calls (node-action planning, the mutation
-judge, correlation analysis and learning extraction), trace context across the
-event_runtime → agent HTTP hop (CFOP-317), and tool spans outside the chat loop
-(CFOP-323).
+Not traced yet:
+- the direct one-shot calls (node-action planning, the mutation judge,
+  correlation analysis and learning extraction; CFOP-386);
+- the phases around an investigation's LLM call (CFOP-387);
+- root spans for console chat, skills and the morning summary (CFOP-388);
+- trace context across the event_runtime → agent HTTP hop (CFOP-317);
+- tool spans outside the chat loop (CFOP-323).
 
 ### Finding traces
 
@@ -516,6 +540,7 @@ In Grafana Explore, on the Tempo datasource:
 
 ```
 { resource.service.name = "cfoperator" && name = "investigation" }
+{ name = "sweep" } >> { name =~ "sweep.*" && duration > 60s }   # a slow sweep phase
 { span.cfop.llm.fallback_used = true }
 { span.gen_ai.request.model = "gemma4:26b" && duration > 30s }
 { status = error && span.gen_ai.operation.name = "chat" }
