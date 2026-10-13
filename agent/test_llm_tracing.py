@@ -70,9 +70,13 @@ class _Transport:
 
     def __init__(self):
         self.script = [
+            # The second call's name is model output carrying the canary: a
+            # name is text the model wrote, not a registered identifier.
             {'message': {'role': 'assistant', 'content': '',
                          'tool_calls': [{'function': {'name': 'k8s_get_pods',
-                                                      'arguments': {'namespace': CANARY}}}]},
+                                                      'arguments': {'namespace': CANARY}}},
+                                        {'function': {'name': f'k8s_get_pods {CANARY}',
+                                                      'arguments': {}}}]},
              'done_reason': 'stop', 'prompt_eval_count': 100, 'eval_count': 7},
             {'message': {'role': 'assistant',
                          'content': f'All good {CANARY}.\nSTATUS: resolved'},
@@ -108,13 +112,14 @@ def _every_string(span):
 
 def test_llm_spans_never_contain_prompts(spans, monkeypatch):
     """The canary is in the system prompt, the user message, the tool's
-    arguments, the tool's result, the completion and the first rung's
-    exception message. It must be in none of the spans."""
+    arguments, the tool's result, a model-emitted tool name, the completion
+    and the first rung's exception message. It must be in none of the spans."""
     result = _walk(_operator(), monkeypatch)
     assert CANARY in result['response']          # the text did flow -- just not here
 
     finished = spans.get_finished_spans()
-    assert len(finished) == 4                    # chain, two rungs, one tool
+    assert len(finished) == 5                    # chain, two rungs, two tool calls
+    assert 'execute_tool unregistered' in {s.name for s in finished}
     leaks = [(s.name, text) for s in finished for text in _every_string(s) if CANARY in text]
     assert leaks == [], f"prompt/completion/tool text reached a span: {leaks}"
 
@@ -143,7 +148,7 @@ def test_each_rung_is_a_child_of_the_chain_with_its_outcome(spans, monkeypatch):
     assert a['gen_ai.usage.input_tokens'] == result['input_tokens'] == 250
     assert a['gen_ai.usage.output_tokens'] == result['output_tokens'] == 27
     assert tuple(a['gen_ai.response.finish_reasons']) == ('stop', 'stop')
-    assert a['cfop.llm.tool_calls'] == 1
+    assert a['cfop.llm.tool_calls'] == 2
     assert a['cfop.llm.stop_reason'] == 'answered'
 
     c = chain.attributes
@@ -194,6 +199,36 @@ def test_investigation_is_the_root_and_carries_the_alert_redacted(spans, monkeyp
     summary = root.attributes['cfop.alert.summary']
     assert 'hunter2' not in summary
     assert len(summary) <= tracing.ALERT_TEXT_LIMIT + 1
+
+
+def test_a_failed_investigation_marks_its_root_span(spans):
+    """_act reports failure in its result, not by raising; the root span
+    must still read as failed, with the outcome and no message."""
+    op = _operator()
+    op._observe_alert = lambda alert: {'alert': alert}
+    op._orient = lambda ctx: ctx
+    op._act = lambda ctx: {'success': False, 'message': f'Investigation failed: {CANARY}',
+                           'details': {'investigation_id': 42, 'outcome': 'failed'}}
+    result = op.run_investigation({'summary': 'x', 'details': {'alertname': 'A'}})
+    assert result['success'] is False
+    (root,) = [s for s in spans.get_finished_spans() if s.name == 'investigation']
+    assert root.status.status_code.name == 'ERROR'
+    assert root.attributes['error.type'] == 'InvestigationFailed'
+    assert root.attributes['cfop.investigation.id'] == 42
+    assert root.attributes['cfop.investigation.outcome'] == 'failed'
+    assert not any(CANARY in text for text in _every_string(root))
+
+
+def test_a_successful_investigation_root_span_is_not_an_error(spans):
+    op = _operator()
+    op._observe_alert = lambda alert: {'alert': alert}
+    op._orient = lambda ctx: ctx
+    op._act = lambda ctx: {'success': True, 'message': 'ok',
+                           'details': {'investigation_id': 7, 'outcome': 'resolved'}}
+    op.run_investigation({'summary': 'x'})
+    (root,) = [s for s in spans.get_finished_spans() if s.name == 'investigation']
+    assert root.status.status_code.name == 'UNSET'
+    assert root.attributes['cfop.investigation.outcome'] == 'resolved'
 
 
 def test_disabled_tracing_changes_nothing(monkeypatch):

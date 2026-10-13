@@ -2776,7 +2776,16 @@ class CFOperator:
             with self._investigation_lock:
                 context = self._observe_alert(alert)
                 context = self._orient(context)
-                return self._act(context)
+                result = self._act(context)
+            # _act reports a failed investigation in its result rather than
+            # raising, so the span has to be told (CodeRabbit on #326).
+            details = result.get('details') if isinstance(result, dict) else None
+            details = details if isinstance(details, dict) else {}
+            tracing.annotate({'cfop.investigation.id': details.get('investigation_id'),
+                              'cfop.investigation.outcome': details.get('outcome')})
+            if isinstance(result, dict) and result.get('success') is False:
+                tracing.mark_error('InvestigationFailed')
+            return result
 
     # The rubric's known-noise list, as a pattern. Matched in run_triage
     # before any model call (CFOP-162): smoke-test-*, tmp-*, Watchdog are
@@ -9632,6 +9641,26 @@ Only return the JSON array, no other text."""
             return False
         return bool((entry.get('schema') or {}).get('mutating'))
 
+    def _traced_tool_name(self, tool_name: Any) -> str:
+        """``tool_name`` if the registry has it, else ``unregistered``.
+
+        A tool name is whatever the model emitted, and nothing stops it
+        emitting a sentence -- prompt or tool-result text included -- which
+        a span would then export in its name (CodeRabbit on #326). The
+        registry's own dict when there is one; registry doubles only have
+        their schemas.
+        """
+        if not isinstance(tool_name, str):
+            return 'unregistered'
+        entries = getattr(self.tools, 'tools', None)
+        if isinstance(entries, dict):
+            return tool_name if tool_name in entries else 'unregistered'
+        try:
+            known = {s.get('function', {}).get('name') for s in self.tools.get_schemas()}
+        except Exception:
+            return 'unregistered'
+        return tool_name if tool_name in known else 'unregistered'
+
     def _dispatch_tool_call(self, tool_name: str, tool_args: dict, *,
                             stats: '_ToolLoopStats', tool_cache: dict,
                             max_result_chars: int, iteration: int,
@@ -9645,10 +9674,12 @@ Only return the JSON array, no other text."""
         """
         # One span per call (CFOP-316): which tool, on which turn, cached or
         # not, and the same result label the metric uses. Never the arguments
-        # or the output -- those are the operator's infrastructure.
-        with tracing.span(f"execute_tool {tool_name}", {
+        # or the output -- those are the operator's infrastructure. The name
+        # is the model's output too, so only a registered one goes on.
+        span_tool = self._traced_tool_name(tool_name) if tracing.enabled() else tool_name
+        with tracing.span(f"execute_tool {span_tool}", {
             'gen_ai.operation.name': 'execute_tool',
-            'gen_ai.tool.name': tool_name,
+            'gen_ai.tool.name': span_tool,
             'cfop.tool.iteration': iteration + 1,
         }):
             if event_callback:

@@ -169,6 +169,20 @@ def annotate(attributes: Mapping[str, Any]) -> None:
         current.set_attributes(_clean(attributes))
 
 
+def mark_error(error_type: str) -> None:
+    """Mark the current span failed without an exception leaving it -- for a
+    call that reports failure in its return value. Class-shaped, like the
+    exception path: a fixed type name, never a message."""
+    if _tracer is None:
+        return
+    from opentelemetry import trace
+    from opentelemetry.trace import Status, StatusCode
+    current = trace.get_current_span()
+    if current.is_recording():
+        current.set_attribute('error.type', error_type)
+        current.set_status(Status(StatusCode.ERROR, error_type))
+
+
 def alert_text(text: Any, limit: int = ALERT_TEXT_LIMIT) -> Optional[str]:
     """An alert's free text, fit for a span: secret-shaped spans redacted
     with the same rules tool arguments get, then clipped to ``limit``."""
