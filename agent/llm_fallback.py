@@ -88,6 +88,7 @@ class ChainCircuitBreaker:
     DEFAULT_FAILURE_THRESHOLD = 3
     DEFAULT_WINDOW_SECONDS = 1800
     DEFAULT_COOLDOWN_SECONDS = 300
+    MAX_SECONDS = 7 * 86400  # window and cooldown ceiling
 
     def __init__(self, failure_threshold: int = DEFAULT_FAILURE_THRESHOLD,
                  window_seconds: float = DEFAULT_WINDOW_SECONDS,
@@ -107,8 +108,10 @@ class ChainCircuitBreaker:
     def from_config(cls, cfg: Optional[Dict[str, Any]], **kwargs) -> "ChainCircuitBreaker":
         """Build from ``llm.circuit_breaker``; absent keys take the defaults.
 
-        A value that is not a non-negative number falls back to its default
-        with a warning rather than failing the boot over a typo.
+        A value that is not a non-negative number, or a duration over
+        MAX_SECONDS, falls back to its default with a warning rather than
+        failing the boot over a typo. The ceiling also keeps the reopen time
+        a representable timestamp.
         """
         cfg = cfg if isinstance(cfg, dict) else {}
         values = {}
@@ -120,7 +123,9 @@ class ChainCircuitBreaker:
                 value = int(raw) if key == "failure_threshold" else float(raw)
                 if isinstance(raw, bool) or not math.isfinite(value) or value < 0:
                     raise ValueError(raw)
-            except (TypeError, ValueError):
+                if key != "failure_threshold" and value > cls.MAX_SECONDS:
+                    raise ValueError(raw)
+            except (TypeError, ValueError, OverflowError):
                 _log("warn", "Invalid llm.circuit_breaker value, using default",
                      key=key, value=str(raw), default=default)
                 value = default

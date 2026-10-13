@@ -152,6 +152,10 @@ def test_config_defaults_and_bad_values():
     b = ChainCircuitBreaker.from_config({'failure_threshold': 'lots', 'window_seconds': -1,
                                          'cooldown_seconds': True})
     assert (b.failure_threshold, b.window_seconds, b.cooldown_seconds) == (3, 1800, 300)
+    assert (b.failure_threshold, b.window_seconds, b.cooldown_seconds) == (3, 1800, 300)
+    b = ChainCircuitBreaker.from_config({'failure_threshold': float('inf'),
+                                         'cooldown_seconds': 1e20})
+    assert (b.failure_threshold, b.window_seconds, b.cooldown_seconds) == (3, 1800, 300)
     b = ChainCircuitBreaker.from_config({'window_seconds': 'nan', 'cooldown_seconds': float('inf')})
     assert (b.failure_threshold, b.window_seconds, b.cooldown_seconds) == (3, 1800, 300)
 
