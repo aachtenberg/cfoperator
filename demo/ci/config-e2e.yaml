@@ -29,7 +29,10 @@ database:
   password: ${POSTGRES_PASSWORD}
 
 # The FIX validator only accepts a gitops target whose repo is in the
-# registry (CFOP-85). github_stub.py serves exactly this repo.
+# registry (CFOP-85). github_stub.py serves exactly this repo. api_url is the
+# agent's own GitHub tools (tools/__init__.py), which the FIX observed check
+# reads the target file through; remediation.executor.github_api_url below is
+# the executor's.
 git:
   github:
     api_url: ${CFOP_E2E_GITHUB_URL}

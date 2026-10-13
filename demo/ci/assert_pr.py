@@ -72,6 +72,15 @@ def main():
                 login()
                 logged_in = True
             rows = scratch_rows()
+        except urllib.error.HTTPError as e:
+            # A 4xx is an answer, not an agent still booting: fail with it
+            # rather than retrying until the timeout hides it.
+            if 400 <= e.code < 500:
+                sys.exit(f"FAIL: {e.code} from {e.url}: {e.read()[:500]!r}")
+            print(f"  ...agent not ready ({e})", flush=True)
+            logged_in = False
+            time.sleep(15)
+            continue
         except (urllib.error.URLError, OSError, ValueError) as e:
             print(f"  ...agent not ready ({e})", flush=True)
             logged_in = False
@@ -84,7 +93,10 @@ def main():
             if r.get("status") in AWAITING_APPROVAL and r["id"] not in approved:
                 print(f"  approving row #{r['id']} ({r.get('status')}, "
                       f"{r.get('remediation_class')}, last_error={r.get('last_error')!r})", flush=True)
-                call("POST", f"{AGENT}/api/remediations/{r['id']}/approve", {})
+                try:
+                    call("POST", f"{AGENT}/api/remediations/{r['id']}/approve", {})
+                except urllib.error.HTTPError as e:
+                    sys.exit(f"FAIL: approve #{r['id']} answered {e.code}: {e.read()[:500]!r}")
                 approved.add(r["id"])
         summary = ", ".join(f"#{r['id']}={r.get('status')}" for r in rows) or "none yet"
         print(f"  ...waiting for a PR (rows for {REPO}: {summary})", flush=True)
