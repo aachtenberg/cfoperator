@@ -416,7 +416,10 @@ def run_gitops(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any
         raise RuntimeError("GITHUB_TOKEN unset; cannot remediate")
     if not repo:
         raise RuntimeError("no target repo configured (CFOP_GIT_REPO)")
-    client = GitHubClient(token)
+    # GITHUB_API_URL is the name GitHub Actions and Enterprise use; unset is
+    # api.github.com. The kind e2e points it at a stub (CFOP-315).
+    api_url = (env.get("GITHUB_API_URL") or "").strip()
+    client = GitHubClient(token, api_url) if api_url else GitHubClient(token)
     llm = make_llm(env)
 
     # Pass 1 — pick the target file from the repo's real manifest list.

@@ -71,7 +71,7 @@ if [[ "$REMEDIATE" == 1 ]]; then
   kubectl -n cfop-demo create secret generic cfoperator-secrets \
     --from-literal=GITHUB_TOKEN="$GITHUB_TOKEN" \
     ${ANTHROPIC_API_KEY:+--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} >/dev/null
-  export CFOP_DEMO_CONFIG=./demo/config-remediate.yaml
+  export CFOP_DEMO_CONFIG="${CFOP_DEMO_CONFIG:-./demo/config-remediate.yaml}"   # CI: demo/ci/config-e2e.yaml
   note "profile: remediate — executor Jobs run in kind ns cfop-demo, PRs target $CFOP_GIT_REPO"
 fi
 

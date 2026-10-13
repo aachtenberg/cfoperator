@@ -199,3 +199,135 @@ def test_up_sh_hands_off_with_the_shipped_attach_verb():
     verb = re.search(r'AttachVerb\s*=\s*"([a-z]+)"', go).group(1)
     assert f"cfassist {verb} " in (DEMO / "up.sh").read_text(), \
         "up.sh must end at the cockpit hand-off line"
+
+
+# ── the PR leg (CFOP-315) ────────────────────────────────────────────────────
+
+def _load(name):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(name, DEMO / "ci" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _github_paths_the_executor_requests():
+    """(method, path-template) for every request executor/github.py makes."""
+    src = (REPO / "executor" / "github.py").read_text()
+    calls = re.findall(r'request\(\s*"([A-Z]+)",\s*f"([^"]+)"', src)
+    assert len(calls) >= 6, f"found only {calls}; did the call style change?"
+    return [(m, re.sub(r"\{[^}]*\}", "X", p).split("?")[0]) for m, p in calls]
+
+
+def test_the_github_stub_serves_every_call_the_executor_makes():
+    """A new executor call the stub does not serve would 404 in the e2e, and
+    the executor reports most failures as a soft needs-human, not a crash."""
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    stub = _load("github_stub")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), stub.Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        for method, template in _github_paths_the_executor_requests():
+            path = (template.replace("/repos/X", f"/repos/{stub.REPO}", 1)
+                    .replace("X", "nope"))
+            body = json.dumps({}).encode() if method in ("POST", "PUT") else None
+            req = urllib.request.Request(base + path, data=body, method=method)
+            try:
+                urllib.request.urlopen(req, timeout=5)
+            except urllib.error.HTTPError as e:
+                detail = json.loads(e.read() or b"{}").get("message", "")
+                # A served route may still say Not Found (unknown branch,
+                # file or sha). Only the stub's own no-route answer means the
+                # executor's call has nowhere to go.
+                assert not detail.startswith("stub: no route"), \
+                    f"github_stub.py has no route for the executor's {method} {template}"
+    finally:
+        server.shutdown()
+
+
+def test_the_e2e_executor_end_to_end_against_both_stubs():
+    """The executor's real gitops path, against the real stubs: it picks the
+    seeded manifest, applies the stub's diff and opens a PR carrying the
+    toleration. If the LLM stub's diff stops applying to the GitHub stub's
+    seed, the kind e2e would fail 20 minutes in; this fails in a second."""
+    import json
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    llm, gh = _load("llm_stub"), _load("github_stub")
+    servers = [ThreadingHTTPServer(("127.0.0.1", 0), m.Handler) for m in (llm, gh)]
+    for s in servers:
+        threading.Thread(target=s.serve_forever, daemon=True).start()
+    sys.path.insert(0, str(REPO / "executor"))
+    try:
+        import entrypoint
+        env = {
+            "GITHUB_TOKEN": "x", "GITHUB_API_URL": f"http://127.0.0.1:{servers[1].server_port}",
+            "CFOP_GIT_REPO": gh.REPO, "CFOP_EXEC_LLM_BACKEND": "openai",
+            "CFOP_EXEC_LLM_MODEL": "demo-stub",
+            "CFOP_EXEC_LLM_BASE_URL": f"http://127.0.0.1:{servers[0].server_port}/v1",
+            "CFOP_TEMPLATES_DIR": str(REPO / "executor" / "templates"),
+            "CFOP_REMEDIATION_JSON": json.dumps({
+                "id": 1, "remediation_class": "gitops-patch",
+                "payload": {"recommendation": llm.RECOMMENDATION, "repo": gh.REPO}}),
+        }
+        out = entrypoint.run(env)
+        assert out["status"] == "pr-open", out
+        pulls = json.load(urllib.request.urlopen(
+            f"http://127.0.0.1:{servers[1].server_port}/_stub/pulls"))
+        assert [p["html_url"] for p in pulls] == [out["pr_url"]]
+        assert "key: cfop-demo" in pulls[0]["files"][gh.SEED_PATH]
+    finally:
+        for s in servers:
+            s.shutdown()
+        sys.path.remove(str(REPO / "executor"))
+
+
+def test_the_stubs_and_configs_agree_on_the_scratch_repo():
+    llm, gh = _load("llm_stub"), _load("github_stub")
+    assert llm.REPO == gh.REPO and llm.SEED_PATH == gh.SEED_PATH
+    e2e = yaml.safe_load(re.sub(r"\$\{[^}]*\}", "x", (DEMO / "ci" / "config-e2e.yaml").read_text()))
+    assert gh.REPO in [r["github"] for r in e2e["git"]["repos"]], \
+        "the FIX validator refuses a gitops target whose repo is not registered (CFOP-85)"
+    assert e2e["remediation"]["executor"]["git_repo"] == gh.REPO
+    assert e2e["remediation"]["executor"]["image_pull_policy"] == "Never", \
+        "the e2e must run the executor it built, not pull :main"
+    fault = (DEMO / "fault.sh").read_text()
+    key = re.search(r"^TAINT_KEY=(\S+)", fault, re.M).group(1)
+    assert key == llm.TAINT
+    for cfg in ("config-remediate.yaml", "ci/config-e2e.yaml"):
+        doc = yaml.safe_load(re.sub(r"\$\{[^}]*\}", "x", (DEMO / cfg).read_text()))
+        tol = doc["remediation"]["executor"].get("tolerations") or []
+        assert any(t.get("key") == key for t in tol), \
+            f"{cfg}: fault.sh taints every node; the executor Job could never schedule"
+
+
+def test_the_e2e_config_is_the_remediate_config_plus_the_stubs():
+    """Two copies drift. Anything the remediate variant sets, the e2e sets the
+    same, except what the stubs replace."""
+    def load(name):
+        return yaml.safe_load(re.sub(r"\$\{[^}]*\}", "x", (DEMO / name).read_text()))
+    base, e2e = load("config-remediate.yaml"), load("ci/config-e2e.yaml")
+    assert e2e["profile"] == base["profile"]
+    for flag, value in base["remediation"].items():
+        if flag != "executor":
+            assert e2e["remediation"].get(flag) == value, flag
+    for key in ("namespace", "completion_base_url"):
+        assert e2e["remediation"]["executor"][key] == base["remediation"]["executor"][key]
+
+
+def test_the_pending_stub_answer_is_a_fix_the_queue_accepts():
+    llm, gh = _load("llm_stub"), _load("github_stub")
+    mod = sys.modules[CFOperator.__module__]
+    fix = mod._parse_structured_fix(llm.PENDING_RESPONSE, [{"name": "scratch", "github": gh.REPO}])
+    assert fix, "the validator refused the stub's FIX; the taint row would never queue"
+    hints = mod._hints_from_structured_fix(fix)
+    assert hints["remediation_class"] == "gitops-patch" and hints["repo"] == gh.REPO
+    assert CFOperator._extract_status(llm.PENDING_RESPONSE) == "needs_action"

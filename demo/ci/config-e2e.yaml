@@ -1,0 +1,64 @@
+# The demo CI e2e's config (CFOP-315): demo/config-remediate.yaml, with the
+# PR leg pointed at the runner's stubs instead of GitHub and a hosted model.
+#
+#   CFOP_DEMO_CONFIG=./demo/ci/config-e2e.yaml demo/up.sh --remediate
+#
+# CFOP_E2E_GITHUB_URL and CFOP_E2E_LLM_URL are github_stub.py and
+# llm_stub.py's OpenAI-compatible root, addressed through kind's docker
+# network gateway. That one address works from the compose agent (also on
+# the kind network) and from executor Jobs inside kind. Keep this file in
+# step with config-remediate.yaml; test_demo_kind.py compares the two.
+
+profile: remediate
+
+llm:
+  backend: ollama
+  url: ${OLLAMA_URL}
+  model: ${OLLAMA_MODEL}
+
+prometheus:
+  url: ${PROMETHEUS_URL}
+
+alertmanager:
+  url: ${ALERTMANAGER_URL}
+
+database:
+  host: ${POSTGRES_HOST}
+  database: ${POSTGRES_DB}
+  user: ${POSTGRES_USER}
+  password: ${POSTGRES_PASSWORD}
+
+# The FIX validator only accepts a gitops target whose repo is in the
+# registry (CFOP-85). github_stub.py serves exactly this repo.
+git:
+  github:
+    api_url: ${CFOP_E2E_GITHUB_URL}
+  repos:
+    - name: scratch
+      github: cfop-demo/scratch
+      branch: main
+
+remediation:
+  queue_feed: true
+  queue_drain: true
+  queue_reap: true
+  queue_verify: true
+  executor:
+    namespace: cfop-demo
+    completion_base_url: http://cfop-demo-agent:8083/v1/remediations
+    git_repo: cfop-demo/scratch
+    # Built from this checkout and `kind load`ed by the workflow. Never
+    # pulled: an e2e that fetched :main would test the last release, not the
+    # change under test.
+    image: cfoperator-executor:e2e
+    image_pull_policy: Never
+    github_api_url: ${CFOP_E2E_GITHUB_URL}
+    # fault.sh taint puts NoSchedule on every node, the executor's included.
+    tolerations:
+      - key: cfop-demo
+        operator: Exists
+        effect: NoSchedule
+    llm:
+      backend: openai
+      model: demo-stub
+      base_url: ${CFOP_E2E_LLM_URL}
