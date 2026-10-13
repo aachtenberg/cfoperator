@@ -270,6 +270,7 @@ def test_the_e2e_executor_end_to_end_against_both_stubs():
         import entrypoint
         env = {
             "GITHUB_TOKEN": "x", "GITHUB_API_URL": f"http://127.0.0.1:{servers[1].server_port}",
+            "CFOP_EXEC_GITHUB_ALLOW_HTTP": "true",  # what config-e2e.yaml's opt-in sets
             "CFOP_GIT_REPO": gh.REPO, "CFOP_EXEC_LLM_BACKEND": "openai",
             "CFOP_EXEC_LLM_MODEL": "demo-stub",
             "CFOP_EXEC_LLM_BASE_URL": f"http://127.0.0.1:{servers[0].server_port}/v1",

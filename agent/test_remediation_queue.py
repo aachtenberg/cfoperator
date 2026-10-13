@@ -195,6 +195,13 @@ def test_build_executor_manifest_pull_policy_and_github_api_are_configurable():
     assert container["imagePullPolicy"] == "IfNotPresent"
     env = {e["name"]: e for e in container["env"]}
     assert env["GITHUB_API_URL"]["value"] == "http://stub:9000"
+    assert "CFOP_EXEC_GITHUB_ALLOW_HTTP" not in env, "http is opt-in, not implied by the URL"
+
+    op._executor_config.return_value = {"github_api_url": "http://stub:9000",
+                                        "github_api_allow_http": True}
+    m = CFOperator._build_executor_manifest(op, "cfop-executor-e2e", work)
+    env = {e["name"]: e for e in m["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert env["CFOP_EXEC_GITHUB_ALLOW_HTTP"]["value"] == "true"
 
     op._executor_config.return_value = {}
     m = CFOperator._build_executor_manifest(op, "cfop-executor-prod", work)

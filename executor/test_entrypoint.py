@@ -332,7 +332,9 @@ def test_run_gitops_talks_to_the_github_api_it_is_given():
         return client
 
     llm = _SeqLLM(["k8s/base/apps/ollama.yaml", _DIFF_REPORT])
-    for extra, want in (({"GITHUB_API_URL": "http://stub:9000/"}, "http://stub:9000"),
+    for extra, want in (({"GITHUB_API_URL": "http://stub:9000/",
+                          "CFOP_EXEC_GITHUB_ALLOW_HTTP": "true"}, "http://stub:9000"),
+                        ({"GITHUB_API_URL": "https://ghe.example/api/v3"}, "https://ghe.example/api/v3"),
                         ({}, "https://api.github.com")):
         llm = _SeqLLM(["k8s/base/apps/ollama.yaml", _DIFF_REPORT])
         with patch.object(entrypoint, "GitHubClient", side_effect=capture), \
@@ -343,3 +345,13 @@ def test_run_gitops_talks_to_the_github_api_it_is_given():
                           return_value={"status": "opened", "html_url": "http://pr/1", "pr_number": 1}):
             run({**_env(), **extra})
         assert seen[-1] == want
+
+
+def test_run_gitops_refuses_to_send_the_token_over_plain_http():
+    env = {**_env(), "GITHUB_API_URL": "http://ghe.example/api/v3"}
+    with patch.object(entrypoint, "make_llm") as make_llm, \
+         patch.object(entrypoint, "list_repo_files") as list_files:
+        with pytest.raises(RuntimeError, match="not https"):
+            run(env)
+    make_llm.assert_not_called()
+    list_files.assert_not_called()

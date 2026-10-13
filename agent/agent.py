@@ -4774,6 +4774,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         ]
         if github_api_url:
             env.append({"name": "GITHUB_API_URL", "value": github_api_url})
+            if ec.get('github_api_allow_http') is True:
+                env.append({"name": "CFOP_EXEC_GITHUB_ALLOW_HTTP", "value": "true"})
         # node-action only: opt in + mount the SSH key so the executor can run a
         # guarded command plan on a host. GitOps classes stay PR-only (no mount).
         volumes: List[Dict[str, Any]] = []

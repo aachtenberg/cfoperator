@@ -618,6 +618,8 @@ remediation:
   #                               # loaded image (the kind e2e builds its own)
   #   github_api_url: ""          # unset = api.github.com; set for GitHub
   #                               # Enterprise, or a stub (passed as GITHUB_API_URL)
+  #   github_api_allow_http: false  # true lets an http:// github_api_url carry
+  #                               # GITHUB_TOKEN in cleartext; local stubs only
   #   tolerations: []             # verbatim onto the Job's pod spec. Needed
   #                               # when every node carries a NoSchedule taint,
   #                               # or the Job sits Pending until its deadline

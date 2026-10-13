@@ -56,6 +56,9 @@ remediation:
     image: cfoperator-executor:e2e
     image_pull_policy: Never
     github_api_url: ${CFOP_E2E_GITHUB_URL}
+    # The stub is plain HTTP on the kind gateway, and its token is a dummy.
+    # Anything real stays https: the executor refuses http without this.
+    github_api_allow_http: true
     # fault.sh taint puts NoSchedule on every node, the executor's included.
     tolerations:
       - key: cfop-demo
