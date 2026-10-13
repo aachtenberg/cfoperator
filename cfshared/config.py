@@ -168,6 +168,11 @@ DEFAULT_CONFIG: dict = {
         # config that already made a choice.
         "containers": [],
         "notifications": [],
+        # OpenTelemetry spans for investigations and LLM calls (CFOP-316). Off
+        # means the SDK is never imported (cfshared/tracing.py). `endpoint` and
+        # `service_name` are optional: absent, the exporter reads
+        # OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME like any OTel app.
+        "tracing": {"enabled": False},
     },
 
     "llm": {

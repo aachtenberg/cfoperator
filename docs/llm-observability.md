@@ -433,6 +433,94 @@ sum by (type) (
 )
 ```
 
+## Tracing (OpenTelemetry, opt-in)
+
+The metrics above say how the LLM layer behaves in aggregate. A trace says
+where one investigation's time went: which rung of the fallback chain answered,
+how long each failed rung took before it gave up, and which tool calls the
+model waited on.
+
+Tracing is **off by default**, and off means absent: the OpenTelemetry SDK is
+never imported, no exporter exists and nothing dials out. Only
+`cfshared/tracing.py` imports it, and `tests/test_tracing.py` fails if anything
+else does.
+
+### Turning it on
+
+```yaml
+observability:
+  tracing:
+    enabled: true
+    # Both optional. Without them the exporter reads the standard
+    # OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_SERVICE_NAME.
+    # endpoint: http://tempo.monitoring.svc.cluster.local:4318
+    # service_name: cfoperator
+```
+
+Spans go out as OTLP over HTTP (port 4318), batched in the background. A
+deployment usually leaves `endpoint` unset and sets the env var on the
+workload, so the same config file works wherever it is mounted:
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: http://tempo.monitoring.svc.cluster.local:4318
+```
+
+### The pipeline: OTLP straight to Tempo
+
+```
+cfoperator ──OTLP/HTTP :4318──▶ Tempo ◀── Grafana (Tempo datasource:
+                                           trace view, TraceQL, span → Loki logs)
+```
+
+Tempo accepts OTLP natively, so no collector sits in between. Add an
+OpenTelemetry Collector when there is a concrete job for it: tail sampling,
+fan-out to a second backend, or scrubbing attributes. Then point
+`OTEL_EXPORTER_OTLP_ENDPOINT` at the collector instead, with nothing else
+changed. The homelab's Tempo is deployed by `homelab-infra`
+(`k3s/base/monitoring/tempo-statefulset.yml`, HOMELAB-33).
+
+### What a trace contains
+
+```
+investigation                       cfop.alert.name / severity / summary (redacted, clipped)
+└─ llm_chain                        chain_length, answered_by, rungs_tried, fallback_used
+   ├─ chat gemma4:26b    ERROR      error.type=ReadTimeout, cfop.llm.error_kind=timeout
+   └─ chat deepseek-chat            gen_ai.usage.input_tokens / output_tokens,
+      ├─ execute_tool k8s_get_pods      gen_ai.response.finish_reasons, cfop.llm.stop_reason
+      └─ execute_tool loki_query        gen_ai.tool.name, cfop.tool.cached, cfop.tool.result
+```
+
+`triage` is a root span of the same shape, with `cfop.triage.action` and
+`served_by`. The `chat` spans follow the OpenTelemetry GenAI semantic
+conventions (`gen_ai.provider.name`, plus the older `gen_ai.system`).
+
+**What a span never carries:** prompt text, completion text, tool arguments or
+tool output. These describe the operator's infrastructure, and a trace store is
+read by more people than the agent's own database. A failed span records the
+exception's class, never its message, because a provider's error body can
+quote the request. The one piece of free text is the alert summary, which goes
+through the same secret redaction as tool arguments and is clipped to 200
+characters. `agent/test_llm_tracing.py::test_llm_spans_never_contain_prompts`
+holds this line.
+
+Not traced yet: the direct one-shot calls (node-action planning, the mutation
+judge, correlation analysis and learning extraction), trace context across the
+event_runtime → agent HTTP hop (CFOP-317), and tool spans outside the chat loop
+(CFOP-323).
+
+### Finding traces
+
+In Grafana Explore, on the Tempo datasource:
+
+```
+{ resource.service.name = "cfoperator" && name = "investigation" }
+{ span.cfop.llm.fallback_used = true }
+{ span.gen_ai.request.model = "gemma4:26b" && duration > 30s }
+{ status = error && span.gen_ai.operation.name = "chat" }
+```
+
 ## Next Steps
 
 1. Add LLM metrics to Grafana dashboard
