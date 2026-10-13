@@ -125,7 +125,7 @@ def bare_agent(monkeypatch):
     # (bare module under CI's PYTHONPATH, package from the repo root).
     agent_mod = sys.modules[CFOperator.__module__]
     op = CFOperator.__new__(CFOperator)
-    op._db_url = "postgresql://x"
+    op._db_params = {"host": "x"}
     return agent_mod, op
 
 
@@ -137,6 +137,19 @@ def test_a_held_lock_keeps_the_agent_passive_until_it_frees(bare_agent, monkeypa
     op._claim_singleton(sleep=sleeps.append)
     assert len(sleeps) == 3, "an unreachable database mid-wait is not permission to start"
     assert seq.states == []
+
+
+def test_the_agent_hands_the_lock_keywords_not_a_url(bare_agent, monkeypatch):
+    """A raw password in a URL is misparsed by libpq, and the lock then reads
+    as "unreachable" and the agent runs unguarded (CFOP-383, production)."""
+    agent_mod, op = bare_agent
+    op._db_params = {"host": "db", "port": 5432, "dbname": "kb",
+                     "user": "sre_agent", "password": "p@ss/w:rd"}
+    seen = []
+    monkeypatch.setattr(agent_mod, "AgentSingletonLock",
+                        lambda conninfo: seen.append(conninfo) or _Seq(ACQUIRED))
+    op._claim_singleton(sleep=lambda s: None)
+    assert seen == [op._db_params]
 
 
 def test_an_unreachable_database_at_boot_does_not_block_startup(bare_agent, monkeypatch):

@@ -19,7 +19,7 @@ minute instead.
 """
 
 import logging
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -41,25 +41,38 @@ _KEEPALIVES = (
 )
 
 
-def _psycopg_connect(dsn: str):
+def _psycopg_connect(conninfo: Union[str, Dict[str, Any]]):
+    """Connect from a libpq DSN/URI string, or from keyword parameters.
+
+    The agent passes keywords. Its database URL is an f-string with the
+    password interpolated raw, and a password holding ``@``, ``/`` or ``:``
+    parses as a different host under libpq's URI rules. SQLAlchemy happens to
+    cope with that, so the knowledge base worked while this connection failed,
+    read as "database unreachable", and left the agent running unguarded in
+    production (CFOP-383). Keywords are never parsed.
+    """
     import psycopg
     # Client-side keepalives and tcp_user_timeout too: check() runs on the
     # agent's main loop, and a network that black-holes packets would
     # otherwise leave its SELECT 1 waiting on the kernel's retransmit timer.
-    return psycopg.connect(dsn, autocommit=True, connect_timeout=10,
-                           keepalives=1, keepalives_idle=30, keepalives_interval=10,
-                           keepalives_count=3, tcp_user_timeout=60000)
+    opts = dict(autocommit=True, connect_timeout=10, keepalives=1, keepalives_idle=30,
+                keepalives_interval=10, keepalives_count=3, tcp_user_timeout=60000)
+    if isinstance(conninfo, dict):
+        return psycopg.connect(**{**conninfo, **opts})
+    return psycopg.connect(conninfo, **opts)
 
 
 class AgentSingletonLock:
     """The single-agent claim, held on a dedicated connection.
 
-    ``connect`` takes a libpq DSN and returns an autocommit DB-API connection;
-    tests inject one.
+    ``conninfo`` is a libpq DSN/URI or a dict of libpq keyword parameters
+    (host, port, dbname, user, password). ``connect`` takes it and returns an
+    autocommit DB-API connection; tests inject one.
     """
 
-    def __init__(self, dsn: str, connect: Optional[Callable[[str], Any]] = None):
-        self._dsn = dsn
+    def __init__(self, conninfo: Union[str, Dict[str, Any]],
+                 connect: Optional[Callable[[Any], Any]] = None):
+        self._dsn = conninfo
         self._connect = connect or _psycopg_connect
         self._conn = None
 
