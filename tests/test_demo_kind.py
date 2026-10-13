@@ -347,7 +347,8 @@ def test_executor_completions_are_signed_with_a_secret_the_agent_holds():
     builder = inspect.getsource(CFOperator._build_executor_manifest)
     key = re.search(r'"CFOP_COMPLETION_TOKEN".*?"key": "([A-Z_]+)"', builder).group(1)
     up = (DEMO / "up.sh").read_text()
-    assert f"--from-literal={key}=" in up, f"up.sh never puts {key} in cfoperator-secrets"
+    assert re.search(rf"printf '{key}=%s", up), f"up.sh never puts {key} in cfoperator-secrets"
+    assert "--from-literal" not in up, "secrets on kubectl's argv are visible to every local process"
     agent_env = _override()["services"]["agent"]["environment"]
     assert "CFOP_COMPLETION_SHARED_SECRET" in agent_env, \
         "the agent must hold the secret its completion gate checks"

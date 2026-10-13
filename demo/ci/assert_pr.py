@@ -24,6 +24,7 @@ http://127.0.0.1:9300).
 
 import http.cookiejar
 import json
+from datetime import datetime, timezone
 import os
 import sys
 import time
@@ -57,8 +58,22 @@ def login():
                                      "password": password})
 
 
+# Rows from before this run (a reused local stack) are not this fault's.
+STARTED = datetime.now(timezone.utc)
+
+
+def _created(row):
+    raw = str(row.get("created_at") or "")
+    try:
+        when = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
 def all_rows():
-    return call("GET", f"{AGENT}/api/remediations?limit=100").get("remediations", [])
+    rows = call("GET", f"{AGENT}/api/remediations?limit=100").get("remediations", [])
+    return [r for r in rows if (_created(r) or STARTED) >= STARTED]
 
 
 def scratch_rows(rows):
@@ -91,7 +106,7 @@ def main():
             every = all_rows()
             rows = scratch_rows(every)
             lost = degraded_taint_row(every)
-            if lost and not rows:
+            if lost:
                 sys.exit(f"FAIL: the taint recommendation became manual row #{lost['id']} "
                          f"(repo {(lost.get('payload') or {}).get('repo')!r}): the agent refused "
                          "its FIX. Look for 'FIX rejected' in the agent log.")
