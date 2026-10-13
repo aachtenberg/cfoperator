@@ -329,6 +329,11 @@ def test_the_pending_stub_answer_is_a_fix_the_queue_accepts():
     mod = sys.modules[CFOperator.__module__]
     fix = mod._parse_structured_fix(llm.PENDING_RESPONSE, [{"name": "scratch", "github": gh.REPO}])
     assert fix, "the validator refused the stub's FIX; the taint row would never queue"
+    # The agent re-reads the target and rejects a FIX whose observed values
+    # contradict it (CFOP-89). The first kind run died exactly here.
+    seed = (DEMO / "manifests" / "pending.yaml").read_text()
+    checked = mod._check_observed_against_targets(fix, lambda repo, path: seed)
+    assert checked["status"] != "contradicted", checked["reason"]
     hints = mod._hints_from_structured_fix(fix)
     assert hints["remediation_class"] == "gitops-patch" and hints["repo"] == gh.REPO
     assert CFOperator._extract_status(llm.PENDING_RESPONSE) == "needs_action"

@@ -57,9 +57,26 @@ def login():
                                      "password": password})
 
 
-def scratch_rows():
-    rows = call("GET", f"{AGENT}/api/remediations?limit=100").get("remediations", [])
+def all_rows():
+    return call("GET", f"{AGENT}/api/remediations?limit=100").get("remediations", [])
+
+
+def scratch_rows(rows):
     return [r for r in rows if (r.get("payload") or {}).get("repo") == REPO]
+
+
+def degraded_taint_row(rows):
+    """A row for the taint fault that lost its repo and class on the way.
+
+    That is a FIX the agent refused, so the recommendation fell to the
+    classifier and parked as manual. Approving it would 409, and waiting
+    would only time out, so say what happened instead.
+    """
+    for r in rows:
+        rec = str((r.get("payload") or {}).get("recommendation") or "")
+        if "pending.yaml" in rec and r.get("remediation_class") == "manual":
+            return r
+    return None
 
 
 def main():
@@ -71,7 +88,13 @@ def main():
             if not logged_in:
                 login()
                 logged_in = True
-            rows = scratch_rows()
+            every = all_rows()
+            rows = scratch_rows(every)
+            lost = degraded_taint_row(every)
+            if lost and not rows:
+                sys.exit(f"FAIL: the taint recommendation became manual row #{lost['id']} "
+                         f"(repo {(lost.get('payload') or {}).get('repo')!r}): the agent refused "
+                         "its FIX. Look for 'FIX rejected' in the agent log.")
         except urllib.error.HTTPError as e:
             # A 4xx is an answer, not an agent still booting: fail with it
             # rather than retrying until the timeout hides it.

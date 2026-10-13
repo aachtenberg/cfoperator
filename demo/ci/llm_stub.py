@@ -67,9 +67,14 @@ RECOMMENDATION = (f"Add a toleration for the {TAINT}=fault:NoSchedule taint to "
 
 PENDING_FIX = {
     "targets": [{"kind": "gitops-manifest", "id": SEED_PATH, "repo": REPO}],
-    "observed": [{"source": "kubectl -n demo-faults describe pod",
-                  "value": f"0/1 nodes are available: 1 node(s) had untolerated taint "
-                           f"{{{TAINT}: fault}}"}],
+    # What was READ in the file being changed (CFOP-88). The agent re-reads
+    # the target and checks these against it (CFOP-89), so they must quote
+    # the seed file. A scheduler message here was rejected: its
+    # "{cfop-demo: fault}" parsed as an assignment and disagreed with a YAML
+    # comment in the file (first kind run of this e2e).
+    "observed": [{"source": f"{SEED_PATH} in {REPO}", "value": "restartPolicy: Always"},
+                 {"source": f"{SEED_PATH} in {REPO}",
+                  "value": "spec declares no tolerations"}],
     "steps": [RECOMMENDATION],
     "verify": {"command": "kubectl -n demo-faults get pods -l fault=pending",
                "expect": "Running"},
