@@ -68,8 +68,14 @@ if [[ "$REMEDIATE" == 1 ]]; then
   say "Preparing executor namespace + secrets (remediate variant)"
   kubectl apply -f demo/manifests/executor-setup.yaml >/dev/null
   kubectl -n cfop-demo delete secret cfoperator-secrets --ignore-not-found >/dev/null
+  # Executor Jobs post their result back to the agent with this shared secret.
+  # With console auth on, the agent's gate 401s every completion unless one
+  # is configured on both sides (first kind run of the CFOP-315 e2e). One
+  # value, two places: this Secret, and the agent's env via the demo override.
+  export CFOP_COMPLETION_SHARED_SECRET="${CFOP_COMPLETION_SHARED_SECRET:-$(python3 -c 'import secrets; print(secrets.token_hex(24))')}"
   kubectl -n cfop-demo create secret generic cfoperator-secrets \
     --from-literal=GITHUB_TOKEN="$GITHUB_TOKEN" \
+    --from-literal=CFOP_COMPLETION_SHARED_SECRET="$CFOP_COMPLETION_SHARED_SECRET" \
     ${ANTHROPIC_API_KEY:+--from-literal=ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"} >/dev/null
   export CFOP_DEMO_CONFIG="${CFOP_DEMO_CONFIG:-./demo/config-remediate.yaml}"   # CI: demo/ci/config-e2e.yaml
   note "profile: remediate — executor Jobs run in kind ns cfop-demo, PRs target $CFOP_GIT_REPO"

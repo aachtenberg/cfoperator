@@ -337,3 +337,17 @@ def test_the_pending_stub_answer_is_a_fix_the_queue_accepts():
     hints = mod._hints_from_structured_fix(fix)
     assert hints["remediation_class"] == "gitops-patch" and hints["repo"] == gh.REPO
     assert CFOperator._extract_status(llm.PENDING_RESPONSE) == "needs_action"
+
+
+def test_executor_completions_are_signed_with_a_secret_the_agent_holds():
+    """With console auth on, the agent 401s an executor's completion POST
+    unless both sides hold CFOP_COMPLETION_SHARED_SECRET. The second kind run
+    opened the PR and then could not report it."""
+    import inspect
+    builder = inspect.getsource(CFOperator._build_executor_manifest)
+    key = re.search(r'"CFOP_COMPLETION_TOKEN".*?"key": "([A-Z_]+)"', builder).group(1)
+    up = (DEMO / "up.sh").read_text()
+    assert f"--from-literal={key}=" in up, f"up.sh never puts {key} in cfoperator-secrets"
+    agent_env = _override()["services"]["agent"]["environment"]
+    assert "CFOP_COMPLETION_SHARED_SECRET" in agent_env, \
+        "the agent must hold the secret its completion gate checks"

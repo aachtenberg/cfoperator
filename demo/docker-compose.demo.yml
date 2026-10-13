@@ -29,6 +29,10 @@ services:
       CFOP_EXECUTOR_NAMESPACE: cfop-demo
       CFOP_EXECUTOR_COMPLETION_BASE_URL: http://cfop-demo-agent:8083/v1/remediations
       CFOP_GIT_REPO: ${CFOP_GIT_REPO:-}
+      # Remediate variant: the secret executor Jobs sign their completion
+      # POST with. up.sh --remediate generates it and puts the same value in
+      # the Jobs' cfoperator-secrets.
+      CFOP_COMPLETION_SHARED_SECRET: ${CFOP_COMPLETION_SHARED_SECRET:-}
       # CI only (CFOP-315): the runner's stubs, as seen from the kind network.
       CFOP_E2E_GITHUB_URL: ${CFOP_E2E_GITHUB_URL:-}
       CFOP_E2E_LLM_URL: ${CFOP_E2E_LLM_URL:-}
