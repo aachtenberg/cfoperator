@@ -330,6 +330,24 @@ CFOP-163. Before that the counter was declared and never incremented, and the
 `ExcessiveFallbacks` alert below could not fire; `tests/test_metrics_conventions.py`
 now fails on any metric that is declared and never observed.
 
+### Chain Circuit Breaker
+```promql
+# 0 closed, 1 open (failing fast), 2 half-open (one probe call in flight)
+cfoperator_llm_circuit_state
+# Times the breaker opened
+cfoperator_llm_circuit_opens_total
+```
+
+When every provider in the chain fails `llm.circuit_breaker.failure_threshold` times
+(default 3) within `window_seconds` (default 1800), LLM calls fail immediately with
+`LLM circuit open until <time>` for `cooldown_seconds` (default 300). After that,
+the next call is a single probe that closes the breaker on success or re-opens it
+on failure (CFOP-321). An exhausted walk where every rung answered 4xx is not
+counted, because it is about that request, not the providers. The gauge is
+written on each walk, so after a cooldown expires with no traffic it still
+reads `1` until the next call probes. An investigation refused by an open circuit
+is recorded `failed` with the message in `findings.error`.
+
 ### Empty Final Responses
 ```promql
 # Tool-loop turns that ended with an empty final message (no tool calls, no
@@ -642,6 +660,13 @@ cfoperator_tools_registered
     severity: warning
   annotations:
     summary: "Frequent LLM fallbacks"
+
+- alert: LLMCircuitOpen
+  expr: increase(cfoperator_llm_circuit_opens_total[15m]) > 0
+  labels:
+    severity: critical
+  annotations:
+    summary: "Every LLM provider failed repeatedly; investigations are failing fast"
 ```
 
 ## Grafana Dashboard

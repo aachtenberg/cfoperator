@@ -321,3 +321,20 @@ def test_the_only_secrets_grant_in_the_chart_is_cockpit_spawns_create():
             f"Role {name} grants secrets via {rule!r}; only cockpit-spawn may (CFOP-312)")
         assert [str(v) for v in rule.get("verbs", [])] == ["create"], (
             f"Role {name}'s secrets grant is {rule.get('verbs')!r}; it may only create")
+
+
+def test_the_agent_deployment_is_pinned_to_one_replica_and_recreate():
+    """The agent assumes it is alone: in-memory investigation lock, dedupe and
+    schedulers (CFOP-322). Two replicas, or a RollingUpdate overlap, means
+    duplicate investigations and PRs. Pinned literally, not templated, so a
+    values knob cannot reintroduce it. The database lock (agent/singleton_lock.py)
+    covers what a chart cannot, like `kubectl scale`."""
+    agent = (CHART / "templates" / "agent.yaml").read_text()
+    deployment = agent[agent.index("kind: Deployment"):]
+    spec = deployment[deployment.index("\nspec:"):]
+    replicas = re.search(r"^  replicas:\s*(.+?)\s*$", spec, re.M)
+    assert replicas and replicas.group(1) == "1", (
+        f"agent Deployment replicas must be the literal 1, got {replicas and replicas.group(1)!r}")
+    strategy = re.search(r"^  strategy:\s*\n\s+type:\s*(\w+)", spec, re.M)
+    assert strategy and strategy.group(1) == "Recreate", (
+        "agent Deployment must use strategy Recreate so a rollout never overlaps two agents")

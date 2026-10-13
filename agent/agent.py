@@ -33,7 +33,8 @@ from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
 from knowledge_base import ResilientKnowledgeBase, correlation_insight_keys, correlation_insight_rejection, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible, resolve_auto_policy, _SUMMARY_CONFIDENCE_CAP
-from llm_fallback import LLMFallbackManager as LLMFallback
+from llm_fallback import LLMFallbackManager as LLMFallback, ChainCircuitBreaker, LLMCircuitOpen
+from singleton_lock import AgentSingletonLock, ACQUIRED as LOCK_ACQUIRED, HELD as LOCK_HELD
 from embedding_service import EmbeddingService, vector_literal
 
 # Import pluggable observability backends
@@ -1580,6 +1581,12 @@ LLM_LATENCY = Histogram(
 )
 LLM_ERRORS = Counter('cfoperator_llm_errors_total', 'LLM errors by provider', ['provider', 'error_type'])
 LLM_FALLBACKS = Counter('cfoperator_llm_fallbacks_total', 'LLM fallback chain activations', ['from_provider', 'to_provider'])
+# Whole-chain circuit breaker (CFOP-321). State is set on every walk, so a
+# breaker that opened and then saw no calls still reads open until the next
+# call probes it.
+LLM_CIRCUIT_STATE = Gauge('cfoperator_llm_circuit_state', 'LLM chain circuit breaker state: 0 closed, 1 open, 2 half-open (probing)')
+LLM_CIRCUIT_OPENS = Counter('cfoperator_llm_circuit_opens_total', 'Times the LLM chain circuit breaker opened (fail fast) after repeated full-chain failures')
+_CIRCUIT_STATE_VALUE = {'closed': 0, 'open': 1, 'half_open': 2}
 # Empty final responses from the tool loop (see _handle_empty_final). The
 # `disposition` label keeps two very different signals apart:
 #   nudged    - first empty of the turn. EMPTY_RESPONSE_NUDGE sent, one bonus
@@ -2061,6 +2068,7 @@ class CFOperator:
             db_url=db_url,
             host_id='cfoperator'  # Single central agent
         )
+        self._db_url = db_url  # the single-agent lock's own session (CFOP-322)
         _install_kb_auto_policy(self)
 
         # Initialize database schema (creates tables if they don't exist)
@@ -2069,7 +2077,9 @@ class CFOperator:
         # Initialize LLM fallback chain
         self.llm = LLMFallback(
             db_session_factory=self.kb.session_scope,
-            settings_getter=self._get_agent_settings
+            settings_getter=self._get_agent_settings,
+            circuit=ChainCircuitBreaker.from_config(
+                self.config.get('llm', {}).get('circuit_breaker')),
         )
 
         # LLM request timeout (generous default for cold model loads)
@@ -2108,6 +2118,8 @@ class CFOperator:
         self.last_cockpit_reap = 0  # cockpit janitor tick (CFOP-36)
         self.last_tracker_sync = 0  # issue-tracker hand-off tick (CFOP-170)
         self.last_reverify = 0  # filed-row re-verification tick (CFOP-185)
+        self._singleton = None  # single-agent lock, taken in run() (CFOP-322)
+        self.last_singleton_check = 0
         self._tracker_url_warned = False
         self.start_time = time.time()
         # Initialized to start_time so the first heartbeat fires after the
@@ -2471,6 +2483,10 @@ class CFOperator:
         logger.info(f"Proactive: deep sweep every {sweep_interval}s ({sweep_interval//60} minutes)")
         logger.info("="*60)
 
+        # Before anything that does work: a second agent against this database
+        # must not start its workers (CFOP-322).
+        self._claim_singleton()
+
         # Start the HTTP investigation worker before the web server so the
         # POST /v1/investigate endpoint has something to drain into.
         self._start_investigation_worker()
@@ -2489,6 +2505,8 @@ class CFOperator:
                 # Update uptime metric
                 AGENT_UPTIME.set(time.time() - self.start_time)
                 OODA_CYCLES.inc()
+
+                self._check_singleton()
 
                 # Heartbeat — proves the loop is alive between events.
                 if time.time() - self.last_heartbeat >= self._get_heartbeat_interval():
@@ -2531,6 +2549,65 @@ class CFOperator:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
                 ERROR_RATE.inc()
                 time.sleep(30)  # Back off on errors
+
+    # Passive agents retry the lock this often; the holder re-checks its session
+    # at most this often from the loop.
+    SINGLETON_RETRY_SECONDS = 15
+    SINGLETON_CHECK_SECONDS = 60
+
+    def _claim_singleton(self, sleep=time.sleep) -> None:
+        """Take the single-agent lock, or wait passively until it is free.
+
+        Held by another agent: start nothing and retry, so that under a
+        Recreate rollout an old pod whose session has not closed yet (seconds,
+        or about a minute after a node death) costs the new one a 15s retry.
+        Nothing answers the console port meanwhile, deliberately: a passive
+        agent that went Ready would take console traffic. So a second agent
+        that stays blocked is restarted by a liveness probe on that port and
+        lands in CrashLoopBackOff, which is the visible outcome. Database
+        unreachable on the first try: start anyway. The agent runs through a
+        database outage today, and refusing to boot without one would turn the
+        guard into an outage of its own; the loop keeps trying.
+        """
+        self._singleton = AgentSingletonLock(self._db_url)
+        state = self._singleton.try_acquire()
+        if state == LOCK_HELD:
+            logger.error(
+                "Another CFOperator agent holds the single-agent lock on this database. "
+                "Staying passive: no investigations, no remediation worker, no console. "
+                f"Retrying every {self.SINGLETON_RETRY_SECONDS}s. Two agents on one database "
+                "produce duplicate investigations, remediation rows and PRs (CFOP-322).")
+            # Unreachable mid-wait keeps it passive: another agent has been
+            # seen, so a database outage is no permission to start.
+            waited, next_log = 0, 300
+            while state != LOCK_ACQUIRED:
+                sleep(self.SINGLETON_RETRY_SECONDS)
+                waited += self.SINGLETON_RETRY_SECONDS
+                state = self._singleton.try_acquire()
+                if state != LOCK_ACQUIRED and waited >= next_log:
+                    logger.error(f"Still passive after {waited}s: the single-agent lock is {state}")
+                    next_log += 300
+        if state == LOCK_ACQUIRED:
+            logger.info("Single-agent lock acquired")
+        else:
+            logger.warning("Single-agent lock not taken (database unreachable); "
+                           "starting anyway and retrying from the loop")
+        self.last_singleton_check = time.time()
+
+    def _check_singleton(self) -> None:
+        """From the loop: keep the claim, and stop if another agent has it.
+
+        Workers are already running by now, so losing the lock to another agent
+        (this one started during a database outage, or its session dropped and
+        someone else got in first) ends this process rather than leaving two.
+        """
+        if self._singleton is None or time.time() - self.last_singleton_check < self.SINGLETON_CHECK_SECONDS:
+            return
+        self.last_singleton_check = time.time()
+        if self._singleton.check() == LOCK_HELD:
+            logger.critical("Another CFOperator agent took the single-agent lock on this "
+                            "database. Exiting so only one keeps running (CFOP-322).")
+            sys.exit(3)
 
     def _check_alerts(self) -> List[Dict[str, Any]]:
         """Check for firing alerts from Alertmanager."""
@@ -3175,23 +3252,31 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     tool_policy=UNATTENDED,
                 )
             except RuntimeError as e:
-                if "No LLM providers available" not in str(e):
+                # An open circuit (CFOP-321) is the same answer as no provider:
+                # nothing was asked, so record a failure that says why rather
+                # than a verdict, and do not hold the investigation lock for a
+                # chain walk known to fail.
+                circuit_open = isinstance(e, LLMCircuitOpen)
+                if not circuit_open and "No LLM providers available" not in str(e):
                     raise
-                logger.error("No LLM provider available for investigation")
+                reason = str(e) if circuit_open else 'No LLM provider available'
+                logger.error(f"Investigation not run: {reason}")
                 duration = time.time() - start_time
                 self.kb.update_investigation(
                     investigation_id=inv_id,
                     completed_at=datetime.now(),
-                    findings={'error': 'No LLM provider available'},
+                    findings={'error': reason},
                     outcome='failed',
                     duration_seconds=duration
                 )
                 INVESTIGATIONS.labels(outcome='failed').inc()
                 INVESTIGATION_DURATION.labels(outcome='failed').observe(duration)
-                details.update({'duration_s': round(duration, 1), 'error': 'no_llm_provider'})
+                details.update({'duration_s': round(duration, 1),
+                                'error': 'llm_circuit_open' if circuit_open else 'no_llm_provider'})
                 return self._build_action_result(
                     success=False,
-                    message=f"Investigation failed (no LLM provider): {trigger[:200]}",
+                    message=(f"Investigation failed ({'LLM circuit open' if circuit_open else 'no LLM provider'}): "
+                             f"{trigger[:200]}"),
                     details=details,
                 )
 
@@ -7628,6 +7713,9 @@ Only return the JSON array, no other text."""
             # Parse findings from response
             return self._parse_sweep_findings(response_text)
 
+        except LLMCircuitOpen as e:
+            logger.warning(f"Sweep skipped: {e}")
+            return []
         except RuntimeError as e:
             if "No LLM providers available" in str(e):
                 logger.warning("No LLM provider available for sweep — skipping")
@@ -9915,61 +10003,114 @@ Only return the JSON array, no other text."""
                     'reason': skipped[1],
                 })
 
+        # Fail fast while the whole chain is known to be down (CFOP-321).
+        # After the empty-chain check on purpose: an unconfigured chain fails
+        # instantly already and is not evidence about provider health. Right
+        # before the walk, so nothing can raise between a half-open probe
+        # being granted and the try that settles it.
+        circuit = self._chain_circuit()
+        if circuit is not None:
+            try:
+                circuit.before_call()
+            finally:
+                LLM_CIRCUIT_STATE.set(_CIRCUIT_STATE_VALUE.get(circuit.state, 0))
+
         last_error = None
         prev_provider = None
-        for idx, (provider_type, url, model_name) in enumerate(provider_chain):
-            try:
-                if idx > 0 and prev_provider:
-                    # CFOP-163: this counter existed since the metric block was
-                    # written and was never incremented; the docs shipped an
-                    # alert on it that could not fire.
-                    LLM_FALLBACKS.labels(
-                        from_provider=prev_provider.split('/')[0],
-                        to_provider=provider_type).inc()
-                if idx > 0 and event_callback and prev_provider:
-                    event_callback('fallback', {
-                        'from': prev_provider,
-                        'to': f"{provider_type}/{model_name}",
-                        'reason': str(last_error)[:100] if last_error else 'unknown',
-                    })
-                logger.info(
-                    f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: "
-                    f"{provider_type}/{model_name}"
-                )
-                result = self._chat_with_tools(
-                    provider_type=provider_type, url=url, model=model_name,
-                    messages=messages, system_context=system_context,
-                    max_iterations=max_iterations, event_callback=event_callback,
-                    tool_policy=tool_policy,
-                )
+        # Whether any rung failed for a reason other than rejecting this
+        # request. Exhaustion where every rung answered 4xx is about the
+        # request (oversized context, a payload bug), not provider health, and
+        # must not lock every other caller out (CFOP-321).
+        health_failure = False
+        settled = False
+        try:
+            for idx, (provider_type, url, model_name) in enumerate(provider_chain):
+                try:
+                    if idx > 0 and prev_provider:
+                        # CFOP-163: this counter existed since the metric block was
+                        # written and was never incremented; the docs shipped an
+                        # alert on it that could not fire.
+                        LLM_FALLBACKS.labels(
+                            from_provider=prev_provider.split('/')[0],
+                            to_provider=provider_type).inc()
+                    if idx > 0 and event_callback and prev_provider:
+                        event_callback('fallback', {
+                            'from': prev_provider,
+                            'to': f"{provider_type}/{model_name}",
+                            'reason': str(last_error)[:100] if last_error else 'unknown',
+                        })
+                    logger.info(
+                        f"[FALLBACK] Trying provider {idx+1}/{len(provider_chain)}: "
+                        f"{provider_type}/{model_name}"
+                    )
+                    result = self._chat_with_tools(
+                        provider_type=provider_type, url=url, model=model_name,
+                        messages=messages, system_context=system_context,
+                        max_iterations=max_iterations, event_callback=event_callback,
+                        tool_policy=tool_policy,
+                    )
+                except Exception as e:
+                    last_error = e
+                    prev_provider = f"{provider_type}/{model_name}"
+                    provider_key = (
+                        f"{provider_type}/{url}/{model_name}" if url
+                        else f"{provider_type}/{model_name}"
+                    )
+                    logger.warning(
+                        f"[FALLBACK] Provider {provider_type}/{model_name} failed: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    kind = self.llm.classify_error(e)
+                    self.llm.record_failure(provider_key, kind)
+                    if kind != 'bad_request':
+                        health_failure = True
+                    continue
+                # Bookkeeping for an answer stays outside the except above, so
+                # a slip in it can never be counted as that provider failing.
                 provider_key = (
                     f"{provider_type}/{url}/{model_name}" if url
                     else f"{provider_type}/{model_name}"
                 )
                 self.llm.record_success(provider_key)
+                self._settle_circuit(circuit, chain_healthy=True)
+                settled = True
                 result['backend'] = provider_type
                 result['model'] = model_name
                 result['fallback_used'] = idx > 0
                 return result
-            except Exception as e:
-                last_error = e
-                prev_provider = f"{provider_type}/{model_name}"
-                provider_key = (
-                    f"{provider_type}/{url}/{model_name}" if url
-                    else f"{provider_type}/{model_name}"
-                )
-                logger.warning(
-                    f"[FALLBACK] Provider {provider_type}/{model_name} failed: "
-                    f"{type(e).__name__}: {e}"
-                )
-                self.llm.record_failure(provider_key, self.llm.classify_error(e))
-                continue
 
+            if health_failure:
+                self._settle_circuit(circuit, chain_healthy=False)
+                settled = True
+            # else: every rung rejected this request. That is no verdict on
+            # the providers either way, so it neither counts toward opening
+            # nor closes an open breaker; the finally hands a half-open
+            # probe slot to the next caller.
+        finally:
+            if not settled and circuit is not None:
+                # Left mid-walk with no verdict; never strand a half-open probe.
+                circuit.release_probe()
         logger.error(
             f"[FALLBACK] All {len(provider_chain)} providers failed. "
             f"Last error: {last_error}"
         )
         raise last_error or RuntimeError("All LLM providers exhausted")
+
+    def _chain_circuit(self) -> Optional[ChainCircuitBreaker]:
+        """The whole-chain breaker (CFOP-321), or None where there is none."""
+        circuit = getattr(getattr(self, 'llm', None), 'circuit', None)
+        return circuit if isinstance(circuit, ChainCircuitBreaker) else None
+
+    @staticmethod
+    def _settle_circuit(circuit: Optional[ChainCircuitBreaker], chain_healthy: bool) -> None:
+        """Report a finished walk to the breaker and the metrics."""
+        if circuit is None:
+            return
+        if chain_healthy:
+            circuit.record_success()
+        elif circuit.record_failure():
+            LLM_CIRCUIT_OPENS.inc()
+        LLM_CIRCUIT_STATE.set(_CIRCUIT_STATE_VALUE.get(circuit.state, 0))
 
     def _chat_with_tools(self, provider_type: str, url: str, model: str,
                          messages: List[Dict[str, str]], system_context: str,
@@ -10678,6 +10819,9 @@ IMPORTANT:
                 event_callback=event_callback,
                 tool_policy=tool_policy,
             )
+        except LLMCircuitOpen as e:
+            # The fast-fail says when it lifts; show that, not a 500 (CFOP-321).
+            return {'response': str(e), 'backend': 'none', 'model': 'none', 'tool_calls': 0}
         except RuntimeError as e:
             if "No LLM providers available" in str(e):
                 return {'response': 'No LLM providers available', 'backend': 'none', 'model': 'none', 'tool_calls': 0}
