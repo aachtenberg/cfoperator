@@ -123,8 +123,10 @@ shared header, not to assert today's markup. Mutation-check a new guard once
   a reply explaining the blocker.
 - **Do not merge until the review is in and triaged.** CodeRabbit finishes
   by editing its summary comment ("Currently processing" disappears) and
-  posting a review with inline comments; wait for that, not for a check to
-  go green (CFOP-133's review sat unfixed until someone asked). It allows
+  posting a review, which may have no inline comments when it found
+  nothing. Wait for that, not for a check to go green (CFOP-133's review sat
+  unfixed until someone asked). Findings it cannot place inline arrive in
+  the review body under "Outside diff range"; read the body too. It allows
   about 10 reviews an hour, so a burst of pushes can leave it rate-limited;
   wait it out rather than merging past it. Then:
   - real finding → smallest fix, reply on the PR, wait for CI
