@@ -381,12 +381,25 @@ def test_no_workflow_runs_claude_on_every_push():
         if "anthropics/claude-code-action" not in text:
             continue
         found += 1
-        triggers = yaml.safe_load(text).get(True) or {}  # PyYAML reads `on:` as True
+        events = triggers(yaml.safe_load(text))
         for event in ("pull_request", "pull_request_target", "push"):
-            assert event not in triggers, (
+            assert event not in events, (
                 f"{wf.name} runs Claude on {event}: that is a review per push. "
                 "Keep Claude behind an @claude mention (claude.yml).")
     assert found >= 1, "no claude-code-action workflow found; is REPO_ROOT right?"
+
+
+def test_a_bot_quoting_at_claude_does_not_start_a_run():
+    """CodeRabbit cited claude.yml in a review comment, the text held
+    "@claude", and a Claude run started (and failed) on #323."""
+    text = (REPO_ROOT / ".github" / "workflows" / "claude.yml").read_text(encoding="utf-8")
+    cond = yaml.safe_load(text)["jobs"]["claude"]["if"]
+    # One line per event. The issues line is left alone: opening an issue
+    # is not a review comment, and no review bot opens issues here.
+    clauses = [ln for ln in cond.splitlines() if "@claude" in ln and "'issues'" not in ln]
+    assert len(clauses) == 3, f"expected the three comment/review clauses, got {clauses}"
+    for clause in clauses:
+        assert "user.type != 'Bot'" in clause, f"bot comments can trigger Claude: {clause.strip()}"
 
 
 # ---------------------------------------------------------------------------
