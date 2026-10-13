@@ -10,6 +10,7 @@ Provides resilient LLM access with:
 Inspired by OpenClaw's model-fallback architecture, simplified for homelab use.
 """
 import json
+import math
 import re
 import threading
 import time
@@ -117,7 +118,7 @@ class ChainCircuitBreaker:
             raw = cfg.get(key, default)
             try:
                 value = int(raw) if key == "failure_threshold" else float(raw)
-                if isinstance(raw, bool) or value < 0:
+                if isinstance(raw, bool) or not math.isfinite(value) or value < 0:
                     raise ValueError(raw)
             except (TypeError, ValueError):
                 _log("warn", "Invalid llm.circuit_breaker value, using default",
@@ -167,6 +168,11 @@ class ChainCircuitBreaker:
             if self._state == CIRCUIT_HALF_OPEN:
                 self._open(now)
                 return True
+            if self._state == CIRCUIT_OPEN:
+                # A walk that started before the circuit opened and failed
+                # after: already accounted for, so neither restart the
+                # cooldown nor count a second open.
+                return False
             self._failures.append(now)
             while self._failures and self._failures[0] <= now - self.window_seconds:
                 self._failures.popleft()

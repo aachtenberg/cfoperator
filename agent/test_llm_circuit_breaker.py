@@ -101,6 +101,20 @@ def test_a_failed_probe_reopens_for_another_cooldown():
         b.before_call()
 
 
+def test_a_walk_that_fails_after_the_circuit_opened_changes_nothing():
+    clock = Clock()
+    b = _breaker(clock, cooldown=300)
+    for _ in range(3):
+        b.record_failure()
+    clock.t += 200
+    # As many stragglers as the threshold: counted, they would re-open it.
+    for _ in range(3):
+        assert b.record_failure() is False, "a straggler must not count a second open"
+    clock.t += 101
+    b.before_call()  # the cooldown was not restarted by the straggler
+    assert b.state == CIRCUIT_HALF_OPEN
+
+
 def test_only_one_probe_at_a_time():
     clock = Clock()
     b = _breaker(clock)
@@ -137,6 +151,8 @@ def test_config_defaults_and_bad_values():
     assert (b.failure_threshold, b.window_seconds, b.cooldown_seconds) == (5, 1800, 60)
     b = ChainCircuitBreaker.from_config({'failure_threshold': 'lots', 'window_seconds': -1,
                                          'cooldown_seconds': True})
+    assert (b.failure_threshold, b.window_seconds, b.cooldown_seconds) == (3, 1800, 300)
+    b = ChainCircuitBreaker.from_config({'window_seconds': 'nan', 'cooldown_seconds': float('inf')})
     assert (b.failure_threshold, b.window_seconds, b.cooldown_seconds) == (3, 1800, 300)
 
 

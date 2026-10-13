@@ -43,7 +43,12 @@ _KEEPALIVES = (
 
 def _psycopg_connect(dsn: str):
     import psycopg
-    return psycopg.connect(dsn, autocommit=True, connect_timeout=10)
+    # Client-side keepalives and tcp_user_timeout too: check() runs on the
+    # agent's main loop, and a network that black-holes packets would
+    # otherwise leave its SELECT 1 waiting on the kernel's retransmit timer.
+    return psycopg.connect(dsn, autocommit=True, connect_timeout=10,
+                           keepalives=1, keepalives_idle=30, keepalives_interval=10,
+                           keepalives_count=3, tcp_user_timeout=60000)
 
 
 class AgentSingletonLock:
