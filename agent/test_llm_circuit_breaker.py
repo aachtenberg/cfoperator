@@ -231,6 +231,24 @@ def test_every_rung_rejecting_the_request_is_not_a_chain_outage():
     assert len(calls) == 8
 
 
+def test_a_probe_every_rung_rejects_leaves_the_breaker_half_open():
+    """A 400 to one payload says nothing about whether the outage is over, so
+    it must not close the breaker; the next caller gets to probe instead."""
+    clock = Clock()
+    down = requests.ConnectionError("connection refused")
+    rejected = RuntimeError("Error code: 400 - invalid_request_error")
+    op, calls = _operator(_breaker(clock), [down] * 6 + [rejected] * 2 + [{'response': 'ok'}])
+    for _ in range(3):
+        with pytest.raises(requests.ConnectionError):
+            _walk(op)
+    clock.t += 301
+    with pytest.raises(RuntimeError, match="400"):
+        _walk(op)
+    assert op.llm.circuit.state == CIRCUIT_HALF_OPEN
+    assert _walk(op)['response'] == 'ok', "the probe slot was released"
+    assert op.llm.circuit.state == CIRCUIT_CLOSED
+
+
 def test_one_rung_down_among_rejections_still_counts():
     clock = Clock()
     mixed = [requests.Timeout("read timed out"), RuntimeError("Error code: 400")] * 3

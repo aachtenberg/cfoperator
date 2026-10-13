@@ -10074,8 +10074,13 @@ Only return the JSON array, no other text."""
                         health_failure = True
                     continue
 
-            self._settle_circuit(circuit, chain_healthy=not health_failure)
-            settled = True
+            if health_failure:
+                self._settle_circuit(circuit, chain_healthy=False)
+                settled = True
+            # else: every rung rejected this request. That is no verdict on
+            # the providers either way, so it neither counts toward opening
+            # nor closes an open breaker; the finally hands a half-open
+            # probe slot to the next caller.
         finally:
             if not settled and circuit is not None:
                 # Left mid-walk with no verdict; never strand a half-open probe.
