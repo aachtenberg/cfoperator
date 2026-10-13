@@ -2559,8 +2559,12 @@ class CFOperator:
         """Take the single-agent lock, or wait passively until it is free.
 
         Held by another agent: start nothing and retry, so that under a
-        Recreate rollout an old pod whose session has not closed yet costs the
-        new one a short wait rather than kubelet crash-backoff. Database
+        Recreate rollout an old pod whose session has not closed yet (seconds,
+        or about a minute after a node death) costs the new one a 15s retry.
+        Nothing answers the console port meanwhile, deliberately: a passive
+        agent that went Ready would take console traffic. So a second agent
+        that stays blocked is restarted by a liveness probe on that port and
+        lands in CrashLoopBackOff, which is the visible outcome. Database
         unreachable on the first try: start anyway. The agent runs through a
         database outage today, and refusing to boot without one would turn the
         guard into an outage of its own; the loop keeps trying.
