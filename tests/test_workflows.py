@@ -365,32 +365,41 @@ def test_every_test_directory_runs_in_ci():
     assert checked >= 5, "the glob found almost nothing; is REPO_ROOT right?"
 
 
-def test_the_pr_review_posts_in_this_session():
-    """A ready pull request is reviewed without anyone commenting @claude.
+def test_no_workflow_runs_claude_on_every_push():
+    """Claude runs only when someone mentions @claude.
 
-    The code-review plugin launches background subagents and then ends the
-    turn to wait for a notification. This action never resumes that session,
-    so the check goes green and the PR gets nothing (claude-code-action
-    #1087). @claude still posts, because that workflow has no plugin and
-    finishes in the same turn — which is why a mention worked and the
-    automatic run did not. The review prompt has to do the work itself and
-    post before it stops, and Agent/Task/Skill stay off the allowlist
-    because those are the tools that background it.
+    claude-code-review.yml reviewed every push to every PR, and a PR that
+    went through five review rounds paid for five full reviews (#322).
+    CodeRabbit reviews this public repo for free, so the automatic run was
+    dropped; claude.yml stays for an explicit @claude. A workflow that wires
+    claude-code-action to pull_request or push events brings the per-push
+    spend back.
     """
-    text = (REPO_ROOT / ".github" / "workflows" / "claude-code-review.yml").read_text(encoding="utf-8")
-    assert "types: [opened, synchronize, ready_for_review, reopened]" in text
-    assert "github.event.pull_request.draft == false" in text
-    assert "code-review@claude-code-plugins" not in text
-    assert "/code-review:code-review" not in text
-    assert "Do not launch a subagent" in text
-    assert "gh pr comment" in text
-    # The allowlist is one line. A tool named there is offered; the plugin
-    # path put Agent and Task on it, and that is the run that posted nothing.
-    allow = next(line for line in text.splitlines() if "allowedTools" in line)
-    for banned in ("Agent", "Task", "Skill"):
-        assert banned not in allow, f"{banned} is back on the review allowlist"
-    assert "Bash(gh pr comment:*)" in allow
-    assert "issues: write" in text
+    found = 0
+    for wf in sorted((REPO_ROOT / ".github" / "workflows").glob("*.y*ml")):
+        text = wf.read_text(encoding="utf-8")
+        if "anthropics/claude-code-action" not in text:
+            continue
+        found += 1
+        events = triggers(yaml.safe_load(text))
+        for event in ("pull_request", "pull_request_target", "push"):
+            assert event not in events, (
+                f"{wf.name} runs Claude on {event}: that is a review per push. "
+                "Keep Claude behind an @claude mention (claude.yml).")
+    assert found >= 1, "no claude-code-action workflow found; is REPO_ROOT right?"
+
+
+def test_a_bot_quoting_at_claude_does_not_start_a_run():
+    """CodeRabbit cited claude.yml in a review comment, the text held
+    "@claude", and a Claude run started (and failed) on #323."""
+    text = (REPO_ROOT / ".github" / "workflows" / "claude.yml").read_text(encoding="utf-8")
+    cond = yaml.safe_load(text)["jobs"]["claude"]["if"]
+    # One line per event. The issues line is left alone: opening an issue
+    # is not a review comment, and no review bot opens issues here.
+    clauses = [ln for ln in cond.splitlines() if "@claude" in ln and "'issues'" not in ln]
+    assert len(clauses) == 3, f"expected the three comment/review clauses, got {clauses}"
+    for clause in clauses:
+        assert "user.type != 'Bot'" in clause, f"bot comments can trigger Claude: {clause.strip()}"
 
 
 # ---------------------------------------------------------------------------
