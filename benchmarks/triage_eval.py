@@ -82,12 +82,14 @@ def load_production_system_prompt() -> str:
     something that is not running in production. Extracting it means the
     harness cannot lie about what it tested.
     """
-    src = inspect.getsource(CFOperator.run_triage)
+    # _run_triage since CFOP-316: run_triage became the thin layer that opens
+    # the trace span, and the prompt moved with the body, unchanged.
+    src = inspect.getsource(CFOperator._run_triage)
     match = re.search(r'system_prompt = """(.*?)"""', src, re.DOTALL)
     if not match:
         raise RuntimeError(
             "Could not find the `system_prompt = \"\"\"...\"\"\"` literal in "
-            "CFOperator.run_triage. The triage prompt was refactored — update "
+            "CFOperator._run_triage. The triage prompt was refactored — update "
             "load_production_system_prompt() to match, and treat previously "
             "recorded scores as non-comparable."
         )

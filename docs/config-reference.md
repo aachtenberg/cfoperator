@@ -161,6 +161,17 @@ observability:
       topic: ${NTFY_TOPIC}
       token: ${NTFY_TOKEN}
 
+  # OpenTelemetry tracing for investigations, triage and LLM calls. Off by
+  # default; off means the SDK is never imported and nothing is exported.
+  # endpoint / service_name are optional and fall back to the standard
+  # OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME env vars. Spans carry
+  # names, counts and timings, never prompt, completion or tool text.
+  # See docs/llm-observability.md#tracing-opentelemetry-opt-in.
+  tracing:
+    enabled: false
+    # endpoint: http://tempo:4318
+    # service_name: cfoperator
+
 # LLM Configuration
 llm:
   # Primary LLM (Ollama local)

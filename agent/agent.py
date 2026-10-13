@@ -86,6 +86,9 @@ from cfshared import config as shared_config
 from cfshared import repos as shared_repos
 from cfshared.evidence import EVIDENCE_KEY, render as render_evidence
 from cfshared.tool_args import redact_tool_result
+# Opt-in OpenTelemetry (CFOP-316). The import is free: the SDK itself is only
+# loaded by tracing.init_tracing, and only when the config turns it on.
+from cfshared import tracing
 
 # Configure logging
 logging.basicConfig(
@@ -1966,6 +1969,15 @@ class _ToolLoopStats:
     # ssh_execute is as much a loop as a third k8s_get_pods.
     call_fingerprints: set = field(default_factory=set)
     repeat_streak: int = 0
+    # The provider's own reason for ending each response (Ollama done_reason,
+    # OpenAI finish_reason, Anthropic stop_reason), in order. Not stop_reason
+    # above, which is the loop's; this is gen_ai.response.finish_reasons on
+    # the trace span (CFOP-316).
+    finish_reasons: List[str] = field(default_factory=list)
+
+    def note_finish(self, reason: Any) -> None:
+        if reason:
+            self.finish_reasons.append(str(reason))
 
     def note_call(self, tool_name: str, tool_args: Any) -> None:
         try:
@@ -1988,6 +2000,7 @@ class _ToolLoopStats:
             'cached_tool_hits': self.cached_hits,
             'opened_prs': list(self.opened_prs),
             'stop_reason': self.stop_reason,
+            'finish_reasons': list(self.finish_reasons),
         }
 
 
@@ -2060,6 +2073,9 @@ class CFOperator:
 
         # Load configuration
         self.config = self._load_config(config_path)
+        # Before anything that makes an LLM call; a no-op unless
+        # observability.tracing.enabled (CFOP-316).
+        tracing.init_tracing(self.config)
 
         # Initialize core components
         # Build database URL for ResilientKnowledgeBase
@@ -2752,10 +2768,24 @@ class CFOperator:
         shared state (``current_investigation``, KB session, embeddings).
         Returns an ActionResult-shaped dict (see event_runtime.models.ActionResult).
         """
-        with self._investigation_lock:
-            context = self._observe_alert(alert)
-            context = self._orient(context)
-            return self._act(context)
+        # Opened before the lock, so time spent queued behind another
+        # investigation shows in the trace instead of vanishing (CFOP-316).
+        # The alert's text goes on as redacted, clipped attributes; the span
+        # name stays fixed so a trace list does not grow one name per alert.
+        with tracing.span('investigation', tracing.alert_attributes(alert)):
+            with self._investigation_lock:
+                context = self._observe_alert(alert)
+                context = self._orient(context)
+                result = self._act(context)
+            # _act reports a failed investigation in its result rather than
+            # raising, so the span has to be told (CodeRabbit on #326).
+            details = result.get('details') if isinstance(result, dict) else None
+            details = details if isinstance(details, dict) else {}
+            tracing.annotate({'cfop.investigation.id': details.get('investigation_id'),
+                              'cfop.investigation.outcome': details.get('outcome')})
+            if isinstance(result, dict) and result.get('success') is False:
+                tracing.mark_error('InvestigationFailed')
+            return result
 
     # The rubric's known-noise list, as a pattern. Matched in run_triage
     # before any model call (CFOP-162): smoke-test-*, tmp-*, Watchdog are
@@ -2767,6 +2797,12 @@ class CFOperator:
     _TRIAGE_NOISE_RE = re.compile(r"(?i:smoke-test-|tmp-)|\bWatchdog\b")
 
     def run_triage(self, alert: Dict[str, Any]) -> Dict[str, Any]:
+        """Classify an alert; see ``_run_triage``. This layer is the trace
+        span (CFOP-316), so the body's many exits need no ``with`` each."""
+        with tracing.span('triage', tracing.alert_attributes(alert)):
+            return self._run_triage(alert)
+
+    def _run_triage(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """Classify an alert without running a full investigation.
 
         Called from event_runtime's HTTPTriageDecisionEngine before it
@@ -2798,6 +2834,10 @@ class CFOperator:
                 model=str(decision.get('model') or 'none'),
             ).inc()
             TRIAGE_LATENCY.labels(served_by=served_by).observe(time.monotonic() - t0)
+            tracing.annotate({
+                'cfop.triage.action': str(decision.get('action') or 'unknown'),
+                'cfop.triage.served_by': served_by,
+            })
             return decision
 
         trigger = (
@@ -9617,6 +9657,26 @@ Only return the JSON array, no other text."""
             return False
         return bool((entry.get('schema') or {}).get('mutating'))
 
+    def _traced_tool_name(self, tool_name: Any) -> str:
+        """``tool_name`` if the registry has it, else ``unregistered``.
+
+        A tool name is whatever the model emitted, and nothing stops it
+        emitting a sentence -- prompt or tool-result text included -- which
+        a span would then export in its name (CodeRabbit on #326). The
+        registry's own dict when there is one; registry doubles only have
+        their schemas.
+        """
+        if not isinstance(tool_name, str):
+            return 'unregistered'
+        entries = getattr(self.tools, 'tools', None)
+        if isinstance(entries, dict):
+            return tool_name if tool_name in entries else 'unregistered'
+        try:
+            known = {s.get('function', {}).get('name') for s in self.tools.get_schemas()}
+        except Exception:
+            return 'unregistered'
+        return tool_name if tool_name in known else 'unregistered'
+
     def _dispatch_tool_call(self, tool_name: str, tool_args: dict, *,
                             stats: '_ToolLoopStats', tool_cache: dict,
                             max_result_chars: int, iteration: int,
@@ -9628,57 +9688,66 @@ Only return the JSON array, no other text."""
         tool_call/tool_result events, memoizes read-only tools, tracks the
         loop counters plus consulted learning ids, and records the metric.
         """
-        if event_callback:
-            event_callback('tool_call', {
-                'tool': tool_name,
-                'args': tool_args,
-                'iteration': iteration + 1,
-                'max': max_iterations
-            })
+        # One span per call (CFOP-316): which tool, on which turn, cached or
+        # not, and the same result label the metric uses. Never the arguments
+        # or the output -- those are the operator's infrastructure. The name
+        # is the model's output too, so only a registered one goes on.
+        span_tool = self._traced_tool_name(tool_name) if tracing.enabled() else tool_name
+        with tracing.span(f"execute_tool {span_tool}", {
+            'gen_ai.operation.name': 'execute_tool',
+            'gen_ai.tool.name': span_tool,
+            'cfop.tool.iteration': iteration + 1,
+        }):
+            if event_callback:
+                event_callback('tool_call', {
+                    'tool': tool_name,
+                    'args': tool_args,
+                    'iteration': iteration + 1,
+                    'max': max_iterations
+                })
 
-        try:
-            content, result, was_cached = self._cached_tool_exec(
-                tool_name, tool_args, tool_cache, max_result_chars, policy=tool_policy)
-        except Exception:
-            # execute() itself does not raise (it returns {error: ...}), but a
-            # serialize blow-up still has to hit result="error" or the metric
-            # goes silent on the only path that actually crashed.
-            TOOL_CALLS.labels(tool_name=tool_name, result='error').inc()
-            raise
-        stats.tool_calls += 1
-        stats.note_call(tool_name, tool_args)
-        if was_cached:
-            stats.cached_hits += 1
-            logger.info(f"Tool result reused from cache: {tool_name}")
-        else:
-            logger.info(f"Executing tool: {tool_name}")
-            # "Ran", not "was asked for": a refusal executed nothing, so a
-            # later transport failure may still rotate the chain.
-            if self._tool_is_mutating(tool_name) and not _tool_was_refused(result):
-                stats.mutating_ran = True
+            try:
+                content, result, was_cached = self._cached_tool_exec(
+                    tool_name, tool_args, tool_cache, max_result_chars, policy=tool_policy)
+            except Exception:
+                # execute() itself does not raise (it returns {error: ...}), but a
+                # serialize blow-up still has to hit result="error" or the metric
+                # goes silent on the only path that actually crashed.
+                TOOL_CALLS.labels(tool_name=tool_name, result='error').inc()
+                raise
+            stats.tool_calls += 1
+            stats.note_call(tool_name, tool_args)
+            if was_cached:
+                stats.cached_hits += 1
+                logger.info(f"Tool result reused from cache: {tool_name}")
+            else:
+                logger.info(f"Executing tool: {tool_name}")
+                # "Ran", not "was asked for": a refusal executed nothing, so a
+                # later transport failure may still rotate the chain.
+                if self._tool_is_mutating(tool_name) and not _tool_was_refused(result):
+                    stats.mutating_ran = True
 
-        if tool_name == 'find_learnings' and isinstance(result, list):
-            stats.learning_ids.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
-        if tool_name == 'github_create_pr' and not was_cached:
-            opened = _opened_pr_url(result)
-            if opened:
-                stats.opened_prs.append(opened)
+            if tool_name == 'find_learnings' and isinstance(result, list):
+                stats.learning_ids.extend(r.get('id') for r in result if isinstance(r, dict) and r.get('id'))
+            if tool_name == 'github_create_pr' and not was_cached:
+                opened = _opened_pr_url(result)
+                if opened:
+                    stats.opened_prs.append(opened)
 
-        if event_callback:
-            # `result` is the redacted copy _cached_tool_exec handed back: the
-            # console stores this event in the member-readable transcript
-            # (web_server.py, chat_sessions), so it must see what the model saw.
-            event_callback('tool_result', {
-                'tool': tool_name,
-                'result': json.dumps(result, default=str)[:500],
-                'iteration': iteration + 1
-            })
+            if event_callback:
+                # `result` is the redacted copy _cached_tool_exec handed back: the
+                # console stores this event in the member-readable transcript
+                # (web_server.py, chat_sessions), so it must see what the model saw.
+                event_callback('tool_result', {
+                    'tool': tool_name,
+                    'result': json.dumps(result, default=str)[:500],
+                    'iteration': iteration + 1
+                })
 
-        TOOL_CALLS.labels(
-            tool_name=tool_name,
-            result=_tool_call_result_label(result),
-        ).inc()
-        return content
+            outcome = _tool_call_result_label(result)
+            TOOL_CALLS.labels(tool_name=tool_name, result=outcome).inc()
+            tracing.annotate({'cfop.tool.cached': bool(was_cached), 'cfop.tool.result': outcome})
+            return content
 
     @staticmethod
     def _to_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -9978,6 +10047,26 @@ Only return the JSON array, no other text."""
         event_callback=None,
         tool_policy: Optional[ToolPolicy] = None,
     ) -> Dict[str, Any]:
+        """The provider walk, as one trace span (CFOP-316); see
+        ``_walk_provider_chain``. Each rung it tries is a ``chat {model}``
+        child of this span, so a failover reads as siblings, left to right."""
+        with tracing.span('llm_chain', {'cfop.llm.requested_backend': backend,
+                                        'cfop.llm.requested_model': model}):
+            return self._walk_provider_chain(
+                messages, system_context=system_context, backend=backend,
+                model=model, max_iterations=max_iterations,
+                event_callback=event_callback, tool_policy=tool_policy)
+
+    def _walk_provider_chain(
+        self,
+        messages: List[Dict[str, str]],
+        system_context: str = '',
+        backend: str = 'auto',
+        model: str = None,
+        max_iterations: int = None,
+        event_callback=None,
+        tool_policy: Optional[ToolPolicy] = None,
+    ) -> Dict[str, Any]:
         """Run _chat_with_tools across the configured provider fallback chain.
 
         On ANY exception from one provider, record the failure for cooldown,
@@ -10000,6 +10089,7 @@ Only return the JSON array, no other text."""
         fail, or ``RuntimeError`` if the chain is empty.
         """
         provider_chain = self._get_provider_chain(backend, model)
+        tracing.annotate({'cfop.llm.chain_length': len(provider_chain or [])})
         if not provider_chain:
             raise RuntimeError("No LLM providers available")
 
@@ -10009,6 +10099,7 @@ Only return the JSON array, no other text."""
         # whatever came next while the console chip still names the first.
         skipped = self._skipped_selection(backend, provider_chain[0])
         if skipped:
+            tracing.annotate({'cfop.llm.selected_skipped': str(skipped[0])})
             logger.warning(f"[FALLBACK] Selected {skipped[0]} skipped: {skipped[1]}; "
                            f"starting at {provider_chain[0][0]}/{provider_chain[0][2]}")
             # A configured provider with no key/model is a fallback too, and
@@ -10097,6 +10188,11 @@ Only return the JSON array, no other text."""
                 result['backend'] = provider_type
                 result['model'] = model_name
                 result['fallback_used'] = idx > 0
+                tracing.annotate({
+                    'cfop.llm.answered_by': f"{provider_type}/{model_name}",
+                    'cfop.llm.rungs_tried': idx + 1,
+                    'cfop.llm.fallback_used': idx > 0,
+                })
                 return result
 
             if health_failure:
@@ -10139,29 +10235,59 @@ Only return the JSON array, no other text."""
         """
         Execute LLM chat with tool calling support.
 
-        Wraps _chat_with_tools_inner with Prometheus metrics tracking.
+        Wraps _chat_with_tools_inner with Prometheus metrics tracking, and
+        with the ``chat {model}`` span (GenAI semantic conventions, CFOP-316).
+        The span carries counts and names only: what was asked and what came
+        back stay out of the trace store (test_llm_spans_never_contain_prompts).
         """
-        start = time.time()
+        with tracing.span(f"chat {model}", {
+            'gen_ai.operation.name': 'chat',
+            # gen_ai.system is the name the issue and older tooling use;
+            # semconv 1.37 renamed it gen_ai.provider.name. Both, for now.
+            'gen_ai.provider.name': provider_type,
+            'gen_ai.system': provider_type,
+            'gen_ai.request.model': model,
+        }):
+            start = time.time()
+            try:
+                result = self._chat_with_tools_inner(
+                    provider_type, url, model, messages, system_context,
+                    max_iterations, event_callback, tool_policy=tool_policy,
+                )
+                latency = time.time() - start
+                tracing.annotate({
+                    'gen_ai.usage.input_tokens': result.get('input_tokens') or 0,
+                    'gen_ai.usage.output_tokens': result.get('output_tokens') or 0,
+                    'gen_ai.response.finish_reasons': result.get('finish_reasons') or None,
+                    'cfop.llm.tool_calls': result.get('tool_calls') or 0,
+                    'cfop.llm.stop_reason': result.get('stop_reason'),
+                })
+                TOOL_LOOP_STOPS.labels(reason=result.get('stop_reason') or 'answered').inc()
+                LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
+                LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
+                if result.get('input_tokens'):
+                    LLM_TOKENS.labels(provider=provider_type, model=model, type='input').inc(result['input_tokens'])
+                if result.get('output_tokens'):
+                    LLM_TOKENS.labels(provider=provider_type, model=model, type='output').inc(result['output_tokens'])
+                return result
+            except Exception as e:
+                latency = time.time() - start
+                if tracing.enabled():
+                    # The fallback manager's own verdict (timeout, rate_limit,
+                    # bad_request...), so a failed rung says why it failed
+                    # without its message, which may quote the request.
+                    tracing.annotate({'cfop.llm.error_kind': self._llm_error_kind(e)})
+                LLM_REQUESTS.labels(provider=provider_type, model=model, result='error').inc()
+                LLM_ERRORS.labels(provider=provider_type, error_type=type(e).__name__).inc()
+                LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
+                raise
+
+    def _llm_error_kind(self, error: Exception) -> Optional[str]:
+        """classify_error's verdict, or None where there is no fallback manager."""
         try:
-            result = self._chat_with_tools_inner(
-                provider_type, url, model, messages, system_context,
-                max_iterations, event_callback, tool_policy=tool_policy,
-            )
-            latency = time.time() - start
-            TOOL_LOOP_STOPS.labels(reason=result.get('stop_reason') or 'answered').inc()
-            LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
-            LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
-            if result.get('input_tokens'):
-                LLM_TOKENS.labels(provider=provider_type, model=model, type='input').inc(result['input_tokens'])
-            if result.get('output_tokens'):
-                LLM_TOKENS.labels(provider=provider_type, model=model, type='output').inc(result['output_tokens'])
-            return result
-        except Exception as e:
-            latency = time.time() - start
-            LLM_REQUESTS.labels(provider=provider_type, model=model, result='error').inc()
-            LLM_ERRORS.labels(provider=provider_type, error_type=type(e).__name__).inc()
-            LLM_LATENCY.labels(provider=provider_type, model=model).observe(latency)
-            raise
+            return self.llm.classify_error(error)
+        except Exception:
+            return None
 
     def _chat_with_tools_inner(self, provider_type: str, url: str, model: str,
                          messages: List[Dict[str, str]], system_context: str,
@@ -10285,6 +10411,7 @@ Only return the JSON array, no other text."""
                     # Extract tokens
                     stats.input_tokens += data.get('prompt_eval_count', 0)
                     stats.output_tokens += data.get('eval_count', 0)
+                    stats.note_finish(data.get('done_reason'))
 
                     # Check for tool calls
                     message = data.get('message', {})
@@ -10362,6 +10489,7 @@ Only return the JSON array, no other text."""
 
                     # Check for tool calls
                     choice = data.get('choices', [{}])[0]
+                    stats.note_finish(choice.get('finish_reason'))
                     message = choice.get('message', {})
                     tool_calls = message.get('tool_calls', [])
 
@@ -10446,6 +10574,7 @@ Only return the JSON array, no other text."""
                     usage = data.get('usage', {})
                     stats.input_tokens += usage.get('input_tokens', 0)
                     stats.output_tokens += usage.get('output_tokens', 0)
+                    stats.note_finish(data.get('stop_reason'))
 
                     # Check for tool use in content blocks
                     # Anthropic can return multiple tool_use blocks in parallel
