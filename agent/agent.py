@@ -7121,6 +7121,16 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         }
 
     def _deep_system_sweep(self):
+        """One sweep as one trace (CFOP-385); see ``_run_deep_system_sweep``.
+
+        Before this, each LLM call in a sweep was its own ``llm_chain`` root,
+        so a sweep showed up in Tempo as several unrelated traces and the
+        non-LLM phases not at all. The phases below open ``sweep.*`` children.
+        """
+        with tracing.span('sweep'):
+            return self._run_deep_system_sweep()
+
+    def _run_deep_system_sweep(self):
         """
         Proactive mode: Comprehensive system analysis.
 
@@ -7144,14 +7154,17 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             logger.info(f"Using parallel sweep ({self.ollama_pool.available_count()} instances available)")
             try:
                 from sweep_graph import run_parallel_sweep
+                tracing.annotate({'cfop.sweep.mode': 'parallel'})
                 parallel_findings = run_parallel_sweep(self, self.ollama_pool, sweep_config)
                 findings.extend(parallel_findings)
             except Exception as e:
                 logger.error(f"Parallel sweep failed, falling back to sequential: {e}")
+                tracing.annotate({'cfop.sweep.mode': 'sequential_fallback'})
                 findings.extend(self._sequential_sweep(sweep_config))
         else:
             if self.ollama_pool:
                 logger.info("Pool has <2 available instances, using sequential sweep")
+            tracing.annotate({'cfop.sweep.mode': 'sequential'})
             findings.extend(self._sequential_sweep(sweep_config))
 
         # 4. Baseline drift detection
@@ -7167,89 +7180,94 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             self._consolidate_learnings()
 
         # 5b. Backfill embeddings for unindexed investigations and learnings
-        try:
-            if self.embeddings.is_available():
-                result = self.embeddings.batch_index_investigations(
-                    kb=self.kb._kb,
-                    batch_size=10,
-                    max_total=50
-                )
-                if result.get('success', 0) > 0:
-                    logger.info(f"Embedding backfill (investigations): {result['success']} indexed, {result.get('remaining', 0)} remaining")
+        with tracing.span('sweep.embedding_backfill'):
+            try:
+                if self.embeddings.is_available():
+                    result = self.embeddings.batch_index_investigations(
+                        kb=self.kb._kb,
+                        batch_size=10,
+                        max_total=50
+                    )
+                    if result.get('success', 0) > 0:
+                        logger.info(f"Embedding backfill (investigations): {result['success']} indexed, {result.get('remaining', 0)} remaining")
 
-                lr = self.embeddings.batch_index_learnings(
-                    kb=self.kb._kb,
-                    batch_size=10,
-                    max_total=50
-                )
-                if lr.get('success', 0) > 0:
-                    logger.info(f"Embedding backfill (learnings): {lr['success']} indexed, {lr.get('remaining', 0)} remaining")
-        except Exception as e:
-            logger.debug(f"Embedding backfill skipped: {e}")
+                    lr = self.embeddings.batch_index_learnings(
+                        kb=self.kb._kb,
+                        batch_size=10,
+                        max_total=50
+                    )
+                    if lr.get('success', 0) > 0:
+                        logger.info(f"Embedding backfill (learnings): {lr['success']} indexed, {lr.get('remaining', 0)} remaining")
+            except Exception as e:
+                logger.debug(f"Embedding backfill skipped: {e}")
 
         # 6. Deduplicate findings across phases
+        tracing.annotate({'cfop.sweep.findings_raw': len(findings)})
         findings = self._dedup_findings(findings)
 
         # 6b. LLM judge — filter hallucinated/unsupported findings
         findings = self._verify_findings(findings)
+        tracing.annotate({'cfop.sweep.findings': len(findings)})
 
         # 6c. Post findings to event runtime (if configured). None = no
         # runtime; an incomplete Forwarded means step 7 notifies itself.
-        forwarded = None
-        if findings:
-            try:
-                forwarded = self._post_findings_to_event_runtime(findings)
-            except Exception as e:
-                forwarded = Forwarded(sent=len(findings), delivered=0)
-                logger.warning(f"Could not post findings to event runtime: {e}")
+        with tracing.span('sweep.publish'):
+            forwarded = None
+            if findings:
+                try:
+                    forwarded = self._post_findings_to_event_runtime(findings)
+                except Exception as e:
+                    forwarded = Forwarded(sent=len(findings), delivered=0)
+                    logger.warning(f"Could not post findings to event runtime: {e}")
 
-        # 6d. Emit resolutions for findings that cleared since last sweep
-        # so Slack/Discord see explicit "Resolved: …" notifications instead
-        # of silently dropping previously-fired alerts.
-        try:
-            resolved = self._get_resolved_findings(findings)
-            if resolved:
-                logger.info(f"Sweep: {len(resolved)} finding(s) resolved since last sweep")
-                self._post_resolutions_to_event_runtime(resolved)
-        except Exception as e:
-            logger.warning(f"Could not emit resolutions: {e}")
+            # 6d. Emit resolutions for findings that cleared since last sweep
+            # so Slack/Discord see explicit "Resolved: …" notifications instead
+            # of silently dropping previously-fired alerts.
+            try:
+                resolved = self._get_resolved_findings(findings)
+                if resolved:
+                    logger.info(f"Sweep: {len(resolved)} finding(s) resolved since last sweep")
+                    self._post_resolutions_to_event_runtime(resolved)
+            except Exception as e:
+                logger.warning(f"Could not emit resolutions: {e}")
 
         # 7. Generate sweep report
-        if findings:
-            logger.info(f"Sweep found {len(findings)} total issues")
-            report = self._generate_sweep_report(findings)
+        with tracing.span('sweep.report'):
+            if findings:
+                logger.info(f"Sweep found {len(findings)} total issues")
+                report = self._generate_sweep_report(findings)
 
-            # Only notify if findings changed since last sweep
-            if report['severity'] in ['warning', 'critical']:
-                new_findings = self._get_new_findings(report['findings'])
-                if new_findings:
-                    logger.warning(f"New findings in sweep ({len(new_findings)} new): {report['summary'][:200]}")
-                    # Build a notification-only report with just the new stuff
-                    notif_report = self._generate_sweep_report(new_findings)
-                    notif_report['summary'] = f"[{len(new_findings)} new of {len(findings)} total] " + notif_report['summary']
-                    self._notify_sweep_findings(notif_report, forwarded=forwarded)
-                else:
-                    logger.info(f"Sweep found {len(findings)} issues (all known from previous sweep, skipping notification)")
+                # Only notify if findings changed since last sweep
+                if report['severity'] in ['warning', 'critical']:
+                    new_findings = self._get_new_findings(report['findings'])
+                    if new_findings:
+                        logger.warning(f"New findings in sweep ({len(new_findings)} new): {report['summary'][:200]}")
+                        # Build a notification-only report with just the new stuff
+                        notif_report = self._generate_sweep_report(new_findings)
+                        notif_report['summary'] = f"[{len(new_findings)} new of {len(findings)} total] " + notif_report['summary']
+                        self._notify_sweep_findings(notif_report, forwarded=forwarded)
+                    else:
+                        logger.info(f"Sweep found {len(findings)} issues (all known from previous sweep, skipping notification)")
 
-            # Add timing and mode info to sweep_meta
-            sweep_duration = time.time() - sweep_start
-            sweep_mode = 'parallel' if (self.ollama_pool and self.ollama_pool.available_count() >= 0) else 'sequential'
-            if report.get('sweep_meta'):
-                report['sweep_meta']['duration_seconds'] = round(sweep_duration, 1)
-                report['sweep_meta']['mode'] = sweep_mode
+                # Add timing and mode info to sweep_meta
+                sweep_duration = time.time() - sweep_start
+                sweep_mode = 'parallel' if (self.ollama_pool and self.ollama_pool.available_count() >= 0) else 'sequential'
+                if report.get('sweep_meta'):
+                    report['sweep_meta']['duration_seconds'] = round(sweep_duration, 1)
+                    report['sweep_meta']['mode'] = sweep_mode
 
-            # Always store the full report in DB
-            try:
-                self.kb.store_sweep_report(
-                    severity=report['severity'],
-                    findings=report['findings'],
-                    summary=report['summary'],
-                    sweep_meta=report.get('sweep_meta')
-                )
-            except Exception as e:
-                logger.warning(f"Could not store sweep report (DB down?): {e}")
-        else:
-            logger.info("Sweep complete - no findings")
+                # Always store the full report in DB
+                try:
+                    self.kb.store_sweep_report(
+                        severity=report['severity'],
+                        findings=report['findings'],
+                        summary=report['summary'],
+                        sweep_meta=report.get('sweep_meta')
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not store sweep report (DB down?): {e}")
+            else:
+                logger.info("Sweep complete - no findings")
 
         # 7b. Capture metric snapshot for correlation baseline
         try:
@@ -7264,56 +7282,57 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
         # 8. Correlation analysis — detect patterns AND have LLM analyze them
         logger.info("Starting correlation analysis...")
-        try:
-            # Keep ephemeral Job/CronJob services out of correlations: clean any
-            # previously-persisted false rows (recorded before the baseline
-            # filter), and guard against recording new ones.
-            ephemeral = self._ephemeral_service_names()
-            if ephemeral:
-                purged = self.kb._kb.purge_correlations_for_services(ephemeral)
-                if purged:
-                    logger.info(f"Purged {purged} false correlation(s) for ephemeral job services")
-            patterns = self.kb._kb.find_service_failure_patterns(days=30)
-            if patterns:
-                for p in patterns:
-                    svc_a = p.get('service_a', '')
-                    svc_b = p.get('service_b', '')
-                    if svc_a and svc_b and svc_a not in ephemeral and svc_b not in ephemeral:
-                        ctype = p.get('correlation_type', 'co_failure')
-                        self.kb._kb.record_service_correlation(
-                            service_a=svc_a,
-                            service_b=svc_b,
-                            correlation_type=ctype,
-                            time_delta_seconds=p.get('avg_time_delta_seconds'),
-                            details={'co_failure_count': p.get('co_failure_count', 0)}
+        with tracing.span('sweep.correlations'):
+            try:
+                # Keep ephemeral Job/CronJob services out of correlations: clean any
+                # previously-persisted false rows (recorded before the baseline
+                # filter), and guard against recording new ones.
+                ephemeral = self._ephemeral_service_names()
+                if ephemeral:
+                    purged = self.kb._kb.purge_correlations_for_services(ephemeral)
+                    if purged:
+                        logger.info(f"Purged {purged} false correlation(s) for ephemeral job services")
+                patterns = self.kb._kb.find_service_failure_patterns(days=30)
+                if patterns:
+                    for p in patterns:
+                        svc_a = p.get('service_a', '')
+                        svc_b = p.get('service_b', '')
+                        if svc_a and svc_b and svc_a not in ephemeral and svc_b not in ephemeral:
+                            ctype = p.get('correlation_type', 'co_failure')
+                            self.kb._kb.record_service_correlation(
+                                service_a=svc_a,
+                                service_b=svc_b,
+                                correlation_type=ctype,
+                                time_delta_seconds=p.get('avg_time_delta_seconds'),
+                                details={'co_failure_count': p.get('co_failure_count', 0)}
+                            )
+                    logger.info(f"Correlation analysis: {len(patterns)} service failure patterns found")
+
+                # Persist investigation<->drift correlations. Two investigations
+                # that started together are not a pair (CFOP-149).
+                correlated = self.kb._kb.find_correlated_events(window_seconds=300, hours=168)
+                persisted = 0
+                for ce in correlated:
+                    try:
+                        self.kb._kb.record_event_correlation(
+                            event_a_type=ce['event_a']['type'],
+                            event_a_id=ce['event_a']['id'],
+                            event_b_type=ce['event_b']['type'],
+                            event_b_id=ce['event_b']['id'],
+                            time_delta_seconds=ce['time_delta_seconds'],
+                            root_cause_candidate='event_a' if ce['time_delta_seconds'] > 0 else 'event_b',
+                            analysis_notes=f"{ce['event_a'].get('trigger', '')} <-> {ce['event_b'].get('trigger', ce['event_b'].get('drift_type', ''))}"
                         )
-                logger.info(f"Correlation analysis: {len(patterns)} service failure patterns found")
+                        persisted += 1
+                    except Exception as e:
+                        logger.debug(f"Could not persist event correlation: {e}")
+                if persisted:
+                    logger.info(f"Correlation analysis: persisted {persisted} event correlations")
 
-            # Persist investigation<->drift correlations. Two investigations
-            # that started together are not a pair (CFOP-149).
-            correlated = self.kb._kb.find_correlated_events(window_seconds=300, hours=168)
-            persisted = 0
-            for ce in correlated:
-                try:
-                    self.kb._kb.record_event_correlation(
-                        event_a_type=ce['event_a']['type'],
-                        event_a_id=ce['event_a']['id'],
-                        event_b_type=ce['event_b']['type'],
-                        event_b_id=ce['event_b']['id'],
-                        time_delta_seconds=ce['time_delta_seconds'],
-                        root_cause_candidate='event_a' if ce['time_delta_seconds'] > 0 else 'event_b',
-                        analysis_notes=f"{ce['event_a'].get('trigger', '')} <-> {ce['event_b'].get('trigger', ce['event_b'].get('drift_type', ''))}"
-                    )
-                    persisted += 1
-                except Exception as e:
-                    logger.debug(f"Could not persist event correlation: {e}")
-            if persisted:
-                logger.info(f"Correlation analysis: persisted {persisted} event correlations")
-
-            # LLM analysis of operational data + correlations
-            self._analyze_correlations(findings, patterns or [])
-        except Exception as e:
-            logger.warning(f"Correlation analysis failed: {e}", exc_info=True)
+                # LLM analysis of operational data + correlations
+                self._analyze_correlations(findings, patterns or [])
+            except Exception as e:
+                logger.warning(f"Correlation analysis failed: {e}", exc_info=True)
 
     def _known_namespaces(self):
         """Namespace names from the cluster, or None when they cannot be read.
@@ -7875,6 +7894,7 @@ Only return the JSON array, no other text."""
 
         return []
 
+    @tracing.traced('sweep.metrics', count_attr='cfop.sweep.phase_findings')
     def _sweep_metrics(self) -> List[Dict[str, Any]]:
         """Sweep metrics across the infrastructure using LLM analysis."""
         logger.info("Starting LLM-driven metric sweep")
@@ -7883,6 +7903,7 @@ Only return the JSON array, no other text."""
             "Look at resource usage, scrape targets, container health, and anything that looks off."
         )
 
+    @tracing.traced('sweep.logs', count_attr='cfop.sweep.phase_findings')
     def _sweep_logs(self) -> List[Dict[str, Any]]:
         """Sweep logs across all services using LLM pattern detection."""
         logger.info("Starting LLM-driven log sweep")
@@ -7898,6 +7919,7 @@ Only return the JSON array, no other text."""
             "Each loki_query call must contain exactly ONE stream selector {}."
         )
 
+    @tracing.traced('sweep.containers', count_attr='cfop.sweep.phase_findings')
     def _sweep_containers(self) -> List[Dict[str, Any]]:
         """Check all containers/pods across configured backends + LLM review."""
         findings = []
@@ -8030,6 +8052,7 @@ Only return the JSON array, no other text."""
             ERROR_RATE.inc()
             return []
 
+    @tracing.traced('sweep.baseline_drift', count_attr='cfop.sweep.phase_findings')
     def _check_baseline_drift(self) -> List[Dict[str, Any]]:
         """Compare expected infrastructure state to reality."""
         findings = []
@@ -8179,6 +8202,7 @@ Only return the JSON array, no other text."""
         except Exception as e:
             logger.warning(f"Baseline update failed: {e}")
 
+    @tracing.traced('sweep.consolidate_learnings')
     def _consolidate_learnings(self):
         """Periodically consolidate similar learnings by deprecating duplicates."""
         try:
@@ -8721,6 +8745,7 @@ Only return the JSON array, no other text."""
             verified_finding['remediation'] = finding['remediation']
         return verified_finding
 
+    @tracing.traced('sweep.verify_findings', count_attr='cfop.sweep.phase_findings')
     def _verify_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Active verification pass to filter hallucinated or unsupported findings.
 
@@ -8815,6 +8840,7 @@ Only return the JSON array, no other text."""
             logger.debug(f"Could not compute resolved findings: {e}")
             return []
 
+    @tracing.traced('sweep.metric_snapshot')
     def _capture_metric_snapshot(self) -> Optional[Dict[str, Any]]:
         """Capture key cluster metrics for correlation baseline."""
         snapshot = {}

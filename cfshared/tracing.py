@@ -19,6 +19,7 @@ span event carrying its message, and a message is provider- or tool-written
 text that can quote anything, so ``span()`` records the class name only.
 """
 
+import functools
 import logging
 import os
 from contextlib import contextmanager
@@ -153,6 +154,23 @@ def span(name: str, attributes: Optional[Mapping[str, Any]] = None) -> Iterator[
             s.set_attribute('error.type', type(e).__name__)
             s.set_status(Status(StatusCode.ERROR, type(e).__name__))
             raise
+
+
+def traced(name: str, count_attr: Optional[str] = None):
+    """Decorator form of ``span()`` for a function that is one phase of
+    something larger (CFOP-385: the sweep's phases). With ``count_attr``, a
+    sized result's length goes on the span under that name -- how many
+    findings a phase produced, never what they say."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def inner(*args, **kwargs):
+            with span(name):
+                result = fn(*args, **kwargs)
+                if count_attr and hasattr(result, '__len__'):
+                    annotate({count_attr: len(result)})
+                return result
+        return inner
+    return wrap
 
 
 def annotate(attributes: Mapping[str, Any]) -> None:
