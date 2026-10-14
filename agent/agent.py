@@ -8634,11 +8634,22 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
         'not accessible externally',
     )
 
+    #: Everything a sweep might claim is "missing". Listed one kind per kubectl
+    #: call: a single call for all of them fails as a whole when the
+    #: ServiceAccount may not read one kind, and that is how the workload half
+    #: of the suppressor sat empty on every sweep -- jobs, cronjobs and
+    #: ingresses were Forbidden, so pods and deployments never loaded either,
+    #: and only a debug line said so (CFOP-398).
+    _GROUND_TRUTH_KINDS = ('pods', 'deployments', 'daemonsets', 'statefulsets',
+                           'cronjobs', 'jobs', 'services', 'ingresses')
+
     def _ground_truth_snapshot(self) -> Optional[Dict[str, Any]]:
-        """Pull a single cluster snapshot used to disprove obvious false positives.
+        """Pull a cluster snapshot used to disprove obvious false positives.
 
         Returns None if K8sTools isn't wired up (tests, partial bootstrap),
-        which makes the suppressor a no-op.
+        which makes the suppressor a no-op. A kind that cannot be listed costs
+        only itself, and says so at WARNING: a finding about that kind will
+        reach the LLM verifier unfiltered, which the operator should know.
         """
         k8s = getattr(getattr(self, 'tools', None), 'k8s_tools', None)
         if not k8s:
@@ -8656,28 +8667,68 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
         except Exception as e:
             logger.debug(f"Ground truth: could not load nodes: {e}")
 
-        try:
-            # Single broad lookup covering everything a sweep might claim is "missing".
-            result = k8s._run_kubectl(
-                ['get',
-                 'pods,deployments,daemonsets,statefulsets,cronjobs,jobs,services,ingresses',
-                 '-A', '-o', 'name'],
-                timeout=15,
-            )
-            if result.get('success'):
-                for line in result.get('stdout', '').splitlines():
-                    # Lines look like "pod/river-history-ingest-29625252-8ltx8"
-                    if '/' in line:
-                        kind, resource_name = line.split('/', 1)
-                        resource_name = resource_name.strip().lower()
-                        if resource_name:
-                            snapshot['workloads'].add(resource_name)
-                            if kind.strip().lower() == 'ingress':
-                                snapshot['ingresses'].add(resource_name)
-        except Exception as e:
-            logger.debug(f"Ground truth: could not load workloads: {e}")
+        failed = []
+        for kind in self._GROUND_TRUTH_KINDS:
+            try:
+                result = k8s._run_kubectl(['get', kind, '-A', '-o', 'name'], timeout=15)
+            except Exception as e:
+                result = {'success': False, 'error': str(e)}
+            if not result.get('success'):
+                failed.append(kind)
+                reason = (result.get('error') or result.get('stderr') or '').strip().splitlines()
+                logger.warning(
+                    f"Ground truth: cannot list {kind}: {reason[0] if reason else 'kubectl failed'}"
+                    f" -- findings about {kind} will not be suppressed")
+                continue
+            for line in result.get('stdout', '').splitlines():
+                # Lines look like "pod/river-history-ingest-29625252-8ltx8"
+                if '/' in line:
+                    resource_name = line.split('/', 1)[1].strip().lower()
+                    if resource_name:
+                        snapshot['workloads'].add(resource_name)
+                        if kind == 'ingresses':
+                            snapshot['ingresses'].add(resource_name)
 
+        logger.info(f"Ground truth: {len(snapshot['workloads'])} workloads across "
+                    f"{len(self._GROUND_TRUTH_KINDS) - len(failed)} kinds"
+                    + (f"; unreadable: {', '.join(failed)}" if failed else ''))
+        tracing.annotate({'cfop.verify.ground_truth_workloads': len(snapshot['workloads']),
+                          'cfop.verify.ground_truth_kinds_failed': len(failed)})
         return snapshot
+
+    def _resolved_identities(self, finding: Dict[str, Any],
+                             snapshot: Optional[Dict[str, Any]]) -> str:
+        """What the snapshot already settles about the names a finding uses.
+
+        The verifier's budget is 2-4 tool calls and its prompt asks it to
+        resolve exact names before testing the claim; it spent the budget on
+        the resolving and reached the cap 29 times in 33 (CFOP-398). Handing
+        it the matching workloads and the named nodes' Ready state up front
+        leaves the calls for the disproof. Cluster names and conditions only,
+        taken from the snapshot, never from the finding.
+        """
+        if not snapshot:
+            return ''
+        text = f"{finding.get('finding', '')} {finding.get('evidence', '')}".lower()
+        tokens: set = set()
+        tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
+        tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
+        tokens -= self._GROUND_TRUTH_STOPWORDS
+
+        workloads = sorted(w for w in snapshot['workloads']
+                           if any(t == w or t in w.split('-') for t in tokens))[:12]
+        nodes = [(n, info.get('ready')) for n, info in snapshot['nodes'].items() if n in text]
+
+        lines = []
+        if workloads:
+            lines.append('Workloads that exist right now and match names in the finding: '
+                         + ', '.join(workloads))
+        elif snapshot['workloads'] and any('-' in t for t in tokens):
+            lines.append('No workload in the cluster matches a hyphenated name in the finding.')
+        if nodes:
+            lines.append('Nodes named in the finding, with their Ready condition: '
+                         + ', '.join(f'{n}={r}' for n, r in nodes))
+        return '\n'.join(lines)
 
     def _match_workload_in_text(self, text: str,
                                 snapshot: Dict[str, Any]) -> Optional[Tuple[str, str]]:
@@ -8798,7 +8849,8 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
 
     def _verify_single_finding(self,
                                finding: Dict[str, Any],
-                               max_iterations: int) -> Optional[Dict[str, Any]]:
+                               max_iterations: int,
+                               snapshot: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Actively try to disprove a finding before allowing it to be emitted."""
         infra = self._get_infra_summary()
         system_prompt = f"""You are a strict verification agent for infrastructure monitoring findings.
@@ -8833,6 +8885,10 @@ Only return the JSON array, no other text."""
             "Try to falsify it with fresh tool queries, then return [] if it does not survive verification.\n\n"
             f"Draft finding JSON:\n{json.dumps(finding, default=str)}"
         )
+        identities = self._resolved_identities(finding, snapshot)
+        if identities:
+            user_msg += ("\n\nAlready resolved from the live cluster (do not spend tool calls "
+                         "looking these up again):\n" + identities)
 
         try:
             result = self._chat_with_tools_with_fallback(
@@ -8857,6 +8913,13 @@ Only return the JSON array, no other text."""
         verified_finding = verified[0]
         if not verified_finding.get('remediation') and finding.get('remediation'):
             verified_finding['remediation'] = finding['remediation']
+        if result.get('stop_reason') == 'cap':
+            # The loop's cap ends in one no-tools summary call over the last
+            # few clipped tool results, not in the model finishing its
+            # disproof. Kept, but marked, so the span and the report say which
+            # verdicts were forced. Dropping them waits on measuring how many
+            # were real (CFOP-398).
+            verified_finding['verification'] = 'capped'
         return verified_finding
 
     @tracing.traced('sweep.verify_findings', count_attr='cfop.sweep.phase_findings')
@@ -8890,6 +8953,7 @@ Only return the JSON array, no other text."""
                 logger.info(
                     f"Ground-truth filter: {len(findings)} → {len(survivors)} ({suppressed} suppressed)"
                 )
+            tracing.annotate({'cfop.verify.suppressed': suppressed})
             findings = survivors
             if not findings:
                 return findings
@@ -8902,12 +8966,16 @@ Only return the JSON array, no other text."""
                 verified_finding = self._verify_single_finding(
                     finding=finding,
                     max_iterations=max_iterations,
+                    snapshot=snapshot,
                 )
                 if verified_finding:
                     verified.append(verified_finding)
 
             removed = len(findings) - len(verified)
-            logger.info(f"Finding verification: {len(findings)} → {len(verified)} ({removed} filtered)")
+            capped = sum(1 for v in verified if v.get('verification') == 'capped')
+            logger.info(f"Finding verification: {len(findings)} → {len(verified)} ({removed} filtered"
+                        + (f", {capped} kept at the tool cap" if capped else '') + ')')
+            tracing.annotate({'cfop.verify.kept': len(verified), 'cfop.verify.capped': capped})
 
             if removed > 0:
                 # Log which findings were filtered

@@ -507,7 +507,7 @@ sweep                               cfop.sweep.mode, findings_raw, findings
 ├─ sweep.logs                       (and sweep.containers / sweep.baseline_drift
 │  └─ llm_chain → …                  / sweep.consolidate_learnings when enabled)
 ├─ sweep.embedding_backfill
-├─ sweep.verify_findings            findings the judge kept
+├─ sweep.verify_findings            cfop.verify.kept / capped / suppressed
 ├─ sweep.publish                    post to event_runtime + resolutions
 ├─ sweep.report
 ├─ sweep.metric_snapshot
@@ -516,6 +516,14 @@ sweep                               cfop.sweep.mode, findings_raw, findings
 
 A sweep span carries counts, never finding text: findings are model output
 about the operator's systems. `agent/test_sweep_tracing.py` holds that line.
+
+`sweep.verify_findings` says how the gate decided (CFOP-398).
+`cfop.verify.suppressed` is what the deterministic ground-truth stage removed,
+`cfop.verify.ground_truth_kinds_failed` how many kinds that stage could not
+list (a grant missing on the ServiceAccount; each is also a WARNING in the
+log), and `cfop.verify.capped` how many kept findings got their verdict from
+the tool loop's cap rather than from the model finishing its check. Those
+findings carry `verification: capped` in the sweep report.
 
 An investigation is broken into phases under its root (CFOP-387):
 
