@@ -5,17 +5,88 @@ Infrastructure Discovery Tools
 Auto-discover hosts, verify connectivity, and gather inventory.
 """
 
+import re
 import subprocess
 import logging
-from typing import Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, List, Tuple
+
+# The agent's SSH identity (cfop-forensics, homelab-infra HOMELAB-28) is
+# narrow by design: no `sudo` in general, NOPASSWD only for an allowlist of
+# reads -- exact dmesg forms, du, read subcommands of crictl/docker/kubectl.
+# `sudo -n echo` therefore fails on every host and says nothing. What an
+# investigation depends on is the allowlist, so that is what is checked, by
+# RUNNING each probe read with `sudo -n` (output discarded, 5s cap). Asking
+# instead (`sudo -n -l <cmd>`) is not enough: under sudo's default
+# listpw=any, listing succeeds for an entry that would still prompt for a
+# password (CodeRabbit on #329). A refused probe is a real problem (the
+# drop-in missing or broken, or -- found live -- sudo-rs resolving a
+# symlinked binary out of the allowlist); full sudo being refused is the
+# design (CFOP-391).
+#
+# Defaults for infrastructure.discovery.sudo_read_probes. Only reads that
+# should run on every host belong in the default: dmesg -T. Probes are
+# EXECUTED as root through the allowlist, so list only harmless reads.
+SUDO_READ_PROBES = ('/usr/bin/dmesg -T',)
+# A probe is spliced into a remote shell command, so only an absolute path
+# and plain arguments are accepted -- no quoting, separators or expansions.
+_SAFE_PROBE = re.compile(r'^/[\w./+-]+( [\w./=+-]+)*$')
+
+
+def _sudo_checks(probes) -> str:
+    reads = '; '.join(f'timeout 5 sudo -n {probe} >/dev/null 2>&1 && echo SUDO_READ_OK_{i}'
+                      for i, probe in enumerate(probes))
+    return f'sudo -n echo SUDO_OK 2>&1; {reads}'
+
+
+def _refused_reads(probes, stdout: str) -> List[str]:
+    """The probes whose OK marker is missing. Token match, not substring:
+    SUDO_READ_OK_1 is a prefix of SUDO_READ_OK_10."""
+    seen = set(stdout.split())
+    return [probe for i, probe in enumerate(probes) if f'SUDO_READ_OK_{i}' not in seen]
+
+
+_SUDO_CHECKS = _sudo_checks(SUDO_READ_PROBES)
+
+# Hosts checked at once by discover_all_hosts. Each check is a ping and an
+# SSH round trip, nearly all of it waiting on the network.
+_DISCOVERY_WORKERS = 16
 
 logger = logging.getLogger("cfoperator.tools.discovery")
 
 class DiscoveryTools:
     """Tools for discovering and verifying infrastructure."""
 
-    def __init__(self, hosts_config: Dict[str, Any]):
+    def __init__(self, hosts_config: Dict[str, Any], settings: Dict[str, Any] = None):
+        """``settings`` is ``infrastructure.discovery``: ``sudo_read_probes``
+        (allowlisted reads to run, a list or one string) and ``workers``
+        (hosts checked at once). Both optional; see the module constants."""
         self.hosts = hosts_config
+        settings = settings if isinstance(settings, dict) else {}
+        configured = settings.get('sudo_read_probes')
+        if isinstance(configured, str):
+            configured = [configured]
+        probes = []
+        for probe in configured if isinstance(configured, (list, tuple)) else []:
+            probe = str(probe).strip()
+            if _SAFE_PROBE.match(probe):
+                probes.append(probe)
+            else:
+                logger.warning(f"Ignoring sudo read probe {probe!r} in infrastructure.discovery: "
+                               f"expected an absolute path and plain arguments")
+        self.sudo_read_probes = tuple(probes) or SUDO_READ_PROBES
+        self._sudo_checks = _sudo_checks(self.sudo_read_probes)
+        # The whole SSH command: 5s to connect plus up to 5s per probe read
+        # (each is capped by `timeout 5` on the host), with slack. A fixed 10s
+        # cut a slow but healthy host off mid-sequence and reported it as
+        # SSH-inaccessible (CodeRabbit on #329).
+        self._probe_timeout = 10 + 5 * len(self.sudo_read_probes)
+        try:
+            workers = int(settings.get('workers') or _DISCOVERY_WORKERS)
+        except (TypeError, ValueError):
+            logger.warning(f"Ignoring infrastructure.discovery.workers={settings.get('workers')!r}")
+            workers = _DISCOVERY_WORKERS
+        self.workers = max(1, min(64, workers))
         logger.info(f"Discovery tools initialized for {len(self.hosts)} hosts")
 
     def ping_host(self, host: str) -> Dict[str, Any]:
@@ -26,8 +97,11 @@ class DiscoveryTools:
         address = self.hosts[host]['address']
 
         try:
+            # Three samples for the average, 0.2s apart (the floor iputils
+            # allows without root) rather than the default 1s: the same
+            # measurement in ~0.4s instead of ~2s (CFOP-391).
             result = subprocess.run(
-                ['ping', '-c', '3', '-W', '2', address],
+                ['ping', '-c', '3', '-i', '0.2', '-W', '2', address],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -103,7 +177,11 @@ class DiscoveryTools:
             }
 
     def verify_sudo(self, host: str) -> Dict[str, Any]:
-        """Verify passwordless sudo on host."""
+        """Check sudo for the agent's SSH user: full passwordless sudo
+        (``sudo_passwordless``) and the read-only allowlist investigations
+        use (``sudo_reads``, with ``sudo_read_refused`` naming any probe
+        read that would not run). The forensics identity is meant to have
+        only the latter; see SUDO_READ_PROBES."""
         if host not in self.hosts:
             return {'success': False, 'error': f'Unknown host: {host}'}
 
@@ -117,26 +195,30 @@ class DiscoveryTools:
         if ssh_key:
             ssh_cmd.extend(['-i', ssh_key])
         ssh_cmd.append(f'{ssh_user}@{ssh_address}')
-        ssh_cmd.append('sudo -n echo SUDO_OK 2>&1')
+        ssh_cmd.append(self._sudo_checks)
 
         try:
             result = subprocess.run(
                 ssh_cmd,
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=self._probe_timeout
             )
 
-            sudo_ok = 'SUDO_OK' in result.stdout
+            sudo_ok = 'SUDO_OK' in result.stdout.split()
             needs_password = 'password is required' in result.stdout.lower()
+            refused = _refused_reads(self.sudo_read_probes, result.stdout)
 
             return {
                 'success': True,
                 'host': host,
                 'address': ssh_address,
                 'sudo_passwordless': sudo_ok,
+                'sudo_reads': not refused,
+                'sudo_read_refused': refused,
                 'needs_password': needs_password,
-                'message': result.stdout.strip()
+                'message': ' '.join(t for t in result.stdout.split()
+                                    if not t.startswith('SUDO_READ_OK_')).strip()
             }
         except Exception as e:
             return {
@@ -145,53 +227,84 @@ class DiscoveryTools:
                 'error': str(e)
             }
 
+    def _ssh_probe(self, host: str) -> Tuple[bool, bool, List[str]]:
+        """(ssh_accessible, sudo_passwordless, refused read probes) from ONE
+        connection.
+
+        verify_ssh and verify_sudo each open their own, which is right for
+        the single-purpose tools and wasteful for the inventory, where both
+        questions go to every host (CFOP-391).
+        """
+        host_config = self.hosts[host]
+        ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'ConnectTimeout=5']
+        if host_config['ssh'].get('key_path'):
+            ssh_cmd.extend(['-i', host_config['ssh']['key_path']])
+        ssh_cmd.append(f"{host_config['ssh']['user']}@{host_config['address']}")
+        ssh_cmd.append('echo SSH_OK; ' + self._sudo_checks)
+        try:
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=self._probe_timeout)
+        except Exception as e:
+            logger.debug(f"SSH probe of {host} failed: {e}")
+            return False, False, list(self.sudo_read_probes)
+        tokens = set(result.stdout.split())
+        return ('SSH_OK' in tokens, 'SUDO_OK' in tokens,
+                _refused_reads(self.sudo_read_probes, result.stdout))
+
+    def _discover_host(self, host_name: str) -> Dict[str, Any]:
+        """One inventory row: reachability, SSH and sudo for one host."""
+        host_config = self.hosts[host_name]
+        logger.info(f"Discovering host: {host_name}")
+        ping_result = self.ping_host(host_name)
+        ssh_ok, sudo_ok, refused = self._ssh_probe(host_name)
+
+        host_info = {
+            'name': host_name,
+            'address': host_config['address'],
+            'role': host_config.get('role', 'unknown'),
+            'alive': ping_result.get('alive', False),
+            'latency_ms': ping_result.get('latency_ms'),
+            'ssh_accessible': ssh_ok,
+            'sudo_passwordless': sudo_ok,
+            'sudo_reads': ssh_ok and not refused,
+            'monitoring': host_config.get('monitoring', []),
+            'issues': []
+        }
+
+        # Collect issues
+        if not host_info['alive']:
+            host_info['issues'].append('Host not responding to ping')
+        if not host_info['ssh_accessible']:
+            host_info['issues'].append('SSH not accessible')
+        # Full sudo is refused by design, so its absence is not an issue;
+        # the read allowlist failing is. Only asked when SSH worked: with no
+        # session there is no answer, and "SSH not accessible" already says so.
+        if host_info['ssh_accessible'] and refused:
+            host_info['issues'].append(
+                f"Read-only sudo refused for: {', '.join(refused)}")
+        return host_info
+
     def discover_all_hosts(self) -> Dict[str, Any]:
         """
         Discover and verify connectivity to all configured hosts.
 
-        Returns comprehensive inventory of infrastructure.
+        Returns comprehensive inventory of infrastructure. Hosts are checked
+        at once rather than one after another: sequentially, seven healthy
+        hosts took ~20s, every sweep (CFOP-391), and one dead host's timeouts
+        stalled every host behind it. The inventory keeps config order.
         """
-        inventory = []
-
-        for host_name, host_config in self.hosts.items():
-            logger.info(f"Discovering host: {host_name}")
-
-            # Check if alive
-            ping_result = self.ping_host(host_name)
-
-            # Check SSH access
-            ssh_result = self.verify_ssh(host_name)
-
-            # Check sudo
-            sudo_result = self.verify_sudo(host_name)
-
-            host_info = {
-                'name': host_name,
-                'address': host_config['address'],
-                'role': host_config.get('role', 'unknown'),
-                'alive': ping_result.get('alive', False),
-                'latency_ms': ping_result.get('latency_ms'),
-                'ssh_accessible': ssh_result.get('ssh_accessible', False),
-                'sudo_passwordless': sudo_result.get('sudo_passwordless', False),
-                'monitoring': host_config.get('monitoring', []),
-                'issues': []
-            }
-
-            # Collect issues
-            if not host_info['alive']:
-                host_info['issues'].append('Host not responding to ping')
-            if not host_info['ssh_accessible']:
-                host_info['issues'].append('SSH not accessible')
-            if not host_info['sudo_passwordless']:
-                host_info['issues'].append('Sudo requires password')
-
-            inventory.append(host_info)
+        names = list(self.hosts)
+        if names:
+            with ThreadPoolExecutor(max_workers=min(self.workers, len(names))) as pool:
+                inventory = list(pool.map(self._discover_host, names))
+        else:
+            inventory = []
 
         # Summary
         total = len(inventory)
         alive = sum(1 for h in inventory if h['alive'])
         ssh_ok = sum(1 for h in inventory if h['ssh_accessible'])
         sudo_ok = sum(1 for h in inventory if h['sudo_passwordless'])
+        sudo_reads = sum(1 for h in inventory if h['sudo_reads'])
         has_issues = sum(1 for h in inventory if h['issues'])
 
         return {
@@ -200,6 +313,7 @@ class DiscoveryTools:
             'alive': alive,
             'ssh_accessible': ssh_ok,
             'sudo_passwordless': sudo_ok,
+            'sudo_reads': sudo_reads,
             'hosts_with_issues': has_issues,
             'inventory': inventory
         }
@@ -237,7 +351,10 @@ class DiscoveryTools:
             },
             {
                 'name': 'verify_sudo',
-                'description': 'Verify passwordless sudo on a host. Use this to check if automated remediation will work.',
+                'description': ('Check sudo for the agent\'s SSH user on a host: sudo_reads is whether the read-only '
+                                'allowlist investigations use (dmesg, du, crictl/docker/kubectl reads) works without '
+                                'a password; sudo_passwordless is full sudo, which the agent\'s identity is meant NOT '
+                                'to have. Host changes go through the node-action lane, not this user.'),
                 'parameters': {
                     'type': 'object',
                     'properties': {

@@ -126,7 +126,8 @@ infrastructure:
 
 ### SSH Requirements
 
-**CRITICAL: SSH must be passwordless and sudo must be passwordless.**
+**SSH must be key-based (no password). Sudo must be passwordless for a short
+allowlist of reads, and need not be passwordless for anything else.**
 
 #### Setup SSH Key Authentication
 
@@ -145,29 +146,53 @@ ssh-copy-id user@10.0.0.4
 ssh user@10.0.0.2 'echo "Success"'
 ```
 
-#### Setup Passwordless Sudo
+#### Setup Passwordless Sudo, for reads only
 
-On each worker host (Pi2, Pi3, Pi4):
+Investigations read with sudo (`sudo dmesg`, `sudo crictl ps`), so the agent's
+SSH user needs those commands without a password. It does not need, and
+should not have, `NOPASSWD: ALL`. Investigations never change hosts: every
+unattended run is read-only, and each command it sends is classified before it
+runs (CFOP-240). That classifier is a denylist, though: a script or an
+interpreter one-liner is not recognised. With `NOPASSWD: ALL` it would be the
+only thing between an investigation and root. A sudoers drop-in that lists
+the reads makes the host enforce the boundary:
 
 ```bash
-# Add your user to sudoers with NOPASSWD
-echo "user ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/user
-
-# Test
-sudo ls  # Should not ask for password
+# /etc/sudoers.d/cfop-reader -- validate with: sudo visudo -cf <file>
+cfop-reader ALL=(root) NOPASSWD: /usr/bin/dmesg -T, /usr/bin/du *, \
+    /usr/local/bin/crictl ps, /usr/local/bin/crictl ps *, /usr/bin/docker ps, /usr/bin/docker logs *
 ```
 
-**Why this matters:**
-Investigations read with sudo (`sudo dmesg`, `sudo crictl ps`), and the
-node-action lane runs its gated fixes as `sudo -n <command>`. If sudo prompts
-for a password, both break.
+List exact argument forms where an argument could change what a command does:
+a command listed with no arguments may be run with ANY arguments, so a bare
+`/usr/bin/dmesg` would admit `dmesg -C`. The homelab's full list and its
+reasoning are in homelab-infra `ansible/files/sudoers-cfop-forensics`.
 
-Investigations themselves do not change hosts: every unattended run is
-read-only, and each command it sends is classified before it runs (CFOP-240).
-That classifier is a denylist, though — a script or an interpreter one-liner
-is not recognised — so with `NOPASSWD: ALL` it is the only thing between an
-investigation and root. A sudoers entry restricted to the commands you want
-the agent to run makes the host enforce the same boundary.
+The node-action lane, which runs the gated host fixes, uses its own identity
+with its own drop-in, scoped to the `node_action` allowlist.
+
+`discover_all_hosts` checks this the way it is meant to be set up. It *runs*
+each probe read with `sudo -n`, output discarded and capped at 5s, and
+reports `sudo_reads` (every probe ran) plus a host issue naming any probe that
+was refused. Running the read matters: `sudo -n -l <cmd>` succeeds for an
+entry that would still prompt for a password, under sudo's default
+`listpw=any`. Full sudo (`sudo_passwordless`) is reported but is not an issue.
+The probes and the number of hosts checked at once are configurable:
+
+```yaml
+infrastructure:
+  discovery:
+    # Reads your drop-in allows. They are EXECUTED as root, so list only
+    # harmless reads; absolute path and plain arguments only.
+    sudo_read_probes:
+      - /usr/bin/dmesg -T
+    workers: 16          # hosts checked at once (1-64)
+```
+
+Watch for `sudo-rs` (Ubuntu 25.10 and later). It resolves symlinks before
+matching sudoers. `/usr/bin/du` there is a symlink into uutils coreutils, and
+k3s's `kubectl` and `crictl` are symlinks to `k3s`, so an entry for the
+symlink's path never matches. A probe for such a command is how you find out.
 
 ### Observability Backend Configuration
 
