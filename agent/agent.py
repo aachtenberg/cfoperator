@@ -10993,7 +10993,8 @@ IMPORTANT:
         }
 
     def handle_chat_message_stream(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None,
-                                   actor_role: Optional[str] = None, verify_only: bool = False):
+                                   actor_role: Optional[str] = None, verify_only: bool = False,
+                                   session_id: Optional[str] = None):
         """
         Run one console chat turn, yielding SSE event dicts.
 
@@ -11002,7 +11003,9 @@ IMPORTANT:
         drawer / sweep-banner hand-off. Together they become the turn's
         ToolPolicy (CFOP-124). No role is read as a member, the same fallback
         the console route applies: a chat turn always has a person behind it,
-        and nothing internal calls this (CFOP-240, review).
+        and nothing internal calls this (CFOP-240, review). ``session_id`` is
+        the persisted transcript the turn belongs to, if any; it only labels
+        the turn's trace (CFOP-388).
 
         Events yielded:
             {'event': 'tool_call', 'data': {'tool': ..., 'args': ..., 'iteration': ..., 'max': ...}}
@@ -11018,25 +11021,37 @@ IMPORTANT:
             event_queue.put({'event': event_type, 'data': data})
 
         def run_chat():
-            try:
-                # Expand shortcut slash commands
-                nonlocal message
-                message = self._expand_slash_shortcut(message)
+            # One trace per turn (CFOP-388), opened on the turn's own thread.
+            # Who and which transcript, never what was said: the role, not
+            # the username; no message, no history.
+            with tracing.span('chat_turn', {
+                'cfop.chat.session_id': session_id,
+                'cfop.chat.role': tool_policy.actor_role,
+                'cfop.chat.verify_only': bool(verify_only),
+            }):
+                try:
+                    # Expand shortcut slash commands
+                    nonlocal message
+                    message = self._expand_slash_shortcut(message)
 
-                # Check for skill/command invocation
-                if message.startswith('/'):
-                    result = self._execute_skill_stream(message, backend=backend, model=model, event_callback=event_callback,
-                                                        tool_policy=tool_policy)
-                elif message.lower().strip() in ('summary', 'report', 'status', 'tps report', 'morning summary', 'give me a summary', 'show summary'):
-                    summary = self._generate_morning_summary()
-                    result = {'response': summary['text'], 'backend': 'N/A', 'model': 'N/A', 'tool_calls': 0}
-                else:
-                    result = self._handle_chat_with_stream(message, history, backend, model, event_callback,
-                                                           tool_policy=tool_policy)
-                event_queue.put({'event': 'done', 'data': result})
-            except Exception as e:
-                logger.error(f"Stream chat failed: {e}", exc_info=True)
-                event_queue.put({'event': 'error', 'data': {'error': str(e)}})
+                    # Check for skill/command invocation
+                    if message.startswith('/'):
+                        tracing.annotate({'cfop.chat.kind': 'skill'})
+                        result = self._execute_skill_stream(message, backend=backend, model=model, event_callback=event_callback,
+                                                            tool_policy=tool_policy)
+                    elif message.lower().strip() in ('summary', 'report', 'status', 'tps report', 'morning summary', 'give me a summary', 'show summary'):
+                        tracing.annotate({'cfop.chat.kind': 'summary'})
+                        summary = self._generate_morning_summary()
+                        result = {'response': summary['text'], 'backend': 'N/A', 'model': 'N/A', 'tool_calls': 0}
+                    else:
+                        tracing.annotate({'cfop.chat.kind': 'chat'})
+                        result = self._handle_chat_with_stream(message, history, backend, model, event_callback,
+                                                               tool_policy=tool_policy)
+                    event_queue.put({'event': 'done', 'data': result})
+                except Exception as e:
+                    logger.error(f"Stream chat failed: {e}", exc_info=True)
+                    tracing.mark_error(type(e).__name__)
+                    event_queue.put({'event': 'error', 'data': {'error': str(e)}})
 
         # Run the chat in a background thread
         import threading
@@ -11087,10 +11102,14 @@ IMPORTANT:
             'fallback_used': result.get('fallback_used', False),
         }
 
+    @tracing.traced('skill')
     def _execute_skill_stream(self, message: str, backend: str = 'auto', model: str = None, event_callback=None,
                               tool_policy: Optional[ToolPolicy] = None) -> Dict[str, Any]:
         """Execute a skill with streaming events."""
         system_context, user_message, skill_name = self._prepare_skill_invocation(message)
+        # The name is the user's text until the registry vouches for it
+        # (CFOP-388): `/anything at all` must not become a span attribute.
+        tracing.annotate({'cfop.skill.name': skill_name if system_context is not None else 'unknown'})
         if system_context is None:
             return self._unknown_skill_response(skill_name)
 
@@ -11284,6 +11303,9 @@ IMPORTANT:
                            f"{_MORNING_SUMMARY_SENT_SETTING} unset so a restart "
                            "retries today's digest")
 
+    # A root of its own from the OODA loop and the web endpoints; a child of
+    # chat_turn when someone asks for the summary in the console (CFOP-388).
+    @tracing.traced('morning_summary')
     @_meter_morning_summary
     def _generate_morning_summary(self) -> Dict[str, Any]:
         """

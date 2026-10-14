@@ -357,7 +357,10 @@ def test_api_chat_resolves_the_role_in_the_route_and_threads_it(monkeypatch):
             time.sleep(0.02)
         return operator.handle_chat_message_stream.call_args.kwargs
 
-    assert ask("admin", {"message": "hi"}) == {"model": None, "actor_role": "admin", "verify_only": False}
+    assert ask("admin", {"message": "hi"}) == {"model": None, "actor_role": "admin",
+                                               "verify_only": False, "session_id": None}
     kw = ask("member", {"message": "hi", "mode": "verify"})
     assert kw["actor_role"] == "member" and kw["verify_only"] is True
     assert ask(None, {"message": "hi"})["actor_role"] == "member"
+    # The transcript id rides along too, to label the turn's trace (CFOP-388).
+    assert ask("admin", {"message": "hi", "session_id": "42"})["session_id"] == 42
