@@ -2004,6 +2004,69 @@ class _ToolLoopStats:
         }
 
 
+def _llm_usage_attributes(provider: str, resp) -> Dict[str, Any]:
+    """Token counts and finish reason from a raw completion response, by
+    provider shape (CFOP-386). Counts and reasons only; a body that does not
+    parse yields nothing rather than an error."""
+    try:
+        data = resp.json()
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    if provider == 'ollama':
+        tokens_in, tokens_out = data.get('prompt_eval_count'), data.get('eval_count')
+        reason = data.get('done_reason')
+    elif provider == 'anthropic':
+        usage = data.get('usage') or {}
+        tokens_in, tokens_out = usage.get('input_tokens'), usage.get('output_tokens')
+        reason = data.get('stop_reason')
+    else:   # the OpenAI-compatible shape
+        usage = data.get('usage') or {}
+        tokens_in, tokens_out = usage.get('prompt_tokens'), usage.get('completion_tokens')
+        choices = data.get('choices') or [{}]
+        reason = choices[0].get('finish_reason') if isinstance(choices[0], dict) else None
+    return {
+        'gen_ai.usage.input_tokens': tokens_in if isinstance(tokens_in, int) else None,
+        'gen_ai.usage.output_tokens': tokens_out if isinstance(tokens_out, int) else None,
+        'gen_ai.response.finish_reasons': [str(reason)] if reason else None,
+    }
+
+
+def _llm_post(purpose: str, provider: str, model: str, url: str, **kwargs):
+    """One provider round-trip, as a ``chat {model}`` span (CFOP-386).
+
+    For the one-shot completions that do not go through _chat_with_tools
+    (judge, node-action plan, correlations, learnings): the same GenAI
+    attributes the tool loop's spans carry, plus ``cfop.llm.purpose`` so
+    their time can be told apart. Returns the response untouched; each
+    caller keeps its own error handling. Module-level, not a method: it
+    needs nothing from the agent, and the judge's tests call
+    CFOperator._complete_judge with a mock for self.
+
+    An HTTP error is marked by status code only. The body is provider
+    text that can quote the request, which is also why the judge's
+    _raise_for_status_with_body message must never reach a span.
+    """
+    import requests
+    with tracing.span(f"chat {model}", {
+        'gen_ai.operation.name': 'chat',
+        'gen_ai.provider.name': provider,
+        'gen_ai.system': provider,
+        'gen_ai.request.model': model,
+        'cfop.llm.purpose': purpose,
+    }):
+        resp = requests.post(url, **kwargs)
+        if tracing.enabled():
+            status = getattr(resp, 'status_code', None)
+            if isinstance(status, int) and status >= 400:
+                tracing.annotate({'http.response.status_code': status})
+                tracing.mark_error(f"HTTP{status}")
+            else:
+                tracing.annotate(_llm_usage_attributes(provider, resp))
+        return resp
+
+
 def _opened_pr_url(result) -> Optional[str]:
     """html_url of a PR that a github_create_pr call actually opened, or None.
 
@@ -4481,7 +4544,6 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
     def _complete_node_action_plan(self, prompt: str) -> str:
         """LLM completion for a node-action plan (same model floor as the Job)."""
-        import requests as req
         ec = self._executor_config()
         llm = ec.get('llm') if isinstance(ec.get('llm'), dict) else {}
         na = ec.get('node_action') if isinstance(ec.get('node_action'), dict) else {}
@@ -4494,7 +4556,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             'max_tokens': 2048,
             'messages': [{'role': 'user', 'content': prompt}],
         }
-        resp = req.post(
+        resp = _llm_post(
+            'node_action_plan', 'anthropic', model,
             'https://api.anthropic.com/v1/messages',
             json=payload,
             headers={
@@ -5883,13 +5946,13 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         find different evidence, which makes the verdict unreproducible and the
         gate slow.
         """
-        import requests as req
         api_key = self._judge_api_key(backend)
         if not api_key:
             raise RuntimeError(f"no API key for judge backend '{backend}'")
 
         if backend == 'anthropic':
-            resp = req.post(
+            resp = _llm_post(
+                'judge', 'anthropic', model,
                 'https://api.anthropic.com/v1/messages',
                 json={
                     'model': model,
@@ -5921,7 +5984,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         cfg = OPENAI_COMPAT_PROVIDERS.get(backend)
         if not cfg:
             raise RuntimeError(f"unknown judge backend '{backend}'")
-        resp = req.post(
+        resp = _llm_post(
+            'judge', backend, model,
             cfg['base_url'].rstrip('/') + '/chat/completions',
             json={
                 'model': model,
@@ -7372,7 +7436,6 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
     def _analyze_correlations(self, sweep_findings: list, failure_patterns: list):
         """Have the LLM analyze operational data and correlations to produce insights."""
-        import requests as req
 
         # Gather operational context
         try:
@@ -7474,7 +7537,8 @@ Return empty array if nothing notable: {{"insights": []}}"""
         try:
             if provider_type == 'ollama':
                 payload = self._ollama_chat_payload(model, messages, 0.3, format='json')
-                resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
+                resp = _llm_post('correlations', 'ollama', model, f"{url}/api/chat",
+                                      json=payload, timeout=self.llm_timeout)
                 text = resp.json().get('message', {}).get('content', '')
             elif provider_type in OPENAI_COMPAT_PROVIDERS:
                 api_key, endpoint = self._openai_compat_request_config(provider_type)
@@ -7488,7 +7552,8 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     'response_format': {'type': 'json_object'}
                 }
                 payload.update(self._openai_compat_request_params(provider_type))
-                resp = req.post(
+                resp = _llm_post(
+                    'correlations', provider_type, model,
                     endpoint,
                     json=payload,
                     headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {api_key}'},
@@ -7506,7 +7571,8 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     'messages': [{'role': 'user', 'content': prompt}],
                     'temperature': 0.3
                 }
-                resp = req.post(
+                resp = _llm_post(
+                    'correlations', 'anthropic', model,
                     'https://api.anthropic.com/v1/messages',
                     json=payload,
                     headers={'Content-Type': 'application/json', 'x-api-key': api_key, 'anthropic-version': '2023-06-01'},
@@ -8227,7 +8293,6 @@ Only return the JSON array, no other text."""
 
     def _extract_learnings(self, inv_id: int, trigger: str, findings: Dict[str, Any]):
         """Extract structured learnings from a resolved investigation using LLM."""
-        import requests as req
 
         try:
             resolved = self._resolve_provider()
@@ -8270,7 +8335,8 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
 
             if provider_type == 'ollama':
                 payload = self._ollama_chat_payload(model, messages, 0.3, format='json')
-                resp = req.post(f"{url}/api/chat", json=payload, timeout=self.llm_timeout)
+                resp = _llm_post('learnings', 'ollama', model, f"{url}/api/chat",
+                                      json=payload, timeout=self.llm_timeout)
                 data = resp.json()
                 text = data.get('message', {}).get('content', '')
             elif provider_type in OPENAI_COMPAT_PROVIDERS:
@@ -8291,7 +8357,8 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                     'Content-Type': 'application/json',
                     'Authorization': f'Bearer {api_key}'
                 }
-                resp = req.post(
+                resp = _llm_post(
+                    'learnings', provider_type, model,
                     endpoint,
                     json=payload, headers=headers, timeout=60
                 )
@@ -8314,7 +8381,8 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                     'x-api-key': api_key,
                     'anthropic-version': '2023-06-01'
                 }
-                resp = req.post(
+                resp = _llm_post(
+                    'learnings', 'anthropic', model,
                     'https://api.anthropic.com/v1/messages',
                     json=payload, headers=headers, timeout=60
                 )
