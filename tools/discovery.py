@@ -10,6 +10,18 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Tuple
 
+# The agent's SSH identity (cfop-forensics, homelab-infra HOMELAB-28) is
+# narrow by design: no `sudo` in general, NOPASSWD only for an allowlist of
+# reads -- exact dmesg forms, du, read subcommands of crictl/docker/kubectl.
+# `sudo -n echo` therefore fails on every host and says nothing. What an
+# investigation depends on is the allowlist, so that is what is checked:
+# `sudo -n -l <cmd>` asks sudo whether <cmd> may run without a password,
+# without running it. A failure there is a real problem (the drop-in missing
+# or broken); full sudo being refused is the design (CFOP-391).
+SUDO_READ_PROBE = '/usr/bin/dmesg -T'
+_SUDO_CHECKS = (f'sudo -n echo SUDO_OK 2>&1; '
+                f'sudo -n -l {SUDO_READ_PROBE} >/dev/null 2>&1 && echo SUDO_READS_OK')
+
 # Hosts checked at once by discover_all_hosts. Each check is a ping and an
 # SSH round trip, nearly all of it waiting on the network.
 _DISCOVERY_WORKERS = 16
@@ -111,7 +123,10 @@ class DiscoveryTools:
             }
 
     def verify_sudo(self, host: str) -> Dict[str, Any]:
-        """Verify passwordless sudo on host."""
+        """Check sudo for the agent's SSH user: full passwordless sudo
+        (``sudo_passwordless``) and the read-only allowlist investigations
+        use (``sudo_reads``). The forensics identity is meant to have only
+        the latter; see SUDO_READ_PROBE."""
         if host not in self.hosts:
             return {'success': False, 'error': f'Unknown host: {host}'}
 
@@ -125,7 +140,7 @@ class DiscoveryTools:
         if ssh_key:
             ssh_cmd.extend(['-i', ssh_key])
         ssh_cmd.append(f'{ssh_user}@{ssh_address}')
-        ssh_cmd.append('sudo -n echo SUDO_OK 2>&1')
+        ssh_cmd.append(_SUDO_CHECKS)
 
         try:
             result = subprocess.run(
@@ -143,8 +158,9 @@ class DiscoveryTools:
                 'host': host,
                 'address': ssh_address,
                 'sudo_passwordless': sudo_ok,
+                'sudo_reads': 'SUDO_READS_OK' in result.stdout,
                 'needs_password': needs_password,
-                'message': result.stdout.strip()
+                'message': result.stdout.replace('SUDO_READS_OK', '').strip()
             }
         except Exception as e:
             return {
@@ -153,8 +169,8 @@ class DiscoveryTools:
                 'error': str(e)
             }
 
-    def _ssh_probe(self, host: str) -> Tuple[bool, bool]:
-        """(ssh_accessible, sudo_passwordless) from ONE connection.
+    def _ssh_probe(self, host: str) -> Tuple[bool, bool, bool]:
+        """(ssh_accessible, sudo_passwordless, sudo_reads) from ONE connection.
 
         verify_ssh and verify_sudo each open their own, which is right for
         the single-purpose tools and wasteful for the inventory, where both
@@ -165,20 +181,21 @@ class DiscoveryTools:
         if host_config['ssh'].get('key_path'):
             ssh_cmd.extend(['-i', host_config['ssh']['key_path']])
         ssh_cmd.append(f"{host_config['ssh']['user']}@{host_config['address']}")
-        ssh_cmd.append('echo SSH_OK; sudo -n echo SUDO_OK 2>&1')
+        ssh_cmd.append('echo SSH_OK; ' + _SUDO_CHECKS)
         try:
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
         except Exception as e:
             logger.debug(f"SSH probe of {host} failed: {e}")
-            return False, False
-        return 'SSH_OK' in result.stdout, 'SUDO_OK' in result.stdout
+            return False, False, False
+        out = result.stdout
+        return 'SSH_OK' in out, 'SUDO_OK' in out, 'SUDO_READS_OK' in out
 
     def _discover_host(self, host_name: str) -> Dict[str, Any]:
         """One inventory row: reachability, SSH and sudo for one host."""
         host_config = self.hosts[host_name]
         logger.info(f"Discovering host: {host_name}")
         ping_result = self.ping_host(host_name)
-        ssh_ok, sudo_ok = self._ssh_probe(host_name)
+        ssh_ok, sudo_ok, sudo_reads = self._ssh_probe(host_name)
 
         host_info = {
             'name': host_name,
@@ -188,6 +205,7 @@ class DiscoveryTools:
             'latency_ms': ping_result.get('latency_ms'),
             'ssh_accessible': ssh_ok,
             'sudo_passwordless': sudo_ok,
+            'sudo_reads': sudo_reads,
             'monitoring': host_config.get('monitoring', []),
             'issues': []
         }
@@ -197,8 +215,12 @@ class DiscoveryTools:
             host_info['issues'].append('Host not responding to ping')
         if not host_info['ssh_accessible']:
             host_info['issues'].append('SSH not accessible')
-        if not host_info['sudo_passwordless']:
-            host_info['issues'].append('Sudo requires password')
+        # Full sudo is refused by design, so its absence is not an issue;
+        # the read allowlist failing is. Only asked when SSH worked: with no
+        # session there is no answer, and "SSH not accessible" already says so.
+        if host_info['ssh_accessible'] and not host_info['sudo_reads']:
+            host_info['issues'].append(
+                f'Read-only sudo allowlist unavailable (sudo -n -l {SUDO_READ_PROBE} refused)')
         return host_info
 
     def discover_all_hosts(self) -> Dict[str, Any]:
@@ -222,6 +244,7 @@ class DiscoveryTools:
         alive = sum(1 for h in inventory if h['alive'])
         ssh_ok = sum(1 for h in inventory if h['ssh_accessible'])
         sudo_ok = sum(1 for h in inventory if h['sudo_passwordless'])
+        sudo_reads = sum(1 for h in inventory if h['sudo_reads'])
         has_issues = sum(1 for h in inventory if h['issues'])
 
         return {
@@ -230,6 +253,7 @@ class DiscoveryTools:
             'alive': alive,
             'ssh_accessible': ssh_ok,
             'sudo_passwordless': sudo_ok,
+            'sudo_reads': sudo_reads,
             'hosts_with_issues': has_issues,
             'inventory': inventory
         }
@@ -267,7 +291,10 @@ class DiscoveryTools:
             },
             {
                 'name': 'verify_sudo',
-                'description': 'Verify passwordless sudo on a host. Use this to check if automated remediation will work.',
+                'description': ('Check sudo for the agent\'s SSH user on a host: sudo_reads is whether the read-only '
+                                'allowlist investigations use (dmesg, du, crictl/docker/kubectl reads) works without '
+                                'a password; sudo_passwordless is full sudo, which the agent\'s identity is meant NOT '
+                                'to have. Host changes go through the node-action lane, not this user.'),
                 'parameters': {
                     'type': 'object',
                     'properties': {
