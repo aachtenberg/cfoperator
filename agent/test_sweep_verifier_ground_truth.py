@@ -127,6 +127,58 @@ def test_the_verifier_is_handed_the_names_that_already_resolve():
     assert 'ubuntu-cm5-01=True' in resolved
 
 
+def test_a_partial_listing_never_says_a_name_does_not_exist():
+    """Review finding on #333: with a kind Forbidden, "no workload matches"
+    would read as "does not exist" to a verifier told not to re-check."""
+    captured = {}
+
+    def chat_stub(**kwargs):
+        captured.update(kwargs)
+        return {'response': '[]', 'tool_calls': 1}
+
+    operator = _with_k8s(chat_stub, _FakeK8s(forbidden=('cronjobs', 'ingresses')))
+    operator._verify_findings([_finding('the nightly-backup-run cronjob is missing', 'no such job')])
+    msg = captured['messages'][0]['content']
+    assert 'No workload in the cluster matches' not in msg
+    assert 'Could not list cronjobs, ingresses' in msg
+
+
+def test_a_complete_listing_may_say_no_name_matches():
+    captured = {}
+
+    def chat_stub(**kwargs):
+        captured.update(kwargs)
+        return {'response': '[]', 'tool_calls': 1}
+
+    operator = _with_k8s(chat_stub, _FakeK8s(forbidden=()))
+    operator._verify_findings([_finding('the ghost-service-x deployment restarts', 'x')])
+    msg = captured['messages'][0]['content']
+    assert 'No workload in the cluster matches' in msg
+    assert 'Could not list' not in msg
+
+
+def test_a_stagnation_stop_is_marked_like_the_cap():
+    def chat_stub(**kwargs):
+        return {'response': '[{"severity": "warning", "finding": "plane-api restarts every few minutes", '
+                            '"evidence": "fresh"}]',
+                'tool_calls': 3, 'stop_reason': 'stagnation'}
+
+    out = _make_operator(chat_stub)._verify_findings([_finding('plane-api restarts every few minutes')])
+    assert out[0]['verification'] == 'stagnation'
+
+
+def test_a_plain_token_matches_only_a_first_segment():
+    """`server` must not pull every *-server-* in the cluster into the hint."""
+    k8s = _FakeK8s(forbidden=())
+    k8s._run_kubectl = lambda args, timeout=30: {
+        'success': True, 'exit_code': 0, 'stderr': '',
+        'stdout': f'{args[1]}/server-main\n{args[1]}/nginx-server-7f\n'}
+    operator = _with_k8s(lambda **kw: {'response': '[]', 'tool_calls': 1}, k8s)
+    snapshot = operator._ground_truth_snapshot()
+    hint = operator._resolved_identities(_finding('the server process is slow'), snapshot)
+    assert 'server-main' in hint and 'nginx-server-7f' not in hint
+
+
 def test_no_preamble_without_a_snapshot():
     captured = {}
 

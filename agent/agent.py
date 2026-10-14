@@ -8655,7 +8655,8 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
         if not k8s:
             return None
 
-        snapshot: Dict[str, Any] = {'nodes': {}, 'workloads': set(), 'ingresses': set()}
+        snapshot: Dict[str, Any] = {'nodes': {}, 'workloads': set(), 'ingresses': set(),
+                                    'kinds_failed': []}
 
         try:
             nodes_result = k8s.get_nodes()
@@ -8689,6 +8690,7 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                         if kind == 'ingresses':
                             snapshot['ingresses'].add(resource_name)
 
+        snapshot['kinds_failed'] = failed
         logger.info(f"Ground truth: {len(snapshot['workloads'])} workloads across "
                     f"{len(self._GROUND_TRUTH_KINDS) - len(failed)} kinds"
                     + (f"; unreadable: {', '.join(failed)}" if failed else ''))
@@ -8715,16 +8717,26 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
         tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
         tokens -= self._GROUND_TRUTH_STOPWORDS
 
+        # A hyphenated token names a workload exactly or as a prefix
+        # (plane-api → plane-api-wl-…); a plain one only as the first segment
+        # (cfoperator → cfoperator-mcp), so `server` does not pull in every
+        # *-server-* in the cluster.
         workloads = sorted(w for w in snapshot['workloads']
-                           if any(t == w or t in w.split('-') for t in tokens))[:12]
+                           if any(t == w or w.startswith(t + '-') for t in tokens))[:12]
         nodes = [(n, info.get('ready')) for n, info in snapshot['nodes'].items() if n in text]
+        failed = list(snapshot.get('kinds_failed') or [])
 
         lines = []
         if workloads:
             lines.append('Workloads that exist right now and match names in the finding: '
                          + ', '.join(workloads))
-        elif snapshot['workloads'] and any('-' in t for t in tokens):
+        elif snapshot['workloads'] and not failed and any('-' in t for t in tokens):
+            # Only on a complete listing: with a kind unlisted, "no match" would
+            # read as "does not exist" to a verifier told not to re-check.
             lines.append('No workload in the cluster matches a hyphenated name in the finding.')
+        if failed and snapshot['workloads']:
+            lines.append(f"Could not list {', '.join(failed)} (not permitted); a name absent "
+                         "above may simply be unlisted, so check those kinds yourself.")
         if nodes:
             lines.append('Nodes named in the finding, with their Ready condition: '
                          + ', '.join(f'{n}={r}' for n, r in nodes))
@@ -8913,13 +8925,14 @@ Only return the JSON array, no other text."""
         verified_finding = verified[0]
         if not verified_finding.get('remediation') and finding.get('remediation'):
             verified_finding['remediation'] = finding['remediation']
-        if result.get('stop_reason') == 'cap':
-            # The loop's cap ends in one no-tools summary call over the last
-            # few clipped tool results, not in the model finishing its
-            # disproof. Kept, but marked, so the span and the report say which
-            # verdicts were forced. Dropping them waits on measuring how many
-            # were real (CFOP-398).
-            verified_finding['verification'] = 'capped'
+        stop = result.get('stop_reason')
+        if stop in ('cap', 'stagnation'):
+            # Both end the loop in one no-tools summary call over the last few
+            # clipped tool results, not in the model finishing its disproof.
+            # Kept, but marked, so the span and the report say which verdicts
+            # were forced. Dropping them waits on measuring how many were real
+            # (CFOP-398).
+            verified_finding['verification'] = 'capped' if stop == 'cap' else 'stagnation'
         return verified_finding
 
     @tracing.traced('sweep.verify_findings', count_attr='cfop.sweep.phase_findings')
@@ -8973,9 +8986,12 @@ Only return the JSON array, no other text."""
 
             removed = len(findings) - len(verified)
             capped = sum(1 for v in verified if v.get('verification') == 'capped')
+            stagnated = sum(1 for v in verified if v.get('verification') == 'stagnation')
             logger.info(f"Finding verification: {len(findings)} → {len(verified)} ({removed} filtered"
-                        + (f", {capped} kept at the tool cap" if capped else '') + ')')
-            tracing.annotate({'cfop.verify.kept': len(verified), 'cfop.verify.capped': capped})
+                        + (f", {capped} kept at the tool cap" if capped else '')
+                        + (f", {stagnated} kept after stagnation" if stagnated else '') + ')')
+            tracing.annotate({'cfop.verify.kept': len(verified), 'cfop.verify.capped': capped,
+                              'cfop.verify.stagnated': stagnated})
 
             if removed > 0:
                 # Log which findings were filtered

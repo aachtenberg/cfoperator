@@ -528,9 +528,10 @@ about the operator's systems. `agent/test_sweep_tracing.py` holds that line.
 `cfop.verify.suppressed` is what the deterministic ground-truth stage removed,
 `cfop.verify.ground_truth_kinds_failed` how many kinds that stage could not
 list (a grant missing on the ServiceAccount; each is also a WARNING in the
-log), and `cfop.verify.capped` how many kept findings got their verdict from
-the tool loop's cap rather than from the model finishing its check. Those
-findings carry `verification: capped` in the sweep report.
+log), and `cfop.verify.capped` / `cfop.verify.stagnated` how many kept findings
+got their verdict from the tool loop's cap or its stagnation stop rather than
+from the model finishing its check. Those findings carry `verification:
+capped` or `verification: stagnation` in the sweep report.
 
 An investigation is broken into phases under its root (CFOP-387):
 
