@@ -324,3 +324,53 @@ class TestSudoCheck:
         assert result["hosts_with_issues"] == 2
         assert result["inventory"][0]["issues"] == [
             "Read-only sudo allowlist unavailable (sudo -n -l /usr/bin/dmesg -T refused)"]
+
+
+class TestDiscoverySettings:
+    """infrastructure.discovery: the probe and the pool size are config,
+    not constants -- another install's identity may allow other reads."""
+
+    HOST = {"h0": {"address": "10.0.3.1", "ssh": {"user": "reader"}}}
+
+    def _ssh_cmd(self, tools):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return _completed(cmd, stdout=PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\n")
+        with patch("subprocess.run", side_effect=fake_run):
+            result = tools.discover_all_hosts()
+        return [c for c in calls if c[0] == "ssh"][0][-1], result
+
+    def test_defaults(self):
+        tools = DiscoveryTools(self.HOST)
+        assert tools.sudo_read_probe == "/usr/bin/dmesg -T"
+        assert tools.workers == 16
+
+    def test_a_configured_probe_is_what_sudo_is_asked_about(self):
+        tools = DiscoveryTools(self.HOST, {"sudo_read_probe": "/usr/bin/du -s /var"})
+        remote, result = self._ssh_cmd(tools)
+        assert "sudo -n -l /usr/bin/du -s /var " in remote
+        assert result["inventory"][0]["issues"] == [
+            "Read-only sudo allowlist unavailable (sudo -n -l /usr/bin/du -s /var refused)"]
+
+    def test_an_unsafe_probe_is_refused_for_the_default(self):
+        """It is spliced into a remote shell command: no separators,
+        substitutions or relative paths."""
+        for bad in ("/usr/bin/dmesg; reboot", "$(id)", "dmesg -T", "/bin/sh -c 'x'", "/x && y"):
+            assert DiscoveryTools(self.HOST, {"sudo_read_probe": bad}).sudo_read_probe == "/usr/bin/dmesg -T", bad
+
+    def test_workers_are_clamped_and_garbage_ignored(self):
+        assert DiscoveryTools(self.HOST, {"workers": 4}).workers == 4
+        assert DiscoveryTools(self.HOST, {"workers": 0}).workers == 16     # 0/None mean "unset"
+        assert DiscoveryTools(self.HOST, {"workers": 999}).workers == 64
+        assert DiscoveryTools(self.HOST, {"workers": "many"}).workers == 16
+
+    def test_the_registry_passes_infrastructure_discovery_through(self):
+        from types import SimpleNamespace
+        from tools import ToolRegistry
+        op = SimpleNamespace(config={"infrastructure": {
+            "hosts": self.HOST, "discovery": {"sudo_read_probe": "/usr/bin/du -s /", "workers": 3}}})
+        d = ToolRegistry(op).discovery_tools
+        assert (d.sudo_read_probe, d.workers) == ("/usr/bin/du -s /", 3)
+

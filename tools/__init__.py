@@ -288,7 +288,8 @@ class ToolRegistry:
         hosts_config = operator.config.get('infrastructure', {}).get('hosts', {})
         if hosts_config:
             self.ssh_tools = SSHTools(hosts_config)
-            self.discovery_tools = DiscoveryTools(hosts_config)
+            self.discovery_tools = DiscoveryTools(
+                hosts_config, operator.config.get('infrastructure', {}).get('discovery'))
             logger.info(f"SSH and discovery tools initialized for {len(hosts_config)} hosts")
         else:
             self.ssh_tools = None

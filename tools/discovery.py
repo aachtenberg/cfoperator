@@ -5,6 +5,7 @@ Infrastructure Discovery Tools
 Auto-discover hosts, verify connectivity, and gather inventory.
 """
 
+import re
 import subprocess
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -18,9 +19,20 @@ from typing import Dict, Any, List, Tuple
 # `sudo -n -l <cmd>` asks sudo whether <cmd> may run without a password,
 # without running it. A failure there is a real problem (the drop-in missing
 # or broken); full sudo being refused is the design (CFOP-391).
+# Both are defaults for infrastructure.discovery (sudo_read_probe, workers);
+# another install's identity may allow different reads.
 SUDO_READ_PROBE = '/usr/bin/dmesg -T'
-_SUDO_CHECKS = (f'sudo -n echo SUDO_OK 2>&1; '
-                f'sudo -n -l {SUDO_READ_PROBE} >/dev/null 2>&1 && echo SUDO_READS_OK')
+# The probe is spliced into a remote shell command, so only an absolute path
+# and plain arguments are accepted -- no quoting, separators or expansions.
+_SAFE_PROBE = re.compile(r'^/[\w./+-]+( [\w./=+-]+)*$')
+
+
+def _sudo_checks(probe: str) -> str:
+    return (f'sudo -n echo SUDO_OK 2>&1; '
+            f'sudo -n -l {probe} >/dev/null 2>&1 && echo SUDO_READS_OK')
+
+
+_SUDO_CHECKS = _sudo_checks(SUDO_READ_PROBE)
 
 # Hosts checked at once by discover_all_hosts. Each check is a ping and an
 # SSH round trip, nearly all of it waiting on the network.
@@ -31,8 +43,25 @@ logger = logging.getLogger("cfoperator.tools.discovery")
 class DiscoveryTools:
     """Tools for discovering and verifying infrastructure."""
 
-    def __init__(self, hosts_config: Dict[str, Any]):
+    def __init__(self, hosts_config: Dict[str, Any], settings: Dict[str, Any] = None):
+        """``settings`` is ``infrastructure.discovery``: ``sudo_read_probe``
+        (the allowlisted read to ask sudo about) and ``workers`` (hosts
+        checked at once). Both optional; see the module constants."""
         self.hosts = hosts_config
+        settings = settings if isinstance(settings, dict) else {}
+        probe = str(settings.get('sudo_read_probe') or SUDO_READ_PROBE).strip()
+        if not _SAFE_PROBE.match(probe):
+            logger.warning(f"Ignoring infrastructure.discovery.sudo_read_probe={probe!r}: "
+                           f"expected an absolute path and plain arguments")
+            probe = SUDO_READ_PROBE
+        self.sudo_read_probe = probe
+        self._sudo_checks = _sudo_checks(probe)
+        try:
+            workers = int(settings.get('workers') or _DISCOVERY_WORKERS)
+        except (TypeError, ValueError):
+            logger.warning(f"Ignoring infrastructure.discovery.workers={settings.get('workers')!r}")
+            workers = _DISCOVERY_WORKERS
+        self.workers = max(1, min(64, workers))
         logger.info(f"Discovery tools initialized for {len(self.hosts)} hosts")
 
     def ping_host(self, host: str) -> Dict[str, Any]:
@@ -140,7 +169,7 @@ class DiscoveryTools:
         if ssh_key:
             ssh_cmd.extend(['-i', ssh_key])
         ssh_cmd.append(f'{ssh_user}@{ssh_address}')
-        ssh_cmd.append(_SUDO_CHECKS)
+        ssh_cmd.append(self._sudo_checks)
 
         try:
             result = subprocess.run(
@@ -181,7 +210,7 @@ class DiscoveryTools:
         if host_config['ssh'].get('key_path'):
             ssh_cmd.extend(['-i', host_config['ssh']['key_path']])
         ssh_cmd.append(f"{host_config['ssh']['user']}@{host_config['address']}")
-        ssh_cmd.append('echo SSH_OK; ' + _SUDO_CHECKS)
+        ssh_cmd.append('echo SSH_OK; ' + self._sudo_checks)
         try:
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
         except Exception as e:
@@ -220,7 +249,7 @@ class DiscoveryTools:
         # session there is no answer, and "SSH not accessible" already says so.
         if host_info['ssh_accessible'] and not host_info['sudo_reads']:
             host_info['issues'].append(
-                f'Read-only sudo allowlist unavailable (sudo -n -l {SUDO_READ_PROBE} refused)')
+                f'Read-only sudo allowlist unavailable (sudo -n -l {self.sudo_read_probe} refused)')
         return host_info
 
     def discover_all_hosts(self) -> Dict[str, Any]:
@@ -234,7 +263,7 @@ class DiscoveryTools:
         """
         names = list(self.hosts)
         if names:
-            with ThreadPoolExecutor(max_workers=min(_DISCOVERY_WORKERS, len(names))) as pool:
+            with ThreadPoolExecutor(max_workers=min(self.workers, len(names))) as pool:
                 inventory = list(pool.map(self._discover_host, names))
         else:
             inventory = []
