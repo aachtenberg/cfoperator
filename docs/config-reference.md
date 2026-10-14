@@ -189,9 +189,11 @@ llm:
     # OLLAMA_CONTEXT_LENGTH=<same number> on the Ollama host, host first.
     # Floor 2048, no ceiling. Independent of this key, the agent already
     # keeps the tool-loop history it re-sends each iteration under 75% of
-    # this window (16384 when unset), collapsing the oldest tool results
-    # first — that bound is what stops a long investigation from filling
-    # the window and being clipped by the runner. (CFOP-168)
+    # the window: this value when set; else the window the runner actually
+    # loaded (Ollama /api/ps); else 16384. The oldest tool results are
+    # collapsed first. That bound is what stops a long investigation from
+    # filling the window and being clipped by the runner. See chat.history
+    # for its tunables. (CFOP-168, CFOP-390)
     # num_ctx: 16384
 
   # Fallback chain (on error/timeout)
@@ -367,6 +369,24 @@ chat:
   # sweeps, investigations and chat alike. 0 turns it off. Default 3
   # (CFOP-271).
   # stagnation_repeats: 3
+  # How the Ollama tool loop keeps its re-sent history inside the model's
+  # window (CFOP-168, CFOP-390). The budget is budget_fraction of the window
+  # the runner actually has: llm.primary.num_ctx when set, else the loaded
+  # model's own context_length (Ollama /api/ps, re-read every
+  # runner_window_ttl_seconds), else fallback_window. Over budget, the oldest
+  # tool results are collapsed to a stub, never the turn just requested nor
+  # the keep_recent results before it, down to low_water_fraction of the
+  # budget in one batch. Collapsing well under, rather than just under,
+  # matters on sliding-window models such as gemma4: any change to an earlier
+  # message re-processes the whole prompt, so a bound that trims a little on
+  # every turn costs a full re-process every turn. Every key is optional; the
+  # values below are the defaults.
+  # history:
+  #   budget_fraction: 0.75
+  #   low_water_fraction: 0.6
+  #   keep_recent: 4
+  #   fallback_window: 16384
+  #   runner_window_ttl_seconds: 300
   # Replace secret-shaped values in tool results — env dumps, kubectl Secrets,
   # key files, tokens, connection-string passwords, webhook URLs — with ***
   # before the result reaches any model or the console transcript. The key is

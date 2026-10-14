@@ -1974,6 +1974,11 @@ class _ToolLoopStats:
     # above, which is the loop's; this is gen_ai.response.finish_reasons on
     # the trace span (CFOP-316).
     finish_reasons: List[str] = field(default_factory=list)
+    # Turns on which the history bound changed an earlier message, and the
+    # budget it held to (CFOP-390). Under sliding-window attention each such
+    # turn re-processes the whole prompt, so this is the number to watch.
+    history_collapses: int = 0
+    history_budget: Optional[int] = None
 
     def note_finish(self, reason: Any) -> None:
         if reason:
@@ -2001,6 +2006,8 @@ class _ToolLoopStats:
             'opened_prs': list(self.opened_prs),
             'stop_reason': self.stop_reason,
             'finish_reasons': list(self.finish_reasons),
+            'history_collapses': self.history_collapses,
+            'history_budget': self.history_budget,
         }
 
 
@@ -9421,11 +9428,23 @@ Only return the JSON array, no other text."""
 
     _OLLAMA_NUM_CTX_FLOOR = 2048
     #: The window the history is budgeted against when no num_ctx is
-    #: configured. 16384 is the operator's number for gemma4:26b (remediation
-    #: #111): a healthy investigation turn is ~11k prompt tokens, so 8192 —
-    #: the first proposal — would truncate real work.
+    #: configured AND the runner's own window cannot be read (model not
+    #: loaded yet, Ollama unreachable). 16384 was the operator's number for
+    #: gemma4:26b (remediation #111); since CFOP-390 it is only the fallback.
     _OLLAMA_DEFAULT_WINDOW = 16384
     _OLLAMA_HISTORY_FRACTION = 0.75
+    #: Where a collapse stops, as a fraction of the budget (CFOP-390). Not
+    #: at the budget: gemma4 uses sliding-window attention, so llama.cpp
+    #: cannot resume from a partial prefix and ANY change to an earlier
+    #: message re-processes the whole prompt (~3.5s at 13k tokens, against
+    #: ~0.25s for a cached one). Stopping just under the budget meant the
+    #: next result pushed it over again -- a collapse, and a full
+    #: re-process, on nearly every turn (33 of 62 requests in the measured
+    #: window). Collapsing to well under leaves several turns of unchanged
+    #: prefix between collapses.
+    _OLLAMA_LOW_WATER_FRACTION = 0.6
+    #: How long a runner's reported window is trusted before asking again.
+    _OLLAMA_PS_TTL_SECONDS = 300
     #: Most recent tool results of EARLIER turns never collapsed (the turn
     #: just requested is kept whole regardless — see _bound_tool_history).
     #: Four, not six: the tool schemas alone are ~4.6k tokens of every turn,
@@ -9470,15 +9489,91 @@ Only return the JSON array, no other text."""
             return self._OLLAMA_NUM_CTX_FLOOR
         return num_ctx
 
-    def _ollama_history_budget(self) -> int:
+    def _history_settings(self) -> Dict[str, Any]:
+        """``chat.history``: the tool-loop history bound's tunables (CFOP-390).
+
+        Each key is optional and falls back to the class constant, so an
+        install that says nothing behaves as before; a written value is
+        clamped to a sane range and a non-number is ignored with a warning,
+        the same posture as chat.max_tool_result_chars.
+        """
+        raw = self.config.get('chat') if isinstance(self.config, dict) else None
+        raw = (raw or {}).get('history') if isinstance(raw, dict) else None
+        raw = raw if isinstance(raw, dict) else {}
+
+        def read(key, default, lo, hi, cast=float):
+            val = raw.get(key)
+            if val in (None, ''):
+                return default
+            try:
+                val = cast(val)
+            except (TypeError, ValueError):
+                logger.warning(f"Ignoring chat.history.{key}={raw.get(key)!r}: not a number")
+                return default
+            return min(hi, max(lo, val))
+
+        return {
+            'budget_fraction': read('budget_fraction', self._OLLAMA_HISTORY_FRACTION, 0.1, 0.95),
+            'low_water_fraction': read('low_water_fraction', self._OLLAMA_LOW_WATER_FRACTION, 0.1, 1.0),
+            'keep_recent': read('keep_recent', self._OLLAMA_KEEP_RECENT_TOOL_RESULTS, 0, 50, int),
+            'fallback_window': read('fallback_window', self._OLLAMA_DEFAULT_WINDOW,
+                                    self._OLLAMA_NUM_CTX_FLOOR, 10_000_000, int),
+            'runner_window_ttl_seconds': read('runner_window_ttl_seconds',
+                                              self._OLLAMA_PS_TTL_SECONDS, 0, 86_400, int),
+        }
+
+    def _ollama_history_budget(self, url: Optional[str] = None,
+                               model: Optional[str] = None) -> int:
         """Estimated tokens the tool-loop history is kept under per turn.
 
-        A fraction of the configured num_ctx, or of the default window when
-        none is configured — so the bound applies today against a 32k runner
-        exactly as it will once num_ctx is set.
+        A fraction of the window the runner actually has: the configured
+        num_ctx when there is one, else the loaded runner's own
+        ``context_length`` (Ollama /api/ps), else the default window.
+        CFOP-390 replaced "the default window" as the normal case: no num_ctx
+        was ever set, the runner loads 32768, and a 16k budget sat below what
+        the bound may never collapse -- so it churned instead of fitting.
         """
-        window = self._ollama_num_ctx() or self._OLLAMA_DEFAULT_WINDOW
-        return int(window * self._OLLAMA_HISTORY_FRACTION)
+        settings = self._history_settings()
+        window = (self._ollama_num_ctx()
+                  or (self._ollama_loaded_context(url, model) if url and model else None)
+                  or settings['fallback_window'])
+        return int(window * settings['budget_fraction'])
+
+    def _ollama_loaded_context(self, url: str, model: str) -> Optional[int]:
+        """The context window Ollama loaded ``model`` with, or None.
+
+        Read from ``/api/ps`` (``context_length``, Ollama 0.40 reports it)
+        and cached per (url, model). None when the model is not loaded or the
+        server cannot be asked; a failure is cached briefly so a down server
+        is not asked on every turn. Never raises: a missing answer only
+        means the default window.
+        """
+        import requests
+        cache = self.__dict__.setdefault('_ollama_ps_cache', {})
+        key = (url, model)
+        now = time.time()
+        hit = cache.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+        value = None
+        ttl = self._history_settings()['runner_window_ttl_seconds']
+        try:
+            resp = requests.get(f"{url.rstrip('/')}/api/ps", timeout=2)
+            for m in (resp.json() or {}).get('models') or []:
+                if model in (m.get('name'), m.get('model')):
+                    ctx = m.get('context_length')
+                    value = int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else None
+                    break
+        except Exception as e:
+            logger.debug(f"Could not read the loaded context of {model} at {url}: {e}")
+            cache[key] = (now + min(ttl, 30), None)   # a down server: not every turn
+            return None
+        if value:
+            cache[key] = (now + ttl, value)
+        # Not listed is NOT cached: on a cold start the model is absent until
+        # the loop's first request loads it, and caching that would hold the
+        # rest of the loop on the fallback window (CodeRabbit on #330).
+        return value
 
     def _ollama_chat_payload(self, model: str, messages: list, temperature: float,
                              format: Optional[str] = None,
@@ -9528,7 +9623,8 @@ Only return the JSON array, no other text."""
     @classmethod
     def _bound_tool_history(cls, full_messages: list, budget_tokens: int,
                             fixed_tokens: int = 0,
-                            keep_recent: Optional[int] = None) -> int:
+                            keep_recent: Optional[int] = None,
+                            low_water_tokens: Optional[int] = None) -> int:
         """Collapse the oldest tool results until the history fits the budget.
 
         Mutates ``full_messages`` in place and returns how many results were
@@ -9547,9 +9643,15 @@ Only return the JSON array, no other text."""
         budget it collapses what it may and returns — the per-result cap
         (chat.max_tool_result_chars) and the iteration cap still bound that
         case.
+
+        ``low_water_tokens`` is where a collapse stops once one is needed
+        (default: the budget itself). The tool loop passes less than the
+        budget, so a collapse makes room for several turns and the prompt
+        stays unchanged -- and cached -- in between (CFOP-390).
         """
         if keep_recent is None:
             keep_recent = cls._OLLAMA_KEEP_RECENT_TOOL_RESULTS
+        target = budget_tokens if low_water_tokens is None else min(low_water_tokens, budget_tokens)
         estimate = fixed_tokens + sum(cls._estimate_tokens(m) for m in full_messages)
         if estimate <= budget_tokens:
             return 0
@@ -9570,7 +9672,7 @@ Only return the JSON array, no other text."""
             estimate += cls._estimate_tokens(stub) - cls._estimate_tokens(msg)
             full_messages[i] = stub
             collapsed += 1
-            if estimate <= budget_tokens:
+            if estimate <= target:
                 break
         if collapsed:
             still = (" — still over; the turn just requested and the last "
@@ -10363,6 +10465,8 @@ Only return the JSON array, no other text."""
                     'gen_ai.response.finish_reasons': result.get('finish_reasons') or None,
                     'cfop.llm.tool_calls': result.get('tool_calls') or 0,
                     'cfop.llm.stop_reason': result.get('stop_reason'),
+                    'cfop.llm.history_collapses': result.get('history_collapses'),
+                    'cfop.llm.history_budget': result.get('history_budget'),
                 })
                 TOOL_LOOP_STOPS.labels(reason=result.get('stop_reason') or 'answered').inc()
                 LLM_REQUESTS.labels(provider=provider_type, model=model, result='success').inc()
@@ -10488,9 +10592,15 @@ Only return the JSON array, no other text."""
                     # schemas ride along with it; keep the whole prompt inside
                     # the window instead of letting the runner clip it
                     # (CFOP-168).
-                    self._bound_tool_history(
-                        full_messages, self._ollama_history_budget(),
-                        fixed_tokens=self._estimate_tokens(offered_tools))
+                    budget = self._ollama_history_budget(url, model)
+                    history = self._history_settings()
+                    stats.history_budget = budget
+                    if self._bound_tool_history(
+                            full_messages, budget,
+                            fixed_tokens=self._estimate_tokens(offered_tools),
+                            keep_recent=history['keep_recent'],
+                            low_water_tokens=int(budget * history['low_water_fraction'])):
+                        stats.history_collapses += 1
                     payload = self._ollama_chat_payload(
                         model, full_messages, 0.7, tools=offered_tools or None)
                     headers = {'Content-Type': 'application/json'}
