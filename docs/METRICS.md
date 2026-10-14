@@ -229,7 +229,9 @@ histogram_quantile(0.95, sum by (le, outcome) (rate(cfoperator_investigation_dur
 cfoperator_investigation_queue_depth
 
 # Cumulative rejections when the in-process queue is full and the endpoint
-# returns 503. event_runtime's worker retries with backoff on 5xx.
+# returns 503. event_runtime's worker waits a 503 out with a growing delay
+# (5s doubling to 60s, for up to CFOP_EVENT_RUNTIME_DEFER_BUDGET_SECONDS);
+# each wait is recorded as an alert_job_deferred event.
 cfoperator_investigation_queue_rejected_total
 
 # Outcome of posting the completed ActionResult back to event_runtime

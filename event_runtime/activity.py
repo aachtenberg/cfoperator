@@ -173,6 +173,10 @@ def _merge_activity(activity: dict, event: dict, payload: dict, alert: dict | No
     if event_type == "alert_queued":
         activity["status"] = "queued"
         return
+    if event_type == "alert_job_deferred":
+        # Waiting out an unavailable agent (CFOP-395): still queued.
+        activity["status"] = "queued"
+        return
     if event_type in {"alert_job_started", "alert_job_restored"}:
         activity["status"] = "running" if event_type == "alert_job_started" else "queued"
         return

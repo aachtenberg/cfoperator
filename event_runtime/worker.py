@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from .engine import EventRuntime
 from .models import Alert
+from .plugins import TargetUnavailableError
 from .telemetry import (
     observe_job_finished,
     observe_job_started,
@@ -58,6 +59,10 @@ class WorkerJob:
     result: Optional[dict] = None
     error: Optional[str] = None
     attempt: int = 0
+    # Waits on an unavailable target (CFOP-395): counted apart from attempts,
+    # timed from the first one against the worker's defer budget.
+    deferrals: int = 0
+    deferred_since: Optional[str] = None
     _done: threading.Event = field(default_factory=threading.Event, repr=False)
 
     def to_dict(self) -> dict:
@@ -70,6 +75,8 @@ class WorkerJob:
             "result": self.result,
             "error": self.error,
             "attempt": self.attempt,
+            "deferrals": self.deferrals,
+            "deferred_since": self.deferred_since,
             "alert": self.alert.to_dict(),
         }
 
@@ -100,6 +107,8 @@ class WorkerJob:
             result=payload.get("result"),
             error=payload.get("error"),
             attempt=int(payload.get("attempt") or 0),
+            deferrals=int(payload.get("deferrals") or 0),
+            deferred_since=payload.get("deferred_since"),
         )
         if job.status in {"completed", "failed"}:
             job._done.set()
@@ -187,6 +196,9 @@ class BackgroundAlertWorker:
         max_terminal_jobs: int = 100,
         max_retries: int = 2,
         state: FileBackedWorkerState | None = None,
+        defer_budget_seconds: float = 600.0,
+        defer_base_seconds: float = 5.0,
+        defer_max_seconds: float = 60.0,
     ):
         if worker_count < 1:
             raise ValueError("worker_count must be >= 1")
@@ -197,6 +209,14 @@ class BackgroundAlertWorker:
         self.max_queue_size = max_queue_size
         self.max_terminal_jobs = max_terminal_jobs
         self.max_retries = max_retries
+        # A target that is restarting or shedding load is waited out rather
+        # than charged an attempt: retry after base, doubling to max, until
+        # budget seconds after the first wait. 0 turns deferral off.
+        self.defer_budget_seconds = defer_budget_seconds
+        self.defer_base_seconds = defer_base_seconds
+        self.defer_max_seconds = defer_max_seconds
+        self._timers: set[threading.Timer] = set()
+        self._timers_lock = threading.Lock()
         self.state = state or FileBackedWorkerState()
         self._queue: queue.Queue[WorkerJob] = queue.Queue(maxsize=max_queue_size)
         self._jobs: Dict[str, WorkerJob] = self.state.load_jobs()
@@ -218,6 +238,11 @@ class BackgroundAlertWorker:
 
     def stop(self) -> None:
         self._stop.set()
+        # A deferred job is persisted as queued, so the next start restores it.
+        with self._timers_lock:
+            for timer in self._timers:
+                timer.cancel()
+            self._timers.clear()
         for _ in self._threads:
             try:
                 self._queue.put_nowait(None)  # type: ignore[arg-type]
@@ -320,6 +345,12 @@ class BackgroundAlertWorker:
                 self._queue.task_done()
                 continue
 
+            # A job that has run before got past the alert policies, and
+            # running them again dedupes it against itself (CFOP-395). The
+            # exception is a policy that raised on the first run: skipping
+            # them then fails open, on purpose. A noise filter that cannot
+            # decide should risk a duplicate notification, not drop the alert.
+            rerun = job.attempt > 0 or job.deferrals > 0
             try:
                 job.status = "running"
                 job.attempt += 1
@@ -329,11 +360,17 @@ class BackgroundAlertWorker:
                 observe_job_started(job.queue_delay_seconds())
                 self._update_metrics()
                 self.runtime.record_event("alert_job_started", job=job.to_dict())
-                job.result = self.runtime.handle_alert(job.alert)
+                job.result = self.runtime.handle_alert(job.alert, admitted=rerun)
                 job.status = "completed"
             except Exception as exc:
                 job.error = str(exc)
-                if job.attempt < self.max_retries:
+                if isinstance(exc, TargetUnavailableError) and self.defer_budget_seconds > 0:
+                    if self._defer(job, exc):
+                        self._queue.task_done()
+                        continue
+                    job.status = "failed"
+                    logger.error("Background alert job %s failed: %s", job.job_id, job.error)
+                elif job.attempt < self.max_retries:
                     job.status = "queued"
                     job.started_at = None
                     job.completed_at = None
@@ -351,8 +388,9 @@ class BackgroundAlertWorker:
                         logger.error("Cannot retry job %s: queue full", job.job_id)
                     self._queue.task_done()
                     continue
-                job.status = "failed"
-                logger.exception("Background alert job %s failed after %d attempts", job.job_id, job.attempt)
+                else:
+                    job.status = "failed"
+                    logger.exception("Background alert job %s failed after %d attempts", job.job_id, job.attempt)
             finally:
                 if job.status in TERMINAL_JOB_STATUSES:
                     job.completed_at = _utc_now()
@@ -366,6 +404,65 @@ class BackgroundAlertWorker:
                         self.runtime.record_event("alert_job_failed", job=job.to_dict(), error=job.error)
                     job._done.set()
                     self._queue.task_done()
+
+    def _defer(self, job: WorkerJob, exc: Exception) -> bool:
+        """Requeue ``job`` after a delay; False once the defer budget is spent."""
+        now = datetime.now(timezone.utc)
+        if job.deferred_since is None:
+            job.deferred_since = now.isoformat()
+        waited = (now - _parse_datetime(job.deferred_since)).total_seconds()
+        if waited >= self.defer_budget_seconds:
+            job.error = (
+                f"target unavailable for {waited:.0f}s, past the "
+                f"{self.defer_budget_seconds:g}s defer budget: {exc}"
+            )
+            return False
+        # Waiting out an outage is not an attempt: max_retries stays for
+        # a target that answered and failed.
+        job.attempt -= 1
+        job.deferrals += 1
+        delay = min(
+            self.defer_base_seconds * 2 ** min(job.deferrals - 1, 16),
+            self.defer_max_seconds,
+        )
+        job.status = "queued"
+        job.started_at = None
+        job.completed_at = None
+        self.state.save_job(job)
+        self._update_metrics()
+        logger.warning(
+            "Background alert job %s deferred (%d, %.0fs so far), retrying in %gs: %s",
+            job.job_id, job.deferrals, waited, delay, exc,
+        )
+        self.runtime.record_event(
+            "alert_job_deferred",
+            job=job.to_dict(),
+            reason=f"{exc}; retrying in {delay:g}s",
+            delay_seconds=delay,
+        )
+        self._requeue_after(job, delay)
+        return True
+
+    def _requeue_after(self, job: WorkerJob, delay: float) -> None:
+        def requeue() -> None:
+            with self._timers_lock:
+                self._timers.discard(timer)
+            # Blocks for room rather than dropping the job; on stop the job
+            # stays persisted as queued and the next start restores it.
+            while not self._stop.is_set():
+                try:
+                    self._queue.put(job, timeout=0.5)
+                    return
+                except queue.Full:
+                    continue
+
+        timer = threading.Timer(delay, requeue)
+        timer.daemon = True
+        with self._timers_lock:
+            if self._stop.is_set():
+                return
+            self._timers.add(timer)
+        timer.start()
 
     def _update_metrics(self) -> None:
         with self._jobs_lock:

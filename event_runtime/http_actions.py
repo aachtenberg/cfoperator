@@ -26,7 +26,7 @@ from typing import Optional, Tuple
 
 from cfshared.evidence import EVIDENCE_KEY, collect as collect_evidence
 from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision
-from .plugins import ActionHandler, DecisionEngine
+from .plugins import ActionHandler, DecisionEngine, TargetUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -216,8 +216,9 @@ class HTTPInvestigateActionHandler(ActionHandler):
     The agent is expected to:
       1. Accept ``POST {agent_url}/v1/investigate`` with the alert body
          (matches event_runtime.models.Alert.to_dict()).
-      2. Return 2xx for accepted, 5xx (or refuse the connection) when it
-         can't take the work — the worker retries the latter.
+      2. Return 2xx for accepted, 503 (or refuse the connection) when it
+         can't take the work right now — the worker defers and waits that
+         out — and other 5xx for a failure, which the worker retries.
       3. POST the completed ActionResult back to
          ``{event_runtime_url}/v1/investigations/{alert_id}/complete``
          when the LLM run finishes.
@@ -250,8 +251,13 @@ class HTTPInvestigateActionHandler(ActionHandler):
         try:
             self._post(endpoint, body)
         except urllib.error.HTTPError as exc:
+            # 503 is the agent saying "later": its queue is full or it is
+            # shutting down (CFOP-394). The worker waits that out (CFOP-395).
             # 4xx is permanent (bad payload); surface as failure-without-retry.
-            # 5xx is transient; raising lets the worker retry per its policy.
+            # Other 5xx is transient; raising lets the worker retry per its policy.
+            if exc.code == 503:
+                logger.warning("Agent unavailable (503) for investigate dispatch: %s", endpoint)
+                raise TargetUnavailableError(f"agent answered 503 at {endpoint}") from exc
             if 500 <= exc.code < 600:
                 logger.warning("Agent returned %s for investigate dispatch: %s", exc.code, endpoint)
                 raise
@@ -267,6 +273,14 @@ class HTTPInvestigateActionHandler(ActionHandler):
             )
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             logger.warning("Agent unreachable for investigate dispatch: %s (%s)", endpoint, type(exc).__name__)
+            # Refused or reset: no agent process behind the Service, as for
+            # the whole gap of a Recreate deploy. A timeout is not that -- an
+            # agent that is up but slow -- so it stays an ordinary attempt.
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            if isinstance(reason, (ConnectionRefusedError, ConnectionResetError)):
+                raise TargetUnavailableError(
+                    f"agent unreachable at {endpoint} ({type(reason).__name__})"
+                ) from exc
             raise
 
         return ActionResult(

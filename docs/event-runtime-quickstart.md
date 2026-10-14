@@ -242,6 +242,8 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS`: duplicate suppression window in seconds, default `300`, set to `0` to disable
 - `CFOP_EVENT_RUNTIME_WORKER_COUNT`: background worker count, default `1`, set to `0` to force synchronous processing
 - `CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE`: max in-memory queued jobs, default `1000`
+- `CFOP_EVENT_RUNTIME_MAX_RETRIES`: attempts for a job whose handler raised, default `2`. A retry skips the alert policies, which already admitted the alert
+- `CFOP_EVENT_RUNTIME_DEFER_BUDGET_SECONDS`: how long a job waits out an agent that refuses the connection or answers 503 (restarting, or its queue is full), default `600`. Each wait is a deferral, not an attempt: the job is requeued after 5s, doubling to 60s, and fails only once this long has passed since the first. `0` makes those errors ordinary attempts again
 - `CFOP_EVENT_RUNTIME_MAX_TERMINAL_JOBS`: how many completed/failed jobs to retain in the persisted state file for `GET /jobs/<id>` lookups, default `100`; older terminal jobs are pruned. Increase for richer post-mortem debugging at the cost of a larger state file
 - `CFOP_EVENT_RUNTIME_QUEUE_STATE_PATH`: persisted worker job state path, default `~/.cfoperator/event-runtime/queue/jobs.json`
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_ENABLED`: enable bare-metal host observability plugins, default `1`
