@@ -70,7 +70,7 @@ def _operator(pool=None):
     op._skipped_selection = lambda backend, head: None
     op._build_sweep_system_prompt = lambda task, skill_name=None: f'You sweep. {CANARY}'
     op._get_sweep_max_iterations = lambda: 4
-    op._verify_single_finding = lambda finding, max_iterations: finding
+    op._verify_single_finding = lambda finding, max_iterations, snapshot=None: finding
     op._post_findings_to_event_runtime = lambda findings: None
     op._get_resolved_findings = lambda findings: []
     op._generate_sweep_report = lambda findings: {'severity': 'info', 'findings': findings,

@@ -27,6 +27,13 @@ rules:
   - apiGroups: [batch]
     resources: [jobs, cronjobs]
     verbs: [get, list, watch]
+  {{/* The sweep verifier lists ingresses for its ground-truth snapshot and
+       its prompt sends the model to Ingresses on exposure claims; without
+       this grant both were Forbidden (CFOP-397). tests/test_rbac_covers_tools.py
+       holds every kind the agent lists against this role. */}}
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list, watch]
   - apiGroups: [metrics.k8s.io]
     resources: [pods, nodes]
     verbs: [get, list]

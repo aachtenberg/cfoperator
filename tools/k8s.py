@@ -488,10 +488,20 @@ class K8sTools:
                 return {'success': True, 'raw': result['stdout']}
         return result
 
+    # kubectl's reason for a failed describe, as handed back to the model:
+    # room for a NotFound or Forbidden line with the resource named in it.
+    _DESCRIBE_ERROR_LIMIT = 400
+
     def describe(self, resource_type: str, name: str,
                  namespace: str = "default") -> Dict[str, Any]:
         """
         Describe a Kubernetes resource.
+
+        On failure the result carries kubectl's own reason under ``error``
+        (NotFound, Forbidden, an unknown kind). It used to carry only
+        ``success: false`` and an empty description, and a model handed that
+        could not tell a wrong namespace from a missing grant, so it retried
+        blind -- 17 of 31 calls in one day (CFOP-397).
 
         Args:
             resource_type: Type of resource (pod, deployment, service, etc.)
@@ -499,17 +509,22 @@ class K8sTools:
             namespace: Kubernetes namespace
 
         Returns:
-            Dict with describe output
+            Dict with describe output, plus ``error`` when kubectl failed
         """
         args = ['describe', resource_type, name, '-n', namespace]
         result = self._run_kubectl(args, timeout=30)
-        return {
+        out = {
             'success': result['success'],
             'description': result.get('stdout', ''),
             'resource_type': resource_type,
             'name': name,
             'namespace': namespace
         }
+        if not result['success']:
+            reason = (result.get('error') or result.get('stderr') or '').strip()
+            out['error'] = (reason or f"kubectl describe exited {result.get('exit_code')}"
+                            )[:self._DESCRIBE_ERROR_LIMIT]
+        return out
 
     # =========================================================================
     # Node Operations
@@ -893,11 +908,11 @@ class K8sTools:
                 'parameters': {
                     'type': 'object',
                     'properties': {
-                        'resource_type': {'type': 'string', 'description': 'Type (pod, deployment, service, node, configmap, secret, etc.)'},
+                        'resource_type': {'type': 'string', 'description': 'Kind (pod, deployment, service, node, ingress, cronjob, etc.). Secrets are not readable.'},
                         'name': {'type': 'string', 'description': 'Resource name'},
-                        'namespace': {'type': 'string', 'description': 'Kubernetes namespace', 'default': 'default'}
+                        'namespace': {'type': 'string', 'description': "The resource's namespace. Required: almost nothing lives in 'default'. For a cluster-scoped kind (node, namespace, persistentvolume) pass any value; it is ignored."}
                     },
-                    'required': ['resource_type', 'name']
+                    'required': ['resource_type', 'name', 'namespace']
                 }
             },
             {

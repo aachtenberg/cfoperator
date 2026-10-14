@@ -58,6 +58,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from prometheus_client import Counter
 
+from cfshared import tracing
+
 logger = logging.getLogger(__name__)
 
 # Defined here rather than imported from agent.agent, like the tracker tick's
@@ -436,13 +438,31 @@ def reverify_row(op, row: Dict[str, Any], *, max_iterations: int) -> Optional[st
     Every failure path returns None and leaves the row filed: no eligible
     verifier, a raising chat, an empty reply, an unparseable verdict. See the
     module docstring on why this fails open.
+
+    One pass is one trace, rooted here (CFOP-399): the judge's ``chat`` span
+    used to arrive with nothing above it, so a trace said deepseek was called
+    and not which row it judged or what it decided. The attributes are shapes
+    -- ids, the class, which model filed and which judged, the outcome --
+    never the recommendation, the note or the learning.
     """
+    with tracing.span('reverify', {
+            'cfop.remediation.id': row.get('id'),
+            'cfop.remediation.class': row.get('remediation_class'),
+            'cfop.remediation.risk': row.get('risk'),
+            'cfop.reverify.reporter': str(_payload(row).get('provider') or '') or None}):
+        outcome = _reverify_row(op, row, max_iterations=max_iterations)
+        tracing.annotate({'cfop.reverify.outcome': outcome or 'skipped'})
+        return outcome
+
+
+def _reverify_row(op, row: Dict[str, Any], *, max_iterations: int) -> Optional[str]:
     from tools import ToolPolicy
 
     rid = row.get('id')
     peers = eligible_peers(op, row)
     if not peers:
         logger.info(f"No eligible re-verification peer for remediation #{rid}; leaving it filed")
+        tracing.annotate({'cfop.reverify.skip_reason': 'no_peer'})
         return None
 
     question = [{'role': 'user', 'content': build_question(row)}]
@@ -460,6 +480,8 @@ def reverify_row(op, row: Dict[str, Any], *, max_iterations: int) -> Optional[st
         if not provider:
             continue
         provider_type, url, resolved_model = provider
+        tracing.annotate({'cfop.reverify.judge_backend': provider_type,
+                          'cfop.reverify.judge_model': resolved_model})
         try:
             result = op._chat_with_tools(
                 provider_type, url, resolved_model, question, SYSTEM_PROMPT,
@@ -478,12 +500,14 @@ def reverify_row(op, row: Dict[str, Any], *, max_iterations: int) -> Optional[st
         if not verdict:
             logger.warning(f"Re-verification of remediation #{rid} returned no usable "
                            f"verdict from {provider_type}/{resolved_model}; leaving it filed")
+            tracing.annotate({'cfop.reverify.skip_reason': 'no_verdict'})
             return None
         if verdict['verdict'] != VERDICT_OPEN and not verdict['note']:
             # A close with no note leaves the issue with a bare state change
             # and nobody able to see why. Treat it as an unusable answer.
             logger.warning(f"Re-verification of remediation #{rid} returned "
                            f"{verdict['verdict']} with no note; leaving it filed")
+            tracing.annotate({'cfop.reverify.skip_reason': 'no_note'})
             return None
         # Attributed to the peer that actually answered, never to the one we
         # meant to ask: the note is posted on the issue, and naming a model
@@ -492,6 +516,7 @@ def reverify_row(op, row: Dict[str, Any], *, max_iterations: int) -> Optional[st
 
     logger.warning(f"No re-verification peer could be reached for remediation #{rid}; "
                    f"leaving it filed")
+    tracing.annotate({'cfop.reverify.skip_reason': 'unreachable'})
     return None
 
 
