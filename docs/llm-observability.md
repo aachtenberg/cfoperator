@@ -496,6 +496,13 @@ investigation                       cfop.alert.name / severity / summary (redact
 `served_by`. The `chat` spans follow the OpenTelemetry GenAI semantic
 conventions (`gen_ai.provider.name`, plus the older `gen_ai.system`).
 
+A filed-row re-verification (CFOP-185) is a `reverify` root (CFOP-399): the
+remediation's id, class and risk, `cfop.reverify.reporter` (the model that
+filed it), the judge backend and model that answered, and
+`cfop.reverify.outcome` -- `open`, `resolved`, `rejected`, or `skipped` with a
+`cfop.reverify.skip_reason`. The judge's `chat` span hangs under it. The
+note and the learning text stay off the span.
+
 A proactive sweep is one trace too (CFOP-385), with a span per phase. On the
 parallel (Ollama pool) path, the phases run on LangGraph worker threads and keep
 `sweep` as their parent, and the `chat` spans hang directly under the phase.
