@@ -11720,6 +11720,12 @@ def _graceful_shutdown(grace_seconds: float, operator=None) -> None:
 
     while busy() and time.monotonic() < deadline:
         time.sleep(0.25)
+    if operator is not None and operator.shutdown_busy():
+        # Cut off mid-way: an investigation's completion may never be posted,
+        # or a morning summary sent without its marker may go again from the
+        # next pod. Named here so either is traceable.
+        logger.warning("SIGTERM: grace period over with must-finish work still in flight "
+                       "(investigation post-back or morning summary); exiting anyway")
     interrupted = tracing.interrupt_open_spans()
     tracing.flush(FINAL_FLUSH_SECONDS)
     logger.info(f"SIGTERM: done; {interrupted} span(s) still open were ended as Interrupted")
