@@ -15,24 +15,38 @@ from typing import Dict, Any, List, Tuple
 # narrow by design: no `sudo` in general, NOPASSWD only for an allowlist of
 # reads -- exact dmesg forms, du, read subcommands of crictl/docker/kubectl.
 # `sudo -n echo` therefore fails on every host and says nothing. What an
-# investigation depends on is the allowlist, so that is what is checked:
-# `sudo -n -l <cmd>` asks sudo whether <cmd> may run without a password,
-# without running it. A failure there is a real problem (the drop-in missing
-# or broken); full sudo being refused is the design (CFOP-391).
-# Both are defaults for infrastructure.discovery (sudo_read_probe, workers);
-# another install's identity may allow different reads.
-SUDO_READ_PROBE = '/usr/bin/dmesg -T'
-# The probe is spliced into a remote shell command, so only an absolute path
+# investigation depends on is the allowlist, so that is what is checked, by
+# RUNNING each probe read with `sudo -n` (output discarded, 5s cap). Asking
+# instead (`sudo -n -l <cmd>`) is not enough: under sudo's default
+# listpw=any, listing succeeds for an entry that would still prompt for a
+# password (CodeRabbit on #329). A refused probe is a real problem (the
+# drop-in missing or broken, or -- found live -- sudo-rs resolving a
+# symlinked binary out of the allowlist); full sudo being refused is the
+# design (CFOP-391).
+#
+# Defaults for infrastructure.discovery.sudo_read_probes. Only reads that
+# should run on every host belong in the default: dmesg -T. Probes are
+# EXECUTED as root through the allowlist, so list only harmless reads.
+SUDO_READ_PROBES = ('/usr/bin/dmesg -T',)
+# A probe is spliced into a remote shell command, so only an absolute path
 # and plain arguments are accepted -- no quoting, separators or expansions.
 _SAFE_PROBE = re.compile(r'^/[\w./+-]+( [\w./=+-]+)*$')
 
 
-def _sudo_checks(probe: str) -> str:
-    return (f'sudo -n echo SUDO_OK 2>&1; '
-            f'sudo -n -l {probe} >/dev/null 2>&1 && echo SUDO_READS_OK')
+def _sudo_checks(probes) -> str:
+    reads = '; '.join(f'timeout 5 sudo -n {probe} >/dev/null 2>&1 && echo SUDO_READ_OK_{i}'
+                      for i, probe in enumerate(probes))
+    return f'sudo -n echo SUDO_OK 2>&1; {reads}'
 
 
-_SUDO_CHECKS = _sudo_checks(SUDO_READ_PROBE)
+def _refused_reads(probes, stdout: str) -> List[str]:
+    """The probes whose OK marker is missing. Token match, not substring:
+    SUDO_READ_OK_1 is a prefix of SUDO_READ_OK_10."""
+    seen = set(stdout.split())
+    return [probe for i, probe in enumerate(probes) if f'SUDO_READ_OK_{i}' not in seen]
+
+
+_SUDO_CHECKS = _sudo_checks(SUDO_READ_PROBES)
 
 # Hosts checked at once by discover_all_hosts. Each check is a ping and an
 # SSH round trip, nearly all of it waiting on the network.
@@ -44,18 +58,24 @@ class DiscoveryTools:
     """Tools for discovering and verifying infrastructure."""
 
     def __init__(self, hosts_config: Dict[str, Any], settings: Dict[str, Any] = None):
-        """``settings`` is ``infrastructure.discovery``: ``sudo_read_probe``
-        (the allowlisted read to ask sudo about) and ``workers`` (hosts
-        checked at once). Both optional; see the module constants."""
+        """``settings`` is ``infrastructure.discovery``: ``sudo_read_probes``
+        (allowlisted reads to run, a list or one string) and ``workers``
+        (hosts checked at once). Both optional; see the module constants."""
         self.hosts = hosts_config
         settings = settings if isinstance(settings, dict) else {}
-        probe = str(settings.get('sudo_read_probe') or SUDO_READ_PROBE).strip()
-        if not _SAFE_PROBE.match(probe):
-            logger.warning(f"Ignoring infrastructure.discovery.sudo_read_probe={probe!r}: "
-                           f"expected an absolute path and plain arguments")
-            probe = SUDO_READ_PROBE
-        self.sudo_read_probe = probe
-        self._sudo_checks = _sudo_checks(probe)
+        configured = settings.get('sudo_read_probes')
+        if isinstance(configured, str):
+            configured = [configured]
+        probes = []
+        for probe in configured if isinstance(configured, (list, tuple)) else []:
+            probe = str(probe).strip()
+            if _SAFE_PROBE.match(probe):
+                probes.append(probe)
+            else:
+                logger.warning(f"Ignoring sudo read probe {probe!r} in infrastructure.discovery: "
+                               f"expected an absolute path and plain arguments")
+        self.sudo_read_probes = tuple(probes) or SUDO_READ_PROBES
+        self._sudo_checks = _sudo_checks(self.sudo_read_probes)
         try:
             workers = int(settings.get('workers') or _DISCOVERY_WORKERS)
         except (TypeError, ValueError):
@@ -154,8 +174,9 @@ class DiscoveryTools:
     def verify_sudo(self, host: str) -> Dict[str, Any]:
         """Check sudo for the agent's SSH user: full passwordless sudo
         (``sudo_passwordless``) and the read-only allowlist investigations
-        use (``sudo_reads``). The forensics identity is meant to have only
-        the latter; see SUDO_READ_PROBE."""
+        use (``sudo_reads``, with ``sudo_read_refused`` naming any probe
+        read that would not run). The forensics identity is meant to have
+        only the latter; see SUDO_READ_PROBES."""
         if host not in self.hosts:
             return {'success': False, 'error': f'Unknown host: {host}'}
 
@@ -179,17 +200,20 @@ class DiscoveryTools:
                 timeout=10
             )
 
-            sudo_ok = 'SUDO_OK' in result.stdout
+            sudo_ok = 'SUDO_OK' in result.stdout.split()
             needs_password = 'password is required' in result.stdout.lower()
+            refused = _refused_reads(self.sudo_read_probes, result.stdout)
 
             return {
                 'success': True,
                 'host': host,
                 'address': ssh_address,
                 'sudo_passwordless': sudo_ok,
-                'sudo_reads': 'SUDO_READS_OK' in result.stdout,
+                'sudo_reads': not refused,
+                'sudo_read_refused': refused,
                 'needs_password': needs_password,
-                'message': result.stdout.replace('SUDO_READS_OK', '').strip()
+                'message': ' '.join(t for t in result.stdout.split()
+                                    if not t.startswith('SUDO_READ_OK_')).strip()
             }
         except Exception as e:
             return {
@@ -198,8 +222,9 @@ class DiscoveryTools:
                 'error': str(e)
             }
 
-    def _ssh_probe(self, host: str) -> Tuple[bool, bool, bool]:
-        """(ssh_accessible, sudo_passwordless, sudo_reads) from ONE connection.
+    def _ssh_probe(self, host: str) -> Tuple[bool, bool, List[str]]:
+        """(ssh_accessible, sudo_passwordless, refused read probes) from ONE
+        connection.
 
         verify_ssh and verify_sudo each open their own, which is right for
         the single-purpose tools and wasteful for the inventory, where both
@@ -215,16 +240,17 @@ class DiscoveryTools:
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
         except Exception as e:
             logger.debug(f"SSH probe of {host} failed: {e}")
-            return False, False, False
-        out = result.stdout
-        return 'SSH_OK' in out, 'SUDO_OK' in out, 'SUDO_READS_OK' in out
+            return False, False, list(self.sudo_read_probes)
+        tokens = set(result.stdout.split())
+        return ('SSH_OK' in tokens, 'SUDO_OK' in tokens,
+                _refused_reads(self.sudo_read_probes, result.stdout))
 
     def _discover_host(self, host_name: str) -> Dict[str, Any]:
         """One inventory row: reachability, SSH and sudo for one host."""
         host_config = self.hosts[host_name]
         logger.info(f"Discovering host: {host_name}")
         ping_result = self.ping_host(host_name)
-        ssh_ok, sudo_ok, sudo_reads = self._ssh_probe(host_name)
+        ssh_ok, sudo_ok, refused = self._ssh_probe(host_name)
 
         host_info = {
             'name': host_name,
@@ -234,7 +260,7 @@ class DiscoveryTools:
             'latency_ms': ping_result.get('latency_ms'),
             'ssh_accessible': ssh_ok,
             'sudo_passwordless': sudo_ok,
-            'sudo_reads': sudo_reads,
+            'sudo_reads': ssh_ok and not refused,
             'monitoring': host_config.get('monitoring', []),
             'issues': []
         }
@@ -247,9 +273,9 @@ class DiscoveryTools:
         # Full sudo is refused by design, so its absence is not an issue;
         # the read allowlist failing is. Only asked when SSH worked: with no
         # session there is no answer, and "SSH not accessible" already says so.
-        if host_info['ssh_accessible'] and not host_info['sudo_reads']:
+        if host_info['ssh_accessible'] and refused:
             host_info['issues'].append(
-                f'Read-only sudo allowlist unavailable (sudo -n -l {self.sudo_read_probe} refused)')
+                f"Read-only sudo refused for: {', '.join(refused)}")
         return host_info
 
     def discover_all_hosts(self) -> Dict[str, Any]:

@@ -128,7 +128,7 @@ class TestVerifySudo:
         assert tools.verify_sudo("nope")["success"] is False
 
     def test_passwordless(self, tools):
-        with patch("subprocess.run", return_value=_completed(["ssh"], stdout="SUDO_OK\nSUDO_READS_OK\n")) as run:
+        with patch("subprocess.run", return_value=_completed(["ssh"], stdout="SUDO_OK\nSUDO_READ_OK_0\n")) as run:
             result = tools.verify_sudo("web1")
 
         assert run.call_args.args[0][-1] == _SUDO_CHECKS
@@ -140,7 +140,7 @@ class TestVerifySudo:
     def test_forensics_identity_reads_only(self, tools):
         """CFOP-391: the agent's identity is narrow by design -- no full sudo,
         the read allowlist works. Both are reported as they are."""
-        stdout = "sudo: a password is required\nSUDO_READS_OK\n"
+        stdout = "sudo: a password is required\nSUDO_READ_OK_0\n"
         with patch("subprocess.run", return_value=_completed(["ssh"], stdout=stdout)):
             result = tools.verify_sudo("web1")
         assert (result["sudo_passwordless"], result["sudo_reads"]) == (False, True)
@@ -166,7 +166,7 @@ class TestDiscoverAllHosts:
         def fake_run(cmd, **kwargs):
             if cmd[0] == "ping":
                 return _completed(cmd, stdout=PING_OUTPUT)
-            return _completed(cmd, stdout="SSH_OK\nSUDO_OK\nSUDO_READS_OK\n")
+            return _completed(cmd, stdout="SSH_OK\nSUDO_OK\nSUDO_READ_OK_0\n")
 
         with patch("subprocess.run", side_effect=fake_run):
             result = tools.discover_all_hosts()
@@ -233,7 +233,7 @@ class TestDiscoverAllHosts:
 
         def slow_run(cmd, **kwargs):
             time.sleep(0.3)
-            out = PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nSUDO_READS_OK\n"
+            out = PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nSUDO_READ_OK_0\n"
             return _completed(cmd, stdout=out)
 
         tools = self._fleet(8)
@@ -249,7 +249,7 @@ class TestDiscoverAllHosts:
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            out = PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nsudo: a password is required\nSUDO_READS_OK\n"
+            out = PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nsudo: a password is required\nSUDO_READ_OK_0\n"
             return _completed(cmd, stdout=out)
 
         with patch("subprocess.run", side_effect=fake_run):
@@ -271,7 +271,7 @@ class TestDiscoverAllHosts:
             if dead:
                 time.sleep(1.0)
                 raise subprocess.TimeoutExpired(cmd=cmd[0], timeout=10)
-            return _completed(cmd, stdout=PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nSUDO_READS_OK\n")
+            return _completed(cmd, stdout=PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nSUDO_READ_OK_0\n")
 
         tools = self._fleet(5)
         with patch("subprocess.run", side_effect=run):
@@ -302,63 +302,78 @@ class TestSudoCheck:
     """The agent's SSH identity is narrow by design (homelab-infra HOMELAB-28):
     no full sudo, NOPASSWD for an allowlist of reads. CFOP-391."""
 
-    def _probe_fleet(self, ssh_stdout):
-        def fake_run(cmd, **kwargs):
-            return _completed(cmd, stdout=PING_OUTPUT if cmd[0] == "ping" else ssh_stdout)
-        tools = DiscoveryTools({f"h{i}": {"address": f"10.0.2.{i}", "ssh": {"user": "cfop-forensics"}}
-                                for i in range(2)})
-        with patch("subprocess.run", side_effect=fake_run):
-            return tools.discover_all_hosts()
-
-    def test_no_full_sudo_is_not_an_issue_for_the_forensics_identity(self):
-        """Every host's real state: full sudo refused, the read allowlist
-        works. Seven false issues per sweep until this."""
-        result = self._probe_fleet("SSH_OK\nsudo: a password is required\nSUDO_READS_OK\n")
-        assert result["hosts_with_issues"] == 0
-        assert (result["sudo_passwordless"], result["sudo_reads"]) == (0, 2)
-        assert all(h["issues"] == [] for h in result["inventory"])
-
-    def test_a_missing_read_allowlist_is_an_issue(self):
-        """The drop-in gone or broken: investigations' sudo reads fail."""
-        result = self._probe_fleet("SSH_OK\nsudo: a password is required\n")
-        assert result["hosts_with_issues"] == 2
-        assert result["inventory"][0]["issues"] == [
-            "Read-only sudo allowlist unavailable (sudo -n -l /usr/bin/dmesg -T refused)"]
-
-
-class TestDiscoverySettings:
-    """infrastructure.discovery: the probe and the pool size are config,
-    not constants -- another install's identity may allow other reads."""
-
-    HOST = {"h0": {"address": "10.0.3.1", "ssh": {"user": "reader"}}}
-
-    def _ssh_cmd(self, tools):
+    def _probe_fleet(self, ssh_stdout, settings=None):
         calls = []
 
         def fake_run(cmd, **kwargs):
             calls.append(cmd)
-            return _completed(cmd, stdout=PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\n")
+            return _completed(cmd, stdout=PING_OUTPUT if cmd[0] == "ping" else ssh_stdout)
+        tools = DiscoveryTools({f"h{i}": {"address": f"10.0.2.{i}", "ssh": {"user": "cfop-forensics"}}
+                                for i in range(2)}, settings)
         with patch("subprocess.run", side_effect=fake_run):
-            result = tools.discover_all_hosts()
-        return [c for c in calls if c[0] == "ssh"][0][-1], result
+            return tools.discover_all_hosts(), [c for c in calls if c[0] == "ssh"][0][-1]
+
+    def test_no_full_sudo_is_not_an_issue_for_the_forensics_identity(self):
+        """Every host's real state: full sudo refused, the read allowlist
+        works. Seven false issues per sweep until this."""
+        result, _ = self._probe_fleet("SSH_OK\nsudo: a password is required\nSUDO_READ_OK_0\n")
+        assert result["hosts_with_issues"] == 0
+        assert (result["sudo_passwordless"], result["sudo_reads"]) == (0, 2)
+        assert all(h["issues"] == [] for h in result["inventory"])
+
+    def test_the_probe_read_is_run_not_merely_listed(self):
+        """`sudo -n -l` succeeds for a password-required entry under the
+        default listpw=any (CodeRabbit on #329); only running it with -n
+        proves it runs without a password."""
+        _, remote = self._probe_fleet("SSH_OK\n")
+        assert "timeout 5 sudo -n /usr/bin/dmesg -T >/dev/null 2>&1 && echo SUDO_READ_OK_0" in remote
+        assert "sudo -n -l" not in remote
+
+    def test_a_refused_read_is_an_issue_naming_it(self):
+        """The drop-in gone or broken -- or, found live, sudo-rs resolving a
+        symlinked binary out of the allowlist."""
+        result, _ = self._probe_fleet("SSH_OK\nsudo: a password is required\n")
+        assert result["hosts_with_issues"] == 2
+        assert result["inventory"][0]["issues"] == ["Read-only sudo refused for: /usr/bin/dmesg -T"]
+
+    def test_every_probe_must_run_and_only_the_refused_are_named(self):
+        """All probes, not one standing in for the allowlist (CodeRabbit on
+        #329). Eleven probes so that marker 1 vs 10 cannot be confused."""
+        probes = [f"/usr/bin/probe{i}" for i in range(11)]
+        ok = " ".join(f"SUDO_READ_OK_{i}" for i in range(11) if i != 1)
+        result, remote = self._probe_fleet(f"SSH_OK {ok}\n", {"sudo_read_probes": probes})
+        assert remote.count("timeout 5 sudo -n /usr/bin/probe") == 11
+        row = result["inventory"][0]
+        assert row["sudo_reads"] is False
+        assert row["issues"] == ["Read-only sudo refused for: /usr/bin/probe1"]
+
+
+class TestDiscoverySettings:
+    """infrastructure.discovery: the probes and the pool size are config,
+    not constants -- another install's identity may allow other reads."""
+
+    HOST = {"h0": {"address": "10.0.3.1", "ssh": {"user": "reader"}}}
 
     def test_defaults(self):
         tools = DiscoveryTools(self.HOST)
-        assert tools.sudo_read_probe == "/usr/bin/dmesg -T"
+        assert tools.sudo_read_probes == ("/usr/bin/dmesg -T",)
         assert tools.workers == 16
 
-    def test_a_configured_probe_is_what_sudo_is_asked_about(self):
-        tools = DiscoveryTools(self.HOST, {"sudo_read_probe": "/usr/bin/du -s /var"})
-        remote, result = self._ssh_cmd(tools)
-        assert "sudo -n -l /usr/bin/du -s /var " in remote
-        assert result["inventory"][0]["issues"] == [
-            "Read-only sudo allowlist unavailable (sudo -n -l /usr/bin/du -s /var refused)"]
+    def test_one_string_or_a_list(self):
+        assert DiscoveryTools(self.HOST, {"sudo_read_probes": "/usr/bin/du -s /var"}).sudo_read_probes == \
+            ("/usr/bin/du -s /var",)
+        assert DiscoveryTools(self.HOST, {"sudo_read_probes": ["/usr/bin/dmesg -T", "/usr/bin/du -s /"]}
+                              ).sudo_read_probes == ("/usr/bin/dmesg -T", "/usr/bin/du -s /")
 
-    def test_an_unsafe_probe_is_refused_for_the_default(self):
-        """It is spliced into a remote shell command: no separators,
-        substitutions or relative paths."""
+    def test_unsafe_probes_are_dropped(self):
+        """Spliced into a remote shell command: no separators, substitutions,
+        quotes or relative paths. Bad ones are dropped; none left means the
+        default."""
         for bad in ("/usr/bin/dmesg; reboot", "$(id)", "dmesg -T", "/bin/sh -c 'x'", "/x && y"):
-            assert DiscoveryTools(self.HOST, {"sudo_read_probe": bad}).sudo_read_probe == "/usr/bin/dmesg -T", bad
+            assert DiscoveryTools(self.HOST, {"sudo_read_probes": [bad]}).sudo_read_probes == \
+                ("/usr/bin/dmesg -T",), bad
+        assert DiscoveryTools(self.HOST, {"sudo_read_probes": ["/usr/bin/du -s /", "$(id)"]}
+                              ).sudo_read_probes == ("/usr/bin/du -s /",)
 
     def test_workers_are_clamped_and_garbage_ignored(self):
         assert DiscoveryTools(self.HOST, {"workers": 4}).workers == 4
@@ -370,7 +385,6 @@ class TestDiscoverySettings:
         from types import SimpleNamespace
         from tools import ToolRegistry
         op = SimpleNamespace(config={"infrastructure": {
-            "hosts": self.HOST, "discovery": {"sudo_read_probe": "/usr/bin/du -s /", "workers": 3}}})
+            "hosts": self.HOST, "discovery": {"sudo_read_probes": ["/usr/bin/du -s /"], "workers": 3}}})
         d = ToolRegistry(op).discovery_tools
-        assert (d.sudo_read_probe, d.workers) == ("/usr/bin/du -s /", 3)
-
+        assert (d.sudo_read_probes, d.workers) == (("/usr/bin/du -s /",), 3)

@@ -171,18 +171,28 @@ reasoning are in homelab-infra `ansible/files/sudoers-cfop-forensics`.
 The node-action lane, which runs the gated host fixes, uses its own identity
 with its own drop-in, scoped to the `node_action` allowlist.
 
-`discover_all_hosts` checks this the way it is meant to be set up. It reports
-`sudo_reads`, whether sudo would run an allowlisted read without a password,
-and raises a host issue only when that fails. Full sudo (`sudo_passwordless`)
-is reported but is not an issue. The probe and the number of hosts checked at
-once are configurable:
+`discover_all_hosts` checks this the way it is meant to be set up. It *runs*
+each probe read with `sudo -n`, output discarded and capped at 5s, and
+reports `sudo_reads` (every probe ran) plus a host issue naming any probe that
+was refused. Running the read matters: `sudo -n -l <cmd>` succeeds for an
+entry that would still prompt for a password, under sudo's default
+`listpw=any`. Full sudo (`sudo_passwordless`) is reported but is not an issue.
+The probes and the number of hosts checked at once are configurable:
 
 ```yaml
 infrastructure:
   discovery:
-    sudo_read_probe: /usr/bin/dmesg -T   # a read your drop-in allows; absolute path, plain args
-    workers: 16                          # hosts checked at once (1-64)
+    # Reads your drop-in allows. They are EXECUTED as root, so list only
+    # harmless reads; absolute path and plain arguments only.
+    sudo_read_probes:
+      - /usr/bin/dmesg -T
+    workers: 16          # hosts checked at once (1-64)
 ```
+
+Watch for `sudo-rs` (Ubuntu 25.10 and later). It resolves symlinks before
+matching sudoers. `/usr/bin/du` there is a symlink into uutils coreutils, and
+k3s's `kubectl` and `crictl` are symlinks to `k3s`, so an entry for the
+symlink's path never matches. A probe for such a command is how you find out.
 
 ### Observability Backend Configuration
 
