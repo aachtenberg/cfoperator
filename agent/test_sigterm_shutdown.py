@@ -143,8 +143,9 @@ def _bare_operator():
     op._enqueue_dedup_ttl = 3600.0
     op._enqueue_dedup_keys = {}
     op._enqueue_dedup_lock = threading.Lock()
-    op._shutting_down = threading.Event()
-    op._investigation_busy = threading.Event()
+    op._admission_lock = threading.Lock()
+    op._shutting_down = False
+    op._in_flight = 0
     return op
 
 
@@ -188,6 +189,37 @@ def test_the_worker_is_busy_through_the_post_back():
     op._investigation_queue.join()
     assert seen == {'busy_during_post_back': True}
     assert not op.shutdown_busy()
+
+
+def test_begin_shutdown_cannot_land_between_the_check_and_the_put():
+    """Otherwise a request passes the check, shutdown begins, the put
+    succeeds -- a 202 for an alert the worker will then skip, with no 503
+    for event_runtime to retry."""
+    import threading
+    op = _bare_operator()
+    orig = op._enqueue_investigation_locked
+    seen = {}
+
+    def locked(alert):
+        t = threading.Thread(target=op.begin_shutdown)
+        t.start()
+        t.join(0.3)
+        seen['shutdown_landed_mid_enqueue'] = not t.is_alive()
+        return orig(alert)
+    op._enqueue_investigation_locked = locked
+    assert op.enqueue_investigation({'alert_id': 'a1'})['status'] == 'queued'
+    assert seen == {'shutdown_landed_mid_enqueue': False}
+
+
+def test_the_morning_summary_is_in_flight_through_delivery_and_skipped_once_shutting_down():
+    op = _bare_operator()
+    seen = []
+    op._check_morning_summary = lambda: seen.append(op.shutdown_busy())
+    op._morning_summary_tick()
+    assert seen == [True] and not op.shutdown_busy()
+    op.begin_shutdown()
+    op._morning_summary_tick()
+    assert seen == [True]
 
 
 def test_tracing_off_the_helpers_are_no_ops():

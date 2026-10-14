@@ -35,8 +35,9 @@ def _operator(*, queue_size: int = 4, reactive_poll: bool = True) -> CFOperator:
     op._enqueue_dedup_ttl = 3600.0
     op._enqueue_dedup_keys = {}
     op._enqueue_dedup_lock = _t.Lock()
-    op._shutting_down = _t.Event()
-    op._investigation_busy = _t.Event()
+    op._admission_lock = _t.Lock()
+    op._shutting_down = False
+    op._in_flight = 0
     op.current_investigation = None
     return op
 

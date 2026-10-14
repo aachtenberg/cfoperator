@@ -2230,12 +2230,16 @@ class CFOperator:
         self._enqueue_dedup_ttl = float(ooda_cfg.get('investigation_dedup_ttl_seconds', 3600))
         self._enqueue_dedup_keys: Dict[str, float] = {}
         self._enqueue_dedup_lock = threading.Lock()
-        # SIGTERM (CFOP-394): set once shutdown begins; the worker sets
-        # _investigation_busy for a whole item, post-back included, which the
-        # shutdown waits on -- the investigation span closes before the
-        # post-back, so open spans alone would cut a completion off.
-        self._shutting_down = threading.Event()
-        self._investigation_busy = threading.Event()
+        # SIGTERM (CFOP-394). Work that must land whole -- an HTTP-triggered
+        # investigation through its post-back, the morning summary through
+        # its sent-marker -- counts itself in _in_flight, which the shutdown
+        # waits on: their spans close before that tail, so open spans alone
+        # would cut it off. Admission, the in-flight count and the shutdown
+        # flag change only under _admission_lock, so nothing is accepted
+        # after begin_shutdown() nor starts unseen by the shutdown's wait.
+        self._admission_lock = threading.Lock()
+        self._shutting_down = False
+        self._in_flight = 0
         # Serializes investigations across the reactive poll (main thread)
         # and the HTTP worker thread. Without this, both paths could race
         # on self.current_investigation and other non-thread-safe state.
@@ -2628,7 +2632,7 @@ class CFOperator:
                     self.last_sweep = time.time()
 
                 # MODE 3: Morning summary (TPS report style)
-                self._check_morning_summary()
+                self._morning_summary_tick()
 
                 # Remediation reaper/drainer/verify run in their own daemon thread
                 # (_remediation_worker_loop) so a long proactive sweep can't starve
@@ -3196,12 +3200,18 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         within a TTL window: a repeat within the window returns
         status='deduped' without enqueuing.
         """
-        if self._shutting_down.is_set():
-            # Shutting down (CFOP-394): a 503, which event_runtime retries,
-            # so the alert lands on the next pod instead of in a queue that
-            # is about to vanish.
-            INVESTIGATION_QUEUE_REJECTED.inc()
-            raise queue.Full()
+        # The shutdown check and the put are one step (CFOP-394): a request
+        # is either refused or queued before begin_shutdown(), never queued
+        # after it and then skipped by the worker.
+        with self._admission_lock:
+            if self._shutting_down:
+                # A 503, which event_runtime retries, so the alert lands on
+                # the next pod instead of in a queue that is about to vanish.
+                INVESTIGATION_QUEUE_REJECTED.inc()
+                raise queue.Full()
+            return self._enqueue_investigation_locked(alert)
+
+    def _enqueue_investigation_locked(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         dedup_key = alert.get('idempotency_key') or alert.get('alert_id')
         if dedup_key:
             now = time.time()
@@ -3255,14 +3265,13 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
             except Exception:
                 logger.exception("Investigation queue read failed; worker exiting")
                 return
-            if self._shutting_down.is_set():
+            if not self._try_begin_work():
                 # Not started: it could not finish before the process exits.
                 # Queued alerts were always lost to a restart (the queue is
                 # in memory); this just doesn't begin one only to cut it off.
                 logger.warning(f"Shutting down: not starting queued investigation {alert.get('alert_id')}")
                 self._investigation_queue.task_done()
                 continue
-            self._investigation_busy.set()
             try:
                 INVESTIGATION_QUEUE_DEPTH.set(self._investigation_queue.qsize())
                 result = self.run_investigation(alert)
@@ -3270,7 +3279,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
             except Exception:
                 logger.exception("HTTP-triggered investigation failed")
             finally:
-                self._investigation_busy.clear()
+                self._end_work()
                 self._investigation_queue.task_done()
 
     def _post_action_result_to_event_runtime(self, alert: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -9391,12 +9400,38 @@ Only return the JSON array, no other text."""
 
     def begin_shutdown(self) -> None:
         """SIGTERM (CFOP-394): refuse new HTTP-triggered investigations and
-        start no more queued ones."""
-        self._shutting_down.set()
+        start no more in-flight work."""
+        with self._admission_lock:
+            self._shutting_down = True
 
     def shutdown_busy(self) -> bool:
-        """An HTTP-triggered investigation is running or posting its result."""
-        return self._investigation_busy.is_set()
+        """Work that must land whole is still running (see _in_flight)."""
+        with self._admission_lock:
+            return self._in_flight > 0
+
+    def _try_begin_work(self) -> bool:
+        """Count a unit of must-finish work in, unless shutdown has begun."""
+        with self._admission_lock:
+            if self._shutting_down:
+                return False
+            self._in_flight += 1
+            return True
+
+    def _end_work(self) -> None:
+        with self._admission_lock:
+            self._in_flight -= 1
+
+    def _morning_summary_tick(self) -> None:
+        """The morning summary, in flight as a whole (CFOP-394): its span
+        closes before the digest is delivered and the sent-marker written,
+        and a shutdown between the two would send it again from the next
+        pod."""
+        if not self._try_begin_work():
+            return
+        try:
+            self._check_morning_summary()
+        finally:
+            self._end_work()
 
     def _shutdown_grace_seconds(self) -> float:
         """``ooda.shutdown_grace_seconds``: how long SIGTERM waits for
