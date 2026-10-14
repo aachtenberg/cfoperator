@@ -45,7 +45,21 @@ CHILD = textwrap.dedent('''
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(FileExporter()))
     tracing.use_provider(provider)
-    agent_module.install_shutdown_handler(grace)
+
+    class Operator:
+        """The two calls the shutdown makes on the agent. busy is the
+        investigation worker between its span closing and its post-back
+        finishing -- no span open, still work that must land."""
+        def __init__(self):
+            self.stopping = threading.Event()
+            self.posting = threading.Event()
+        def begin_shutdown(self):
+            self.stopping.set()
+        def shutdown_busy(self):
+            return self.posting.is_set()
+
+    operator = Operator()
+    agent_module.install_shutdown_handler(grace, operator)
 
     def work(name, seconds):
         with tracing.span(name):
@@ -55,6 +69,14 @@ CHILD = textwrap.dedent('''
         threading.Thread(target=work, args=('sweep', 60), daemon=True).start()
     elif mode == 'finishing':
         threading.Thread(target=work, args=('investigation', 0.8), daemon=True).start()
+    elif mode == 'postback':
+        def post_back():
+            operator.posting.set()
+            time.sleep(0.8)
+            with open(out_path, 'a') as f:
+                f.write(json.dumps({'posted': True, 'stop_seen': operator.stopping.is_set()}) + '\\n')
+            operator.posting.clear()
+        threading.Thread(target=post_back, daemon=True).start()
     time.sleep(0.3)
     print('READY', flush=True)
     os.kill(os.getpid(), signal.SIGTERM)
@@ -99,6 +121,73 @@ def test_work_that_finishes_inside_the_grace_period_finishes(tmp_path):
     assert 'STILL ALIVE' not in proc.stdout, proc.stdout + proc.stderr
     assert spans == [{'name': 'investigation', 'status': 'UNSET', 'error_type': None}]
     assert elapsed < 15
+
+
+def test_a_completion_post_back_in_flight_is_waited_for(tmp_path):
+    """The investigation span closes before its result is posted back to
+    event_runtime; with no span open the shutdown must still wait, or the
+    one message telling a human the investigation finished is cut off."""
+    proc, elapsed, spans = _run(tmp_path, 'postback', grace=10)
+    assert 'STILL ALIVE' not in proc.stdout, proc.stdout + proc.stderr
+    assert spans == [{'posted': True, 'stop_seen': True}]
+    assert elapsed < 15
+
+
+def _bare_operator():
+    import queue
+    import threading
+    sys.path.insert(0, AGENT_DIR)
+    from agent import CFOperator
+    op = CFOperator.__new__(CFOperator)
+    op._investigation_queue = queue.Queue(maxsize=4)
+    op._enqueue_dedup_ttl = 3600.0
+    op._enqueue_dedup_keys = {}
+    op._enqueue_dedup_lock = threading.Lock()
+    op._shutting_down = threading.Event()
+    op._investigation_busy = threading.Event()
+    return op
+
+
+def test_shutting_down_refuses_new_investigations_with_queue_full():
+    """queue.Full is the endpoint's 503, which event_runtime retries -- so
+    the alert lands on the next pod rather than in a queue about to vanish."""
+    import queue
+    op = _bare_operator()
+    assert op.enqueue_investigation({'alert_id': 'a1'})['status'] == 'queued'
+    op.begin_shutdown()
+    with pytest.raises(queue.Full):
+        op.enqueue_investigation({'alert_id': 'a2'})
+    assert op._investigation_queue.qsize() == 1
+
+
+def test_the_worker_starts_no_queued_investigation_once_shutting_down():
+    import threading
+    op = _bare_operator()
+    ran = []
+    op.run_investigation = lambda alert: ran.append(alert['alert_id']) or {}
+    op._post_action_result_to_event_runtime = lambda alert, result: None
+    op.enqueue_investigation({'alert_id': 'a1'})
+    op.begin_shutdown()
+    threading.Thread(target=op._investigation_worker_loop, daemon=True).start()
+    op._investigation_queue.join()          # task_done() was still called
+    assert ran == []
+    assert not op.shutdown_busy()
+
+
+def test_the_worker_is_busy_through_the_post_back():
+    import threading
+    op = _bare_operator()
+    seen = {}
+    op.run_investigation = lambda alert: {}
+
+    def post_back(alert, result):
+        seen['busy_during_post_back'] = op.shutdown_busy()
+    op._post_action_result_to_event_runtime = post_back
+    op.enqueue_investigation({'alert_id': 'a1'})
+    threading.Thread(target=op._investigation_worker_loop, daemon=True).start()
+    op._investigation_queue.join()
+    assert seen == {'busy_during_post_back': True}
+    assert not op.shutdown_busy()
 
 
 def test_tracing_off_the_helpers_are_no_ops():

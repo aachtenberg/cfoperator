@@ -333,9 +333,10 @@ ooda:
   # On SIGTERM (a deploy), how long the agent waits for in-flight traced work
   # (a sweep, an investigation, a chat turn) to finish before ending what is
   # still open as Interrupted, exporting it and exiting. An idle agent exits
-  # at once. Keep it below the pod's terminationGracePeriodSeconds (default
-  # 30), or the kubelet's SIGKILL lands first. 0 to 600; default 20
-  # (CFOP-394).
+  # at once. New POST /v1/investigate requests get a 503 meanwhile (retried
+  # onto the next pod). The final export takes up to 5s more, so keep this
+  # plus 5 below the pod's terminationGracePeriodSeconds (default 30), or
+  # the kubelet's SIGKILL lands first. 0 to 600; default 20 (CFOP-394).
   # shutdown_grace_seconds: 20
 
   # What to sweep

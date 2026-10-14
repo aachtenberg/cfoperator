@@ -200,19 +200,24 @@ def span(name: str, attributes: Optional[Mapping[str, Any]] = None) -> Iterator[
         yield _NOOP
         return
     from opentelemetry.trace import Status, StatusCode
-    with _tracer.start_as_current_span(
-            name[:ATTR_LIMIT], attributes=_clean(attributes),
-            record_exception=False, set_status_on_exception=False) as s:
-        with _open_lock:
-            _open_spans.add(s)
-        try:
-            yield s
-        except Exception as e:
-            if s.is_recording():
-                s.set_attribute('error.type', type(e).__name__)
-                s.set_status(Status(StatusCode.ERROR, type(e).__name__))
-            raise
-        finally:
+    s = None
+    try:
+        with _tracer.start_as_current_span(
+                name[:ATTR_LIMIT], attributes=_clean(attributes),
+                record_exception=False, set_status_on_exception=False) as s:
+            with _open_lock:
+                _open_spans.add(s)
+            try:
+                yield s
+            except Exception as e:
+                if s.is_recording():
+                    s.set_attribute('error.type', type(e).__name__)
+                    s.set_status(Status(StatusCode.ERROR, type(e).__name__))
+                raise
+    finally:
+        # Only once the context has ended (and so exported) the span: a
+        # shutdown waiting on active_count() must not see 0 before then.
+        if s is not None:
             with _open_lock:
                 _open_spans.discard(s)
 
