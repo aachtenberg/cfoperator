@@ -2736,6 +2736,7 @@ class CFOperator:
             'trigger': trigger,
         }
 
+    @tracing.traced('investigation.orient')
     def _orient(self, context: Dict[str, Any]) -> Dict[str, Any]:
         """
         ORIENT phase: Understand what's happening.
@@ -3596,6 +3597,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         # paragraph, then cap length for a one-line notification.
         return tail.split('\n\n')[0].strip()[:400]
 
+    @tracing.traced('investigation.structured_fix')
     def _ensure_structured_fix(self, outcome: str, recommendation: str,
                                response_text: str, trigger: str = ''):
         """Parse FIX; one JSON nudge if needs_action and missing/malformed.
@@ -3904,6 +3906,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             return f"last restart {minutes // 60}h"
         return f"last restart {minutes}m"
 
+    @tracing.traced('investigation.noise_check')
     def _recovered_and_healthy(self, alert_info: Dict[str, Any], trigger: str) -> tuple:
         """Tier-1 noise filter: is the alert about a recoverable runtime
         condition whose pod is healthy *right now*? Returns
@@ -4041,6 +4044,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                      'preflight_skip': True, 'remediation': rec},
         )
 
+    @tracing.traced('investigation.propose_remediation')
     def _maybe_propose_remediation(self, outcome: str, alert_info: Dict[str, Any],
                                    trigger: str):
         """Phase-B: for a confirmed needs_action pod, build a dry-run remediation
@@ -6387,6 +6391,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         content = result.get('content')
         return content if isinstance(content, str) else None
 
+    @tracing.traced('investigation.queue_remediation')
     def _queue_needs_action_remediation(self, investigation_id: int, trigger: str,
                                         alert_info: Dict[str, Any], recommendation: str,
                                         response_text: str, provider: str,
@@ -7130,6 +7135,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             logger.warning(f"Deep-investigation PR path failed: {e}")
             return {'status': 'error', 'detail': str(e)[:200]}
 
+    @tracing.traced('investigation.verify_outcome')
     def _verify_investigation_outcome(self, outcome: str, alert_info: Dict[str, Any],
                                       trigger: str) -> tuple:
         """Deterministically check a 'resolved' verdict against live cluster state.
@@ -8291,6 +8297,7 @@ Only return the JSON array, no other text."""
         except Exception as e:
             logger.warning(f"Learning consolidation failed: {e}")
 
+    @tracing.traced('investigation.extract_learnings')
     def _extract_learnings(self, inv_id: int, trigger: str, findings: Dict[str, Any]):
         """Extract structured learnings from a resolved investigation using LLM."""
 
@@ -8432,6 +8439,7 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
         except Exception as e:
             logger.warning(f"Learning extraction failed for investigation #{inv_id}: {e}")
 
+    @tracing.traced('embed_investigation')
     def _embed_investigation(self, inv_id: int, trigger: str, findings: Dict[str, Any], outcome: str):
         """Generate and store embedding for a completed investigation."""
         try:

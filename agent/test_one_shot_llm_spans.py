@@ -204,7 +204,10 @@ def test_learning_extraction_is_a_chat_span_under_the_investigation(spans, monke
     assert s.attributes['cfop.llm.purpose'] == 'learnings'
     assert s.attributes['gen_ai.usage.input_tokens'] == 90
     assert tuple(s.attributes['gen_ai.response.finish_reasons']) == ('stop',)
-    assert s.parent.span_id == root.get_span_context().span_id
+    # investigation → investigation.extract_learnings (CFOP-387) → chat
+    (phase,) = [x for x in spans.get_finished_spans() if x.name == 'investigation.extract_learnings']
+    assert s.parent.span_id == phase.context.span_id
+    assert phase.parent.span_id == root.get_span_context().span_id
     _no_canary(spans)
 
 

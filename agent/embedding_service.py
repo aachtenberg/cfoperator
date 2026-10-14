@@ -18,6 +18,8 @@ from collections import OrderedDict
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, timezone
 
+from cfshared import tracing
+
 def _get_metrics():
     """Lazy import of Prometheus counters from agent.agent (avoids circular import)."""
     try:
@@ -474,14 +476,23 @@ class EmbeddingService:
                  limit=limit)
 
         try:
-            response = requests.post(
-                f"{self.ollama_url}/api/embeddings",
-                json={
-                    "model": self.model,
-                    "prompt": prompt
-                },
-                timeout=30
-            )
+            # The round trip only (CFOP-387): a cache hit is free and gets no
+            # span. Model and outcome, never the text being embedded.
+            with tracing.span(f"embeddings {self.model}", {
+                'gen_ai.operation.name': 'embeddings',
+                'gen_ai.provider.name': 'ollama',
+                'gen_ai.request.model': self.model,
+            }):
+                response = requests.post(
+                    f"{self.ollama_url}/api/embeddings",
+                    json={
+                        "model": self.model,
+                        "prompt": prompt
+                    },
+                    timeout=30
+                )
+                if response.status_code != 200:
+                    tracing.mark_error(f"HTTP{response.status_code}")
 
             if response.status_code == 200:
                 data = response.json()
