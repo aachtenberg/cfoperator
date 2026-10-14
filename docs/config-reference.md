@@ -330,6 +330,15 @@ ooda:
   # ceiling 86400; a `remediation_reverify_interval` DB setting wins over this.
   remediation_reverify_interval_seconds: 900
 
+  # On SIGTERM (a deploy), how long the agent waits for in-flight traced work
+  # (a sweep, an investigation, a chat turn) to finish before ending what is
+  # still open as Interrupted, exporting it and exiting. An idle agent exits
+  # at once. New POST /v1/investigate requests get a 503 meanwhile (not
+  # yet retried across the restart by event_runtime: CFOP-395). The final export takes up to 5s more, so keep this
+  # plus 5 below the pod's terminationGracePeriodSeconds (default 30), or
+  # the kubelet's SIGKILL lands first. 0 to 600; default 20 (CFOP-394).
+  # shutdown_grace_seconds: 20
+
   # What to sweep
   sweep:
     metrics: true

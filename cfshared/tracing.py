@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import threading
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, Mapping, Optional
 
@@ -42,6 +43,12 @@ ALERT_TEXT_LIMIT = 200
 ATTR_LIMIT = 256
 
 _tracer = None
+_provider = None
+# Spans span() has open, so a shutdown can end what is still in flight
+# (CFOP-394). A span never ended is never exported, and its trace shows in
+# Grafana as "<root span not yet received>" forever.
+_open_spans = set()
+_open_lock = threading.Lock()
 
 
 class _NoopSpan:
@@ -111,14 +118,60 @@ def init_tracing(config: Optional[Mapping[str, Any]]) -> bool:
 
 def use_provider(provider) -> None:
     """Trace through ``provider`` (tests hand in one with an in-memory exporter)."""
-    global _tracer
+    global _tracer, _provider
+    _provider = provider
     _tracer = provider.get_tracer('cfoperator')
 
 
 def reset() -> None:
     """Back to off. For tests; the running agent never turns tracing off."""
-    global _tracer
+    global _tracer, _provider
     _tracer = None
+    _provider = None
+    with _open_lock:
+        _open_spans.clear()
+
+
+def active_count() -> int:
+    """How many spans are open right now -- in-flight traced work."""
+    with _open_lock:
+        return len(_open_spans)
+
+
+def flush(timeout_seconds: float = 5.0) -> bool:
+    """Export whatever the batch processor is holding. True when there is
+    nothing to export or it all went; never raises."""
+    if _provider is None:
+        return True
+    try:
+        return bool(_provider.force_flush(int(timeout_seconds * 1000)))
+    except Exception as e:
+        logger.warning(f"[TRACING] flush failed: {type(e).__name__}")
+        return False
+
+
+def interrupt_open_spans(error_type: str = 'Interrupted') -> int:
+    """End every span still open as ERROR with ``error.type`` (CFOP-394).
+
+    For process shutdown: a span that is never ended is never exported, so a
+    sweep cut short by a deploy left a trace with no root. Ending it says what
+    happened. The thread that opened it may still try to end it later; the
+    SDK ignores a second end. Returns how many were ended.
+    """
+    if _tracer is None:
+        return 0
+    from opentelemetry.trace import Status, StatusCode
+    with _open_lock:
+        spans = list(_open_spans)
+        _open_spans.clear()
+    ended = 0
+    for s in spans:
+        if s.is_recording():
+            s.set_attribute('error.type', error_type)
+            s.set_status(Status(StatusCode.ERROR, error_type))
+            s.end()
+            ended += 1
+    return ended
 
 
 def _clean(attributes: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
@@ -147,15 +200,26 @@ def span(name: str, attributes: Optional[Mapping[str, Any]] = None) -> Iterator[
         yield _NOOP
         return
     from opentelemetry.trace import Status, StatusCode
-    with _tracer.start_as_current_span(
-            name[:ATTR_LIMIT], attributes=_clean(attributes),
-            record_exception=False, set_status_on_exception=False) as s:
-        try:
-            yield s
-        except Exception as e:
-            s.set_attribute('error.type', type(e).__name__)
-            s.set_status(Status(StatusCode.ERROR, type(e).__name__))
-            raise
+    s = None
+    try:
+        with _tracer.start_as_current_span(
+                name[:ATTR_LIMIT], attributes=_clean(attributes),
+                record_exception=False, set_status_on_exception=False) as s:
+            with _open_lock:
+                _open_spans.add(s)
+            try:
+                yield s
+            except Exception as e:
+                if s.is_recording():
+                    s.set_attribute('error.type', type(e).__name__)
+                    s.set_status(Status(StatusCode.ERROR, type(e).__name__))
+                raise
+    finally:
+        # Only once the context has ended (and so exported) the span: a
+        # shutdown waiting on active_count() must not see 0 before then.
+        if s is not None:
+            with _open_lock:
+                _open_spans.discard(s)
 
 
 def traced(name: str, count_attr: Optional[str] = None):

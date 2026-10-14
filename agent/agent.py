@@ -2230,6 +2230,16 @@ class CFOperator:
         self._enqueue_dedup_ttl = float(ooda_cfg.get('investigation_dedup_ttl_seconds', 3600))
         self._enqueue_dedup_keys: Dict[str, float] = {}
         self._enqueue_dedup_lock = threading.Lock()
+        # SIGTERM (CFOP-394). Work that must land whole -- an HTTP-triggered
+        # investigation through its post-back, the morning summary through
+        # its sent-marker -- counts itself in _in_flight, which the shutdown
+        # waits on: their spans close before that tail, so open spans alone
+        # would cut it off. Admission, the in-flight count and the shutdown
+        # flag change only under _admission_lock, so nothing is accepted
+        # after begin_shutdown() nor starts unseen by the shutdown's wait.
+        self._admission_lock = threading.Lock()
+        self._shutting_down = False
+        self._in_flight = 0
         # Serializes investigations across the reactive poll (main thread)
         # and the HTTP worker thread. Without this, both paths could race
         # on self.current_investigation and other non-thread-safe state.
@@ -2622,7 +2632,7 @@ class CFOperator:
                     self.last_sweep = time.time()
 
                 # MODE 3: Morning summary (TPS report style)
-                self._check_morning_summary()
+                self._morning_summary_tick()
 
                 # Remediation reaper/drainer/verify run in their own daemon thread
                 # (_remediation_worker_loop) so a long proactive sweep can't starve
@@ -3190,6 +3200,19 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         within a TTL window: a repeat within the window returns
         status='deduped' without enqueuing.
         """
+        # The shutdown check and the put are one step (CFOP-394): a request
+        # is either refused or queued before begin_shutdown(), never queued
+        # after it and then skipped by the worker.
+        with self._admission_lock:
+            if self._shutting_down:
+                # A 503 rather than a 202 for an alert that would vanish
+                # with the in-memory queue. event_runtime counts it a failed
+                # attempt; it does not yet wait out a restart (CFOP-395).
+                INVESTIGATION_QUEUE_REJECTED.inc()
+                raise queue.Full()
+            return self._enqueue_investigation_locked(alert)
+
+    def _enqueue_investigation_locked(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         dedup_key = alert.get('idempotency_key') or alert.get('alert_id')
         if dedup_key:
             now = time.time()
@@ -3243,6 +3266,13 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
             except Exception:
                 logger.exception("Investigation queue read failed; worker exiting")
                 return
+            if not self._try_begin_work():
+                # Not started: it could not finish before the process exits.
+                # Queued alerts were always lost to a restart (the queue is
+                # in memory); this just doesn't begin one only to cut it off.
+                logger.warning(f"Shutting down: not starting queued investigation {alert.get('alert_id')}")
+                self._investigation_queue.task_done()
+                continue
             try:
                 INVESTIGATION_QUEUE_DEPTH.set(self._investigation_queue.qsize())
                 result = self.run_investigation(alert)
@@ -3250,6 +3280,7 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
             except Exception:
                 logger.exception("HTTP-triggered investigation failed")
             finally:
+                self._end_work()
                 self._investigation_queue.task_done()
 
     def _post_action_result_to_event_runtime(self, alert: Dict[str, Any], result: Dict[str, Any]) -> None:
@@ -9368,6 +9399,55 @@ Only return the JSON array, no other text."""
             logger.debug(f"Invalid max_tool_iterations setting, using default: {e}")
         return self.config.get('chat', {}).get('max_tool_iterations', 10)
 
+    def begin_shutdown(self) -> None:
+        """SIGTERM (CFOP-394): refuse new HTTP-triggered investigations and
+        start no more in-flight work."""
+        with self._admission_lock:
+            self._shutting_down = True
+
+    def shutdown_busy(self) -> bool:
+        """Work that must land whole is still running (see _in_flight)."""
+        with self._admission_lock:
+            return self._in_flight > 0
+
+    def _try_begin_work(self) -> bool:
+        """Count a unit of must-finish work in, unless shutdown has begun."""
+        with self._admission_lock:
+            if self._shutting_down:
+                return False
+            self._in_flight += 1
+            return True
+
+    def _end_work(self) -> None:
+        with self._admission_lock:
+            self._in_flight -= 1
+
+    def _morning_summary_tick(self) -> None:
+        """The morning summary, in flight as a whole (CFOP-394): its span
+        closes before the digest is delivered and the sent-marker written,
+        and a shutdown between the two would send it again from the next
+        pod."""
+        if not self._try_begin_work():
+            return
+        try:
+            self._check_morning_summary()
+        finally:
+            self._end_work()
+
+    def _shutdown_grace_seconds(self) -> float:
+        """``ooda.shutdown_grace_seconds``: how long SIGTERM waits for
+        in-flight traced work before ending it as Interrupted (CFOP-394).
+        Default 20: with FINAL_FLUSH_SECONDS that is 25, inside a pod's
+        default 30s grace period. Keep grace + 5 below the pod's
+        terminationGracePeriodSeconds."""
+        try:
+            val = (self.config.get('ooda') or {}).get('shutdown_grace_seconds')
+            if val not in (None, ''):
+                return max(0.0, min(600.0, float(val)))
+        except (TypeError, ValueError, AttributeError) as e:
+            logger.debug(f"Invalid ooda.shutdown_grace_seconds, using default: {e}")
+        return 20.0
+
     def _stagnation_repeats(self) -> int:
         """Consecutive repeated tool calls that end a loop early (CFOP-271).
 
@@ -11614,6 +11694,68 @@ IMPORTANT:
 
         return settings
 
+# The export after the grace wait. Shutdown takes at most grace + this, so
+# ooda.shutdown_grace_seconds + FINAL_FLUSH_SECONDS must stay below the pod's
+# terminationGracePeriodSeconds (20 + 5 under the default 30).
+FINAL_FLUSH_SECONDS = 5.0
+
+
+def _graceful_shutdown(grace_seconds: float, operator=None) -> None:
+    """What SIGTERM does (CFOP-394), on its own thread.
+
+    Stop taking new investigations, export what is finished, and give
+    in-flight work up to ``grace_seconds`` to finish -- an investigation near
+    its end still lands, completion post-back included. Then end whatever
+    traced work is still open as Interrupted, export that, and exit. An idle
+    agent goes straight through.
+    """
+    deadline = time.monotonic() + grace_seconds
+    logger.info(f"SIGTERM: shutting down (up to {grace_seconds:g}s for in-flight work)")
+    if operator is not None:
+        operator.begin_shutdown()
+    # Inside the grace budget, not on top of it.
+    tracing.flush(min(2.0, grace_seconds))
+
+    def busy():
+        return tracing.active_count() or (operator is not None and operator.shutdown_busy())
+
+    while busy() and time.monotonic() < deadline:
+        time.sleep(0.25)
+    if operator is not None and operator.shutdown_busy():
+        # Cut off mid-way: an investigation's completion may never be posted,
+        # or a morning summary sent without its marker may go again from the
+        # next pod. Named here so either is traceable.
+        logger.warning("SIGTERM: grace period over with must-finish work still in flight "
+                       "(investigation post-back or morning summary); exiting anyway")
+    interrupted = tracing.interrupt_open_spans()
+    tracing.flush(FINAL_FLUSH_SECONDS)
+    logger.info(f"SIGTERM: done; {interrupted} span(s) still open were ended as Interrupted")
+    logging.shutdown()
+    # Not sys.exit: that only raises in this thread, and the OODA loop and
+    # the worker threads would carry on. The agent holds nothing that needs
+    # more than its sockets closing -- the old ending was a SIGKILL.
+    os._exit(0)
+
+
+def install_shutdown_handler(grace_seconds: float, operator=None) -> None:
+    """Handle SIGTERM instead of ignoring it (CFOP-394).
+
+    The agent is PID 1 in its container, and PID 1 does not get a signal
+    whose action is the default: with no handler, SIGTERM did nothing, every
+    deploy waited out the 30s grace period for a SIGKILL, and spans still open
+    or still in the export batch were lost -- a sweep cut short showed in
+    Grafana as "<root span not yet received>" forever. The handler only
+    starts a thread; the work happens there, not in signal context.
+    """
+    import signal
+
+    def on_sigterm(signum, frame):
+        threading.Thread(target=_graceful_shutdown, args=(grace_seconds, operator),
+                         name='sigterm-shutdown', daemon=True).start()
+
+    signal.signal(signal.SIGTERM, on_sigterm)
+
+
 def main():
     """Main entry point."""
     logger.info("="*60)
@@ -11640,6 +11782,7 @@ def main():
 
     config_path = os.getenv('CONFIG_PATH', 'config.yaml')
     operator = CFOperator(config_path=config_path)
+    install_shutdown_handler(operator._shutdown_grace_seconds(), operator)
     operator.run()
 
 if __name__ == '__main__':
