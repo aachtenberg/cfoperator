@@ -9368,6 +9368,20 @@ Only return the JSON array, no other text."""
             logger.debug(f"Invalid max_tool_iterations setting, using default: {e}")
         return self.config.get('chat', {}).get('max_tool_iterations', 10)
 
+    def _shutdown_grace_seconds(self) -> float:
+        """``ooda.shutdown_grace_seconds``: how long SIGTERM waits for
+        in-flight traced work before ending it as Interrupted (CFOP-394).
+        Default 20, so a Kubernetes pod's default 30s grace period still
+        leaves room to export and exit; keep it below the pod's
+        terminationGracePeriodSeconds."""
+        try:
+            val = (self.config.get('ooda') or {}).get('shutdown_grace_seconds')
+            if val not in (None, ''):
+                return max(0.0, min(600.0, float(val)))
+        except (TypeError, ValueError, AttributeError) as e:
+            logger.debug(f"Invalid ooda.shutdown_grace_seconds, using default: {e}")
+        return 20.0
+
     def _stagnation_repeats(self) -> int:
         """Consecutive repeated tool calls that end a loop early (CFOP-271).
 
@@ -11614,6 +11628,48 @@ IMPORTANT:
 
         return settings
 
+def _graceful_shutdown(grace_seconds: float) -> None:
+    """What SIGTERM does (CFOP-394), on its own thread.
+
+    Export what is finished, give in-flight traced work up to
+    ``grace_seconds`` to finish -- an investigation near its end still
+    lands -- then end whatever is still open as Interrupted, export that, and
+    exit. An idle agent goes straight through.
+    """
+    logger.info(f"SIGTERM: shutting down (up to {grace_seconds:g}s for in-flight work)")
+    tracing.flush()
+    deadline = time.monotonic() + grace_seconds
+    while tracing.active_count() and time.monotonic() < deadline:
+        time.sleep(0.25)
+    interrupted = tracing.interrupt_open_spans()
+    tracing.flush()
+    logger.info(f"SIGTERM: done; {interrupted} span(s) still open were ended as Interrupted")
+    logging.shutdown()
+    # Not sys.exit: that only raises in this thread, and the OODA loop and
+    # the worker threads would carry on. The agent holds nothing that needs
+    # more than its sockets closing -- the old ending was a SIGKILL.
+    os._exit(0)
+
+
+def install_shutdown_handler(grace_seconds: float) -> None:
+    """Handle SIGTERM instead of ignoring it (CFOP-394).
+
+    The agent is PID 1 in its container, and PID 1 does not get a signal
+    whose action is the default: with no handler, SIGTERM did nothing, every
+    deploy waited out the 30s grace period for a SIGKILL, and spans still open
+    or still in the export batch were lost -- a sweep cut short showed in
+    Grafana as "<root span not yet received>" forever. The handler only
+    starts a thread; the work happens there, not in signal context.
+    """
+    import signal
+
+    def on_sigterm(signum, frame):
+        threading.Thread(target=_graceful_shutdown, args=(grace_seconds,),
+                         name='sigterm-shutdown', daemon=True).start()
+
+    signal.signal(signal.SIGTERM, on_sigterm)
+
+
 def main():
     """Main entry point."""
     logger.info("="*60)
@@ -11640,6 +11696,7 @@ def main():
 
     config_path = os.getenv('CONFIG_PATH', 'config.yaml')
     operator = CFOperator(config_path=config_path)
+    install_shutdown_handler(operator._shutdown_grace_seconds())
     operator.run()
 
 if __name__ == '__main__':
