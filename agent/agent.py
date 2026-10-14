@@ -9556,6 +9556,7 @@ Only return the JSON array, no other text."""
         if hit and hit[0] > now:
             return hit[1]
         value = None
+        ttl = self._history_settings()['runner_window_ttl_seconds']
         try:
             resp = requests.get(f"{url.rstrip('/')}/api/ps", timeout=2)
             for m in (resp.json() or {}).get('models') or []:
@@ -9565,8 +9566,13 @@ Only return the JSON array, no other text."""
                     break
         except Exception as e:
             logger.debug(f"Could not read the loaded context of {model} at {url}: {e}")
-        ttl = self._history_settings()['runner_window_ttl_seconds']
-        cache[key] = (now + (ttl if value else min(ttl, 30)), value)
+            cache[key] = (now + min(ttl, 30), None)   # a down server: not every turn
+            return None
+        if value:
+            cache[key] = (now + ttl, value)
+        # Not listed is NOT cached: on a cold start the model is absent until
+        # the loop's first request loads it, and caching that would hold the
+        # rest of the loop on the fallback window (CodeRabbit on #330).
         return value
 
     def _ollama_chat_payload(self, model: str, messages: list, temperature: float,

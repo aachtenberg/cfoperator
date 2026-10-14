@@ -460,3 +460,30 @@ def test_the_loop_passes_keep_recent_through(monkeypatch):
         _run(op, fake, monkeypatch)
         stubs[keep] = _stubs_in(fake.payloads[-1])
     assert stubs[1] > stubs[4], stubs
+
+
+def test_a_cold_model_is_asked_again_once_it_has_loaded(monkeypatch):
+    """CodeRabbit on #330: on a cold start /api/ps does not list the model
+    until the loop's first request loads it. "Not listed" must not be
+    cached, or the rest of the loop budgets on the fallback window."""
+    answers = [[], [{'name': 'gemma4:26b', 'model': 'gemma4:26b', 'context_length': 32768}]]
+
+    def ps(url, timeout=None):
+        models = answers.pop(0) if answers else answers_last
+        return SimpleNamespace(status_code=200, json=lambda: {'models': models})
+    answers_last = [{'name': 'gemma4:26b', 'model': 'gemma4:26b', 'context_length': 32768}]
+    monkeypatch.setattr('requests.get', ps)
+    op = _operator({})
+    fallback = int(CFOperator._OLLAMA_DEFAULT_WINDOW * CFOperator._OLLAMA_HISTORY_FRACTION)
+    assert op._ollama_history_budget('http://llm:11434', 'gemma4:26b') == fallback   # cold
+    assert op._ollama_history_budget('http://llm:11434', 'gemma4:26b') == int(32768 * 0.75)
+
+
+def test_an_unreachable_server_is_not_asked_every_turn(monkeypatch):
+    ps = _FakePs(raises=ConnectionError('down'))
+    monkeypatch.setattr('requests.get', ps)
+    op = _operator({})
+    op._ollama_history_budget('http://llm:11434', 'gemma4:26b')
+    op._ollama_history_budget('http://llm:11434', 'gemma4:26b')
+    assert len(ps.calls) == 1
+

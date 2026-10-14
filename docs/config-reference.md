@@ -189,9 +189,11 @@ llm:
     # OLLAMA_CONTEXT_LENGTH=<same number> on the Ollama host, host first.
     # Floor 2048, no ceiling. Independent of this key, the agent already
     # keeps the tool-loop history it re-sends each iteration under 75% of
-    # this window (16384 when unset), collapsing the oldest tool results
-    # first — that bound is what stops a long investigation from filling
-    # the window and being clipped by the runner. (CFOP-168)
+    # the window: this value when set; else the window the runner actually
+    # loaded (Ollama /api/ps); else 16384. The oldest tool results are
+    # collapsed first. That bound is what stops a long investigation from
+    # filling the window and being clipped by the runner. See chat.history
+    # for its tunables. (CFOP-168, CFOP-390)
     # num_ctx: 16384
 
   # Fallback chain (on error/timeout)
