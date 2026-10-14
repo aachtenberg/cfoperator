@@ -345,8 +345,11 @@ class BackgroundAlertWorker:
                 self._queue.task_done()
                 continue
 
-            # A job that has run before already got past the alert policies;
-            # running them again dedupes it against itself (CFOP-395).
+            # A job that has run before got past the alert policies, and
+            # running them again dedupes it against itself (CFOP-395). The
+            # exception is a policy that raised on the first run: skipping
+            # them then fails open, on purpose. A noise filter that cannot
+            # decide should risk a duplicate notification, not drop the alert.
             rerun = job.attempt > 0 or job.deferrals > 0
             try:
                 job.status = "running"
