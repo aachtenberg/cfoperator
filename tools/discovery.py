@@ -76,6 +76,11 @@ class DiscoveryTools:
                                f"expected an absolute path and plain arguments")
         self.sudo_read_probes = tuple(probes) or SUDO_READ_PROBES
         self._sudo_checks = _sudo_checks(self.sudo_read_probes)
+        # The whole SSH command: 5s to connect plus up to 5s per probe read
+        # (each is capped by `timeout 5` on the host), with slack. A fixed 10s
+        # cut a slow but healthy host off mid-sequence and reported it as
+        # SSH-inaccessible (CodeRabbit on #329).
+        self._probe_timeout = 10 + 5 * len(self.sudo_read_probes)
         try:
             workers = int(settings.get('workers') or _DISCOVERY_WORKERS)
         except (TypeError, ValueError):
@@ -197,7 +202,7 @@ class DiscoveryTools:
                 ssh_cmd,
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=self._probe_timeout
             )
 
             sudo_ok = 'SUDO_OK' in result.stdout.split()
@@ -237,7 +242,7 @@ class DiscoveryTools:
         ssh_cmd.append(f"{host_config['ssh']['user']}@{host_config['address']}")
         ssh_cmd.append('echo SSH_OK; ' + self._sudo_checks)
         try:
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=self._probe_timeout)
         except Exception as e:
             logger.debug(f"SSH probe of {host} failed: {e}")
             return False, False, list(self.sudo_read_probes)

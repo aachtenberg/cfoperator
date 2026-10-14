@@ -388,3 +388,30 @@ class TestDiscoverySettings:
             "hosts": self.HOST, "discovery": {"sudo_read_probes": ["/usr/bin/du -s /"], "workers": 3}}})
         d = ToolRegistry(op).discovery_tools
         assert (d.sudo_read_probes, d.workers) == (("/usr/bin/du -s /",), 3)
+
+
+class TestProbeTimeout:
+    """CodeRabbit on #329: each probe read may take up to 5s, so a fixed 10s
+    on the whole SSH command cut slow-but-healthy hosts off and reported
+    them as SSH-inaccessible."""
+
+    HOST = {"h0": {"address": "10.0.4.1", "ssh": {"user": "reader"}}}
+
+    def _timeouts(self, probes):
+        seen = []
+
+        def fake_run(cmd, **kwargs):
+            seen.append((cmd[0], kwargs.get("timeout")))
+            return _completed(cmd, stdout=PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\n")
+        tools = DiscoveryTools(self.HOST, {"sudo_read_probes": probes})
+        with patch("subprocess.run", side_effect=fake_run):
+            tools.discover_all_hosts()
+            tools.verify_sudo("h0")
+        return [t for name, t in seen if name == "ssh"]
+
+    def test_the_ssh_timeout_grows_with_the_probe_list(self):
+        one = self._timeouts(["/usr/bin/dmesg -T"])
+        four = self._timeouts([f"/usr/bin/probe{i}" for i in range(4)])
+        assert one == [15, 15]                   # discover_all_hosts, verify_sudo
+        assert four == [30, 30]
+        assert all(t >= 5 + 5 * 4 for t in four), "connect + every probe's cap must fit"
