@@ -517,6 +517,38 @@ sweep                               cfop.sweep.mode, findings_raw, findings
 A sweep span carries counts, never finding text: findings are model output
 about the operator's systems. `agent/test_sweep_tracing.py` holds that line.
 
+An investigation is broken into phases under its root (CFOP-387):
+
+```
+investigation
+├─ investigation.orient            └─ embeddings nomic-embed-text   (query vector)
+├─ investigation.noise_check       (twice when the pre-check falls through)
+├─ llm_chain → chat → execute_tool …
+├─ investigation.verify_outcome
+├─ investigation.structured_fix    └─ llm_chain …   (the FIX nudge, when needed)
+├─ investigation.propose_remediation
+├─ investigation.queue_remediation └─ llm_chain …   (the classifier)
+├─ investigation.extract_learnings └─ chat …        (purpose=learnings)
+└─ embed_investigation             └─ embeddings …
+```
+
+`embeddings {model}` wraps each Ollama `/api/embeddings` round trip, wherever
+it happens (orient, the sweep backfill, embed_investigation). A cache hit makes
+no span.
+
+The one-shot completions that bypass the tool loop are `chat {model}` spans
+too, with `cfop.llm.purpose` set to `judge`, `node_action_plan`, `correlations`
+or `learnings` (CFOP-386). An HTTP error on these is marked `error.type =
+HTTP<code>` with `http.response.status_code`, and never the body, which can
+quote the request.
+
+A console turn is one trace (CFOP-388): `chat_turn` carries
+`cfop.chat.session_id`, the asker's `cfop.chat.role` (never the username),
+`verify_only` and `cfop.chat.kind`. Under it is the turn's `llm_chain`, or a
+`skill` span (`cfop.skill.name`, only for a registered skill), or
+`morning_summary`. The summary is its own root when the morning schedule or a
+web endpoint runs it.
+
 **What a span never carries:** prompt text, completion text, tool arguments or
 tool output. These describe the operator's infrastructure, and a trace store is
 read by more people than the agent's own database. A failed span records the
@@ -527,10 +559,6 @@ characters. `agent/test_llm_tracing.py::test_llm_spans_never_contain_prompts`
 holds this line.
 
 Not traced yet:
-- the direct one-shot calls (node-action planning, the mutation judge,
-  correlation analysis and learning extraction; CFOP-386);
-- the phases around an investigation's LLM call (CFOP-387);
-- root spans for console chat, skills and the morning summary (CFOP-388);
 - trace context across the event_runtime → agent HTTP hop (CFOP-317);
 - tool spans outside the chat loop (CFOP-323).
 
@@ -541,6 +569,8 @@ In Grafana Explore, on the Tempo datasource:
 ```
 { resource.service.name = "cfoperator" && name = "investigation" }
 { name = "sweep" } >> { name =~ "sweep.*" && duration > 60s }   # a slow sweep phase
+{ span.cfop.llm.purpose = "judge" }                            # every mutation-judge call
+{ name = "chat_turn" && span.cfop.chat.session_id = "<id>" }    # one console conversation
 { span.cfop.llm.fallback_used = true }
 { span.gen_ai.request.model = "gemma4:26b" && duration > 30s }
 { status = error && span.gen_ai.operation.name = "chat" }

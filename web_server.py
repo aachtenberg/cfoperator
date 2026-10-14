@@ -1069,6 +1069,7 @@ class WebServer:
                 stream = self.operator.handle_chat_message_stream(
                     message, history, backend, model=model,
                     actor_role=actor_role, verify_only=verify_only,
+                    session_id=session_id,
                 )
                 try:
                     logger.debug(f"Chat {chat_id} started")
