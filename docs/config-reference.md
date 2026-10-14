@@ -367,6 +367,24 @@ chat:
   # sweeps, investigations and chat alike. 0 turns it off. Default 3
   # (CFOP-271).
   # stagnation_repeats: 3
+  # How the Ollama tool loop keeps its re-sent history inside the model's
+  # window (CFOP-168, CFOP-390). The budget is budget_fraction of the window
+  # the runner actually has: llm.primary.num_ctx when set, else the loaded
+  # model's own context_length (Ollama /api/ps, re-read every
+  # runner_window_ttl_seconds), else fallback_window. Over budget, the oldest
+  # tool results are collapsed to a stub, never the turn just requested nor
+  # the keep_recent results before it, down to low_water_fraction of the
+  # budget in one batch. Collapsing well under, rather than just under,
+  # matters on sliding-window models such as gemma4: any change to an earlier
+  # message re-processes the whole prompt, so a bound that trims a little on
+  # every turn costs a full re-process every turn. Every key is optional; the
+  # values below are the defaults.
+  # history:
+  #   budget_fraction: 0.75
+  #   low_water_fraction: 0.6
+  #   keep_recent: 4
+  #   fallback_window: 16384
+  #   runner_window_ttl_seconds: 300
   # Replace secret-shaped values in tool results — env dumps, kubectl Secrets,
   # key files, tokens, connection-string passwords, webhook URLs — with ***
   # before the result reaches any model or the console transcript. The key is

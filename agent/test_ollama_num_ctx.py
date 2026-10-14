@@ -19,6 +19,7 @@ the loop no longer calling the bound, or a site no longer going through the
 payload helper; the helper tests alone cannot see that.
 """
 
+import copy
 import json
 import os
 import sys
@@ -267,7 +268,11 @@ class _FakePost:
         self.payloads = []
 
     def __call__(self, url, json=None, headers=None, timeout=None):
-        self.payloads.append(json)
+        # A copy, as sent: the loop passes its live message list, which the
+        # bound mutates in place, so a reference would make every recorded
+        # body read as the final one -- and per-request checks vacuous
+        # (CFOP-390).
+        self.payloads.append(copy.deepcopy(json))
         body = {'message': self.script.pop(0), 'prompt_eval_count': 10, 'eval_count': 5}
         return SimpleNamespace(status_code=200, raise_for_status=lambda: None,
                                json=lambda: body)
@@ -314,3 +319,144 @@ def test_loop_leaves_a_short_investigation_alone(monkeypatch):
     assert all(_stubs_in(p) == 0 for p in fake.payloads)
     assert all('options' not in p for p in fake.payloads)
     assert all(p['stream'] is False and p['model'] == 'gemma4:26b' for p in fake.payloads)
+
+
+# --- CFOP-390: the window the runner has, and collapsing with hysteresis -----
+#
+# gemma4 uses sliding-window attention, so llama.cpp cannot resume a cached
+# prompt from a partial prefix: any change to an earlier message re-processes
+# the whole prompt (~3.5s at 13k tokens vs ~0.25s cached, measured live). The
+# bound changed an earlier message on nearly every turn -- its 16k budget sat
+# below what it may never collapse -- so these tests count PROMPT-CHANGING
+# TURNS, the number that costs time.
+
+class _FakePs:
+    """Ollama /api/ps; records calls."""
+
+    def __init__(self, models=None, raises=None):
+        self.models, self.raises, self.calls = models or [], raises, []
+
+    def __call__(self, url, timeout=None):
+        self.calls.append(url)
+        if self.raises:
+            raise self.raises
+        return SimpleNamespace(status_code=200, json=lambda: {'models': self.models})
+
+
+def _loaded(ctx, name='gemma4:26b'):
+    return _FakePs([{'name': name, 'model': name, 'context_length': ctx}])
+
+
+def test_budget_follows_the_loaded_runner_when_num_ctx_is_unset(monkeypatch):
+    ps = _loaded(32768)
+    monkeypatch.setattr('requests.get', ps)
+    op = _operator({})
+    assert op._ollama_history_budget('http://llm:11434', 'gemma4:26b') == int(32768 * 0.75)
+    op._ollama_history_budget('http://llm:11434', 'gemma4:26b')
+    assert len(ps.calls) == 1, "the runner's window is cached, not asked every turn"
+
+
+def test_a_configured_num_ctx_wins_without_asking(monkeypatch):
+    ps = _FakePs(raises=AssertionError('must not be asked'))
+    monkeypatch.setattr('requests.get', ps)
+    assert _with_num_ctx(16384)._ollama_history_budget('http://llm:11434', 'gemma4:26b') == 12288
+    assert ps.calls == []
+
+
+def test_an_unknown_window_falls_back_to_the_default(monkeypatch):
+    default = int(CFOperator._OLLAMA_DEFAULT_WINDOW * CFOperator._OLLAMA_HISTORY_FRACTION)
+    for ps in (_FakePs([]),                                   # model not loaded
+               _loaded(8192, name='other:7b'),                # a different model
+               _FakePs(raises=ConnectionError('down'))):      # server unreachable
+        monkeypatch.setattr('requests.get', ps)
+        assert _operator({})._ollama_history_budget('http://llm:11434', 'gemma4:26b') == default
+
+
+def _simulate(turns, budget, low_water):
+    """The live shape: ~2k system prompt, 4.6k of schemas, a 6000-char
+    result per turn. Returns how many turns changed an earlier message."""
+    msgs = [{'role': 'system', 'content': 's' * 8000}, {'role': 'user', 'content': 'u' * 400}]
+    changed = 0
+    for i in range(turns):
+        msgs += [_ask(i), {'role': 'tool', 'content': 'r' * 6000}]
+        before = [dict(m) for m in msgs]
+        CFOperator._bound_tool_history(msgs, budget, fixed_tokens=4600, low_water_tokens=low_water)
+        changed += msgs != before
+    return changed
+
+
+def test_hysteresis_leaves_the_prompt_unchanged_for_turns_between_collapses():
+    """A 28-turn investigation against the live 32k runner: without
+    hysteresis every turn past the budget is a prompt change; with it, a
+    handful."""
+    budget = int(32768 * CFOperator._OLLAMA_HISTORY_FRACTION)
+    with_hysteresis = _simulate(28, budget, int(budget * CFOperator._OLLAMA_LOW_WATER_FRACTION))
+    stop_at_budget = _simulate(28, budget, None)
+    assert with_hysteresis <= 5, with_hysteresis
+    assert stop_at_budget >= 12, stop_at_budget
+
+
+def test_the_loop_budgets_against_the_runner_and_counts_prompt_changes(monkeypatch):
+    """Through _chat_with_tools_inner: the budget comes from /api/ps, and the
+    number of request bodies that are NOT a plain extension of the previous
+    one equals history_collapses -- the figure the chat span reports."""
+    monkeypatch.setattr('requests.get', _loaded(8192))
+    op = _loop_operator(result_chars=3000, max_iterations=14)
+    fake = _FakePost([_ask(i) for i in range(12)] + [_final()])
+    result = _run(op, fake, monkeypatch)
+    assert result['history_budget'] == int(8192 * 0.75)
+    msgs = [p['messages'] for p in fake.payloads]
+    rewritten = sum(1 for prev, cur in zip(msgs, msgs[1:]) if cur[:len(prev)] != prev)
+    assert result['history_collapses'] == rewritten
+    assert 1 <= rewritten <= 4, f"{rewritten} prompt rewrites in {len(msgs)} requests"
+
+
+# --- chat.history: the tunables are configuration, not constants -------------
+
+def test_history_tunables_come_from_chat_history(monkeypatch):
+    monkeypatch.setattr('requests.get', _FakePs([]))
+    op = _operator({'chat': {'history': {'budget_fraction': 0.5, 'low_water_fraction': 0.4,
+                                         'keep_recent': 2, 'fallback_window': 8192,
+                                         'runner_window_ttl_seconds': 60}}})
+    s = op._history_settings()
+    assert s == {'budget_fraction': 0.5, 'low_water_fraction': 0.4, 'keep_recent': 2,
+                 'fallback_window': 8192, 'runner_window_ttl_seconds': 60}
+    assert op._ollama_history_budget('http://llm:11434', 'gemma4:26b') == 4096
+
+
+def test_history_tunables_are_clamped_and_garbage_is_ignored():
+    s = _operator({'chat': {'history': {'budget_fraction': 5, 'low_water_fraction': 'lots',
+                                        'keep_recent': -3, 'fallback_window': 100}}})._history_settings()
+    assert s['budget_fraction'] == 0.95
+    assert s['low_water_fraction'] == CFOperator._OLLAMA_LOW_WATER_FRACTION
+    assert s['keep_recent'] == 0
+    assert s['fallback_window'] == CFOperator._OLLAMA_NUM_CTX_FLOOR
+
+
+def test_unset_history_tunables_keep_todays_numbers():
+    s = _operator({})._history_settings()
+    assert s == {'budget_fraction': 0.75, 'low_water_fraction': 0.6, 'keep_recent': 4,
+                 'fallback_window': 16384, 'runner_window_ttl_seconds': 300}
+
+
+def test_chat_history_reaches_the_agent_through_load_config(tmp_path, monkeypatch):
+    """Through the real loader and merge, not a hand-built dict."""
+    from cfshared import config as shared_config
+    path = tmp_path / 'config.yaml'
+    path.write_text('chat:\n  history:\n    low_water_fraction: 0.5\n    keep_recent: 3\n')
+    op = _operator(shared_config.load_config(str(path)))
+    s = op._history_settings()
+    assert (s['low_water_fraction'], s['keep_recent'], s['budget_fraction']) == (0.5, 3, 0.75)
+
+
+def test_the_loop_passes_keep_recent_through(monkeypatch):
+    """keep_recent 1 lets the bound collapse more than the default 4 would."""
+    monkeypatch.setattr('requests.get', _loaded(4096))
+    stubs = {}
+    for keep in (1, 4):
+        op = _loop_operator(result_chars=3000, max_iterations=10)
+        op.config['chat']['history'] = {'keep_recent': keep}
+        fake = _FakePost([_ask(i) for i in range(8)] + [_final()])
+        _run(op, fake, monkeypatch)
+        stubs[keep] = _stubs_in(fake.payloads[-1])
+    assert stubs[1] > stubs[4], stubs
