@@ -908,7 +908,7 @@ class K8sTools:
                 'parameters': {
                     'type': 'object',
                     'properties': {
-                        'resource_type': {'type': 'string', 'description': 'Kind (pod, deployment, service, node, configmap, ingress, cronjob, etc.). Secrets are not readable.'},
+                        'resource_type': {'type': 'string', 'description': 'Kind (pod, deployment, service, node, ingress, cronjob, etc.). Secrets are not readable.'},
                         'name': {'type': 'string', 'description': 'Resource name'},
                         'namespace': {'type': 'string', 'description': "The resource's namespace. Required: almost nothing lives in 'default'. For a cluster-scoped kind (node, namespace, persistentvolume) pass any value; it is ignored."}
                     },

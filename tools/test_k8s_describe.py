@@ -73,8 +73,12 @@ def test_schema_requires_the_namespace():
     assert 'namespace' in _describe_schema()['required']
 
 
-def test_schema_does_not_offer_secrets():
-    """The agent may not read secrets (CFOP-312); naming them as a describable
-    kind invited a guaranteed Forbidden."""
-    assert 'secret' not in _describe_schema()['properties']['resource_type']['description'].lower().replace(
+def test_schema_does_not_offer_kinds_the_chart_role_cannot_read():
+    """The agent may not read secrets (CFOP-312), and the chart's read role
+    grants no configmaps either; naming either as a describable kind invited
+    a guaranteed Forbidden. tests/test_rbac_covers_tools.py holds the whole
+    example list against the role."""
+    examples = _describe_schema()['properties']['resource_type']['description'].lower().replace(
         'secrets are not readable', '')
+    assert 'secret' not in examples
+    assert 'configmap' not in examples

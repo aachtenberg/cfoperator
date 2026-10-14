@@ -8716,13 +8716,19 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
         tokens.update(re.findall(r'\b[a-z][a-z0-9]+(?:-[a-z0-9]+)+\b', text))
         tokens.update(re.findall(r'\b[a-z]{4,}\b', text))
         tokens -= self._GROUND_TRUTH_STOPWORDS
+        # `\b` breaks on `-`, so river-history-ingest also yields river and
+        # ingest as plain tokens, and river alone would pull in every river-*
+        # sibling. A plain token that is a segment of a hyphenated one goes.
+        segments = {s for t in tokens if '-' in t for s in t.split('-')}
+        tokens = {t for t in tokens if '-' in t or t not in segments}
 
-        # A hyphenated token names a workload exactly or as a prefix
-        # (plane-api → plane-api-wl-…); a plain one only as the first segment
-        # (cfoperator → cfoperator-mcp), so `server` does not pull in every
-        # *-server-* in the cluster.
-        workloads = sorted(w for w in snapshot['workloads']
-                           if any(t == w or w.startswith(t + '-') for t in tokens))[:12]
+        # A token names a workload exactly, or as a prefix (plane-api →
+        # plane-api-wl-…; cfoperator → cfoperator-mcp, never nginx-cfoperator).
+        # Exact matches first, so the pod the finding named survives the cut.
+        exact = sorted(w for w in snapshot['workloads'] if w in tokens)
+        prefixed = sorted(w for w in snapshot['workloads'] if w not in tokens
+                          and any(w.startswith(t + '-') for t in tokens))
+        workloads = (exact + prefixed)[:12]
         nodes = [(n, info.get('ready')) for n, info in snapshot['nodes'].items() if n in text]
         failed = list(snapshot.get('kinds_failed') or [])
 
@@ -8735,8 +8741,11 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
             # read as "does not exist" to a verifier told not to re-check.
             lines.append('No workload in the cluster matches a hyphenated name in the finding.')
         if failed and snapshot['workloads']:
-            lines.append(f"Could not list {', '.join(failed)} (not permitted); a name absent "
-                         "above may simply be unlisted, so check those kinds yourself.")
+            # Not "check those kinds": they just returned Forbidden, and the
+            # 2-4 call budget would go to repeating that.
+            lines.append(f"This listing is incomplete: {', '.join(failed)} could not be read "
+                         "(not permitted). A name absent above is inconclusive, not evidence "
+                         "of absence.")
         if nodes:
             lines.append('Nodes named in the finding, with their Ready condition: '
                          + ', '.join(f'{n}={r}' for n, r in nodes))

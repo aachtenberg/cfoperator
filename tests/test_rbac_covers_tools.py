@@ -24,6 +24,9 @@ GROUP_OF = {
     'deployments': 'apps', 'daemonsets': 'apps', 'statefulsets': 'apps', 'replicasets': 'apps',
     'jobs': 'batch', 'cronjobs': 'batch',
     'ingresses': 'networking.k8s.io',
+    # Named so a schema example of either fails on "does not grant", not on a
+    # missing map entry.
+    'configmaps': CORE, 'secrets': CORE,
 }
 # kubectl accepts the singular; RBAC names the plural.
 PLURAL = {'pod': 'pods', 'deployment': 'deployments', 'service': 'services', 'node': 'nodes',
@@ -66,6 +69,31 @@ def _granted(role: dict) -> set:
 def test_the_source_scan_is_not_vacuous():
     kinds = kinds_the_agent_lists()
     assert {'pods', 'nodes', 'cronjobs', 'ingresses'} <= kinds, kinds
+
+
+def describe_example_kinds() -> list:
+    """The kinds k8s_describe's schema offers as examples: what a model
+    reaches for first."""
+    text = (REPO_ROOT / 'tools' / 'k8s.py').read_text()
+    block = text.split("'name': 'k8s_describe'", 1)[1]
+    m = re.search(r"'resource_type':.*?Kind \(([^)]*)\)", block, re.S)
+    assert m, 'k8s_describe no longer lists example kinds as "Kind (...)"'
+    return [e.strip() for e in m.group(1).split(',') if e.strip() and e.strip() != 'etc.']
+
+
+def test_the_describe_examples_are_kinds_the_read_role_grants():
+    """An example the role does not grant is a guaranteed Forbidden the moment
+    the model follows it (review on #333: `configmap` sat in the list while
+    the chart grants no configmaps, on purpose)."""
+    examples = describe_example_kinds()
+    assert len(examples) >= 3, examples
+    granted = _granted(_read_role())
+    for kind in examples:
+        plural = PLURAL.get(kind, kind)
+        assert plural in GROUP_OF, f"{kind!r}: add its API group to GROUP_OF in this test"
+        assert (GROUP_OF[plural], plural) in granted, (
+            f"k8s_describe offers {kind!r} as an example but the chart's read ClusterRole "
+            "does not grant it")
 
 
 def test_every_kind_the_agent_lists_is_granted_by_the_read_role():

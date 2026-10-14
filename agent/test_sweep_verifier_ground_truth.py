@@ -140,7 +140,45 @@ def test_a_partial_listing_never_says_a_name_does_not_exist():
     operator._verify_findings([_finding('the nightly-backup-run cronjob is missing', 'no such job')])
     msg = captured['messages'][0]['content']
     assert 'No workload in the cluster matches' not in msg
-    assert 'Could not list cronjobs, ingresses' in msg
+    assert 'incomplete: cronjobs, ingresses could not be read' in msg
+    assert 'inconclusive' in msg
+    # And it must not send the 2-4 call budget at the kinds that just said Forbidden.
+    assert 'check' not in msg.split('Already resolved from the live cluster', 1)[1].lower()
+
+
+def _river_cluster():
+    """The named pod plus fourteen river-* siblings: more than the hint's cut."""
+    names = ['river-history-ingest-1'] + [f'river-{s}-poller' for s in
+                                           'ab cd ef gh ij kl mn op qr st uv wx yz zz'.split()]
+    k8s = _FakeK8s(forbidden=())
+    k8s._run_kubectl = lambda args, timeout=30: {
+        'success': True, 'exit_code': 0, 'stderr': '',
+        'stdout': ''.join(f'{args[1]}/{n}\n' for n in names)}
+    return k8s
+
+
+def test_a_segment_of_a_hyphenated_name_does_not_widen_the_hint():
+    """Review on #333: `\\b` splits river-history-ingest-1 into river, history
+    and ingest too, and `river` alone matched every river-* sibling."""
+    operator = _with_k8s(lambda **kw: {'response': '[]', 'tool_calls': 1}, _river_cluster())
+    snapshot = operator._ground_truth_snapshot()
+    hint = operator._resolved_identities(_finding('river-history-ingest-1 restarts every hour'), snapshot)
+    assert 'river-history-ingest-1' in hint
+    assert 'poller' not in hint, hint
+
+
+def test_the_named_pod_survives_the_cut():
+    """Exact matches rank first, so twelve siblings cannot push the pod the
+    finding named off the list."""
+    operator = _with_k8s(lambda **kw: {'response': '[]', 'tool_calls': 1}, _river_cluster())
+    snapshot = operator._ground_truth_snapshot()
+    # A finding that names the pod AND a bare `river` that is not one of its
+    # segments' siblings' prefix … the plain word rides along as a prefix match.
+    hint = operator._resolved_identities(
+        _finding('river-history-ingest-1 and the other river jobs restart', 'river pods'), snapshot)
+    listed = hint.split(': ', 1)[1].split('\n', 1)[0].split(', ')
+    assert listed[0] == 'river-history-ingest-1'
+    assert len(listed) <= 12
 
 
 def test_a_complete_listing_may_say_no_name_matches():
