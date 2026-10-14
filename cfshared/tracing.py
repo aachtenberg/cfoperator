@@ -256,5 +256,10 @@ def alert_fingerprint(alert: Mapping[str, Any]) -> str:
         return str(alert['fingerprint'])[:16]
     stable = {key: alert.get(key) for key in
               ('source', 'severity', 'summary', 'namespace', 'resource_type', 'resource_name')}
+    # The summary alert_attributes shows, including a raw Alertmanager
+    # payload's annotations.summary; otherwise two such alerts with different
+    # summaries would share a fingerprint (CodeRabbit on #329). A runtime
+    # alert has it top-level, so its digest is unchanged.
+    stable['summary'] = stable['summary'] or (alert.get('annotations') or {}).get('summary')
     payload = json.dumps(stable, sort_keys=True, ensure_ascii=True)
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]

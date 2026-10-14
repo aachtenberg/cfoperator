@@ -174,6 +174,15 @@ def test_sweep_findings_get_a_name_a_fingerprint_and_a_resource():
     assert 'cfop.alert.resource' not in {k for k, v in am.items() if v is not None}
 
 
+def test_raw_alertmanager_summaries_tell_alerts_apart():
+    """A payload with its summary only in annotations hashes that summary
+    (CodeRabbit on #329): two different alerts must not share a fingerprint."""
+    a = {'source': 'alertmanager', 'severity': 'warning', 'annotations': {'summary': 'Disk full on node-a'}}
+    b = {'source': 'alertmanager', 'severity': 'warning', 'annotations': {'summary': 'CPU hot on node-b'}}
+    assert tracing.alert_attributes(a)['cfop.alert.fingerprint'] != \
+        tracing.alert_attributes(b)['cfop.alert.fingerprint']
+
+
 def test_fingerprint_matches_event_runtimes_own():
     """The span's fingerprint is only useful if it is the one the runtime
     deduped on. Computed both ways, over the wire shape triage receives."""
