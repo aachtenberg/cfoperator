@@ -36,7 +36,7 @@ from event_runtime.http_actions import (
 from event_runtime.models import ActionRequest, ActionResult, Alert, AlertSeverity, ContextEnvelope, Decision
 from event_runtime.notifications import _format_message, should_notify
 from event_runtime.plugin_manager import PluginManager
-from event_runtime.plugins import ActionHandler, DecisionEngine
+from event_runtime.plugins import ActionHandler, DecisionEngine, TargetUnavailableError
 from event_runtime.server import _bounded_int, _match_completion_path, make_handler
 from event_runtime.state.composite import CompositeStateSink
 from event_runtime.state.local_outbox import LocalOutboxStateSink
@@ -360,22 +360,54 @@ def test_http_handler_5xx_raises_so_worker_retries():
     h = HTTPInvestigateActionHandler(agent_url="http://agent:8083")
 
     def fake_urlopen(req, timeout=None):
-        raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", {}, None)
+        raise urllib.error.HTTPError(req.full_url, 500, "Internal Server Error", {}, None)
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(urllib.error.HTTPError) as caught:
             h.execute(_action_request(_alert()))
+    # An agent that is up and erroring is an attempt, not something to wait out.
+    assert not isinstance(caught.value, TargetUnavailableError)
 
 
-def test_http_handler_connection_error_raises_so_worker_retries():
+def test_http_handler_503_is_target_unavailable():
+    """The agent's "later": queue full, or shutting down (CFOP-394/395)."""
     h = HTTPInvestigateActionHandler(agent_url="http://agent:8083")
 
     def fake_urlopen(req, timeout=None):
-        raise urllib.error.URLError("connection refused")
+        raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", {}, None)
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        with pytest.raises(urllib.error.URLError):
+        with pytest.raises(TargetUnavailableError):
             h.execute(_action_request(_alert()))
+
+
+@pytest.mark.parametrize("error", [
+    urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+    urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer")),
+    ConnectionResetError(104, "Connection reset by peer"),
+])
+def test_http_handler_no_agent_process_is_target_unavailable(error):
+    """Refused or reset: nothing behind the Service, as in a Recreate gap."""
+    h = HTTPInvestigateActionHandler(agent_url="http://agent:8083")
+
+    with patch("urllib.request.urlopen", side_effect=error):
+        with pytest.raises(TargetUnavailableError):
+            h.execute(_action_request(_alert()))
+
+
+@pytest.mark.parametrize("error", [
+    urllib.error.URLError(TimeoutError("timed out")),
+    TimeoutError("timed out"),
+    urllib.error.URLError("Name or service not known"),
+])
+def test_http_handler_other_transport_errors_raise_so_worker_retries(error):
+    """A slow agent is up: a timeout stays an ordinary failed attempt."""
+    h = HTTPInvestigateActionHandler(agent_url="http://agent:8083")
+
+    with patch("urllib.request.urlopen", side_effect=error):
+        with pytest.raises(OSError) as caught:
+            h.execute(_action_request(_alert()))
+    assert not isinstance(caught.value, TargetUnavailableError)
 
 
 # ---- build_http_investigate_handler / bootstrap wiring -------------------

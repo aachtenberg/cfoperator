@@ -78,6 +78,16 @@ class DecisionEngine(RuntimePlugin):
         """Return the action decision for the provided context."""
 
 
+class TargetUnavailableError(RuntimeError):
+    """Raised by an ActionHandler whose target cannot take work right now.
+
+    Not a failed attempt: the background worker waits and tries again,
+    with a growing delay, until a wall-clock budget runs out (CFOP-395).
+    Raise it only for "come back later" -- the target is restarting or
+    shedding load -- never for a target that is up and erroring.
+    """
+
+
 class ActionHandler(RuntimePlugin):
     """Plugin that executes a named action."""
 

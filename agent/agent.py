@@ -2218,7 +2218,8 @@ class CFOperator:
         self.last_heartbeat = self.start_time
 
         # HTTP-driven investigation queue (POST /v1/investigate).
-        # Bounded; full queue rejects with 503 so event_runtime's worker retries.
+        # Bounded; full queue rejects with 503, which event_runtime's worker
+        # waits out with a growing delay rather than counting it an attempt.
         ooda_cfg = self.config.get('ooda', {})
         queue_size = max(1, int(ooda_cfg.get('investigation_queue_size', 32)))
         self._investigation_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue(maxsize=queue_size)
@@ -3192,7 +3193,8 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         """Non-blocking enqueue for an HTTP-triggered investigation.
 
         Raises queue.Full when the queue has no slot; caller should map that
-        to HTTP 503 so the event_runtime worker retries with backoff. The
+        to HTTP 503, which the event_runtime worker defers and retries with
+        a growing delay (CFOP-395). The
         rejection counter is incremented here so callers don't reach into
         module-level metrics.
 
@@ -3206,8 +3208,8 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         with self._admission_lock:
             if self._shutting_down:
                 # A 503 rather than a 202 for an alert that would vanish
-                # with the in-memory queue. event_runtime counts it a failed
-                # attempt; it does not yet wait out a restart (CFOP-395).
+                # with the in-memory queue. event_runtime waits it out and
+                # resends once this process's successor is up (CFOP-395).
                 INVESTIGATION_QUEUE_REJECTED.inc()
                 raise queue.Full()
             return self._enqueue_investigation_locked(alert)

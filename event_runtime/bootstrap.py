@@ -200,6 +200,9 @@ def build_portable_worker(
     max_queue_size = int(os.getenv("CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE", "1000"))
     max_terminal_jobs = int(os.getenv("CFOP_EVENT_RUNTIME_MAX_TERMINAL_JOBS", "100"))
     max_retries = int(os.getenv("CFOP_EVENT_RUNTIME_MAX_RETRIES", "2"))
+    # How long to wait out an agent that refuses or answers 503 (CFOP-395):
+    # a Recreate deploy is the old pod's grace, an image pull and a boot.
+    defer_budget = float(os.getenv("CFOP_EVENT_RUNTIME_DEFER_BUDGET_SECONDS", "600"))
     base_dir = Path(os.getenv("CFOP_EVENT_RUNTIME_DIR", str(Path.home() / ".cfoperator" / "event-runtime")))
     queue_path = os.getenv("CFOP_EVENT_RUNTIME_QUEUE_STATE_PATH", str(base_dir / "queue" / "jobs.json"))
     return BackgroundAlertWorker(
@@ -209,6 +212,7 @@ def build_portable_worker(
         max_terminal_jobs=max_terminal_jobs,
         max_retries=max_retries,
         state=FileBackedWorkerState(queue_path),
+        defer_budget_seconds=defer_budget,
     )
 
 

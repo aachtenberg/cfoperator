@@ -91,14 +91,20 @@ class EventRuntime:
                 results.append(self.handle_alert(alert))
         return results
 
-    def handle_alert(self, alert: Alert) -> Dict[str, object]:
-        """Process a single normalized alert end-to-end."""
+    def handle_alert(self, alert: Alert, *, admitted: bool = False) -> Dict[str, object]:
+        """Process a single normalized alert end-to-end.
+
+        ``admitted`` skips the alert policies, for a rerun of an alert they
+        already let through. They are stateful: the cooldown claimed the
+        fingerprint on the first run, so evaluating them again suppresses the
+        alert as a duplicate of itself (CFOP-395).
+        """
         started = perf_counter()
         result: Dict[str, object] | None = None
         observe_alert_received(alert)
         self.record_event("alert_received", alert=alert.to_dict())
         try:
-            for policy in self.plugins.alert_policies:
+            for policy in ([] if admitted else self.plugins.alert_policies):
                 allowed, reason = policy.evaluate(alert)
                 if not allowed:
                     self.record_event(
