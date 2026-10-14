@@ -51,7 +51,7 @@ class TestPingHost:
         with patch("subprocess.run", return_value=_completed(["ping"], stdout=PING_OUTPUT)) as run:
             result = tools.ping_host("web1")
 
-        assert run.call_args.args[0] == ["ping", "-c", "3", "-W", "2", "10.0.0.1"]
+        assert run.call_args.args[0] == ["ping", "-c", "3", "-i", "0.2", "-W", "2", "10.0.0.1"]
         assert result["success"] is True
         assert result["alive"] is True
         assert result["latency_ms"] == 0.412
@@ -210,6 +210,70 @@ class TestDiscoverAllHosts:
         result = DiscoveryTools({}).discover_all_hosts()
         assert result["total_hosts"] == 0
         assert result["inventory"] == []
+
+    # --- CFOP-391: ~20s for seven healthy hosts, every sweep ----------------
+
+    def _fleet(self, n):
+        return DiscoveryTools({f"h{i}": {"address": f"10.0.1.{i}", "ssh": {"user": "ops"}}
+                               for i in range(n)})
+
+    def test_hosts_are_checked_at_once_not_one_after_another(self):
+        """Each probe sleeps 0.3s; sequentially eight hosts would take
+        8 x (ping + ssh) = 4.8s. At once, the slowest host's 0.6s."""
+        import time
+
+        def slow_run(cmd, **kwargs):
+            time.sleep(0.3)
+            out = PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nSUDO_OK\n"
+            return _completed(cmd, stdout=out)
+
+        tools = self._fleet(8)
+        with patch("subprocess.run", side_effect=slow_run):
+            t0 = time.time()
+            result = tools.discover_all_hosts()
+            elapsed = time.time() - t0
+        assert result["alive"] == 8 and result["ssh_accessible"] == 8
+        assert elapsed < 2.0, f"took {elapsed:.1f}s: hosts are being checked one after another"
+
+    def test_one_ssh_connection_per_host_answers_both_questions(self):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            out = PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nsudo: a password is required\n"
+            return _completed(cmd, stdout=out)
+
+        with patch("subprocess.run", side_effect=fake_run):
+            result = self._fleet(3).discover_all_hosts()
+        ssh_calls = [c for c in calls if c[0] == "ssh"]
+        assert len(ssh_calls) == 3, "one SSH connection per host, not one per question"
+        assert all(c[-1] == "echo SSH_OK; sudo -n echo SUDO_OK 2>&1" for c in ssh_calls)
+        row = result["inventory"][0]
+        assert (row["ssh_accessible"], row["sudo_passwordless"]) == (True, False)
+
+    def test_a_dead_host_does_not_stall_the_others_and_order_is_kept(self):
+        """A dead host costs ping timeouts plus an SSH connect timeout; the
+        healthy hosts must not wait behind it, and the inventory stays in
+        config order whatever finishes first."""
+        import time
+
+        def run(cmd, **kwargs):
+            dead = cmd[-1] == "10.0.1.0" or "@10.0.1.0" in " ".join(cmd)
+            if dead:
+                time.sleep(1.0)
+                raise subprocess.TimeoutExpired(cmd=cmd[0], timeout=10)
+            return _completed(cmd, stdout=PING_OUTPUT if cmd[0] == "ping" else "SSH_OK\nSUDO_OK\n")
+
+        tools = self._fleet(5)
+        with patch("subprocess.run", side_effect=run):
+            t0 = time.time()
+            result = tools.discover_all_hosts()
+            elapsed = time.time() - t0
+        assert [h["name"] for h in result["inventory"]] == ["h0", "h1", "h2", "h3", "h4"]
+        assert result["inventory"][0]["issues"] == [
+            "Host not responding to ping", "SSH not accessible", "Sudo requires password"]
+        assert result["hosts_with_issues"] == 1
+        assert elapsed < 3.0, f"took {elapsed:.1f}s"
 
 
 class TestSchemas:

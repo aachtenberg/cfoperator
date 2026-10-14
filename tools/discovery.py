@@ -7,7 +7,12 @@ Auto-discover hosts, verify connectivity, and gather inventory.
 
 import subprocess
 import logging
-from typing import Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, List, Tuple
+
+# Hosts checked at once by discover_all_hosts. Each check is a ping and an
+# SSH round trip, nearly all of it waiting on the network.
+_DISCOVERY_WORKERS = 16
 
 logger = logging.getLogger("cfoperator.tools.discovery")
 
@@ -26,8 +31,11 @@ class DiscoveryTools:
         address = self.hosts[host]['address']
 
         try:
+            # Three samples for the average, 0.2s apart (the floor iputils
+            # allows without root) rather than the default 1s: the same
+            # measurement in ~0.4s instead of ~2s (CFOP-391).
             result = subprocess.run(
-                ['ping', '-c', '3', '-W', '2', address],
+                ['ping', '-c', '3', '-i', '0.2', '-W', '2', address],
                 capture_output=True,
                 text=True,
                 timeout=10
@@ -145,47 +153,69 @@ class DiscoveryTools:
                 'error': str(e)
             }
 
+    def _ssh_probe(self, host: str) -> Tuple[bool, bool]:
+        """(ssh_accessible, sudo_passwordless) from ONE connection.
+
+        verify_ssh and verify_sudo each open their own, which is right for
+        the single-purpose tools and wasteful for the inventory, where both
+        questions go to every host (CFOP-391).
+        """
+        host_config = self.hosts[host]
+        ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'ConnectTimeout=5']
+        if host_config['ssh'].get('key_path'):
+            ssh_cmd.extend(['-i', host_config['ssh']['key_path']])
+        ssh_cmd.append(f"{host_config['ssh']['user']}@{host_config['address']}")
+        ssh_cmd.append('echo SSH_OK; sudo -n echo SUDO_OK 2>&1')
+        try:
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
+        except Exception as e:
+            logger.debug(f"SSH probe of {host} failed: {e}")
+            return False, False
+        return 'SSH_OK' in result.stdout, 'SUDO_OK' in result.stdout
+
+    def _discover_host(self, host_name: str) -> Dict[str, Any]:
+        """One inventory row: reachability, SSH and sudo for one host."""
+        host_config = self.hosts[host_name]
+        logger.info(f"Discovering host: {host_name}")
+        ping_result = self.ping_host(host_name)
+        ssh_ok, sudo_ok = self._ssh_probe(host_name)
+
+        host_info = {
+            'name': host_name,
+            'address': host_config['address'],
+            'role': host_config.get('role', 'unknown'),
+            'alive': ping_result.get('alive', False),
+            'latency_ms': ping_result.get('latency_ms'),
+            'ssh_accessible': ssh_ok,
+            'sudo_passwordless': sudo_ok,
+            'monitoring': host_config.get('monitoring', []),
+            'issues': []
+        }
+
+        # Collect issues
+        if not host_info['alive']:
+            host_info['issues'].append('Host not responding to ping')
+        if not host_info['ssh_accessible']:
+            host_info['issues'].append('SSH not accessible')
+        if not host_info['sudo_passwordless']:
+            host_info['issues'].append('Sudo requires password')
+        return host_info
+
     def discover_all_hosts(self) -> Dict[str, Any]:
         """
         Discover and verify connectivity to all configured hosts.
 
-        Returns comprehensive inventory of infrastructure.
+        Returns comprehensive inventory of infrastructure. Hosts are checked
+        at once rather than one after another: sequentially, seven healthy
+        hosts took ~20s, every sweep (CFOP-391), and one dead host's timeouts
+        stalled every host behind it. The inventory keeps config order.
         """
-        inventory = []
-
-        for host_name, host_config in self.hosts.items():
-            logger.info(f"Discovering host: {host_name}")
-
-            # Check if alive
-            ping_result = self.ping_host(host_name)
-
-            # Check SSH access
-            ssh_result = self.verify_ssh(host_name)
-
-            # Check sudo
-            sudo_result = self.verify_sudo(host_name)
-
-            host_info = {
-                'name': host_name,
-                'address': host_config['address'],
-                'role': host_config.get('role', 'unknown'),
-                'alive': ping_result.get('alive', False),
-                'latency_ms': ping_result.get('latency_ms'),
-                'ssh_accessible': ssh_result.get('ssh_accessible', False),
-                'sudo_passwordless': sudo_result.get('sudo_passwordless', False),
-                'monitoring': host_config.get('monitoring', []),
-                'issues': []
-            }
-
-            # Collect issues
-            if not host_info['alive']:
-                host_info['issues'].append('Host not responding to ping')
-            if not host_info['ssh_accessible']:
-                host_info['issues'].append('SSH not accessible')
-            if not host_info['sudo_passwordless']:
-                host_info['issues'].append('Sudo requires password')
-
-            inventory.append(host_info)
+        names = list(self.hosts)
+        if names:
+            with ThreadPoolExecutor(max_workers=min(_DISCOVERY_WORKERS, len(names))) as pool:
+                inventory = list(pool.map(self._discover_host, names))
+        else:
+            inventory = []
 
         # Summary
         total = len(inventory)
