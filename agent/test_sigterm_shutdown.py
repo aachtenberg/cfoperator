@@ -150,8 +150,8 @@ def _bare_operator():
 
 
 def test_shutting_down_refuses_new_investigations_with_queue_full():
-    """queue.Full is the endpoint's 503, which event_runtime retries -- so
-    the alert lands on the next pod rather than in a queue about to vanish."""
+    """queue.Full is the endpoint's 503: the caller hears the alert was not
+    taken, instead of a 202 for a queue about to vanish."""
     import queue
     op = _bare_operator()
     assert op.enqueue_investigation({'alert_id': 'a1'})['status'] == 'queued'

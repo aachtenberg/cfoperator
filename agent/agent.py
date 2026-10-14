@@ -3205,8 +3205,9 @@ investigate when uncertain. Use escalate only for genuinely urgent."""
         # after it and then skipped by the worker.
         with self._admission_lock:
             if self._shutting_down:
-                # A 503, which event_runtime retries, so the alert lands on
-                # the next pod instead of in a queue that is about to vanish.
+                # A 503 rather than a 202 for an alert that would vanish
+                # with the in-memory queue. event_runtime counts it a failed
+                # attempt; it does not yet wait out a restart (CFOP-395).
                 INVESTIGATION_QUEUE_REJECTED.inc()
                 raise queue.Full()
             return self._enqueue_investigation_locked(alert)
