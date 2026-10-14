@@ -20,6 +20,8 @@ text that can quote anything, so ``span()`` records the class name only.
 """
 
 import functools
+import hashlib
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -219,10 +221,40 @@ def alert_attributes(alert: Mapping[str, Any]) -> Dict[str, Any]:
         labels = {}
     summary = (alert.get('summary')
                or (alert.get('annotations') or {}).get('summary'))
+    name = details.get('alertname') or labels.get('alertname')
+    if not name and alert.get('source') == SWEEP_SOURCE:
+        # A sweep finding is model output, not a rule, so it has no
+        # alertname (CFOP-392). A fixed name lets the spans be grouped; the
+        # fingerprint below tells one finding from another.
+        name = 'sweep-finding'
+    resource = '/'.join(str(alert.get(k)) for k in ('namespace', 'resource_type', 'resource_name')
+                        if alert.get(k))
     return {
-        'cfop.alert.name': alert_text(details.get('alertname') or labels.get('alertname'), 64),
+        'cfop.alert.name': alert_text(name, 64),
         'cfop.alert.severity': alert_text(alert.get('severity') or labels.get('severity'), 32),
         'cfop.alert.source': alert_text(alert.get('source'), 32),
         'cfop.alert.id': alert_text(alert.get('alert_id'), 128),
         'cfop.alert.summary': alert_text(summary),
+        'cfop.alert.resource': alert_text(resource, 128),
+        'cfop.alert.fingerprint': alert_fingerprint(alert) if summary else None,
     }
+
+
+SWEEP_SOURCE = 'cfoperator-sweep'
+
+
+def alert_fingerprint(alert: Mapping[str, Any]) -> str:
+    """The alert's identity as event_runtime's dedupe sees it (CFOP-392).
+
+    The alert's own ``fingerprint`` if it has one, else the same digest
+    event_runtime's ``Alert.effective_fingerprint()`` computes, so a span
+    can be matched to the runtime's dedupe and a recurring sweep finding
+    groups across sweeps. A hash, so no text. tests/test_tracing.py holds
+    it equal to the runtime's, so the two cannot drift apart.
+    """
+    if alert.get('fingerprint'):
+        return str(alert['fingerprint'])[:16]
+    stable = {key: alert.get(key) for key in
+              ('source', 'severity', 'summary', 'namespace', 'resource_type', 'resource_name')}
+    payload = json.dumps(stable, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]

@@ -151,6 +151,45 @@ def test_alert_attributes_cover_both_alert_shapes():
     assert raw['cfop.alert.id'] is None   # dropped by span(), never sent as None
 
 
+def test_sweep_findings_get_a_name_a_fingerprint_and_a_resource():
+    """CFOP-392: 8 of 10 triage spans had no name -- all sweep findings,
+    which have no alertname by nature."""
+    finding = {'source': 'cfoperator-sweep', 'severity': 'warning',
+               'summary': 'Pod web-7f9 restarted 4 times in 10m',
+               'namespace': 'apps', 'resource_type': 'deployment', 'resource_name': 'web',
+               'details': {'category': None}, 'fingerprint': None, 'alert_id': 'a1'}
+    attrs = tracing.alert_attributes(finding)
+    assert attrs['cfop.alert.name'] == 'sweep-finding'
+    assert attrs['cfop.alert.resource'] == 'apps/deployment/web'
+    assert len(attrs['cfop.alert.fingerprint']) == 16
+    # The same finding next sweep is the same fingerprint; a different one is not.
+    assert tracing.alert_attributes(dict(finding, alert_id='a2'))['cfop.alert.fingerprint'] == \
+        attrs['cfop.alert.fingerprint']
+    assert tracing.alert_attributes(dict(finding, summary='Disk full on node-a'))[
+        'cfop.alert.fingerprint'] != attrs['cfop.alert.fingerprint']
+    # A real alert keeps its own name.
+    am = tracing.alert_attributes({'source': 'alertmanager', 'summary': 'x',
+                                   'details': {'alertname': 'KubePodCrashLooping'}})
+    assert am['cfop.alert.name'] == 'KubePodCrashLooping'
+    assert 'cfop.alert.resource' not in {k for k, v in am.items() if v is not None}
+
+
+def test_fingerprint_matches_event_runtimes_own():
+    """The span's fingerprint is only useful if it is the one the runtime
+    deduped on. Computed both ways, over the wire shape triage receives."""
+    from event_runtime.models import Alert
+
+    for payload in (
+        {'source': 'cfoperator-sweep', 'severity': 'warning', 'summary': 'Pod web restarted',
+         'namespace': 'apps', 'resource_type': 'deployment', 'resource_name': 'web'},
+        {'source': 'cfoperator-sweep', 'severity': 'critical', 'summary': 'Disk 95% on node-a'},
+        {'source': 'alertmanager', 'severity': 'info', 'summary': 'x', 'fingerprint': 'abc123'},
+    ):
+        alert = Alert.from_dict(payload)
+        wire = alert.to_dict()                     # what /v1/triage receives
+        assert tracing.alert_fingerprint(wire) == alert.effective_fingerprint()[:16], payload
+
+
 # --- enabled -----------------------------------------------------------------
 
 def test_enabled_span_records_error_type_but_not_the_message():
