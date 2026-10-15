@@ -117,15 +117,30 @@ def build_user_message(case: dict) -> str:
         [tuple(s) for s in (case.get("similar") or [])])
 
 
-def alert_text_of(case: dict) -> str:
-    """The alert's own words -- summary, labels, precedent triggers -- with
-    none of the prompt's frame around them. What a reason has to be grounded
-    IN: the framed prompt always contains "alert", "severity" and "labels",
-    so a reason made of those words would count as grounded against it
-    (review on #336)."""
-    parts = [str(case.get("summary", "")), json.dumps(case.get("labels", {}), default=str)]
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._/-]*[a-z0-9]|[a-z0-9]")
+
+
+def _tokens(text: str) -> set:
+    """Whole tokens of `text`, lower-cased, plus the pieces of hyphenated or
+    dotted names that are five or more characters (so "paperless" is a token
+    of "paperless-ngx-7d9c4b8f5-nq2wm"). Set membership, never substring."""
+    out = set()
+    for tok in _TOKEN_RE.findall((text or "").lower()):
+        out.add(tok)
+        out.update(piece for piece in re.split(r"[-._/]", tok) if len(piece) >= 5)
+    return out
+
+
+def alert_tokens_of(case: dict) -> set:
+    """The alert's own tokens -- summary words, label VALUES, precedent
+    triggers -- with none of the prompt's frame around them, and no label
+    keys: every case's labels carry the keys `alertname` and `severity`, so
+    a reason that only says "the alert" or "severity" must not count as
+    grounded (reviews on #336). What a reason has to name something from."""
+    parts = [str(case.get("summary", ""))]
+    parts += [str(v) for v in (case.get("labels") or {}).values()]
     parts += [str(trigger) for _, trigger, _ in (case.get("similar") or [])]
-    return " ".join(parts)
+    return _tokens(" ".join(parts))
 
 
 def build_payload(model: str, system_prompt: str, user_msg: str,
@@ -511,20 +526,23 @@ _PRECEDENT_CLAIM_RE = re.compile(
     re.IGNORECASE)
 
 
-def grade_reason(reason: str, prompt: str, alert_text=None):
+def grade_reason(reason: str, prompt: str, alert_tokens=None):
     """(grounded, fabricated) for one reason against the prompt it answered.
 
     `grounded` is the planned Tier 3 check -- the reason names something from
-    the alert. It is judged against `alert_text` (the alert's own words, see
-    alert_text_of) when given, else the prompt. `fabricated` is the list of
-    object names it cites that appear nowhere in the prompt, which is the
-    check that catches an invented precedent. A reason can be grounded and
-    fabricating at the same time.
+    the alert: one of its whole tokens of five or more characters, or a
+    name-shaped citation, is among `alert_tokens` (see alert_tokens_of).
+    Whole tokens, never substrings, and without the prompt's frame or the
+    label keys: "the alert should be logged" is not grounded in anything.
+    Without `alert_tokens` the prompt's own tokens stand in. `fabricated` is
+    the list of object names it cites that appear nowhere in the prompt,
+    which is the check that catches an invented precedent. A reason can be
+    grounded and fabricating at the same time.
     """
     if not reason:
         return False, []
     hay = (prompt or "").lower()
-    ground = (alert_text if alert_text is not None else (prompt or "")).lower()
+    ground = alert_tokens if alert_tokens is not None else _tokens(prompt)
     cited = _citation_tokens(reason)
     fabricated = sorted(t for t in cited if t not in hay)
     # An UNNAMED precedent is still an invention when the prompt offered none.
@@ -534,8 +552,8 @@ def grade_reason(reason: str, prompt: str, alert_text=None):
     # one rung down.
     if "similar past investigations" not in hay and _PRECEDENT_CLAIM_RE.search(reason):
         fabricated.append("<unnamed precedent>")
-    grounded = any(t in ground for t in cited) or any(
-        w in ground for w in re.findall(r"[a-z]{5,}", reason.lower()))
+    words = {w for w in _tokens(reason) if len(w) >= 5}
+    grounded = bool((cited | words) & ground)
     return grounded, fabricated
 
 
@@ -847,7 +865,7 @@ def main():
     results = []
     for case in cases:
         user_msg = build_user_message(case)
-        alert_text = alert_text_of(case)
+        alert_tokens = alert_tokens_of(case)
         payload = build_payload(args.model, system_prompt, user_msg, args.num_ctx)
         for run in range(args.runs):
             text, latency, err = call_ollama(args.url, payload, args.timeout)
@@ -855,7 +873,7 @@ def main():
             action = decision["action"] if decision else None
             correct = action in case["expected"] if action else False
             reason = decision.get("reason") if decision else None
-            grounded, fabricated = grade_reason(reason, user_msg, alert_text)
+            grounded, fabricated = grade_reason(reason, user_msg, alert_tokens)
             results.append({
                 "case": case["name"],
                 "run": run,

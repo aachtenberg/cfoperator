@@ -150,19 +150,36 @@ def test_a_tool_calls_dump_is_not_a_decision():
         '[TOOL_CALLS][{"name": "classify", "arguments": {"action": "notify"}}]') is None
 
 
-def test_grounded_means_the_alert_not_the_frame():
-    """The framed prompt always contains "alert", "severity" and "labels";
-    grounding is judged against the alert's own words (review on #336)."""
-    case = _case('novel-oom')
-    prompt, alert_text = te.build_user_message(case), te.alert_text_of(case)
-    assert te.grade_reason('nothing resembles a known pattern here', prompt, alert_text)[0] is False
-    assert te.grade_reason('paperless-ngx OOMKilled with no precedent', prompt, alert_text)[0] is True
-    # Fabrication still looks at the whole prompt: a name from the frame's
-    # precedent block is a real citation, not an invention.
-    case2 = _case('known-sdcard')
+@pytest.mark.parametrize('case_name, reason, grounded', [
+    # The reviewer's own counter-example: "alert" sits inside the label KEY
+    # alertname, and a substring check against json.dumps(labels) passed it.
+    ('smoke-test-pod', 'the alert should be logged', False),
+    ('smoke-test-pod', 'severity says warning so notify', True),   # "warning" is a label VALUE
+    ('smoke-test-pod', 'smoke-test-runner-2xk4f is a test pod, log only', True),
+    ('novel-oom', 'nothing resembles a known pattern here', False),
+    ('novel-oom', 'paperless-ngx OOMKilled with no precedent', True),  # piece of the pod name
+    ('novel-oom', 'paperless restarts, novel', True),
+    ('novel-oom', 'the labels and the severity say investigate', False),  # frame words only
+    ('novel-oom', 'the namespace is apps, investigate', True),  # "namespace" IS in the summary
+    ('known-sdcard', 'raspberrypi3 SD card, replacement scheduled', True),
+])
+def test_grounded_means_a_whole_token_of_the_alert_itself(case_name, reason, grounded):
+    """Whole tokens of the summary, label values and precedent triggers,
+    never substrings, never the frame, never a label key (reviews on #336)."""
+    case = _case(case_name)
+    g, _ = te.grade_reason(reason, te.build_user_message(case), te.alert_tokens_of(case))
+    assert g is grounded
+
+
+def test_fabrication_still_reads_the_whole_prompt():
+    """A name from the prompt's precedent block is a real citation."""
+    case = _case('known-sdcard')
     g, fab = te.grade_reason('raspberrypi3 SD card, replacement scheduled',
-                             te.build_user_message(case2), te.alert_text_of(case2))
+                             te.build_user_message(case), te.alert_tokens_of(case))
     assert g is True and fab == []
+    _, fab = te.grade_reason('nearest was paperless-ngx-7ccf888b4-85484',
+                             te.build_user_message(case), te.alert_tokens_of(case))
+    assert 'paperless-ngx-7ccf888b4-85484' in fab
 
 
 def test_an_errored_run_breaches_the_latency_gate(monkeypatch):
