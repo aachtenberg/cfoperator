@@ -2,16 +2,19 @@
 """Review a pull request with an LLM and post one comment.
 
 Two transports, one pipeline. The original is a local model on the homelab's
-Ollama (CFOP-236), run from the self-hosted runner that can reach it; the
+Ollama (CFOP-236), run from the self-hosted runner that can reach it, which
+homelab-infra still does with this file fetched from cfoperator@main; the
 second is any OpenAI-compatible chat API, run from a hosted runner (CFOP-400,
-Reflection AI's Beam). Both are advisory and run beside the other reviews,
-not instead of them.
+Reflection AI's Beam), which is what cfoperator runs. cfoperator's own Ollama
+job was dropped (CFOP-402): on real diffs gemma4 without thinking proposed
+nothing on 46 of 48 PRs, found a planted shell injection but not the
+off-by-one beside it, and Beam found both. Both reviews are advisory.
 
 It reads the PR from the GitHub API and never checks out, imports or runs the
-PR's code: the diff is only text handed to a model. cfoperator runs both under
-pull_request_target, which is safe only for that reason (see the workflows):
-the script that runs is always the base branch's, so a PR cannot swap the
-reviewer out while an API key is in scope.
+PR's code: the diff is only text handed to a model. The workflows run under
+pull_request_target, which is safe only for that reason: the script that
+runs is always the base branch's, so a PR cannot swap the reviewer out while
+an API key is in scope.
 
 A small local model asked for a review in one shot mostly produces noise:
 "should be verified", complaints about comments, and defects in lines the PR

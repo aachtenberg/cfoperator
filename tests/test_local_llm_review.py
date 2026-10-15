@@ -1,4 +1,4 @@
-"""The local-LLM PR reviewer (CFOP-236), without GitHub or Ollama.
+"""The LLM PR reviewer (CFOP-236, CFOP-400), without GitHub, Ollama or an API.
 
 What is worth guarding here is not the prompt wording but the behaviour that
 costs something when it drifts: which files reach the model, that nothing
@@ -123,13 +123,6 @@ def test_grounding_keeps_only_findings_anchored_on_added_code():
 ])
 def test_a_docblock_star_is_a_comment_but_a_dereference_is_code(line, is_comment):
     assert bool(review.COMMENT_LINE.match(line)) is is_comment
-
-
-def test_two_ollama_calls_fit_inside_the_job_timeout():
-    """Killed mid-call, the job leaves no comment at all."""
-    wf = REPO_ROOT / ".github" / "workflows" / "local-llm-review.yml"
-    minutes = int(re.search(r"timeout-minutes:\s*(\d+)", wf.read_text()).group(1))
-    assert 2 * review.MODEL_TIMEOUT_SECONDS < minutes * 60
 
 
 def test_the_ollama_url_never_reaches_the_public_log(monkeypatch, capsys):
@@ -446,6 +439,7 @@ def test_two_reviewers_under_one_bot_login_keep_separate_comments(monkeypatch):
 
 
 def test_two_model_calls_fit_inside_the_hosted_job_timeout():
+    """Killed mid-call, the job leaves no comment at all."""
     wf = REPO_ROOT / ".github" / "workflows" / "beam-review.yml"
     minutes = int(re.search(r"timeout-minutes:\s*(\d+)", wf.read_text()).group(1))
     assert 2 * review.MODEL_TIMEOUT_SECONDS < minutes * 60
