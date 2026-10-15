@@ -193,7 +193,8 @@ def test_chain_skips_a_selected_backend_with_no_key_and_names_the_variable(no_ke
     op = _operator(selected_backend='gemini', gemini_selected_model='gemini-3.6-flash')
     _, events = _events_of(op)
     assert events[0][0] == 'fallback'
-    assert events[0][1]['reason'] == 'GEMINI_API_KEY not set'
+    # Names the variable, and since CFOP-111 says where else it can be set.
+    assert events[0][1]['reason'].startswith('GEMINI_API_KEY not set')
 
 
 def test_a_usable_selection_is_the_chain_head_with_no_announcement(no_keys):

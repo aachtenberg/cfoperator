@@ -106,11 +106,20 @@ def test_xai_registry_points_at_xai_api():
 
 
 # --- _openai_compat_request_config ------------------------------------------
+# An instance method since CFOP-111: the key comes from the one lookup
+# (console-set over env), so it needs the operator's knowledge base. With no
+# kb wired, the env answers, which is what these tests exercise.
+
+def _bare_operator():
+    op = CFOperator.__new__(CFOperator)
+    op.kb = None
+    return op
+
 
 def test_request_config_builds_chat_completions_url():
     os.environ["XAI_API_KEY"] = "test-xai-key"
     try:
-        key, url = CFOperator._openai_compat_request_config("xai")
+        key, url = _bare_operator()._openai_compat_request_config("xai")
         assert key == "test-xai-key"
         assert url == "https://api.x.ai/v1/chat/completions"
     finally:
@@ -118,19 +127,19 @@ def test_request_config_builds_chat_completions_url():
 
 
 def test_request_config_groq_url():
-    key, url = CFOperator._openai_compat_request_config("groq")
+    key, url = _bare_operator()._openai_compat_request_config("groq")
     assert url == "https://api.groq.com/openai/v1/chat/completions"
 
 
 def test_request_config_missing_key_returns_empty_string():
     os.environ.pop("XAI_API_KEY", None)
-    key, url = CFOperator._openai_compat_request_config("xai")
+    key, url = _bare_operator()._openai_compat_request_config("xai")
     assert key == ""                                  # caller raises on empty
     assert url == "https://api.x.ai/v1/chat/completions"
 
 
 def test_request_config_unknown_provider():
-    key, url = CFOperator._openai_compat_request_config("ollama")
+    key, url = _bare_operator()._openai_compat_request_config("ollama")
     assert key is None and url is None
 
 

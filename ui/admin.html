@@ -235,8 +235,9 @@
   <div class="divider">Effective configuration</div>
   <div class="section">
     <p class="muted" style="margin:8px 0 12px">
-      Read-only view of what the agent can use. Provider URLs and API keys stay in
-      <code>config.yaml</code> / sealed secrets — never shown here.
+      Read-only view of what the agent can use. Provider URLs stay in
+      <code>config.yaml</code>; API keys come from sealed secrets or from
+      <b>Provider keys</b> below — never shown here.
     </p>
     <div class="card" id="eff-card">
       <div class="muted">Loading…</div>
@@ -285,6 +286,17 @@
         <input type="number" id="sweep-interval" min="1" max="1440" value="30" onchange="onSweepIntervalChange()">
       </div>
     </div>
+  </div>
+
+  <div class="divider">Provider keys</div>
+  <div class="section">
+    <p class="muted" style="margin:8px 0 12px">
+      Set a hosted provider's API key here or in sealed secrets. A key set here is
+      stored encrypted in the database, wins over the env, and applies live — no
+      secret PR, no restart. Values are never shown back; blank leaves a key
+      unchanged. Executor Jobs still read the cluster Secret.
+    </p>
+    <div class="card" id="keys-card"><div class="muted">Loading…</div></div>
   </div>
 
   <div class="divider">Ollama pool</div>
@@ -795,8 +807,52 @@ async function loadLlm(){
     document.getElementById('eff-card').innerHTML = '<div class="muted">Admin role required.</div>';
     return;
   }
-  await Promise.all([loadEffective(), loadProvidersAndSettings(), loadPoolToggles()]);
+  await Promise.all([loadEffective(), loadProvidersAndSettings(), loadPoolToggles(), loadProviderKeys()]);
   llmLoaded = true;
+}
+/* Provider keys (CFOP-111): one row per hosted provider the agent registers.
+   The server never returns a value; the row shows where the key in effect
+   comes from and, when configured, its last four characters. */
+async function loadProviderKeys(){
+  const card = document.getElementById('keys-card');
+  const r = await api('/api/settings/llm_keys');
+  if(!r.ok){ card.innerHTML = `<div class="muted">${esc(r.error)}</div>`; return; }
+  const storage = r.data.storage === 'available';
+  const rows = (r.data.providers || []).map(p => {
+    const src = p.source === 'console' ? badge('console (database)', '--accent')
+      : p.source === 'env' ? badge('env / sealed secret', '--cyan')
+      : p.source === 'unreadable' ? badge('stored key unreadable', '--orange')
+      : badge('not configured', '--text-muted');
+    const hint = p.hint ? `<span class="mono muted">…${esc(p.hint)}</span>` : '';
+    const clearable = p.source === 'console' || p.source === 'unreadable';
+    return `<div class="eff-row" style="gap:8px;flex-wrap:wrap">` +
+      `<span>${esc(p.label)} <span class="muted">(${esc(p.key_env)})</span> ${src} ${hint}</span>` +
+      `<span style="display:inline-flex;gap:6px;align-items:center">` +
+      `<input type="password" id="key-${esc(p.id)}" placeholder="paste key" autocomplete="off" ` +
+      `style="width:16em"${storage ? '' : ' disabled'}>` +
+      `<button class="chip primary" onclick="saveProviderKey('${esc(p.id)}')"${storage ? '' : ' disabled'}>Save</button>` +
+      `<button class="chip" onclick="clearProviderKey('${esc(p.id)}')"${clearable ? '' : ' disabled'}>Clear</button>` +
+      `</span></div>`;
+  }).join('');
+  card.innerHTML = (storage ? '' :
+    `<div class="muted" style="margin-bottom:8px">CFOP_SESSION_SECRET is unset on the agent, so a key ` +
+    `cannot be stored encrypted; set it in the deployment first.</div>`) + rows;
+}
+async function saveProviderKey(id){
+  const input = document.getElementById('key-' + id);
+  const key = (input.value || '').trim();
+  if(!key){ toast('paste a key first — blank leaves it unchanged', 'err'); return; }
+  const r = await api(`/api/settings/llm_keys/${id}`, {method:'PUT', body: JSON.stringify({key})});
+  if(!r.ok){ toast('failed to save key: ' + (r.error || ''), 'err'); return; }
+  input.value = '';
+  toast(id + ' key saved', 'ok');
+  await Promise.all([loadProviderKeys(), loadEffective(), loadProvidersAndSettings()]);
+}
+async function clearProviderKey(id){
+  const r = await api(`/api/settings/llm_keys/${id}`, {method:'DELETE'});
+  if(!r.ok){ toast('failed to clear key: ' + (r.error || ''), 'err'); return; }
+  toast(id + ' key cleared — env applies', 'ok');
+  await Promise.all([loadProviderKeys(), loadEffective(), loadProvidersAndSettings()]);
 }
 async function loadEffective(){
   const [prov, sel, fb] = await Promise.all([
