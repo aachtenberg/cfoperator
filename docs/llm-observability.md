@@ -458,8 +458,9 @@ observability:
 ```
 
 Spans go out as OTLP over HTTP (port 4318), batched in the background. A
-deployment usually leaves `endpoint` unset and sets the env var on the
-workload, so the same config file works wherever it is mounted:
+deployment usually leaves `endpoint` unset and sets the env var on both
+workloads -- the agent and the event runtime read the same block
+(CFOP-317) -- so the same config file works wherever it is mounted:
 
 ```yaml
 env:
@@ -470,9 +471,21 @@ env:
 ### The pipeline: OTLP straight to Tempo
 
 ```
-cfoperator ──OTLP/HTTP :4318──▶ Tempo ◀── Grafana (Tempo datasource:
-                                           trace view, TraceQL, span → Loki logs)
+event_runtime ──OTLP/HTTP :4318──▶ Tempo ◀── Grafana (Tempo datasource:
+cfoperator    ──OTLP/HTTP :4318──▶             trace view, TraceQL, span → Loki logs)
 ```
+
+One alert is one trace (CFOP-317). The runtime opens an `alert` root span
+around each alert it handles, and its calls to the agent's `/v1/triage` and
+`/v1/investigate` carry the W3C `traceparent`. The agent's `triage` continues
+it in the request; `/v1/investigate` only enqueues, so the carrier rides the
+queued alert dict to the worker thread and the `investigation` root opens
+there as a child of the runtime's span. The two processes name themselves
+`cfoperator` and `cfoperator-event-runtime` unless `service_name` or
+`OTEL_SERVICE_NAME` says otherwise. No auto-instrumentation: the tree below
+already has a span for every LLM and tool call, and Flask/requests/SQLAlchemy
+spans would carry URLs and statements, which the shapes-not-text rule keeps
+off.
 
 Tempo accepts OTLP natively, so no collector sits in between. Add an
 OpenTelemetry Collector when there is a concrete job for it: tail sampling,
@@ -484,17 +497,22 @@ changed. The homelab's Tempo is deployed by `homelab-infra`
 ### What a trace contains
 
 ```
-investigation                       cfop.alert.name / severity / summary (redacted, clipped)
-└─ llm_chain                        chain_length, answered_by, rungs_tried, fallback_used
+alert (event_runtime)               cfop.alert.name / severity / summary, cfop.alert.status / action
+├─ triage (agent)                   cfop.triage.action, served_by
+└─ investigation (agent)            cfop.alert.name / severity / summary (redacted, clipped)
+   └─ llm_chain                     chain_length, answered_by, rungs_tried, fallback_used
    ├─ chat gemma4:26b    ERROR      error.type=ReadTimeout, cfop.llm.error_kind=timeout
    └─ chat deepseek-chat            gen_ai.usage.input_tokens / output_tokens,
       ├─ execute_tool k8s_get_pods      gen_ai.response.finish_reasons, cfop.llm.stop_reason
       └─ execute_tool loki_query        gen_ai.tool.name, cfop.tool.cached, cfop.tool.result
 ```
 
-`triage` is a root span of the same shape, with `cfop.triage.action` and
-`served_by`. The `chat` spans follow the OpenTelemetry GenAI semantic
-conventions (`gen_ai.provider.name`, plus the older `gen_ai.system`).
+`triage` has the same shape, with `cfop.triage.action` and `served_by`. Both
+it and `investigation` hang under the runtime's `alert` when the request
+carried a traceparent, and are roots otherwise (the agent's own reactive poll
+path, or a runtime with tracing off). The `chat` spans follow the
+OpenTelemetry GenAI semantic conventions (`gen_ai.provider.name`, plus the
+older `gen_ai.system`).
 
 A filed-row re-verification (CFOP-185) is a `reverify` root (CFOP-399): the
 remediation's id, class and risk, `cfop.reverify.reporter` (the model that

@@ -75,15 +75,19 @@ def test_tracing_module_imports_the_sdk_only_inside_functions():
 
 
 def test_a_disabled_agent_process_never_loads_opentelemetry():
-    """The whole agent and console import graph, then a span and an annotate
-    with tracing off. Nothing may pull the SDK in -- not our code, and not a
-    dependency that would quietly make the promise false."""
+    """The whole agent and console import graph, and the event runtime's
+    (CFOP-317 made it a tracing process too), then a span, an annotate, an
+    inject and a parented span with tracing off. Nothing may pull the SDK
+    in -- not our code, and not a dependency that would quietly make the
+    promise false."""
     code = (
         "import sys\n"
         "import agent, web_server\n"
+        "import event_runtime.bootstrap, event_runtime.engine, event_runtime.http_actions\n"
         "from cfshared import tracing\n"
         "assert tracing.init_tracing({'observability': {'tracing': {'enabled': False}}}) is False\n"
-        "with tracing.span('x', {'a': 1}) as s:\n"
+        "assert tracing.inject({'h': '1'}) == {'h': '1'}\n"
+        "with tracing.span('x', {'a': 1}, parent={'traceparent': '00-' + 'a' * 32 + '-' + 'b' * 16 + '-01'}) as s:\n"
         "    s.set_attribute('b', 2)\n"
         "    tracing.annotate({'c': 3})\n"
         "loaded = sorted(m for m in sys.modules if m.startswith('opentelemetry'))\n"

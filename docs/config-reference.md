@@ -166,6 +166,8 @@ observability:
   # endpoint / service_name are optional and fall back to the standard
   # OTEL_EXPORTER_OTLP_ENDPOINT / OTEL_SERVICE_NAME env vars. Spans carry
   # names, counts and timings, never prompt, completion or tool text.
+  # The event runtime reads this same block (CFOP-317) and names itself
+  # cfoperator-event-runtime unless service_name or the env var says.
   # See docs/llm-observability.md#tracing-opentelemetry-opt-in.
   tracing:
     enabled: false

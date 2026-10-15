@@ -69,6 +69,10 @@ spec:
               value: {{ .Values.alertmanager.url | quote }}
             - name: CFOP_EVENT_RUNTIME_ALERTMANAGER_URL
               value: {{ .Values.alertmanager.url | quote }}
+{{- if .Values.tracing.endpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.tracing.endpoint | quote }}
+{{- end }}
             - name: OLLAMA_URL
               value: {{ .Values.llm.url | quote }}
             - name: OLLAMA_MODEL

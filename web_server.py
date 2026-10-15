@@ -24,6 +24,7 @@ import time
 import requests
 
 from cfshared import repos as shared_repos
+from cfshared import tracing
 from cfshared.version import build_version
 from web_auth import (
     ROLE_ADMIN, install_auth, require_console_admin, require_role, require_token_scope)
@@ -372,6 +373,11 @@ class WebServer:
                 return jsonify({'error': 'JSON object body required'}), 400
             if not payload.get('summary'):
                 return jsonify({'error': 'Field summary is required'}), 400
+            # The runtime's trace rides the queued alert to the worker, where
+            # the investigation root opens (CFOP-317); run_investigation pops it.
+            carrier = tracing.carrier_from(request.headers)
+            if carrier:
+                payload[tracing.TRACE_CARRIER_KEY] = carrier
             try:
                 enqueued = self.operator.enqueue_investigation(payload)
             except queue.Full:
@@ -578,6 +584,9 @@ class WebServer:
                 return jsonify({'error': 'JSON object body required'}), 400
             if not payload.get('summary'):
                 return jsonify({'error': 'Field summary is required'}), 400
+            carrier = tracing.carrier_from(request.headers)
+            if carrier:
+                payload[tracing.TRACE_CARRIER_KEY] = carrier
             decision = self.operator.run_triage(payload)
             return jsonify(decision), 200
 
