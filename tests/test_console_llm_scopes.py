@@ -33,7 +33,7 @@ def _real_resolvers(server):
     op = server.operator
     if not isinstance(op.config, dict):
         op.config = {'llm': {}, 'remediation': {}}
-    for name in ('_scope_llm', '_scope_llm_config', '_scope_llm_kwargs', '_triage_model',
+    for name in ('_scope_llm', '_scope_llm_config', '_triage_model',
                  '_judge_model', '_judge_model_setting', '_judge_model_config', '_executor_config'):
         setattr(op, name, MethodType(getattr(CFOperator, name), op))
 

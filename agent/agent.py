@@ -4226,11 +4226,6 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         return {'backend': str(entry.get('backend') or '').strip().lower(),
                 'model': str(entry.get('model') or '').strip()}
 
-    def _scope_llm_kwargs(self, scope: str) -> Dict[str, Any]:
-        """The ``backend=`` / ``model=`` pair for _chat_with_tools_with_fallback."""
-        resolved = self._scope_llm(scope)
-        return {'backend': resolved['backend'], 'model': resolved['model']}
-
     def _triage_model(self) -> Optional[str]:
         """Resolve the dedicated triage model: DB setting overrides config.
 
@@ -6237,10 +6232,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             f"Recommendation: {str(recommendation)[:800]}\n\nClassify."
         )
         messages = [{'role': 'user', 'content': user_msg}]
+        seat = self._scope_llm('classifier')  # CFOP-122
         try:
             result = self._chat_with_tools_with_fallback(
                 messages=messages, system_context=system_prompt,
-                **self._scope_llm_kwargs('classifier'),  # CFOP-122
+                backend=seat['backend'], model=seat['model'],
                 max_iterations=1,  # one-shot classification — no tool loop
                 tool_policy=UNATTENDED,
             )
@@ -6271,7 +6267,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         try:
             retry = self._chat_with_tools_with_fallback(
                 messages=nudge_messages, system_context=system_prompt,
-                **self._scope_llm_kwargs('classifier'),  # the same seat, CFOP-122
+                backend=seat['backend'], model=seat['model'],  # the same seat
                 max_iterations=1,
                 tool_policy=UNATTENDED,
             )
@@ -7963,12 +7959,14 @@ Only return the JSON array, no other text."""
             max_iterations = self._get_sweep_max_iterations()
 
         system_prompt = self._build_sweep_system_prompt(task, skill_name=skill_name)
+        seat = self._scope_llm('sweep')  # CFOP-122
 
         try:
             result = self._chat_with_tools_with_fallback(
                 messages=[{'role': 'user', 'content': task}],
                 system_context=system_prompt,
-                **self._scope_llm_kwargs('sweep'),  # CFOP-122
+                backend=seat['backend'],
+                model=seat['model'],
                 max_iterations=max_iterations,
                 tool_policy=UNATTENDED,
             )
@@ -11781,6 +11779,7 @@ IMPORTANT:
             f"Be conservative with risk."
         )
 
+        seat = self._scope_llm('summary')  # CFOP-122
         try:
             result = self._chat_with_tools_with_fallback(
                 messages=[{'role': 'user', 'content': task}],
@@ -11789,7 +11788,8 @@ IMPORTANT:
                     f"You have tools to check live infrastructure. Be concise and actionable.\n\n"
                     f"{infra}"
                 ),
-                **self._scope_llm_kwargs('summary'),  # CFOP-122
+                backend=seat['backend'],
+                model=seat['model'],
                 max_iterations=15,
                 tool_policy=UNATTENDED,
             )

@@ -47,7 +47,7 @@ def test_console_over_config_over_default():
 def test_every_scope_resolves_and_an_unknown_one_is_refused():
     op = _op()
     for scope in LLM_SCOPES:
-        assert op._scope_llm_kwargs(scope) == {'backend': 'auto', 'model': None}
+        assert op._scope_llm(scope) == {'backend': 'auto', 'model': None, 'source': 'default'}
     with pytest.raises(ValueError):
         op._scope_llm('investigation')
 
@@ -94,7 +94,9 @@ def test_the_classifier_runs_on_the_scope_model():
 def test_each_unattended_call_site_takes_its_scope():
     """The class of regression: a fourth unattended path, or one of these
     three, calling the chain without a scope and silently riding the chat
-    default again. Parsed from source, like the single-lookup guard."""
+    default again. Parsed from source, like the single-lookup guard. The
+    seat is passed as explicit backend= / model= keywords, not **kwargs:
+    test_unattended_policy.py refuses a tool-loop call with a splat."""
     src = open(os.path.join(os.path.dirname(__file__), 'agent.py'), encoding='utf-8').read()
     for method, scope in (('def _sweep_with_llm', 'sweep'),
                           ('def _generate_morning_summary', 'summary'),
@@ -104,7 +106,10 @@ def test_each_unattended_call_site_takes_its_scope():
         body = src[start:end]
         calls = [m.start() for m in re.finditer(r'_chat_with_tools_with_fallback\(', body)]
         assert calls, method
+        assert f"seat = self._scope_llm('{scope}')" in body[:calls[0]], \
+            f'{method} does not resolve the {scope} scope before its first chain call'
         first = body[calls[0]:calls[0] + 600]
-        assert f"_scope_llm_kwargs('{scope}')" in first, f'{method} does not resolve the {scope} scope'
+        assert "backend=seat['backend']" in first and "model=seat['model']" in first, \
+            f'{method} does not pass the {scope} seat to the chain'
     assert "get_setting('sweep_backend'" not in src and "get_setting('sweep_model'" not in src, \
         'the sweep keys are read through _scope_llm now'
