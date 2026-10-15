@@ -149,6 +149,49 @@
   .cp-status { font-size:12px; color:var(--text-secondary); margin-top:6px; min-height:16px; }
   .cp-status.err { color:var(--red); }
   .cp-note { font-size:12px; color:var(--text-muted); margin-left:6px; }
+  /* Explain (CFOP-324): how the investigation got to its answer. A numbered
+     timeline; tool rows are <details>, closed until asked, so the drawer
+     opens on the summary and the operator unfolds the step that matters. */
+  #explain:empty { display:none; }
+  #explain { margin:8px 0 0; padding-top:8px; border-top:1px solid var(--border); }
+  #explain .xhead { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin:8px 0; }
+  #explain .xhead h3 { margin:0; flex-grow:1; }
+  #explain .xlink { background:none; border:0; color:var(--cyan); cursor:pointer; padding:2px 4px; font-size:12px; }
+  #explain .xlink:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+  #explain .xsum { display:flex; gap:6px; flex-wrap:wrap; margin:0 0 8px; }
+  #explain .xsum span { font-size:12px; background:var(--bg-tertiary); border:1px solid var(--border);
+    border-radius:var(--radius-sm); padding:1px 8px; }
+  #explain .xsum .bad { color:#fca5a5; border-color:#5c2323; background:#2a1414; }
+  #explain ol { list-style:none; margin:0; padding:0; }
+  #explain li.step { display:grid; grid-template-columns:28px minmax(0,1fr); column-gap:10px; }
+  #explain .rail { display:flex; flex-direction:column; align-items:center; }
+  #explain .num { width:22px; height:22px; border-radius:11px; background:var(--bg-tertiary); border:1px solid var(--border);
+    color:var(--text-secondary); font-size:10px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+  #explain .line { width:1px; flex-grow:1; background:var(--border); min-height:8px; }
+  #explain .body { padding:0 0 12px; min-width:0; }
+  #explain .lbl { color:var(--text-secondary); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+  #explain details.tool > summary { list-style:none; display:flex; align-items:center; gap:8px; background:var(--bg-tertiary);
+    border:1px solid var(--border); border-radius:var(--radius-sm); padding:6px 10px; color:var(--text-primary); font-weight:400; }
+  #explain details.tool > summary::-webkit-details-marker { display:none; }
+  #explain details.tool > summary::before { content:'▸'; color:var(--text-secondary); }
+  #explain details.tool[open] > summary::before { content:'▾'; }
+  #explain details.tool > summary:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
+  #explain .tname { color:var(--cyan); font-weight:600; }
+  #explain .targs { color:var(--text-secondary); font-size:12px; flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #explain .tdur { color:var(--text-secondary); font-size:12px; white-space:nowrap; }
+  #explain .st { padding:1px 8px; border-radius:var(--radius-sm); font-size:11px; font-weight:600; white-space:nowrap; border:1px solid; }
+  #explain .st.success { color:#86efac; background:#0f1f15; border-color:#1f4a2c; }
+  #explain .st.error { color:#fca5a5; background:#2a1414; border-color:#5c2323; }
+  #explain .st.refused { color:#c4b5fd; background:#1e1830; border-color:#3e3266; }
+  #explain .tbody { margin:8px 0 0 18px; display:flex; flex-direction:column; gap:6px; }
+  #explain pre.err { border-color:#5c2323; color:#fca5a5; }
+  #explain .pill { padding:1px 7px; border-radius:var(--radius-sm); font-size:11px; font-weight:600; background:#3a2a0c; color:#fbbf24; }
+  #explain .answer { background:#0f1f15; border:1px solid #1f4a2c; border-radius:var(--radius-sm); padding:8px 10px; white-space:pre-wrap; word-break:break-word; }
+  #explain .say { white-space:pre-wrap; word-break:break-word; }
+  #explain .trunc { background:#24190a; border:1px solid #6b4a12; color:#fde68a; border-radius:var(--radius-sm); padding:8px 10px; }
+  #explain .none { background:var(--bg-tertiary); border:1px dashed var(--border); border-radius:var(--radius-sm); padding:12px; }
+  #explain .xerr { background:#2a1414; border:1px solid #5c2323; color:#fca5a5; border-radius:var(--radius-sm); padding:8px 10px;
+    display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
 </style>
 </head>
 <body>
@@ -363,7 +406,7 @@ function eventLine(r){
   if(!a) return '';
   return `<div class="kv"><b>event</b> <a class="mono" href="/events#${encodeURIComponent(a)}">${esc(a)}</a></div>`;
 }
-async function detail(id){
+async function detail(id, opts){
   // Tear any open terminal down FIRST, unconditionally. detail() replaces the
   // drawer's innerHTML below, which orphans the xterm node; and a same-id
   // re-entry — re-clicking the open row, or triage() ending in detail(id) —
@@ -376,7 +419,7 @@ async function detail(id){
   // painted over.
   if(OPEN===null) OPENER=document.activeElement||null;
   d.classList.add('open'); d.inert=false; document.getElementById('backdrop').classList.add('open');
-  OPEN=id; history.replaceState(null,'','#'+id);
+  OPEN=id; EXPLAIN=null; history.replaceState(null,'','#'+id);
   // A non-OK body (a 401 once the session is gone, a 404) is JSON too; it
   // used to paint as "Investigation #undefined". Say what happened instead.
   let r; try{
@@ -416,6 +459,7 @@ async function detail(id){
       <pre id="raw-findings">${esc(JSON.stringify(f,null,2))}</pre></details>`;
   applyMax();
   focusDetailClose();
+  if(opts && opts.explain) toggleExplain(id);
 }
 // Server timestamps carry microseconds and no zone (they are UTC — see age()
 // in common.js). Shown to the second in the browser's zone, raw value on
@@ -503,7 +547,9 @@ function reportBlock(f){
 // recommendation, steps, verify — so the operator does not carry the id over
 // by hand. A link, not a button: it is navigation.
 function askBlock(r){
-  return `<div class="kv"><a class="chip" href="/?investigation=${Number(r.id)}" title="open the console chat on this investigation">💬 Ask console</a></div>`;
+  return `<div class="kv"><a class="chip" href="/?investigation=${Number(r.id)}" title="open the console chat on this investigation">💬 Ask console</a>
+    <button type="button" class="chip" id="explain-btn" aria-expanded="false" aria-controls="explain" onclick="toggleExplain(${Number(r.id)})" title="how this investigation got to its answer">Explain</button></div>
+    <div id="explain"></div>`;
 }
 // The handoff (CFOP-73). Slack, Discord and ntfy all end a notification with
 // this line; the console is where you are actually looking at the
@@ -742,9 +788,97 @@ async function killCockpit(id){
   toast(`cockpit removed from ${body.host} · ${body.tokens_revoked||0} token(s) revoked`,'ok');
 }
 
+// Explain (CFOP-324): the trace the agent recorded while it investigated —
+// what it was told, what it said, each tool call and the (already redacted)
+// result it was handed, provider switches, the answer. Loaded on click, not
+// with the drawer: most opens never need it. Everything is untrusted text —
+// tool output above all — so every value goes through esc().
+let EXPLAIN=null;
+function fmtMs(ms){ if(ms==null) return ''; return ms<1000? ms+' ms' : (ms/1000).toFixed(ms<10000?1:0)+' s'; }
+function argSummary(a){
+  if(a==null) return '';
+  if(typeof a!=='object') return String(a);
+  return Object.keys(a).map(k=>{ const v=a[k]; return typeof v==='object'? k+'=…' : String(v); }).join(' · ');
+}
+const ST_LABEL={success:'ok', error:'error', refused:'refused'};
+function explainStep(s, i){
+  const rail=`<div class="rail"><span class="num">${i+1}</span><span class="line"></span></div>`;
+  let b='';
+  if(s.kind==='tool'){
+    const st=ST_LABEL[s.status]?s.status:'error';
+    const res=String(s.result||''); const size=s.length!=null?`${Number(s.length).toLocaleString()} chars${s.length>res.length?' · first '+res.length.toLocaleString()+' shown':''}`:'';
+    b=`<details class="tool"><summary><span class="tname">${esc(s.tool)}</span><span class="targs">${esc(argSummary(s.args))}</span>
+      <span class="tdur">${s.cached?'cached':esc(fmtMs(s.duration_ms))}</span><span class="st ${st}">${ST_LABEL[st]}</span></summary>
+      <div class="tbody"><div class="lbl">arguments</div><pre>${esc(JSON.stringify(s.args,null,2))}</pre>
+      <div><span class="lbl">result</span> <span class="muted">${esc(size)}</span></div>
+      <pre class="${st==='error'?'err':''}">${esc(s.result)}</pre></div></details>`;
+  } else if(s.kind==='prompt'){
+    b=`<details><summary>What the model was told <span class="muted">(${Number((s.text||'').length).toLocaleString()} chars)</span></summary><pre>${esc(s.text)}</pre></details>`;
+  } else if(s.kind==='fallback'){
+    b=`<div><span class="pill">provider switch</span> ${esc(s.text)}</div>`;
+  } else if(s.kind==='assistant'){
+    b=`<div class="lbl">model${s.model?' · '+esc(s.model):''}</div><div class="say">${esc(s.text)}</div>`;
+  } else if(s.kind==='answer'){
+    b=`<div class="lbl">final answer${s.model?' · '+esc(s.model):''}</div><div class="answer">${esc(s.text)}</div>`;
+  } else if(s.kind==='truncated'){
+    b=`<div class="trunc">${esc(s.text)}</div>`;
+  } else {
+    b=`<div class="say">${esc(s.text||'')}</div>`;
+  }
+  return `<li class="step">${rail}<div class="body">${b}</div></li>`;
+}
+function explainSummary(steps){
+  const tools=steps.filter(s=>s.kind==='tool');
+  const n=(k)=>tools.filter(s=>s.status===k).length;
+  const sw=steps.filter(s=>s.kind==='fallback').length;
+  const red=tools.reduce((a,s)=>a+((String(s.result).match(/\*\*\*/g)||[]).length),0);
+  const parts=[`<span>${tools.length} tool call${tools.length===1?'':'s'}</span>`];
+  if(sw) parts.push(`<span>${sw} provider switch${sw===1?'':'es'}</span>`);
+  if(n('error')) parts.push(`<span class="bad">${n('error')} error${n('error')===1?'':'s'}</span>`);
+  if(n('refused')) parts.push(`<span>${n('refused')} refused</span>`);
+  if(red) parts.push(`<span>${red} value${red===1?'':'s'} redacted</span>`);
+  return `<div class="xsum">${parts.join('')}</div>`;
+}
+function explainAll(open){ document.querySelectorAll('#explain details').forEach(d=>{ d.open=open; }); }
+async function toggleExplain(id){
+  const box=document.getElementById('explain'), btn=document.getElementById('explain-btn');
+  if(!box) return;
+  if(EXPLAIN===id){ EXPLAIN=null; box.innerHTML=''; if(btn){ btn.classList.remove('active'); btn.setAttribute('aria-expanded','false'); }
+    history.replaceState(null,'','#'+id); return; }
+  EXPLAIN=id; if(btn){ btn.classList.add('active'); btn.setAttribute('aria-expanded','true'); }
+  history.replaceState(null,'','#'+id+'/explain');
+  box.innerHTML='<span class="muted">loading steps…</span>';
+  let body;
+  try{
+    const res=await fetch('/api/investigations/'+id+'/explain');
+    if(!res.ok) throw new Error(res.status===401?'401 — signed out':res.status===404?'404 — no such investigation':'HTTP '+res.status);
+    body=await res.json();
+  }catch(e){
+    if(EXPLAIN!==id || OPEN!==id) return;
+    box.innerHTML=`<div class="xerr" role="alert"><span style="flex:1 1 240px">Could not load the steps${e&&e.message?' ('+esc(e.message)+')':''}. The rest of the drawer is unaffected.</span>
+      <button type="button" class="chip" onclick="EXPLAIN=null;toggleExplain(${Number(id)})">Retry</button></div>`;
+    return;
+  }
+  if(EXPLAIN!==id || OPEN!==id) return;
+  const steps=Array.isArray(body.steps)?body.steps:[];
+  const head=`<div class="xhead"><h3>How it got there</h3>${steps.length?'<button type="button" class="xlink" onclick="explainAll(true)">Expand all</button><button type="button" class="xlink" onclick="explainAll(false)">Collapse all</button>':''}</div>`;
+  if(!steps.length){
+    const msg=body.reason==='pruned'
+      ? `<b>Steps pruned</b><div class="muted">Steps are kept for ${Number(body.retention_days)||30} days (investigations.trace_retention_days). The findings and any cockpit sessions stay.</div>`
+      : `<b>Not recorded</b><div class="muted">This investigation ran before its steps were recorded. Only its conclusion was kept: see the recommendation and the full report.</div>`;
+    box.innerHTML=head+`<div class="none">${msg}</div>`;
+    return;
+  }
+  box.innerHTML=head+explainSummary(steps)+`<ol>${steps.map(explainStep).join('')}</ol>`;
+}
+
 // Inbound only: a pasted or edited URL, and the reload case. detail() keeps
 // the hash in step from the other direction without coming through here.
-function openFromHash(){ const m=location.hash.match(/^#(\d+)$/); if(m && +m[1]!==OPEN) detail(+m[1]); }
+function openFromHash(){
+  const m=location.hash.match(/^#(\d+)(\/explain)?$/); if(!m) return;
+  if(+m[1]!==OPEN) detail(+m[1], {explain:!!m[2]});
+  else if(m[2] && EXPLAIN!==OPEN) toggleExplain(OPEN);
+}
 window.addEventListener('hashchange', openFromHash);
 
 load().then(openFromHash); setInterval(load, 20000);

@@ -2802,9 +2802,11 @@ class KnowledgeBase:
     def get_investigation_events(self, investigation_id: int) -> List[Dict[str, Any]]:
         """Get all events for an investigation in chronological order."""
         with self.session_scope() as session:
+            # id breaks ties: rows a trace writes in the same instant must
+            # still read back in the order they were written (CFOP-324).
             events = session.query(InvestigationEvent).filter(
                 InvestigationEvent.investigation_id == investigation_id
-            ).order_by(InvestigationEvent.event_at.asc()).all()
+            ).order_by(InvestigationEvent.event_at.asc(), InvestigationEvent.id.asc()).all()
 
             return [
                 {
@@ -2823,6 +2825,19 @@ class KnowledgeBase:
                 }
                 for e in events
             ]
+
+    #: The rows an investigation trace writes (CFOP-324). The prune deletes
+    #: only these: a cockpit session is a human verdict, kept like findings.
+    TRACE_EVENT_TYPES = ('tool_call', 'reasoning')
+
+    def prune_investigation_traces(self, older_than_days: int) -> int:
+        """Delete trace rows older than ``older_than_days``; the count deleted."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=int(older_than_days))
+        with self.session_scope() as session:
+            return (session.query(InvestigationEvent)
+                    .filter(InvestigationEvent.event_type.in_(self.TRACE_EVENT_TYPES),
+                            InvestigationEvent.event_at < cutoff)
+                    .delete(synchronize_session=False))
 
     # ========================= Pending Questions (Q&A) =========================
 

@@ -18,6 +18,7 @@ import queue
 import re
 import threading
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify, redirect, send_from_directory
 import time
@@ -232,6 +233,48 @@ def persist_chat_event(kb, session_id: Optional[int], evt: Dict[str, Any]) -> No
                 kb.append_chat_message(session_id, 'error', err)
     except Exception as e:
         logger.warning("Could not persist chat %s event: %s", kind, e)
+
+
+def _trace_step(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One ``investigation_events`` row as a step of the Explain timeline
+    (CFOP-324); None for a row the trace did not write (a cockpit session)."""
+    etype = event.get('event_type')
+    at = event.get('event_at')
+    if etype == 'tool_call':
+        out = event.get('tool_output') if isinstance(event.get('tool_output'), dict) else {}
+        status = out.get('status') or ('success' if event.get('success', True) else 'error')
+        return {
+            'kind': 'tool', 'at': at,
+            'tool': event.get('tool_name') or '',
+            'args': event.get('tool_input'),
+            'result': event.get('reasoning_text') or '',
+            'length': out.get('length'),
+            'cached': bool(out.get('cached')),
+            'status': status,
+            'duration_ms': event.get('duration_ms'),
+        }
+    if etype == 'reasoning':
+        return {
+            'kind': event.get('action_type') or 'note', 'at': at,
+            'text': event.get('reasoning_text') or '',
+            'model': event.get('action_target'),
+        }
+    return None
+
+
+def _trace_absence(started_at: Optional[str], retention_days: int) -> str:
+    """Why an investigation has no trace: ``pruned`` when it started before
+    the retention window, else ``not_recorded``."""
+    if retention_days and retention_days > 0 and started_at:
+        try:
+            started = datetime.fromisoformat(str(started_at).replace('Z', '+00:00'))
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - started > timedelta(days=retention_days):
+                return 'pruned'
+        except ValueError:
+            pass
+    return 'not_recorded'
 
 
 class WebServer:
@@ -1933,6 +1976,35 @@ class WebServer:
                 logger.error(f"get investigation {investigation_id} failed: {e}")
                 return jsonify({'error': str(e)}), 500
 
+        @self.app.route('/api/investigations/<int:investigation_id>/explain')
+        def explain_investigation_api(investigation_id):
+            """How an investigation got to its answer (CFOP-324).
+
+            The trace rows the agent wrote while it ran, oldest first, shaped
+            for the drawer's timeline. Same access as the drill-in above: any
+            console user. Every value in them was redacted before it was
+            stored; nothing here un-redacts anything.
+
+            No rows means one of two things, and the drawer says which:
+            ``pruned`` when the investigation started before the retention
+            window, ``not_recorded`` when it ran before the recorder did.
+            """
+            try:
+                inv = self.operator.kb.get_investigation(investigation_id)
+                if not inv:
+                    return jsonify({'error': 'not found'}), 404
+                events = self.operator.kb.get_investigation_events(investigation_id) or []
+            except Exception as e:
+                logger.error(f"explain investigation {investigation_id} failed: {e}")
+                return jsonify({'error': str(e)}), 500
+            steps = [step for step in (_trace_step(e) for e in events) if step]
+            payload = {'investigation_id': investigation_id, 'recorded': bool(steps),
+                       'steps': steps}
+            if not steps:
+                payload['reason'] = _trace_absence(inv.get('started_at'), self._trace_retention_days())
+                payload['retention_days'] = self._trace_retention_days()
+            return jsonify(payload)
+
         # Operator triage of an investigation (CFOP-65). Until now the
         # investigations table was append-only from the console's side: the
         # read API returned triage_action/operator_notes but nothing could set
@@ -3026,6 +3098,14 @@ class WebServer:
                          session_name=session_name)
         except Exception as e:
             logger.warning(f"cockpit bridge audit failed: {e}")
+
+    def _trace_retention_days(self) -> int:
+        """The agent's ``investigations.trace_retention_days`` (CFOP-324)."""
+        fn = getattr(self.operator, '_trace_retention_days', None)
+        try:
+            return int(fn()) if callable(fn) else 30
+        except Exception:
+            return 30
 
     def reap_cockpits(self) -> int:
         """Janitor entry point for the agent's worker loop (CFOP-36).

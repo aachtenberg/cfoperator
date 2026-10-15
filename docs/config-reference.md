@@ -427,6 +427,16 @@ chat:
   # all-local setup whose operator wants raw values (CFOP-272).
   redact_tool_results: true
 
+# Investigations
+investigations:
+  # Every step of an investigation's tool loop is recorded for the console's
+  # Explain view (CFOP-324): what the model was told, what it said between
+  # calls, each tool call with its arguments and the redacted result it was
+  # handed, provider switches and the final answer. Rows past this many days
+  # are pruned once a day. Cockpit sessions and the investigation's findings
+  # are never pruned. 0 keeps traces forever. Default 30.
+  trace_retention_days: 30
+
 # Event Runtime
 event_runtime:
   # Outbound liveness ping to a dead-man's-switch endpoint (CFOP-152).

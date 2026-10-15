@@ -69,6 +69,7 @@ from change_record_client import (
 from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
 from reverify import reverify_filed_rows  # CFOP-185: re-check what was filed
 import llm_keys  # CFOP-111: the one lookup for hosted-provider API keys
+from investigation_trace import InvestigationTrace  # CFOP-324: how it got there
 from past_learnings import (  # CFOP-377: what an investigation is shown
     CANDIDATE_LIMIT, SIMILARITY_FLOOR, provenance as learning_provenance,
     select_prompt_learnings,
@@ -102,6 +103,11 @@ logger = logging.getLogger("cfoperator")
 OODA_CYCLES = Counter('cfoperator_ooda_cycles_total', 'Total OODA cycles executed')
 SWEEPS = Counter('cfoperator_sweeps_total', 'Total sweeps executed', ['mode'])  # reactive/proactive
 TOOL_CALLS = Counter('cfoperator_tool_calls_total', 'Tool executions', ['tool_name', 'result'])
+# One per investigation trace row attempted (CFOP-324). kind is the row's kind
+# (tool_call, prompt, assistant, fallback, answer, truncated); result is
+# recorded, failed or truncated, so a recorder that stops writing shows up.
+TRACE_EVENTS = Counter('cfoperator_investigation_trace_events_total',
+                       'Investigation trace rows by kind and result', ['kind', 'result'])
 TOOL_RESULT_REDACTIONS = Counter(
     'cfoperator_tool_result_redactions_total',
     'Secret-shaped values replaced in tool results before a model or the transcript saw them (CFOP-272)',
@@ -2222,6 +2228,7 @@ class CFOperator:
         self.last_cockpit_reap = 0  # cockpit janitor tick (CFOP-36)
         self.last_tracker_sync = 0  # issue-tracker hand-off tick (CFOP-170)
         self.last_reverify = 0  # filed-row re-verification tick (CFOP-185)
+        self.last_trace_prune = 0  # investigation trace retention tick (CFOP-324)
         self._singleton = None  # single-agent lock, taken in run() (CFOP-322)
         self.last_singleton_check = 0
         self._tracker_url_warned = False
@@ -3437,13 +3444,23 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # Run LLM investigation with tools, with provider fallback so a
             # transient Ollama timeout (e.g. GPU cold-start) doesn't abort
             # the investigation.
+            # Every step of the loop lands in investigation_events, so the
+            # console can show how this investigation got to its answer
+            # (CFOP-324). It never raises into the loop.
+            trace = InvestigationTrace(
+                self.kb, inv_id,
+                on_row=lambda kind, res: TRACE_EVENTS.labels(kind=kind, result=res).inc())
             try:
                 trigger_user_msg = frame_untrusted_data(trigger, "investigation trigger", 500)
+                user_message = f'Investigate this alert:\n{trigger_user_msg}'
+                trace.prompt(system_prompt, user_message)
                 result = self._chat_with_tools_with_fallback(
-                    messages=[{'role': 'user', 'content': f'Investigate this alert:\n{trigger_user_msg}'}],
+                    messages=[{'role': 'user', 'content': user_message}],
                     system_context=system_prompt,
                     tool_policy=UNATTENDED,
+                    event_callback=trace,
                 )
+                trace.answer(result)
             except RuntimeError as e:
                 # An open circuit (CFOP-321) is the same answer as no provider:
                 # nothing was asked, so record a failure that says why rather
@@ -4384,6 +4401,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 # only re-read evidence the investigation just wrote.
                 if now - self.last_reverify > self._get_reverify_interval():
                     self._reverify_filed_rows(); self.last_reverify = now
+                # Daily: investigation traces past their retention (CFOP-324).
+                if now - self.last_trace_prune > 86400:
+                    self._prune_investigation_traces(); self.last_trace_prune = now
             except Exception:
                 logger.exception("Remediation worker tick failed")
             time.sleep(10)
@@ -4427,6 +4447,33 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 logger.info("Cockpit PTY bridge listening on :%s", config.port)
         except Exception as e:
             logger.error(f"cockpit bridge failed to start: {e}", exc_info=True)
+
+    def _trace_retention_days(self) -> int:
+        """``investigations.trace_retention_days``; 0 or less keeps traces forever."""
+        cfg = (self.config or {}).get('investigations') if isinstance(self.config, dict) else None
+        try:
+            return int((cfg or {}).get('trace_retention_days', 30))
+        except (TypeError, ValueError):
+            return 30
+
+    def _prune_investigation_traces(self) -> int:
+        """Delete investigation trace rows older than the retention window.
+
+        Only the trace (tool_call and reasoning rows): a cockpit session is a
+        human's verdict and is kept like the findings, and the investigation
+        row itself is never touched (CFOP-324).
+        """
+        days = self._trace_retention_days()
+        if days <= 0:
+            return 0
+        try:
+            pruned = self.kb.prune_investigation_traces(days)
+        except Exception as e:
+            logger.warning(f"Investigation trace prune failed: {e}")
+            return 0
+        if pruned:
+            logger.info(f"Pruned {pruned} investigation trace row(s) older than {days} days")
+        return pruned
 
     def _reap_cockpits(self) -> int:
         """Sweep hosts for cockpit sessions that outlived their TTL (CFOP-36).
@@ -10183,6 +10230,7 @@ Only return the JSON array, no other text."""
                     'max': max_iterations
                 })
 
+            started = time.monotonic()
             try:
                 content, result, was_cached = self._cached_tool_exec(
                     tool_name, tool_args, tool_cache, max_result_chars, policy=tool_policy)
@@ -10211,20 +10259,48 @@ Only return the JSON array, no other text."""
                 if opened:
                     stats.opened_prs.append(opened)
 
+            outcome = _tool_call_result_label(result)
             if event_callback:
                 # `result` is the redacted copy _cached_tool_exec handed back: the
                 # console stores this event in the member-readable transcript
                 # (web_server.py, chat_sessions), so it must see what the model saw.
-                event_callback('tool_result', {
+                event = {
                     'tool': tool_name,
                     'result': json.dumps(result, default=str)[:500],
-                    'iteration': iteration + 1
-                })
+                    'iteration': iteration + 1,
+                    'duration_ms': int((time.monotonic() - started) * 1000),
+                    'cached': bool(was_cached),
+                    # A refusal ran nothing: the policy working, not a failure.
+                    'status': 'refused' if _tool_was_refused(result) else outcome,
+                }
+                # The investigation trace (CFOP-324) keeps the string the model
+                # was handed, not the 500-char preview. Opt-in, so the chat's
+                # live stream to the browser stays the size it was.
+                if getattr(event_callback, 'wants_full_result', False):
+                    event['content'] = content
+                event_callback('tool_result', event)
 
-            outcome = _tool_call_result_label(result)
             TOOL_CALLS.labels(tool_name=tool_name, result=outcome).inc()
             tracing.annotate({'cfop.tool.cached': bool(was_cached), 'cfop.tool.result': outcome})
             return content
+
+    @staticmethod
+    def _emit_assistant_text(event_callback, text, provider_type: str, model: str,
+                             iteration: int) -> None:
+        """Stream the text a model wrote alongside its tool calls (CFOP-324).
+
+        Every provider branch calls this before it runs the turn's tools, so
+        the investigation trace shows what the model said it was doing next to
+        what it did. That text otherwise lives only in ``full_messages``, which
+        the history bound may collapse before the loop ends. A turn with no
+        text emits nothing. The console's chat stream ignores the event.
+        """
+        if event_callback and str(text or '').strip():
+            event_callback('assistant', {
+                'text': str(text),
+                'model': f"{provider_type}/{model}",
+                'iteration': iteration + 1,
+            })
 
     @staticmethod
     def _to_anthropic_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -10906,6 +10982,8 @@ Only return the JSON array, no other text."""
                     tool_calls = message.get('tool_calls', [])
 
                     if tool_calls:
+                        self._emit_assistant_text(event_callback, message.get('content'),
+                                                  provider_type, model, iteration)
                         # Append the assistant message (with all tool_calls) once
                         full_messages.append(message)
 
@@ -10982,6 +11060,8 @@ Only return the JSON array, no other text."""
                     tool_calls = message.get('tool_calls', [])
 
                     if tool_calls:
+                        self._emit_assistant_text(event_callback, message.get('content'),
+                                                  provider_type, model, iteration)
                         # Append the assistant message (with all tool_calls) once
                         full_messages.append(message)
 
@@ -11071,6 +11151,8 @@ Only return the JSON array, no other text."""
                     text_parts = [b.get('text', '') for b in content_blocks if b.get('type') == 'text']
 
                     if tool_use_blocks:
+                        self._emit_assistant_text(event_callback, '\n'.join(text_parts),
+                                                  provider_type, model, iteration)
                         # Execute ALL tool calls and collect results
                         tool_results = []
                         for tool_block in tool_use_blocks:
