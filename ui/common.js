@@ -320,8 +320,8 @@ function injectListKitCss(){
 // across every repaint — the poll's included — by construction. A header
 // naming a key the page did not define throws here, at load, so a typo
 // fails the node harness rather than shipping a header that does nothing.
-// Several tables with the same header set (remediations has three) share
-// the one state: a click on any header updates them all.
+// A page with several header rows naming the same keys shares the one
+// state: a click on any of them updates them all.
 function listKit(opts){
   const o=opts||{}, keys=o.keys||{}, firstDir=o.dir||{};
   const valid=k=>!!keyAccessor(keys,k);

@@ -147,6 +147,12 @@ def test_page_wiring_for_the_hand_off():
     assert "queue_tracker:'tracker'" in src
     assert "confirmTracker" in src and "queue_tracker" in re.search(r"function toggleFlag.*?\n\}", src, re.S).group(0)
     assert 'id="filed-section"' in page and 'id="rows-filed"' in page and 'id="filed-count"' in page
+    # One table, three buckets (CFOP-419): three tables laid out three sets of
+    # columns, and the headers did not line up once there were no active rows.
+    tables = re.findall(r"<table>.*?</table>", page, re.S)
+    assert len(tables) == 1 and page.count("<thead>") == 1, "the buckets must share one table and one header"
+    for tbody in ("rows", "rows-filed", "rows-done", "filed-section", "done-section", "empty"):
+        assert f'<tbody id="{tbody}"' in tables[0], f"#{tbody} is not a tbody of the one table"
     assert "'filed'" in re.search(r"const show = \[.*?\];", src).group(0)
 
 
