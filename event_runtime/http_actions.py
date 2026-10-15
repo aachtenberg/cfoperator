@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from typing import Optional, Tuple
 
+from cfshared import tracing
 from cfshared.evidence import EVIDENCE_KEY, collect as collect_evidence
 from .models import ActionRequest, ActionResult, Alert, ContextEnvelope, Decision
 from .plugins import ActionHandler, DecisionEngine, TargetUnavailableError
@@ -46,12 +47,15 @@ AGENT_TOKEN_ENV = "CFOP_API_TOKEN"  # noqa: S105 - env var name, not a secret
 
 
 def _agent_headers() -> dict:
-    """Content-Type plus bearer auth for calls into the agent API."""
+    """Content-Type plus bearer auth for calls into the agent API, and the
+    current ``alert`` span's traceparent so the agent's triage and
+    investigation land in this alert's trace (CFOP-317; nothing is added
+    while tracing is off)."""
     headers = {"Content-Type": "application/json"}
     token = os.getenv(AGENT_TOKEN_ENV, "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    return headers
+    return tracing.inject(headers)
 
 
 # ---- completion endpoint helpers -----------------------------------------

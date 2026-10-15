@@ -35,6 +35,14 @@ data:
       database: ${POSTGRES_DB}
       user: ${POSTGRES_USER}
       password: ${POSTGRES_PASSWORD}
+{{- if .Values.tracing.enabled }}
+
+    # Read by the agent and the event runtime alike (CFOP-317). The endpoint
+    # is OTEL_EXPORTER_OTLP_ENDPOINT on both workloads, not a key here.
+    observability:
+      tracing:
+        enabled: true
+{{- end }}
 {{- if eq .Values.profile "remediate" }}
 
     # _executor_config() reads remediation.executor — a top-level executor:

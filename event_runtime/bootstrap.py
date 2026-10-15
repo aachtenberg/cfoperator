@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from urllib.parse import quote
@@ -11,6 +12,9 @@ from urllib.parse import quote
 # imports PyYAML lazily) precisely so this runtime keeps its portable posture.
 from cfshared import config as shared_config
 from cfshared import repos as shared_repos
+from cfshared import tracing
+
+logger = logging.getLogger(__name__)
 
 from .defaults import (
     HostContextProvider,
@@ -51,6 +55,15 @@ from .worker import BackgroundAlertWorker, FileBackedWorkerState
 def build_portable_runtime(config_path: str | None = None) -> EventRuntime:
     """Build a runtime that runs with only Python stdlib dependencies."""
     _load_env_file(config_path)
+    # One alert is one trace (CFOP-317): the same observability.tracing block
+    # the agent reads (both mount config.yaml). Off by default, and off means
+    # the SDK is never imported. The runtime names itself unless config or
+    # OTEL_SERVICE_NAME says otherwise. Never a reason not to start.
+    try:
+        tracing.init_tracing(_load_root_config(config_path),
+                             default_service_name="cfoperator-event-runtime")
+    except Exception as exc:
+        logger.warning("Tracing not started (%s); running untraced", type(exc).__name__)
     base_dir = Path(os.getenv("CFOP_EVENT_RUNTIME_DIR", str(Path.home() / ".cfoperator" / "event-runtime")))
     outbox_dir = os.getenv("CFOP_EVENT_RUNTIME_OUTBOX_DIR", str(base_dir / "outbox"))
     schedule_dir = os.getenv("CFOP_EVENT_RUNTIME_SCHEDULE_DIR", str(base_dir / "scheduled"))

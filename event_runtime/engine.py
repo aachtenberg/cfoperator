@@ -8,6 +8,8 @@ import os
 from time import perf_counter
 from typing import Dict, List, Optional
 
+from cfshared import tracing
+
 from .activity import build_activity_feed, filter_activities, filter_events
 from .alert_store import AlertPage, AlertQuery, AlertStoreUnavailable
 from .escalation import EscalationLedger
@@ -98,7 +100,22 @@ class EventRuntime:
         already let through. They are stateful: the cooldown claimed the
         fingerprint on the first run, so evaluating them again suppresses the
         alert as a duplicate of itself (CFOP-395).
+
+        One alert is one trace (CFOP-317): this ``alert`` root is what the
+        agent's ``triage`` and ``investigation`` spans hang under, over the
+        traceparent the outbound calls carry. Shapes only: the alert's
+        attributes are the redacted, clipped set ``tracing.alert_attributes``
+        allows, plus the status and action the pass ended with.
         """
+        with tracing.span('alert', tracing.alert_attributes(alert.to_dict())):
+            result = self._handle_alert(alert, admitted=admitted)
+            tracing.annotate({'cfop.alert.status': result.get('status'),
+                              'cfop.alert.action': result.get('action')})
+            if result.get('success') is False:
+                tracing.mark_error('AlertHandlingFailed')
+            return result
+
+    def _handle_alert(self, alert: Alert, *, admitted: bool = False) -> Dict[str, object]:
         started = perf_counter()
         result: Dict[str, object] | None = None
         observe_alert_received(alert)

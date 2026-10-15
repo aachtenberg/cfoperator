@@ -42,6 +42,14 @@ ALERT_TEXT_LIMIT = 200
 # names) still come from config or from a model's output; cap them anyway.
 ATTR_LIMIT = 256
 
+# Where an inbound trace context rides on an alert dict between the HTTP
+# route that received it and the root span opened later, on another thread
+# (CFOP-317: /v1/investigate enqueues, and the investigation starts on the
+# worker). run_investigation and run_triage pop it before anything else
+# sees the alert.
+TRACE_CARRIER_KEY = '_trace_carrier'
+_CARRIER_HEADERS = ('traceparent', 'tracestate')
+
 _tracer = None
 _provider = None
 # Spans span() has open, so a shutdown can end what is still in flight
@@ -72,14 +80,26 @@ def enabled() -> bool:
     return _tracer is not None
 
 
-def init_tracing(config: Optional[Mapping[str, Any]]) -> bool:
+def _service_name(cfg: Mapping[str, Any], default: str) -> str:
+    """Config, then the standard env var, then the process's own default.
+
+    The agent and the event runtime read one config file (both mount it), so
+    a name set there names both; only an unset one lets each process name
+    itself, which is what tells their spans apart in a trace (CFOP-317).
+    """
+    return cfg.get('service_name') or os.getenv('OTEL_SERVICE_NAME') or default
+
+
+def init_tracing(config: Optional[Mapping[str, Any]],
+                 default_service_name: str = DEFAULT_SERVICE_NAME) -> bool:
     """Start exporting spans if ``observability.tracing.enabled`` is true.
 
     Endpoint and service name come from the config when given, else from the
     standard ``OTEL_EXPORTER_OTLP_ENDPOINT`` / ``OTEL_SERVICE_NAME``, which the
     exporter and resource read themselves -- so a deploy can point at Tempo
-    without a config edit. Returns whether tracing is on. A missing SDK is a
-    warning, never a crash: the agent runs untraced rather than not at all.
+    without a config edit. ``default_service_name`` is what a process calls
+    itself when neither says. Returns whether tracing is on. A missing SDK is
+    a warning, never a crash: the agent runs untraced rather than not at all.
     """
     global _tracer
     observability = (config or {}).get('observability') or {}
@@ -99,8 +119,7 @@ def init_tracing(config: Optional[Mapping[str, Any]]) -> bool:
                        f"OpenTelemetry SDK is not installed ({e}); running untraced")
         return False
 
-    service_name = (cfg.get('service_name') or os.getenv('OTEL_SERVICE_NAME')
-                    or DEFAULT_SERVICE_NAME)
+    service_name = _service_name(cfg, default_service_name)
     provider = TracerProvider(resource=Resource.create({'service.name': service_name}))
     endpoint = (cfg.get('endpoint') or '').rstrip('/')
     # An explicit endpoint is the collector/Tempo base URL, like the env var;
@@ -189,8 +208,13 @@ def _clean(attributes: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
 
 
 @contextmanager
-def span(name: str, attributes: Optional[Mapping[str, Any]] = None) -> Iterator[Any]:
+def span(name: str, attributes: Optional[Mapping[str, Any]] = None,
+         parent: Optional[Mapping[str, str]] = None) -> Iterator[Any]:
     """A span around the block, or a no-op while tracing is off.
+
+    ``parent`` is a W3C carrier (``traceparent`` and friends, as
+    ``carrier_from`` returns them): the span then continues that trace as a
+    child of the remote span instead of starting one of its own (CFOP-317).
 
     An exception leaving the block marks the span ERROR with ``error.type``
     set to its class and is re-raised; its message is not recorded (see the
@@ -200,10 +224,14 @@ def span(name: str, attributes: Optional[Mapping[str, Any]] = None) -> Iterator[
         yield _NOOP
         return
     from opentelemetry.trace import Status, StatusCode
+    context = None
+    if parent:
+        from opentelemetry.propagate import extract
+        context = extract(parent)
     s = None
     try:
         with _tracer.start_as_current_span(
-                name[:ATTR_LIMIT], attributes=_clean(attributes),
+                name[:ATTR_LIMIT], context=context, attributes=_clean(attributes),
                 record_exception=False, set_status_on_exception=False) as s:
             with _open_lock:
                 _open_spans.add(s)
@@ -220,6 +248,27 @@ def span(name: str, attributes: Optional[Mapping[str, Any]] = None) -> Iterator[
         if s is not None:
             with _open_lock:
                 _open_spans.discard(s)
+
+
+def inject(headers: Dict[str, str]) -> Dict[str, str]:
+    """Put the current span's W3C ``traceparent`` on outbound headers, so the
+    process on the other side continues this trace (CFOP-317). Nothing is
+    added while tracing is off or no span is open. Returns the same dict."""
+    if _tracer is not None:
+        from opentelemetry.propagate import inject as _inject
+        _inject(headers)
+    return headers
+
+
+def carrier_from(headers: Mapping[str, Any]) -> Optional[Dict[str, str]]:
+    """The W3C trace headers out of an inbound request, as a plain dict that
+    a later ``span(parent=...)`` can continue -- or None when there are none.
+    No SDK involved, so a route may call it whether tracing is on or off."""
+    out: Dict[str, str] = {}
+    for key, value in headers.items():
+        if str(key).lower() in _CARRIER_HEADERS and value:
+            out[str(key).lower()] = str(value)
+    return out or None
 
 
 def traced(name: str, count_attr: Optional[str] = None):

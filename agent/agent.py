@@ -2854,7 +2854,11 @@ class CFOperator:
         # investigation shows in the trace instead of vanishing (CFOP-316).
         # The alert's text goes on as redacted, clipped attributes; the span
         # name stays fixed so a trace list does not grow one name per alert.
-        with tracing.span('investigation', tracing.alert_attributes(alert)):
+        # The runtime's traceparent, when its request carried one, makes this
+        # a child of its `alert` span rather than a root (CFOP-317); popped
+        # first, so nothing downstream sees the key.
+        parent = alert.pop(tracing.TRACE_CARRIER_KEY, None) if isinstance(alert, dict) else None
+        with tracing.span('investigation', tracing.alert_attributes(alert), parent=parent):
             with self._investigation_lock:
                 context = self._observe_alert(alert)
                 context = self._orient(context)
@@ -2880,8 +2884,11 @@ class CFOperator:
 
     def run_triage(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """Classify an alert; see ``_run_triage``. This layer is the trace
-        span (CFOP-316), so the body's many exits need no ``with`` each."""
-        with tracing.span('triage', tracing.alert_attributes(alert)):
+        span (CFOP-316), so the body's many exits need no ``with`` each.
+        A traceparent the runtime sent rides in under TRACE_CARRIER_KEY and
+        is popped here (CFOP-317)."""
+        parent = alert.pop(tracing.TRACE_CARRIER_KEY, None) if isinstance(alert, dict) else None
+        with tracing.span('triage', tracing.alert_attributes(alert), parent=parent):
             return self._run_triage(alert)
 
     def _run_triage(self, alert: Dict[str, Any]) -> Dict[str, Any]:

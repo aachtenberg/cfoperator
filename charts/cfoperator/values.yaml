@@ -52,6 +52,14 @@ alertmanager:
 loki:
   url: ""
 
+# Optional — OpenTelemetry tracing (docs/llm-observability.md, "Tracing").
+# Off by default, and off means the SDK is never imported. endpoint is the
+# OTLP/HTTP base URL (Tempo accepts it natively, no collector needed); it is
+# set on the agent AND the event runtime, so one alert is one trace.
+tracing:
+  enabled: false
+  endpoint: ""
+
 notify:
   slackWebhook: ""
   discordWebhook: ""
