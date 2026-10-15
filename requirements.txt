@@ -32,6 +32,8 @@ opentelemetry-exporter-otlp-proto-http>=1.44,<2
 requests>=2.31.0
 
 # Utilities
+# Console-set provider keys are stored encrypted (agent/llm_keys.py, CFOP-111).
+cryptography>=42,<47
 pyyaml>=6.0
 python-dotenv>=1.0.0
 slack-sdk>=3.26.0

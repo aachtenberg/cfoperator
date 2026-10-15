@@ -68,6 +68,7 @@ from change_record_client import (
 )
 from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
 from reverify import reverify_filed_rows  # CFOP-185: re-check what was filed
+import llm_keys  # CFOP-111: the one lookup for hosted-provider API keys
 from past_learnings import (  # CFOP-377: what an investigation is shown
     CANDIDATE_LIMIT, SIMILARITY_FLOOR, provenance as learning_provenance,
     select_prompt_learnings,
@@ -4623,7 +4624,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         llm = ec.get('llm') if isinstance(ec.get('llm'), dict) else {}
         na = ec.get('node_action') if isinstance(ec.get('node_action'), dict) else {}
         model = str(na.get('model') or llm.get('model') or _ANTHROPIC_DEFAULT_EXEC_MODEL)
-        api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
+        api_key = self.provider_api_key('anthropic')
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY required to plan node-action before open")
         payload = {
@@ -5949,13 +5950,10 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             out.append(backend)
         return out
 
-    @staticmethod
-    def _judge_api_key(backend: str) -> str:
-        """API key for a judge backend, or '' when unset."""
-        if backend == 'anthropic':
-            return os.getenv('ANTHROPIC_API_KEY', '').strip()
-        cfg = OPENAI_COMPAT_PROVIDERS.get(backend) or {}
-        return os.getenv(cfg.get('key_env', ''), '').strip() if cfg else ''
+    def _judge_api_key(self, backend: str) -> str:
+        """API key for a judge backend, or '' when unset. The one lookup
+        (CFOP-111), so a key set from the console makes a judge eligible."""
+        return self.provider_api_key(backend)
 
     def _judge_model(self, backend: str) -> str:
         """Model this judge backend runs: DB setting, else config, else floor.
@@ -7638,7 +7636,7 @@ Return empty array if nothing notable: {{"insights": []}}"""
                 )
                 text = resp.json().get('choices', [{}])[0].get('message', {}).get('content', '')
             elif provider_type == 'anthropic':
-                api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                api_key = self.provider_api_key('anthropic')
                 if not api_key:
                     return
                 payload = {
@@ -8443,7 +8441,7 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                 data = resp.json()
                 text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
             elif provider_type == 'anthropic':
-                api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                api_key = self.provider_api_key('anthropic')
                 if not api_key:
                     logger.warning("ANTHROPIC_API_KEY not set for learning extraction")
                     return
@@ -10193,17 +10191,24 @@ Only return the JSON array, no other text."""
                 })
         return converted
 
-    @staticmethod
-    def _openai_compat_request_config(provider_type: str):
+    def _openai_compat_request_config(self, provider_type: str):
         """Resolve (api_key, chat_completions_url) for an OpenAI-compatible provider.
 
         Returns (None, None) for an unknown provider. The api_key may be '' if
-        the provider's key env var is unset — callers check and raise.
+        no key is set anywhere (console or env) — callers check and raise.
         """
         cfg = OPENAI_COMPAT_PROVIDERS.get(provider_type)
         if not cfg:
             return None, None
-        return os.getenv(cfg['key_env'], ''), cfg['base_url'].rstrip('/') + '/chat/completions'
+        return self.provider_api_key(provider_type), cfg['base_url'].rstrip('/') + '/chat/completions'
+
+    def provider_api_key(self, backend: str) -> str:
+        """The one lookup for a hosted provider's API key (CFOP-111): a key set
+        from Admin → LLM (stored encrypted in the knowledge base) over the
+        env var, '' when neither. Every call site in the agent goes through
+        here, and the console reads the same module, so availability, model
+        listing, chat, the fallback chain and the judge agree."""
+        return llm_keys.api_key(getattr(self, 'kb', None), backend)
 
     @staticmethod
     def _openai_compat_request_params(provider_type: str) -> Dict[str, Any]:
@@ -10257,12 +10262,11 @@ Only return the JSON array, no other text."""
 
     def _provider_unusable_reason(self, backend: str) -> Optional[str]:
         """Why a hosted backend cannot be called right now, or None if it can."""
-        cfg = OPENAI_COMPAT_PROVIDERS.get(backend)
-        key_env = cfg['key_env'] if cfg else ('ANTHROPIC_API_KEY' if backend == 'anthropic' else None)
+        key_env = llm_keys.key_env_for(backend)
         if not key_env:
             return None
-        if not os.getenv(key_env):
-            return f"{key_env} not set"
+        if not self.provider_api_key(backend):
+            return f"{key_env} not set (env, or Admin → LLM)"
         if not self._configured_model_for(backend):
             return "no model selected (pick one in Admin → LLM, or name one in llm.fallback)"
         return None
@@ -10348,11 +10352,8 @@ Only return the JSON array, no other text."""
 
             fb_provider = self._resolve_provider(fb_type, None)
             if fb_provider and fb_provider not in providers:
-                # Verify the provider has required config (API keys, etc.)
-                if fb_type in OPENAI_COMPAT_PROVIDERS and not os.getenv(
-                        OPENAI_COMPAT_PROVIDERS[fb_type]['key_env']):
-                    continue
-                if fb_type == 'anthropic' and not os.getenv('ANTHROPIC_API_KEY'):
+                # A hosted rung needs a key: console-set or env (CFOP-111).
+                if fb_type in ('anthropic', *OPENAI_COMPAT_PROVIDERS) and not self.provider_api_key(fb_type):
                     continue
                 providers.append(fb_provider)
 
@@ -10944,7 +10945,7 @@ Only return the JSON array, no other text."""
 
                 elif provider_type == 'anthropic':
                     # Anthropic Messages API with tool use
-                    api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                    api_key = self.provider_api_key('anthropic')
                     if not api_key:
                         raise ValueError("ANTHROPIC_API_KEY not set")
 
@@ -11135,7 +11136,7 @@ Only return the JSON array, no other text."""
                 stats.output_tokens += usage.get('completion_tokens', 0)
                 summary_text = data.get('choices', [{}])[0].get('message', {}).get('content', '')
             elif provider_type == 'anthropic':
-                api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                api_key = self.provider_api_key('anthropic')
                 converted = self._to_anthropic_messages(full_messages)
                 payload = {
                     'model': model, 'max_tokens': 4096,

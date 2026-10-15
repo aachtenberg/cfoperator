@@ -198,7 +198,10 @@ llm:
     # for its tunables. (CFOP-168, CFOP-390)
     # num_ctx: 16384
 
-  # Fallback chain (on error/timeout)
+  # Fallback chain (on error/timeout). The api_key lines name the env vars
+  # the deploy fills; a key can also be set live in Admin → LLM (CFOP-111),
+  # where it is stored encrypted under CFOP_SESSION_SECRET, wins over the
+  # env, and is never shown back. Executor Jobs still read the cluster Secret.
   fallback:
     - provider: groq
       model: llama-3.3-70b-versatile

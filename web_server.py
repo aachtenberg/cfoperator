@@ -30,7 +30,7 @@ from web_auth import (
     ROLE_ADMIN, install_auth, require_console_admin, require_role, require_token_scope)
 from auth.bootstrap import init_auth_store
 from auth.models import (
-    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_REMEDIATION_ALLOWLIST,
+    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_LLM_KEY, EVENT_REMEDIATION_ALLOWLIST,
     EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
 # The cockpit spawn mints a session token server-side, and it must resolve the
 # caller exactly as POST /api/auth/tokens does — same role ceiling, same audit
@@ -111,6 +111,14 @@ def _openai_compat_providers() -> dict:
     """
     from agent import OPENAI_COMPAT_PROVIDERS
     return OPENAI_COMPAT_PROVIDERS
+
+
+def _llm_keys():
+    """The agent's key lookup (agent/llm_keys.py, CFOP-111) — lazy, same reason
+    as above. The console asks it, with the operator's knowledge base, whether
+    a provider has a key, so a key set here is the key the agent chats with."""
+    from agent import llm_keys
+    return llm_keys
 
 
 def _normalize_model_id(backend: str, model: str) -> str:
@@ -618,12 +626,14 @@ class WebServer:
             # agent's registry — label and key from the same entry the agent
             # chats through, so availability cannot drift off the env var
             # the agent actually reads.
+            keys = _llm_keys()
             for backend, cfg in _openai_compat_providers().items():
                 providers.append({
                     'id': backend,
                     'name': cfg['label'],
                     'description': _PROVIDER_DESCRIPTIONS.get(backend, f"{cfg['label']} models"),
-                    'available': bool(os.getenv(cfg['key_env'], ''))
+                    # Console-set or env, the same answer the agent gets (CFOP-111).
+                    'available': bool(keys.api_key(self.operator.kb, backend))
                 })
 
             # Check Anthropic
@@ -631,7 +641,7 @@ class WebServer:
                 'id': 'anthropic',
                 'name': 'Anthropic',
                 'description': 'Claude models',
-                'available': bool(os.getenv('ANTHROPIC_API_KEY', ''))
+                'available': bool(keys.api_key(self.operator.kb, 'anthropic'))
             })
 
             return jsonify({'providers': providers})
@@ -663,9 +673,9 @@ class WebServer:
                     # models_require_tools row lists only ids that can run
                     # the tool loop (OpenRouter: ~70 of ~470 cannot).
                     cfg = _openai_compat_providers()[backend]
-                    api_key = os.getenv(cfg['key_env'], '')
+                    api_key = _llm_keys().api_key(self.operator.kb, backend)
                     if not api_key:
-                        return jsonify({'error': f"{cfg['key_env']} not set", 'models': []}), 500
+                        return jsonify({'error': f"{cfg['key_env']} not set (env, or Admin → LLM)", 'models': []}), 500
                     resp = requests.get(
                         f"{cfg['base_url'].rstrip('/')}/models",
                         headers={'Authorization': f'Bearer {api_key}'},
@@ -683,9 +693,9 @@ class WebServer:
                     return jsonify({'models': models, 'selected': selected})
 
                 elif backend == 'anthropic':
-                    api_key = os.getenv('ANTHROPIC_API_KEY', '')
+                    api_key = _llm_keys().api_key(self.operator.kb, 'anthropic')
                     if not api_key:
-                        return jsonify({'error': 'ANTHROPIC_API_KEY not set', 'models': []}), 500
+                        return jsonify({'error': 'ANTHROPIC_API_KEY not set (env, or Admin → LLM)', 'models': []}), 500
                     resp = requests.get(
                         'https://api.anthropic.com/v1/models',
                         headers={
@@ -805,6 +815,80 @@ class WebServer:
                 'effective': self.operator._triage_model(),
                 'db': model,
             })
+
+        # Hosted-provider API keys from the console (CFOP-111). Stored
+        # encrypted in the knowledge base and winning over the env, through
+        # the same lookup the agent chats with. GET never carries a value:
+        # a configured flag, the source and the last four characters.
+        def _llm_key_audit(backend: str, action: str) -> None:
+            store = getattr(self, 'auth_store', None)
+            if store is None:
+                return
+            store.record(EVENT_LLM_KEY, actor=_actor(), target=backend,
+                         source_ip=request.remote_addr, action=action)
+
+        @self.app.route('/api/settings/llm_keys')
+        def get_llm_keys():
+            """Readable by members like the neighbouring settings GETs and
+            /api/providers (configured / source is what "available" already
+            says); the last-four hint is for admins, who are the ones
+            rotating keys and need to tell a rotation from a no-op."""
+            keys = _llm_keys()
+            try:
+                return jsonify({'providers': keys.status(self.operator.kb, with_hint=_is_admin()),
+                                'storage': 'available' if keys.storage_available() else 'unavailable'})
+            except Exception as e:
+                logger.error(f"get llm keys failed: {e}")
+                return jsonify({'error': 'could not read provider keys'}), 500
+
+        def _is_admin() -> bool:
+            try:
+                return _effective_role() == ROLE_ADMIN
+            except Exception:
+                return False
+
+        def _llm_key_row(keys, backend):
+            return next((r for r in keys.status(self.operator.kb) if r['id'] == backend), None)
+
+        @self.app.route('/api/settings/llm_keys/<backend>', methods=['PUT'])
+        @require_role(ROLE_ADMIN)
+        def set_llm_key(backend):
+            keys = _llm_keys()
+            if backend not in keys.hosted_backends():
+                return jsonify({'error': f'unknown provider: {backend}'}), 404
+            data = request.get_json(silent=True) or {}
+            value = str(data.get('key') or '').strip()
+            if not value:
+                return jsonify({'error': 'blank means unchanged; DELETE clears the key'}), 400
+            try:
+                keys.set_key(self.operator.kb, backend, value)
+            except ValueError as e:
+                return jsonify({'error': str(e)}), 400
+            except keys.KeysUnavailable as e:
+                return jsonify({'error': str(e)}), 503
+            except Exception as e:
+                # Never a 200 for a write that did not happen. The detail
+                # stays in the log: a driver message can name the DB host.
+                logger.warning(f"Could not persist the {backend} key (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
+            _llm_key_audit(backend, 'set')
+            logger.info(f"Hosted-provider key for {backend} set from the console")
+            return jsonify({'success': True, 'provider': _llm_key_row(keys, backend)})
+
+        @self.app.route('/api/settings/llm_keys/<backend>', methods=['DELETE'])
+        @require_role(ROLE_ADMIN)
+        def clear_llm_key(backend):
+            keys = _llm_keys()
+            if backend not in keys.hosted_backends():
+                return jsonify({'error': f'unknown provider: {backend}'}), 404
+            try:
+                keys.clear_key(self.operator.kb, backend)
+            except Exception as e:
+                logger.warning(f"Could not clear the {backend} key (DB down?): {e}")
+                return jsonify({'error': 'not cleared: the database is unavailable'}), 503
+            _llm_key_audit(backend, 'cleared')
+            logger.info(f"Hosted-provider key for {backend} cleared from the console; env applies")
+            return jsonify({'success': True, 'provider': _llm_key_row(keys, backend)})
 
         # OODA interval settings
         @self.app.route('/api/settings/ooda')

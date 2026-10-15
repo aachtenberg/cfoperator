@@ -3435,7 +3435,11 @@ class KnowledgeBase:
                 setting = AgentSettings(key=key, value=value)
                 session.add(setting)
             session.commit()
-            _log("info", "Setting updated", key=key, value=value)
+            # A console-set provider key (agent/llm_keys.py, CFOP-111) is
+            # ciphertext here, but ciphertext plus the session secret is the
+            # key, so it stays out of the logs. Everything else logs as before.
+            _log("info", "Setting updated", key=key,
+                 value='<redacted>' if key.startswith('llm_key_') else value)
 
     def get_all_settings(self) -> Dict[str, str]:
         """Get all settings as a dictionary."""

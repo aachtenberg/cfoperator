@@ -247,3 +247,7 @@ EVENT_LEGACY_TOKEN_USED = "token.legacy_used"
 #: before/after live in ``detail``; this is the row someone asks for after a
 #: silent-looking change to what the executor may run over SSH.
 EVENT_REMEDIATION_ALLOWLIST = "remediation.allowlist"
+#: A hosted-provider API key was set or cleared from Admin → LLM (CFOP-111).
+#: ``target`` is the backend and ``detail`` says set or cleared -- never the
+#: value, not even a prefix.
+EVENT_LLM_KEY = "llm.key"
