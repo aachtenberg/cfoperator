@@ -28,7 +28,9 @@ jobs:
   beam-review:
     if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Two model calls at their timeout plus their 429 pauses, with room to
+    # post the comment after (tests/test_local_llm_review.py checks the sum).
+    timeout-minutes: 30
     permissions:
       contents: read
       # The review is an issue comment on a PR; that endpoint wants both.
@@ -57,6 +59,10 @@ jobs:
           # its own default of max). Lower is faster, and a review is not
           # where the last few percent of effort pay for themselves.
           REVIEW_REASONING_EFFORT: ${{ vars.BEAM_REVIEW_EFFORT || 'high' }}
+          # defects: only what the model is sure is a bug. thorough: also
+          # concrete risks a maintainer would raise, as low severity
+          # (CFOP-403). Flip the variable once thorough is measured.
+          REVIEW_SCOPE: ${{ vars.BEAM_REVIEW_SCOPE || 'defects' }}
           # 262k-token window: the whole of most PRs. Still a budget, so one
           # vast generated file cannot push everything else out.
           REVIEW_MAX_DIFF_CHARS: '200000'

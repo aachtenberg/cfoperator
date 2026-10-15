@@ -3,6 +3,7 @@
 What is worth guarding here is not the prompt wording but the behaviour that
 costs something when it drifts: which files reach the model, that nothing
 forces Ollama to reload, and that a PR ends up with one review comment."""
+import email.message
 import io
 import re
 import json
@@ -438,11 +439,14 @@ def test_two_reviewers_under_one_bot_login_keep_separate_comments(monkeypatch):
     assert calls == [("POST", "/repos/o/r/issues/5/comments")]
 
 
-def test_two_model_calls_fit_inside_the_hosted_job_timeout():
-    """Killed mid-call, the job leaves no comment at all."""
+def test_two_model_calls_and_their_retry_pauses_fit_inside_the_hosted_job_timeout():
+    """Killed mid-call, the job leaves no comment at all. The budget is two
+    calls at their timeout plus the most each can spend paused on 429s."""
     wf = REPO_ROOT / ".github" / "workflows" / "beam-review.yml"
     minutes = int(re.search(r"timeout-minutes:\s*(\d+)", wf.read_text()).group(1))
-    assert 2 * review.MODEL_TIMEOUT_SECONDS < minutes * 60
+    worst = 2 * (review.MODEL_TIMEOUT_SECONDS + review.RETRY_PAUSE_BUDGET_SECONDS)
+    assert worst < minutes * 60 - 120, "no room left to post the comment"
+    assert review.RETRY_PAUSE_BUDGET_SECONDS >= sum(review.RETRY_DELAYS_SECONDS)
 
 
 def test_the_beam_workflow_is_the_fenced_shape_with_the_key_from_a_secret():
@@ -462,3 +466,151 @@ def test_the_beam_workflow_is_the_fenced_shape_with_the_key_from_a_secret():
     job = doc["jobs"]["beam-review"]
     assert job["runs-on"] == "ubuntu-latest"
     assert fence_violations(doc, job) == []
+
+
+# --- scopes and rate limits (CFOP-403) -----------------------------------------
+
+
+def test_review_runs_with_the_scope_it_is_given():
+    seen = []
+
+    def ask(system, user, schema):
+        seen.append(system)
+        return {"findings": []}, {}
+
+    review.review(ask, "diff", [{"filename": "m.py", "patch": PATCH}], log=lambda *_: None,
+                  prompts=review.SCOPES["thorough"])
+    assert seen == [review.THOROUGH_PROPOSE_PROMPT]
+    review.review(ask, "diff", [{"filename": "m.py", "patch": PATCH}], log=lambda *_: None)
+    assert seen[-1] == review.PROPOSE_PROMPT
+
+
+def test_the_thorough_verifier_is_not_told_its_claims_are_defects():
+    """Its claims include low-severity risks; a "Claimed defects" heading
+    would nudge it to reject those."""
+    seen = []
+
+    def ask(system, user, schema):
+        seen.append(user)
+        if schema is review.FINDINGS_SCHEMA:
+            return {"findings": [_finding("c = compute(b)", line=13)]}, {}
+        return {"verdicts": [{"id": 0, "real": True, "reason": "r"}]}, {}
+
+    review.review(ask, "diff", [{"filename": "m.py", "patch": PATCH}], log=lambda *_: None,
+                  prompts=review.SCOPES["thorough"])
+    assert "\n\nClaims:\n" in seen[1] and "Claimed defects" not in seen[1]
+
+
+def test_both_scopes_still_demand_grounding_evidence_and_forbid_the_same_noise():
+    """The thorough tier widens what may be raised, not how it is anchored:
+    ground still needs an added code line, and the exclusions a weak model
+    needed stay (missing tests, "should be verified", comments)."""
+    for propose, verify, heading in review.SCOPES.values():
+        assert heading.endswith(":")
+        assert "evidence" in propose and 'added\n("+") line' in propose
+        assert "should be verified" in propose and "missing tests" in propose
+        assert "real=true" in verify and "real=false" in verify
+    assert "concrete risks" in review.THOROUGH_PROPOSE_PROMPT
+    assert "concrete risks" not in review.PROPOSE_PROMPT
+
+
+def test_an_unknown_scope_is_refused(monkeypatch):
+    _openai_env(monkeypatch, REVIEW_SCOPE="everything")
+    with pytest.raises(SystemExit, match="REVIEW_SCOPE"):
+        review.main()
+
+
+class _Http429(review.urllib.error.HTTPError):
+    def __init__(self, headers, body=b'{"error": {"message": "slow down"}}'):
+        super().__init__("https://api.example/v1/chat/completions", 429, "Too Many Requests",
+                         email.message.Message(), io.BytesIO(body))
+        for k, v in headers.items():
+            self.headers[k] = v
+
+
+def _request():
+    return review.urllib.request.Request("https://api.example/v1/chat/completions", data=b"{}")
+
+
+def test_a_short_429_is_retried_with_a_growing_pause(monkeypatch):
+    attempts, slept = [], []
+
+    def urlopen(req, timeout):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise _Http429({"Retry-After": "2"})
+        return _Resp(b'{"ok": true}')
+
+    monkeypatch.setattr(review.urllib.request, "urlopen", urlopen)
+    assert review._open_with_retry(_request(), sleep=slept.append) == {"ok": True}
+    assert len(attempts) == 3 and slept == [5, 15]
+
+
+def test_a_429_the_job_cannot_wait_out_fails_at_once_with_the_apis_words(monkeypatch):
+    """A daily allowance comes back with Retry-After of many hours and
+    x-should-retry: false. Sleeping on it would only hit the job timeout
+    and leave no comment; the PR should say what happened instead."""
+    slept = []
+    body = b'{"error": {"message": "daily output token allowance used; renews at 00:00 UTC"}}'
+    monkeypatch.setattr(review.urllib.request, "urlopen", lambda req, timeout: (_ for _ in ()).throw(
+        _Http429({"Retry-After": "80573", "x-should-retry": "false"}, body)))
+    with pytest.raises(review.RateLimited, match="renews at 00:00 UTC"):
+        review._open_with_retry(_request(), sleep=slept.append)
+    assert slept == []
+    err = review.RateLimited("daily output token allowance used; renews at 00:00 UTC")
+    text = review.render_failure(err, "m", "abcdef0")
+    assert "rate limited by the API" in text and "renews at 00:00 UTC" in text
+
+
+def test_the_api_message_cannot_break_the_italic_span(monkeypatch):
+    """Inside _..._ a newline ends the span and an underscore closes it."""
+    body = b'{"error": {"message": "daily_allowance_exhausted\\nsee\\n  billing"}}'
+    monkeypatch.setattr(review.urllib.request, "urlopen", lambda req, timeout: (_ for _ in ()).throw(
+        _Http429({"x-should-retry": "false"}, body)))
+    with pytest.raises(review.RateLimited) as info:
+        review._open_with_retry(_request(), sleep=lambda s: None)
+    assert str(info.value) == "daily_allowance_exhausted see billing"
+    line = [l for l in review.render_failure(info.value, "m", "abcdef0").splitlines() if "No review" in l][0]
+    assert line.startswith("_") and line.endswith("_") and "\\_" in line and "\n" not in line
+
+
+def test_a_retried_429_response_is_closed(monkeypatch):
+    closed = []
+
+    class Closing(_Http429):
+        def close(self):
+            closed.append(1)
+
+    attempts = []
+
+    def urlopen(req, timeout):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise Closing({})
+        return _Resp(b'{"ok": true}')
+
+    monkeypatch.setattr(review.urllib.request, "urlopen", urlopen)
+    review._open_with_retry(_request(), sleep=lambda s: None)
+    assert closed == [1]
+
+
+def test_retries_are_bounded(monkeypatch):
+    monkeypatch.setattr(review.urllib.request, "urlopen", lambda req, timeout: (_ for _ in ()).throw(
+        _Http429({})))
+    with pytest.raises(review.RateLimited):
+        review._open_with_retry(_request(), sleep=lambda s: None)
+
+
+def test_a_non_429_http_error_is_not_retried(monkeypatch):
+    attempts = []
+
+    def urlopen(req, timeout):
+        attempts.append(1)
+        raise review.urllib.error.HTTPError("u", 500, "boom", email.message.Message(), io.BytesIO(b""))
+
+    monkeypatch.setattr(review.urllib.request, "urlopen", urlopen)
+    with pytest.raises(review.urllib.error.HTTPError):
+        review._open_with_retry(_request(), sleep=lambda s: None)
+    assert len(attempts) == 1
+    err = review.urllib.error.HTTPError("u", 500, "boom", email.message.Message(), io.BytesIO(b""))
+    assert "HTTP 500 from the API" in review.render_failure(err, "m", "abcdef0")
