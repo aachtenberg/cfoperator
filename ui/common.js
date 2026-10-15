@@ -30,21 +30,55 @@ function color(v){ return (getComputedStyle(document.documentElement).getPropert
 function badge(text, varname){ const c=color(varname);
   return `<span class="badge" style="background:${c}22;color:${c};border:1px solid ${c}55">${esc(text)||'—'}</span>`; }
 
-// Relative age of an ISO timestamp. Server timestamps are UTC but not always
-// suffixed; a bare one would otherwise be read as local time. One that
-// already names its zone — the event runtime's "+00:00" (CFOP-215) — is
-// taken as it is: appending Z to it made an invalid date and a "NaNd" age.
+// ---- timestamps (CFOP-412) -------------------------------------------------
+// Server stamps come in three shapes: the knowledge base's bare
+// "2026-10-15T11:04:51.105391" (UTC, no zone — read as local time if taken
+// as it is), the event runtime's zoned "+00:00" (CFOP-215 — appending Z to
+// it made an invalid date and a "NaNd" age), and the auth tables' date with
+// a space before the time. One parser for all three; null for anything
+// else, so a caller can show the raw text rather than "Invalid Date".
 const ZONED=/(Z|[+-]\d\d:?\d\d)$/;
-function age(iso){ if(!iso) return '—'; const s=(Date.now()-new Date(ZONED.test(iso)?iso:iso+'Z').getTime())/1000;
+function parseTs(iso){
+  if(!iso) return null;
+  const raw=String(iso).trim();
+  if(!/^\d{4}-\d\d-\d\d/.test(raw)) return null;
+  const s=raw.replace(/^(\d{4}-\d\d-\d\d) /,'$1T');
+  const bare=/\d\d:\d\d/.test(s) && !ZONED.test(s);
+  const d=new Date(bare?s+'Z':s);
+  return isNaN(d.getTime())?null:d;
+}
+
+// Relative age of a stamp: "3h", "2d".
+function age(iso){ const d=parseTs(iso); if(!d) return '—'; const s=(Date.now()-d.getTime())/1000;
   if(s<90) return Math.round(s)+'s'; if(s<5400) return Math.round(s/60)+'m';
   if(s<129600) return Math.round(s/3600)+'h'; return Math.round(s/86400)+'d'; }
 
-// Refresh every [data-age] cell in place. The list pages no longer rebuild
-// their rows on a poll that brought nothing new (CFOP-95), so the age column
-// is updated by text, not by replacing the row under the pointer.
+// The one way a timestamp is shown. The text is the absolute local time —
+// the lists used to show "3h" alone, which the operator read as no
+// timestamp at all — and the hover title carries the relative age and the
+// server's own value, so neither is lost and the microseconds are out of
+// the way. Lists show minutes; drawers pass {seconds:true}. {sameDayAs}
+// drops the date when it matches that other stamp's, for "started ·
+// completed" on one line. A value that does not parse is shown as it came.
+function fmtTs(iso, opts){
+  const o=opts||{};
+  if(!iso) return '';
+  const d=parseTs(iso); if(!d) return esc(iso);
+  const p=n=>String(n).padStart(2,'0');
+  const dayOf=x=>`${x.getFullYear()}-${p(x.getMonth()+1)}-${p(x.getDate())}`;
+  const day=dayOf(d);
+  let time=`${p(d.getHours())}:${p(d.getMinutes())}`; if(o.seconds) time+=':'+p(d.getSeconds());
+  const ref=o.sameDayAs?parseTs(o.sameDayAs):null;
+  return `<span class="ts" data-age="${esc(iso)}" title="${esc(ageTitle(iso))}">${ref&&dayOf(ref)===day?time:day+' '+time}</span>`;
+}
+function ageTitle(iso){ return age(iso)+' ago · '+String(iso); }
+
+// Refresh every stamp's hover age in place. The list pages do not rebuild
+// their rows on a poll that brought nothing new (CFOP-95), so the age is
+// updated by attribute, not by replacing the row under the pointer.
 function refreshAges(){
   if(!document.querySelectorAll) return;
-  document.querySelectorAll('[data-age]').forEach(el=>{ el.textContent=age(el.getAttribute('data-age')); });
+  document.querySelectorAll('[data-age]').forEach(el=>{ el.title=ageTitle(el.getAttribute('data-age')); });
 }
 
 // One duration, deliberately not a parameter — a per-call override is how the
@@ -208,4 +242,126 @@ function renderMarkdown(text) {
   } catch (e) {
     return esc(s);
   }
+}
+
+// ---- list kit: sortable headers and search (CFOP-412) ---------------------
+// Three list pages (investigations, remediations, events) share one way to
+// sort a column and one way to search. The page supplies what each column
+// sorts by; the kit owns the header buttons, the aria-sort state, the arrow,
+// and remembering the choice. Nothing here runs at load: the page calls
+// listKit() once its table exists.
+
+// Pure: a sorted copy of rows. `keys` maps a column name to an accessor
+// (a function, or {get}) returning a string, a number or nothing; `state`
+// is {key, dir}. Empty values go last whichever way the sort runs — a column
+// sorted to find the largest value must not open on a page of blanks — and
+// ties keep the incoming order, which is the server's newest-first, so a sort
+// by status still reads newest-first within each status. Strings compare
+// numerically aware and case-insensitively ("#9" before "#10").
+function sortRows(rows, keys, state){
+  const get=keyAccessor(keys, state&&state.key);
+  if(!get) return rows.slice();
+  const dir=(state.dir==='asc')?1:-1;
+  const coll=(typeof Intl!=='undefined'&&Intl.Collator)?new Intl.Collator(undefined,{numeric:true,sensitivity:'base'}):null;
+  const blank=v=>v==null||v===''||(typeof v==='number'&&isNaN(v));
+  const cmp=(a,b)=>{ if(typeof a==='number'&&typeof b==='number') return a-b;
+    a=String(a); b=String(b); return coll?coll.compare(a,b):(a<b?-1:a>b?1:0); };
+  return rows.map((r,i)=>({r,i,v:get(r)})).sort((x,y)=>{
+    const bx=blank(x.v), by=blank(y.v);
+    if(bx||by) return bx===by ? x.i-y.i : (bx?1:-1);
+    const c=cmp(x.v,y.v);
+    return c ? c*dir : x.i-y.i;
+  }).map(x=>x.r);
+}
+function keyAccessor(keys, name){ const k=(keys&&name)?keys[name]:null; if(!k) return null; return typeof k==='function'?k:k.get; }
+// A timestamp column sorts by instant, not by text: a bare stamp and a zoned
+// one for the same moment are different strings.
+function tsKey(iso){ const d=parseTs(iso); return d?d.getTime():null; }
+
+// Client-side search: every word of the query must appear somewhere in the
+// row's searchable values, case-insensitively. Words rather than the phrase,
+// so "pi4 disk" finds a row whose host is raspberrypi4 and whose trigger
+// mentions disk. An empty query matches everything.
+function textMatch(q, values){
+  const words=String(q||'').toLowerCase().split(/\s+/).filter(Boolean);
+  if(!words.length) return true;
+  const hay=(Array.isArray(values)?values:[values]).map(v=>v==null?'':String(v)).join('\n').toLowerCase();
+  return words.every(w=>hay.indexOf(w)>=0);
+}
+
+// Where a page's sort choice is kept: localStorage, per page. It is an
+// operator preference rather than a view to paste, and the Events URL
+// already carries filters that mean "what the server returns" — a sort there
+// would read as a server filter it is not. Nothing is written until a
+// header is clicked, so a page sorts the way it always did until then.
+const SORT_STORE='cfop.sort.';
+// The header buttons inherit the th's type so a sortable header looks like
+// the others; the sorted one reads in the primary colour, with an arrow.
+const LIST_KIT_CSS='th button.sort{all:unset;cursor:pointer;font:inherit;color:inherit;text-transform:inherit;letter-spacing:inherit}'+
+  'th button.sort:hover,th[aria-sort] button.sort{color:var(--text-primary)}'+
+  'th button.sort:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}'+
+  'th .arrow{font-size:9px}'+
+  // A stamp is one token: a narrow column must not break it over two lines.
+  '.ts{white-space:nowrap}';
+let LIST_KIT_STYLED=false;
+function injectListKitCss(){
+  if(LIST_KIT_STYLED||!document.createElement||!document.head||!document.head.appendChild) return;
+  const st=document.createElement('style'); st.textContent=LIST_KIT_CSS; document.head.appendChild(st); LIST_KIT_STYLED=true;
+}
+
+// Wire every <th data-sort="key"> on the page into one sort state.
+//   opts.page      name for the remembered choice (cfop.sort.<page>)
+//   opts.keys      column name -> accessor, as sortRows takes
+//   opts.initial   {key, dir} until the operator chooses
+//   opts.dir       first-click direction per key (default asc; a time or id
+//                  column says desc so the first click gives newest first)
+//   opts.onChange  called after a click; the page paints again
+// The page's paint() runs its rows through kit.sort(), so the order holds
+// across every repaint — the poll's included — by construction. A header
+// naming a key the page did not define throws here, at load, so a typo
+// fails the node harness rather than shipping a header that does nothing.
+// Several tables with the same header set (remediations has three) share
+// the one state: a click on any header updates them all.
+function listKit(opts){
+  const o=opts||{}, keys=o.keys||{}, firstDir=o.dir||{};
+  const valid=k=>!!keyAccessor(keys,k);
+  const store=SORT_STORE+(o.page||'list');
+  let state=null;
+  try{ const saved=JSON.parse(localStorage.getItem(store)||'null');
+    if(saved&&valid(saved.key)&&(saved.dir==='asc'||saved.dir==='desc')) state={key:saved.key,dir:saved.dir}; }catch(e){ state=null; }
+  if(!state){ const i=o.initial||{}; state={key:i.key||null, dir:i.dir==='asc'?'asc':'desc'}; }
+  if(state.key&&!valid(state.key)) throw new Error('listKit: unknown sort key '+state.key);
+  const heads=document.querySelectorAll?Array.from(document.querySelectorAll('th[data-sort]')):[];
+  heads.forEach(th=>{
+    const k=th.getAttribute('data-sort');
+    if(!valid(k)) throw new Error('listKit: th[data-sort="'+k+'"] names no key');
+    th.innerHTML=`<button type="button" class="sort">${esc(th.textContent)}<span class="arrow" aria-hidden="true"></span></button>`;
+    th.addEventListener('click', ()=>kit.set(k));
+  });
+  if(heads.length) injectListKitCss();
+  function show(){
+    heads.forEach(th=>{
+      const on=th.getAttribute('data-sort')===state.key;
+      if(on) th.setAttribute('aria-sort', state.dir==='asc'?'ascending':'descending');
+      else if(th.removeAttribute) th.removeAttribute('aria-sort');
+      const a=th.querySelector?th.querySelector('.arrow'):null;
+      if(a) a.textContent=on?(state.dir==='asc'?' ▲':' ▼'):'';
+    });
+  }
+  const kit={
+    get state(){ return {key:state.key, dir:state.dir}; },
+    sort(rows){ return sortRows(rows, keys, state); },
+    // A click on the sorted column reverses it; on another column, that
+    // column's first direction.
+    set(key, dir){
+      if(!valid(key)) throw new Error('listKit: unknown sort key '+key);
+      const d=dir||(key===state.key?(state.dir==='asc'?'desc':'asc'):(firstDir[key]||'asc'));
+      state={key:key, dir:d};
+      try{ localStorage.setItem(store, JSON.stringify(state)); }catch(e){}
+      show();
+      if(o.onChange) o.onChange(kit.state);
+    }
+  };
+  show();
+  return kit;
 }

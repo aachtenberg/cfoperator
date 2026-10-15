@@ -72,7 +72,8 @@ def _render(row):
         c => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
       const safeUrl = u => {{ const s = String(u||'').trim(); return /^https?:\\/\\//i.test(s) ? s : ''; }};
       const badge = (t,c) => `<span class="badge">${{esc(t)}}</span>`;
-      const age = () => 'now';
+      // The stamp helper lives in common.js (CFOP-412); the raw value in a span keeps the assertions readable.
+      const fmtTs = v => v ? `<span class="ts">${{esc(v)}}</span>` : '';
       const color = c => c;
       const changeRecord = r => null;
       {_extract(["STATUS", "SC", "RC", "TERMINAL", "FILED", "trackerInfo", "trackerChip", "trackerCopy",
@@ -113,7 +114,7 @@ def test_render_buckets_filed_rows_apart_from_active_and_closed():
     harness = f"""
       const esc = s => String(s==null?'':s);
       const safeUrl = u => String(u||'');
-      const badge = (t,c) => t; const age = () => ''; const color = c => c; const changeRecord = r => null;
+      const badge = (t,c) => t; const fmtTs = v => String(v||''); const color = c => c; const changeRecord = r => null;
       const store = {{}};
       const el = id => (store[id] = store[id] || {{innerHTML:'', hidden:null, textContent:''}});
       global.document = {{ getElementById: el, activeElement: null }};

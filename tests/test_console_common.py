@@ -35,7 +35,10 @@ SHARED_HELPERS = ["esc", "color", "badge", "age", "refreshAges", "toast", "trapF
                   "copyElementText",
                   # CFOP-113: click-to-copy icons, and the markdown sanitizer that
                   # index.html used to keep to itself.
-                  "copyText", "copyIcon", "bindCopyIcons", "sanitizeHtml", "renderMarkdown"]
+                  "copyText", "copyIcon", "bindCopyIcons", "sanitizeHtml", "renderMarkdown",
+                  # CFOP-412: the list kit — one timestamp parser and format (fmtTs
+                  # used to exist twice, parseTs three times), sorting and search.
+                  "parseTs", "fmtTs", "tsKey", "sortRows", "listKit", "textMatch"]
 
 #: Pages whose main content is a polled row list. Same set as
 #: test_console_a11y.LIST_PAGES; repeated rather than imported so this file
@@ -333,9 +336,12 @@ def test_a_hidden_tab_catches_up_when_shown(page):
 
 @pytest.mark.parametrize("page", LIST_PAGES)
 def test_the_age_column_is_refreshed_in_place(page):
-    """Fewer repaints must not mean a page that reads "3m" for an hour."""
+    """Fewer repaints must not mean a page whose hover age reads "3m" for an
+    hour. Since CFOP-412 the stamp — and its data-age — comes from fmtTs() in
+    common.js; the page's part is to use it and to call the refresh."""
+    assert "data-age=" in COMMON_JS.read_text(encoding="utf-8"), "fmtTs() no longer marks stamps with data-age"
     js = "".join(inline_scripts(page))
-    assert "data-age=" in js, f"{page} rows carry no data-age for the in-place refresh"
+    assert "fmtTs(" in js, f"{page} rows carry no fmtTs() stamp for the in-place refresh"
     assert "refreshAges()" in js, f"{page} never refreshes ages on a quiet poll"
 
 

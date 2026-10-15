@@ -178,19 +178,11 @@
 
 <div id="toasts"></div>
 
-<!-- esc/badge/color/toast — one copy, see ui/common.js. Not deferred: the
+<!-- esc/badge/color/parseTs/toast — one copy, see ui/common.js. Not deferred: the
      script below is not either. -->
 <script src="/common.js"></script>
 <script>
-function parseTs(iso){
-  if(!iso) return null;
-  const raw = String(iso).trim();
-  if(!/^\d{4}-\d\d-\d\d/.test(raw)) return null;
-  const s = raw.replace(/^(\d{4}-\d\d-\d\d) /, '$1T');
-  const bare = /\d\d:\d\d/.test(s) && !/(Z|[+-]\d\d:?\d\d)$/.test(s);
-  const d = new Date(bare ? s + 'Z' : s);
-  return isNaN(d.getTime()) ? null : d;
-}
+// parseTs — one copy, see ui/common.js (CFOP-412).
 function fmt(iso){
   if(!iso) return '—';
   const d = parseTs(iso);
