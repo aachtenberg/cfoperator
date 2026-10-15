@@ -41,6 +41,7 @@ Environment:
     REVIEW_NAME             how the comment is titled; default "Local LLM"
                             for ollama and "LLM" for openai
     REVIEW_MAX_DIFF_CHARS   default 60000
+    REVIEW_SCOPE            defects (default) or thorough; see SCOPES
     REVIEW_DRY_RUN          1 = print the comment instead of posting it
   ollama:
     OLLAMA_URL              required, e.g. http://<ollama-host>:11434
@@ -155,6 +156,66 @@ callers: a condition that is always true, SQL or a shell command built from
 unescaped input, a secret in the code, an exception that is swallowed. Answer
 real=false when the claim only holds under assumptions about code you cannot
 see, or when you are unsure. Give the reason in one sentence."""
+
+THOROUGH_PROPOSE_PROMPT = f"""\
+You are a senior engineer reviewing a pull request. Read the whole diff
+before deciding anything.
+
+{READING_THE_DIFF}
+
+Report what a careful maintainer would raise before merging:
+
+- defects (severity high or medium): bugs, security problems, broken or
+  dangerous configuration, data loss, races, wrong error handling, and
+  changes that do not do what the description says they do;
+- concrete risks (severity low): an error path that is swallowed or
+  misreported, a resource that is not released, input trusted further than
+  it should be, a cost that grows with data (a query per row, a read repeated
+  per call), behaviour that changes for existing callers, and a guarantee the
+  description makes that the code does not quite keep.
+
+Say what goes wrong and when, concretely enough that the author can act
+without asking.
+
+Do not report:
+- style, naming, formatting or missing tests;
+- comments or documentation;
+- things the pull request does not do (missing automation, missing guidance,
+  possible future improvements), unless the description claims them;
+- anything that only says something "should be verified" or "confirmed";
+- a concern the description already states and argues.
+
+An empty list is fine when the diff is clean; do not pad it.
+
+For each finding give: path; line (the NEW line number); severity (high,
+medium or low); problem (what goes wrong, and when); and evidence: one added
+("+") line from the diff, copied exactly, without its number and marker, that
+the finding is on."""
+
+THOROUGH_VERIFY_PROMPT = f"""\
+You check claims about a pull request, each one on its own.
+
+{READING_THE_DIFF}
+
+The claims came from a first pass that is sometimes wrong: it misreads the
+diff, flags harmless code, asks for things to be "verified", restates what
+the description already argues, or describes something the pull request
+does not do. For each claim, answer real=true if a careful maintainer would
+want it raised before merging: the behaviour goes wrong, or the risk is
+concrete and the fix is clear. Answer real=false for a claim that is wrong
+about the code, only holds under assumptions about code you cannot see, is
+a matter of taste, or is already addressed in the description or the diff.
+Give the reason in one sentence."""
+
+#: The prompt pairs a review can run with. ``defects`` is for a small local
+#: model, which proposes noise under anything looser and verifies weakly;
+#: ``thorough`` is for a strong model, which under ``defects`` obeys "only
+#: what you are confident is a defect" literally and never raises the
+#: medium-grade concerns a human reviewer would (CFOP-403).
+SCOPES = {
+    "defects": (PROPOSE_PROMPT, VERIFY_PROMPT, "Claimed defects:"),
+    "thorough": (THOROUGH_PROPOSE_PROMPT, THOROUGH_VERIFY_PROMPT, "Claims:"),
+}
 
 FINDINGS_SCHEMA = {
     "type": "object",
@@ -440,8 +501,7 @@ def ask_openai(url, key, model, effort, system, user, schema):
     # Unredirected: urllib copies ordinary headers onto a redirect's target,
     # which would hand the key to whatever host the endpoint pointed at.
     req.add_unredirected_header("Authorization", f"Bearer {key}")
-    with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT_SECONDS) as resp:
-        data = json.loads(resp.read())
+    data = _open_with_retry(req)
     choices = data.get("choices") or [{}]
     content = (choices[0].get("message") or {}).get("content") or ""
     usage = data.get("usage") or {}
@@ -451,6 +511,60 @@ def ask_openai(url, key, model, effort, system, user, schema):
         "generated_tokens": usage.get("completion_tokens", "?"),
         "note": f"reasoning {reasoning}",
     }
+
+
+#: 429 from the API. Two kinds, told apart by the headers (CFOP-403, seen on
+#: Reflection): a per-minute limit (30 requests) that two PRs pushed together
+#: can trip, worth a short wait; and a daily output-token allowance
+#: (``retry-after`` of many hours, ``x-should-retry: false``) that no wait
+#: inside a job can outlive. Bounded, so a real outage still fails inside the
+#: job's timeout and the PR gets its "No review" comment.
+RETRY_DELAYS_SECONDS = (5, 15, 45)
+MAX_RETRY_AFTER_SECONDS = 60
+#: The most one model call can spend paused on 429s. Two calls' worth, plus
+#: two calls' MODEL_TIMEOUT_SECONDS, must fit beam-review.yml's
+#: timeout-minutes, or a throttled run is killed before it can post.
+RETRY_PAUSE_BUDGET_SECONDS = len(RETRY_DELAYS_SECONDS) * MAX_RETRY_AFTER_SECONDS
+
+
+class RateLimited(RuntimeError):
+    """A 429 the job cannot wait out. Carries the API's own message, which
+    on a daily allowance says when it renews."""
+
+
+def _open_with_retry(req, sleep=time.sleep):
+    """The JSON body, retrying a short 429 a few times with a growing pause.
+    Anything else propagates as before."""
+    for delay in (*RETRY_DELAYS_SECONDS, None):
+        try:
+            with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT_SECONDS) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code != 429:
+                raise
+            headers = e.headers or {}
+            try:
+                retry_after = float(headers.get("Retry-After", 0))
+            except (TypeError, ValueError):
+                retry_after = 0
+            if (headers.get("x-should-retry", "").lower() == "false"
+                    or retry_after > MAX_RETRY_AFTER_SECONDS or delay is None):
+                message = _api_error_message(e)
+                e.close()
+                raise RateLimited(message) from e
+            e.close()  # the 429's socket, not left to the garbage collector
+            sleep(max(delay, retry_after))
+
+
+def _api_error_message(e):
+    """The API's error message out of a failed response, or the status line.
+    One line: it ends up inside an italic span in the PR comment."""
+    try:
+        body = json.loads(e.read())
+        message = str((body.get("error") or {}).get("message") or body)
+    except Exception:
+        return f"HTTP {e.code}"
+    return " ".join(message.split())[:300]
 
 
 def parse_answer(content):
@@ -475,10 +589,12 @@ class UnreadableAnswer(RuntimeError):
         super().__init__(f"the model's {step} answer was not valid JSON; no review")
 
 
-def review(ask, diff, files, log=print):
+def review(ask, diff, files, log=print, prompts=SCOPES["defects"]):
     """Propose, ground, verify. ``ask(system, user, schema)`` is the model,
-    whichever transport. Returns (kept findings, counts)."""
-    proposed, usage = ask(PROPOSE_PROMPT, diff, FINDINGS_SCHEMA)
+    whichever transport; ``prompts`` is a (propose, verify, claims heading)
+    entry from SCOPES. Returns (kept findings, counts)."""
+    propose_prompt, verify_prompt, heading = prompts
+    proposed, usage = ask(propose_prompt, diff, FINDINGS_SCHEMA)
     log(f"propose: {usage.get('prompt_tokens', '?')} prompt tokens, "
         f"{usage.get('generated_tokens', '?')} generated, {usage.get('note', '')}")
     if proposed is None:
@@ -492,7 +608,7 @@ def review(ask, diff, files, log=print):
         claims = "\n".join(
             f"[{i}] {f['path']}:{f['line']} ({f['severity']}) {f['problem']}\n"
             f"    evidence: {f['evidence']}" for i, f in enumerate(grounded))
-        answer, _ = ask(VERIFY_PROMPT, f"{diff}\n\nClaimed defects:\n{claims}", VERDICTS_SCHEMA)
+        answer, _ = ask(verify_prompt, f"{diff}\n\n{heading}\n{claims}", VERDICTS_SCHEMA)
         if answer is None:
             # Not "no findings": every grounded claim would vanish unseen.
             raise UnreadableAnswer("verify")
@@ -555,10 +671,21 @@ def render(findings, counts, model, head_sha, included, skipped, seconds, who=LO
 DEFAULT_BOT_LOGIN = "github-actions[bot]"
 
 
+def describe_failure(error):
+    """What to say on the PR: the class, plus the status for an HTTP error
+    and the API's own words for a rate limit (it says when the allowance
+    renews). Model text is not involved; the API's message is defanged."""
+    if isinstance(error, RateLimited):
+        return f"rate limited by the API ({defang(str(error)).replace('_', chr(92) + '_')})"
+    if isinstance(error, urllib.error.HTTPError):
+        return f"HTTP {error.code} from the API"
+    return type(error).__name__
+
+
 def render_failure(error, model, head_sha, who=LOCAL):
     return "\n".join([
         who.marker, f"### {who.name} review", "",
-        f"_No review for {head_sha[:7]}: {defang(type(error).__name__)}. "
+        f"_No review for {head_sha[:7]}: {describe_failure(error)}. "
         "See the workflow run's log. Any earlier review on this PR is for an older commit._",
         "", f"<sub>{model} {who.served} · {head_sha[:7]}.</sub>",
     ])
@@ -591,6 +718,9 @@ def main():
     if not (token and repo and number):
         sys.exit("GITHUB_TOKEN, GITHUB_REPOSITORY and PR_NUMBER are required")
     ask, model, who = backend_from_env()
+    scope = env("REVIEW_SCOPE", "defects")
+    if scope not in SCOPES:
+        sys.exit(f"REVIEW_SCOPE={scope!r}; want one of {', '.join(SCOPES)}")
     budget = int(env("REVIEW_MAX_DIFF_CHARS", str(DEFAULT_MAX_DIFF_CHARS)))
 
     pr = github("GET", f"/repos/{repo}/pulls/{number}", token)
@@ -604,10 +734,12 @@ def main():
     findings, counts, failure = [], None, None
     if included:
         try:
-            findings, counts = review(ask, build_diff(repo, pr, included), included)
+            findings, counts = review(ask, build_diff(repo, pr, included), included,
+                                      prompts=SCOPES[scope])
         # OSError covers URLError, timeouts and a reset connection; ValueError a
         # truncated body that is not JSON; HTTPException a bad status line.
-        except (UnreadableAnswer, OSError, ValueError, http.client.HTTPException) as e:
+        except (UnreadableAnswer, RateLimited, OSError, ValueError,
+                http.client.HTTPException) as e:
             failure = e
     seconds = time.monotonic() - started
 
