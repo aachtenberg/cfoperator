@@ -8,6 +8,7 @@ import re
 import json
 
 import pytest
+import yaml
 
 import scripts.local_llm_review as review
 from repo_paths import REPO_ROOT
@@ -128,7 +129,7 @@ def test_two_ollama_calls_fit_inside_the_job_timeout():
     """Killed mid-call, the job leaves no comment at all."""
     wf = REPO_ROOT / ".github" / "workflows" / "local-llm-review.yml"
     minutes = int(re.search(r"timeout-minutes:\s*(\d+)", wf.read_text()).group(1))
-    assert 2 * review.OLLAMA_TIMEOUT_SECONDS < minutes * 60
+    assert 2 * review.MODEL_TIMEOUT_SECONDS < minutes * 60
 
 
 def test_the_ollama_url_never_reaches_the_public_log(monkeypatch, capsys):
@@ -171,15 +172,14 @@ def test_every_claim_is_verified_in_one_call_and_only_confirmed_ones_are_kept(mo
     files = [{"filename": "m.py", "patch": PATCH}]
     calls = []
 
-    def fake_ask(url, model, system, user, schema):
+    def fake_ask(system, user, schema):
         calls.append(schema)
         if schema is review.FINDINGS_SCHEMA:
             return {"findings": [_finding("b = 3", line=12), _finding("c = compute(b)", line=13)]}, {}
         return {"verdicts": [{"id": 0, "real": False, "reason": "fine"},
                              {"id": 1, "real": True, "reason": "bug"}]}, {}
 
-    monkeypatch.setattr(review, "ask_ollama", fake_ask)
-    kept, counts = review.review("u", "m", "diff", files, log=lambda *_: None)
+    kept, counts = review.review(fake_ask, "diff", files, log=lambda *_: None)
     assert calls == [review.FINDINGS_SCHEMA, review.VERDICTS_SCHEMA]
     assert [f["line"] for f in kept] == [13]
     assert counts["proposed"] == 2 and counts["grounded"] == 2 and counts["kept"] == 1
@@ -192,15 +192,14 @@ def test_an_unreadable_model_answer_fails_the_review_instead_of_passing_it(monke
     claim at the verify step."""
     files = [{"filename": "m.py", "patch": PATCH}]
 
-    def fake_ask(url, model, system, user, schema):
+    def fake_ask(system, user, schema):
         if schema is review.FINDINGS_SCHEMA:
             return (None, {}) if broken == "propose" else (
                 {"findings": [_finding("c = compute(b)", line=13)]}, {})
         return None, {}
 
-    monkeypatch.setattr(review, "ask_ollama", fake_ask)
     with pytest.raises(review.UnreadableAnswer, match=broken):
-        review.review("u", "m", "diff", files, log=lambda *_: None)
+        review.review(fake_ask, "diff", files, log=lambda *_: None)
 
 
 def test_a_file_name_cannot_break_out_of_its_code_span():
@@ -223,8 +222,8 @@ def test_ollama_url_is_required_not_defaulted(monkeypatch):
 
 def test_no_grounded_claim_means_no_verify_call(monkeypatch):
     calls = []
-    monkeypatch.setattr(review, "ask_ollama", lambda *a: calls.append(a[-1]) or ({"findings": []}, {}))
-    kept, counts = review.review("u", "m", "diff", [{"filename": "m.py", "patch": PATCH}],
+    ask = lambda *a: calls.append(a[-1]) or ({"findings": []}, {})
+    kept, counts = review.review(ask, "diff", [{"filename": "m.py", "patch": PATCH}],
                                  log=lambda *_: None)
     assert kept == [] and calls == [review.FINDINGS_SCHEMA]
 
@@ -302,7 +301,8 @@ def test_a_failed_review_replaces_the_old_one_and_fails_the_job(monkeypatch, fai
     monkeypatch.setattr(review, "paged", lambda *a: [{"filename": "m.py", "status": "modified",
                                                       "additions": 1, "deletions": 0, "patch": PATCH}])
     monkeypatch.setattr(review, "ask_ollama", fail)
-    monkeypatch.setattr(review, "upsert_comment", lambda repo, n, token, body: posted.append(body) or ("updated", "u"))
+    monkeypatch.setattr(review, "upsert_comment",
+                        lambda repo, n, token, body, marker=None: posted.append(body) or ("updated", "u"))
     with pytest.raises(SystemExit, match="review failed"):
         review.main()
     assert len(posted) == 1 and "No review for abcdef0" in posted[0] and review.MARKER in posted[0]
@@ -310,10 +310,11 @@ def test_a_failed_review_replaces_the_old_one_and_fails_the_job(monkeypatch, fai
 
 def test_verdict_ids_given_as_strings_still_count(monkeypatch):
     files = [{"filename": "m.py", "patch": PATCH}]
-    monkeypatch.setattr(review, "ask_ollama", lambda url, model, system, user, schema: (
-        {"findings": [_finding("c = compute(b)", line=13)]}, {}) if schema is review.FINDINGS_SCHEMA
-        else ({"verdicts": [{"id": "0", "real": True, "reason": "bug"}]}, {}))
-    kept, _ = review.review("u", "m", "diff", files, log=lambda *_: None)
+    def ask(system, user, schema):
+        if schema is review.FINDINGS_SCHEMA:
+            return {"findings": [_finding("c = compute(b)", line=13)]}, {}
+        return {"verdicts": [{"id": "0", "real": True, "reason": "bug"}]}, {}
+    kept, _ = review.review(ask, "diff", files, log=lambda *_: None)
     assert [f["line"] for f in kept] == [13]
 
 
@@ -321,3 +322,149 @@ def test_an_off_schema_severity_is_clamped():
     body = review.render([{"path": "m.py", "line": 1, "severity": "<b>CRITICAL</b>", "problem": "p"}],
                          {"proposed": 1, "grounded": 1, "kept": 1}, "m", "abcdef0", [1], [], 1.0)
     assert "CRITICAL" not in body and "[low]" in body
+
+
+# --- the OpenAI-compatible backend (CFOP-400) ---------------------------------
+
+
+def test_the_openai_request_is_a_strict_json_schema_completion_with_a_bearer(monkeypatch):
+    sent = {}
+
+    def fake_urlopen(req, timeout):
+        sent["url"] = req.full_url
+        sent["headers"] = dict(req.header_items())
+        sent["unredirected"] = dict(req.unredirected_hdrs)
+        sent["body"] = json.loads(req.data)
+        return _Resp(json.dumps({"choices": [{"message": {"content": '{"findings": []}'}}],
+                                 "usage": {"prompt_tokens": 10, "completion_tokens": 3}}).encode())
+
+    monkeypatch.setattr(review.urllib.request, "urlopen", fake_urlopen)
+    answer, usage = review.ask_openai("https://api.example/openai/v1/", "k3y", "beam", "high",
+                                      "sys", "diff", review.FINDINGS_SCHEMA)
+    assert answer == {"findings": []}
+    assert sent["url"] == "https://api.example/openai/v1/chat/completions"
+    assert sent["headers"]["Authorization"] == "Bearer k3y"
+    # Unredirected, or urllib would forward the key to a redirect's host.
+    assert sent["unredirected"] == {"Authorization": "Bearer k3y"}
+    body = sent["body"]
+    assert body["model"] == "beam" and body["reasoning_effort"] == "high"
+    fmt = body["response_format"]
+    assert fmt["type"] == "json_schema" and fmt["json_schema"]["strict"] is True
+    # Strict mode refuses an object that does not close itself.
+    schema = fmt["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["findings"]["items"]["additionalProperties"] is False
+    assert usage["prompt_tokens"] == 10 and usage["generated_tokens"] == 3
+
+
+def test_no_reasoning_effort_means_none_is_sent(monkeypatch):
+    """An empty repo variable must leave the model's own default in place,
+    not send reasoning_effort="" and get a 400."""
+    sent = {}
+    monkeypatch.setattr(review.urllib.request, "urlopen", lambda req, timeout: sent.update(
+        json.loads(req.data)) or _Resp(b'{"choices": [{"message": {"content": "{}"}}]}'))
+    review.ask_openai("https://api.example/v1", "k", "m", "", "s", "u", review.FINDINGS_SCHEMA)
+    assert "reasoning_effort" not in sent
+
+
+def test_strict_leaves_the_ollama_schema_alone():
+    """Ollama gets the schema as written; only the openai copy is closed."""
+    assert "additionalProperties" not in review.FINDINGS_SCHEMA
+    review.strict(review.FINDINGS_SCHEMA)
+    assert "additionalProperties" not in review.FINDINGS_SCHEMA
+
+
+@pytest.mark.parametrize("content, expected", [
+    ('{"findings": []}', {"findings": []}),
+    ('```json\n{"findings": []}\n```', {"findings": []}),
+    ("", None), ("not json", None), ("[1, 2]", None), ('{"a": 1} trailing', None),
+])
+def test_a_fenced_or_bare_json_object_is_read_and_anything_else_is_not(content, expected):
+    assert review.parse_answer(content) == expected
+
+
+def test_a_null_content_is_an_unreadable_answer_not_a_crash(monkeypatch):
+    """A refusal comes back with content: null."""
+    monkeypatch.setattr(review.urllib.request, "urlopen", lambda req, timeout: _Resp(
+        b'{"choices": [{"message": {"content": null, "refusal": "no"}}]}'))
+    answer, _ = review.ask_openai("https://api.example/v1", "k", "m", "", "s", "u", review.FINDINGS_SCHEMA)
+    assert answer is None
+
+
+def _openai_env(monkeypatch, **extra):
+    for k, v in {"GITHUB_TOKEN": "t", "GITHUB_REPOSITORY": "o/r", "PR_NUMBER": "1",
+                 "REVIEW_BACKEND": "openai", "REVIEW_NAME": "Beam",
+                 "REVIEW_API_URL": "https://api.reflection.ai/openai/v1",
+                 "REVIEW_API_KEY": "sk-super-secret-value", "REVIEW_MODEL": "Beam-1.0",
+                 "REVIEW_DRY_RUN": "1", **extra}.items():
+        monkeypatch.setenv(k, v)
+
+
+def test_the_api_key_never_reaches_the_public_log(monkeypatch, capsys):
+    _openai_env(monkeypatch)
+    monkeypatch.setattr(review, "github", lambda *a, **k: {"head": {"sha": "abcdef0"}, "number": 1,
+                                                           "title": "t", "body": ""})
+    monkeypatch.setattr(review, "paged", lambda *a: [{"filename": "m.py", "status": "modified",
+                                                      "additions": 1, "deletions": 0, "patch": PATCH}])
+    monkeypatch.setattr(review, "ask_openai", lambda *a: ({"findings": []}, {}))
+    review.main()
+    out = capsys.readouterr().out
+    assert "sk-super-secret" not in out
+    assert "### Beam review" in out and "<!-- beam-review -->" in out
+    assert "Beam-1.0 at api.reflection.ai" in out
+
+
+@pytest.mark.parametrize("missing", ["REVIEW_API_URL", "REVIEW_API_KEY", "REVIEW_MODEL"])
+def test_the_openai_backend_requires_url_key_and_model(monkeypatch, missing):
+    _openai_env(monkeypatch, **{missing: ""})
+    with pytest.raises(SystemExit, match="REVIEW_API_URL, REVIEW_API_KEY and REVIEW_MODEL"):
+        review.main()
+
+
+def test_an_unknown_backend_is_refused(monkeypatch):
+    _openai_env(monkeypatch, REVIEW_BACKEND="anthropic")
+    with pytest.raises(SystemExit, match="REVIEW_BACKEND"):
+        review.main()
+
+
+def test_two_reviewers_under_one_bot_login_keep_separate_comments(monkeypatch):
+    """Both post as github-actions[bot]; the marker, derived from the name, is
+    what stops Beam's run editing the local review's comment."""
+    beam = review.reviewer("Beam", "at api.example")
+    assert beam.marker != review.MARKER
+    assert review.reviewer("Local LLM", "x").marker == review.MARKER == "<!-- local-llm-review -->"
+    calls = []
+    monkeypatch.setattr(review, "github",
+                        lambda method, path, token, body=None, accept=None:
+                        calls.append((method, path)) or {"html_url": "u"})
+    monkeypatch.setattr(review, "paged", lambda path, token: [
+        {"id": 7, "body": review.MARKER + "\nlocal review", "user": {"login": "github-actions[bot]"}},
+    ])
+    action, _ = review.upsert_comment("o/r", "5", "t", "body", marker=beam.marker)
+    assert action == "created"
+    assert calls == [("POST", "/repos/o/r/issues/5/comments")]
+
+
+def test_two_model_calls_fit_inside_the_hosted_job_timeout():
+    wf = REPO_ROOT / ".github" / "workflows" / "beam-review.yml"
+    minutes = int(re.search(r"timeout-minutes:\s*(\d+)", wf.read_text()).group(1))
+    assert 2 * review.MODEL_TIMEOUT_SECONDS < minutes * 60
+
+
+def test_the_beam_workflow_is_the_fenced_shape_with_the_key_from_a_secret():
+    """The runner is hosted, so the fence is not about the homelab here; it is
+    about the key. Under plain pull_request the PR's own copy of this script
+    would run with REFLECTION_API_KEY and a write token, so a same-repo PR
+    could swap the reviewer out. pull_request_target runs the base branch's
+    script, and the rest of the fence (same-repo only, base checkout, no
+    credential kept, comment-only token) is the same shape the Ollama job
+    passes, judged by the same function."""
+    from test_workflows import fence_violations
+    wf = REPO_ROOT / ".github" / "workflows" / "beam-review.yml"
+    text = wf.read_text()
+    assert "REVIEW_API_KEY: ${{ secrets.REFLECTION_API_KEY }}" in text
+    assert "REVIEW_BACKEND: openai" in text
+    doc = yaml.safe_load(text)
+    job = doc["jobs"]["beam-review"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert fence_violations(doc, job) == []

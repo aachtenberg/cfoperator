@@ -111,8 +111,10 @@ shared header, not to assert today's markup. Mutation-check a new guard once
   reasoning. Reviewers should never have to discover a narrowed scope by reading
   the diff.
 - Reviews arrive on their own: CodeRabbit reviews every PR (free on this
-  public repo), and the local LLM review (`local-llm-review`, CFOP-236) runs
-  on the homelab runner. Both skip drafts. There is no automatic Claude
+  public repo), the local LLM review (`local-llm-review`, CFOP-236) runs
+  on the homelab runner, and the Beam review (`beam-review`, CFOP-400) runs
+  the same script against Reflection AI's API on a hosted runner. All skip
+  drafts. There is no automatic Claude
   review any more: it reviewed every push, and a PR with five review rounds
   paid for five (#322). `tests/test_workflows.py` keeps it off push events.
   For a second opinion on a PR that deserves one, comment `@claude review`
