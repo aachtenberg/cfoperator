@@ -18,13 +18,18 @@ Two rules, each learned the hard way or nearly so:
    k3s. GitHub's own guidance says the same; this makes it a test failure
    rather than a code review catch.
 
-   One shape is exempt, and only as a whole (CFOP-236, the local-LLM
-   review, which has to run where Ollama is): ``pull_request_target`` as the
+   One shape is exempt, and only as a whole: ``pull_request_target`` as the
    only trigger, so the workflow and scripts come from the base branch and a
    PR cannot change what runs; a same-repo ``if``, so forks never start it;
    checkouts of the base only, keeping no credential; nothing that names
    the PR's head; and a token that can at most comment. Drop any one piece
-   and the exemption no longer holds, so the test checks every piece.
+   and the exemption no longer holds, so the test checks every piece. It was
+   cut for CFOP-236's local-LLM review, which had to run where Ollama is;
+   that job is gone (CFOP-402: gemma4 found blatant defects only), and the
+   shape now guards the Beam review (CFOP-400), where what it protects is the
+   API key a swapped-in script would otherwise run with. No PR-reachable job
+   is self-hosted any more; ``fence_violations`` is exercised through the
+   Beam workflow so the fence does not go vacuous.
 """
 from repo_paths import REPO_ROOT
 import re
@@ -199,20 +204,20 @@ def test_no_pull_request_job_targets_a_self_hosted_runner(wf):
             + "; ".join(problems))
 
 
-LOCAL_REVIEW = REPO_ROOT / ".github" / "workflows" / "local-llm-review.yml"
+BEAM_REVIEW = REPO_ROOT / ".github" / "workflows" / "beam-review.yml"
 
 
 def _review_job():
-    doc = yaml.safe_load(read(LOCAL_REVIEW))
-    return doc, doc["jobs"]["local-review"]
+    doc = yaml.safe_load(read(BEAM_REVIEW))
+    return doc, doc["jobs"]["beam-review"]
 
 
-def test_the_local_review_is_the_fenced_shape():
-    """Not vacuous: the review really is self-hosted and PR-reachable, so the
-    exemption above is exercised by a real workflow, and it passes the fence."""
+def test_the_beam_review_is_the_fenced_shape():
+    """Not vacuous: the fence is exercised by a real pull_request_target
+    workflow that passes it. Hosted, so the runner is not what it protects
+    here; the key is (see the workflow's comment)."""
     doc, job = _review_job()
-    assert "self-hosted" in runs_on_of(LOCAL_REVIEW, "local-review", job)
-    assert triggers(doc) & {"pull_request_target"}
+    assert triggers(doc) == {"pull_request_target"}
     assert fence_violations(doc, job) == []
 
 

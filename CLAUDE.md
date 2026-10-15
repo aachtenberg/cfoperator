@@ -110,30 +110,32 @@ shared header, not to assert today's markup. Mutation-check a new guard once
 - Include a section for any deviation from what the issues asked for, with the
   reasoning. Reviewers should never have to discover a narrowed scope by reading
   the diff.
-- Two reviews arrive on their own, each as one PR comment that is edited in
-  place on every push: the local LLM review (`local-llm-review`, CFOP-236,
-  gemma4 on the homelab runner) and the Beam review (`beam-review`,
-  CFOP-400, Reflection AI's Beam on a hosted runner). Same script, same
-  propose/ground/verify pipeline, so a finding has already survived a
-  second look before it is posted. Both skip drafts. There is no other
-  automatic reviewer: CodeRabbit was removed on 2026-10-15 (its trial ended
-  and the free tier wants 10 stars), and the automatic Claude review went
-  earlier because it reviewed every push and a PR with five review rounds
-  paid for five (#322); `tests/test_workflows.py` keeps it off push events.
+- One review arrives on its own, as a PR comment edited in place on every
+  push: the Beam review (`beam-review`, CFOP-400, Reflection AI's Beam on a
+  hosted runner, through `scripts/local_llm_review.py`'s propose/ground/
+  verify pipeline, so a finding has survived a second look before it is
+  posted). It skips drafts. There is no other automatic reviewer: the local
+  gemma4 review was dropped (CFOP-402: it proposed nothing on 46 of 48 PRs
+  and, measured on a real diff, caught a planted shell injection but not the
+  off-by-one beside it, which Beam caught); CodeRabbit was removed on
+  2026-10-15 (its trial ended and the free tier wants 10 stars); and the
+  automatic Claude review went earlier because it reviewed every push and a
+  PR with five review rounds paid for five (#322); `tests/test_workflows.py`
+  keeps it off push events.
   For a second opinion on a PR that deserves one, comment `@claude review`
   (`claude.yml`). **Do not request a Copilot review**: its credit is spent,
   and a request comes back as a "quota limit" comment, not a review.
   Subscribe to the PR.
 - Drive CI to green. A failure on your own PR ends with either a pushed fix or
   a reply explaining the blocker.
-- **Do not merge until both review comments are in and triaged.** Each is a
-  `github-actions[bot]` comment headed "Local LLM review" or "Beam review",
-  with findings as `path:line` bullets, or "No significant issues found".
+- **Do not merge until the review comment is in and triaged.** It is a
+  `github-actions[bot]` comment headed "Beam review", with findings as
+  `path:line` bullets, or "No significant issues found".
   Read the comment, not the check: the job is green whenever it managed to
   post, including a review that found things (CFOP-133's review sat unfixed
   until someone asked). A comment saying "No review for <sha>" means that
-  run failed; look at its log before merging past it. A push replaces both
-  comments, so after a fix wait for them to come back for the new head.
+  run failed; look at its log before merging past it. A push replaces the
+  comment, so after a fix wait for it to come back for the new head.
   Then:
   - real finding → smallest fix, reply on the PR, wait for CI
   - nit you agree with → fix it; "non-blocking" is not skip
