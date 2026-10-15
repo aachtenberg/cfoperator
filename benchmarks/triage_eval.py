@@ -89,6 +89,13 @@ sys.path.insert(0, _REPO_ROOT)
 
 from agent.agent import CFOperator  # noqa: E402
 
+if not hasattr(CFOperator, "_triage_system_prompt"):
+    # An older agent (an image built before CFOP-314) has no prompt builders
+    # to call; say so instead of dying on an AttributeError eight minutes in.
+    sys.exit("this agent build predates CFOP-314 (no CFOperator._triage_system_prompt): "
+             "the harness scores the production prompt builders, so run it against an "
+             "agent checkout or image that has them")
+
 
 # ── Production prompt and request, by construction ────────────────────────────
 
@@ -108,6 +115,17 @@ def build_user_message(case: dict) -> str:
     return CFOperator._triage_user_message(
         case["severity"], case["summary"], case["labels"],
         [tuple(s) for s in (case.get("similar") or [])])
+
+
+def alert_text_of(case: dict) -> str:
+    """The alert's own words -- summary, labels, precedent triggers -- with
+    none of the prompt's frame around them. What a reason has to be grounded
+    IN: the framed prompt always contains "alert", "severity" and "labels",
+    so a reason made of those words would count as grounded against it
+    (review on #336)."""
+    parts = [str(case.get("summary", "")), json.dumps(case.get("labels", {}), default=str)]
+    parts += [str(trigger) for _, trigger, _ in (case.get("similar") or [])]
+    return " ".join(parts)
 
 
 def build_payload(model: str, system_prompt: str, user_msg: str,
@@ -493,17 +511,20 @@ _PRECEDENT_CLAIM_RE = re.compile(
     re.IGNORECASE)
 
 
-def grade_reason(reason: str, prompt: str):
+def grade_reason(reason: str, prompt: str, alert_text=None):
     """(grounded, fabricated) for one reason against the prompt it answered.
 
     `grounded` is the planned Tier 3 check -- the reason names something from
-    the alert. `fabricated` is the list of object names it cites that appear
-    nowhere in the prompt, which is the check that catches an invented
-    precedent. A reason can be grounded and fabricating at the same time.
+    the alert. It is judged against `alert_text` (the alert's own words, see
+    alert_text_of) when given, else the prompt. `fabricated` is the list of
+    object names it cites that appear nowhere in the prompt, which is the
+    check that catches an invented precedent. A reason can be grounded and
+    fabricating at the same time.
     """
     if not reason:
         return False, []
     hay = (prompt or "").lower()
+    ground = (alert_text if alert_text is not None else (prompt or "")).lower()
     cited = _citation_tokens(reason)
     fabricated = sorted(t for t in cited if t not in hay)
     # An UNNAMED precedent is still an invention when the prompt offered none.
@@ -513,8 +534,8 @@ def grade_reason(reason: str, prompt: str):
     # one rung down.
     if "similar past investigations" not in hay and _PRECEDENT_CLAIM_RE.search(reason):
         fabricated.append("<unnamed precedent>")
-    grounded = any(t in hay for t in cited) or any(
-        w in hay for w in re.findall(r"[a-z]{5,}", reason.lower()))
+    grounded = any(t in ground for t in cited) or any(
+        w in ground for w in re.findall(r"[a-z]{5,}", reason.lower()))
     return grounded, fabricated
 
 
@@ -611,17 +632,22 @@ def grade(results: list, cases_by_name: dict) -> dict:
     reroute = sum(1 for r in valid if r.get("confidence") is not None
                   and 0 < float(r["confidence"]) < threshold)
 
-    # Latency (the SLO), per case, against the configured timeout.
+    # Latency (the SLO), per case, against the configured timeout. A run that
+    # errored is a call that never answered inside the harness's own 300 s
+    # timeout, or a host that was not there: either way not under the SLO,
+    # so it breaches rather than quietly dropping out of the percentiles.
     timeout_s, timeout_source = triage_timeout_seconds()
     latency = {}
     breaches = []
     for name in sorted(per_case_counts):
         lat = [r["latency_s"] for r in rows if r["case"] == name
                and r.get("error") is None and r.get("latency_s") is not None]
-        entry = {"n": len(lat), "p50": _percentile(lat, 50), "p95": _percentile(lat, 95),
+        errored = sum(1 for r in rows if r["case"] == name and r.get("error"))
+        entry = {"n": len(lat), "errors": errored,
+                 "p50": _percentile(lat, 50), "p95": _percentile(lat, 95),
                  "p99": _percentile(lat, 99), "max": (round(max(lat), 2) if lat else None)}
         latency[name] = entry
-        if entry["p95"] is not None and entry["p95"] >= timeout_s:
+        if errored or (entry["p95"] is not None and entry["p95"] >= timeout_s):
             breaches.append(name)
     all_lat = [r["latency_s"] for r in rows if r.get("error") is None and r.get("latency_s") is not None]
     # A chart or compose install gets the 5 s default; say when a deployment
@@ -735,6 +761,11 @@ def summarise_per_case(results: list, case_names: list) -> dict:
     return per_case
 
 
+def _write(path: str, doc: dict) -> None:
+    with open(path, "w") as f:
+        json.dump(doc, f, indent=1)
+
+
 def replay(path: str) -> dict:
     """Re-grade a result file this harness wrote. Grounding and fabrication
     come from the persisted per-run fields (the prompt is not stored); the
@@ -816,6 +847,7 @@ def main():
     results = []
     for case in cases:
         user_msg = build_user_message(case)
+        alert_text = alert_text_of(case)
         payload = build_payload(args.model, system_prompt, user_msg, args.num_ctx)
         for run in range(args.runs):
             text, latency, err = call_ollama(args.url, payload, args.timeout)
@@ -823,7 +855,7 @@ def main():
             action = decision["action"] if decision else None
             correct = action in case["expected"] if action else False
             reason = decision.get("reason") if decision else None
-            grounded, fabricated = grade_reason(reason, user_msg)
+            grounded, fabricated = grade_reason(reason, user_msg, alert_text)
             results.append({
                 "case": case["name"],
                 "run": run,
@@ -860,6 +892,14 @@ def main():
                       f"cited but absent from the prompt")
             if decision and is_canned(reason):
                 print(f"         CANNED reason — a v1 template string")
+        if args.output:
+            # After every case, so a host that falls asleep or a job timeout
+            # mid-run leaves the rows scored so far, marked partial.
+            _write(args.output, {"summary": {"partial": True, "model": args.model,
+                                             "cases_done": len({r["case"] for r in results}),
+                                             "cases_total": len(cases)},
+                                 "per_case": summarise_per_case(results, [c["name"] for c in cases]),
+                                 "results": results})
 
     g = grade(results, CASES_BY_NAME)
     g["model"] = args.model
@@ -869,8 +909,7 @@ def main():
     print_report(args.model, version, g, per_case)
 
     if args.output:
-        with open(args.output, "w") as f:
-            json.dump({"summary": g, "per_case": per_case, "results": results}, f, indent=1)
+        _write(args.output, {"summary": g, "per_case": per_case, "results": results})
         print(f"\nWrote {args.output}")
 
     sys.exit(0 if (g["gate"]["pass"] or args.no_gate) else 1)

@@ -26,7 +26,7 @@ on:
         default: "36"
         type: string
       image:
-        description: cfoperator image whose agent code the harness runs against
+        description: cfoperator image whose agent code the harness runs against (must be built after CFOP-314; the harness says so if not)
         default: "ghcr.io/aachtenberg/cfoperator:main"
         type: string
 
@@ -67,7 +67,12 @@ jobs:
           fi
           mkdir -p "$RUNNER_TEMP/out"
           docker pull "$IMAGE"
+          # As the runner's own uid: the image runs as root, and a root-owned
+          # result file in $RUNNER_TEMP is one the runner cannot clean up.
+          # The harness writes the file after every case, so a host that
+          # falls asleep mid-run still leaves the rows scored so far.
           docker run --rm --network host \
+            --user "$(id -u):$(id -g)" -e HOME=/tmp \
             -e CFOP_TRIAGE_TIMEOUT_SECONDS \
             -v "$PWD/benchmarks:/app/benchmarks:ro" \
             -v "$RUNNER_TEMP/out:/out" \
@@ -81,4 +86,4 @@ jobs:
         with:
           name: triage-eval-${{ inputs.model }}-${{ github.run_id }}
           path: ${{ runner.temp }}/out/triage_eval.json
-          if-no-files-found: ignore
+          if-no-files-found: warn

@@ -150,6 +150,35 @@ def test_a_tool_calls_dump_is_not_a_decision():
         '[TOOL_CALLS][{"name": "classify", "arguments": {"action": "notify"}}]') is None
 
 
+def test_grounded_means_the_alert_not_the_frame():
+    """The framed prompt always contains "alert", "severity" and "labels";
+    grounding is judged against the alert's own words (review on #336)."""
+    case = _case('novel-oom')
+    prompt, alert_text = te.build_user_message(case), te.alert_text_of(case)
+    assert te.grade_reason('nothing resembles a known pattern here', prompt, alert_text)[0] is False
+    assert te.grade_reason('paperless-ngx OOMKilled with no precedent', prompt, alert_text)[0] is True
+    # Fabrication still looks at the whole prompt: a name from the frame's
+    # precedent block is a real citation, not an invention.
+    case2 = _case('known-sdcard')
+    g, fab = te.grade_reason('raspberrypi3 SD card, replacement scheduled',
+                             te.build_user_message(case2), te.alert_text_of(case2))
+    assert g is True and fab == []
+
+
+def test_an_errored_run_breaches_the_latency_gate(monkeypatch):
+    """A call that never answered is not under the SLO; it must not drop out
+    of the percentiles and leave the gate green."""
+    monkeypatch.setenv('CFOP_TRIAGE_TIMEOUT_SECONDS', '120')
+    rows = _rows(reason=lambda c, r: f'pod-{c} {r}', confidence=lambda c, r: 0.5 + 0.01 * (r % 3))
+    rows[5]['error'] = 'TimeoutError: timed out'
+    rows[5]['valid'] = False
+    rows[5]['correct'] = False
+    g = te.grade(rows, te.CASES_BY_NAME)
+    assert g['latency']['per_case']['case-0']['errors'] == 1
+    assert 'case-0' in g['latency']['p95_breaches']
+    assert g['gate']['latency_p95_under_timeout'] is False
+
+
 # ---- the gate -----------------------------------------------------------------
 
 def _rows(n_cases=3, runs=36, *, reason, confidence, latency=1.0, correct=True):
