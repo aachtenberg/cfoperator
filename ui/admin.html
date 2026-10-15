@@ -831,6 +831,7 @@ function scopeSourceBadge(src){
   if(src === 'config') return badge('config.yaml', '--cyan');
   if(src === 'floor') return badge('floor', '--orange');
   if(src === 'env') return badge('env', '--cyan');
+  if(src === 'unknown') return badge('not visible here', '--text-muted');
   return badge('default (chain)', '--text-muted');
 }
 async function loadLlmScopes(){

@@ -976,11 +976,14 @@ class WebServer:
                 'hint': 'the Job env (remediation.executor.llm.chain); node actions keep their floor',
                 'effective': {'chain': _executor_chain_summary()}, 'source': 'config',
             })
+            # The runtime's env is not visible from this process: a value
+            # here is only what this pod was given, and absence says nothing.
+            deep_env = os.getenv('CFOP_DEEP_MODEL', '').strip()
             rows.append({
                 'scope': 'deep', 'label': 'Deep investigation', 'kind': 'model', 'editable': False,
                 'hint': "event_runtime's CFOP_DEEP_MODEL; the runtime's env, not this process",
-                'effective': {'model': os.getenv('CFOP_DEEP_MODEL', '') or '(runtime default)'},
-                'source': 'env' if os.getenv('CFOP_DEEP_MODEL') else 'default',
+                'effective': {'model': deep_env or '(not visible from the console)'},
+                'source': 'env' if deep_env else 'unknown',
             })
             return rows
 
@@ -1000,7 +1003,13 @@ class WebServer:
                 return jsonify({'error': 'could not read per-scope models'}), 500
 
         def _scope_row(scope):
-            return next((r for r in _scope_rows() if r['scope'] == scope), None)
+            """The row after a write, or None: the write already happened,
+            so a row build that fails must not turn into a failed save."""
+            try:
+                return next((r for r in _scope_rows() if r['scope'] == scope), None)
+            except Exception as e:
+                logger.warning(f"Could not rebuild the {scope} row after the write: {e}")
+                return None
 
         @self.app.route('/api/settings/llm_scopes/<scope>', methods=['PUT'])
         @require_role(ROLE_ADMIN)

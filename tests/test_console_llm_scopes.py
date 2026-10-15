@@ -123,6 +123,22 @@ def test_a_failed_write_is_never_a_success_here_or_on_the_older_endpoints(server
         assert 'db-host' not in resp.get_data(as_text=True)
 
 
+def test_a_saved_write_is_reported_saved_even_when_the_row_cannot_be_rebuilt(server):
+    c = server.app.test_client()
+    server.operator._triage_model = lambda: (_ for _ in ()).throw(RuntimeError('triage lookup broke'))
+    r = c.put('/api/settings/llm_scopes/sweep', json={'backend': 'groq'})
+    assert r.status_code == 200 and r.get_json() == {'success': True, 'row': None}
+    assert server.settings['sweep_backend'] == 'groq'
+
+
+def test_the_deep_row_never_claims_a_default_it_cannot_see(server, monkeypatch):
+    monkeypatch.delenv('CFOP_DEEP_MODEL', raising=False)
+    assert _rows(server.app.test_client())['deep']['source'] == 'unknown'
+    monkeypatch.setenv('CFOP_DEEP_MODEL', 'deep-m')
+    row = _rows(server.app.test_client())['deep']
+    assert row['source'] == 'env' and row['effective'] == {'model': 'deep-m'}
+
+
 def test_scope_writes_are_admin_gated():
     src = (REPO_ROOT / 'web_server.py').read_text(encoding='utf-8')
     for handler in ('def set_llm_scope', 'def reset_llm_scope'):

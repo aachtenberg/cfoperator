@@ -4204,9 +4204,12 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             raise ValueError(f'unknown LLM scope: {scope}')
         db_backend, db_model = '', ''
         try:
-            db_backend = str(self.kb.get_setting(f'{scope}_backend', '') or '').strip()
+            db_backend = str(self.kb.get_setting(f'{scope}_backend', '') or '').strip().lower()
             db_model = str(self.kb.get_setting(f'{scope}_model', '') or '').strip()
         except Exception as e:
+            # Both or neither: a backend read that succeeded before the model
+            # read failed must not become "console: that backend, no model".
+            db_backend, db_model = '', ''
             logger.debug(f"Could not read {scope} scope model from DB, using config: {e}")
         if db_backend or db_model:
             return {'backend': db_backend or 'auto', 'model': db_model or None, 'source': 'console'}

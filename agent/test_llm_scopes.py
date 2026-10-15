@@ -58,6 +58,17 @@ def test_a_db_read_failure_falls_through_to_config():
     assert op._scope_llm('summary') == {'backend': 'auto', 'model': 'gemma4:26b', 'source': 'config'}
 
 
+def test_a_failure_on_the_second_read_does_not_keep_half_a_console_value():
+    """Backend read fine, model read raised: not "console: groq, no model"."""
+    op = _op({'llm': {'scopes': {'summary': {'backend': 'xai', 'model': 'grok-3'}}}})
+    op.kb.get_setting = MagicMock(side_effect=['groq', ConnectionError('offline')])
+    assert op._scope_llm('summary') == {'backend': 'xai', 'model': 'grok-3', 'source': 'config'}
+
+
+def test_a_hand_written_db_backend_is_lowercased_like_config():
+    assert _op(sweep_backend='Ollama')._scope_llm('sweep')['backend'] == 'ollama'
+
+
 def test_the_sweep_runs_on_the_scope_model():
     op = _op(sweep_backend='deepseek', sweep_model='deepseek-chat')
     op._get_sweep_max_iterations = lambda: 3
