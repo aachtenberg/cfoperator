@@ -288,6 +288,18 @@
     </div>
   </div>
 
+  <div class="divider">Models per scope</div>
+  <div class="section">
+    <p class="muted" style="margin:8px 0 12px">
+      Which model each unattended path runs, and where that choice comes from.
+      A row set here is stored in the database and wins over <code>config.yaml</code>;
+      reset hands it back. Blank backend means "auto": whatever the chain resolves.
+      The judge rows cannot go below their floor. Executor Jobs and the deep tier
+      read their env, so they are shown, not set, here.
+    </p>
+    <div class="card" id="scopes-card"><div class="muted">Loading…</div></div>
+  </div>
+
   <div class="divider">Provider keys</div>
   <div class="section">
     <p class="muted" style="margin:8px 0 12px">
@@ -807,8 +819,65 @@ async function loadLlm(){
     document.getElementById('eff-card').innerHTML = '<div class="muted">Admin role required.</div>';
     return;
   }
-  await Promise.all([loadEffective(), loadProvidersAndSettings(), loadPoolToggles(), loadProviderKeys()]);
+  await Promise.all([loadEffective(), loadProvidersAndSettings(), loadPoolToggles(), loadProviderKeys(), loadLlmScopes()]);
   llmLoaded = true;
+}
+/* Models per scope (CFOP-122): one row per LLM seat the agent fills
+   unattended. Editable rows take a backend+model (sweep, summary,
+   classifier) or a model over a floor (judge:<backend>); the rest show
+   their effective value and provenance only. */
+function scopeSourceBadge(src){
+  if(src === 'console') return badge('console (database)', '--accent');
+  if(src === 'config') return badge('config.yaml', '--cyan');
+  if(src === 'floor') return badge('floor', '--orange');
+  if(src === 'env') return badge('env', '--cyan');
+  return badge('default (chain)', '--text-muted');
+}
+async function loadLlmScopes(){
+  const card = document.getElementById('scopes-card');
+  const r = await api('/api/settings/llm_scopes');
+  if(!r.ok){ card.innerHTML = `<div class="muted">${esc(r.error)}</div>`; return; }
+  const backends = r.data.backends || ['auto'];
+  const rows = (r.data.scopes || []).map(s => {
+    const eff = s.effective || {};
+    const effText = s.kind === 'chain' ? eff.chain
+      : s.kind === 'backend_model' ? `${eff.backend || 'auto'}${eff.model ? '/' + eff.model : ''}`
+      : (eff.model || '—');
+    let controls = '';
+    if(s.editable && s.kind === 'backend_model'){
+      const db = s.db || {};
+      const opts = backends.map(b => `<option value="${esc(b)}"${(db.backend || 'auto') === b ? ' selected' : ''}>${esc(b)}</option>`).join('');
+      controls = `<select id="scope-backend-${esc(s.scope)}" style="width:9em">${opts}</select>` +
+        `<input type="text" id="scope-model-${esc(s.scope)}" placeholder="model (optional)" value="${esc(db.model || '')}" style="width:14em">`;
+    } else if(s.editable && s.kind === 'model'){
+      controls = `<input type="text" id="scope-model-${esc(s.scope)}" placeholder="${esc(s.floor || 'model')}" value="${esc((s.db || {}).model || '')}" style="width:14em">`;
+    }
+    const buttons = s.editable
+      ? `<button class="chip primary" onclick="saveLlmScope('${esc(s.scope)}','${esc(s.kind)}')">Save</button>` +
+        `<button class="chip" onclick="resetLlmScope('${esc(s.scope)}')"${s.source === 'console' ? '' : ' disabled'}>Reset</button>`
+      : '';
+    return `<div class="eff-row" style="gap:8px;flex-wrap:wrap" title="${esc(s.hint || '')}">` +
+      `<span>${esc(s.label)} <span class="mono">${esc(effText)}</span> ${scopeSourceBadge(s.source)}</span>` +
+      `<span style="display:inline-flex;gap:6px;align-items:center">${controls}${buttons}</span></div>`;
+  }).join('');
+  card.innerHTML = rows;
+}
+async function saveLlmScope(scope, kind){
+  const body = {};
+  const modelEl = document.getElementById('scope-model-' + scope);
+  if(modelEl) body.model = (modelEl.value || '').trim();
+  const backendEl = document.getElementById('scope-backend-' + scope);
+  if(backendEl) body.backend = backendEl.value;
+  const r = await api(`/api/settings/llm_scopes/${scope}`, {method:'PUT', body: JSON.stringify(body)});
+  if(!r.ok){ toast('failed to save ' + scope + ': ' + (r.error || ''), 'err'); return; }
+  toast(scope + ' → ' + (body.backend && body.backend !== 'auto' ? body.backend + '/' : '') + (body.model || 'auto'), 'ok');
+  await loadLlmScopes();
+}
+async function resetLlmScope(scope){
+  const r = await api(`/api/settings/llm_scopes/${scope}`, {method:'DELETE'});
+  if(!r.ok){ toast('failed to reset ' + scope + ': ' + (r.error || ''), 'err'); return; }
+  toast(scope + ' reset — config applies', 'ok');
+  await loadLlmScopes();
 }
 /* Provider keys (CFOP-111): one row per hosted provider the agent registers.
    The server never returns a value; the row shows where the key in effect

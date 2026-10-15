@@ -30,7 +30,7 @@ from web_auth import (
     ROLE_ADMIN, install_auth, require_console_admin, require_role, require_token_scope)
 from auth.bootstrap import init_auth_store
 from auth.models import (
-    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_LLM_KEY, EVENT_REMEDIATION_ALLOWLIST,
+    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_LLM_KEY, EVENT_LLM_SCOPE, EVENT_REMEDIATION_ALLOWLIST,
     EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
 # The cockpit spawn mints a session token server-side, and it must resolve the
 # caller exactly as POST /api/auth/tokens does — same role ceiling, same audit
@@ -731,7 +731,9 @@ class WebServer:
                 self.operator.kb.set_setting('selected_backend', backend)
                 logger.info(f"Set default provider to {backend}/{model_name}")
             except Exception as e:
+                # Never a 200 for a write that did not happen (CFOP-122).
                 logger.warning(f"Could not persist {backend} model selection (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
             return jsonify({'success': True, 'backend': backend, 'model': model_name})
 
         @self.app.route('/api/settings/provider')
@@ -757,6 +759,7 @@ class WebServer:
                 logger.info(f"Set default provider to: {backend}")
             except Exception as e:
                 logger.warning(f"Could not persist provider selection: {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
             return jsonify({'success': True, 'backend': backend})
 
         # Settings API
@@ -776,6 +779,7 @@ class WebServer:
                 self.operator.kb.set_setting('max_tool_iterations', str(val))
             except Exception as e:
                 logger.warning(f"Could not persist max_tool_iterations (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
             return jsonify({'success': True, 'max_tool_iterations': val})
 
         # Dedicated triage model (CFOP-58). DB setting overrides the
@@ -889,6 +893,172 @@ class WebServer:
             _llm_key_audit(backend, 'cleared')
             logger.info(f"Hosted-provider key for {backend} cleared from the console; env applies")
             return jsonify({'success': True, 'provider': _llm_key_row(keys, backend)})
+
+        # ── Models per scope (CFOP-122) ──
+        # One table of every LLM seat the agent fills unattended, each with
+        # its effective value and where it came from (console / config /
+        # default or floor), and a PUT per editable row. The sweep, summary
+        # and classifier resolve through CFOperator._scope_llm; the judge
+        # rows drive CFOP-121's judge_model_<backend> keys (floor enforced
+        # at write time, as _judge_model enforces it at read time); triage
+        # is listed for completeness and edited by its own select; the
+        # executor chain and the deep tier are read-only here because they
+        # live in Job env / the runtime's env, not in this process.
+
+        def _scope_registry():
+            from agent import LLM_SCOPES
+            from agent.agent import _JUDGE_MODEL_FLOOR, _is_fast_tier_model
+            return LLM_SCOPES, _JUDGE_MODEL_FLOOR, _is_fast_tier_model
+
+        def _scope_backends():
+            return ['auto', 'ollama', 'anthropic', *_openai_compat_providers()]
+
+        def _scope_setting(key):
+            try:
+                return str(self.operator.kb.get_setting(key, '') or '').strip()
+            except Exception as e:
+                logger.warning(f"Could not read {key}: {e}")
+                return ''
+
+        def _executor_chain_summary():
+            ec = self.operator._executor_config() if hasattr(self.operator, '_executor_config') else {}
+            llm = ec.get('llm') if isinstance(ec.get('llm'), dict) else {}
+            rungs = llm.get('chain') if isinstance(llm.get('chain'), list) else []
+            if rungs:
+                return ' → '.join(f"{r.get('backend', '?')}/{r.get('model', '?')}" for r in rungs
+                                  if isinstance(r, dict))
+            backend = str(llm.get('backend') or 'anthropic')
+            model = str(llm.get('model') or '')
+            return f"{backend}/{model}" if model else backend
+
+        def _scope_rows():
+            scopes, floors, _ = _scope_registry()
+            rows = []
+            for scope, meta in scopes.items():
+                eff = self.operator._scope_llm(scope)
+                cfg = self.operator._scope_llm_config(scope)
+                rows.append({
+                    'scope': scope, 'label': meta['label'], 'hint': meta['hint'],
+                    'kind': 'backend_model', 'editable': True,
+                    'effective': {'backend': eff['backend'], 'model': eff['model'] or ''},
+                    'source': eff['source'],
+                    'db': {'backend': _scope_setting(f'{scope}_backend'),
+                           'model': _scope_setting(f'{scope}_model')},
+                    'config': cfg,
+                })
+            tcfg = self.operator.config.get('llm', {}) if isinstance(self.operator.config, dict) else {}
+            triage_db = _scope_setting('triage_model')
+            rows.append({
+                'scope': 'triage', 'label': 'Triage', 'kind': 'model', 'editable': False,
+                'hint': 'alert triage classifier; set with the Triage model select above',
+                'effective': {'model': self.operator._triage_model() or ''},
+                'source': 'console' if triage_db else ('config' if tcfg.get('triage_model') else 'default'),
+                'db': {'model': triage_db}, 'config': {'model': str(tcfg.get('triage_model') or '')},
+            })
+            for backend, floor in floors.items():
+                db = self.operator._judge_model_setting(backend)
+                cfg_model = self.operator._judge_model_config(backend)
+                eff = self.operator._judge_model(backend)
+                source = 'floor'
+                if db and eff == db:
+                    source = 'console'
+                elif cfg_model and eff == cfg_model:
+                    source = 'config'
+                rows.append({
+                    'scope': f'judge:{backend}', 'label': f'Mutation judge · {backend}',
+                    'hint': f'frontier veto on mutation-shaped remediations; floor {floor}',
+                    'kind': 'model', 'editable': True, 'backend': backend, 'floor': floor,
+                    'effective': {'model': eff}, 'source': source,
+                    'db': {'model': db}, 'config': {'model': cfg_model},
+                })
+            rows.append({
+                'scope': 'executor', 'label': 'Remediation executor', 'kind': 'chain', 'editable': False,
+                'hint': 'the Job env (remediation.executor.llm.chain); node actions keep their floor',
+                'effective': {'chain': _executor_chain_summary()}, 'source': 'config',
+            })
+            rows.append({
+                'scope': 'deep', 'label': 'Deep investigation', 'kind': 'model', 'editable': False,
+                'hint': "event_runtime's CFOP_DEEP_MODEL; the runtime's env, not this process",
+                'effective': {'model': os.getenv('CFOP_DEEP_MODEL', '') or '(runtime default)'},
+                'source': 'env' if os.getenv('CFOP_DEEP_MODEL') else 'default',
+            })
+            return rows
+
+        def _scope_audit(scope, **detail):
+            store = getattr(self, 'auth_store', None)
+            if store is None:
+                return
+            store.record(EVENT_LLM_SCOPE, actor=_actor(), target=scope,
+                         source_ip=request.remote_addr, **detail)
+
+        @self.app.route('/api/settings/llm_scopes')
+        def get_llm_scopes():
+            try:
+                return jsonify({'scopes': _scope_rows(), 'backends': _scope_backends()})
+            except Exception as e:
+                logger.error(f"get llm scopes failed: {e}")
+                return jsonify({'error': 'could not read per-scope models'}), 500
+
+        def _scope_row(scope):
+            return next((r for r in _scope_rows() if r['scope'] == scope), None)
+
+        @self.app.route('/api/settings/llm_scopes/<scope>', methods=['PUT'])
+        @require_role(ROLE_ADMIN)
+        def set_llm_scope(scope):
+            scopes, floors, is_fast_tier = _scope_registry()
+            data = request.get_json(silent=True) or {}
+            model = str(data.get('model') or '').strip()
+            if len(model) > 200:
+                return jsonify({'error': 'model id too long'}), 400
+            writes = {}
+            if scope in scopes:
+                backend = str(data.get('backend') or '').strip().lower()
+                if backend == 'auto':
+                    backend = ''
+                if backend and backend not in _scope_backends():
+                    return jsonify({'error': f'unknown backend: {backend}'}), 400
+                if not backend and not model:
+                    return jsonify({'error': 'nothing to set; DELETE resets the scope to config'}), 400
+                writes = {f'{scope}_backend': backend, f'{scope}_model': model}
+            elif scope.startswith('judge:') and scope[6:] in floors:
+                backend = scope[6:]
+                if not model:
+                    return jsonify({'error': 'nothing to set; DELETE resets the judge to config/floor'}), 400
+                if is_fast_tier(model):
+                    return jsonify({'error': f'{model} is a fast-tier model; the mutation veto stays at '
+                                             f'or above {floors[backend]}'}), 400
+                writes = {f'judge_model_{backend}': model}
+            else:
+                return jsonify({'error': f'unknown or read-only scope: {scope}'}), 404
+            try:
+                for key, value in writes.items():
+                    self.operator.kb.set_setting(key, value)
+            except Exception as e:
+                logger.warning(f"Could not persist {scope} model (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
+            _scope_audit(scope, action='set', **writes)
+            logger.info(f"LLM scope {scope} set from the console: {writes}")
+            return jsonify({'success': True, 'row': _scope_row(scope)})
+
+        @self.app.route('/api/settings/llm_scopes/<scope>', methods=['DELETE'])
+        @require_role(ROLE_ADMIN)
+        def reset_llm_scope(scope):
+            scopes, floors, _ = _scope_registry()
+            if scope in scopes:
+                keys = (f'{scope}_backend', f'{scope}_model')
+            elif scope.startswith('judge:') and scope[6:] in floors:
+                keys = (f'judge_model_{scope[6:]}',)
+            else:
+                return jsonify({'error': f'unknown or read-only scope: {scope}'}), 404
+            try:
+                for key in keys:
+                    self.operator.kb.set_setting(key, '')
+            except Exception as e:
+                logger.warning(f"Could not reset {scope} model (DB down?): {e}")
+                return jsonify({'error': 'not reset: the database is unavailable'}), 503
+            _scope_audit(scope, action='reset')
+            logger.info(f"LLM scope {scope} reset from the console; config applies")
+            return jsonify({'success': True, 'row': _scope_row(scope)})
 
         # OODA interval settings
         @self.app.route('/api/settings/ooda')

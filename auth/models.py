@@ -251,3 +251,6 @@ EVENT_REMEDIATION_ALLOWLIST = "remediation.allowlist"
 #: ``target`` is the backend and ``detail`` says set or cleared -- never the
 #: value, not even a prefix.
 EVENT_LLM_KEY = "llm.key"
+#: A per-scope model was set or reset from Admin → LLM (CFOP-122). ``target``
+#: is the scope ('sweep', 'judge:xai', …), ``detail`` the new values.
+EVENT_LLM_SCOPE = "llm.scope"

@@ -307,6 +307,19 @@ _JUDGE_MODEL_FLOOR = {
 # DeepSeek first: cheapest capable rung, with the frontier peers as failover.
 _JUDGE_DEFAULT_ORDER = ('deepseek', 'anthropic', 'xai', 'gemini')
 
+# The unattended paths whose (backend, model) the console can set per scope
+# (CFOP-122). Each resolves through CFOperator._scope_llm: DB keys
+# ``<scope>_backend`` / ``<scope>_model`` over ``llm.scopes.<scope>`` in
+# config over the chain default. Triage (one Ollama model, CFOP-58) and the
+# judge (one model per backend over a floor, CFOP-121) keep their own keys;
+# the console's scope table reads all of them through one endpoint.
+LLM_SCOPES = {
+    'sweep': {'label': 'Sweeps', 'hint': 'the scheduled sweep phases (unattended, tool loop)'},
+    'summary': {'label': 'Morning summary', 'hint': 'the daily summary (unattended, tool loop)'},
+    'classifier': {'label': 'Remediation classifier',
+                   'hint': 'one-shot classification of a needs-action recommendation'},
+}
+
 # Model-name tokens that mark a vendor's FAST tier, refused in the judge seat
 # (CFOP-121). Tokens, not substrings — 'mini' is inside 'gemini'.
 #
@@ -4169,6 +4182,52 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
     _REMEDIATION_FLAGS = ('queue_feed', 'queue_drain', 'queue_reap', 'queue_verify',
                           'queue_tracker', 'queue_reverify', 'node_action_enabled')
 
+    # ── Per-scope models (CFOP-122) ──────────────────────────────────────
+    # The chat default is one (backend, model); the unattended paths each
+    # carry their own: the sweep already read sweep_backend/sweep_model from
+    # the DB with nothing writing them, the morning summary and the
+    # remediation classifier rode the chat default. One resolver, one key
+    # shape per scope, DB over config over the chain default, so the console
+    # can repoint any of them live and show where the value came from.
+
+    def _scope_llm(self, scope: str) -> Dict[str, Any]:
+        """{'backend', 'model', 'source'} for an LLM_SCOPES scope.
+
+        Console (``<scope>_backend`` / ``<scope>_model`` in the knowledge
+        base) over ``llm.scopes.<scope>`` in config over the chain default
+        ('auto', no model: whatever the fallback chain resolves). Backend
+        and model travel together: a console backend with no model means
+        "that backend's selected model", the same thing the chat chip does.
+        A DB read failure falls through to config rather than breaking an
+        unattended path."""
+        if scope not in LLM_SCOPES:
+            raise ValueError(f'unknown LLM scope: {scope}')
+        db_backend, db_model = '', ''
+        try:
+            db_backend = str(self.kb.get_setting(f'{scope}_backend', '') or '').strip()
+            db_model = str(self.kb.get_setting(f'{scope}_model', '') or '').strip()
+        except Exception as e:
+            logger.debug(f"Could not read {scope} scope model from DB, using config: {e}")
+        if db_backend or db_model:
+            return {'backend': db_backend or 'auto', 'model': db_model or None, 'source': 'console'}
+        cfg = self._scope_llm_config(scope)
+        if cfg['backend'] or cfg['model']:
+            return {'backend': cfg['backend'] or 'auto', 'model': cfg['model'] or None, 'source': 'config'}
+        return {'backend': 'auto', 'model': None, 'source': 'default'}
+
+    def _scope_llm_config(self, scope: str) -> Dict[str, str]:
+        """``llm.scopes.<scope>.{backend,model}`` from config.yaml, '' when unset."""
+        llm_cfg = self.config.get('llm', {}) if isinstance(self.config, dict) else {}
+        scopes = llm_cfg.get('scopes') if isinstance(llm_cfg.get('scopes'), dict) else {}
+        entry = scopes.get(scope) if isinstance(scopes.get(scope), dict) else {}
+        return {'backend': str(entry.get('backend') or '').strip().lower(),
+                'model': str(entry.get('model') or '').strip()}
+
+    def _scope_llm_kwargs(self, scope: str) -> Dict[str, Any]:
+        """The ``backend=`` / ``model=`` pair for _chat_with_tools_with_fallback."""
+        resolved = self._scope_llm(scope)
+        return {'backend': resolved['backend'], 'model': resolved['model']}
+
     def _triage_model(self) -> Optional[str]:
         """Resolve the dedicated triage model: DB setting overrides config.
 
@@ -6178,6 +6237,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         try:
             result = self._chat_with_tools_with_fallback(
                 messages=messages, system_context=system_prompt,
+                **self._scope_llm_kwargs('classifier'),  # CFOP-122
                 max_iterations=1,  # one-shot classification — no tool loop
                 tool_policy=UNATTENDED,
             )
@@ -6208,6 +6268,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         try:
             retry = self._chat_with_tools_with_fallback(
                 messages=nudge_messages, system_context=system_prompt,
+                **self._scope_llm_kwargs('classifier'),  # the same seat, CFOP-122
                 max_iterations=1,
                 tool_policy=UNATTENDED,
             )
@@ -7898,18 +7959,13 @@ Only return the JSON array, no other text."""
         if max_iterations is None:
             max_iterations = self._get_sweep_max_iterations()
 
-        # Check for sweep-specific backend/model override (DB settings)
-        sweep_backend = self.kb.get_setting('sweep_backend', '')
-        sweep_model = self.kb.get_setting('sweep_model', '')
-
         system_prompt = self._build_sweep_system_prompt(task, skill_name=skill_name)
 
         try:
             result = self._chat_with_tools_with_fallback(
                 messages=[{'role': 'user', 'content': task}],
                 system_context=system_prompt,
-                backend=sweep_backend or 'auto',
-                model=sweep_model or None,
+                **self._scope_llm_kwargs('sweep'),  # CFOP-122
                 max_iterations=max_iterations,
                 tool_policy=UNATTENDED,
             )
@@ -9123,8 +9179,7 @@ Only return the JSON array, no other text."""
                 summary += f"\n  -> {f['remediation']}"
             summary += "\n"
 
-        sweep_backend = self.kb.get_setting('sweep_backend', '')
-        sweep_model = self.kb.get_setting('sweep_model', '')
+        sweep_llm = self._scope_llm('sweep')  # CFOP-122
 
         return {
             'timestamp': datetime.now(),
@@ -9132,8 +9187,8 @@ Only return the JSON array, no other text."""
             'summary': summary,
             'severity': max_severity,
             'sweep_meta': {
-                'sweep_backend': sweep_backend or 'default',
-                'sweep_model': sweep_model or 'default',
+                'sweep_backend': sweep_llm['backend'] if sweep_llm['source'] != 'default' else 'default',
+                'sweep_model': sweep_llm['model'] or 'default',
             }
         }
 
@@ -11731,6 +11786,7 @@ IMPORTANT:
                     f"You have tools to check live infrastructure. Be concise and actionable.\n\n"
                     f"{infra}"
                 ),
+                **self._scope_llm_kwargs('summary'),  # CFOP-122
                 max_iterations=15,
                 tool_policy=UNATTENDED,
             )

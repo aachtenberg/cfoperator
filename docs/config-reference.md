@@ -256,6 +256,23 @@ llm:
   # them on `helm upgrade` by itself — chart users need no manual restart.
   # triage_model: cfop-triage-ministral3:v1-q4
 
+  # Models per scope (CFOP-122). Each unattended path can run on its own
+  # (backend, model) instead of riding the chat default: `sweep` (the
+  # scheduled sweep phases), `summary` (the morning summary), `classifier`
+  # (the one-shot remediation classifier). Either key may be omitted —
+  # backend alone means that backend's selected model, model alone means
+  # the chain picks the backend. Absent entirely = 'auto', what the chain
+  # resolves. Admin → LLM "Models per scope" overrides any of these live
+  # (DB keys `<scope>_backend` / `<scope>_model`) and shows which source is
+  # in effect; the judge rows there drive remediation.judge.models, triage
+  # keeps llm.triage_model, and the executor chain / deep tier are env-only.
+  # scopes:
+  #   sweep:
+  #     backend: ollama
+  #     model: gemma4:26b
+  #   classifier:
+  #     backend: groq
+
   # Ollama host for triage, when it should NOT be llm.primary.url. Optional;
   # absent means "use the primary host". Lets the triage model run on a
   # different ollama box than investigations — e.g. a spare 16GB GPU — so the
