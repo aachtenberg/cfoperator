@@ -234,6 +234,10 @@ DEFAULT_CONFIG: dict = {
         "redact_tool_results": True,
     },
 
+    # How an investigation got to its answer: the trace rows the Explain view
+    # reads (CFOP-324). Pruned daily past this many days; 0 keeps them.
+    "investigations": {"trace_retention_days": 30},
+
     "event_runtime": {
         "scheduler": {"backend": "json-file", "misfire_grace_time_seconds": 300},
         "persistence": {"postgres": {"enabled": False, "table_name": "event_runtime_events"}},

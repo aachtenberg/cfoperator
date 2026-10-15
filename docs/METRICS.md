@@ -200,6 +200,19 @@ and every `k8s_*` tool set `success` from the process exit code, and those
 payloads carry `exit_code` with no `error`. Cached repeats use the original
 result's label, not the stub.
 
+### Investigation Trace
+```promql
+# Rows the Explain view's recorder tried to write, by kind and result (CFOP-324)
+sum by (kind, result) (rate(cfoperator_investigation_trace_events_total[1h]))
+```
+
+One row per tool call, one for the prompt, one per provider switch, one per
+turn the model wrote text, one for the answer. `result="failed"` means the
+knowledge base refused the write: the investigation went on without that step,
+and its Explain view has a gap. `result="truncated"` is a loop that reached the
+200-row cap. Investigations with no rows at all are older than the recorder or
+past `investigations.trace_retention_days`.
+
 ### Tool Result Redaction
 ```promql
 # Secret-shaped values replaced in tool results before a model or the transcript saw them (CFOP-272)
@@ -506,6 +519,8 @@ shipped several examples that could never match.
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |
 | `cfoperator_event_runtime_completion_requests_total` | `outcome` | `recorded`, `auth_missing`, `auth_invalid`, `bad_request`, `error` |
 | `cfoperator_tool_calls_total` | `result` | `success`, `error` |
+| `cfoperator_investigation_trace_events_total` | `kind` | `tool_call`, `prompt`, `assistant`, `fallback`, `answer`, `truncated` |
+| `cfoperator_investigation_trace_events_total` | `result` | `recorded`, `failed`, `truncated` |
 | `cfoperator_tool_result_redactions_total` | `tool_name` | the tool's registered name, as in `cfoperator_tool_calls_total` |
 | `cfoperator_llm_requests_total` | `result` | `success`, `error` |
 | `cfoperator_llm_tokens_total` | `type` | `input`, `output` |
