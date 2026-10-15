@@ -41,7 +41,7 @@ def server(monkeypatch):
     settings = {}
     op = MagicMock()
     op.config = {"llm": {"primary": {"url": "http://ollama:11434"}}}
-    op.kb.get_setting.side_effect = lambda key, default="": settings.get(key, default)
+    op.kb.get_setting.side_effect = lambda key, default="", **_kw: settings.get(key, default)
     op.kb.set_setting.side_effect = settings.__setitem__
 
     from web_server import WebServer
@@ -170,7 +170,7 @@ def test_agent_resolves_every_registered_compat_provider(server):
         # Explicit backend, explicit model: nothing to look up.
         assert CFOperator._resolve_provider(op, backend, "m") == (backend, None, "m")
         # 'auto' with the console's saved preference.
-        op.kb.get_setting.side_effect = lambda key, default="": (
+        op.kb.get_setting.side_effect = lambda key, default="", **_kw: (
             backend if key == "selected_backend" else default)
         assert CFOperator._resolve_provider(op, "auto", "m") == (backend, None, "m")
 

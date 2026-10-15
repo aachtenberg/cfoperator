@@ -24,7 +24,7 @@ class _KB:
     def __init__(self):
         self.d = {}
 
-    def get_setting(self, key, default=''):
+    def get_setting(self, key, default='', *, strict=False):
         return self.d.get(key, default)
 
     def set_setting(self, key, value):
@@ -38,6 +38,56 @@ def _clean_env(monkeypatch):
         monkeypatch.delenv(cfg['key_env'], raising=False)
     monkeypatch.delenv('ANTHROPIC_API_KEY', raising=False)
     llm_keys._warned_unreadable.clear()
+    llm_keys._db_outage_warned = False
+
+
+class _OutageKB(_KB):
+    """A ResilientKnowledgeBase when unhealthy: a strict read raises, a
+    lenient one would hand back the default and look like 'unset'."""
+    down = False
+
+    def get_setting(self, key, default='', *, strict=False):
+        if self.down:
+            if strict:
+                raise ConnectionError('Database is offline')
+            return default
+        return super().get_setting(key, default, strict=strict)
+
+
+def test_a_db_outage_is_not_mistaken_for_no_console_key(monkeypatch, caplog):
+    kb = _OutageKB()
+    monkeypatch.setenv('XAI_API_KEY', 'xai-env-stale-0000000000')
+    llm_keys.set_key(kb, 'xai', 'xai-console-rotated-1111111111')
+    assert llm_keys.api_key(kb, 'xai') == 'xai-console-rotated-1111111111'
+    kb.down = True
+    with caplog.at_level(logging.INFO):
+        # The env still answers during the outage -- but it says so, once,
+        # and the source is 'unknown', not 'env'.
+        assert llm_keys.api_key(kb, 'xai') == 'xai-env-stale-0000000000'
+        assert llm_keys.source(kb, 'xai') == 'unknown'
+        assert llm_keys.api_key(kb, 'gemini') == ''
+        kb.down = False
+        assert llm_keys.api_key(kb, 'xai') == 'xai-console-rotated-1111111111'
+        assert llm_keys.source(kb, 'xai') == 'console'
+    warned = [r for r in caplog.records if r.levelno == logging.WARNING and 'env vars apply' in r.message]
+    assert len(warned) == 1
+    assert [r for r in caplog.records if 'readable again' in r.message]
+
+
+def test_the_stored_value_never_reaches_the_knowledge_base_log(capsys):
+    from sqlalchemy import create_engine
+    from knowledge_base import AgentSettings, KnowledgeBase
+    kb = KnowledgeBase.__new__(KnowledgeBase)
+    kb.engine = create_engine('sqlite://')
+    AgentSettings.__table__.create(kb.engine)   # the one table set_setting touches
+    from sqlalchemy.orm import sessionmaker
+    kb.Session = sessionmaker(bind=kb.engine)
+    llm_keys.set_key(kb, 'xai', 'xai-console-value-9999999999')
+    kb.set_setting('sweep_model', 'gemma4:26b')
+    out = capsys.readouterr().out
+    assert kb.get_setting('llm_key_xai').startswith('enc:v1:')
+    assert 'enc:v1:' not in out and '<redacted>' in out
+    assert 'gemma4:26b' in out          # other settings log as before
 
 
 def test_console_wins_over_env_and_clear_restores_env(monkeypatch):

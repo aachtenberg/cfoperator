@@ -829,13 +829,23 @@ class WebServer:
 
         @self.app.route('/api/settings/llm_keys')
         def get_llm_keys():
+            """Readable by members like the neighbouring settings GETs and
+            /api/providers (configured / source is what "available" already
+            says); the last-four hint is for admins, who are the ones
+            rotating keys and need to tell a rotation from a no-op."""
             keys = _llm_keys()
             try:
-                return jsonify({'providers': keys.status(self.operator.kb),
+                return jsonify({'providers': keys.status(self.operator.kb, with_hint=_is_admin()),
                                 'storage': 'available' if keys.storage_available() else 'unavailable'})
             except Exception as e:
                 logger.error(f"get llm keys failed: {e}")
-                return jsonify({'error': str(e)}), 500
+                return jsonify({'error': 'could not read provider keys'}), 500
+
+        def _is_admin() -> bool:
+            try:
+                return _effective_role() == ROLE_ADMIN
+            except Exception:
+                return False
 
         def _llm_key_row(keys, backend):
             return next((r for r in keys.status(self.operator.kb) if r['id'] == backend), None)
@@ -857,9 +867,10 @@ class WebServer:
             except keys.KeysUnavailable as e:
                 return jsonify({'error': str(e)}), 503
             except Exception as e:
-                # Never a 200 for a write that did not happen.
+                # Never a 200 for a write that did not happen. The detail
+                # stays in the log: a driver message can name the DB host.
                 logger.warning(f"Could not persist the {backend} key (DB down?): {e}")
-                return jsonify({'error': f'not saved: {e}'}), 503
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
             _llm_key_audit(backend, 'set')
             logger.info(f"Hosted-provider key for {backend} set from the console")
             return jsonify({'success': True, 'provider': _llm_key_row(keys, backend)})
@@ -874,7 +885,7 @@ class WebServer:
                 keys.clear_key(self.operator.kb, backend)
             except Exception as e:
                 logger.warning(f"Could not clear the {backend} key (DB down?): {e}")
-                return jsonify({'error': f'not cleared: {e}'}), 503
+                return jsonify({'error': 'not cleared: the database is unavailable'}), 503
             _llm_key_audit(backend, 'cleared')
             logger.info(f"Hosted-provider key for {backend} cleared from the console; env applies")
             return jsonify({'success': True, 'provider': _llm_key_row(keys, backend)})

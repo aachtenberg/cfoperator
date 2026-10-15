@@ -138,6 +138,37 @@ def test_model_listing_uses_the_console_key(server, monkeypatch):
     assert seen['headers']['Authorization'] == 'Bearer gsk_console_key_77777777'
 
 
+def test_a_member_sees_configured_and_source_but_no_hint(monkeypatch):
+    """The last-four hint is for the admin rotating a key. A member reads the
+    rest, as with /api/providers."""
+    from sqlalchemy import create_engine
+    from auth.models import ROLE_ADMIN, ROLE_MEMBER
+    from auth.store import AuthStore
+    from test_console_allowlist import PASSWORD, _client, _login
+    monkeypatch.setenv('GROQ_API_KEY', ENV_KEY)
+    store = AuthStore(engine=create_engine('sqlite://'))
+    store.ensure_schema()
+    store.create_user('m', PASSWORD, role=ROLE_MEMBER)
+    store.create_user('root', PASSWORD, role=ROLE_ADMIN)
+    client, _, _ = _client(store=store, auth_disabled=False)
+    _login(client, 'm')
+    row = {r['id']: r for r in client.get('/api/settings/llm_keys').get_json()['providers']}['groq']
+    assert row['configured'] is True and row['source'] == 'env' and row['hint'] == ''
+    assert client.put('/api/settings/llm_keys/groq', json={'key': 'gsk_member_try_000000'}).status_code == 403
+    assert client.delete('/api/settings/llm_keys/groq').status_code == 403
+    client, _, _ = _client(store=store, auth_disabled=False)
+    _login(client, 'root')
+    row = {r['id']: r for r in client.get('/api/settings/llm_keys').get_json()['providers']}['groq']
+    assert row['hint'] == '7890'
+
+
+def test_a_failed_write_does_not_echo_the_driver_error(server):
+    c = server.app.test_client()
+    server.operator.kb.set_setting.side_effect = RuntimeError('could not connect to db-host.internal:5432')
+    r = c.put('/api/settings/llm_keys/xai', json={'key': 'xai-value-4444444444'})
+    assert r.status_code == 503 and 'db-host' not in r.get_data(as_text=True)
+
+
 def test_key_writes_are_admin_gated():
     """The CFOP-58 guard shape: the decorator between the route and the
     handler must be the admin gate, or a member could rotate a key."""

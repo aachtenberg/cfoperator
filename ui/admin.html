@@ -822,6 +822,7 @@ async function loadProviderKeys(){
     const src = p.source === 'console' ? badge('console (database)', '--accent')
       : p.source === 'env' ? badge('env / sealed secret', '--cyan')
       : p.source === 'unreadable' ? badge('stored key unreadable', '--orange')
+      : p.source === 'unknown' ? badge('database unreachable — env applies', '--orange')
       : badge('not configured', '--text-muted');
     const hint = p.hint ? `<span class="mono muted">…${esc(p.hint)}</span>` : '';
     const clearable = p.source === 'console' || p.source === 'unreadable';

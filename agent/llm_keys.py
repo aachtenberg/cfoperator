@@ -38,6 +38,9 @@ MAX_KEY_LENGTH = 512
 _ENC_PREFIX = 'enc:v1:'
 _HKDF_INFO = b'cfoperator llm_keys v1'
 _warned_unreadable: set = set()
+# One warning per DB outage, not per call: set on the first failed read,
+# cleared by the next successful one.
+_db_outage_warned = False
 
 
 class KeysUnavailable(RuntimeError):
@@ -84,18 +87,31 @@ def _fernet():
     return Fernet(base64.urlsafe_b64encode(raw))
 
 
-def _stored(kb, backend: str) -> str:
-    """The raw stored value, '' when unset or when the DB cannot be asked.
+def _stored(kb, backend: str) -> Optional[str]:
+    """The raw stored value: '' when unset, None when the DB cannot be asked.
 
-    A read failure looks like unset on purpose: the env then answers, which
-    is what the process had before the console could set anything."""
+    ``strict=True`` so a ResilientKnowledgeBase that is marked unhealthy
+    raises instead of handing back the default -- otherwise an outage reads
+    as "no console key" and the env var takes over silently, which is the
+    wrong answer when the env key is the one that was just rotated out. The
+    env still answers during the outage (the process had nothing else before
+    the console could set a key), but it says so, once per outage, and the
+    console shows the source as unknown rather than env."""
+    global _db_outage_warned
     if kb is None:
         return ''
     try:
-        return str(kb.get_setting(SETTING_PREFIX + backend, '') or '')
+        value = str(kb.get_setting(SETTING_PREFIX + backend, '', strict=True) or '')
     except Exception as e:
-        logger.debug(f"Could not read {SETTING_PREFIX}{backend}: {e}")
-        return ''
+        if not _db_outage_warned:
+            _db_outage_warned = True
+            logger.warning(f"[LLM-KEYS] cannot read console-set provider keys ({e}); "
+                           f"env vars apply until the database is back")
+        return None
+    if _db_outage_warned:
+        _db_outage_warned = False
+        logger.info("[LLM-KEYS] database readable again; console-set provider keys apply")
+    return value
 
 
 def _decrypt(backend: str, stored: str) -> Optional[str]:
@@ -136,11 +152,14 @@ def api_key(kb, backend: str) -> str:
 
 def source(kb, backend: str) -> Optional[str]:
     """Where the key in effect comes from: 'console', 'env', 'unreadable'
-    (stored but not decryptable, env in effect if set), or None."""
+    (stored but not decryptable, env in effect if set), 'unknown' (the DB
+    cannot be read, env in effect if set), or None."""
     env = key_env_for(backend)
     if not env:
         return None
     stored = _stored(kb, backend)
+    if stored is None:
+        return 'unknown'
     if stored:
         return 'console' if _decrypt(backend, stored) else 'unreadable'
     return 'env' if os.getenv(env, '').strip() else None
@@ -154,9 +173,11 @@ def storage_available() -> bool:
         return False
 
 
-def status(kb) -> List[Dict[str, Any]]:
+def status(kb, with_hint: bool = True) -> List[Dict[str, Any]]:
     """One row per hosted provider for the console. Never the value: a
-    configured flag, the source, and the last four characters as a hint."""
+    configured flag, the source, and -- for admins -- the last four
+    characters as a hint, so a rotation can be told from a no-op. A key
+    shorter than 12 characters gets no hint: four of eight is too much."""
     rows = []
     for backend in hosted_backends():
         src = source(kb, backend)
@@ -167,7 +188,7 @@ def status(kb) -> List[Dict[str, Any]]:
             'key_env': key_env_for(backend),
             'configured': bool(key),
             'source': src,
-            'hint': key[-4:] if len(key) >= 12 else '',
+            'hint': key[-4:] if with_hint and len(key) >= 12 else '',
         })
     return rows
 

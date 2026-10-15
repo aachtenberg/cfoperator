@@ -159,7 +159,7 @@ def _client(*, config_repos=None, stored="", store=None, auth_disabled=True):
     operator = MagicMock()
     operator.config = {"git": {"repos": list(file_repos), "github": {"token": "ghp_test"}}}
     operator.file_git_repos.side_effect = lambda: list(file_repos)
-    operator.kb.get_setting.side_effect = lambda key, default=None: settings.get(key, default)
+    operator.kb.get_setting.side_effect = lambda key, default=None, **_kw: settings.get(key, default)
     operator.kb.set_setting.side_effect = lambda key, value: settings.__setitem__(key, value)
 
     server = WebServer.__new__(WebServer)
