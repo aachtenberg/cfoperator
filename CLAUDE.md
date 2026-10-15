@@ -111,10 +111,13 @@ shared header, not to assert today's markup. Mutation-check a new guard once
   reasoning. Reviewers should never have to discover a narrowed scope by reading
   the diff.
 - One review arrives on its own, as a PR comment edited in place on every
-  push: the Beam review (`beam-review`, CFOP-400, Reflection AI's Beam on a
-  hosted runner, through `scripts/local_llm_review.py`'s propose/ground/
-  verify pipeline, so a finding has survived a second look before it is
-  posted). It skips drafts. There is no other automatic reviewer: the local
+  push: the LLM review (`llm-review`, CFOP-400/404): Reflection AI's Beam on
+  a hosted runner, and Claude Haiku 5.5 through OpenRouter in the same run
+  when Beam cannot answer (its beta allowance is small and daily); the
+  footer says which model served. Both go through
+  `scripts/local_llm_review.py`'s propose/ground/verify pipeline, so a
+  finding has survived a second look before it is posted. It skips drafts.
+  There is no other automatic reviewer: the local
   gemma4 review was dropped (CFOP-402: it proposed nothing on 46 of 48 PRs
   and, measured on a real diff, caught a planted shell injection but not the
   off-by-one beside it, which Beam caught); CodeRabbit was removed on
@@ -129,7 +132,7 @@ shared header, not to assert today's markup. Mutation-check a new guard once
 - Drive CI to green. A failure on your own PR ends with either a pushed fix or
   a reply explaining the blocker.
 - **Do not merge until the review comment is in and triaged.** It is a
-  `github-actions[bot]` comment headed "Beam review", with findings as
+  `github-actions[bot]` comment headed "LLM review", with findings as
   `path:line` bullets, or "No significant issues found".
   Read the comment, not the check: the job is green whenever it managed to
   post, including a review that found things (CFOP-133's review sat unfixed

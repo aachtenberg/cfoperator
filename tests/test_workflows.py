@@ -26,10 +26,10 @@ Two rules, each learned the hard way or nearly so:
    and the exemption no longer holds, so the test checks every piece. It was
    cut for CFOP-236's local-LLM review, which had to run where Ollama is;
    that job is gone (CFOP-402: gemma4 found blatant defects only), and the
-   shape now guards the Beam review (CFOP-400), where what it protects is the
+   shape now guards the LLM review (CFOP-400, CFOP-404), where what it protects is the
    API key a swapped-in script would otherwise run with. No PR-reachable job
    is self-hosted any more; ``fence_violations`` is exercised through the
-   Beam workflow so the fence does not go vacuous.
+   LLM-review workflow so the fence does not go vacuous.
 """
 from repo_paths import REPO_ROOT
 import re
@@ -204,15 +204,15 @@ def test_no_pull_request_job_targets_a_self_hosted_runner(wf):
             + "; ".join(problems))
 
 
-BEAM_REVIEW = REPO_ROOT / ".github" / "workflows" / "beam-review.yml"
+LLM_REVIEW = REPO_ROOT / ".github" / "workflows" / "llm-review.yml"
 
 
 def _review_job():
-    doc = yaml.safe_load(read(BEAM_REVIEW))
-    return doc, doc["jobs"]["beam-review"]
+    doc = yaml.safe_load(read(LLM_REVIEW))
+    return doc, doc["jobs"]["llm-review"]
 
 
-def test_the_beam_review_is_the_fenced_shape():
+def test_the_llm_review_is_the_fenced_shape():
     """Not vacuous: the fence is exercised by a real pull_request_target
     workflow that passes it. Hosted, so the runner is not what it protects
     here; the key is (see the workflow's comment)."""
