@@ -1,19 +1,19 @@
 name: Beam Review
 
 # A review from Reflection AI's Beam over its OpenAI-compatible API
-# (CFOP-400). Same script and pipeline as the local-LLM review; only the
-# transport differs. It is advisory: the job fails only if it could not
-# produce a review at all.
+# (CFOP-400). Same script and pipeline as the local-LLM review that preceded
+# it (CFOP-236, dropped in CFOP-402; homelab-infra still runs that one);
+# only the transport differs. It is advisory: the job fails only if it
+# could not produce a review at all.
 #
-# A hosted runner, so unlike local-llm-review.yml nothing here protects the
-# homelab. The same fence still applies, for the key: under plain
+# A hosted runner, so nothing here protects the homelab, which is what the
+# fence was first cut for. The same fence still applies, for the key: under plain
 # pull_request the PR's own copy of the script would run with
 # REFLECTION_API_KEY and a write token, and a same-repo PR could swap the
 # reviewer out. So pull_request_target (the base branch's workflow and
 # script run, whatever the PR changes), same-repo PRs only, a base-only
 # checkout that keeps no credential, and a token that can at most comment.
-# tests/test_workflows.py judges this job by the same fence_violations as
-# the Ollama one. The cost: a PR that changes the script is reviewed with
+# tests/test_workflows.py judges this job by fence_violations. The cost: a PR that changes the script is reviewed with
 # the base's copy, and this workflow only starts running once it is on main.
 on:
   pull_request_target:
