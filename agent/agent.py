@@ -8122,6 +8122,7 @@ Only return the JSON array, no other text."""
         """Check all containers/pods across configured backends + LLM review."""
         findings = []
         containers = []
+        stopped = []
 
         # Determine active runtime names for LLM context
         runtime_label = "all configured backends"
@@ -8136,12 +8137,23 @@ Only return the JSON array, no other text."""
             running_count = sum(1 for c in containers if c.get('status') == 'running')
             RUNNING_CONTAINERS.set(running_count)
 
-            for container in containers:
-                if container.get('status') != 'running':
-                    findings.append({
-                        'severity': 'warning',
-                        'finding': f"{container['name']} on {container['host']}: status={container['status']}"
-                    })
+            # A Job/CronJob pod that is not running is not a sweep finding.
+            # With restartPolicy=Never a failed run is terminally Failed by
+            # design and stays until ttlSecondsAfterFinished GC's it, so
+            # reporting it here re-fires every tick for that whole window —
+            # one failed freshet-synthetic-check run became ten alerts, two
+            # investigations, two remediation rows and a tracker issue
+            # (CFOP-408). Alertmanager's CronJob rules own retained failed
+            # Jobs; the sweep adds only repetition.
+            stopped = [
+                c for c in containers
+                if c.get('status') != 'running' and not is_ephemeral_job_pod(c.get('name'))
+            ]
+            for container in stopped:
+                findings.append({
+                    'severity': 'warning',
+                    'finding': f"{container['name']} on {container['host']}: status={container['status']}"
+                })
 
         except Exception as e:
             logger.error(f"Error listing containers: {e}")
@@ -8151,7 +8163,6 @@ Only return the JSON array, no other text."""
         container_summary = ""
         if containers:
             container_summary = f"\n\nCurrently running {running_count} of {len(containers)} containers/pods."
-            stopped = [c for c in containers if c.get('status') != 'running']
             if stopped:
                 container_summary += f"\nStopped/unhealthy: {', '.join(c['name'] for c in stopped)}"
 
@@ -8167,6 +8178,8 @@ Only return the JSON array, no other text."""
             "Check for BackOff, Unhealthy/readiness failures, CrashLoopBackOff, and other issues. "
             "IMPORTANT: High restart counts alone are NOT findings if the pod is currently healthy and the last restart was hours/days ago. "
             "Only report restarts as issues if they are RECENT (last 2 hours) or ONGOING. Stale restart counts from past node reboots are normal. "
+            "IMPORTANT: A retained Failed Job or its pod (names like <cronjob>-<digits>-<hash>) is NOT a finding when the CronJob's latest run succeeded. "
+            "Failed Jobs stay until their TTL garbage-collects them and Alertmanager already alerts on them; do not report, re-describe, or propose deleting them. "
             "IMPORTANT: Identify workloads by their Deployment/StatefulSet/DaemonSet name, NOT by specific pod names. "
             "Pod names include random suffixes (e.g., -7b5b6c8d9f-xyz12) that change on every rollout. "
             "Never report a specific pod name as 'missing' — check the parent Deployment's ready replica count instead.",
