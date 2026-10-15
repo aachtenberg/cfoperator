@@ -73,9 +73,14 @@
   .badge { display:inline-block; padding:2px 8px; border-radius:var(--radius-sm); font-size:12px;
     font-weight:600; white-space:nowrap; font-family:'JetBrains Mono',monospace; }
   .rec { max-width:520px; }
-  .divider { margin:24px 20px 2px; padding-top:14px; border-top:1px solid var(--border);
+  /* A bucket divider is a full-width row in the one table (CFOP-419), not a
+     heading between tables: three tables laid out three sets of columns. */
+  tr.divider { cursor:default; }
+  tr.divider:hover { background:none; }
+  tr.divider td { padding:24px 12px 6px; border-top:1px solid var(--border); border-bottom:0;
     font-family:'JetBrains Mono',monospace; font-size:12px; text-transform:uppercase;
     letter-spacing:.06em; color:var(--text-secondary); }
+  tr.empty-row { cursor:default; } tr.empty-row:hover { background:none; }
 
   #backdrop { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:40;
     opacity:0; pointer-events:none; transition:opacity .15s; }
@@ -144,38 +149,26 @@
   <input type="search" id="f-q" aria-label="Search remediations" placeholder="search recommendation, host, class, status, model, #id" oninput="searchInput(this.value)">
 </div>
 <!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
-     The three tables carry the same header set and share the one sort. -->
+     One table with three buckets (CFOP-419): active, filed to the tracker (CFOP-170:
+     noted, not a line item), closed. One header, one column layout; each bucket is a
+     tbody, its divider a full-width row in a tbody of its own so hiding it leaves the
+     bucket's rows tbody in place for render(). -->
 <table>
   <thead><tr>
     <th data-sort="id">ID</th><th data-sort="status">Status</th><th data-sort="class">Class</th><th data-sort="risk">Risk</th><th data-sort="conf">Conf</th>
     <th data-sort="host">Host</th><th data-sort="llm">LLM</th><th data-sort="rec">Recommendation</th><th data-sort="created">Created</th><th>PR</th>
   </tr></thead>
   <tbody id="rows"></tbody>
+  <tbody id="empty" hidden><tr class="empty-row"><td colspan="10" class="empty">No open remediations.</td></tr></tbody>
+  <tbody id="filed-section" hidden>
+    <tr class="divider"><td colspan="10">Filed to tracker <span id="filed-count" class="muted"></span></td></tr>
+  </tbody>
+  <tbody id="rows-filed"></tbody>
+  <tbody id="done-section" hidden>
+    <tr class="divider"><td colspan="10">Closed <span id="done-count" class="muted"></span></td></tr>
+  </tbody>
+  <tbody id="rows-done"></tbody>
 </table>
-<div id="empty" class="empty" hidden>No open remediations.</div>
-
-<!-- Handed off to the issue tracker (CFOP-170): noted, not a line item. -->
-<div id="filed-section" hidden>
-  <div class="divider">Filed to tracker <span id="filed-count" class="muted"></span></div>
-  <table>
-    <thead><tr>
-      <th data-sort="id">ID</th><th data-sort="status">Status</th><th data-sort="class">Class</th><th data-sort="risk">Risk</th><th data-sort="conf">Conf</th>
-      <th data-sort="host">Host</th><th data-sort="llm">LLM</th><th data-sort="rec">Recommendation</th><th data-sort="created">Created</th><th>PR</th>
-    </tr></thead>
-    <tbody id="rows-filed"></tbody>
-  </table>
-</div>
-
-<div id="done-section" hidden>
-  <div class="divider">Closed <span id="done-count" class="muted"></span></div>
-  <table>
-    <thead><tr>
-      <th data-sort="id">ID</th><th data-sort="status">Status</th><th data-sort="class">Class</th><th data-sort="risk">Risk</th><th data-sort="conf">Conf</th>
-      <th data-sort="host">Host</th><th data-sort="llm">LLM</th><th data-sort="rec">Recommendation</th><th data-sort="created">Created</th><th>PR</th>
-    </tr></thead>
-    <tbody id="rows-done"></tbody>
-  </table>
-</div>
 <div id="backdrop" onclick="closeDetail()" aria-hidden="true"></div>
 <!-- A dialog (CFOP-94): inert while closed so its off-screen controls are not in the tab
      order; detail() lifts it, closeDetail() restores it. Labelled by the h2 detail() paints. -->
@@ -207,7 +200,7 @@ function clearForm(){ const f=document.getElementById('actionform'); if(f) f.inn
 let ALL = [];
 // Sortable headers and the search box (CFOP-412): one kit in common.js, the
 // page supplies what each column sorts by. Risk sorts by rank, not alphabet.
-// All three tables run through KIT.sort in render(), so the order holds
+// All three buckets run through KIT.sort in render(), so the order holds
 // across the poll's repaint; a header click only paints again.
 const RISK_RANK = {low:1, med:2, medium:2, high:3};
 const KIT = listKit({page:'remediations', initial:{key:'created',dir:'desc'},
