@@ -147,12 +147,12 @@ def test_pod_labels_handle_both_trigger_forms():
 # pin the properties that stop it recurring, and they are the same properties
 # docs/triage-eval-v2-plan.md Tier 3 grades on the model's output.
 
-V1_CANNED_REASONS = frozenset({
-    "no resolved precedent for this pattern",
-    "similar past investigation resolved with little effort",
-    "critical with broad impact, operator should page in",
-    "known noise pattern (test pod or watchdog heartbeat)",
-})
+# One source (CFOP-314): the harness owns the frozen list and gates on it.
+_te_spec = importlib.util.spec_from_file_location(
+    "triage_eval", os.path.join(_REPO_ROOT, "benchmarks", "triage_eval.py"))
+_te = importlib.util.module_from_spec(_te_spec)
+_te_spec.loader.exec_module(_te)
+V1_CANNED_REASONS = _te.V1_CANNED_REASONS
 
 
 def _derive(trigger, outcome, similar_past=()):

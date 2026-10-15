@@ -12,29 +12,39 @@ The July 2026 gemma4-vs-qwen3.6 round ran this as a throwaway script and
 committed only the JSON output, so the next candidate had to rebuild it. Hence
 this file.
 
-Fidelity to production (`CFOperator.run_triage`):
-  - system prompt is EXTRACTED FROM `agent/agent.py` AT RUNTIME, not copied
-    here. If the rubric changes, this harness changes with it and old scores
-    are known to be non-comparable.
-  - the user message is assembled in the same order and format.
-  - the call matches the triage path: /api/chat, temperature 0.7, stream off,
-    NO tools (run_triage passes max_iterations=1, which makes the tool loop's
-    final-iteration branch withhold tools on the very first call).
+Fidelity to production (`CFOperator.run_triage`), by construction (CFOP-314):
+  - the system prompt IS `CFOperator._triage_system_prompt()` and the user
+    message IS `CFOperator._triage_user_message(...)` -- the same two
+    functions run_triage calls. This harness used to regex the prompt out of
+    run_triage's source; when CFOP-313 turned the literal into an expression
+    (framing), the regex captured its first line, and every score between
+    2026-10-09 and this change was of a one-line prompt. agent/
+    test_triage_eval_contract.py now asserts the harness sends what
+    run_triage sends.
+  - the request body IS `CFOperator._ollama_chat_payload(...)`, the one place
+    an Ollama /api/chat body is assembled: same temperature, same `options`
+    rule (CFOP-279: sampling options are sent only when llm.num_ctx is set,
+    on both sides). `--num-ctx` mirrors a deployment that sets it.
+  - NO tools: run_triage passes max_iterations=1, which makes the tool loop's
+    final-iteration branch withhold tools on the very first call.
   - responses are scored by `CFOperator._parse_triage_response` itself.
 
 Usage:
     PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-        --model gemma4:26b --runs 3 \
-        --output benchmarks/triage_eval_gemma4_26b.json
+        --model cfop-triage-ministral3:v5-q4 --url http://192.168.0.232:11434 \
+        --output benchmarks/triage_eval_cfop_triage_ministral3_v5_q4.json
+
+    # Re-grade a committed result file, no model needed:
+    .venv/bin/python benchmarks/triage_eval.py --replay benchmarks/<file>.json
 
 Scores are only comparable across models run on the SAME ollama version and
-the SAME rubric — record both in the output JSON (this script does).
+the SAME rubric -- record both in the output JSON (this script does).
 
-STATISTICAL POWER — read before trusting a 100% score
+STATISTICAL POWER -- read before trusting a 100% score
 -----------------------------------------------------
 The failure mode this suite is looking for is usually RARE, not systematic: a
 model that takes a rubric shortcut on some fraction of runs rather than every
-run. The default 3 runs/case cannot see that.
+run. Three runs per case cannot see that.
 
 Measured example (2026-08-16): qwen3.8:27b answers `precedent-monitoring`
 correctly ~92% of the time and takes the notify shortcut the other ~8%. At
@@ -42,16 +52,24 @@ correctly ~92% of the time and takes the notify shortcut the other ~8%. At
 so the suite reported a clean 42/42. At 12 runs it showed up. gemma4:26b was
 12/12 on the same case.
 
-So:
-  --runs 3     fast screen. A miss is meaningful; a clean sheet is NOT proof.
-  --runs 10+   with --only, to characterise a case where a model looks shaky.
+So the default is 36 runs per case (docs/triage-eval-v2-plan.md, Tier 1): a
+fault firing on 8% of runs is seen at least once 95% of the time, and at the
+deployed model's ~1 s per call the full suite is about eight minutes. The
+result JSON records the run count and that power. `--runs 3` is still a fast
+screen: a miss is meaningful, a clean sheet is NOT proof, and the summary says
+so.
 
-A clean run at low --runs means "no systematic error found", never "correct".
-The summary prints this caveat rather than leaving the headline to mislead.
+THE GATE
+--------
+A run passes when every case is at 100% of its `expected` list, every reason
+is alert-grounded and none is a v1 canned string or cites an object absent
+from the prompt, confidence is not a pure function of action, and every
+case's p95 latency is under the deployed triage timeout
+(`CFOP_TRIAGE_TIMEOUT_SECONDS`, read exactly as event_runtime reads it: 5 s
+when unset). The process exits non-zero on a failed gate so a CI job fails.
 """
 
 import argparse
-import inspect
 import json
 import os
 import re
@@ -71,48 +89,76 @@ sys.path.insert(0, _REPO_ROOT)
 
 from agent.agent import CFOperator  # noqa: E402
 
+if not hasattr(CFOperator, "_triage_system_prompt"):
+    # An older agent (an image built before CFOP-314) has no prompt builders
+    # to call; say so instead of dying on an AttributeError eight minutes in.
+    sys.exit("this agent build predates CFOP-314 (no CFOperator._triage_system_prompt): "
+             "the harness scores the production prompt builders, so run it against an "
+             "agent checkout or image that has them")
 
-# ── Production prompt extraction ──────────────────────────────────────────────
 
-def load_production_system_prompt() -> str:
-    """Pull the triage system prompt out of run_triage's source.
+# ── Production prompt and request, by construction ────────────────────────────
 
-    Copying the prompt into this file would let the two drift silently, and a
-    drifted prompt makes every score in this benchmark a measurement of
-    something that is not running in production. Extracting it means the
-    harness cannot lie about what it tested.
-    """
-    # _run_triage since CFOP-316: run_triage became the thin layer that opens
-    # the trace span, and the prompt moved with the body, unchanged.
-    src = inspect.getsource(CFOperator._run_triage)
-    match = re.search(r'system_prompt = """(.*?)"""', src, re.DOTALL)
-    if not match:
-        raise RuntimeError(
-            "Could not find the `system_prompt = \"\"\"...\"\"\"` literal in "
-            "CFOperator._run_triage. The triage prompt was refactored — update "
-            "load_production_system_prompt() to match, and treat previously "
-            "recorded scores as non-comparable."
-        )
-    return match.group(1)
+# What run_triage passes to the tool loop for the triage-model call; the
+# contract test pins this against the body the production path really sends.
+TRIAGE_TEMPERATURE = 0.7
+
+
+def production_system_prompt() -> str:
+    """The system prompt run_triage sends, from the same function."""
+    return CFOperator._triage_system_prompt()
 
 
 def build_user_message(case: dict) -> str:
-    """Assemble the user message exactly as run_triage does."""
-    similar_context = ""
-    if case.get("similar"):
-        lines = [
-            f"- [{outcome:10}] {trigger[:100]} (similarity: {sim:.2f})"
-            for outcome, trigger, sim in case["similar"]
-        ]
-        similar_context = "\n\nSimilar past investigations:\n" + "\n".join(lines)
+    """The user message run_triage would build for this case, from the same
+    function. `similar` is (outcome, trigger, similarity) per precedent."""
+    return CFOperator._triage_user_message(
+        case["severity"], case["summary"], case["labels"],
+        [tuple(s) for s in (case.get("similar") or [])])
 
-    return (
-        f"Alert severity: {case['severity']}\n"
-        f"Alert summary: {case['summary']}\n"
-        f"Labels: {json.dumps(case['labels'], default=str)[:500]}"
-        f"{similar_context}\n\n"
-        "Classify."
-    )
+
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9._/-]*[a-z0-9]|[a-z0-9]")
+
+
+def _tokens(text: str) -> set:
+    """Whole tokens of `text`, lower-cased, plus the pieces of hyphenated or
+    dotted names that are five or more characters (so "paperless" is a token
+    of "paperless-ngx-7d9c4b8f5-nq2wm"). Set membership, never substring."""
+    out = set()
+    for tok in _TOKEN_RE.findall((text or "").lower()):
+        out.add(tok)
+        out.update(piece for piece in re.split(r"[-._/]", tok) if len(piece) >= 5)
+    return out
+
+
+def alert_tokens_of(case: dict) -> set:
+    """The alert's own tokens -- summary words, label VALUES, precedent
+    triggers -- with none of the prompt's frame around them, and no label
+    keys: every case's labels carry the keys `alertname` and `severity`, so
+    a reason that only says "the alert" or "severity" must not count as
+    grounded (reviews on #336). What a reason has to name something from."""
+    parts = [str(case.get("summary", ""))]
+    parts += [str(v) for v in (case.get("labels") or {}).values()]
+    parts += [str(trigger) for _, trigger, _ in (case.get("similar") or [])]
+    return _tokens(" ".join(parts))
+
+
+def build_payload(model: str, system_prompt: str, user_msg: str,
+                  num_ctx=None) -> dict:
+    """The /api/chat body, from the one place production assembles it.
+
+    A bare operator with only the config key _ollama_chat_payload reads:
+    `llm.primary.num_ctx` decides whether sampling options are sent at all
+    (CFOP-279), so `--num-ctx` is how to score the way a deployment that sets
+    it runs.
+    """
+    op = CFOperator.__new__(CFOperator)
+    op.config = {"llm": {"primary": ({"num_ctx": int(num_ctx)} if num_ctx else {})}}
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_msg},
+    ]
+    return op._ollama_chat_payload(model, messages, TRIAGE_TEMPERATURE)
 
 
 # ── Ground-truth cases ────────────────────────────────────────────────────────
@@ -157,11 +203,26 @@ def build_user_message(case: dict) -> str:
 # than one (the info-severity cases), so a model is not marked wrong for a
 # defensible reading. Any listed action counts as correct.
 
-# Rate used only for the low-run-count warning below: the measured frequency at
-# which qwen3.8:27b took the notify shortcut on `precedent-monitoring`
-# (1 miss in 12 runs, 2026-08-16). It is a reference point for "how rare a real
-# shortcut can be", not a property of any particular model under test.
+# Rate used for the power line and the low-run-count warning: the measured
+# frequency at which qwen3.8:27b took the notify shortcut on
+# `precedent-monitoring` (1 miss in 12 runs, 2026-08-16). It is a reference
+# point for "how rare a real shortcut can be", not a property of any
+# particular model under test.
 REFERENCE_SHORTCUT_RATE = 0.08
+# Runs per case that see an 8%-rate fault at least once 95% of the time
+# (docs/triage-eval-v2-plan.md, Tier 1).
+DEFAULT_RUNS = 36
+
+# The four reason strings the v1 fine-tune emitted for everything (CFOP-153):
+# a frozen historical constant, kept as the thing a regression would look
+# like. The dataset builder no longer has these to export, so they live here
+# and tests/test_build_triage_dataset.py imports them from here.
+V1_CANNED_REASONS = frozenset({
+    "no resolved precedent for this pattern",
+    "similar past investigation resolved with little effort",
+    "critical with broad impact, operator should page in",
+    "known noise pattern (test pod or watchdog heartbeat)",
+})
 
 CASES = [
     {
@@ -378,26 +439,14 @@ CASES = [
     },
 ]
 
+CASES_BY_NAME = {c["name"]: c for c in CASES}
 
-# ── Ollama call (matches the production triage request) ───────────────────────
 
-def call_ollama(url: str, model: str, system_prompt: str, user_msg: str,
-                timeout: int) -> tuple:
-    """Return (response_text, latency_seconds, error_or_None)."""
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_msg},
-        ],
-        "stream": False,
-        # run_triage goes through _chat_with_tools_with_fallback, whose ollama
-        # branch uses 0.7 — NOT the 0.3 used by the insights path. The July
-        # round's throwaway script used 0.3, so its latencies/accuracies are
-        # very slightly off-production; noted here so the discrepancy is not
-        # rediscovered as a mystery.
-        "temperature": 0.7,
-    }
+# ── Ollama call (the production request body) ─────────────────────────────────
+
+def call_ollama(url: str, payload: dict, timeout: int) -> tuple:
+    """POST `payload` (from build_payload) to /api/chat.
+    Return (response_text, latency_seconds, error_or_None)."""
     req = urllib.request.Request(
         f"{url}/api/chat",
         data=json.dumps(payload).encode(),
@@ -452,8 +501,8 @@ def _citation_tokens(text: str) -> set:
     out = set()
     # Curly quotes too: the 8B v4 wrote “the “2xk4f” suffix” and the quoted
     # token, kept with its quotes, read as an invented object.
-    for raw in re.split(r"[\s,;:()\[\]{}\"'\u201c\u201d\u2018\u2019]+", text or ""):
-        tok = raw.strip(".").strip("'\"\u201c\u201d\u2018\u2019")
+    for raw in re.split(r"[\s,;:()\[\]{}\"'“”‘’]+", text or ""):
+        tok = raw.strip(".").strip("'\"“”‘’")
         if len(tok) < 4:
             continue
         # Dotted-quad IPs are object identifiers here (node addresses) and
@@ -477,17 +526,23 @@ _PRECEDENT_CLAIM_RE = re.compile(
     re.IGNORECASE)
 
 
-def grade_reason(reason: str, prompt: str):
+def grade_reason(reason: str, prompt: str, alert_tokens=None):
     """(grounded, fabricated) for one reason against the prompt it answered.
 
     `grounded` is the planned Tier 3 check -- the reason names something from
-    the alert. `fabricated` is the list of object names it cites that appear
-    nowhere in the prompt, which is the check that catches an invented
-    precedent. A reason can be grounded and fabricating at the same time.
+    the alert: one of its whole tokens of five or more characters, or a
+    name-shaped citation, is among `alert_tokens` (see alert_tokens_of).
+    Whole tokens, never substrings, and without the prompt's frame or the
+    label keys: "the alert should be logged" is not grounded in anything.
+    Without `alert_tokens` the prompt's own tokens stand in. `fabricated` is
+    the list of object names it cites that appear nowhere in the prompt,
+    which is the check that catches an invented precedent. A reason can be
+    grounded and fabricating at the same time.
     """
     if not reason:
         return False, []
     hay = (prompt or "").lower()
+    ground = alert_tokens if alert_tokens is not None else _tokens(prompt)
     cited = _citation_tokens(reason)
     fabricated = sorted(t for t in cited if t not in hay)
     # An UNNAMED precedent is still an invention when the prompt offered none.
@@ -497,22 +552,268 @@ def grade_reason(reason: str, prompt: str):
     # one rung down.
     if "similar past investigations" not in hay and _PRECEDENT_CLAIM_RE.search(reason):
         fabricated.append("<unnamed precedent>")
-    grounded = any(t in hay for t in cited) or any(
-        w in hay for w in re.findall(r"[a-z]{5,}", reason.lower()))
+    words = {w for w in _tokens(reason) if len(w) >= 5}
+    grounded = bool((cited | words) & ground)
     return grounded, fabricated
+
+
+def _normalise_reason(reason) -> str:
+    return re.sub(r"\s+", " ", str(reason or "")).strip().strip(".").lower()
+
+
+_CANNED_NORMALISED = frozenset(_normalise_reason(c) for c in V1_CANNED_REASONS)
+
+
+def is_canned(reason) -> bool:
+    """True when the reason is one of the v1 fine-tune's four templates
+    (whitespace, case and a trailing full stop ignored)."""
+    return _normalise_reason(reason) in _CANNED_NORMALISED
+
+
+# ── The gate (CFOP-314): shared by a live run and --replay ────────────────────
+
+def detection_power(runs_per_case: int, fault_rate: float = REFERENCE_SHORTCUT_RATE) -> float:
+    """P(a fault firing independently on `fault_rate` of runs is seen at
+    least once in `runs_per_case` runs)."""
+    return 1 - (1 - fault_rate) ** max(0, int(runs_per_case))
+
+
+def triage_timeout_seconds() -> tuple:
+    """(seconds, source): CFOP_TRIAGE_TIMEOUT_SECONDS read the way
+    event_runtime's build_http_triage_engine reads it -- 5 s when unset or
+    unparseable. The source is printed so a result says which world it was
+    graded in: the homelab sets 120 s; a chart or compose install sets nothing."""
+    raw = os.getenv("CFOP_TRIAGE_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 5.0, "default (CFOP_TRIAGE_TIMEOUT_SECONDS unset)"
+    try:
+        return float(raw), "CFOP_TRIAGE_TIMEOUT_SECONDS"
+    except ValueError:
+        return 5.0, f"default (CFOP_TRIAGE_TIMEOUT_SECONDS={raw!r} is not a number)"
+
+
+def deep_confidence_threshold() -> float:
+    """The deep-investigation reroute band's upper bound, as event_runtime
+    reads it (CFOP_DEEP_CONFIDENCE_THRESHOLD, default 0.4)."""
+    raw = os.getenv("CFOP_DEEP_CONFIDENCE_THRESHOLD", "").strip()
+    try:
+        return float(raw) if raw else 0.4
+    except ValueError:
+        return 0.4
+
+
+def _percentile(values, pct: float):
+    """Nearest-rank percentile; None on no values."""
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = max(1, int(round(pct / 100.0 * len(ordered) + 0.4999)))
+    return round(ordered[min(rank, len(ordered)) - 1], 2)
+
+
+def grade(results: list, cases_by_name: dict) -> dict:
+    """Everything the gate decides on, from the per-run rows alone, so a
+    committed result file can be re-graded without a model (--replay).
+
+    Rows carry: case, action, expected, correct, valid, confidence, reason,
+    reason_grounded, reason_fabricated, latency_s, error.
+    """
+    rows = list(results)
+    n = len(rows)
+    valid = [r for r in rows if r.get("valid")]
+    per_case_counts = {}
+    for r in rows:
+        per_case_counts[r["case"]] = per_case_counts.get(r["case"], 0) + 1
+    runs_per_case = min(per_case_counts.values()) if per_case_counts else 0
+
+    # Action: every case at 100% of its expected list (Tier 1 pass criterion).
+    correct = sum(1 for r in rows if r.get("correct"))
+    failing_cases = sorted({r["case"] for r in rows if not r.get("correct")})
+
+    # Reason (Tier 3).
+    canned = [r for r in valid if is_canned(r.get("reason"))]
+    grounded = sum(1 for r in valid if r.get("reason_grounded"))
+    fabricating = sum(1 for r in valid if r.get("reason_fabricated"))
+    distinct_reasons = len({_normalise_reason(r.get("reason")) for r in valid})
+
+    # Confidence (Tier 3): a label, not a confidence, when every action class
+    # with more than one run shows exactly one value.
+    by_action = {}
+    for r in valid:
+        if r.get("confidence") is None:
+            continue
+        by_action.setdefault(str(r.get("action")), []).append(float(r["confidence"]))
+    values_by_action = {a: sorted(set(v)) for a, v in by_action.items()}
+    multi = {a: v for a, v in by_action.items() if len(v) >= 2}
+    confidence_is_alias = bool(multi) and all(len(set(v)) == 1 for v in multi.values())
+    threshold = deep_confidence_threshold()
+    reroute = sum(1 for r in valid if r.get("confidence") is not None
+                  and 0 < float(r["confidence"]) < threshold)
+
+    # Latency (the SLO), per case, against the configured timeout. A run that
+    # errored is a call that never answered inside the harness's own 300 s
+    # timeout, or a host that was not there: either way not under the SLO,
+    # so it breaches rather than quietly dropping out of the percentiles.
+    timeout_s, timeout_source = triage_timeout_seconds()
+    latency = {}
+    breaches = []
+    for name in sorted(per_case_counts):
+        lat = [r["latency_s"] for r in rows if r["case"] == name
+               and r.get("error") is None and r.get("latency_s") is not None]
+        errored = sum(1 for r in rows if r["case"] == name and r.get("error"))
+        entry = {"n": len(lat), "errors": errored,
+                 "p50": _percentile(lat, 50), "p95": _percentile(lat, 95),
+                 "p99": _percentile(lat, 99), "max": (round(max(lat), 2) if lat else None)}
+        latency[name] = entry
+        if errored or (entry["p95"] is not None and entry["p95"] >= timeout_s):
+            breaches.append(name)
+    all_lat = [r["latency_s"] for r in rows if r.get("error") is None and r.get("latency_s") is not None]
+    # A chart or compose install gets the 5 s default; say when a deployment
+    # that set its own timeout would still fail there.
+    default_world_warning = (timeout_source == "CFOP_TRIAGE_TIMEOUT_SECONDS"
+                             and any(e["p95"] is not None and e["p95"] >= 5.0 for e in latency.values()))
+
+    gate = {
+        "action_every_case_100pct": n > 0 and correct == n,
+        "json_valid_100pct": n > 0 and len(valid) == n,
+        "reason_none_canned": not canned,
+        "reason_grounded_90pct": bool(valid) and grounded / len(valid) >= 0.9,
+        "reason_none_fabricated": fabricating == 0,
+        "confidence_not_action_alias": not confidence_is_alias,
+        "latency_p95_under_timeout": not breaches and bool(all_lat),
+    }
+    gate["pass"] = all(gate.values())
+
+    return {
+        "runs": n,
+        "runs_per_case": runs_per_case,
+        "detection_power_at_reference_rate": round(detection_power(runs_per_case), 4),
+        "reference_fault_rate": REFERENCE_SHORTCUT_RATE,
+        "json_valid_rate": round(len(valid) / n, 4) if n else 0,
+        "action_accuracy": round(correct / n, 4) if n else 0,
+        "failing_cases": failing_cases,
+        "reason": {
+            "canned_runs": len(canned),
+            "canned_rate": round(len(canned) / len(valid), 4) if valid else 0,
+            "grounded_rate": round(grounded / len(valid), 4) if valid else 0,
+            "fabrication_rate": round(fabricating / len(valid), 4) if valid else 0,
+            "distinct": distinct_reasons,
+        },
+        "confidence": {
+            "values_by_action": values_by_action,
+            "is_action_alias": confidence_is_alias,
+            "deep_reroute_threshold": threshold,
+            "deep_reroute_candidates": reroute,
+        },
+        "latency": {
+            "timeout_s": timeout_s,
+            "timeout_source": timeout_source,
+            "mean_s": round(statistics.mean(all_lat), 2) if all_lat else None,
+            "p95_s": _percentile(all_lat, 95),
+            "p99_s": _percentile(all_lat, 99),
+            "max_s": round(max(all_lat), 2) if all_lat else None,
+            "per_case": latency,
+            "p95_breaches": breaches,
+            "would_breach_unset_default": default_world_warning,
+        },
+        "errors": sum(1 for r in rows if r.get("error")),
+        "gate": gate,
+    }
+
+
+def print_report(model: str, version: str, g: dict, per_case: dict) -> None:
+    n = g["runs"]
+    print(f"\n{'='*60}")
+    print(f"model            {model} (ollama {version})")
+    print(f"runs             {n} = {g['runs_per_case']} per case; a {g['reference_fault_rate']*100:.0f}%-rate "
+          f"fault is seen {g['detection_power_at_reference_rate']*100:.0f}% of the time")
+    print(f"JSON valid       {g['json_valid_rate']*100:.1f}%")
+    print(f"Action accuracy  {g['action_accuracy']*100:.1f}%"
+          + (f"  <- FAIL on {', '.join(g['failing_cases'])}" if g['failing_cases'] else ""))
+    r = g["reason"]
+    print(f"Reason grounded  {r['grounded_rate']*100:.1f}%   canned {r['canned_runs']}"
+          + ("  <- FAIL: v1 template strings" if r['canned_runs'] else "")
+          + f"   distinct {r['distinct']}")
+    print(f"Fabricated cites {r['fabrication_rate']*100:.1f}%"
+          + ("  <- FAIL: reasons cite objects absent from the prompt" if r['fabrication_rate'] else ""))
+    c = g["confidence"]
+    print(f"Confidence       by action {c['values_by_action']}"
+          + ("  <- FAIL: one value per action is a label, not a confidence" if c['is_action_alias'] else ""))
+    print(f"{'':17}{c['deep_reroute_candidates']} run(s) in the deep-tier reroute band "
+          f"(0 < c < {c['deep_reroute_threshold']})")
+    lt = g["latency"]
+    print(f"Latency          mean {lt['mean_s']}s  p95 {lt['p95_s']}s  p99 {lt['p99_s']}s  max {lt['max_s']}s")
+    print(f"{'':17}gate: p95 < {lt['timeout_s']}s ({lt['timeout_source']})"
+          + (f"  <- FAIL on {', '.join(lt['p95_breaches'])}" if lt['p95_breaches'] else ""))
+    if lt["would_breach_unset_default"]:
+        print(f"{'':17}WARNING: a case's p95 is over the 5s an install that never set "
+              f"CFOP_TRIAGE_TIMEOUT_SECONDS gets; that install would time out.")
+    if g["errors"]:
+        print(f"Errors           {g['errors']}")
+    if g["action_accuracy"] == 1.0 and g["runs_per_case"] < 10:
+        print(f"{'':17}NOTE: clean at {g['runs_per_case']} runs/case. A shortcut firing at "
+              f"~{REFERENCE_SHORTCUT_RATE*100:.0f}% would be caught only "
+              f"{g['detection_power_at_reference_rate']*100:.0f}% of the time at this run "
+              f"count. Re-run with --runs {DEFAULT_RUNS} before concluding a model is clean.")
+    print(f"GATE             {'PASS' if g['gate']['pass'] else 'FAIL'}  "
+          + ", ".join(f"{k}={'ok' if v else 'FAIL'}" for k, v in g["gate"].items() if k != "pass"))
+    print(f"{'='*60}")
+    for name, pc in per_case.items():
+        print(f"  {name:22} {pc['correct']}/{pc['of']}  "
+              f"expected={'|'.join(pc['expected']):22} got={','.join(pc['actions'])}")
+
+
+def summarise_per_case(results: list, case_names: list) -> dict:
+    per_case = {}
+    for name in case_names:
+        runs = [r for r in results if r["case"] == name]
+        if not runs:
+            continue
+        per_case[name] = {
+            "expected": runs[0].get("expected"),
+            "correct": sum(1 for r in runs if r.get("correct")),
+            "of": len(runs),
+            "actions": sorted({str(r.get("action")) for r in runs}),
+            "fabricating_runs": sum(1 for r in runs if r.get("reason_fabricated")),
+        }
+    return per_case
+
+
+def _write(path: str, doc: dict) -> None:
+    with open(path, "w") as f:
+        json.dump(doc, f, indent=1)
+
+
+def replay(path: str) -> dict:
+    """Re-grade a result file this harness wrote. Grounding and fabrication
+    come from the persisted per-run fields (the prompt is not stored); the
+    rest is recomputed. Returns the summary, with `gate`."""
+    with open(path) as f:
+        doc = json.load(f)
+    results = doc.get("results") or []
+    old = doc.get("summary") or {}
+    g = grade(results, CASES_BY_NAME)
+    g["model"] = old.get("model", "?")
+    g["ollama_version"] = old.get("ollama_version", "?")
+    g["replayed_from"] = path
+    return g
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True)
+    ap.add_argument("--model", help="Ollama tag to score (required unless --replay)")
     ap.add_argument("--url", default="http://localhost:11434")
-    ap.add_argument("--runs", type=int, default=3,
-                    help="runs per case (default 3)")
+    ap.add_argument("--runs", type=int, default=DEFAULT_RUNS,
+                    help=f"runs per case (default {DEFAULT_RUNS}: 95%% power against an "
+                         f"{REFERENCE_SHORTCUT_RATE*100:.0f}%%-rate fault)")
     ap.add_argument("--timeout", type=int, default=300,
                     help="per-call timeout; deliberately far above the "
                          "production CFOP_TRIAGE_TIMEOUT_SECONDS so that a "
                          "timeout-breaching model is MEASURED rather than "
                          "truncated (see the qwen3.6 157s finding)")
+    ap.add_argument("--num-ctx", type=int, default=None,
+                    help="mirror a deployment that sets llm.num_ctx: sampling "
+                         "options then ride in `options`, as in production (CFOP-279)")
     ap.add_argument("--output", default=None)
     ap.add_argument("--keep-raw", action="store_true",
                     help="store raw text for runs that failed to parse")
@@ -520,7 +821,26 @@ def main():
                     help="comma-separated case names to run. For characterising "
                          "one case at high run-count — a latency tail seen once "
                          "in 3 runs is an anecdote, not a measurement")
+    ap.add_argument("--replay", default=None, metavar="RESULTS_JSON",
+                    help="re-grade a result file this harness wrote; no model is called")
+    ap.add_argument("--no-gate", action="store_true",
+                    help="exit 0 even when the gate fails (exploratory runs)")
     args = ap.parse_args()
+
+    if args.replay:
+        g = replay(args.replay)
+        with open(args.replay) as f:
+            results = (json.load(f).get("results") or [])
+        per_case = summarise_per_case(results, sorted({r["case"] for r in results}))
+        print(f"Triage eval replay of {args.replay}")
+        print_report(g["model"], g["ollama_version"], g, per_case)
+        if args.output:
+            with open(args.output, "w") as f:
+                json.dump({"summary": g, "per_case": per_case, "results": results}, f, indent=1)
+        sys.exit(0 if (g["gate"]["pass"] or args.no_gate) else 1)
+
+    if not args.model:
+        ap.error("--model is required unless --replay is given")
 
     cases = CASES
     if args.only:
@@ -534,23 +854,26 @@ def main():
             ap.error(f"unknown case name(s): {', '.join(sorted(unknown))}")
         cases = [c for c in CASES if c["name"] in wanted]
 
-    system_prompt = load_production_system_prompt()
+    system_prompt = production_system_prompt()
     version = ollama_version(args.url)
+    timeout_s, timeout_source = triage_timeout_seconds()
 
     print(f"Triage eval: {args.model} @ {args.url} (ollama {version})")
-    print(f"{len(cases)} cases x {args.runs} runs, production prompt + parser\n")
+    print(f"{len(cases)} cases x {args.runs} runs, production prompt + parser; "
+          f"latency gate p95 < {timeout_s}s ({timeout_source})\n")
 
     results = []
     for case in cases:
         user_msg = build_user_message(case)
+        alert_tokens = alert_tokens_of(case)
+        payload = build_payload(args.model, system_prompt, user_msg, args.num_ctx)
         for run in range(args.runs):
-            text, latency, err = call_ollama(
-                args.url, args.model, system_prompt, user_msg, args.timeout)
+            text, latency, err = call_ollama(args.url, payload, args.timeout)
             decision = CFOperator._parse_triage_response(text) if text else None
             action = decision["action"] if decision else None
             correct = action in case["expected"] if action else False
             reason = decision.get("reason") if decision else None
-            grounded, fabricated = grade_reason(reason, user_msg)
+            grounded, fabricated = grade_reason(reason, user_msg, alert_tokens)
             results.append({
                 "case": case["name"],
                 "run": run,
@@ -566,6 +889,7 @@ def main():
                 "reason": reason,
                 "reason_grounded": grounded,
                 "reason_fabricated": fabricated,
+                "reason_canned": is_canned(reason) if decision else False,
                 "error": err,
                 "raw": (text[:500] if (args.keep_raw and decision is None)
                         else None),
@@ -584,78 +908,29 @@ def main():
             if fabricated:
                 print(f"         FABRICATED {', '.join(fabricated)} — "
                       f"cited but absent from the prompt")
+            if decision and is_canned(reason):
+                print(f"         CANNED reason — a v1 template string")
+        if args.output:
+            # After every case, so a host that falls asleep or a job timeout
+            # mid-run leaves the rows scored so far, marked partial.
+            _write(args.output, {"summary": {"partial": True, "model": args.model,
+                                             "cases_done": len({r["case"] for r in results}),
+                                             "cases_total": len(cases)},
+                                 "per_case": summarise_per_case(results, [c["name"] for c in cases]),
+                                 "results": results})
 
-    latencies = [r["latency_s"] for r in results if r["error"] is None]
-    valid = sum(1 for r in results if r["valid"])
-    correct = sum(1 for r in results if r["correct"])
-
-    summary = {
-        "model": args.model,
-        "ollama_version": version,
-        "runs": len(results),
-        "json_valid_rate": round(valid / len(results), 4) if results else 0,
-        "action_accuracy": round(correct / len(results), 4) if results else 0,
-        "latency_mean_s": round(statistics.mean(latencies), 2) if latencies else None,
-        "latency_max_s": round(max(latencies), 2) if latencies else None,
-        "errors": sum(1 for r in results if r["error"]),
-        "reason_grounded_rate": (
-            round(sum(1 for r in results if r["reason_grounded"]) / len(results), 4)
-            if results else 0),
-        "reason_fabrication_rate": (
-            round(sum(1 for r in results if r["reason_fabricated"]) / len(results), 4)
-            if results else 0),
-    }
-
-    per_case = {}
-    for case in cases:
-        runs = [r for r in results if r["case"] == case["name"]]
-        per_case[case["name"]] = {
-            "expected": case["expected"],
-            "correct": sum(1 for r in runs if r["correct"]),
-            "of": len(runs),
-            "actions": sorted({str(r["action"]) for r in runs}),
-            "fabricating_runs": sum(1 for r in runs if r["reason_fabricated"]),
-        }
-
-    print(f"\n{'='*60}")
-    print(f"model            {summary['model']} (ollama {version})")
-    print(f"JSON valid       {valid}/{len(results)} "
-          f"({summary['json_valid_rate']*100:.1f}%)")
-    print(f"Action accuracy  {correct}/{len(results)} "
-          f"({summary['action_accuracy']*100:.1f}%)")
-    print(f"Latency          mean {summary['latency_mean_s']}s  "
-          f"max {summary['latency_max_s']}s")
-    fab = sum(1 for r in results if r["reason_fabricated"])
-    print(f"Reason grounded  {sum(1 for r in results if r['reason_grounded'])}"
-          f"/{len(results)} ({summary['reason_grounded_rate']*100:.1f}%)")
-    print(f"Fabricated cites {fab}/{len(results)} "
-          f"({summary['reason_fabrication_rate']*100:.1f}%)"
-          + ("  <- FAIL: reasons cite objects absent from the prompt" if fab else ""))
-    if summary["errors"]:
-        print(f"Errors           {summary['errors']}")
-    # A perfect score at low run-count is the suite's most misleading output:
-    # the shortcuts these cases probe show up on a FRACTION of runs, so a clean
-    # sheet here means "no systematic error", not "correct". Say so inline.
-    if correct == len(results) and args.runs < 10:
-        # P(at least one miss observed) for a shortcut that fires at
-        # REFERENCE_SHORTCUT_RATE on each independent run.
-        detection_prob = 1 - (1 - REFERENCE_SHORTCUT_RATE) ** args.runs
-        print(f"{'':17}NOTE: clean at {args.runs} runs/case. A shortcut firing at "
-              f"~{REFERENCE_SHORTCUT_RATE*100:.0f}%\n{'':23}(the observed qwen3.8 "
-              f"precedent-monitoring rate) would be caught\n{'':23}only "
-              f"{detection_prob*100:.0f}% of the time at this run count. Re-run "
-              f"with\n{'':23}--only <case> --runs 12+ before concluding a model "
-              f"is clean.")
-    print(f"{'='*60}")
-    for name, pc in per_case.items():
-        print(f"  {name:20} {pc['correct']}/{pc['of']}  "
-              f"expected={'|'.join(pc['expected']):22} got={','.join(pc['actions'])}")
+    g = grade(results, CASES_BY_NAME)
+    g["model"] = args.model
+    g["ollama_version"] = version
+    g["num_ctx"] = args.num_ctx
+    per_case = summarise_per_case(results, [c["name"] for c in cases])
+    print_report(args.model, version, g, per_case)
 
     if args.output:
-        with open(args.output, "w") as f:
-            json.dump({"summary": summary, "per_case": per_case,
-                       "results": results}, f, indent=1)
+        _write(args.output, {"summary": g, "per_case": per_case, "results": results})
         print(f"\nWrote {args.output}")
+
+    sys.exit(0 if (g["gate"]["pass"] or args.no_gate) else 1)
 
 
 if __name__ == "__main__":

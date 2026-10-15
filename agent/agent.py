@@ -2882,6 +2882,76 @@ class CFOperator:
     # hardware/systemd event in this homelab and must not be log_only.
     _TRIAGE_NOISE_RE = re.compile(r"(?i:smoke-test-|tmp-)|\bWatchdog\b")
 
+    @staticmethod
+    def _triage_system_prompt() -> str:
+        """The triage classifier's system prompt, framed (CFOP-313).
+
+        A method rather than a literal inside _run_triage so the eval harness
+        (benchmarks/triage_eval.py) sends exactly this (CFOP-314). The harness
+        used to regex the literal out of this method's source; once the
+        framing turned the literal into an expression it captured the first
+        line only, and every score after CFOP-313 was of a one-line prompt.
+        """
+        from agent.prompt_injection import get_system_framing
+        return """You are a triage classifier for infrastructure alerts.""" + get_system_framing() + """
+Decide the cheapest correct response. Respond ONLY with a JSON object,
+no other text:
+{
+  "action":     "log_only" | "notify" | "investigate" | "escalate",
+  "reason":     "<one short sentence>",
+  "confidence": <0.0 to 1.0>
+}
+
+Action rubric:
+  log_only    Known noise. Test pods (smoke-test-*, tmp-*), Alertmanager
+              Watchdog, intentionally-failing canaries.
+  notify      Operator should see this, but a full LLM investigation is
+              waste. Use when a similar past investigation resolved with
+              little effort, when severity=info, or when the pattern is
+              one the operator already understands (e.g. raspberrypi
+              SD-card warning that's been known for weeks). Requires a
+              clear precedent: do NOT use notify for pod failures
+              (CrashLoop, OOMKilled, ImagePullBackOff, NotReady) unless
+              a similar past investigation is listed in the alert
+              context.
+  investigate Novel pattern, no similar resolved precedent, or pattern
+              that previous investigations classified as 'monitoring'.
+              A pod failure with no similar past investigation listed is
+              novel by definition — investigate it. Default if
+              uncertain.
+  escalate    Severity=critical AND impact is broad (NodeNotReady on a
+              control plane, data-loss patterns, multiple correlated
+              services down). Operator should page in.
+
+Prefer notify and log_only when there is a clear precedent. Prefer
+investigate when uncertain. Use escalate only for genuinely urgent."""
+
+    @staticmethod
+    def _triage_user_message(severity: str, trigger: str, labels: Any,
+                             similar: List[Tuple[str, str, float]]) -> str:
+        """The triage user message, each field framed as untrusted (CFOP-313).
+
+        ``similar`` is one (outcome, trigger, similarity) per precedent, in the
+        order the KB returned them. The eval harness builds its cases' messages
+        through this same function (CFOP-314).
+        """
+        from agent.prompt_injection import frame_untrusted_data as _frame
+        similar_context = ""
+        if similar:
+            lines = [f"- [{outcome:10}] {text[:100]} (similarity: {sim:.2f})"
+                     for outcome, text, sim in similar]
+            similar_context = "\n\nSimilar past investigations:\n" + _frame(
+                "\n".join(lines), "similar past investigations", 1000)
+        trigger_framed = _frame(trigger, "alert summary", 500)
+        labels_framed = _frame(json.dumps(labels, default=str)[:500], "labels", 500)
+        return (
+            f"Alert severity: {severity}\n"
+            f"{trigger_framed}\n"
+            f"{labels_framed}"
+            f"{similar_context}\n\n"
+            "Classify."
+        )
+
     def run_triage(self, alert: Dict[str, Any]) -> Dict[str, Any]:
         """Classify an alert; see ``_run_triage``. This layer is the trace
         span (CFOP-316), so the body's many exits need no ``with`` each.
@@ -3002,73 +3072,27 @@ class CFOperator:
                 'model': None,
             }, 'short_circuit_info')
 
-        # CFOP-313: past triggers are past alert text, framed like the rest.
-        from agent.prompt_injection import frame_untrusted_data as _frame_triage
-        similar_context = ""
+        # The top 3 precedents, as (outcome, trigger, similarity). Framed as
+        # past alert text inside _triage_user_message (CFOP-313).
+        similar: List[Tuple[str, str, float]] = []
         try:
             if self.embeddings.is_available():
                 query_embedding = self.embeddings.generate_embedding(trigger)
-                similar = self.kb._kb.find_similar_investigations_hybrid(
+                found = self.kb._kb.find_similar_investigations_hybrid(
                     query_text=trigger,
                     query_embedding=query_embedding,
                     limit=3,
                 )
-                if similar:
-                    lines = []
-                    for inv in similar:
-                        sim = inv.get('similarity') or inv.get('vector_similarity', 0)
-                        lines.append(
-                            f"- [{inv.get('outcome','?'):10}] "
-                            f"{inv.get('trigger','')[:100]} (similarity: {sim:.2f})"
-                        )
-                    similar_context = "\n\nSimilar past investigations:\n" + _frame_triage(
-                        "\n".join(lines), "similar past investigations", 1000)
+                for inv in found or []:
+                    sim = inv.get('similarity') or inv.get('vector_similarity', 0) or 0
+                    similar.append((str(inv.get('outcome', '?')), str(inv.get('trigger', '')), float(sim)))
         except Exception:
             pass  # Best-effort; missing context is not a triage blocker.
 
-        from agent.prompt_injection import get_system_framing
-        system_prompt = """You are a triage classifier for infrastructure alerts.""" + get_system_framing() + """
-Decide the cheapest correct response. Respond ONLY with a JSON object,
-no other text:
-{
-  "action":     "log_only" | "notify" | "investigate" | "escalate",
-  "reason":     "<one short sentence>",
-  "confidence": <0.0 to 1.0>
-}
-
-Action rubric:
-  log_only    Known noise. Test pods (smoke-test-*, tmp-*), Alertmanager
-              Watchdog, intentionally-failing canaries.
-  notify      Operator should see this, but a full LLM investigation is
-              waste. Use when a similar past investigation resolved with
-              little effort, when severity=info, or when the pattern is
-              one the operator already understands (e.g. raspberrypi
-              SD-card warning that's been known for weeks). Requires a
-              clear precedent: do NOT use notify for pod failures
-              (CrashLoop, OOMKilled, ImagePullBackOff, NotReady) unless
-              a similar past investigation is listed in the alert
-              context.
-  investigate Novel pattern, no similar resolved precedent, or pattern
-              that previous investigations classified as 'monitoring'.
-              A pod failure with no similar past investigation listed is
-              novel by definition — investigate it. Default if
-              uncertain.
-  escalate    Severity=critical AND impact is broad (NodeNotReady on a
-              control plane, data-loss patterns, multiple correlated
-              services down). Operator should page in.
-
-Prefer notify and log_only when there is a clear precedent. Prefer
-investigate when uncertain. Use escalate only for genuinely urgent."""
-
-        trigger_framed = _frame_triage(trigger, "alert summary", 500)
-        labels_framed = _frame_triage(json.dumps(labels, default=str)[:500], "labels", 500)
-        user_msg = (
-            f"Alert severity: {severity}\n"
-            f"{trigger_framed}\n"
-            f"{labels_framed}"
-            f"{similar_context}\n\n"
-            "Classify."
-        )
+        # One source for the prompt (CFOP-314): benchmarks/triage_eval.py calls
+        # these same two builders, so what it scores is what runs here.
+        system_prompt = self._triage_system_prompt()
+        user_msg = self._triage_user_message(severity, trigger, labels, similar)
 
         # CFOP-57: a dedicated triage model (the fine-tuned local classifier)
         # takes the first shot when configured. This is deliberately a single
