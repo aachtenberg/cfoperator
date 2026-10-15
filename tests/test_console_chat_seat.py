@@ -139,6 +139,8 @@ function send(text){ doc.getElementById('message-input').value=text; box.sendMes
   }
   if (mode==='newchat'){
     box.startNewChat();
+    // Before the new row answers: the old override must already be gone.
+    out.llmRightAfterNewChat = vm.runInContext('chatLlm', box);
     await settle();
     out.badges.push(badge());
     await send('fresh');
@@ -267,6 +269,9 @@ def test_a_new_chat_after_an_override_starts_from_the_default(newchat):
     assert turns[2]["session_id"] == 42 and turns[1]["session_id"] == 41
     assert newchat["badges"] == ["", "this session", ""]
     assert newchat["chatLlm"] == CHAT_SEAT
+    # Bugbot on #347: a turn sent in the gap before the new row answers must
+    # not ride the previous session's override.
+    assert newchat["llmRightAfterNewChat"] is None
     assert _global_writes(newchat) == []
 
 

@@ -1261,6 +1261,13 @@
         function startNewChat() {
             chatHistory = [];
             chatSessionId = null;
+            // The old session's seat goes with it (CFOP-417, Bugbot on #347):
+            // a turn sent before the new row exists would otherwise still
+            // carry the previous override, and an open popover could write
+            // it onto the new session. Null means 'auto' until the row
+            // answers with its seat.
+            setChatLlm(null);
+            if (llmPopoverOpen) setLlmPopoverOpen(false);
             const container = document.getElementById('chat-container');
             container.innerHTML = `<div class="message agent"><div class="message-header">cfoperator</div><div class="message-bubble">CFOperator ready. Ask me about your infrastructure, or type <code>/</code> for skills.</div></div>`;
             createChatSession();
