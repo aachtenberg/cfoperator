@@ -50,7 +50,14 @@ def _agent_headers() -> dict:
     """Content-Type plus bearer auth for calls into the agent API, and the
     current ``alert`` span's traceparent so the agent's triage and
     investigation land in this alert's trace (CFOP-317; nothing is added
-    while tracing is off)."""
+    while tracing is off).
+
+    "Current" is thread-local: the span is carried only when this runs on
+    the thread that opened it, which both callers do today (the dispatch and
+    the triage call happen inside handle_alert). A dispatch moved onto a
+    pool or executor would send no header and nothing would say so;
+    tests/test_trace_propagation.py fails if either caller stops carrying it.
+    """
     headers = {"Content-Type": "application/json"}
     token = os.getenv(AGENT_TOKEN_ENV, "").strip()
     if token:

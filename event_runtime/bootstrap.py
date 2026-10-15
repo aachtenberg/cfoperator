@@ -14,8 +14,6 @@ from cfshared import config as shared_config
 from cfshared import repos as shared_repos
 from cfshared import tracing
 
-logger = logging.getLogger(__name__)
-
 from .defaults import (
     HostContextProvider,
     JsonFileScheduler,
@@ -50,6 +48,8 @@ from .state.local_outbox import LocalOutboxStateSink
 from .state.postgres import PostgresStateSink
 from .state.replay import ReplayingStateSink
 from .worker import BackgroundAlertWorker, FileBackedWorkerState
+
+logger = logging.getLogger(__name__)
 
 
 def build_portable_runtime(config_path: str | None = None) -> EventRuntime:

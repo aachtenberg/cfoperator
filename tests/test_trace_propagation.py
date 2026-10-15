@@ -101,6 +101,22 @@ def test_inject_then_parent_continues_the_trace(spans):
     assert finished['investigation'].parent.span_id == finished['alert'].context.span_id
 
 
+@pytest.mark.parametrize('carrier', [
+    {'traceparent': 'garbage'},
+    {'traceparent': '00-' + 'z' * 32 + '-' + 'b' * 16 + '-01'},
+    {'traceparent': ''},
+    {'tracestate': 'vendor=1'},
+])
+def test_a_malformed_carrier_still_runs_the_block_as_a_root(spans, carrier):
+    """The value comes off the network (authenticated, but still a string):
+    extract() of junk is an empty context, and the span is a root."""
+    ran = []
+    with tracing.span('investigation', parent=carrier):
+        ran.append(True)
+    (s,) = spans.get_finished_spans()
+    assert ran and s.parent is None
+
+
 def test_service_name_precedence(monkeypatch):
     monkeypatch.delenv('OTEL_SERVICE_NAME', raising=False)
     assert tracing._service_name({}, 'cfoperator-event-runtime') == 'cfoperator-event-runtime'

@@ -2,6 +2,12 @@
      to this install; everything else comes from the default schema in
      cfshared/config.py, merged under this file. Values arrive as env vars on
      the pods (whole-value ${VAR} fill) so secrets stay out of the ConfigMap. */}}
+{{/* Enabled without an endpoint would export to the SDK's localhost default
+     on both workloads and log a failed batch every few seconds; make it a
+     render-time error instead (review on #334). */}}
+{{- if and .Values.tracing.enabled (not .Values.tracing.endpoint) }}
+{{- fail "tracing.enabled is true but tracing.endpoint is empty: set the OTLP/HTTP base URL (e.g. http://tempo.monitoring:4318)" }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
