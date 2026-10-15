@@ -1,0 +1,63 @@
+name: Beam Review
+
+# A review from Reflection AI's Beam over its OpenAI-compatible API
+# (CFOP-400). Same script and pipeline as the local-LLM review; only the
+# transport differs. It is advisory: the job fails only if it could not
+# produce a review at all.
+#
+# A hosted runner, so unlike local-llm-review.yml nothing here protects the
+# homelab. The same fence still applies, for the key: under plain
+# pull_request the PR's own copy of the script would run with
+# REFLECTION_API_KEY and a write token, and a same-repo PR could swap the
+# reviewer out. So pull_request_target (the base branch's workflow and
+# script run, whatever the PR changes), same-repo PRs only, a base-only
+# checkout that keeps no credential, and a token that can at most comment.
+# tests/test_workflows.py judges this job by the same fence_violations as
+# the Ollama one. The cost: a PR that changes the script is reviewed with
+# the base's copy, and this workflow only starts running once it is on main.
+on:
+  pull_request_target:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  # A push while a review runs makes that review stale; replace it.
+  group: beam-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  beam-review:
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # The review is an issue comment on a PR; that endpoint wants both.
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout the reviewer (base branch only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/local_llm_review.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Review
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REVIEW_BACKEND: openai
+          REVIEW_NAME: Beam
+          REVIEW_API_URL: https://api.reflection.ai/openai/v1
+          REVIEW_API_KEY: ${{ secrets.REFLECTION_API_KEY }}
+          # Repo variables override the defaults; unset ones arrive empty.
+          REVIEW_MODEL: ${{ vars.BEAM_REVIEW_MODEL || 'Beam-1.0-501B-A23B' }}
+          # Beam always reasons (the API says the setting is mandatory, with
+          # its own default of max). Lower is faster, and a review is not
+          # where the last few percent of effort pay for themselves.
+          REVIEW_REASONING_EFFORT: ${{ vars.BEAM_REVIEW_EFFORT || 'high' }}
+          # 262k-token window: the whole of most PRs. Still a budget, so one
+          # vast generated file cannot push everything else out.
+          REVIEW_MAX_DIFF_CHARS: '200000'
+        run: python3 scripts/local_llm_review.py

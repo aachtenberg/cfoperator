@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Review a pull request with a local model on Ollama and post one comment.
+"""Review a pull request with an LLM and post one comment.
 
-Runs on the homelab's self-hosted runner, which can reach Ollama on the LAN
-(CFOP-236). CodeRabbit and the Claude review both need a cloud model; this is
-the one that does not. It is advisory and runs beside the Claude review, not
-instead of it.
+Two transports, one pipeline. The original is a local model on the homelab's
+Ollama (CFOP-236), run from the self-hosted runner that can reach it; the
+second is any OpenAI-compatible chat API, run from a hosted runner (CFOP-400,
+Reflection AI's Beam). Both are advisory and run beside the other reviews,
+not instead of them.
 
 It reads the PR from the GitHub API and never checks out, imports or runs the
-PR's code: the diff is only text handed to a model. cfoperator runs it under
-pull_request_target, which is safe only for that reason (see the workflow).
+PR's code: the diff is only text handed to a model. cfoperator runs both under
+pull_request_target, which is safe only for that reason (see the workflows):
+the script that runs is always the base branch's, so a PR cannot swap the
+reviewer out while an API key is in scope.
 
 A small local model asked for a review in one shot mostly produces noise:
 "should be verified", complaints about comments, and defects in lines the PR
@@ -24,18 +27,31 @@ deletes. So a review is three steps, and a finding has to survive all three:
                  so Ollama reuses its cache and this costs little.
 
 The comment is created once and edited on every later push, so a PR carries
-one local review for its current head, not a stack of them.
+one review per reviewer for its current head, not a stack of them. Each
+reviewer is named, and the name is what tells its comment apart.
 
 Environment:
-    GITHUB_TOKEN          token with pull-requests read and issues write
-    GITHUB_REPOSITORY     owner/name (set by Actions)
-    PR_NUMBER             the pull request to review
-    OLLAMA_URL            required, e.g. http://<ollama-host>:11434
-    REVIEW_MODEL          default gemma4:26b
-    REVIEW_MAX_DIFF_CHARS default 60000
-    REVIEW_DRY_RUN        1 = print the comment instead of posting it
+    GITHUB_TOKEN            token with pull-requests read and issues write
+    GITHUB_REPOSITORY       owner/name (set by Actions)
+    PR_NUMBER               the pull request to review
+    REVIEW_BACKEND          ollama (default) or openai
+    REVIEW_NAME             how the comment is titled; default "Local LLM"
+                            for ollama and "LLM" for openai
+    REVIEW_MAX_DIFF_CHARS   default 60000
+    REVIEW_DRY_RUN          1 = print the comment instead of posting it
+  ollama:
+    OLLAMA_URL              required, e.g. http://<ollama-host>:11434
+    REVIEW_MODEL            default gemma4:26b
+  openai:
+    REVIEW_API_URL          required, the base URL ending in /v1
+    REVIEW_API_KEY          required, sent as a bearer token
+    REVIEW_MODEL            required
+    REVIEW_REASONING_EFFORT optional, passed through as reasoning_effort
 """
+import collections
+import copy
 import fnmatch
+import functools
 import http.client
 import json
 import os
@@ -43,10 +59,24 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
-MARKER = "<!-- local-llm-review -->"
 GITHUB_API = "https://api.github.com"
+
+#: A reviewer, as its comment shows it: the title, where the model ran, and
+#: the hidden marker that finds the comment again on the next push.
+Reviewer = collections.namedtuple("Reviewer", "name served marker")
+
+
+def reviewer(name, served):
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "llm"
+    return Reviewer(name, served, f"<!-- {slug}-review -->")
+
+
+LOCAL = reviewer("Local LLM", "on the homelab's Ollama")
+#: The marker the Ollama review has always used; derived, so it cannot drift.
+MARKER = LOCAL.marker
 
 # The model cfoperator already keeps resident on the 24 GB card. A dedicated
 # coder model was tried (qwen3-coder:30b, CFOP-236): through this pipeline it
@@ -59,8 +89,8 @@ DEFAULT_MODEL = "gemma4:26b"
 # come on top. ~60k chars of diff is ~17k tokens, so the whole prompt stays
 # near 20k, which leaves the answer room but not a wide margin.
 DEFAULT_MAX_DIFF_CHARS = 60000
-# Per Ollama call. A review makes at most two; both must fit timeout-minutes: 20.
-OLLAMA_TIMEOUT_SECONDS = 480
+# Per model call. A review makes at most two; both must fit timeout-minutes: 20.
+MODEL_TIMEOUT_SECONDS = 480
 
 #: Files whose diff costs context and carries nothing a reviewer can judge.
 SKIP_PATTERNS = (
@@ -355,13 +385,83 @@ def ask_ollama(url, model, system, user, schema):
     )
     # Two calls per review must fit the job's 20 minutes, or the job is
     # killed mid-call and leaves no comment; a timeout here fails it visibly.
-    with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_SECONDS) as resp:
+    with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT_SECONDS) as resp:
         data = json.loads(resp.read())
     content = (data.get("message") or {}).get("content", "")
+    return parse_answer(content), {
+        "prompt_tokens": data.get("prompt_eval_count", "?"),
+        "generated_tokens": data.get("eval_count", "?"),
+        "note": f"load {data.get('load_duration', 0) / 1e9:.1f}s",
+    }
+
+
+def strict(schema):
+    """The schema with additionalProperties: false on every object, which
+    OpenAI-style strict structured output requires and Ollama does not."""
+    out = copy.deepcopy(schema)
+
+    def close(node):
+        if isinstance(node, dict):
+            if node.get("type") == "object":
+                node["additionalProperties"] = False
+            for v in node.values():
+                close(v)
+        elif isinstance(node, list):
+            for v in node:
+                close(v)
+    close(out)
+    return out
+
+
+def ask_openai(url, key, model, effort, system, user, schema):
+    """One chat completion against an OpenAI-compatible endpoint, answered as
+    JSON matching ``schema``. ``effort`` is passed as reasoning_effort when
+    set; a model that reasons by default (Beam) otherwise picks its own."""
+    body = {
+        "model": model,
+        "temperature": 0.1,
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "answer", "strict": True, "schema": strict(schema)}},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    if effort:
+        body["reasoning_effort"] = effort
+    req = urllib.request.Request(
+        url.rstrip("/") + "/chat/completions",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": "cfoperator-llm-review"},
+    )
+    # Unredirected: urllib copies ordinary headers onto a redirect's target,
+    # which would hand the key to whatever host the endpoint pointed at.
+    req.add_unredirected_header("Authorization", f"Bearer {key}")
+    with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT_SECONDS) as resp:
+        data = json.loads(resp.read())
+    choices = data.get("choices") or [{}]
+    content = (choices[0].get("message") or {}).get("content") or ""
+    usage = data.get("usage") or {}
+    reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", "?")
+    return parse_answer(content), {
+        "prompt_tokens": usage.get("prompt_tokens", "?"),
+        "generated_tokens": usage.get("completion_tokens", "?"),
+        "note": f"reasoning {reasoning}",
+    }
+
+
+def parse_answer(content):
+    """The JSON object in a model's answer, or None. A fenced block is
+    unwrapped: some endpoints wrap structured output in ```json anyway."""
+    text = content.strip()
+    m = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, re.S)
+    if m:
+        text = m.group(1)
     try:
-        return json.loads(content), data
+        parsed = json.loads(text)
     except json.JSONDecodeError:
-        return None, data
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 class UnreadableAnswer(RuntimeError):
@@ -372,11 +472,12 @@ class UnreadableAnswer(RuntimeError):
         super().__init__(f"the model's {step} answer was not valid JSON; no review")
 
 
-def review(url, model, diff, files, log=print):
-    """Propose, ground, verify. Returns (kept findings, counts)."""
-    proposed, raw = ask_ollama(url, model, PROPOSE_PROMPT, diff, FINDINGS_SCHEMA)
-    log(f"propose: {raw.get('prompt_eval_count', '?')} prompt tokens, "
-        f"{raw.get('eval_count', '?')} generated, load {raw.get('load_duration', 0) / 1e9:.1f}s")
+def review(ask, diff, files, log=print):
+    """Propose, ground, verify. ``ask(system, user, schema)`` is the model,
+    whichever transport. Returns (kept findings, counts)."""
+    proposed, usage = ask(PROPOSE_PROMPT, diff, FINDINGS_SCHEMA)
+    log(f"propose: {usage.get('prompt_tokens', '?')} prompt tokens, "
+        f"{usage.get('generated_tokens', '?')} generated, {usage.get('note', '')}")
     if proposed is None:
         raise UnreadableAnswer("propose")
     proposed = proposed.get("findings") or []
@@ -388,8 +489,7 @@ def review(url, model, diff, files, log=print):
         claims = "\n".join(
             f"[{i}] {f['path']}:{f['line']} ({f['severity']}) {f['problem']}\n"
             f"    evidence: {f['evidence']}" for i, f in enumerate(grounded))
-        answer, _ = ask_ollama(url, model, VERIFY_PROMPT,
-                               f"{diff}\n\nClaimed defects:\n{claims}", VERDICTS_SCHEMA)
+        answer, _ = ask(VERIFY_PROMPT, f"{diff}\n\nClaimed defects:\n{claims}", VERDICTS_SCHEMA)
         if answer is None:
             # Not "no findings": every grounded claim would vanish unseen.
             raise UnreadableAnswer("verify")
@@ -402,7 +502,7 @@ def review(url, model, diff, files, log=print):
                 continue
         verified = [f for i, f in enumerate(grounded) if real.get(i)]
     return verified, {"proposed": len(proposed), "grounded": len(grounded), "kept": len(verified),
-                      "prompt_tokens": raw.get("prompt_eval_count", "?")}
+                      "prompt_tokens": usage.get("prompt_tokens", "?")}
 
 
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2}
@@ -422,8 +522,8 @@ def defang(text):
             .replace("#", "#" + ZWSP))
 
 
-def render(findings, counts, model, head_sha, included, skipped, seconds):
-    lines = [MARKER, "### Local LLM review", ""]
+def render(findings, counts, model, head_sha, included, skipped, seconds, who=LOCAL):
+    lines = [who.marker, f"### {who.name} review", ""]
     if findings:
         for f in sorted(findings, key=lambda f: SEVERITY_ORDER.get(f["severity"], 3)):
             # Clamped: the schema asks for one of these, but it is model output.
@@ -441,9 +541,9 @@ def render(findings, counts, model, head_sha, included, skipped, seconds):
     tally = (f"{counts['proposed']} proposed, {counts['grounded']} grounded, {counts['kept']} kept"
              if counts else "not run")
     lines.append(
-        f"<sub>{model} on the homelab's Ollama · {head_sha[:7]} · "
+        f"<sub>{model} {who.served} · {head_sha[:7]} · "
         f"{len(included)} file(s) · findings {tally} · {seconds:.0f}s. "
-        "Advisory only; the Claude review is separate.</sub>"
+        "Advisory only; the other reviews are separate.</sub>"
     )
     return "\n".join(lines)
 
@@ -452,12 +552,12 @@ def render(findings, counts, model, head_sha, included, skipped, seconds):
 DEFAULT_BOT_LOGIN = "github-actions[bot]"
 
 
-def render_failure(error, model, head_sha):
+def render_failure(error, model, head_sha, who=LOCAL):
     return "\n".join([
-        MARKER, "### Local LLM review", "",
+        who.marker, f"### {who.name} review", "",
         f"_No review for {head_sha[:7]}: {defang(type(error).__name__)}. "
         "See the workflow run's log. Any earlier review on this PR is for an older commit._",
-        "", f"<sub>{model} on the homelab's Ollama · {head_sha[:7]}.</sub>",
+        "", f"<sub>{model} {who.served} · {head_sha[:7]}.</sub>",
     ])
 
 
@@ -468,12 +568,13 @@ def code(name):
     return "`" + defang(str(name).replace("`", "'")) + "`"
 
 
-def upsert_comment(repo, number, token, body, bot_login=DEFAULT_BOT_LOGIN):
-    """Edit this workflow's earlier comment if there is one, else create it.
+def upsert_comment(repo, number, token, body, bot_login=DEFAULT_BOT_LOGIN, marker=MARKER):
+    """Edit this reviewer's earlier comment if there is one, else create it.
     Only a comment the bot itself wrote counts: anyone can paste the marker
-    into their own comment, and that must not get it overwritten."""
+    into their own comment, and that must not get it overwritten. Two
+    reviewers post under the same bot login; the marker tells them apart."""
     for c in paged(f"/repos/{repo}/issues/{number}/comments", token):
-        if MARKER in (c.get("body") or "") and (c.get("user") or {}).get("login") == bot_login:
+        if marker in (c.get("body") or "") and (c.get("user") or {}).get("login") == bot_login:
             edited = github("PATCH", f"/repos/{repo}/issues/comments/{c['id']}", token, {"body": body})
             return "updated", edited["html_url"]
     c = github("POST", f"/repos/{repo}/issues/{number}/comments", token, {"body": body})
@@ -486,11 +587,7 @@ def main():
     number = env("PR_NUMBER")
     if not (token and repo and number):
         sys.exit("GITHUB_TOKEN, GITHUB_REPOSITORY and PR_NUMBER are required")
-    ollama = env("OLLAMA_URL")
-    if not ollama:
-        sys.exit("OLLAMA_URL is required (the workflows set it from the LOCAL_REVIEW_OLLAMA_URL "
-                 "repo variable)")
-    model = env("REVIEW_MODEL", DEFAULT_MODEL)
+    ask, model, who = backend_from_env()
     budget = int(env("REVIEW_MAX_DIFF_CHARS", str(DEFAULT_MAX_DIFF_CHARS)))
 
     pr = github("GET", f"/repos/{repo}/pulls/{number}", token)
@@ -504,7 +601,7 @@ def main():
     findings, counts, failure = [], None, None
     if included:
         try:
-            findings, counts = review(ollama, model, build_diff(repo, pr, included), included)
+            findings, counts = review(ask, build_diff(repo, pr, included), included)
         # OSError covers URLError, timeouts and a reset connection; ValueError a
         # truncated body that is not JSON; HTTPException a bad status line.
         except (UnreadableAnswer, OSError, ValueError, http.client.HTTPException) as e:
@@ -512,18 +609,41 @@ def main():
     seconds = time.monotonic() - started
 
     if failure is None:
-        body = render(findings, counts, model, pr["head"]["sha"], included, skipped, seconds)
+        body = render(findings, counts, model, pr["head"]["sha"], included, skipped, seconds, who)
     else:
         # Say so on the PR too: otherwise the previous push's review stays up
         # looking current, and nothing shows this head went unreviewed.
-        body = render_failure(failure, model, pr["head"]["sha"])
+        body = render_failure(failure, model, pr["head"]["sha"], who)
     if env("REVIEW_DRY_RUN") == "1":
         print(body)
     else:
-        action, url = upsert_comment(repo, number, token, body)
+        action, url = upsert_comment(repo, number, token, body, marker=who.marker)
         print(f"{action} {url}")
     if failure is not None:
         sys.exit(f"review failed: {failure}")
+
+
+def backend_from_env():
+    """(ask, model, reviewer) for REVIEW_BACKEND. Secrets stay out of the
+    reviewer: its text goes into a public comment."""
+    backend = env("REVIEW_BACKEND", "ollama")
+    if backend == "ollama":
+        ollama = env("OLLAMA_URL")
+        if not ollama:
+            sys.exit("OLLAMA_URL is required (the workflows set it from the LOCAL_REVIEW_OLLAMA_URL "
+                     "repo variable)")
+        model = env("REVIEW_MODEL", DEFAULT_MODEL)
+        return (functools.partial(ask_ollama, ollama, model), model,
+                reviewer(env("REVIEW_NAME", LOCAL.name), LOCAL.served))
+    if backend == "openai":
+        url, key, model = env("REVIEW_API_URL"), env("REVIEW_API_KEY"), env("REVIEW_MODEL")
+        if not (url and key and model):
+            sys.exit("REVIEW_API_URL, REVIEW_API_KEY and REVIEW_MODEL are required for the "
+                     "openai backend")
+        host = urllib.parse.urlsplit(url).hostname or "an OpenAI-compatible API"
+        return (functools.partial(ask_openai, url, key, model, env("REVIEW_REASONING_EFFORT")),
+                model, reviewer(env("REVIEW_NAME", "LLM"), f"at {host}"))
+    sys.exit(f"REVIEW_BACKEND={backend!r}; want ollama or openai")
 
 
 if __name__ == "__main__":
