@@ -1,0 +1,84 @@
+name: Triage eval
+
+# The triage model regression suite (benchmarks/triage_eval.py, CFOP-314), run
+# by hand against the homelab's Ollama. It needs the LAN, so it runs on the
+# homelab runner -- behind workflow_dispatch only, which is collaborator-only
+# (tests/test_workflows.py's self-hosted rule). No push trigger: 14 cases x 36
+# runs is about eight minutes of a GPU, not something every merge should spend.
+#
+# What is scored is the deployed agent code: the harness runs inside the
+# published cfoperator image, which carries agent/ and every dependency but
+# not benchmarks/, so the checkout's benchmarks/ is mounted in read-only.
+# The image tag is an input, so a candidate build can be scored too.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Ollama tag to score
+        default: "cfop-triage-ministral3:v5-q4"
+        type: string
+      ollama_url:
+        description: Ollama base URL (blank = the TRIAGE_EVAL_OLLAMA_URL repo variable)
+        default: ""
+        type: string
+      runs:
+        description: Runs per case (36 = 95% power against an 8%-rate fault)
+        default: "36"
+        type: string
+      image:
+        description: cfoperator image whose agent code the harness runs against
+        default: "ghcr.io/aachtenberg/cfoperator:main"
+        type: string
+
+jobs:
+  triage-eval:
+    runs-on: [self-hosted, linux, x64, ubuntu-itx-01]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout benchmarks (base branch only)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: benchmarks
+          # itx-01's work dir outlives the job; do not leave the token in .git.
+          persist-credentials: false
+
+      - name: Score
+        env:
+          OLLAMA_URL: ${{ inputs.ollama_url || vars.TRIAGE_EVAL_OLLAMA_URL }}
+          MODEL: ${{ inputs.model }}
+          RUNS: ${{ inputs.runs }}
+          IMAGE: ${{ inputs.image }}
+          # The deployed timeout, so the latency gate judges the homelab's
+          # world; the harness also warns when the 5 s default would fail.
+          CFOP_TRIAGE_TIMEOUT_SECONDS: ${{ vars.TRIAGE_EVAL_TIMEOUT_SECONDS || '120' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$OLLAMA_URL" ]; then
+            echo "::error::no Ollama URL: pass ollama_url or set the TRIAGE_EVAL_OLLAMA_URL repo variable"
+            exit 1
+          fi
+          # The triage host sleeps; an unreachable Ollama is not a model result.
+          if ! curl -fsS -m 10 "$OLLAMA_URL/api/version" >/dev/null; then
+            echo "::error::Ollama at $OLLAMA_URL is unreachable (the triage host may be asleep). No model was scored."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/out"
+          docker pull "$IMAGE"
+          docker run --rm --network host \
+            -e CFOP_TRIAGE_TIMEOUT_SECONDS \
+            -v "$PWD/benchmarks:/app/benchmarks:ro" \
+            -v "$RUNNER_TEMP/out:/out" \
+            "$IMAGE" python benchmarks/triage_eval.py \
+              --model "$MODEL" --url "$OLLAMA_URL" --runs "$RUNS" \
+              --output /out/triage_eval.json
+
+      - name: Upload the result JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-eval-${{ inputs.model }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/out/triage_eval.json
+          if-no-files-found: ignore

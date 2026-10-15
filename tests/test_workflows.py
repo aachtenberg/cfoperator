@@ -272,12 +272,38 @@ def test_breaking_any_piece_of_the_fence_fails_it(mutate):
     assert fence_violations(doc, job), f"{mutate.__name__} went unnoticed"
 
 
+#: Triggers only a collaborator can fire. A self-hosted job may sit behind
+#: these without a main-only push trigger (CFOP-314: the manual triage eval).
+COLLABORATOR_ONLY_TRIGGERS = {"workflow_dispatch", "release"}
+
+
+def self_hosted_trigger_problems(doc, job_name) -> list:
+    """Why a self-hosted job outside the review fence is NOT safely triggered.
+    Empty means: no pull_request trigger, and either a push trigger pinned to
+    branches: [main] or nothing but collaborator-only triggers."""
+    problems = []
+    trig = triggers(doc)
+    if trig & {"pull_request", "pull_request_target"}:
+        problems.append(f"job {job_name!r} is self-hosted and a pull request can trigger it")
+    on = doc.get("on", doc.get(True, {}))
+    push = (on or {}).get("push") if isinstance(on, dict) else None
+    if "push" in trig:
+        if not (isinstance(push, dict) and push.get("branches") == ["main"]):
+            problems.append(f"job {job_name!r} is self-hosted but the workflow's push trigger is "
+                            f"{push!r}; want branches: [main]")
+    elif not trig <= COLLABORATOR_ONLY_TRIGGERS:
+        problems.append(f"job {job_name!r} is self-hosted behind {sorted(trig)}; without a main-only "
+                        f"push, only {sorted(COLLABORATOR_ONLY_TRIGGERS)} are allowed")
+    return problems
+
+
 def test_a_self_hosted_job_lives_only_in_a_main_push_workflow():
     """The inverse, pinned to what actually makes it safe: the workflow has
     no pull_request trigger AND its push trigger is branches: [main] — a bare
     `on: push` would run every branch anyone with write access pushes, and
     that is the whole fleet's deploy token. Tags and workflow_dispatch are
-    collaborator-only and stay allowed. The fenced review shape is the one
+    collaborator-only and stay allowed, on their own too (the manual triage
+    eval has no push trigger at all). The fenced review shape is the one
     other way onto the runner, judged by the test above."""
     for wf in WORKFLOWS:
         doc = yaml.safe_load(read(wf))
@@ -286,13 +312,26 @@ def test_a_self_hosted_job_lives_only_in_a_main_push_workflow():
                 continue
             if not fence_violations(doc, job):
                 continue
-            trig = triggers(doc)
-            assert not (trig & {"pull_request", "pull_request_target"}), (wf.name, name)
-            on = doc.get("on", doc.get(True, {}))
-            push = (on or {}).get("push") if isinstance(on, dict) else None
-            assert isinstance(push, dict) and push.get("branches") == ["main"], (
-                f"{wf.name} job {name!r} is self-hosted but the workflow's push trigger is "
-                f"{push!r}; want branches: [main]")
+            assert not self_hosted_trigger_problems(doc, name), (wf.name, self_hosted_trigger_problems(doc, name))
+
+
+@pytest.mark.parametrize("on, ok", [
+    ({"workflow_dispatch": {}}, True),
+    ({"workflow_dispatch": {}, "release": {"types": ["published"]}}, True),
+    ({"push": {"branches": ["main"]}}, True),
+    ({"push": {"branches": ["main"]}, "workflow_dispatch": {}}, True),
+    ("push", False),
+    ({"push": {}}, False),
+    ({"push": {"branches": ["main", "release/*"]}}, False),
+    ({"workflow_dispatch": {}, "pull_request": {}}, False),
+    ({"schedule": [{"cron": "0 3 * * *"}]}, False),
+    ({"workflow_dispatch": {}, "issue_comment": {}}, False),
+])
+def test_the_self_hosted_trigger_rule_on_each_shape(on, ok):
+    """Not vacuous: each trigger shape lands where the docstring says. A bare
+    `on: push`, an unpinned push, a PR, a schedule and a comment all fail."""
+    doc = {"on": on, "jobs": {"j": {"runs-on": ["self-hosted"]}}}
+    assert (not self_hosted_trigger_problems(doc, "j")) is ok, self_hosted_trigger_problems(doc, "j")
 
 
 def test_no_test_files_sit_at_the_repo_root():

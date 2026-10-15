@@ -1,5 +1,21 @@
 # Triage eval v2 — what the next version of the tests should cover
 
+> **Status (2026-10-15, CFOP-314).** Landed: Tier 0 contract tests
+> (`agent/test_triage_eval_contract.py`), which hold the harness to the bytes
+> `run_triage` sends — the harness now *calls* `CFOperator._triage_system_prompt()`
+> and `_triage_user_message()` and builds its body with `_ollama_chat_payload()`
+> instead of copying them; the Tier 3 `reason` and `confidence` graders; the
+> latency SLO against the configured `CFOP_TRIAGE_TIMEOUT_SECONDS`; `--runs`
+> defaulting to 36 with the power printed; a `gate` block in the result JSON
+> with a non-zero exit on failure; `--replay` to re-grade a committed result
+> without a model; and the manual `triage-eval.yml` job on the homelab runner.
+> Found on the way: after CFOP-313 framed the prompt, the old regex extraction
+> captured only its first line, so every run between 2026-10-09 and 2026-10-15
+> scored a one-line system prompt — exactly the drift Tier 0 exists to catch.
+> Still open, in the plan's own order: counterfactual pairs and new Tier 1
+> cases (each needs a rubric citation), Tier 4 shape variants, Tier 6 shadow
+> replay, `--baseline` diffs, and the live Modelfile check.
+
 **In plain terms:** the current triage test suite (`benchmarks/triage_eval.py`)
 is a good test of *whether the model picks the right action*. It is honest, it
 covers all four actions, and it caught real shortcuts in three candidate models.
