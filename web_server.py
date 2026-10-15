@@ -1345,8 +1345,8 @@ class WebServer:
             data = request.json
             message = data.get('message', '')
             history = data.get('history', [])
-            backend = data.get('backend', 'auto')
-            model = data.get('model')
+            backend = str(data.get('backend') or 'auto').strip().lower() or 'auto'
+            model = (str(data.get('model') or '').strip()) or None
             # The persisted transcript this turn belongs to. Absent for a
             # caller that has no session; the chat still runs, it just is
             # not written down (CFOP-125).
@@ -1354,6 +1354,23 @@ class WebServer:
 
             if not message:
                 return jsonify({'error': 'No message provided'}), 400
+
+            # The seat this turn runs on (CFOP-417). A payload that names a
+            # backend or model wins — the MCP server and other sessionless
+            # callers choose per call and are unchanged. Otherwise the
+            # session row's seat: the chat / handoff scope it was created
+            # on, or the chip's override for this one session. Otherwise
+            # 'auto', the global selection — which is also what a row from
+            # before the column existed resolves to. Best-effort: a row
+            # read that fails leaves the turn on the payload, not refused.
+            if backend == 'auto' and not model and session_id is not None:
+                try:
+                    row_llm = self.operator.kb.get_chat_session_llm(session_id) or {}
+                except Exception as e:
+                    logger.warning(f"Could not read the seat of chat session {session_id}: {e}")
+                    row_llm = {}
+                backend = str(row_llm.get('backend') or 'auto').strip().lower() or 'auto'
+                model = (str(row_llm.get('model') or '').strip()) or None
 
             # CFOP-124: who is asking, resolved HERE while request context
             # still exists — the chat runs in a thread where current_role()
@@ -1488,14 +1505,64 @@ class WebServer:
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
 
+        # The seat a new session starts on (CFOP-417): the 'chat' scope for a
+        # plain session, 'handoff' for an Ask-console row. Resolved once,
+        # here, through the CFOP-122 resolver and stored on the row, so a
+        # later change in Admin → LLM reaches new sessions and never moves a
+        # session already open. The row carries where the value came from
+        # so the chip can say so.
+        CHAT_SEATS = ('chat', 'handoff')
+
+        def _seat_llm(seat):
+            eff = self.operator._scope_llm(seat)
+            return {'seat': seat, 'backend': eff['backend'] or 'auto',
+                    'model': eff['model'] or '', 'source': eff['source']}
+
         @self.app.route('/api/chat-sessions', methods=['POST'])
         def create_chat_session():
+            data = request.json or {}
+            seat = str(data.get('seat') or 'chat').strip().lower()
+            if seat not in CHAT_SEATS:
+                return jsonify({'error': f'unknown seat: {seat}'}), 400
             try:
-                data = request.json or {}
-                session_id = self.operator.kb.create_chat_session(title=data.get('title'))
-                return jsonify({'id': session_id})
+                llm = _seat_llm(seat)
+                session_id = self.operator.kb.create_chat_session(title=data.get('title'), llm=llm)
+                return jsonify({'id': session_id, 'llm': llm})
             except Exception as e:
                 return jsonify({'error': str(e)}), 500
+
+        # The chip's per-session choice (CFOP-417). Admin-gated as the global
+        # writes it replaces were: a hosted model costs money. backend 'auto'
+        # with no model puts the session back on the seat it was created on,
+        # re-resolved now (the seat may have moved in Admin → LLM meanwhile,
+        # and "back to default" should mean today's default).
+        @self.app.route('/api/chat-sessions/<int:session_id>/llm', methods=['PUT'])
+        @require_role(ROLE_ADMIN)
+        def set_chat_session_llm(session_id):
+            data = request.get_json(silent=True) or {}
+            backend = str(data.get('backend') or 'auto').strip().lower() or 'auto'
+            model = str(data.get('model') or '').strip()
+            if backend not in ('auto', 'ollama', 'anthropic', *_openai_compat_providers()):
+                return jsonify({'error': f'Invalid backend: {backend}'}), 400
+            if len(model) > 200:
+                return jsonify({'error': 'model id too long'}), 400
+            try:
+                current = self.operator.kb.get_chat_session_llm(session_id) or {}
+                seat = current.get('seat') if current.get('seat') in CHAT_SEATS else 'chat'
+                if backend == 'auto' and not model:
+                    llm = _seat_llm(seat)
+                else:
+                    llm = {'seat': seat, 'backend': backend,
+                           'model': _normalize_model_id(backend, model) if model else '',
+                           'source': 'session'}
+                if not self.operator.kb.set_chat_session_llm(session_id, llm):
+                    return jsonify({'error': 'Session not found'}), 404
+            except Exception as e:
+                # Never a 200 for a write that did not happen (CFOP-122).
+                logger.warning(f"Could not persist the seat of chat session {session_id} (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
+            logger.info(f"Chat session {session_id} seat set from the console: {llm}")
+            return jsonify({'success': True, 'llm': llm})
 
         @self.app.route('/api/chat-sessions/<int:session_id>')
         def get_chat_session(session_id):

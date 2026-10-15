@@ -114,6 +114,27 @@
         .llm-chip-label.ready { color: var(--text-primary); }
         .llm-chip-caret { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
         .llm-chip:disabled .llm-chip-caret { display: none; }
+        /* The session is off the plain-chat seat (CFOP-417): a handed row,
+           or a chip override. Coloured so a frontier session is never a
+           surprise on the bill, and gone with the session. */
+        .llm-chip.session { border-color: var(--orange); }
+        .llm-chip-badge {
+            display: none; flex-shrink: 0;
+            background: var(--orange-dim); color: var(--orange);
+            border-radius: 999px; padding: 1px 7px; font-size: 10px;
+            text-transform: uppercase; letter-spacing: .04em;
+        }
+        .llm-chip.session .llm-chip-badge { display: inline-block; }
+        .llm-popover .llm-scope {
+            color: var(--text-secondary); font-size: 11px; margin: 0 0 10px; line-height: 1.4;
+        }
+        .llm-popover .llm-reset {
+            background: none; border: 1px solid var(--border); color: var(--text-secondary);
+            border-radius: var(--radius-sm); padding: 4px 8px; cursor: pointer;
+            font-family: 'JetBrains Mono', monospace; font-size: 11px; margin-top: 8px;
+        }
+        .llm-popover .llm-reset:hover { border-color: var(--text-secondary); color: var(--text-primary); }
+        .llm-popover .llm-reset[hidden] { display: none; }
 
         .llm-popover {
             position: absolute; top: calc(100% + 8px); left: 0; z-index: 40;
@@ -936,16 +957,20 @@
             </svg>
             CFOperator
         </div>
-        <!-- Current LLM readout + admin quick switch (CFOP-19).
-             Full OODA / pool / fallback stay at /admin?tab=llm (CFOP-15). -->
+        <!-- The LLM this chat SESSION runs on (CFOP-19, per session since
+             CFOP-417). A change here is stored on the session row and ends
+             with the session; the defaults — the chat and handed-rows seats,
+             the global selection — are set at /admin?tab=llm (CFOP-15/122). -->
         <div class="llm-switcher" id="llm-switcher">
             <button type="button" class="llm-chip" id="llm-chip"
                     aria-haspopup="dialog" aria-expanded="false" aria-controls="llm-popover"
                     disabled title="Loading LLM…">
                 <span class="llm-chip-label" id="llm-chip-label">…</span>
+                <span class="llm-chip-badge" id="llm-chip-badge"></span>
                 <span class="llm-chip-caret" aria-hidden="true">▾</span>
             </button>
-            <div class="llm-popover" id="llm-popover" role="dialog" aria-label="Select LLM" hidden>
+            <div class="llm-popover" id="llm-popover" role="dialog" aria-label="Select LLM for this session" hidden>
+                <p class="llm-scope" id="llm-scope">Applies to this chat session only.</p>
                 <div class="field">
                     <label for="llm-backend">Backend</label>
                     <select id="llm-backend"></select>
@@ -956,7 +981,8 @@
                     <input type="text" id="llm-model-custom" placeholder="model id" hidden autocomplete="off">
                 </div>
                 <p class="llm-err" id="llm-model-err"></p>
-                <a class="llm-more" href="/admin?tab=llm">More in Admin →</a>
+                <button type="button" class="llm-reset" id="llm-reset" hidden>Back to default</button>
+                <a class="llm-more" href="/admin?tab=llm">Defaults and seats in Admin →</a>
             </div>
         </div>
         <!-- Section nav, identity and logout — see ui/nav.js -->
@@ -1025,6 +1051,11 @@
     <script>
         let chatHistory = [];
         let chatSessionId = null;  // Current DB session ID
+        // The seat the current session runs on (CFOP-417): {seat, backend,
+        // model, source} as the server stored it on the session row. Sent
+        // with every turn, shown in the chip; never written to the global
+        // selection. null until a session exists.
+        let chatLlm = null;
         let inFlightChatId = null;  // chat_id of the in-flight /api/chat request, if any
 
         // Toggle the send button between "Send" and "Stop" depending on whether
@@ -1046,13 +1077,18 @@
         // Fire-and-forget by design: the chat works without a saved session, so
         // an ordinary page load swallows a failure here. Only a handoff (CFOP-109)
         // has something riding on the session existing, and it passes `fail`.
-        function createChatSession(then, fail) {
+        //
+        // `seat` is where the session starts (CFOP-417): 'chat' (the
+        // default) for a plain session, 'handoff' for an Ask-console row.
+        // The server resolves the seat and stores it on the row.
+        function createChatSession(then, fail, seat) {
             fetch('/api/chat-sessions', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({})
+                body: JSON.stringify({seat: seat || 'chat'})
             }).then(r => r.json()).then(data => {
                 if (data.id) {
                     chatSessionId = data.id;
+                    setChatLlm(data.llm || null);
                     localStorage.setItem('cfoperator_chat_session', chatSessionId);
                     loadChatSessions();
                     if (then) then();
@@ -1168,6 +1204,7 @@
                 const container = document.getElementById('chat-container');
                 container.innerHTML = '';
                 chatSessionId = data.id;
+                setChatLlm(data.llm || null);  // a reopened session keeps its seat
                 localStorage.setItem('cfoperator_chat_session', chatSessionId);
 
                 // Replay messages. Tool rows are drawn the way the live view
@@ -1437,8 +1474,6 @@
             if (!message) return;
             SENDING = true;
 
-            // Chat uses the server's selected_backend (backend: auto). Provider/
-            // model are set via the header chip (or Admin → LLM).
             addMessage('user', message);
             chatHistory.push({role: 'user', content: message});
             input.value = '';
@@ -1449,7 +1484,14 @@
             document.getElementById('thinking').classList.add('active');
             document.getElementById('chat-container').scrollTop = document.getElementById('chat-container').scrollHeight;
 
-            const payload = {message, history: chatHistory, backend: 'auto'};
+            // The session's seat rides on every turn (CFOP-417): what the
+            // server stored on the row when the session was created, or the
+            // chip's override for this session. Not the chip's DOM — the
+            // popover is a view of chatLlm, not the other way round. 'auto'
+            // with no model is the global selection, as before.
+            const payload = {message, history: chatHistory,
+                             backend: (chatLlm && chatLlm.backend) || 'auto'};
+            if (chatLlm && chatLlm.model) payload.model = chatLlm.model;
             // The worker writes tool rows and the assistant reply against this
             // session as they happen (CFOP-125). Without it a closed tab loses
             // the turn: nothing server-side knew which transcript to append to.
@@ -1881,9 +1923,19 @@
         loadSweepReports();
         setInterval(loadSweepReports, 60000);
 
-        /* ── LLM chip / quick switcher (CFOP-19) ── */
+        /* ── LLM chip / quick switcher (CFOP-19; per session since CFOP-417) ──
+           The chip shows the seat THIS SESSION runs on and the popover changes
+           it for this session only (PUT /api/chat-sessions/<id>/llm). It never
+           writes the global selection: that, and the chat / handed-rows seats
+           a new session starts on, live in Admin → LLM. The failure this
+           replaces: switch to a frontier for one question, forget, and every
+           later chat pays for it. */
         let llmIsAdmin = false;
         let llmPopoverOpen = false;
+        // The global selection (/api/settings/provider): what a seat of
+        // 'auto' with no model resolves to, shown so the chip never says
+        // just "auto".
+        let llmDefault = {backend: 'auto', model: ''};
 
         function llmLabelText(backend, model) {
             const b = backend || 'auto';
@@ -1891,14 +1943,38 @@
             return model ? (b + ' · ' + model) : b;
         }
 
-        function setLlmChip(backend, model) {
+        // Off the plain-chat seat: a handed row, or a chip override. Both
+        // get the badge — both are "a model other than the default".
+        function llmSessionIsOverride(llm) {
+            return !!(llm && (llm.source === 'session' || (llm.seat && llm.seat !== 'chat')));
+        }
+
+        function llmBadgeText(llm) {
+            if (!llm) return '';
+            if (llm.source === 'session') return 'this session';
+            if (llm.seat === 'handoff') return 'handed row';
+            return '';
+        }
+
+        function setChatLlm(llm) {
+            chatLlm = llm;
+            renderLlmChip();
+        }
+
+        function renderLlmChip() {
             const label = document.getElementById('llm-chip-label');
             const chip = document.getElementById('llm-chip');
+            const badge = document.getElementById('llm-chip-badge');
+            const llm = chatLlm || {backend: 'auto', model: ''};
+            let backend = llm.backend || 'auto', model = llm.model || '';
+            if (backend === 'auto' && !model) { backend = llmDefault.backend; model = llmDefault.model; }
             label.textContent = llmLabelText(backend, model);
             label.classList.add('ready');
-            chip.title = llmIsAdmin
-                ? 'Change LLM provider / model'
-                : 'Current LLM (admin required to change)';
+            const override = llmSessionIsOverride(chatLlm);
+            chip.classList.toggle('session', override);
+            badge.textContent = llmBadgeText(chatLlm);
+            chip.title = 'This session: ' + label.textContent
+                + (llmIsAdmin ? ' — change for this session' : ' (admin required to change)');
             chip.disabled = !llmIsAdmin;
         }
 
@@ -1952,7 +2028,9 @@
             }
         }
 
-        function fetchModels(backend) {
+        // `preferred` is the session's own model when it has one; otherwise
+        // the backend's selected model, which is what the server will run.
+        function fetchModels(backend, preferred) {
             const sel = document.getElementById('llm-model');
             const custom = document.getElementById('llm-model-custom');
             const err = document.getElementById('llm-model-err');
@@ -1974,13 +2052,13 @@
                 .then(r => r.json().then(data => ({ok: r.ok, data})))
                 .then(({ok, data}) => {
                     const models = (data && data.models) || [];
-                    const selected = (data && data.selected) || '';
+                    const selected = preferred || (data && data.selected) || '';
                     const msg = (!ok || !models.length)
                         ? ((data && data.error) || (!ok ? 'failed to load models' : ''))
                         : '';
                     setModelUi(models, selected, msg);
                 })
-                .catch(() => setModelUi([], '', 'failed to load models'));
+                .catch(() => setModelUi([], preferred || '', 'failed to load models'));
         }
 
         function loadLlmProviders(selectedBackend) {
@@ -2003,14 +2081,15 @@
                 .catch(() => {});
         }
 
+        // The global selection, read for the label only. Nothing on this
+        // page writes it.
         function refreshLlmChip() {
             return fetch('/api/settings/provider')
                 .then(r => r.json())
                 .then(data => {
-                    const backend = data.backend || 'auto';
-                    const model = data.model || '';
-                    setLlmChip(backend, model);
-                    return {backend, model};
+                    llmDefault = {backend: data.backend || 'auto', model: data.model || ''};
+                    renderLlmChip();
+                    return llmDefault;
                 })
                 .catch(() => {
                     document.getElementById('llm-chip-label').textContent = 'LLM?';
@@ -2018,40 +2097,61 @@
                 });
         }
 
+        function llmScopeText(llm) {
+            if (llm && llm.source === 'session') return 'Set for this chat session only; a new chat starts from the default.';
+            if (llm && llm.seat === 'handoff') return 'This session started on the handed-rows seat (Admin → LLM). Changes apply to this session only.';
+            return 'Applies to this chat session only. A new chat starts from the default.';
+        }
+
+        // Draw the popover from chatLlm: the row is the truth, the selects
+        // are a view of it. Also the re-sync after a failed save.
+        function syncLlmPopover() {
+            const llm = chatLlm || {};
+            const backend = llm.backend || 'auto';
+            document.getElementById('llm-scope').textContent = llmScopeText(chatLlm);
+            document.getElementById('llm-reset').hidden = !(chatLlm && chatLlm.source === 'session');
+            return loadLlmProviders(backend).then(() => fetchModels(backend, llm.model || ''));
+        }
+
         function openLlmPopover() {
             if (!llmIsAdmin) return;
             setLlmPopoverOpen(true);
-            refreshLlmChip().then(cur => {
-                const backend = (cur && cur.backend) || 'auto';
-                return loadLlmProviders(backend)
-                    .then(() => fetchModels(backend))
-                    .then(() => { if (llmPopoverOpen) focusLlmPopover(); });
+            syncLlmPopover().then(() => { if (llmPopoverOpen) focusLlmPopover(); });
+        }
+
+        // The one write the chip makes: this session's row. Resolves to
+        // whether it was saved; the error text stays in the popover.
+        function putSessionLlm(body, failMsg) {
+            if (!chatSessionId) {
+                setLlmErr('no chat session yet — reload the page');
+                return Promise.resolve(false);
+            }
+            return fetch(`/api/chat-sessions/${chatSessionId}/llm`, {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(body)
+            }).then(r => r.json().then(data => ({ok: r.ok, data})).catch(() => ({ok: r.ok, data: null})))
+              .then(({ok, data}) => {
+                if (!ok) {
+                    setLlmErr((data && data.error) || failMsg);
+                    return syncLlmPopover().then(() => false);
+                }
+                setChatLlm(data.llm || null);
+                document.getElementById('llm-scope').textContent = llmScopeText(chatLlm);
+                document.getElementById('llm-reset').hidden = !(chatLlm && chatLlm.source === 'session');
+                return true;
+            }).catch(() => {
+                setLlmErr(failMsg);
+                return syncLlmPopover().then(() => false);
             });
         }
 
         function onLlmBackendChange() {
             const backend = document.getElementById('llm-backend').value;
             setLlmErr('');
-            fetch('/api/settings/provider', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({backend})
-            }).then(r => r.json().then(data => ({ok: r.ok, data})).catch(() => ({ok: r.ok, data: null})))
-              .then(({ok, data}) => {
-                if (!ok) {
-                    setLlmErr((data && data.error) || 'failed to save provider');
-                    // Re-sync selects + chip with whatever the server still has.
-                    return refreshLlmChip().then(cur => {
-                        const b = (cur && cur.backend) || 'auto';
-                        return loadLlmProviders(b).then(() => fetchModels(b));
-                    });
-                }
-                return fetchModels(backend).then(() => refreshLlmChip());
-            }).catch(() => {
-                setLlmErr('failed to save provider');
-                return refreshLlmChip().then(cur => {
-                    const b = (cur && cur.backend) || 'auto';
-                    return loadLlmProviders(b).then(() => fetchModels(b));
-                });
+            // Backend alone: that backend's selected model, resolved by the
+            // server at chat time. 'auto' puts the session back on its seat.
+            putSessionLlm({backend}, 'failed to save provider for this session').then(ok => {
+                if (ok) return fetchModels(backend, chatLlm && chatLlm.model);
             });
         }
 
@@ -2059,27 +2159,7 @@
             const backend = document.getElementById('llm-backend').value;
             if (!model || backend === 'auto') return;
             setLlmErr('');
-            fetch('/api/models/' + encodeURIComponent(backend) + '/select', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({model})
-            }).then(r => r.json().then(data => ({ok: r.ok, data})).catch(() => ({ok: r.ok, data: null})))
-              .then(({ok, data}) => {
-                if (ok) {
-                    setLlmChip(backend, model);
-                    return;
-                }
-                setLlmErr((data && data.error) || 'failed to save model');
-                return refreshLlmChip().then(cur => {
-                    const b = (cur && cur.backend) || backend;
-                    return fetchModels(b);
-                });
-            }).catch(() => {
-                setLlmErr('failed to save model');
-                return refreshLlmChip().then(cur => {
-                    const b = (cur && cur.backend) || backend;
-                    return fetchModels(b);
-                });
-            });
+            putSessionLlm({backend, model}, 'failed to save model for this session');
         }
 
         function onLlmModelChange() {
@@ -2088,6 +2168,13 @@
 
         function onLlmModelCustomChange() {
             commitLlmModel(document.getElementById('llm-model-custom').value.trim());
+        }
+
+        function resetSessionLlm() {
+            setLlmErr('');
+            putSessionLlm({backend: 'auto'}, 'failed to reset this session').then(ok => {
+                if (ok) return syncLlmPopover();
+            });
         }
 
         document.getElementById('llm-chip').addEventListener('click', (e) => {
@@ -2099,6 +2186,7 @@
         document.getElementById('llm-backend').addEventListener('change', onLlmBackendChange);
         document.getElementById('llm-model').addEventListener('change', onLlmModelChange);
         document.getElementById('llm-model-custom').addEventListener('change', onLlmModelCustomChange);
+        document.getElementById('llm-reset').addEventListener('click', resetSessionLlm);
         document.addEventListener('click', (e) => {
             if (!llmPopoverOpen) return;
             if (!document.getElementById('llm-switcher').contains(e.target)) {
@@ -2134,14 +2222,19 @@
         if (handedRemediation === null && handedInvestigation === null) restoreDraft();
         // Restore or create chat session
         const savedSession = localStorage.getItem('cfoperator_chat_session');
+        // A handed row starts on the handed-rows seat (CFOP-417): the
+        // operator points that seat at a frontier model once, in Admin →
+        // LLM, instead of switching the chip for every Ask console.
         if (handedRemediation !== null) {
             createChatSession(
                 () => askAboutRemediation(handedRemediation),
-                () => toast(`could not start a chat session for remediation #${handedRemediation} — reload to retry`, 'err'));
+                () => toast(`could not start a chat session for remediation #${handedRemediation} — reload to retry`, 'err'),
+                'handoff');
         } else if (handedInvestigation !== null) {
             createChatSession(
                 () => askAboutInvestigation(handedInvestigation),
-                () => toast(`could not start a chat session for investigation #${handedInvestigation} — reload to retry`, 'err'));
+                () => toast(`could not start a chat session for investigation #${handedInvestigation} — reload to retry`, 'err'),
+                'handoff');
         } else if (savedSession) {
             chatSessionId = parseInt(savedSession);
             // Verify session still exists, load it
@@ -2149,6 +2242,9 @@
                 if (r.ok) return r.json();
                 throw new Error('gone');
             }).then(data => {
+                // The seat first, so the chip is right even for a session
+                // with nothing in it yet (loadChatSession sets it again).
+                setChatLlm(data.llm || null);
                 if (data.messages && data.messages.length > 0) {
                     loadChatSession(chatSessionId);
                 }

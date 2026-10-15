@@ -291,11 +291,15 @@
   <div class="divider">Models per scope</div>
   <div class="section">
     <p class="muted" style="margin:8px 0 12px">
-      Which model each unattended path runs, and where that choice comes from.
+      Which model each path runs, and where that choice comes from.
       A row set here is stored in the database and wins over <code>config.yaml</code>;
       reset hands it back. Blank backend means "auto": whatever the chain resolves.
-      The judge rows cannot go below their floor. Executor Jobs and the deep tier
-      read their env, so they are shown, not set, here.
+      The two chat rows are where a console session <em>starts</em>: a plain chat on
+      <em>Chat</em>, an Ask-console row on <em>Handed rows</em> (point it at a frontier
+      model once, and every handed row gets it). The chip in the console then changes
+      one session only, never these defaults. The judge rows cannot go below their
+      floor. Executor Jobs and the deep tier read their env, so they are shown, not
+      set, here.
     </p>
     <div class="card" id="scopes-card"><div class="muted">Loading…</div></div>
   </div>

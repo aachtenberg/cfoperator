@@ -1423,6 +1423,11 @@ class ChatSession(Base):
     title = Column(String(255), nullable=True)  # Auto-generated from first user message
     messages = Column(JSONB, nullable=False, default=list)  # [{role, content, backend?, model?, ts}]
     message_count = Column(Integer, nullable=False, default=0)
+    # The seat this session runs on (CFOP-417): {seat, backend, model, source}.
+    # Resolved once at creation from the chat / handoff scope, overridden by
+    # the console chip for this session only. NULL on rows from before the
+    # column existed, which the chat route reads as 'auto'.
+    llm = Column(JSONB, nullable=True)
 
     __table_args__ = (
         Index('idx_chat_created', 'created_at', postgresql_using='btree', postgresql_ops={'created_at': 'DESC'}),
@@ -1604,6 +1609,9 @@ class KnowledgeBase:
         # read of Investigation selects alert_id — so this must succeed before
         # the first one, or report failure so ResilientKB retries.
         alert_col_ok = self._ensure_investigation_alert_id_column()
+        # Same shape: chat_sessions.llm (CFOP-417) is selected by every ORM
+        # read of ChatSession, so a database from before it must grow it.
+        llm_col_ok = self._ensure_chat_session_llm_column()
         # Widen investigations.outcome CHECK if the vocabulary grew since this
         # database was created (create_all never alters an existing table)
         outcome_ok = self._ensure_outcome_constraint()
@@ -1617,8 +1625,8 @@ class KnowledgeBase:
         _log("info", "Knowledge base schema initialized",
              outcome_constraint_ok=outcome_ok, remediation_class_constraint_ok=class_ok,
              remediation_status_constraint_ok=status_ok, event_type_constraint_ok=event_ok,
-             alert_id_column_ok=alert_col_ok)
-        return outcome_ok and class_ok and status_ok and event_ok and alert_col_ok
+             alert_id_column_ok=alert_col_ok, chat_llm_column_ok=llm_col_ok)
+        return outcome_ok and class_ok and status_ok and event_ok and alert_col_ok and llm_col_ok
 
     def _ensure_investigation_alert_id_column(self) -> bool:
         """Add investigations.alert_id to a database created before CFOP-216.
@@ -1644,6 +1652,32 @@ class KnowledgeBase:
             return True
         except Exception as e:
             _log("error", "Could not add investigations.alert_id; investigation reads will fail "
+                          "until it exists", error=str(e))
+            return False
+
+    def _ensure_chat_session_llm_column(self) -> bool:
+        """Add chat_sessions.llm to a database created before CFOP-417.
+
+        Nullable JSONB with no default: a catalog change, not a rewrite, like
+        investigations.alert_id above. Checked first for the same reason —
+        even a no-op ALTER takes an ACCESS EXCLUSIVE lock on every start.
+        """
+        try:
+            with self.session_scope() as session:
+                present = session.execute(text("""
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'chat_sessions' AND column_name = 'llm'
+                """)).fetchone()
+                if present:
+                    return True
+                _log("info", "Adding chat_sessions.llm")
+                session.execute(text(
+                    "ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS llm JSONB"
+                ))
+            return True
+        except Exception as e:
+            _log("error", "Could not add chat_sessions.llm; chat session reads will fail "
                           "until it exists", error=str(e))
             return False
 
@@ -2362,13 +2396,40 @@ class KnowledgeBase:
 
     # ── Chat Sessions ──────────────────────────────────────────────────────
 
-    def create_chat_session(self, title: Optional[str] = None) -> int:
-        """Create a new chat session, return its ID."""
+    def create_chat_session(self, title: Optional[str] = None,
+                            llm: Optional[Dict[str, Any]] = None) -> int:
+        """Create a new chat session, return its ID.
+
+        ``llm`` is the seat the session starts on (CFOP-417):
+        ``{seat, backend, model, source}``, resolved by the caller from the
+        chat / handoff scope. Stored as given; None leaves the row on 'auto'.
+        """
         with self.session_scope() as session:
-            chat = ChatSession(title=title, messages=[], message_count=0)
+            chat = ChatSession(title=title, messages=[], message_count=0, llm=llm or None)
             session.add(chat)
             session.flush()
             return chat.id
+
+    def set_chat_session_llm(self, session_id: int, llm: Optional[Dict[str, Any]]) -> bool:
+        """Replace the seat a session runs on (the console chip, CFOP-417).
+        False when the session does not exist."""
+        with self.session_scope() as session:
+            chat = session.query(ChatSession).filter(ChatSession.id == session_id).first()
+            if not chat:
+                return False
+            chat.llm = dict(llm) if llm else None
+            chat.updated_at = datetime.now(timezone.utc)
+            return True
+
+    def get_chat_session_llm(self, session_id: int) -> Optional[Dict[str, Any]]:
+        """The seat a session runs on, or None (no row, or a pre-CFOP-417 row).
+        One column, not the whole transcript: the chat route reads this on
+        every turn."""
+        with self.session_scope() as session:
+            row = session.query(ChatSession.llm).filter(ChatSession.id == session_id).first()
+            if not row or not row[0]:
+                return None
+            return dict(row[0])
 
     def append_chat_message(self, session_id: int, role: str, content: str,
                             backend: str = '', model: str = '',
@@ -2416,6 +2477,7 @@ class KnowledgeBase:
                 'title': chat.title,
                 'messages': chat.messages,
                 'message_count': chat.message_count,
+                'llm': chat.llm,
             }
 
     def list_chat_sessions(self, limit: int = 30) -> List[Dict[str, Any]]:
@@ -2430,6 +2492,7 @@ class KnowledgeBase:
                 'updated_at': c.updated_at.isoformat(),
                 'title': c.title,
                 'message_count': c.message_count,
+                'llm': c.llm,
             } for c in chats]
 
     def delete_chat_session(self, session_id: int) -> bool:

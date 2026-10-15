@@ -1,9 +1,12 @@
-"""Guards for the console LLM chip / quick switcher (CFOP-19).
+"""Guards for the console LLM chip / quick switcher (CFOP-19, CFOP-417).
 
 CFOP-15 moved full LLM/OODA/pool controls into Admin. The console keeps a
-compact readout + admin popover that posts the same settings APIs. These
-tests pin the wiring so a future edit cannot silently drop the chip, send
-a per-chat backend again, or hollow out the Admin LLM tab.
+compact readout + admin popover. Since CFOP-417 the chip is PER SESSION: it
+shows the seat the current chat session runs on and writes that session's
+row, never the global selection (``/api/settings/provider``,
+``/api/models/<b>/select``), which is Admin → LLM's alone. These tests pin
+the wiring so a future edit cannot silently drop the chip, hand it the
+global writes back, or hollow out the Admin LLM tab.
 """
 
 from repo_paths import REPO_ROOT
@@ -25,15 +28,27 @@ def test_console_mounts_llm_switcher():
     assert "/admin?tab=llm" in html
 
 
-def test_console_chat_still_uses_server_selected_backend():
-    """Chat must not reintroduce a per-request backend from the chip."""
+def test_the_chip_never_writes_the_global_selection():
+    """The regression CFOP-417 fixed: the chip wrote ``selected_backend``,
+    so one frontier question re-pointed every later chat. The page may READ
+    the global selection (for the label) and must not POST it; the one write
+    the chip makes is the session row's seat."""
     html = INDEX.read_text(encoding="utf-8")
-    start = html.index("function sendMessage(")
-    end = html.index("function stopChat()", start)
-    body = html[start:end]
-    assert "backend: 'auto'" in body
-    assert "llm-backend" not in body
-    assert "getElementById('llm-model')" not in body
+    script = html[html.index("<script>"):]
+    assert "/api/chat-sessions/${chatSessionId}/llm" in script
+    assert "/select'" not in script, "the chip selects a model globally again"
+    # The global endpoint appears only as a read.
+    for idx in _indexes(script, "/api/settings/provider"):
+        window = script[idx:idx + 200]
+        assert "method: 'POST'" not in window and "method: 'PUT'" not in window, window
+
+
+def _indexes(text, needle):
+    out, idx = [], text.find(needle)
+    while idx >= 0:
+        out.append(idx)
+        idx = text.find(needle, idx + 1)
+    return out
 
 
 def test_admin_still_owns_full_llm_tab():

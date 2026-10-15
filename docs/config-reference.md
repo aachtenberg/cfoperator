@@ -259,7 +259,13 @@ llm:
   # Models per scope (CFOP-122). Each unattended path can run on its own
   # (backend, model) instead of riding the chat default: `sweep` (the
   # scheduled sweep phases), `summary` (the morning summary), `classifier`
-  # (the one-shot remediation classifier). Either key may be omitted —
+  # (the one-shot remediation classifier). Two more are where a console
+  # chat SESSION starts (CFOP-417): `chat` for a plain session, `handoff`
+  # for an Ask-console session opened from a remediation or investigation
+  # row — point `handoff` at a frontier model and every handed row gets it,
+  # while plain chat stays on the cheap default. The seat is resolved when
+  # the session is created and stored on it; the console chip then changes
+  # that one session only. Either key may be omitted —
   # backend alone means that backend's selected model, model alone means
   # the chain picks the backend. Absent entirely = 'auto', what the chain
   # resolves. Admin → LLM "Models per scope" overrides any of these live
@@ -272,6 +278,9 @@ llm:
   #     model: gemma4:26b
   #   classifier:
   #     backend: groq
+  #   handoff:
+  #     backend: anthropic
+  #     model: claude-opus-5-5
 
   # Ollama host for triage, when it should NOT be llm.primary.url. Optional;
   # absent means "use the primary host". Lets the triage model run on a
