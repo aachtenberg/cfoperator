@@ -49,6 +49,11 @@
   .chip:hover { border-color:var(--text-secondary); }
   .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .chip.active { background:var(--accent-dim); border-color:var(--accent); color:#fff; }
+  /* The search box reads as a chip: same surface, same size (as on /events). */
+  .bar { padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .bar input { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:var(--radius-sm); padding:5px 10px; font-size:13px; min-width:260px; }
+  .bar input:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
   a.chip { text-decoration:none; }
   /* The handoff command (CFOP-109). user-select:all so a double-click takes the whole line. */
   .cmd { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:6px;
@@ -135,10 +140,15 @@
 </div>
 <div class="tiles" id="tiles"></div>
 <div class="filters" id="filters"></div>
+<div class="bar">
+  <input type="search" id="f-q" aria-label="Search remediations" placeholder="search recommendation, host, class, status, model, #id" oninput="searchInput(this.value)">
+</div>
+<!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
+     The three tables carry the same header set and share the one sort. -->
 <table>
   <thead><tr>
-    <th>ID</th><th>Status</th><th>Class</th><th>Risk</th><th>Conf</th>
-    <th>Host</th><th>LLM</th><th>Recommendation</th><th>Age</th><th>PR</th>
+    <th data-sort="id">ID</th><th data-sort="status">Status</th><th data-sort="class">Class</th><th data-sort="risk">Risk</th><th data-sort="conf">Conf</th>
+    <th data-sort="host">Host</th><th data-sort="llm">LLM</th><th data-sort="rec">Recommendation</th><th data-sort="created">Created</th><th>PR</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
@@ -149,8 +159,8 @@
   <div class="divider">Filed to tracker <span id="filed-count" class="muted"></span></div>
   <table>
     <thead><tr>
-      <th>ID</th><th>Status</th><th>Class</th><th>Risk</th><th>Conf</th>
-      <th>Host</th><th>LLM</th><th>Recommendation</th><th>Age</th><th>PR</th>
+      <th data-sort="id">ID</th><th data-sort="status">Status</th><th data-sort="class">Class</th><th data-sort="risk">Risk</th><th data-sort="conf">Conf</th>
+      <th data-sort="host">Host</th><th data-sort="llm">LLM</th><th data-sort="rec">Recommendation</th><th data-sort="created">Created</th><th>PR</th>
     </tr></thead>
     <tbody id="rows-filed"></tbody>
   </table>
@@ -160,8 +170,8 @@
   <div class="divider">Closed <span id="done-count" class="muted"></span></div>
   <table>
     <thead><tr>
-      <th>ID</th><th>Status</th><th>Class</th><th>Risk</th><th>Conf</th>
-      <th>Host</th><th>LLM</th><th>Recommendation</th><th>Age</th><th>PR</th>
+      <th data-sort="id">ID</th><th data-sort="status">Status</th><th data-sort="class">Class</th><th data-sort="risk">Risk</th><th data-sort="conf">Conf</th>
+      <th data-sort="host">Host</th><th data-sort="llm">LLM</th><th data-sort="rec">Recommendation</th><th data-sort="created">Created</th><th>PR</th>
     </tr></thead>
     <tbody id="rows-done"></tbody>
   </table>
@@ -172,7 +182,7 @@
 <div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
-<!-- esc/badge/color/age/toast/trapFocus — one copy, see ui/common.js. Not deferred:
+<!-- esc/badge/color/fmtTs/listKit/toast/trapFocus — one copy, see ui/common.js. Not deferred:
      the script below calls them at top level. -->
 <script src="/common.js"></script>
 <script>
@@ -183,7 +193,7 @@ const SC = {queued:'--cyan',claimed:'--orange',executing:'--orange','pr-open':'-
   // noted, not asking for attention; the orange of needs-human is what it left.
   filed:'--text-secondary'};
 const RC = {low:'--accent',med:'--orange',high:'--red'};
-let filter = '';
+let filter = '', Q = '';
 
 // Remediation payloads carry LLM-authored URLs; only http(s) reaches href so a
 // javascript: link cannot execute in the console. Empty/null must return '' —
@@ -195,6 +205,19 @@ function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
 function clearForm(){ const f=document.getElementById('actionform'); if(f) f.innerHTML=''; }
 
 let ALL = [];
+// Sortable headers and the search box (CFOP-412): one kit in common.js, the
+// page supplies what each column sorts by. Risk sorts by rank, not alphabet.
+// All three tables run through KIT.sort in render(), so the order holds
+// across the poll's repaint; a header click only paints again.
+const RISK_RANK = {low:1, med:2, medium:2, high:3};
+const KIT = listKit({page:'remediations', initial:{key:'created',dir:'desc'},
+  dir:{id:'desc',created:'desc',conf:'desc',risk:'desc'},
+  keys:{id:r=>r.id, status:r=>r.status, class:r=>r.remediation_class,
+    risk:r=>RISK_RANK[String(r.risk||'').toLowerCase()]||null,
+    conf:r=>r.confidence==null?null:Number(r.confidence), host:r=>r.host_id,
+    llm:r=>(r.payload||{}).provider, rec:r=>{ const p=r.payload||{}; return p.recommendation||p.title||''; },
+    created:r=>tsKey(r.created_at)},
+  onChange:()=>paint()});
 // A poll that brought nothing new does not rebuild the tables (CFOP-95). Both
 // were replaced by innerHTML every 15 s regardless, which shifted rows under
 // the pointer and dropped focus mid-Tab for no reason. The signature is every
@@ -223,7 +246,14 @@ async function load(){
   if(sig !== LAST_SIG){ LAST_SIG = sig; paint(); } else refreshAges();
   document.getElementById('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
 }
-function paint(){ tiles(ALL); render(filter ? ALL.filter(r=>r.status===filter) : ALL); }
+function paint(){
+  tiles(ALL);
+  let rows = filter ? ALL.filter(r=>r.status===filter) : ALL;
+  if(Q) rows = rows.filter(r=>{ const p=r.payload||{};
+    return textMatch(Q, ['#'+r.id, r.status, r.remediation_class, r.risk, r.host_id, p.provider,
+      p.recommendation, p.title, r.tracker_key, r.pr_url, r.named_pr_url]); });
+  render(KIT.sort(rows));
+}
 
 function tiles(rows){
   const c = {}; STATUS.forEach(s=>c[s]=0); rows.forEach(r=>c[r.status]=(c[r.status]||0)+1);
@@ -288,7 +318,7 @@ function rowHtml(r){
     <td>${esc(r.host_id)}</td>
     <td>${llm}</td>
     <td class="rec">${esc(String(rec).slice(0,160))}</td>
-    <td class="muted" data-age="${esc(r.created_at||'')}">${age(r.created_at)}</td>
+    <td class="muted">${fmtTs(r.created_at)}</td>
     <td>${prCell}</td></tr>`;
 }
 // Three buckets (CFOP-170): active, filed, closed. A filed row was handed to
@@ -386,7 +416,7 @@ async function detail(id){
     ${absorbedHtml(p.absorbed)}
     <div class="kv"><b>source investigation</b> ${r.investigation_id?('#'+r.investigation_id):'—'}</div>
     ${attachBlock(r)}
-    <div class="kv"><b>created</b> ${esc(r.created_at)} · <b>attempts</b> ${r.attempts}</div>
+    <div class="kv"><b>created</b> ${fmtTs(r.created_at,{seconds:true})} · <b>attempts</b> ${r.attempts}</div>
     ${safeUrl(r.pr_url)?`<div class="kv"><b>PR</b> <a href="${esc(safeUrl(r.pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.pr_url)}</a></div>`
       :safeUrl(r.named_pr_url)?`<div class="kv"><b>PR named</b> <a href="${esc(safeUrl(r.named_pr_url))}" target="_blank" rel="noopener noreferrer">${esc(r.named_pr_url)}</a> <span class="muted">not tracked by this row</span></div>`:''}
     ${prAttemptHtml(p.pr_attempt)}
@@ -536,7 +566,7 @@ function trackerHtml(r){
   const key=r.tracker_key||t.key||'';
   return `<div class="kv"><b>tracker</b> `+
     (href?`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(key||href)}</a>`:esc(key||'—'))+
-    (t.synced_status?` <span class="muted">· synced ${esc(t.synced_status)}${t.synced_at?' at '+esc(t.synced_at):''}</span>`:'')+
+    (t.synced_status?` <span class="muted">· synced ${esc(t.synced_status)}${t.synced_at?' at '+fmtTs(t.synced_at,{seconds:true}):''}</span>`:'')+
     (t.error?`<br><span style="color:var(--orange)">last tracker error: ${esc(t.error)}${t.error_count?' ('+Number(t.error_count)+'×)':''}</span>`:'')+
     `</div>`;
 }
@@ -552,11 +582,13 @@ function resolutionHtml(r){
   if(r.status!=='resolved' && !note) return '';
   const who = res.resolved_by || (res.pr_merged ? 'PR merge' : '');
   return `<div class="kv"><b>resolved</b>` + (who?` by ${esc(who)}`:'') +
-    (r.completed_at?` · ${esc(r.completed_at)}`:'') +
+    (r.completed_at?` · ${fmtTs(r.completed_at,{seconds:true,sameDayAs:r.created_at})}`:'') +
     (note?`<br><span class="muted">${esc(note)}</span>`:'') + `</div>`;
 }
 
 function setFilter(s){ filter=s; paint(); }
+// The search narrows the rows the page already holds (the chips' set), per keystroke.
+function searchInput(v){ Q=String(v||'').trim(); paint(); }
 
 // ---- pipeline flags + run-feed ----
 const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify',queue_tracker:'tracker',queue_reverify:'re-verify',node_action_enabled:'node-action'};

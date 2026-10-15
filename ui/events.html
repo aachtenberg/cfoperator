@@ -108,8 +108,10 @@
   <select id="f-window" aria-label="Time window" onchange="setFilter('window', this.value)"></select>
   <input type="search" id="f-q" aria-label="Search alerts" placeholder="search summary, resource, alert id" oninput="searchInput(this.value)">
 </div>
+<!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit.
+     The sort is over the rows loaded so far (the server pages newest first). -->
 <table>
-  <thead><tr><th>When</th><th>Source</th><th>Severity</th><th>Alert</th><th>Decision</th><th>LLM</th><th>Status</th><th>Investigation</th></tr></thead>
+  <thead><tr><th data-sort="when">Latest</th><th data-sort="source">Source</th><th data-sort="severity">Severity</th><th data-sort="alert">Alert</th><th data-sort="decision">Decision</th><th data-sort="llm">LLM</th><th data-sort="status">Status</th><th data-sort="investigation">Investigation</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" class="empty" hidden>No alerts match these filters.</div>
@@ -120,7 +122,7 @@
 <div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
-<!-- esc/badge/age/toast/trapFocus/copyIcon — one copy, see ui/common.js. Not deferred:
+<!-- esc/badge/fmtTs/listKit/toast/trapFocus/copyIcon — one copy, see ui/common.js. Not deferred:
      the script below calls them at top level. -->
 <script src="/common.js"></script>
 <script>
@@ -159,6 +161,19 @@ const REASONS={
 // is a view you can paste and a reload comes back to (the CFOP-73 pattern).
 const F={status:'',action:'',source:'',severity:'',window:'',q:''};
 let ROWS=[], CURSOR=null, LAST_SIG=null, SEEN_SOURCES=new Set(KNOWN_SOURCES), PAUSED=false;
+
+// Sortable headers (CFOP-412): one kit in common.js, the page supplies what
+// each column sorts by. Severity sorts by rank, not alphabet. The sort is
+// over the rows loaded so far: the server pages newest first and the default
+// keeps that, so nothing changes until a header is clicked. The search box
+// is the server's (q in the query string), not the kit's.
+const SEV_RANK={critical:3,warning:2,info:1};
+const KIT=listKit({page:'events', initial:{key:'when',dir:'desc'},
+  dir:{when:'desc',severity:'desc',investigation:'desc'},
+  keys:{when:r=>tsKey(r.latest_event_at), source:r=>r.source, severity:r=>SEV_RANK[r.severity]||null,
+    alert:r=>r.summary, decision:r=>r.action, llm:r=>{ const s=llmStamps(r); return s.investigated||s.triaged||null; },
+    status:r=>r.status, investigation:r=>investigationOf(r)},
+  onChange:()=>paint()});
 
 function parseQuery(search){
   const out={};
@@ -312,11 +327,11 @@ function paint(){
   // The alert id reaches the handler through data-id, never through the
   // inline JS: ids come from alert sources, and a quote in one must not be
   // able to become script.
-  document.getElementById('rows').innerHTML=ROWS.map(r=>{
+  document.getElementById('rows').innerHTML=KIT.sort(ROWS).map(r=>{
     const inv=investigationOf(r), res=resource(r);
     return `
     <tr id="row-${esc(r.alert_id)}" data-id="${esc(r.alert_id)}" tabindex="0" onclick="openRow(this)" onkeydown="rowKey(event,this)">
-      <td class="muted" data-age="${esc(r.latest_event_at||'')}" title="${esc(r.latest_event_at||'')}">${age(r.latest_event_at)}</td>
+      <td class="muted">${fmtTs(r.latest_event_at)}</td>
       <td>${esc(sourceLabel(r.source))}</td>
       <td>${badge(r.severity, SEVERITY_COLOR[r.severity]||'--text-muted')}</td>
       <td class="summ">${esc(String(r.summary||'').slice(0,160))}${res?`<div class="muted">${esc(res)}</div>`:''}</td>
@@ -359,12 +374,6 @@ document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeDetail(); });
 trapFocus(document.getElementById('detail'));
 bindCopyIcons(document);
 
-function fmtTs(iso){
-  if(!iso) return '';
-  const d=new Date(iso); if(isNaN(d)) return esc(iso);
-  const p=n=>String(n).padStart(2,'0');
-  return `<span title="${esc(iso)}">${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}</span>`;
-}
 function closeButton(){ return '<button type="button" class="x" id="detail-close" onclick="closeDetail()" aria-label="Close">×</button>'; }
 
 async function detail(id){
@@ -401,8 +410,8 @@ function renderDetail(a, events){
       <span class="muted">${esc(a.source||'')}</span></div>
     <div class="kv"><b>alert</b> <span id="alert-id">${esc(a.alert_id)}</span>${copyIcon('alert id',{from:'alert-id'})}</div>
     ${resource(a)?`<div class="kv"><b>resource</b> ${esc(resource(a))}${a.resource_type?' <span class="muted">('+esc(a.resource_type)+')</span>':''}</div>`:''}
-    <div class="kv"><b>first seen</b> ${fmtTs(a.first_event_at)}</div>
-    <div class="kv"><b>latest</b> ${fmtTs(a.latest_event_at)} <span class="muted">· ${esc(a.event_count)} events</span></div>
+    <div class="kv"><b>first seen</b> ${fmtTs(a.first_event_at,{seconds:true})}</div>
+    <div class="kv"><b>latest</b> ${fmtTs(a.latest_event_at,{seconds:true})} <span class="muted">· ${esc(a.event_count)} events</span></div>
     ${a.reason?`<div class="kv"><b>reason</b> ${esc(a.reason)}</div>`:''}
     ${dec.action?`<h3>Triage</h3>
       <div class="kv"><b>decision</b> ${badge(dec.action, ACTION_COLOR[dec.action]||'--text-muted')}${dec.confidence!=null?' <span class="muted">confidence '+esc(dec.confidence)+'</span>':''}</div>
@@ -414,7 +423,7 @@ function renderDetail(a, events){
       ${links.map(u=>`<div class="kv"><b>link</b> <a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)} ↗</a></div>`).join('')}
       ${a.message?`<div class="prose">${esc(a.message)}</div>`:''}`:''}
     <h3>Timeline</h3>
-    <ol class="tl">${(a.timeline||[]).map(t=>`<li><span class="when">${fmtTs(t.created_at)}</span> ${esc(t.event_type)}${t.note?`<span class="note">${esc(t.note)}</span>`:''}</li>`).join('')}</ol>
+    <ol class="tl">${(a.timeline||[]).map(t=>`<li><span class="when">${fmtTs(t.created_at,{seconds:true})}</span> ${esc(t.event_type)}${t.note?`<span class="note">${esc(t.note)}</span>`:''}</li>`).join('')}</ol>
     ${Object.keys(alertDetails).length?`<details><summary>Alert details${copyIcon('alert details',{from:'alert-details'})}</summary>
       <pre id="alert-details">${esc(JSON.stringify(alertDetails,null,2))}</pre></details>`:''}
     <details><summary>Raw events (${events.length})${copyIcon('raw events',{from:'raw-events'})}</summary>

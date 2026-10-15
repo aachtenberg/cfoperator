@@ -41,6 +41,11 @@
     border-radius:var(--radius-sm); padding:5px 12px; cursor:pointer; font-size:13px; font-family:inherit; }
   .chip:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
   .chip.active { background:var(--accent); border-color:var(--accent); color:#0a0a0f; font-weight:600; }
+  /* The search box reads as a chip: same surface, same size (as on /events). */
+  .bar { padding:0 20px 12px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .bar input { background:var(--bg-tertiary); border:1px solid var(--border); color:var(--text-primary);
+    border-radius:var(--radius-sm); padding:5px 10px; font-size:13px; min-width:260px; }
+  .bar input:focus-visible { outline:2px solid var(--cyan); outline-offset:1px; }
   table { width:100%; border-collapse:collapse; }
   th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
   th { color:var(--text-secondary); font-weight:600; font-size:11px; text-transform:uppercase;
@@ -208,8 +213,12 @@
 </header>
 <script src="/nav.js" defer></script>
 <div class="filters" id="filters"></div>
+<div class="bar">
+  <input type="search" id="f-q" aria-label="Search investigations" placeholder="search trigger, outcome, model, #id" oninput="searchInput(this.value)">
+</div>
+<!-- Sortable headers (CFOP-412): data-sort names a key the script defines for listKit. -->
 <table>
-  <thead><tr><th>ID</th><th>Outcome</th><th>Trigger</th><th>LLM</th><th>Remediation</th><th>Duration</th><th>Started</th></tr></thead>
+  <thead><tr><th data-sort="id">ID</th><th data-sort="outcome">Outcome</th><th data-sort="trigger">Trigger</th><th data-sort="llm">LLM</th><th data-sort="remediation">Remediation</th><th data-sort="duration">Duration</th><th data-sort="started">Started</th></tr></thead>
   <tbody id="rows"></tbody>
 </table>
 <div id="empty" class="empty" hidden>No investigations match this filter.</div>
@@ -219,14 +228,26 @@
 <div id="detail" role="dialog" aria-modal="true" aria-labelledby="detail-title" inert></div>
 <div id="toasts"></div>
 
-<!-- esc/badge/color/age/toast/trapFocus — one copy, see ui/common.js. Not deferred:
+<!-- esc/badge/color/fmtTs/listKit/toast/trapFocus — one copy, see ui/common.js. Not deferred:
      the script below calls them at top level. -->
 <script src="/common.js"></script>
 <script>
 const OUTCOMES = ['resolved','needs_action','monitoring','escalated','escalate','failed','in_progress','retry'];
 const OC = {resolved:'--accent',needs_action:'--orange',monitoring:'--cyan',escalated:'--red',
   escalate:'--red',failed:'--red',in_progress:'--text-muted',retry:'--purple'};
-let filter='', ALL=[], REMS={}, REMID={};
+let filter='', Q='', ALL=[], REMS={}, REMID={};
+
+// Sortable headers and the search box (CFOP-412): one kit in common.js, the
+// page supplies what each column sorts by. The remediation column sorts by
+// the linked row's id, which is what the cell shows; rows with none go last.
+// paint() runs every row through KIT.sort, so the order holds across the
+// poll's repaint; a header click only paints again.
+const KIT=listKit({page:'investigations', initial:{key:'started',dir:'desc'},
+  dir:{id:'desc',started:'desc',duration:'desc'},
+  keys:{id:r=>r.id, outcome:r=>r.outcome, trigger:r=>r.trigger, llm:r=>r.provider,
+    remediation:r=>{ const m=linkedRem(r); return m?Number(m.id):null; },
+    duration:r=>r.duration_seconds, started:r=>tsKey(r.started_at)},
+  onChange:()=>paint()});
 
 // A poll that brought nothing new does not rebuild the table (CFOP-95). The
 // rows were replaced by innerHTML every 20 s regardless, which shifted them
@@ -262,10 +283,11 @@ async function load(){
 function safeUrl(u){ const s=String(u==null?'':u).trim(); if(!s) return '';
   try{ const p=new URL(s, window.location.href);
   return (p.protocol==='http:'||p.protocol==='https:')?p.href:''; }catch(e){ return ''; } }
+// Deduped repeats carry only the id (the map keys the row under the FIRST
+// investigation); resolve through REMID so they still get a status chip.
+function linkedRem(r){ return REMS[r.id] || (r.remediation_id ? (REMID[r.remediation_id]||{id:r.remediation_id,status:''}) : null); }
 function remLink(r){
-  // Deduped repeats carry only the id (the map keys the row under the FIRST
-  // investigation); resolve through REMID so they still get a status chip.
-  const m=REMS[r.id] || (r.remediation_id ? (REMID[r.remediation_id]||{id:r.remediation_id,status:''}) : null);
+  const m=linkedRem(r);
   if(m) return `<a href="/remediations#${m.id}" onclick="event.stopPropagation()">#${m.id}${m.status?' '+esc(m.status):''}</a>`;
   const pr=safeUrl(r.remediation_pr_url);
   if(pr) return `<a href="${esc(pr)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">PR ↗</a>`;
@@ -308,9 +330,14 @@ function paint(){
     chip('', `all (${ALL.length})`)+
     seen.map(o=>chip(o, `${o} (${c[o]})`)).join('')+
     (tri?chip('__triaged', `triaged (${tri})`):'');
-  const rows=filter==='__triaged'?ALL.filter(r=>r.triage_action)
+  let rows=filter==='__triaged'?ALL.filter(r=>r.triage_action)
            :filter==='__untriaged'?ALL.filter(r=>!r.triage_action)
            :filter?ALL.filter(r=>r.outcome===filter):ALL;
+  // Only what a list row carries: the host lives in findings, which the
+  // list API does not return (it is on the drill-in), so it is not offered.
+  if(Q) rows=rows.filter(r=>{ const m=linkedRem(r);
+    return textMatch(Q,['#'+r.id, r.trigger, r.outcome, r.triage_action, r.provider, m?'#'+m.id:'']); });
+  rows=KIT.sort(rows);
   document.getElementById('empty').hidden=rows.length>0;
   const focused=focusedRow();
   document.getElementById('rows').innerHTML=rows.map(r=>`
@@ -321,10 +348,12 @@ function paint(){
       <td>${llmStamp(r.provider)}</td>
       <td>${remLink(r)}</td>
       <td class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':'—'}</td>
-      <td class="muted" data-age="${esc(r.started_at||'')}">${age(r.started_at)}</td></tr>`).join('');
+      <td class="muted">${fmtTs(r.started_at)}</td></tr>`).join('');
   refocusRow(focused);
 }
 function setF(o){ filter=o; paint(); }
+// The search narrows the rows the page already holds (the chips' set), per keystroke.
+function searchInput(v){ Q=String(v||'').trim(); paint(); }
 // Filter chips are buttons with aria-pressed (CFOP-94): the active filter is
 // not signalled by colour alone, and a button is reachable by Tab where the
 // span it replaced was not.
@@ -443,7 +472,7 @@ async function detail(id, opts){
       <span class="muted">${r.duration_seconds?Math.round(r.duration_seconds)+'s':''} · ${r.tool_calls_count||0} tool calls</span></div>
     ${f.provider?`<div class="kv"><b>investigated by</b> <span class="mono">${esc(f.provider)}</span></div>`:''}
     <div class="kv"><b>trigger</b> <span id="trigger-text">${esc(r.trigger)}</span>${copyIcon('trigger',{from:'trigger-text'})}</div>
-    <div class="kv"><b>started</b> ${fmtTs(r.started_at)}${r.completed_at?' · <b>completed</b> '+fmtTs(r.completed_at, r.started_at):''}</div>
+    <div class="kv"><b>started</b> ${fmtTs(r.started_at,{seconds:true})}${r.completed_at?' · <b>completed</b> '+fmtTs(r.completed_at,{seconds:true,sameDayAs:r.started_at}):''}</div>
     ${f.host?`<div class="kv"><b>host</b> ${esc(f.host)}</div>`:''}
     ${eventLine(r)}
     ${attachBlock(r)}
@@ -460,18 +489,6 @@ async function detail(id, opts){
   applyMax();
   focusDetailClose();
   if(opts && opts.explain) toggleExplain(id);
-}
-// Server timestamps carry microseconds and no zone (they are UTC — see age()
-// in common.js). Shown to the second in the browser's zone, raw value on
-// hover; a second stamp on the same day as `sameDayAs` shows the time only.
-function fmtTs(iso, sameDayAs){
-  if(!iso) return '';
-  const parse=v=>new Date(String(v)+(String(v).endsWith('Z')?'':'Z'));
-  const d=parse(iso); if(isNaN(d)) return esc(iso);
-  const p=n=>String(n).padStart(2,'0');
-  const day=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`, time=`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-  let ref=null; if(sameDayAs){ const o=parse(sameDayAs); if(!isNaN(o)) ref=`${o.getFullYear()}-${p(o.getMonth()+1)}-${p(o.getDate())}`; }
-  return `<span title="${esc(iso)}">${ref===day?time:day+' '+time}</span>`;
 }
 // The recommendation and its fix (CFOP-113), as prose rather than the JSON the
 // drawer used to dump. Order is what an operator acts on: the sentence, the
@@ -586,7 +603,7 @@ function sessionsBlock(r){
     const cmds=(d.commands||[]).length
       ? `<pre>${(d.commands||[]).map(c=>'$ '+esc(c)).join('\n')}</pre>` : '';
     return `<div class="kv">${badge(s.outcome||'unrecorded','--accent')}${warn}
-        <span class="muted">${esc(s.actor||'')}${meta?' · '+meta:''}${s.recorded_at?' · '+esc(s.recorded_at):''}</span>${learn}</div>
+        <span class="muted">${esc(s.actor||'')}${meta?' · '+meta:''}${s.recorded_at?' · '+fmtTs(s.recorded_at,{seconds:true}):''}</span>${learn}</div>
       <pre>${esc(s.summary||'')}</pre>${cmds}`;
   }).join('');
 }
