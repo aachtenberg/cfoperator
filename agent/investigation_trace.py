@@ -9,8 +9,8 @@ columns for exactly this and no writer but the cockpit write-back.
 
 Rows, by ``event_type`` and the kind tag in ``action_type``:
 
-- ``tool_call`` — one row per call, written when its result arrives: the
-  arguments (``redact_tool_args``), the exact string the model was handed in
+- ``tool_call`` — one row per call, written when its result arrives, which
+  carries the call's arguments (``redact_tool_args``), the exact string the model was handed in
   ``reasoning_text``, and ``{status, length, cached}`` in ``tool_output``.
 - ``reasoning`` / ``prompt`` — what the model was told: system and user
   message, through the CFOP-272 text rules.
@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Optional
 
 from cfshared.tool_args import redact_tool_args, redact_tool_result
 
@@ -92,9 +92,6 @@ class InvestigationTrace:
         self._on_row = on_row
         self._rows = 0
         self._truncated = False
-        # tool_call events waiting for their result, oldest first. Calls in
-        # one turn execute in order, so the first pending one is this result's.
-        self._pending: List[Dict[str, Any]] = []
 
     @property
     def enabled(self) -> bool:
@@ -107,9 +104,11 @@ class InvestigationTrace:
     def __call__(self, event_type: str, data: Dict[str, Any]) -> None:
         try:
             data = data if isinstance(data, dict) else {}
-            if event_type == 'tool_call':
-                self._pending.append(data)
-            elif event_type == 'tool_result':
+            # tool_call is not recorded on its own: its arguments arrive on
+            # the tool_result (wants_full_result), so a call that raised
+            # before its result cannot leave state behind for the next
+            # provider's calls to be mispaired with.
+            if event_type == 'tool_result':
                 self._tool_result(data)
             elif event_type == 'assistant':
                 text = data.get('text')
@@ -148,9 +147,8 @@ class InvestigationTrace:
     # -- rows ------------------------------------------------------------
 
     def _tool_result(self, data: Dict[str, Any]) -> None:
-        call = self._pending.pop(0) if self._pending else {}
-        tool = str(data.get('tool') or call.get('tool') or '')
-        args = call.get('args')
+        tool = str(data.get('tool') or '')
+        args = data.get('args')
         if not isinstance(args, (dict, list, str)):
             args = {} if args is None else str(args)
         args = redact_tool_args(args, limit=ARG_CHARS)

@@ -236,3 +236,46 @@ def test_the_recorder_writes_only_kinds_the_console_reads():
                    encoding='utf-8').read()
     for kind in investigation_trace.REASONING_KINDS:
         assert f"s.kind==='{kind}'" in console, f"the drawer has no rendering for {kind!r} rows"
+
+
+def test_a_call_that_raised_cannot_lend_its_args_to_the_next_providers_call(monkeypatch):
+    """A tool that raises before its result leaves no state behind: after the
+    chain rotates (same trace, next provider), the next result carries its
+    own arguments, not the dead call's (Bugbot on #343).
+
+    Mutation check: pair results with tool_call events through a queue again
+    and this goes red.
+    """
+    kb = FakeKB()
+    trace = InvestigationTrace(kb, 11)
+    op = _operator(kb)
+    real = op._cached_tool_exec
+    calls = {'n': 0}
+
+    def flaky(name, args, *a, **k):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise RuntimeError('serialize blew up')
+        return real(name, args, *a, **k)
+
+    monkeypatch.setattr(op, '_cached_tool_exec', flaky)
+
+    def turn(arg):
+        m = {'role': 'assistant', 'content': '',
+             'tool_calls': [{'function': {'name': 'ssh_execute', 'arguments': {'command': arg}}}]}
+        return [m, _msg('done\nSTATUS: resolved\nRECOMMENDATION: none')]
+
+    monkeypatch.setattr('requests.post', _FakePost(turn('first-provider-call')))
+    try:
+        op._chat_with_tools_inner(provider_type='ollama', url='http://fake', model='a',
+                                  messages=[{'role': 'user', 'content': 'x'}], system_context='s',
+                                  event_callback=trace)
+    except RuntimeError:
+        pass  # iteration 0 raises: _chat_with_tools_with_fallback would rotate
+    monkeypatch.setattr('requests.post', _FakePost(turn('second-provider-call')))
+    op._chat_with_tools_inner(provider_type='ollama', url='http://fake', model='b',
+                              messages=[{'role': 'user', 'content': 'x'}], system_context='s',
+                              event_callback=trace)
+    tools = [r for r in kb.rows if r['event_type'] == 'tool_call']
+    assert len(tools) == 1
+    assert tools[0]['tool_input'] == {'command': 'second-provider-call'}

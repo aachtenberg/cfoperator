@@ -10278,6 +10278,12 @@ Only return the JSON array, no other text."""
                 # live stream to the browser stays the size it was.
                 if getattr(event_callback, 'wants_full_result', False):
                     event['content'] = content
+                    # The call's own arguments ride on its result, so a
+                    # recorder pairs them without remembering the call. A
+                    # call that raised before its result would otherwise
+                    # leave a stale entry for the next provider's first
+                    # result to pick up (Bugbot on #343).
+                    event['args'] = tool_args
                 event_callback('tool_result', event)
 
             TOOL_CALLS.labels(tool_name=tool_name, result=outcome).inc()
