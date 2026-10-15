@@ -51,6 +51,9 @@ Environment:
     REVIEW_API_KEY          required, sent as a bearer token
     REVIEW_MODEL            required
     REVIEW_REASONING_EFFORT optional, passed through as reasoning_effort
+  fallback (optional, openai-compatible; used when the primary cannot answer):
+    REVIEW_FALLBACK_API_URL, REVIEW_FALLBACK_API_KEY, REVIEW_FALLBACK_MODEL
+    REVIEW_FALLBACK_REASONING_EFFORT
 """
 import collections
 import copy
@@ -93,7 +96,8 @@ DEFAULT_MODEL = "gemma4:26b"
 # come on top. ~60k chars of diff is ~17k tokens, so the whole prompt stays
 # near 20k, which leaves the answer room but not a wide margin.
 DEFAULT_MAX_DIFF_CHARS = 60000
-# Per model call. A review makes at most two; both must fit timeout-minutes: 20.
+# Per model call. A review makes at most two per backend, and with a fallback
+# configured a run can make four; all must fit the job's timeout-minutes.
 MODEL_TIMEOUT_SECONDS = 480
 
 #: Files whose diff costs context and carries nothing a reviewer can judge.
@@ -447,7 +451,7 @@ def ask_ollama(url, model, system, user, schema):
         data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json"},
     )
-    # Two calls per review must fit the job's 20 minutes, or the job is
+    # Every call must fit the job's timeout with the others, or the job is
     # killed mid-call and leaves no comment; a timeout here fails it visibly.
     with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT_SECONDS) as resp:
         data = json.loads(resp.read())
@@ -521,9 +525,10 @@ def ask_openai(url, key, model, effort, system, user, schema):
 #: job's timeout and the PR gets its "No review" comment.
 RETRY_DELAYS_SECONDS = (5, 15, 45)
 MAX_RETRY_AFTER_SECONDS = 60
-#: The most one model call can spend paused on 429s. Two calls' worth, plus
-#: two calls' MODEL_TIMEOUT_SECONDS, must fit beam-review.yml's
-#: timeout-minutes, or a throttled run is killed before it can post.
+#: The most one model call can spend paused on 429s. Four calls' worth (two
+#: per backend, primary then fallback), plus four calls' MODEL_TIMEOUT_SECONDS,
+#: must fit llm-review.yml's timeout-minutes, or a run whose primary hung to
+#: its timeout and whose fallback then did too is killed before it can post.
 RETRY_PAUSE_BUDGET_SECONDS = len(RETRY_DELAYS_SECONDS) * MAX_RETRY_AFTER_SECONDS
 
 
@@ -671,11 +676,34 @@ def render(findings, counts, model, head_sha, included, skipped, seconds, who=LO
 DEFAULT_BOT_LOGIN = "github-actions[bot]"
 
 
-def describe_failure(error):
+#: What ends a review attempt and, with a fallback configured, hands the diff
+#: to the other backend. OSError covers URLError, timeouts and a reset
+#: connection; ValueError a truncated body that is not JSON; HTTPException a
+#: bad status line.
+FAILURES = (UnreadableAnswer, RateLimited, OSError, ValueError, http.client.HTTPException)
+
+
+class BothFailed(RuntimeError):
+    """The primary and the fallback both failed; the comment names both."""
+
+    def __init__(self, primary_model, primary, fallback_model, fallback):
+        super().__init__(f"{primary_model}: {primary}; fallback {fallback_model}: {fallback}")
+        self.primary_model, self.primary = primary_model, primary
+        self.fallback_model, self.fallback = fallback_model, fallback
+
+
+def describe_failure(error, short=False):
     """What to say on the PR: the class, plus the status for an HTTP error
     and the API's own words for a rate limit (it says when the allowance
-    renews). Model text is not involved; the API's message is defanged."""
+    renews). ``short`` drops the API's words, for the footer of a review the
+    fallback served. Model text is not involved; the API's message is
+    defanged."""
+    if isinstance(error, BothFailed):
+        return (f"{code(error.primary_model)} {describe_failure(error.primary, short)}; "
+                f"fallback {code(error.fallback_model)} {describe_failure(error.fallback, short)}")
     if isinstance(error, RateLimited):
+        if short:
+            return "rate limited by the API"
         return f"rate limited by the API ({defang(str(error)).replace('_', chr(92) + '_')})"
     if isinstance(error, urllib.error.HTTPError):
         return f"HTTP {error.code} from the API"
@@ -718,6 +746,7 @@ def main():
     if not (token and repo and number):
         sys.exit("GITHUB_TOKEN, GITHUB_REPOSITORY and PR_NUMBER are required")
     ask, model, who = backend_from_env()
+    fallback = fallback_from_env()
     scope = env("REVIEW_SCOPE", "defects")
     if scope not in SCOPES:
         sys.exit(f"REVIEW_SCOPE={scope!r}; want one of {', '.join(SCOPES)}")
@@ -733,14 +762,24 @@ def main():
     started = time.monotonic()
     findings, counts, failure = [], None, None
     if included:
+        diff = build_diff(repo, pr, included)
         try:
-            findings, counts = review(ask, build_diff(repo, pr, included), included,
-                                      prompts=SCOPES[scope])
-        # OSError covers URLError, timeouts and a reset connection; ValueError a
-        # truncated body that is not JSON; HTTPException a bad status line.
-        except (UnreadableAnswer, RateLimited, OSError, ValueError,
-                http.client.HTTPException) as e:
+            findings, counts = review(ask, diff, included, prompts=SCOPES[scope])
+        except FAILURES as e:
             failure = e
+            if fallback is not None:
+                # The same diff to the other backend, and the comment says so:
+                # a review that Haiku wrote must not read as Beam's (CFOP-404).
+                fb_ask, fb_model, fb_served = fallback
+                print(f"{model} could not review ({describe_failure(e)}); trying {fb_model}")
+                try:
+                    findings, counts = review(fb_ask, diff, included, prompts=SCOPES[scope])
+                except FAILURES as e2:
+                    failure = BothFailed(model, e, fb_model, e2)
+                else:
+                    who = who._replace(served=f"{fb_served}, standing in for {model} "
+                                              f"({describe_failure(e, short=True)})")
+                    model, failure = fb_model, None
     seconds = time.monotonic() - started
 
     if failure is None:
@@ -779,6 +818,20 @@ def backend_from_env():
         return (functools.partial(ask_openai, url, key, model, env("REVIEW_REASONING_EFFORT")),
                 model, reviewer(env("REVIEW_NAME", "LLM"), f"at {host}"))
     sys.exit(f"REVIEW_BACKEND={backend!r}; want ollama or openai")
+
+
+def fallback_from_env():
+    """(ask, model, served) for an optional second OpenAI-compatible backend,
+    or None. All three of URL, key and model, or nothing: a half-set fallback
+    would fail exactly when it is needed."""
+    url, key, model = env("REVIEW_FALLBACK_API_URL"), env("REVIEW_FALLBACK_API_KEY"), env("REVIEW_FALLBACK_MODEL")
+    if not (url or key or model):
+        return None
+    if not (url and key and model):
+        sys.exit("REVIEW_FALLBACK_API_URL, REVIEW_FALLBACK_API_KEY and REVIEW_FALLBACK_MODEL go together")
+    host = urllib.parse.urlsplit(url).hostname or "an OpenAI-compatible API"
+    return (functools.partial(ask_openai, url, key, model, env("REVIEW_FALLBACK_REASONING_EFFORT")),
+            model, f"at {host}")
 
 
 if __name__ == "__main__":

@@ -439,17 +439,21 @@ def test_two_reviewers_under_one_bot_login_keep_separate_comments(monkeypatch):
     assert calls == [("POST", "/repos/o/r/issues/5/comments")]
 
 
-def test_two_model_calls_and_their_retry_pauses_fit_inside_the_hosted_job_timeout():
+def test_four_model_calls_and_their_retry_pauses_fit_inside_the_hosted_job_timeout():
     """Killed mid-call, the job leaves no comment at all. The budget is two
-    calls at their timeout plus the most each can spend paused on 429s."""
-    wf = REPO_ROOT / ".github" / "workflows" / "beam-review.yml"
-    minutes = int(re.search(r"timeout-minutes:\s*(\d+)", wf.read_text()).group(1))
-    worst = 2 * (review.MODEL_TIMEOUT_SECONDS + review.RETRY_PAUSE_BUDGET_SECONDS)
+    calls per backend, primary then fallback, at their timeout plus the most
+    each can spend paused on 429s (the Claude review on #344 caught the
+    count going from two to four with the fallback)."""
+    wf = REPO_ROOT / ".github" / "workflows" / "llm-review.yml"
+    text = wf.read_text()
+    minutes = int(re.search(r"timeout-minutes:\s*(\d+)", text).group(1))
+    backends = 2 if "REVIEW_FALLBACK_MODEL" in text else 1
+    worst = 2 * backends * (review.MODEL_TIMEOUT_SECONDS + review.RETRY_PAUSE_BUDGET_SECONDS)
     assert worst < minutes * 60 - 120, "no room left to post the comment"
     assert review.RETRY_PAUSE_BUDGET_SECONDS >= sum(review.RETRY_DELAYS_SECONDS)
 
 
-def test_the_beam_workflow_is_the_fenced_shape_with_the_key_from_a_secret():
+def test_the_llm_review_workflow_is_the_fenced_shape_with_its_keys_from_secrets():
     """The runner is hosted, so the fence is not about the homelab here; it is
     about the key. Under plain pull_request the PR's own copy of this script
     would run with REFLECTION_API_KEY and a write token, so a same-repo PR
@@ -458,14 +462,18 @@ def test_the_beam_workflow_is_the_fenced_shape_with_the_key_from_a_secret():
     credential kept, comment-only token) is the same shape the Ollama job
     passes, judged by the same function."""
     from test_workflows import fence_violations
-    wf = REPO_ROOT / ".github" / "workflows" / "beam-review.yml"
+    wf = REPO_ROOT / ".github" / "workflows" / "llm-review.yml"
     text = wf.read_text()
     assert "REVIEW_API_KEY: ${{ secrets.REFLECTION_API_KEY }}" in text
     assert "REVIEW_BACKEND: openai" in text
     doc = yaml.safe_load(text)
-    job = doc["jobs"]["beam-review"]
+    job = doc["jobs"]["llm-review"]
     assert job["runs-on"] == "ubuntu-latest"
     assert fence_violations(doc, job) == []
+    # The fallback's key too, and never a literal.
+    assert "REVIEW_FALLBACK_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}" in text
+    assert "REVIEW_FALLBACK_API_URL: https://openrouter.ai/api/v1" in text
+    assert "REVIEW_NAME: LLM" in text, "a review Haiku served must not be titled Beam"
 
 
 # --- scopes and rate limits (CFOP-403) -----------------------------------------
@@ -614,3 +622,105 @@ def test_a_non_429_http_error_is_not_retried(monkeypatch):
     assert len(attempts) == 1
     err = review.urllib.error.HTTPError("u", 500, "boom", email.message.Message(), io.BytesIO(b""))
     assert "HTTP 500 from the API" in review.render_failure(err, "m", "abcdef0")
+
+
+# --- the fallback backend (CFOP-404) -------------------------------------------
+
+
+def _pr_env(monkeypatch, **extra):
+    _openai_env(monkeypatch, REVIEW_NAME="LLM", **extra)
+    monkeypatch.setattr(review, "github", lambda *a, **k: {"head": {"sha": "abcdef0123"}, "number": 1,
+                                                           "title": "t", "body": ""})
+    monkeypatch.setattr(review, "paged", lambda *a: [{"filename": "m.py", "status": "modified",
+                                                      "additions": 1, "deletions": 0, "patch": PATCH}])
+
+
+def _fallback_env(monkeypatch):
+    for k, v in {"REVIEW_FALLBACK_API_URL": "https://openrouter.ai/api/v1",
+                 "REVIEW_FALLBACK_API_KEY": "or-key", "REVIEW_FALLBACK_MODEL": "anthropic/claude-haiku-5.5"}.items():
+        monkeypatch.setenv(k, v)
+
+
+def test_the_fallback_reviews_when_the_primary_is_rate_limited_and_the_footer_says_so(monkeypatch, capsys):
+    _pr_env(monkeypatch)
+    _fallback_env(monkeypatch)
+    calls = []
+
+    def ask_openai(url, key, model, effort, system, user, schema):
+        calls.append(model)
+        if model == "Beam-1.0":
+            raise review.RateLimited("daily output token allowance used; renews at 00:00 UTC")
+        if schema is review.FINDINGS_SCHEMA:
+            return {"findings": [_finding("c = compute(b)", line=13)]}, {}
+        return {"verdicts": [{"id": 0, "real": True, "reason": "bug"}]}, {}
+
+    monkeypatch.setattr(review, "ask_openai", ask_openai)
+    review.main()  # no SystemExit: a review was posted
+    out = capsys.readouterr().out
+    assert calls == ["Beam-1.0", "anthropic/claude-haiku-5.5", "anthropic/claude-haiku-5.5"]
+    assert "could not review (rate limited by the API (daily" in out, "the log says why the primary failed"
+    comment = out[out.index("<!-- llm-review -->"):]
+    assert "### LLM review" in comment
+    assert "`m.py`:13" in comment
+    assert "anthropic/claude-haiku-5.5 at openrouter.ai, standing in for Beam-1.0 (rate limited by the API)" in comment
+    assert "renews at" not in comment, "the footer carries the short reason, not the API's paragraph"
+    assert "No review" not in comment
+
+
+def test_the_fallback_is_not_consulted_when_the_primary_answers(monkeypatch, capsys):
+    _pr_env(monkeypatch)
+    _fallback_env(monkeypatch)
+    calls = []
+    monkeypatch.setattr(review, "ask_openai", lambda url, key, model, *a: calls.append(model) or ({"findings": []}, {}))
+    review.main()
+    assert calls == ["Beam-1.0"]
+    assert "standing in" not in capsys.readouterr().out
+
+
+def test_both_failing_posts_one_comment_naming_both_and_fails_the_job(monkeypatch, capsys):
+    _pr_env(monkeypatch, REVIEW_DRY_RUN="")
+    _fallback_env(monkeypatch)
+    posted = []
+
+    def ask_openai(url, key, model, effort, system, user, schema):
+        if model == "Beam-1.0":
+            raise review.RateLimited("allowance used")
+        raise review.urllib.error.HTTPError("u", 502, "bad gateway", email.message.Message(), io.BytesIO(b""))
+
+    monkeypatch.setattr(review, "ask_openai", ask_openai)
+    monkeypatch.setattr(review, "upsert_comment",
+                        lambda repo, n, token, body, marker=None: posted.append(body) or ("created", "u"))
+    with pytest.raises(SystemExit, match="review failed"):
+        review.main()
+    assert len(posted) == 1
+    body = posted[0]
+    assert "No review for abcdef0" in body
+    assert "`Beam-1.0` rate limited by the API (allowance used)" in body
+    assert "fallback `anthropic/claude-haiku-5.5` HTTP 502 from the API" in body
+
+
+def test_without_a_fallback_a_primary_failure_is_reported_as_before(monkeypatch):
+    _pr_env(monkeypatch, REVIEW_DRY_RUN="")
+    posted = []
+    monkeypatch.setattr(review, "ask_openai", lambda *a: (_ for _ in ()).throw(review.RateLimited("used")))
+    monkeypatch.setattr(review, "upsert_comment",
+                        lambda repo, n, token, body, marker=None: posted.append(body) or ("created", "u"))
+    with pytest.raises(SystemExit, match="review failed"):
+        review.main()
+    assert "rate limited by the API (used)" in posted[0] and "fallback" not in posted[0]
+
+
+@pytest.mark.parametrize("missing", ["REVIEW_FALLBACK_API_URL", "REVIEW_FALLBACK_API_KEY", "REVIEW_FALLBACK_MODEL"])
+def test_a_half_configured_fallback_is_refused_up_front(monkeypatch, missing):
+    """It would fail exactly when it is needed, after the primary already had."""
+    _pr_env(monkeypatch)
+    _fallback_env(monkeypatch)
+    monkeypatch.setenv(missing, "")
+    with pytest.raises(SystemExit, match="go together"):
+        review.main()
+
+
+def test_no_fallback_env_means_no_fallback(monkeypatch):
+    for k in ("REVIEW_FALLBACK_API_URL", "REVIEW_FALLBACK_API_KEY", "REVIEW_FALLBACK_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    assert review.fallback_from_env() is None
