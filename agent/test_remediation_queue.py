@@ -568,6 +568,66 @@ def test_maybe_queue_remediation_off_or_unclassified():
     on.kb.queue_remediation.assert_not_called()
 
 
+# ---- CFOP-431: a local placeholder id never reaches the queue ----------------
+
+
+def _placeholder_op(resolved):
+    """An operator whose KB maps placeholder -2 to ``resolved`` (None = not replayed yet)."""
+    op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
+    op.config = {"remediation": {"queue_feed": True}}
+    op.kb.queue_remediation.return_value = 7
+    op.kb.resolve_investigation_id = MagicMock(return_value=resolved)
+    return op
+
+
+_PLACEHOLDER_DETAILS = {"remediation_class": "k8s-action", "risk": "low", "confidence": 0.9,
+                        "recommendation": "restart", "host": "rpi5"}
+
+
+def test_placeholder_investigation_id_resolves_to_the_replayed_row():
+    op = _placeholder_op(resolved=3825)
+    assert CFOperator._maybe_queue_remediation(op, -2, dict(_PLACEHOLDER_DETAILS)) == 7
+    op.kb.resolve_investigation_id.assert_called_once_with(-2)
+    assert op.kb.queue_remediation.call_args.kwargs["investigation_id"] == 3825
+
+
+def test_unresolved_placeholder_enqueues_without_a_link():
+    """Not replayed yet: the row is still recorded, with no investigation id.
+
+    Mutation check: return ``investigation_id`` unchanged from
+    _published_investigation_id and this asserts -2 reached the KB.
+    """
+    op = _placeholder_op(resolved=None)
+    assert CFOperator._maybe_queue_remediation(op, -2, dict(_PLACEHOLDER_DETAILS)) == 7
+    assert op.kb.queue_remediation.call_args.kwargs["investigation_id"] is None
+
+
+def test_published_investigation_id_passes_real_ids_and_none_through():
+    kb = MagicMock()
+    assert agent_mod._published_investigation_id(kb, 42) == 42
+    assert agent_mod._published_investigation_id(kb, None) is None
+    kb.resolve_investigation_id.assert_not_called()
+
+
+def test_kb_level_guard_stores_none_for_a_placeholder():
+    """Last line of defence for every feed: queue_remediation never stores a placeholder."""
+    from knowledge_base import published_investigation_id
+    assert published_investigation_id(3825) == 3825
+    assert published_investigation_id(None) is None
+    assert published_investigation_id(-2) is None
+    assert published_investigation_id(0) is None
+
+
+def test_published_investigation_id_ignores_a_kb_without_the_resolver():
+    """A bare KnowledgeBase (no outbox) has no resolver; a placeholder is still dropped."""
+    assert agent_mod._published_investigation_id(MagicMock(spec=[]), -1) is None
+    # A resolver that answers with something that is not a row id (a mock,
+    # a bool, zero) is treated the same as "not replayed yet".
+    assert agent_mod._published_investigation_id(MagicMock(), -1) is None
+    kb = MagicMock(); kb.resolve_investigation_id.return_value = 0
+    assert agent_mod._published_investigation_id(kb, -1) is None
+
+
 # ---- PR reconcile ------------------------------------------------------------
 
 

@@ -526,6 +526,34 @@ def _note_followup(op, investigation_id: int, key: str) -> None:
     d[investigation_id] = key
 
 
+def _published_investigation_id(kb, investigation_id: Optional[int]) -> Optional[int]:
+    """The investigation id a remediation row may carry, or None.
+
+    An investigation started while the database was deemed unreachable runs
+    under a negative local placeholder (CFOP-216). By the time its
+    recommendation reaches the queue the buffered start has usually been
+    replayed, so the placeholder resolves to the real row through
+    ``kb.resolve_investigation_id``; if not, the row is enqueued without a
+    link rather than with an id that matches nothing (three rows carried -2
+    before CFOP-431, and the console offered ``cfassist attach -2``). Never
+    refuse the row over this: a classified recommendation is the valuable
+    output, and None is already the documented shape for rows with no source
+    investigation. A KB without the resolver (no outbox) cannot have handed
+    out a placeholder, so the id is simply dropped.
+    """
+    if investigation_id is None or investigation_id > 0:
+        return investigation_id
+    resolve = getattr(kb, 'resolve_investigation_id', None)
+    resolved = resolve(investigation_id) if callable(resolve) else None
+    if isinstance(resolved, int) and not isinstance(resolved, bool) and resolved > 0:
+        logger.info(f"Investigation placeholder #{investigation_id} resolved to "
+                    f"#{resolved} for the remediation row")
+        return resolved
+    logger.warning(f"Investigation #{investigation_id} is a local placeholder not yet "
+                   f"replayed to the database; enqueuing the remediation without a link")
+    return None
+
+
 def _dispatch_checklist_followup(op, investigation_id: int, trigger: str,
                                  alert_info, details: Dict[str, Any], fix) -> bool:
     """Re-run a needs_action whose "fix" is a checklist, instead of parking it.
@@ -5497,6 +5525,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         rclass = details.get('remediation_class')
         if not rclass:
             return None
+        investigation_id = _published_investigation_id(self.kb, investigation_id)
         risk = str(details.get('risk') or 'high')
         # The fork CAP lives here, at the choke point, with the other gates —
         # a gate a future third feed can forget to call is not a gate. The

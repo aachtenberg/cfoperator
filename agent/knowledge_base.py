@@ -637,6 +637,26 @@ REMEDIATION_STATUS_CHECK_SQL = "status IN ({})".format(
 )
 
 
+def published_investigation_id(investigation_id: Optional[int]) -> Optional[int]:
+    """An id ``remediation_queue.investigation_id`` may hold: a real row id or None.
+
+    ``ResilientKnowledgeBase.start_investigation`` hands out negative local
+    placeholders while the database is deemed unreachable (CFOP-216). Three
+    remediation rows stored -2 before this guard (CFOP-431); the console then
+    offered ``cfassist attach -2`` and the link went nowhere. The feeds
+    resolve a placeholder upstream when they can; here, anything that is not
+    a positive id becomes None so no feed can store one.
+    """
+    if investigation_id is None:
+        return None
+    if isinstance(investigation_id, bool) or not isinstance(investigation_id, int) \
+            or investigation_id <= 0:
+        _log("warning", "Remediation row stored without an investigation link: "
+                        "id is not a database row id", investigation_id=investigation_id)
+        return None
+    return investigation_id
+
+
 def normalize_remediation_fields(remediation_class: str, risk: str):
     """Coerce class/risk to valid values, defaulting conservatively.
 
@@ -4392,6 +4412,7 @@ class KnowledgeBase:
         """
         remediation_class, risk = normalize_remediation_fields(remediation_class, risk)
         pr_url = str(pr_url or '').strip() or None
+        investigation_id = published_investigation_id(investigation_id)
         if pr_url:
             status = 'pr-open'
         else:
@@ -6098,6 +6119,18 @@ class ResilientKnowledgeBase:
             return id_value
         # Negative ID = local ID, look up mapping
         return self._local_to_db_id_map.get(id_value)
+
+    def resolve_investigation_id(self, id_value: int) -> Optional[int]:
+        """The database id behind an investigation id this process handed out.
+
+        A positive id is itself. A negative one is the local placeholder
+        ``start_investigation`` returns while the database is deemed
+        unreachable (CFOP-216); it maps to the real row once the buffered
+        start has been replayed, and is None until then. Callers that
+        publish an id beyond this process (the remediation queue, CFOP-431)
+        go through here rather than storing the placeholder.
+        """
+        return self._resolve_investigation_id(id_value)
 
     def _get_local_id(self) -> int:
         """Get a unique local investigation ID (negative to avoid conflicts)."""
