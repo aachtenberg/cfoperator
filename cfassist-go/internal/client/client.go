@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -156,43 +157,104 @@ func (c *LLMClient) CheckConnection() error {
 	return nil
 }
 
+// checkAnthropicConnection asks for one page of /v1/models and discards it.
+//
+// It used to POST a one-token /v1/messages instead, on the belief that
+// Anthropic had no list endpoint. That cost a billed call on every start, and
+// a mistyped model name came back as "connection failed" when the connection
+// was fine. Reachability and the key are what this check is for; a wrong model
+// is the chat path's error to report.
 func (c *LLMClient) checkAnthropicConnection(ctx context.Context) error {
-	// Anthropic has no list-models GET endpoint; send a minimal messages request
-	payload := []byte(fmt.Sprintf(`{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`, c.Model))
-	req, err := http.NewRequestWithContext(ctx, "POST", c.URL+"/v1/messages", bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	_, _, err := c.anthropicModelsPage(ctx, "")
+	return err
+}
+
+// anthropicModelsPage fetches one page of GET /v1/models and returns the ids
+// on it plus the cursor for the next page ("" when this was the last). The
+// response has the OpenAI shape (data[].id) with Anthropic's own auth headers
+// and cursor pagination on top.
+func (c *LLMClient) anthropicModelsPage(ctx context.Context, afterID string) ([]string, string, error) {
+	u := c.URL + "/v1/models?limit=1000"
+	if afterID != "" {
+		u += "&after_id=" + url.QueryEscape(afterID)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create request: %w", err)
+	}
 	req.Header.Set("x-api-key", c.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
-		return c.newTransportError(err)
+		return nil, "", c.newTransportError(err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return c.newAPIError(resp.StatusCode, resp.Header, string(body))
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", err
 	}
-	return nil
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", c.newAPIError(resp.StatusCode, resp.Header, string(body))
+	}
+
+	var page struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		HasMore bool   `json:"has_more"`
+		LastID  string `json:"last_id"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		return nil, "", err
+	}
+	ids := make([]string, 0, len(page.Data))
+	for _, m := range page.Data {
+		ids = append(ids, m.ID)
+	}
+	if !page.HasMore || page.LastID == "" {
+		return ids, "", nil
+	}
+	return ids, page.LastID, nil
+}
+
+// anthropicModelsPageCap bounds the pagination walk. Anthropic serves a few
+// dozen models at 1000 per page, so a second page is already unexpected; a
+// server that keeps answering has_more=true with a repeating cursor must not
+// turn /models into an infinite loop.
+const anthropicModelsPageCap = 10
+
+func (c *LLMClient) listAnthropicModels(ctx context.Context) ([]string, error) {
+	var names []string
+	after := ""
+	for i := 0; i < anthropicModelsPageCap; i++ {
+		ids, next, err := c.anthropicModelsPage(ctx, after)
+		if err != nil {
+			return nil, err
+		}
+		names = append(names, ids...)
+		if next == "" || next == after {
+			return names, nil
+		}
+		after = next
+	}
+	return names, nil
 }
 
 // ListModels fetches available models from the provider.
+//
+// Every provider is asked, Anthropic included: a list that is baked into the
+// binary is wrong by the next model release, and the three ids that used to
+// live here were already stale (one of them never existed) when the
+// hand-maintained list was replaced.
 func (c *LLMClient) ListModels() ([]string, error) {
-	// Anthropic has no list-models API; return known models
-	if c.Provider == "anthropic" {
-		return []string{
-			"claude-sonnet-4-20250514",
-			"claude-haiku-4-20250414",
-			"claude-opus-4-20250514",
-		}, nil
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
+	if c.Provider == "anthropic" {
+		return c.listAnthropicModels(ctx)
+	}
 
 	var url string
 	if c.Provider == "ollama" {
@@ -257,18 +319,18 @@ func (c *LLMClient) ListModels() ([]string, error) {
 // --- Ollama provider ---
 
 type ollamaChatRequest struct {
-	Model    string            `json:"model"`
-	Messages []Message         `json:"messages"`
-	Stream   bool              `json:"stream"`
-	Options  map[string]any    `json:"options,omitempty"`
-	Tools    []ToolSchema      `json:"tools,omitempty"`
+	Model    string         `json:"model"`
+	Messages []Message      `json:"messages"`
+	Stream   bool           `json:"stream"`
+	Options  map[string]any `json:"options,omitempty"`
+	Tools    []ToolSchema   `json:"tools,omitempty"`
 }
 
 type ollamaChatResponse struct {
-	Message        ollamaMessage `json:"message"`
-	Done           bool          `json:"done"`
-	PromptEvalCount int          `json:"prompt_eval_count"`
-	EvalCount      int           `json:"eval_count"`
+	Message         ollamaMessage `json:"message"`
+	Done            bool          `json:"done"`
+	PromptEvalCount int           `json:"prompt_eval_count"`
+	EvalCount       int           `json:"eval_count"`
 }
 
 type ollamaMessage struct {
@@ -327,21 +389,21 @@ func (c *LLMClient) ollamaChat(ctx context.Context, messages []Message, tools []
 // --- OpenAI-compatible provider ---
 
 type openaiChatRequest struct {
-	Model       string            `json:"model"`
-	Messages    []openaiReqMsg    `json:"messages"`
-	Stream      bool              `json:"stream"`
-	Temperature float64           `json:"temperature"`
-	Tools       []ToolSchema      `json:"tools,omitempty"`
+	Model       string         `json:"model"`
+	Messages    []openaiReqMsg `json:"messages"`
+	Stream      bool           `json:"stream"`
+	Temperature float64        `json:"temperature"`
+	Tools       []ToolSchema   `json:"tools,omitempty"`
 }
 
 // openaiReqMsg is the outbound message format for OpenAI-compatible APIs,
 // where tool_calls[].function.arguments must be a JSON string.
 // Content must always be present for assistant messages (Groq requires it).
 type openaiReqMsg struct {
-	Role       string              `json:"role"`
-	Content    *string             `json:"content"`
-	ToolCalls  []openaiToolCall    `json:"tool_calls,omitempty"`
-	ToolCallID string              `json:"tool_call_id,omitempty"`
+	Role       string           `json:"role"`
+	Content    *string          `json:"content"`
+	ToolCalls  []openaiToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type openaiChatResponse struct {
@@ -354,9 +416,9 @@ type openaiChoice struct {
 }
 
 type openaiMessage struct {
-	Role      string              `json:"role"`
-	Content   string              `json:"content"`
-	ToolCalls []openaiToolCall    `json:"tool_calls,omitempty"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
 }
 
 type openaiToolCall struct {
@@ -473,11 +535,11 @@ func (c *LLMClient) openaiChat(ctx context.Context, messages []Message, tools []
 // --- Anthropic provider ---
 
 type anthropicRequest struct {
-	Model     string           `json:"model"`
-	MaxTokens int              `json:"max_tokens"`
-	System    string           `json:"system,omitempty"`
-	Messages  []anthropicMsg   `json:"messages"`
-	Tools     []anthropicTool  `json:"tools,omitempty"`
+	Model     string          `json:"model"`
+	MaxTokens int             `json:"max_tokens"`
+	System    string          `json:"system,omitempty"`
+	Messages  []anthropicMsg  `json:"messages"`
+	Tools     []anthropicTool `json:"tools,omitempty"`
 }
 
 type anthropicMsg struct {

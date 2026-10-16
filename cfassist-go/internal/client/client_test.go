@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -502,49 +504,158 @@ func TestAnthropicChatWithToolCall(t *testing.T) {
 	}
 }
 
-func TestCheckConnectionAnthropic(t *testing.T) {
+// anthropicModelsServer serves GET /v1/models in Anthropic's shape, split
+// into the given pages. Each page lists its ids and sets has_more/last_id so
+// the client has to follow after_id to see the next one. It records which
+// after_id values it was asked for and refuses anything that is not a GET on
+// /v1/models with both Anthropic headers, so a test asserting on the model
+// list is also asserting on the request shape.
+func anthropicModelsServer(t *testing.T, pages [][]string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var afters []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/messages" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if r.Method != "POST" {
-			t.Errorf("unexpected method: %s", r.Method)
+		if r.URL.Path != "/v1/models" || r.Method != "GET" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "wrong endpoint", http.StatusNotFound)
+			return
 		}
 		if apiKey := r.Header.Get("x-api-key"); apiKey != "test-key" {
 			t.Errorf("x-api-key = %q, want %q", apiKey, "test-key")
 		}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]any{
-			"content": []map[string]any{{"type": "text", "text": "hi"}},
-			"role":    "assistant",
-		})
+		if version := r.Header.Get("anthropic-version"); version != "2023-06-01" {
+			t.Errorf("anthropic-version = %q, want %q", version, "2023-06-01")
+		}
+		after := r.URL.Query().Get("after_id")
+		afters = append(afters, after)
+
+		idx := 0
+		if after != "" {
+			// after_id is the last id of the previous page; find the page after it.
+			for i, p := range pages {
+				if len(p) > 0 && p[len(p)-1] == after {
+					idx = i + 1
+				}
+			}
+		}
+		if idx >= len(pages) {
+			t.Errorf("asked for a page after %q, but there is none", after)
+			idx = len(pages) - 1
+		}
+		page := pages[idx]
+		data := make([]map[string]any, 0, len(page))
+		for _, id := range page {
+			data = append(data, map[string]any{"type": "model", "id": id, "display_name": id})
+		}
+		resp := map[string]any{
+			"data":     data,
+			"has_more": idx < len(pages)-1,
+			"first_id": page[0],
+			"last_id":  page[len(page)-1],
+		}
+		json.NewEncoder(w).Encode(resp)
 	}))
+	return server, &afters
+}
+
+func TestCheckConnectionAnthropic(t *testing.T) {
+	server, afters := anthropicModelsServer(t, [][]string{{"claude-opus-5-5"}})
 	defer server.Close()
 
-	c := New("anthropic", server.URL, "claude-sonnet-4-20250514", 0.7, "test-key")
+	c := New("anthropic", server.URL, "claude-opus-5-5", 0.7, "test-key")
 	if err := c.CheckConnection(); err != nil {
 		t.Errorf("CheckConnection failed: %v", err)
 	}
+	// One GET, no pagination: the check wants reachability and a valid key,
+	// not the whole catalogue, and it must not bill a messages call.
+	if len(*afters) != 1 {
+		t.Errorf("expected exactly one /v1/models request, got %d", len(*afters))
+	}
 }
 
+func TestCheckConnectionAnthropicBadKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`))
+	}))
+	defer server.Close()
+
+	c := New("anthropic", server.URL, "claude-opus-5-5", 0.7, "bad-key")
+	err := c.CheckConnection()
+	if err == nil {
+		t.Fatal("expected an error for a 401, got nil")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected an APIError with status 401, got %T: %v", err, err)
+	}
+}
+
+// TestListModelsAnthropic is the guard against the list going back to a
+// hardcoded array: the ids served here are made up, so the only way the
+// client can return them is by asking the server.
 func TestListModelsAnthropic(t *testing.T) {
-	c := New("anthropic", "https://api.anthropic.com", "claude-sonnet-4-20250514", 0.7, "key")
+	server, afters := anthropicModelsServer(t, [][]string{
+		{"claude-test-alpha", "claude-test-beta"},
+		{"claude-test-gamma"},
+	})
+	defer server.Close()
+
+	c := New("anthropic", server.URL, "claude-test-alpha", 0.7, "test-key")
 	models, err := c.ListModels()
 	if err != nil {
 		t.Fatalf("ListModels failed: %v", err)
 	}
-	if len(models) != 3 {
-		t.Fatalf("expected 3 models, got %d", len(models))
+	want := []string{"claude-test-alpha", "claude-test-beta", "claude-test-gamma"}
+	if strings.Join(models, ",") != strings.Join(want, ",") {
+		t.Errorf("models = %v, want %v (both pages, in order)", models, want)
 	}
-	// Should include known Claude models
-	found := false
-	for _, m := range models {
-		if m == "claude-sonnet-4-20250514" {
-			found = true
-		}
+	// The second request must carry the first page's last_id as after_id.
+	if len(*afters) != 2 || (*afters)[0] != "" || (*afters)[1] != "claude-test-beta" {
+		t.Errorf("after_id sequence = %q, want [\"\" \"claude-test-beta\"]", *afters)
 	}
-	if !found {
-		t.Errorf("expected claude-sonnet-4-20250514 in models list: %v", models)
+}
+
+func TestListModelsAnthropicError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"type":"error","error":{"type":"api_error","message":"overloaded"}}`))
+	}))
+	defer server.Close()
+
+	c := New("anthropic", server.URL, "claude-opus-5-5", 0.7, "test-key")
+	models, err := c.ListModels()
+	if err == nil {
+		t.Fatalf("expected an error, got models %v", models)
+	}
+	if models != nil {
+		t.Errorf("expected no models on error, got %v", models)
+	}
+}
+
+// A server that keeps saying has_more with a cursor that never advances must
+// not hang /models: the walk gives up after a bounded number of pages.
+func TestListModelsAnthropicPageCap(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		json.NewEncoder(w).Encode(map[string]any{
+			"data":     []map[string]any{{"type": "model", "id": "claude-loop"}},
+			"has_more": true,
+			"last_id":  "cursor-" + r.URL.Query().Get("after_id"),
+		})
+	}))
+	defer server.Close()
+
+	c := New("anthropic", server.URL, "claude-loop", 0.7, "test-key")
+	models, err := c.ListModels()
+	if err != nil {
+		t.Fatalf("ListModels failed: %v", err)
+	}
+	if calls != anthropicModelsPageCap {
+		t.Errorf("made %d requests, want the cap of %d", calls, anthropicModelsPageCap)
+	}
+	if len(models) != anthropicModelsPageCap {
+		t.Errorf("got %d models from %d pages", len(models), anthropicModelsPageCap)
 	}
 }
 
