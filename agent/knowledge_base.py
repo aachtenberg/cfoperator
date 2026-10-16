@@ -23,8 +23,9 @@ from contextlib import contextmanager
 
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Text, Boolean,
-    DateTime, Index, CheckConstraint, text, func, cast, or_
+    DateTime, Index, CheckConstraint, text, func, cast, or_, ARRAY
 )
+from sqlalchemy.exc import DBAPIError, InterfaceError, OperationalError
 from sqlalchemy.types import Text as SQLText
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import TIMESTAMP
@@ -3813,18 +3814,11 @@ class KnowledgeBase:
             if category:
                 q = q.filter(InvestigationLearning.category == category)
 
-            # Service filter using JSONB containment
+            # Service / tag filters: "the JSONB array holds any of these".
             if services:
-                # Check if services array contains any of the requested services
-                q = q.filter(
-                    InvestigationLearning.services.op('?|')(services)
-                )
-
-            # Tag filter using JSONB containment
+                q = q.filter(_jsonb_has_any(InvestigationLearning.services, services))
             if tags:
-                q = q.filter(
-                    InvestigationLearning.tags.op('?|')(tags)
-                )
+                q = q.filter(_jsonb_has_any(InvestigationLearning.tags, tags))
 
             # Full-text search on search_text if query provided
             if query:
@@ -5831,6 +5825,38 @@ class KnowledgeBase:
         }
 
 
+def _jsonb_has_any(column, values):
+    """``column ?| values`` — does the JSONB array hold any of ``values``?
+
+    The right-hand side of ``?|`` is ``text[]``, not ``jsonb``. Bound bare,
+    a Python list takes the column's JSONB type and PostgreSQL rejects the
+    whole statement (``operator does not exist: jsonb ?| jsonb``); every
+    ``find_learnings(tags=...)`` call failed that way, and each failure was
+    taken for an outage (CFOP-430). The explicit cast binds it as ``text[]``.
+    """
+    return column.op('?|')(cast(list(values), ARRAY(SQLText)))
+
+
+def _is_query_rejection(exc: BaseException) -> bool:
+    """True when the database answered and said no; False when it could not be reached.
+
+    ``ResilientKnowledgeBase`` falls back to the local outbox on failure,
+    which is right for a connection that dropped and wrong for a statement
+    the server rejected: a bad query fails again on replay, and marking
+    the connection unhealthy sends every write of the next ten seconds
+    into the outbox for no reason. A driver-level error that did not
+    invalidate the connection (ProgrammingError, DataError, IntegrityError,
+    ...) is a rejection. OperationalError, InterfaceError, an invalidated
+    connection, and anything that is not a database error at all stay
+    "outage": when in doubt, buffer.
+    """
+    if isinstance(exc, (OperationalError, InterfaceError)):
+        return False
+    if isinstance(exc, DBAPIError):
+        return not exc.connection_invalidated
+    return False
+
+
 # ============================= Resilient Knowledge Base =======================
 
 class ResilientKnowledgeBase:
@@ -6079,6 +6105,22 @@ class ResilientKnowledgeBase:
             self._local_inv_id_counter -= 1
             return self._local_inv_id_counter
 
+    def _db_failed(self, op: str, exc: BaseException) -> None:
+        """A wrapped KnowledgeBase call raised: decide whether that means the database is down.
+
+        Only an unreachable database marks the connection unhealthy (which
+        routes the next ten seconds of writes to the local outbox). A
+        statement the server rejected is a bug in the statement: it is
+        logged as such and the connection's health is left alone — see
+        _is_query_rejection and CFOP-430.
+        """
+        if _is_query_rejection(exc):
+            _log("error", "Database rejected a statement (query bug, not an outage)",
+                 op=op, error=str(exc)[:500])
+            return
+        self._health_monitor.mark_unhealthy()
+
+
     # ====================== Public API - Resilient Methods ======================
 
     def is_online(self) -> bool:
@@ -6105,7 +6147,7 @@ class ResilientKnowledgeBase:
             try:
                 return self._kb.start_investigation(trigger, alert_id=alert_id)
             except Exception as e:
-                self._health_monitor.mark_unhealthy()
+                self._db_failed("start_investigation", e)
                 _log("warn", "start_investigation failed, buffering", error=str(e))
 
         # Offline - buffer and return local ID
@@ -6148,7 +6190,7 @@ class ResilientKnowledgeBase:
                     error_message=error_message
                 )
             except Exception as e:
-                self._health_monitor.mark_unhealthy()
+                self._db_failed("record_investigation_event", e)
                 _log("warn", "record_investigation_event failed, buffering", error=str(e))
 
         # Offline or local investigation - buffer
@@ -6188,7 +6230,7 @@ class ResilientKnowledgeBase:
                     tool_calls_count=tool_calls_count
                 )
             except Exception as e:
-                self._health_monitor.mark_unhealthy()
+                self._db_failed("update_investigation", e)
                 _log("warn", "update_investigation failed, buffering", error=str(e))
 
         # Offline or local investigation - buffer
@@ -6207,7 +6249,7 @@ class ResilientKnowledgeBase:
             try:
                 return self._kb.record_drift_event(drift_type, description, drift_details)
             except Exception as e:
-                self._health_monitor.mark_unhealthy()
+                self._db_failed("record_drift_event", e)
                 _log("warn", "record_drift_event failed, buffering", error=str(e))
 
         # Offline - buffer
@@ -6224,7 +6266,7 @@ class ResilientKnowledgeBase:
             try:
                 return self._kb.update_baseline(service_name, expected_state, baseline_metrics)
             except Exception as e:
-                self._health_monitor.mark_unhealthy()
+                self._db_failed("update_baseline", e)
                 _log("warn", "update_baseline failed, buffering", error=str(e))
 
         # Offline - buffer
@@ -6250,8 +6292,8 @@ class ResilientKnowledgeBase:
         if self._health_monitor.is_healthy():
             try:
                 return self._kb.get_setting(key, default)
-            except Exception:
-                self._health_monitor.mark_unhealthy()
+            except Exception as e:
+                self._db_failed("get_setting", e)
                 if strict:
                     raise
         elif strict:
@@ -6264,8 +6306,8 @@ class ResilientKnowledgeBase:
             raise ConnectionError("Database is offline")
         try:
             self._kb.set_setting(key, value)
-        except Exception:
-            self._health_monitor.mark_unhealthy()
+        except Exception as e:
+            self._db_failed("set_setting", e)
             raise
 
     def get_next_queued_investigation(self) -> Optional[Dict[str, Any]]:
@@ -6273,8 +6315,8 @@ class ResilientKnowledgeBase:
         if self._health_monitor.is_healthy():
             try:
                 return self._kb.get_next_queued_investigation()
-            except Exception:
-                self._health_monitor.mark_unhealthy()
+            except Exception as e:
+                self._db_failed("get_next_queued_investigation", e)
         return None  # Can't process queue when offline
 
     def get_baseline(self, service_name: Optional[str] = None) -> Dict[str, Any]:
@@ -6282,8 +6324,8 @@ class ResilientKnowledgeBase:
         if self._health_monitor.is_healthy():
             try:
                 return self._kb.get_baseline(service_name)
-            except Exception:
-                self._health_monitor.mark_unhealthy()
+            except Exception as e:
+                self._db_failed("get_baseline", e)
         return {}
 
     def get_stats(self) -> Dict[str, Any]:
@@ -6293,8 +6335,8 @@ class ResilientKnowledgeBase:
             try:
                 db_stats = self._kb.get_stats()
                 stats.update(db_stats)
-            except Exception:
-                self._health_monitor.mark_unhealthy()
+            except Exception as e:
+                self._db_failed("get_stats", e)
         stats["buffer_pending"] = self._buffer.pending_count()
         return stats
 
@@ -6303,8 +6345,8 @@ class ResilientKnowledgeBase:
         if self._health_monitor.is_healthy():
             try:
                 return self._kb.find_learnings(**kwargs)
-            except Exception:
-                self._health_monitor.mark_unhealthy()
+            except Exception as e:
+                self._db_failed("find_learnings", e)
         return []
 
     def store_learning(self, learning_data):
@@ -6313,7 +6355,7 @@ class ResilientKnowledgeBase:
             try:
                 return self._kb.store_learning(learning_data)
             except Exception as e:
-                self._health_monitor.mark_unhealthy()
+                self._db_failed("store_learning", e)
                 _log("warn", "store_learning failed (DB down?)", error=str(e))
         return -1
 
@@ -6322,8 +6364,8 @@ class ResilientKnowledgeBase:
         if self._health_monitor.is_healthy():
             try:
                 return self._kb.get_learnings_since(since, limit)
-            except Exception:
-                self._health_monitor.mark_unhealthy()
+            except Exception as e:
+                self._db_failed("get_learnings_since", e)
         return []
 
     # ====================== Delegate Everything Else to Underlying KB ===========
