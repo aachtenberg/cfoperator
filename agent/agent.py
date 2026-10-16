@@ -422,6 +422,18 @@ def _raise_for_status_with_body(resp) -> None:
             raise
         raise req.HTTPError(f"{e}: {snippet}", response=resp) from None
 
+# What the agent's SSH identity can do on a host, said once where the model
+# reads it. The forensics user has no blanket sudo (HOMELAB-28); its sudoers
+# allows a read allowlist. A model that was not told this took a docker
+# socket refusal as proof it had no access to Docker (CFOP-437).
+SSH_ACCESS_CONTRACT = (
+    'SSH runs as an unprivileged user on every host: docker and crictl commands sent through '
+    'ssh_execute go through sudo -n automatically, and the host permits their read subcommands '
+    'only (ps, logs, inspect, images, stats). dmesg and du need an explicit sudo -n; journalctl '
+    'and systemctl status need none. A "permission denied" from a bare docker call is the '
+    'wrong command shape, not missing access.'
+)
+
 # The morning summary is authored by the cheap, unverified primary model, so a
 # mutation-class rec from it is a HYPOTHESIS, not a diagnosis. These are routed
 # through the investigation pipeline (capable model + real tools) instead of
@@ -3468,6 +3480,7 @@ Alert trigger: {frame_untrusted_data(trigger, "trigger", 500)}
 {get_system_framing()}
 
 Investigate this alert using the available tools. Check metrics, logs, and container/service status.
+{SSH_ACCESS_CONTRACT}
 This investigation is read-only: observe, do not change anything. A command that restarts, writes, or changes settings is refused; the change you would make goes in your FIX, and the remediation queue applies it.
 First give a short summary of what you found. Then end your response with:
 
@@ -11439,6 +11452,7 @@ You have access to these tools (use them — do not claim you lack a capability 
 {policy_block}
 Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
 Use ssh_list_services to see BOTH containers and systemd services on a host.
+{SSH_ACCESS_CONTRACT}
 
 Your role:
 - Answer infrastructure-specific questions

@@ -266,6 +266,24 @@ def _service_from_host(host: Optional[str]) -> Optional[Tuple[str, Optional[str]
         return labels[0], labels[1], False
     return None
 
+def _tool_result_failure(result) -> str:
+    """Why a tool result is a failure, or '' when it is not one.
+
+    Only dict results with an explicit ``success: False`` or an ``error``
+    key count; a tool that returns plain data is a success.
+    """
+    if not isinstance(result, dict):
+        return ''
+    if result.get('success') is not False and not result.get('error'):
+        return ''
+    for key in ('error', 'stderr', 'message'):
+        text = ' '.join(str(result.get(key) or '').split())
+        if text:
+            return text[:160]
+    code = result.get('exit_code')
+    return f'exit_code={code}' if code is not None else 'success=False'
+
+
 class ToolRegistry:
     """
     Central registry for all tools available to CFOperator.
@@ -1182,7 +1200,14 @@ class ToolRegistry:
                 logger.info("Executing tool: %s", tool_name)
             func = self.tools[tool_name]['function']
             result = func(**arguments)
-            logger.info(f"Tool {tool_name} completed successfully")
+            # A tool that ran and answered "no" is not a success: ssh_execute
+            # hands back success=False with the remote stderr, and that line
+            # used to read "completed successfully" in the log (CFOP-437).
+            failure = _tool_result_failure(result)
+            if failure:
+                logger.info(f"Tool {tool_name} returned failure: {failure}")
+            else:
+                logger.info(f"Tool {tool_name} completed successfully")
             return result
         except Exception as e:
             logger.error(f"Tool {tool_name} failed: {e}", exc_info=True)
