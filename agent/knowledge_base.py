@@ -5858,6 +5858,36 @@ def _jsonb_has_any(column, values):
     return column.op('?|')(cast(list(values), ARRAY(SQLText)))
 
 
+def _replayed_completed_at(data: Dict[str, Any], event_timestamp: Optional[str]) -> Optional[datetime]:
+    """The completed_at a replayed ``update_investigation`` should carry.
+
+    The buffered payload carries the stamp the caller passed, as ISO 8601
+    (CFOP-433). An event buffered before that key existed, or one whose
+    caller passed None, falls back to the moment the event was buffered
+    when the outcome is terminal: an investigation's final update is
+    buffered as it finishes, so the event timestamp is the completion time
+    to within milliseconds, and it beats a row that reads as never
+    finished. An update that carries no outcome, or ``in_progress``, is not
+    a completion and gets no stamp.
+    """
+    raw = data.get('completed_at')
+    if raw:
+        try:
+            return datetime.fromisoformat(str(raw))
+        except ValueError:
+            _log("warn", "Buffered completed_at is not ISO 8601; using the event time",
+                 value=str(raw)[:64])
+    outcome = data.get('outcome')
+    if not outcome or normalize_outcome(str(outcome)) == 'in_progress':
+        return None
+    if not event_timestamp:
+        return None
+    try:
+        return datetime.fromisoformat(str(event_timestamp))
+    except ValueError:
+        return None
+
+
 def _is_query_rejection(exc: BaseException) -> bool:
     """True when the database answered and said no; False when it could not be reached.
 
@@ -6093,6 +6123,7 @@ class ResilientKnowledgeBase:
             if inv_id and inv_id > 0:
                 self._kb.update_investigation(
                     investigation_id=inv_id,
+                    completed_at=_replayed_completed_at(data, event.timestamp),
                     findings=data.get('findings'),
                     outcome=data.get('outcome'),
                     duration_seconds=data.get('duration_seconds'),
@@ -6269,6 +6300,10 @@ class ResilientKnowledgeBase:
         # Offline or local investigation - buffer
         self._buffer.buffer_event('update_investigation', {
             'investigation_id': investigation_id,
+            # ISO 8601 so the outbox line stays JSON; _replayed_completed_at
+            # parses it back. Left out, a replayed investigation kept
+            # completed_at NULL for good (CFOP-433).
+            'completed_at': completed_at.isoformat() if completed_at else None,
             'findings': findings,
             'outcome': outcome,
             'duration_seconds': duration_seconds,
