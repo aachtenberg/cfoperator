@@ -324,6 +324,17 @@ LLM_SCOPES = {
     'summary': {'label': 'Morning summary', 'hint': 'the daily summary (unattended, tool loop)'},
     'classifier': {'label': 'Remediation classifier',
                    'hint': 'one-shot classification of a needs-action recommendation'},
+    # The two console chat seats (CFOP-417). Not unattended: each is where a
+    # chat *session* starts, resolved once when the session is created and
+    # stored on its row, so the console chip changes one session rather
+    # than the global default. 'auto' is the global selection
+    # (selected_backend), which keeps an untouched install on today's
+    # behaviour; the handed-rows seat is where the operator points a
+    # frontier model so Ask-console gets it without the chip.
+    'chat': {'label': 'Chat (new session)',
+             'hint': 'where a plain console chat session starts; auto = the global selection'},
+    'handoff': {'label': 'Handed rows',
+                'hint': 'where an Ask-console session (a remediation or investigation row) starts'},
 }
 
 # Model-name tokens that mark a vendor's FAST tier, refused in the judge seat
