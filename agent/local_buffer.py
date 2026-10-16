@@ -195,17 +195,21 @@ class LocalEventBuffer:
         """
         Mark events up to sequence number as synced.
 
-        Deletes buffer files where all events have been processed.
+        Deletes buffer files where all events have been processed — the file
+        currently open for writing included. It used to be spared, which
+        meant a file that was never rotated (the common case: a handful of
+        events during a short blip, nowhere near the size limit) was
+        replayed on every sync tick for the life of the process; each
+        replay of a ``start_investigation`` inserted another row (CFOP-430,
+        868 rows in seven hours). Holding ``_write_lock`` here means no
+        writer can append between the sequence scan and the unlink; a
+        writer waiting on the lock opens a fresh file afterwards.
 
         Args:
             up_to_sequence: All events with sequence <= this value are synced
         """
         with self._write_lock:
             for path in sorted(self.buffer_dir.glob(f"events_{self.host_id}_*.jsonl")):
-                # Skip the current file being written to
-                if self._current_file and path == self._current_file:
-                    continue
-
                 try:
                     max_seq_in_file = 0
                     with open(path, 'r') as f:
@@ -216,6 +220,11 @@ class LocalEventBuffer:
 
                     if max_seq_in_file <= up_to_sequence:
                         # All events in this file have been synced
+                        if self._current_file and path == self._current_file:
+                            if self._file_handle and not self._file_handle.closed:
+                                self._file_handle.close()
+                            self._file_handle = None
+                            self._current_file = None
                         path.unlink()
                         _log("info", "Deleted synced buffer file",
                              path=str(path), max_sequence=max_seq_in_file)

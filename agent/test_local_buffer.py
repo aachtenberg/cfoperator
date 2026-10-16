@@ -178,7 +178,13 @@ class TestGetPendingEvents:
 
 
 class TestMarkSynced:
-    def test_deletes_fully_synced_files_but_keeps_current(self, tmp_path):
+    def test_deletes_fully_synced_files_including_current(self, tmp_path):
+        """The open file is not exempt: once everything in it is synced it goes.
+
+        Sparing it is the CFOP-430 replay loop — a file that never reached
+        the rotation size was re-read on every sync tick, and each pass
+        re-inserted its start_investigation (868 rows in seven hours).
+        """
         buffer_dir = tmp_path / "buffer"
         first = LocalEventBuffer(host_id="testhost", buffer_dir=str(buffer_dir))
         first.buffer_event("a", {})
@@ -190,11 +196,50 @@ class TestMarkSynced:
             second.buffer_event("c", {})  # sequence 3, in the current file
             second.mark_synced(3)
 
-            remaining = list(buffer_dir.glob("events_testhost_*.jsonl"))
-            assert remaining == [second._current_file]
-            assert [e.sequence for e in second.get_pending_events()] == [3]
+            assert list(buffer_dir.glob("events_testhost_*.jsonl")) == []
+            assert second.get_pending_events() == []
+            assert not second.has_pending_events()
         finally:
             second.close()
+
+    def test_current_file_with_unsynced_tail_is_kept(self, tmp_path):
+        buffer_dir = tmp_path / "buffer"
+        buf = LocalEventBuffer(host_id="testhost", buffer_dir=str(buffer_dir))
+        try:
+            buf.buffer_event("a", {})
+            buf.buffer_event("b", {})
+            buf.mark_synced(1)  # sequence 2 is still pending in the open file
+            assert [e.sequence for e in buf.get_pending_events()] == [1, 2]
+        finally:
+            buf.close()
+
+    def test_synced_current_file_is_not_replayed_on_the_next_tick(self, tmp_path):
+        """Simulate the sync loop: pending → replay → mark → pending again.
+
+        The second read must be empty, and an event buffered afterwards must
+        land in a fresh file and be the only thing pending — not be appended
+        to an unlinked inode and lost.
+        """
+        buffer_dir = tmp_path / "buffer"
+        buf = LocalEventBuffer(host_id="testhost", buffer_dir=str(buffer_dir))
+        try:
+            buf.buffer_event("start_investigation", {"trigger": "x"})
+            first_file = buf._current_file
+            pending = buf.get_pending_events()
+            assert [e.sequence for e in pending] == [1]
+            buf.mark_synced(pending[-1].sequence)
+
+            assert buf.get_pending_events() == []          # tick 2: nothing to replay
+            assert buf.get_pending_events() == []          # tick 3: still nothing
+
+            assert buf.buffer_event("update_investigation", {}) == 2
+            assert buf._current_file != first_file
+            assert buf._current_file.exists()
+            assert [(e.sequence, e.event_type) for e in buf.get_pending_events()] == [
+                (2, "update_investigation")
+            ]
+        finally:
+            buf.close()
 
     def test_keeps_file_with_unsynced_events(self, tmp_path):
         buffer_dir = tmp_path / "buffer"
