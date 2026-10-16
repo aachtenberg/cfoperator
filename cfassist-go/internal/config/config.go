@@ -399,10 +399,10 @@ providers:
   # claude:
   #   provider: anthropic
   #   url: https://api.anthropic.com
-  #   model: claude-sonnet-4-20250514
+  #   model: claude-opus-5-5
   #   temperature: 0.7
   #   api_key: ${ANTHROPIC_API_KEY}
-  #   context_window: 200000
+  #   context_window: 1048576
 
 context:
   directory: ~/.cfassist/context
