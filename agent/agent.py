@@ -7791,7 +7791,6 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     'max_tokens': 2048,
                     'system': 'You are an SRE analyst. Analyze operational data for patterns. Return ONLY valid JSON.',
                     'messages': [{'role': 'user', 'content': prompt}],
-                    'temperature': 0.3
                 }
                 resp = _llm_post(
                     'correlations', 'anthropic', model,
@@ -8607,7 +8606,6 @@ write a real trigger condition for. Return {{"learnings": []}} if nothing qualif
                     'max_tokens': 2048,
                     'system': 'You are a structured data extractor. Return ONLY valid JSON.',
                     'messages': [{'role': 'user', 'content': prompt}],
-                    'temperature': 0.3
                 }
                 headers = {
                     'Content-Type': 'application/json',
@@ -11157,12 +11155,14 @@ Only return the JSON array, no other text."""
                     # Anthropic uses system as a top-level param, not a message
                     converted_messages = self._to_anthropic_messages(full_messages)
 
+                    # No sampling parameters on the Anthropic wire: Opus 4.7 and later
+                    # reject temperature/top_p/top_k with a 400 (CFOP-117 for the judge,
+                    # CFOP-435 for this site).
                     payload = {
                         'model': model,
                         'max_tokens': 4096,
                         'system': system_context,
                         'messages': converted_messages,
-                        'temperature': 0.7
                     }
                     if offered_tools:
                         payload['tools'] = anthropic_tools
@@ -11178,7 +11178,9 @@ Only return the JSON array, no other text."""
                         headers=headers,
                         timeout=120
                     )
-                    response.raise_for_status()
+                    # The body says WHICH thing Anthropic refused; the
+                    # status line alone was the console's bare "400".
+                    _raise_for_status_with_body(response)
                     data = response.json()
 
                     if data.get('error'):
@@ -11338,7 +11340,7 @@ Only return the JSON array, no other text."""
                 payload = {
                     'model': model, 'max_tokens': 4096,
                     'system': system_context,
-                    'messages': converted, 'temperature': 0.7
+                    'messages': converted
                 }
                 headers = {
                     'Content-Type': 'application/json',
@@ -11346,7 +11348,7 @@ Only return the JSON array, no other text."""
                     'anthropic-version': '2023-06-01'
                 }
                 response = requests.post('https://api.anthropic.com/v1/messages', json=payload, headers=headers, timeout=120)
-                response.raise_for_status()
+                _raise_for_status_with_body(response)
                 data = response.json()
                 usage = data.get('usage', {})
                 stats.input_tokens += usage.get('input_tokens', 0)
