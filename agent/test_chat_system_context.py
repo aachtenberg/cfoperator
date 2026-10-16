@@ -44,3 +44,20 @@ def test_chat_system_context_mutation_fails_when_builder_ignores_registry():
     # The old hand-written bullets mentioned Prometheus without tool names —
     # ensure we are not still emitting that as the sole capability list.
     assert "brand_new_tool:" in prompt
+
+
+def test_chat_system_context_states_the_ssh_access_contract():
+    # A model that is not told the SSH user is unprivileged, and that docker
+    # reads go through sudo -n, reads a socket refusal as "no access to
+    # Docker" and answers the operator with it (CFOP-437).
+    import importlib
+    SSH_ACCESS_CONTRACT = importlib.import_module(CFOperator.__module__).SSH_ACCESS_CONTRACT
+    op = MagicMock()
+    op.config = {"infrastructure": {"hosts": {"pi": {"address": "10.0.0.1", "role": "node"}}}}
+    op.current_investigation = None
+    op.last_sweep = 0
+    op.kb.find_learnings.return_value = []
+    op.tools.get_schemas.return_value = _schemas(("ssh_execute", "Execute shell command."))
+    prompt = CFOperator._build_chat_system_context(op)
+    assert SSH_ACCESS_CONTRACT in prompt
+    assert "sudo -n" in prompt and "unprivileged" in prompt

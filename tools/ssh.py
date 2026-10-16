@@ -21,6 +21,45 @@ logger = logging.getLogger("cfoperator.tools.ssh")
 # and it fails closed instead of prompting.
 _SUDO_DOCKER = "sudo -n docker"
 
+# CFOP-437: docker and crictl answer through a root-owned socket, so a bare
+# call as the forensics user fails before the subcommand is looked at
+# ("permission denied while trying to connect to the docker API"). The
+# helpers above know to say `sudo -n docker`; a model composing its own
+# command through ssh_execute did not, read the refusal as having no
+# access to Docker at all, and answered the operator with that. The host's
+# sudoers is what bounds this: it allows the read subcommands and refuses
+# the rest, so `sudo -n docker rm` is no more possible than before. Only
+# the first simple command is touched, and only when nothing already
+# elevates it. The mutation gate runs on the command as sent and strips
+# sudo before classifying, so a gated turn sees the same program word.
+_SOCKET_READ_PROGRAMS = frozenset({"docker", "crictl"})
+_FIRST_SEGMENT_END = re.compile(r"(?<![|&])[|&;](?![&|])|\n")
+
+
+def with_sudo_for_socket_reads(command: str) -> str:
+    """``docker …`` / ``crictl …`` as the first simple command → ``sudo -n`` in front.
+
+    Leading ``VAR=value`` assignments stay in front of sudo (sudo resets the
+    environment; they were not reaching docker before either). A program
+    given by path is matched on its basename. Anything already under sudo or
+    doas, any other program, and every later pipeline segment are returned
+    untouched.
+    """
+    text = str(command or "")
+    body = text.lstrip()
+    lead = text[:len(text) - len(body)]
+    m = _ENV_ASSIGN.match(body)
+    env = m.group(0) if m else ""
+    rest = body[len(env):]
+    first_segment = _FIRST_SEGMENT_END.split(rest, 1)[0]
+    words = first_segment.split()
+    if not words:
+        return text
+    program = words[0].rsplit("/", 1)[-1]
+    if program not in _SOCKET_READ_PROGRAMS:
+        return text
+    return f"{lead}{env}sudo -n {rest}"
+
 
 def _q(value: Any) -> str:
     """Quote a value for interpolation into a remote shell command.
@@ -352,6 +391,7 @@ class SSHTools:
         ssh_user = host_config['ssh']['user']
         ssh_address = host_config['address']
         ssh_key = host_config['ssh'].get('key_path')
+        command = with_sudo_for_socket_reads(command)
 
         # Build SSH command
         ssh_cmd = ['ssh', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
@@ -625,7 +665,10 @@ class SSHTools:
             {
                 'name': 'ssh_execute',
                 'mutating': True,  # CFOP-124: withheld from members and verify-only turns
-                'description': 'Execute shell command on remote host via SSH. Use for troubleshooting, checking status, or any remote operation.',
+                'description': ('Execute shell command on remote host via SSH. Use for troubleshooting, checking status, '
+                                'or any remote operation. Runs as an unprivileged user: docker and crictl are sent through '
+                                'sudo -n for you and the host permits their read subcommands only (ps, logs, inspect, '
+                                'images, stats); dmesg and du need an explicit sudo -n; journalctl and systemctl status need none.'),
                 'parameters': {
                     'type': 'object',
                     'properties': {
