@@ -238,8 +238,10 @@ def headers_for(entry: Dict[str, Any]) -> Tuple[Dict[str, str], Optional[str]]:
     try:
         data = json.loads(plain)
     except ValueError:
+        data = None
+    if not isinstance(data, dict):
         return {}, 'the stored headers are corrupt; save them again'
-    return {str(k): str(v) for k, v in (data or {}).items()}, None
+    return {str(k): str(v) for k, v in data.items()}, None
 
 
 def public_view(entry: Dict[str, Any], status: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

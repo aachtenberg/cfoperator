@@ -283,6 +283,32 @@ class TestPolicy:
         assert set(reg.tools) == native
         assert reg.mcp_status == {}
 
+    def test_a_database_blip_keeps_the_live_connector_tools(self, monkeypatch):
+        """Review on #355 (Bugbot): a non-strict read during an outage
+        returns the default, which read as "no connectors" and swapped every
+        live connector tool out of the chat."""
+        reg = self._with_connector_tools(monkeypatch)
+
+        def get_setting(key, default="", strict=False):
+            if strict:
+                raise RuntimeError("db down")
+            return default
+        reg.operator.kb.get_setting.side_effect = get_setting
+        status = reg.mcp_status
+        assert reg.refresh_mcp_connectors() == status
+        assert reg.refresh_mcp_connectors_async() is False
+        assert {"mcp_plane_read_it", "mcp_plane_write_it"} <= set(reg.tools)
+
+
+class TestCorruptHeaders:
+    @pytest.mark.parametrize("plain", ["[1, 2]", "\"a string\"", "42", "not json"])
+    def test_sealed_headers_that_are_not_an_object_read_as_corrupt(self, secret, plain):
+        # Review on #355 (LLM review): a list here raised AttributeError
+        # out of the refresh instead of naming the problem.
+        entry = _connector(headers=mc.sealed.seal(plain, mc.HKDF_INFO))
+        headers, why = mc.headers_for(entry)
+        assert headers == {} and "corrupt" in why
+
 
 # ── A real server ────────────────────────────────────────────────────────
 

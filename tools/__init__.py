@@ -380,15 +380,23 @@ class ToolRegistry:
     # a refresh lands does not die on "dictionary changed size".
     # ------------------------------------------------------------------
 
-    def _load_mcp_connectors(self) -> List[Dict[str, Any]]:
+    def _load_mcp_connectors(self) -> Optional[List[Dict[str, Any]]]:
+        """The saved list, or None when the database cannot be read.
+
+        Strict, and None rather than []: a ResilientKnowledgeBase that is
+        marked unhealthy hands back the default, and an empty list here
+        would swap every live connector tool out of the chat over a
+        database blip. None means "keep what is registered" (review, #355).
+        """
         kb = getattr(self.operator, 'kb', None)
         if kb is None:
             return []
         try:
-            raw = kb.get_setting(mcp_connectors.SETTING_KEY, '')
+            raw = kb.get_setting(mcp_connectors.SETTING_KEY, '', strict=True)
         except Exception as e:
-            logger.warning(f"[MCP] could not read the connector list: {e}")
-            return []
+            logger.warning(f"[MCP] could not read the connector list; keeping the tools "
+                           f"already registered: {e}")
+            return None
         return mcp_connectors.loads(raw)
 
     def refresh_mcp_connectors(self, connectors: Optional[List[Dict[str, Any]]] = None
@@ -399,6 +407,8 @@ class ToolRegistry:
         with self._mcp_lock:
             if connectors is None:
                 connectors = self._load_mcp_connectors()
+            if connectors is None:
+                return self.mcp_status
             # Listing is network time; only the swap holds the tools lock, so
             # a repo save is not kept waiting on a slow MCP server.
             reserved = set(self.tools) - set(self._mcp_names)
@@ -418,7 +428,9 @@ class ToolRegistry:
         """Refresh in a background thread when any connector is saved.
         Returns whether a refresh was started."""
         connectors = self._load_mcp_connectors()
-        if not connectors and not self._mcp_names:
+        if connectors is None or (not connectors and not self._mcp_names):
+            # Unreadable: keep what is registered, and the next chat turn
+            # past max_age tries again. Empty with nothing registered: idle.
             self._mcp_refreshed_at = time.time()
             return False
 
