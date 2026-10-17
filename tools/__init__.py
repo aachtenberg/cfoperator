@@ -22,9 +22,12 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import requests as _requests
 from cfshared.config import ROLE_ADMIN
 from cfshared.tool_args import redact_tool_args
+from . import mcp_connectors
 from .ssh import SSHTools, ssh_mutation_reason
 from .discovery import DiscoveryTools
 from .k8s import K8sTools
@@ -81,7 +84,11 @@ _UNATTENDED_COMMAND_GATED = {**_VERIFY_COMMAND_GATED, 'k8s_exec_pod': 'command'}
 #                   (CFOP-240). Before that those runs were unrestricted and
 #                   "trusted to restart a service"; investigation 2558 used the
 #                   trust to run rocm-smi --setfan as root.
-_SCHEMA_MARKERS = ('mutating', 'human_only', 'unattended_ok')
+#   attended_only — offered and run only on a turn with a person behind it
+#                   (a console chat, of any role). Read or write, an
+#                   unattended run never sees it. For tools whose output this
+#                   process does not control: an MCP connector's (CFOP-443).
+_SCHEMA_MARKERS = ('mutating', 'human_only', 'unattended_ok', 'attended_only')
 
 
 def summarize_tool_args(arguments: Any) -> str:
@@ -292,6 +299,11 @@ class ToolRegistry:
     with their schemas for function calling.
     """
 
+    #: Held while ``self.tools`` is rebuilt at runtime: linked repos (CFOP-77)
+    #: and MCP connectors (CFOP-443). On the class so a registry built without
+    #: __init__ (several test fixtures) still has it; production has one.
+    _tools_lock = threading.Lock()
+
     def __init__(self, operator):
         """
         Initialize tool registry with reference to operator.
@@ -350,6 +362,83 @@ class ToolRegistry:
         self._check_marker_placement()
 
         logger.info(f"Tool registry initialized with {len(self.tools)} tools")
+
+        # MCP connectors (CFOP-443): listed in the background, so a slow or
+        # dead server never delays startup.
+        self._mcp_names: frozenset = frozenset()
+        self.mcp_status: Dict[str, Dict[str, Any]] = {}
+        self._mcp_lock = threading.Lock()  # one listing at a time
+        self._mcp_refreshed_at = 0.0
+        self.refresh_mcp_connectors_async()
+
+    # ------------------------------------------------------------------
+    # MCP connectors (CFOP-443)
+    #
+    # Same build-then-swap shape as the linked repos below, with one
+    # difference: the swap replaces ``self.tools`` with a new dict rather
+    # than editing it in place, so a chat turn iterating the old one while
+    # a refresh lands does not die on "dictionary changed size".
+    # ------------------------------------------------------------------
+
+    def _load_mcp_connectors(self) -> List[Dict[str, Any]]:
+        kb = getattr(self.operator, 'kb', None)
+        if kb is None:
+            return []
+        try:
+            raw = kb.get_setting(mcp_connectors.SETTING_KEY, '')
+        except Exception as e:
+            logger.warning(f"[MCP] could not read the connector list: {e}")
+            return []
+        return mcp_connectors.loads(raw)
+
+    def refresh_mcp_connectors(self, connectors: Optional[List[Dict[str, Any]]] = None
+                               ) -> Dict[str, Dict[str, Any]]:
+        """List every enabled connector's tools and swap them in. Returns the
+        status per connector. ``connectors`` is the list just saved, when the
+        caller has it; otherwise it is read from the database."""
+        with self._mcp_lock:
+            if connectors is None:
+                connectors = self._load_mcp_connectors()
+            # Listing is network time; only the swap holds the tools lock, so
+            # a repo save is not kept waiting on a slow MCP server.
+            reserved = set(self.tools) - set(self._mcp_names)
+            entries, status = mcp_connectors.build_entries(connectors, reserved)
+            with self._tools_lock:
+                fresh = {k: v for k, v in self.tools.items() if k not in self._mcp_names}
+                # A native tool registered while the listing ran still wins.
+                entries = {k: v for k, v in entries.items() if k not in fresh}
+                fresh.update(entries)
+                self.tools = fresh
+                self._mcp_names = frozenset(entries)
+            self.mcp_status = status
+            self._mcp_refreshed_at = time.time()
+            return status
+
+    def refresh_mcp_connectors_async(self) -> bool:
+        """Refresh in a background thread when any connector is saved.
+        Returns whether a refresh was started."""
+        connectors = self._load_mcp_connectors()
+        if not connectors and not self._mcp_names:
+            self._mcp_refreshed_at = time.time()
+            return False
+
+        def run():
+            try:
+                self.refresh_mcp_connectors(connectors)
+            except Exception as e:
+                logger.warning(f"[MCP] connector refresh failed: {e}", exc_info=True)
+
+        threading.Thread(target=run, name='mcp-connector-refresh', daemon=True).start()
+        return True
+
+    def maybe_refresh_mcp_connectors(self, max_age: float = 600.0) -> bool:
+        """Called at the start of a chat turn: refresh in the background when
+        the last one is older than ``max_age``. Covers a server whose tools
+        changed and a database that was down at startup. Never blocks."""
+        if time.time() - self._mcp_refreshed_at < max_age or self._mcp_lock.locked():
+            return False
+        self._mcp_refreshed_at = time.time()
+        return self.refresh_mcp_connectors_async()
 
     # ------------------------------------------------------------------
     # Linked repos (CFOP-77)
@@ -439,10 +528,13 @@ class ToolRegistry:
         so. Build, then swap.
         """
         git_tools, github_tools = self._build_git_tools()
-        for name in self._git_tool_names():
-            self.tools.pop(name, None)
-        self.git_tools, self.github_tools = git_tools, github_tools
-        self._register_git_tools()
+        # The MCP connector swap replaces self.tools whole (CFOP-443); without
+        # the lock an edit here could land on the dict it is about to drop.
+        with self._tools_lock:
+            for name in self._git_tool_names():
+                self.tools.pop(name, None)
+            self.git_tools, self.github_tools = git_tools, github_tools
+            self._register_git_tools()
         names = self._git_tool_names()
         logger.info(f"Git tools refreshed: {len(names)} tools for "
                     f"{len((self.operator.config.get('git') or {}).get('repos') or [])} repos")
@@ -1131,10 +1223,23 @@ class ToolRegistry:
         — that is exactly what an unrestricted internal caller is."""
         return policy is not None and policy.is_named_admin()
 
+    def is_attended_only(self, tool_name: str) -> bool:
+        """True if the tool runs only with a person behind the turn (CFOP-443)."""
+        entry = self.tools.get(tool_name)
+        return bool(entry and (entry.get('schema') or {}).get('attended_only'))
+
+    @staticmethod
+    def _a_person_is_there(policy: Optional[ToolPolicy]) -> bool:
+        """A console chat of any role, verify turns included. Not ``None``:
+        that is an internal caller, and nobody is behind it."""
+        return policy is not None and not policy.unattended and policy.actor_role is not None
+
     def _offers(self, name: str, schema: Dict[str, Any],
                 policy: Optional[ToolPolicy]) -> bool:
         """Whether this turn may be offered the tool at all."""
         if schema.get('human_only') and not self._a_human_asked(policy):
+            return False
+        if schema.get('attended_only') and not self._a_person_is_there(policy):
             return False
         if policy is None:
             return True
@@ -1164,6 +1269,12 @@ class ToolRegistry:
             return {'error': f'{tool_name} runs only when an admin asks for it directly. '
                              'An automated run cannot use it — put the recommendation in '
                              'your findings and let the queue classify it.',
+                    'refused': True, 'tool': tool_name}
+        if self.is_attended_only(tool_name) and not self._a_person_is_there(policy):
+            logger.warning("Tool %s refused: attended only (%s)", tool_name,
+                           policy.describe() if policy else 'internal caller, no policy')
+            return {'error': f'{tool_name} is a connector tool and runs only in a console '
+                             'chat. An automated run cannot use it.',
                     'refused': True, 'tool': tool_name}
         if policy is not None and self.is_mutating(tool_name):
             if not policy.allows_tool(tool_name, True, self.is_unattended_ok(tool_name)):

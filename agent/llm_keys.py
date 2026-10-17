@@ -23,7 +23,6 @@ for its TTL after a rotation. A read is one ``get_setting``, which a chain
 walk already does several times over.
 """
 
-import base64
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -75,16 +74,11 @@ def label_for(backend: str) -> str:
 
 def _fernet():
     """A Fernet under the session secret, or None when the secret is unset.
-    Raises ImportError when the cryptography library is missing."""
-    secret = os.getenv(SECRET_ENV, '').strip()
-    if not secret:
-        return None
-    from cryptography.fernet import Fernet
-    from cryptography.hazmat.primitives import hashes
-    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    raw = HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
-               info=_HKDF_INFO).derive(secret.encode('utf-8'))
-    return Fernet(base64.urlsafe_b64encode(raw))
+    Raises ImportError when the cryptography library is missing. The
+    derivation is shared with MCP connector headers (cfshared/sealed.py,
+    CFOP-443); the HKDF info keeps the two purposes' keys apart."""
+    from cfshared import sealed
+    return sealed.fernet(_HKDF_INFO)
 
 
 def _stored(kb, backend: str) -> Optional[str]:

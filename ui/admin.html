@@ -78,11 +78,11 @@
   .acts { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
   .empty { padding:40px; text-align:center; color:var(--text-muted); }
 
-  select, input[type="number"], input[type="text"], input[type="password"], input:not([type]) {
+  select, textarea, input[type="number"], input[type="text"], input[type="password"], input:not([type]) {
     background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border);
     border-radius:var(--radius-sm); padding:5px 8px; font-family:'JetBrains Mono',monospace;
     font-size:13px; outline:none; }
-  select:focus, input:focus { border-color:var(--accent); }
+  select:focus, input:focus, textarea:focus { border-color:var(--accent); }
   input[type="checkbox"] { accent-color:var(--accent); }
   .actform { background:var(--bg-tertiary); border:1px solid var(--border); border-radius:var(--radius-sm);
     padding:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:8px 0 12px; }
@@ -153,6 +153,7 @@
   <button type="button" class="tab" role="tab" data-tab="llm" aria-selected="false">LLM</button>
   <button type="button" class="tab" role="tab" data-tab="allowlist" aria-selected="false">Allowlist</button>
   <button type="button" class="tab" role="tab" data-tab="repos" aria-selected="false">Repos</button>
+  <button type="button" class="tab" role="tab" data-tab="connectors" aria-selected="false">Connectors</button>
 </nav>
 
 <!-- ── Users ── -->
@@ -438,6 +439,62 @@
   </div>
 </section>
 
+<!-- ── Connectors (CFOP-443) ── -->
+<section class="panel" id="panel-connectors" role="tabpanel">
+  <div class="divider">MCP connectors <span class="muted" id="conn-count"></span></div>
+  <div class="section">
+    <p class="muted" style="margin:8px 0 12px">
+      MCP servers whose tools the console chat may use. Each tool joins the chat as
+      <code>mcp_&lt;name&gt;_&lt;tool&gt;</code>. Chat only: investigations, sweeps and
+      triage never see them. A tool the server does not mark read-only is treated as a
+      write, so members are not offered it and an admin's call is logged with its
+      arguments. Streamable HTTP servers only; header values are stored encrypted and
+      never shown again.
+    </p>
+  </div>
+  <div class="banner warn" id="conn-storage" hidden></div>
+  <table>
+    <thead><tr>
+      <th>Name</th><th>URL</th><th>Headers</th><th>Tools</th><th>Status</th><th>Actions</th>
+    </tr></thead>
+    <tbody id="conn-rows"></tbody>
+  </table>
+  <div id="conn-empty" class="empty" hidden>No connectors.</div>
+  <div class="section" id="conn-refresh-row" style="margin-top:10px" hidden>
+    <button class="chip" id="conn-refresh-btn" onclick="refreshConns()">Refresh all</button>
+    <span class="muted">Lists every enabled connector's tools again. The chat also refreshes on its own every ten minutes.</span>
+  </div>
+
+  <div class="divider" id="conn-form-title">Add a connector</div>
+  <div class="section" id="conn-form">
+    <div class="actform" style="flex-direction:column; align-items:stretch; gap:10px">
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        <label for="nc-name">name</label>
+        <input id="nc-name" type="text" placeholder="plane" autocomplete="off" style="width:140px">
+        <label for="nc-url">url</label>
+        <input id="nc-url" type="text" placeholder="the server's MCP endpoint, scheme included" autocomplete="off" style="min-width:360px; flex:1">
+        <label style="display:inline-flex; gap:5px; align-items:center"><input id="nc-enabled" type="checkbox" checked> enabled</label>
+      </div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-start">
+        <label for="nc-headers">headers</label>
+        <textarea id="nc-headers" rows="3" autocomplete="off" spellcheck="false" style="min-width:360px; flex:1"
+          placeholder="x-api-key: plane_api_…&#10;x-workspace-slug: cfoperator"></textarea>
+      </div>
+      <div class="muted" id="nc-headers-note">One <code>Name: value</code> per line. Values are encrypted at rest and never returned.</div>
+      <label id="nc-clear-wrap" style="display:none; gap:5px; align-items:center"><input id="nc-clear" type="checkbox"> remove the stored headers</label>
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+        <label for="nc-tools">only these tools</label>
+        <input id="nc-tools" type="text" placeholder="optional, e.g. workitem, workitem_comment, state" autocomplete="off" style="min-width:360px; flex:1">
+      </div>
+      <div class="muted">Leave empty to offer every tool the server lists. A small local model does better with a short list.</div>
+      <div>
+        <button class="chip" id="nc-btn" onclick="saveConn()">+ Save connector</button>
+        <button class="chip" id="nc-cancel" onclick="resetConnForm()" hidden>Cancel edit</button>
+      </div>
+    </div>
+  </div>
+</section>
+
 <div id="toasts"></div>
 
 <!-- esc/badge/color/parseTs/toast — one copy, see ui/common.js. Not deferred: the
@@ -477,7 +534,7 @@ async function api(path, opts){
 let ME = null;
 function isAdmin(){ return !!(ME && (ME.role === 'admin' || ME.auth_disabled)); }
 
-const TABS = ['users','tokens','llm','allowlist','repos'];
+const TABS = ['users','tokens','llm','allowlist','repos','connectors'];
 function currentTab(){
   const q = new URLSearchParams(location.search).get('tab');
   return TABS.includes(q) ? q : 'users';
@@ -498,6 +555,7 @@ function showTab(tab){
   if(tab === 'tokens') loadTokens();
   if(tab === 'allowlist') loadAllowlist();
   if(tab === 'repos') loadRepos();
+  if(tab === 'connectors') loadConns();
 }
 document.querySelector('.tabs').addEventListener('click', (e)=>{
   const btn = e.target.closest('.tab');
@@ -1316,6 +1374,186 @@ async function revertRepos(){
   resetRepoForm();
   applyRepoPayload(r.data);
 }
+
+/* ── Connectors (CFOP-443) ──
+ * MCP servers whose tools the console chat may use. The server never sends a
+ * header value back, only names, so editing leaves the headers box empty and
+ * an empty box means "keep what is stored".
+ */
+let CONNS = { connectors: [], storage: 'available' };
+let CONN_EDITING = null;
+
+function connField(id){ return document.getElementById(id); }
+function resetConnForm(){
+  CONN_EDITING = null;
+  ['nc-name','nc-url','nc-headers','nc-tools'].forEach(id=>{ connField(id).value=''; });
+  connField('nc-enabled').checked = true;
+  connField('nc-clear').checked = false;
+  connField('nc-clear-wrap').style.display = 'none';
+  connField('nc-name').disabled = false;
+  connField('nc-headers').placeholder = 'x-api-key: plane_api_…\nx-workspace-slug: cfoperator';
+  document.getElementById('conn-form-title').textContent = 'Add a connector';
+  document.getElementById('nc-btn').textContent = '+ Save connector';
+  document.getElementById('nc-cancel').hidden = true;
+}
+function editConn(name){
+  const c = (CONNS.connectors || []).find(x => x.name === name);
+  if(!c) return;
+  CONN_EDITING = name;
+  connField('nc-name').value = c.name;
+  // The name is in every tool name the chat has seen; changing it would add
+  // a second connector rather than rename this one.
+  connField('nc-name').disabled = true;
+  connField('nc-url').value = c.url || '';
+  connField('nc-enabled').checked = !!c.enabled;
+  connField('nc-tools').value = (c.tools || []).join(', ');
+  connField('nc-headers').value = '';
+  const names = c.header_names || [];
+  connField('nc-headers').placeholder = names.length
+    ? `stored: ${names.join(', ')}. Leave empty to keep them; anything typed here replaces them all.`
+    : 'none stored';
+  connField('nc-clear').checked = false;
+  connField('nc-clear-wrap').style.display = names.length ? 'inline-flex' : 'none';
+  document.getElementById('conn-form-title').textContent = 'Edit ' + c.name;
+  document.getElementById('nc-btn').textContent = 'Save changes';
+  document.getElementById('nc-cancel').hidden = false;
+  document.getElementById('conn-form').scrollIntoView({block:'nearest'});
+}
+function connStatusHtml(c){
+  const s = c.status || {};
+  if(!c.enabled) return badge('disabled', '--text-muted');
+  if(s.state === 'error') return badge('error', '--red') + `<div class="muted" style="margin-top:4px">${esc(s.error)}</div>`;
+  if(s.state !== 'ok') return '<span class="muted">not listed yet</span>';
+  const n = (s.tools || []).length, ro = (s.read_only || []).length;
+  let html = badge(`${n} tool${n===1?'':'s'}`, n ? '--accent' : '--orange')
+    + `<div class="muted" style="margin-top:4px">${ro} read-only · ${esc(s.remote_count)} listed by the server</div>`;
+  if((s.missing || []).length) html += `<div class="muted">not on the server: ${esc(s.missing.join(', '))}</div>`;
+  if((s.skipped || []).length) html += `<div class="muted">skipped (name clash or too long): ${esc(s.skipped.join(', '))}</div>`;
+  if(s.checked_at) html += `<div class="muted">checked ${esc(fmt(s.checked_at))}</div>`;
+  return html;
+}
+function connToolsHtml(c){
+  const s = c.status || {};
+  const offered = s.tools || [];
+  const filter = (c.tools || []).length ? `only: ${esc(c.tools.join(', '))}` : 'all the server lists';
+  if(!offered.length) return `<span class="muted">${filter}</span>`;
+  const ro = new Set(s.read_only || []);
+  const items = offered.map(t => `<div class="mono">${esc(t)}${ro.has(t) ? '' : ' ' + badge('write','--orange')}</div>`).join('');
+  return `<details><summary class="muted">${filter}</summary>${items}</details>`;
+}
+function connRowHtml(c){
+  const headers = (c.header_names || []).length
+    ? esc(c.header_names.join(', ')) + (c.headers_state === 'unreadable' ? ' ' + badge('unreadable','--red') : '')
+    : '<span class="muted">—</span>';
+  const acts = isAdmin() ? `<div class="acts">
+      <button class="chip" data-act="edit" data-name="${esc(c.name)}">Edit</button>
+      <button class="chip danger" data-act="rm" data-name="${esc(c.name)}">Remove</button>
+    </div>` : '<span class="muted">—</span>';
+  return `<tr class="${c.enabled ? '' : 'inactive'}">
+    <td class="mono">${esc(c.name)}</td>
+    <td class="mono" style="word-break:break-all">${esc(c.url)}</td>
+    <td class="mono">${headers}</td>
+    <td>${connToolsHtml(c)}</td>
+    <td>${connStatusHtml(c)}</td>
+    <td>${acts}</td>
+  </tr>
+  <tr class="formrow" id="cf-${esc(c.name)}" hidden><td colspan="6"><div class="formbody"></div></td></tr>`;
+}
+function renderConns(){
+  const rows = CONNS.connectors || [];
+  document.getElementById('conn-rows').innerHTML = rows.map(connRowHtml).join('');
+  document.getElementById('conn-empty').hidden = rows.length > 0;
+  document.getElementById('conn-count').textContent = rows.length ? `(${rows.length})` : '';
+  const warn = document.getElementById('conn-storage');
+  if(CONNS.db_error){
+    warn.hidden = false; warn.textContent = 'Could not read the saved connectors: ' + CONNS.db_error;
+  } else if(CONNS.storage !== 'available'){
+    warn.hidden = false;
+    warn.textContent = 'Headers cannot be stored on this server: CFOP_SESSION_SECRET is unset or the cryptography library is missing. A connector without auth headers still works.';
+  } else {
+    warn.hidden = true;
+  }
+  document.getElementById('conn-form').hidden = !isAdmin();
+  document.getElementById('conn-form-title').hidden = !isAdmin();
+  document.getElementById('conn-refresh-row').hidden = !isAdmin() || !rows.length;
+}
+async function loadConns(){
+  const r = await api('/api/settings/mcp_connectors');
+  if(!r.ok){
+    document.getElementById('conn-rows').innerHTML = '';
+    document.getElementById('conn-empty').hidden = false;
+    document.getElementById('conn-empty').textContent = r.error;
+    if(r.status !== 403) banner(r.error, 'err');
+    return;
+  }
+  CONNS = r.data || CONNS;
+  document.getElementById('conn-empty').textContent = 'No connectors.';
+  renderConns();
+}
+function applyConnPayload(data){
+  if(data && data.connectors) CONNS = data;
+  renderConns();
+}
+async function saveConn(){
+  const name = connField('nc-name').value.trim();
+  const body = {
+    url: connField('nc-url').value.trim(),
+    enabled: connField('nc-enabled').checked,
+    tools: connField('nc-tools').value,
+  };
+  const headers = connField('nc-headers').value;
+  if(headers.trim()) body.headers = headers;
+  else if(CONN_EDITING && connField('nc-clear').checked) body.headers = {};
+  else if(!CONN_EDITING) body.headers = {};
+  if(!name || !body.url){ toast('name and url are required','err'); return; }
+  const btn = document.getElementById('nc-btn');
+  btn.disabled = true; btn.textContent = 'Saving and listing tools…';
+  const r = await api('/api/settings/mcp_connectors/' + encodeURIComponent(name), {method:'PUT', body: JSON.stringify(body)});
+  btn.disabled = false;
+  if(!r.ok){ btn.textContent = CONN_EDITING ? 'Save changes' : '+ Save connector'; toast(r.error, 'err'); return; }
+  const saved = (r.data.connectors || []).find(x => x.name === name);
+  const s = (saved && saved.status) || {};
+  if(saved && saved.enabled && s.state === 'error') toast(`${name} saved, but listing its tools failed: ${s.error}`, 'err');
+  else toast(`${name} saved` + (s.state === 'ok' ? ` — ${(s.tools||[]).length} tools` : ''), 'ok');
+  resetConnForm();
+  applyConnPayload(r.data);
+}
+function connFormRow(name){ return document.getElementById('cf-' + name); }
+function confirmRemoveConn(name){
+  document.querySelectorAll('#conn-rows tr.formrow').forEach(tr=>{ tr.hidden=true; tr.querySelector('.formbody').innerHTML=''; });
+  const tr = connFormRow(name); if(!tr) return;
+  tr.querySelector('.formbody').innerHTML =
+    `<span class="warn">Remove ${esc(name)}? The chat loses its tools at once, and its stored headers are deleted.</span>
+     <button class="chip danger" data-act="rm-save" data-name="${esc(name)}">Yes, remove</button>
+     <button class="chip" data-act="cancel" data-name="${esc(name)}">Cancel</button>`;
+  tr.hidden = false;
+}
+async function removeConn(name){
+  const r = await api('/api/settings/mcp_connectors/' + encodeURIComponent(name), {method:'DELETE'});
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast(name + ' removed', 'ok');
+  if(CONN_EDITING === name) resetConnForm();
+  applyConnPayload(r.data);
+}
+async function refreshConns(){
+  const btn = document.getElementById('conn-refresh-btn');
+  btn.disabled = true;
+  const r = await api('/api/settings/mcp_connectors/refresh', {method:'POST', body:'{}'});
+  btn.disabled = false;
+  if(!r.ok){ toast(r.error,'err'); return; }
+  toast('connectors listed again', 'ok');
+  applyConnPayload(r.data);
+}
+document.getElementById('conn-rows').addEventListener('click', (e)=>{
+  const el = e.target.closest('[data-act]');
+  if(!el) return;
+  const name = el.dataset.name;
+  const act = el.dataset.act;
+  if(act === 'edit') editConn(name);
+  else if(act === 'rm') confirmRemoveConn(name);
+  else if(act === 'rm-save') removeConn(name);
+  else if(act === 'cancel'){ const tr = connFormRow(name); if(tr){ tr.hidden = true; tr.querySelector('.formbody').innerHTML=''; } }
+});
 
 document.getElementById('llm-backend').addEventListener('change', onBackendChange);
 document.getElementById('model-select').addEventListener('change', onModelChange);

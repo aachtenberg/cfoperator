@@ -8,6 +8,8 @@ never imports the knowledge base or DB layers.
 
 - Design/contract/history: [mcp-server-plan.md](mcp-server-plan.md)
 - Slack bridge (a consumer of this server): [slack-bridge.md](slack-bridge.md)
+- The other direction, the console chat using tools from someone else's MCP
+  server: [mcp-connectors.md](mcp-connectors.md)
 - Using this server as an incident cockpit, plus a copy-pasteable
   `.mcp.json`: [cockpit.md](cockpit.md) and
   [examples/cfoperator.mcp.json](examples/cfoperator.mcp.json)
