@@ -673,3 +673,50 @@ class TestQueueGitopsPatch:
             assert f'payload.get("{key}"' in src, (
                 f"the executor no longer reads payload[{key!r}] — this tool is "
                 "writing a work order nothing reads")
+
+
+class TestResolveTellsWhatHappensToTheTrackerItem:
+    """CFOP-444: closing a filed row closes its tracker item on the next tick.
+
+    The model was never told, so it told the operator that closing CFOP-438
+    was "a manual step in Plane" — a minute before the tick closed it.
+    """
+
+    FILED = {"id": 303, "status": "filed",
+             "result": {"tracker": {"ref": "plane:abc", "key": "CFOP-438",
+                                    "url": "https://plane.example/CFOP-438"}}}
+
+    def _close(self, row, status="resolved", tick_on=True):
+        op, reg = _registry()
+        op.kb.get_remediation.return_value = row
+        op.kb.update_remediation_status.return_value = True
+        op._remediation_flag.return_value = tick_on
+        op._tracker_url.return_value = "http://cfop-tracker:8092" if tick_on else ""
+        return reg.execute("resolve_remediation",
+                           {"remediation_id": row["id"], "status": status, "note": "decommissioned"},
+                           policy=ADMIN)
+
+    @pytest.mark.parametrize("status", ["resolved", "rejected"])
+    def test_a_filed_row_says_the_tick_closes_its_item(self, status):
+        out = self._close(self.FILED, status=status)
+        assert out["success"] is True
+        assert "CFOP-438" in out["tracker_note"]
+        assert "next tick" in out["tracker_note"]
+
+    def test_with_the_tick_off_it_says_the_item_stays_open(self):
+        out = self._close(self.FILED, tick_on=False)
+        assert "stays open" in out["tracker_note"]
+        assert "next tick" not in out["tracker_note"]
+
+    def test_a_row_with_no_tracker_item_gets_no_note(self):
+        out = self._close({"id": 7, "status": "needs-human", "result": {}})
+        assert out["success"] is True and "tracker_note" not in out
+
+    def test_an_approval_does_not_claim_a_close(self):
+        op, reg = _registry()
+        op.kb.get_remediation.return_value = self.FILED
+        op.kb.remediation_approve_conflict.return_value = None
+        op.kb.update_remediation_status.return_value = True
+        out = reg.execute("resolve_remediation", {"remediation_id": 303, "status": "approved"},
+                          policy=ADMIN)
+        assert out["success"] is True and "tracker_note" not in out

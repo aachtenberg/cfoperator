@@ -931,7 +931,10 @@ class ToolRegistry:
                     'no longer needed, or the device/service is decommissioned — or approve it, '
                     'handing it to the executor. This is the ONLY way to take a row off the '
                     '/remediations worklist or send it on — update_sweep_finding does NOT close a '
-                    'remediation. Use get_remediation first to confirm the id.'
+                    'remediation. Use get_remediation first to confirm the id. A row filed to the '
+                    'issue tracker (Plane, GitHub, Jira) needs nothing done in the tracker: closing '
+                    'the row here closes its item on the next tracker hand-off tick, and the result '
+                    'says so in tracker_note.'
                 ),
                 'parameters': {
                     'type': 'object',
@@ -1653,11 +1656,44 @@ class ToolRegistry:
             if not ok:
                 return {'error': f'Remediation #{rid} could not be updated.'}
             # Re-read so the model reports the stored state, not its intent.
-            return {'success': True,
-                    'remediation': self._trim_remediation_for_tool(
-                        self.operator.kb.get_remediation(rid) or {})}
+            stored = self.operator.kb.get_remediation(rid) or {}
+            out = {'success': True,
+                   'remediation': self._trim_remediation_for_tool(stored)}
+            tracker_note = self._tracker_close_note(stored or row, status)
+            if tracker_note:
+                out['tracker_note'] = tracker_note
+            return out
         except Exception as e:
             return {'error': str(e)}
+
+    def _tracker_close_note(self, row: Dict[str, Any], status: str) -> str:
+        """What happens to a closed row's tracker item, said to the model (CFOP-444).
+
+        Without it the model guessed, and guessed wrong: it closed #303 and
+        told the operator that closing CFOP-438 was "a manual step in Plane",
+        which the tracker tick did a minute later on its own. The note is
+        only as strong as the facts: when the tick is off on this agent it
+        says the item stays open instead.
+        """
+        if status not in ('resolved', 'rejected'):
+            return ''
+        res = row.get('result') if isinstance(row, dict) else None
+        tr = res.get('tracker') if isinstance(res, dict) else None
+        if not isinstance(tr, dict) or not tr.get('ref'):
+            return ''
+        item = str(tr.get('key') or tr.get('url') or 'the tracker item')
+        op = self.operator
+        try:
+            live = bool(op._remediation_flag('queue_tracker')) and bool(op._tracker_url())
+        except Exception:
+            live = False
+        if live:
+            return (f'{item} is closed by the tracker hand-off on its next tick, with this '
+                    f'note. Nothing needs doing in the tracker; do not tell the operator to '
+                    f'close it by hand.')
+        return (f'{item} stays open: the tracker hand-off is off on this agent (the '
+                f'queue_tracker flag or the tracker URL is unset), so close it in the '
+                f'tracker by hand.')
 
     #: A one-line "fix it" gives the executor's file-select pass nothing to go
     #: on: it picks a file by the identifiers in the recommendation, so a
