@@ -714,6 +714,46 @@
             word-break: break-word;
         }
 
+        /* A host write waiting for the admin (CFOP-442). Outside the
+           collapsible tool log on purpose: the turn is paused on it. */
+        .host-confirm {
+            margin: 10px 0;
+            padding: 12px 14px;
+            border: 1px solid var(--orange-dim);
+            border-left: 3px solid var(--orange);
+            border-radius: var(--radius-sm);
+            background: var(--bg-secondary);
+            max-width: 760px;
+        }
+        .host-confirm .hc-title { color: var(--orange); font-size: 12px; margin-bottom: 6px; }
+        .host-confirm .hc-host { color: var(--text-secondary); font-size: 12px; }
+        .host-confirm .hc-command {
+            margin: 6px 0;
+            padding: 8px 10px;
+            background: var(--bg-primary);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 13px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        .host-confirm .hc-reason { color: var(--text-muted); font-size: 11px; margin-bottom: 8px; }
+        .host-confirm .hc-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .host-confirm button {
+            font: inherit; font-size: 12px;
+            padding: 5px 14px;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            cursor: pointer;
+        }
+        .host-confirm button.hc-run { border-color: var(--orange); color: var(--orange); }
+        .host-confirm button:disabled { opacity: 0.5; cursor: default; }
+        .host-confirm .hc-outcome { color: var(--text-secondary); font-size: 12px; }
+        .host-confirm.settled { border-left-color: var(--border); }
+
         .tool-card .tc-summary {
             color: var(--text-muted);
             font-size: 11px;
@@ -1648,6 +1688,12 @@
                         msgEl.querySelector('.message-bubble').appendChild(fbDiv);
                     }
                 }
+            } else if (type === 'confirm') {
+                document.getElementById('thinking').classList.remove('active');
+                addHostConfirm(data);
+            } else if (type === 'confirm_result') {
+                settleHostConfirm(data.id, data.decision, data.by);
+                document.getElementById('thinking').classList.add('active');
             } else if (type === 'fallback') {
                 addFallbackNote(data.from, data.to, data.reason);
             } else if (type === 'error') {
@@ -1656,6 +1702,70 @@
                 currentToolLog = null; currentToolCard = null; toolCallCount = 0;
                 addMessage('agent', `Error: ${data.error}`, 'error', 'none');
             }
+        }
+
+        // A host write the agent wants to make (CFOP-442). The turn is paused
+        // on the server until this is answered; Run executes exactly the
+        // command shown, once, as the write identity, with a change record.
+        function addHostConfirm(q) {
+            if (!q || !q.id) return;
+            const container = document.getElementById('chat-container');
+            const card = document.createElement('div');
+            card.className = 'host-confirm';
+            card.id = 'host-confirm-' + q.id;
+            const mins = Math.max(1, Math.round((q.timeout_s || 300) / 60));
+            card.innerHTML = `
+                <div class="hc-title">\u26A0 Run this on a host?</div>
+                <div class="hc-host">${escapeHtml(q.host || '')} \u00B7 ${escapeHtml(q.tool || '')}</div>
+                <div class="hc-command"></div>
+                <div class="hc-reason">${escapeHtml(q.reason || '')}. Runs once as the write identity, with sudo, and is recorded. Unanswered in ${mins} min, nothing runs.</div>
+                <div class="hc-actions">
+                    <button type="button" class="hc-run">Run</button>
+                    <button type="button" class="hc-decline">Decline</button>
+                    <span class="hc-outcome"></span>
+                </div>`;
+            card.querySelector('.hc-command').textContent = q.command || '';
+            const chatId = inFlightChatId;
+            card.querySelector('.hc-run').addEventListener('click', () => answerHostConfirm(chatId, q.id, true));
+            card.querySelector('.hc-decline').addEventListener('click', () => answerHostConfirm(chatId, q.id, false));
+            container.appendChild(card);
+            currentToolLog = null; currentToolCard = null;  // later tool rows go below the card
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function answerHostConfirm(chatId, confirmId, approve) {
+            const card = document.getElementById('host-confirm-' + confirmId);
+            if (!card || !chatId) return;
+            card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+            const out = card.querySelector('.hc-outcome');
+            out.textContent = approve ? 'running\u2026' : 'declining\u2026';
+            fetch(`/api/chat/${chatId}/confirm`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({confirm_id: confirmId, approve})
+            }).then(r => r.json().then(body => ({ok: r.ok, body}))).then(({ok, body}) => {
+                if (!ok) {
+                    out.textContent = (body && body.error) || 'could not answer';
+                    // A question that is still waiting can be answered again.
+                    if (!/already|no longer|no such/.test(out.textContent)) {
+                        card.querySelectorAll('button').forEach(b => { b.disabled = false; });
+                    }
+                }
+            }).catch(() => {
+                out.textContent = 'could not reach the agent';
+                card.querySelectorAll('button').forEach(b => { b.disabled = false; });
+            });
+        }
+
+        function settleHostConfirm(confirmId, decision, by) {
+            const card = document.getElementById('host-confirm-' + confirmId);
+            if (!card) return;
+            card.classList.add('settled');
+            card.querySelectorAll('button').forEach(b => { b.disabled = true; b.style.display = 'none'; });
+            const words = {approved: 'Approved', declined: 'Declined', stopped: 'Stopped', timeout: 'Not answered in time; nothing ran'};
+            const text = (words[decision] || decision || '') + (by ? ` by ${by}` : '');
+            card.querySelector('.hc-outcome').textContent = decision === 'approved'
+                ? text + ' \u2014 running through the executor\u2026' : text;
         }
 
         // The server already emitted 'fallback' whenever it rotated providers

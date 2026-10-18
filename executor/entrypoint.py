@@ -35,7 +35,7 @@ from diff import extract_diff_block
 from github import GitHubClient, get_file, list_repo_files, open_pr_from_diff
 from llm import make_llm
 from nodeaction import (
-    allowlist_from_env, build_command_prompt, command_is_query, parse_command_plan,
+    SSHError, allowlist_from_env, build_command_prompt, command_is_query, parse_command_plan,
     plan_refusals, run_ssh_plan, validate_plan,
 )
 
@@ -54,6 +54,31 @@ logger = logging.getLogger("cfop-executor")
 # applicable diff". Remove a class from here in the change that gives it a
 # runner, never before (CFOP-61).
 _NO_EXECUTOR_PATH = ("k8s-imperative", "data-fix", "external-system")
+
+# CFOP-442: a command a named console admin read and confirmed in the chat.
+# The agent stamps both the origin and an approval whose state says so; the
+# pair, plus an approved plan, is what makes a work order one of these.
+CONSOLE_CONFIRMED_ORIGIN = "console-chat-confirm"
+CONSOLE_CONFIRMED_STATE = "console-confirmed"
+
+
+def is_console_confirmed(work_order: Dict[str, Any]) -> bool:
+    """Whether a person approved this exact plan before it reached the Job.
+
+    Every part must be present: the origin, an approval in the confirmed
+    state naming someone, and the plan they saw. Anything less is an ordinary
+    node-action and goes through the allowlist as before. The agent already
+    hands this Job its allowlist through the same environment, so trusting
+    its stamp here gives the agent no more power than it had.
+    """
+    approval = work_order.get("change_record_approval")
+    plan = work_order.get("approved_plan")
+    return bool(
+        work_order.get("origin") == CONSOLE_CONFIRMED_ORIGIN
+        and isinstance(approval, dict)
+        and approval.get("state") == CONSOLE_CONFIRMED_STATE
+        and str(approval.get("identity") or "").strip()
+        and isinstance(plan, dict) and plan.get("commands"))
 
 
 def load_work_order(env: Dict[str, str]) -> Dict[str, Any]:
@@ -297,6 +322,8 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
     # fallback -- an absent list refuses every command, which is what an
     # executor newer than its agent, or an install that declared nothing, gets.
     allow = allowlist_from_env(env)
+    if is_console_confirmed(work_order):
+        return run_confirmed_command(env, work_order)
     approved = work_order.get("approved_plan") if isinstance(work_order.get("approved_plan"), dict) else None
     if approved and approved.get("commands"):
         plan = {
@@ -390,6 +417,76 @@ def run_node_action(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str
     else:
         detail = f"ran {len(results)} command(s) on {host}"
     return build_completion_payload(work_order, "resolved", pr_url, detail, result)
+
+
+def run_confirmed_command(env: Dict[str, str], work_order: Dict[str, Any]) -> Dict[str, Any]:
+    """Run what a console admin confirmed, exactly as they saw it (CFOP-442).
+
+    No allowlist, deny list or metacharacter rule: those exist for plans no
+    person read, and this one a named admin read verbatim before saying run.
+    The host's sudoers for the write identity is the only bound left, and the
+    change record is what makes it accountable.
+
+    It runs once. A command that exits non-zero, or a host that cannot be
+    reached, is ``failed`` — not raised (main() would report the same, but
+    the detail would lose the command), and not ``needs-human``: the admin
+    already has the result in the chat, and that status files a tracker
+    issue. Nothing here is retried, because a retried ``docker rm`` is not
+    the command anyone approved.
+    """
+    plan = work_order.get("approved_plan") or {}
+    approval = work_order.get("change_record_approval") or {}
+    who = str(approval.get("identity") or "").strip()
+    commands = [str(c) for c in plan.get("commands") or []]
+    target = (work_order.get("payload") or {}).get("target") or {}
+    host = str(plan.get("host") or "").strip() or str(target.get("host") or "").strip()
+    # The record is a file on base, not a PR: it rides in result.change_record
+    # and the row's pr_url stays empty, so nothing shows it as a PR to merge.
+    record_url = work_order.get("change_record_url")
+    pr_url = None
+    result: Dict[str, Any] = {
+        "host": host,
+        "commands": commands,
+        "executed": [],
+        "explanation": str(plan.get("explanation") or ""),
+        "origin": CONSOLE_CONFIRMED_ORIGIN,
+        "approval": {"identity": who, "timestamp": approval.get("timestamp"),
+                     "state": approval.get("state")},
+    }
+    if work_order.get("change_record_ref"):
+        result["change_record"] = {"ref": work_order.get("change_record_ref"), "url": record_url}
+    if not host:
+        return build_completion_payload(work_order, "failed", pr_url,
+                                        "no target host on the confirmed command", result)
+
+    status, detail = "resolved", ""
+    try:
+        result["executed"] = run_ssh_plan(host, commands, env)
+    except SSHError as e:
+        status, detail = "failed", f"could not reach {host}: {e}"
+    except Exception as e:  # noqa: BLE001 - the command must not be retried
+        status, detail = "failed", f"command did not complete on {host}: {e}"
+    if status == "resolved":
+        failed = [r for r in result["executed"] if r.get("returncode") != 0]
+        if failed:
+            last = failed[-1]
+            status = "failed"
+            detail = f"command exited {last['returncode']}: {str(last.get('stderr') or '')[:200]}"
+        else:
+            detail = f"ran {len(result['executed'])} command(s) on {host}, confirmed by {who}"
+
+    close_err = _maybe_close_change_record(env, work_order, {
+        "host": host,
+        "commands": commands,
+        "executed": result["executed"],
+        "approval": result["approval"],
+        "change_record": result.get("change_record"),
+        "status": status,
+        "detail": detail,
+    })
+    if close_err:
+        result["change_record_close_error"] = close_err
+    return build_completion_payload(work_order, status, pr_url, detail, result)
 
 
 def _checked_detail(answered: list, n_results: int, host: str) -> str:

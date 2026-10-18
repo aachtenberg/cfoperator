@@ -28,7 +28,8 @@ from cfshared import repos as shared_repos
 from cfshared import tracing
 from cfshared.version import build_version
 from web_auth import (
-    ROLE_ADMIN, install_auth, require_console_admin, require_role, require_token_scope)
+    ROLE_ADMIN, current_token, install_auth, require_console_admin, require_role,
+    require_token_scope)
 from auth.bootstrap import init_auth_store
 from auth.models import (
     EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_LLM_KEY, EVENT_LLM_SCOPE, EVENT_MCP_CONNECTOR,
@@ -231,6 +232,20 @@ def persist_chat_event(kb, session_id: Optional[int], evt: Dict[str, Any]) -> No
                 err = str(err)
             if err:
                 kb.append_chat_message(session_id, 'error', err)
+        elif kind == 'confirm':
+            # CFOP-442: the question an admin was asked, as a tool row, so a
+            # reloaded transcript shows what was put in front of them.
+            args = {'host': str(data.get('host') or ''), 'command': str(data.get('command') or ''),
+                    'reason': str(data.get('reason') or '')}
+            kb.append_chat_message(session_id, 'tool_call',
+                                   f"confirm {json.dumps(args, ensure_ascii=False)}",
+                                   extra={'tool': 'confirm', 'args': args})
+        elif kind == 'confirm_result':
+            decision = str(data.get('decision') or '')
+            by = str(data.get('by') or '')
+            text = f"{decision} by {by}" if by else decision
+            kb.append_chat_message(session_id, 'tool_result', text,
+                                   extra={'tool': 'confirm', 'result': text})
     except Exception as e:
         logger.warning("Could not persist chat %s event: %s", kind, e)
 
@@ -1509,6 +1524,11 @@ class WebServer:
                 logger.warning(f"Chat role lookup failed; treating caller as member: {e}")
                 actor_role = ROLE_MEMBER
             verify_only = data.get('mode') == 'verify'
+            # CFOP-442: only a browser session can answer a host-write
+            # confirm, so only a browser session's turn gets a confirmer. A
+            # remediate token is an admin with nobody at a console; its host
+            # writes are refused with what would have run.
+            can_confirm = current_token() is None and actor_role == ROLE_ADMIN
 
             chat_id = str(uuid.uuid4())[:8]
             with self._sessions_lock:
@@ -1517,14 +1537,17 @@ class WebServer:
                     'cursor': 0,
                     'done': False,
                     'cancelled': False,
-                    'created': time.time()
+                    'created': time.time(),
+                    # Host-write questions this turn asked (CFOP-442): the
+                    # confirm route answers only these, and Stop declines them.
+                    'confirms': set(),
                 }
 
             def run_chat():
                 stream = self.operator.handle_chat_message_stream(
                     message, history, backend, model=model,
                     actor_role=actor_role, verify_only=verify_only,
-                    session_id=session_id,
+                    session_id=session_id, can_confirm_host_writes=can_confirm,
                 )
                 try:
                     logger.debug(f"Chat {chat_id} started")
@@ -1544,6 +1567,10 @@ class WebServer:
                                 logger.info(f"Chat {chat_id} stopped by user")
                             else:
                                 session['events'].append(evt)
+                                if evt['event'] == 'confirm':
+                                    cid = str((evt.get('data') or {}).get('id') or '')
+                                    if cid:
+                                        session.setdefault('confirms', set()).add(cid)
                                 if evt['event'] in ('done', 'error'):
                                     session['done'] = True
                         # Outside the sessions lock: a DB write must not stall
@@ -1615,8 +1642,45 @@ class WebServer:
                 if session['done']:
                     return jsonify({'status': 'already_done'})
                 session['cancelled'] = True
+                pending = list(session.get('confirms') or ())
+            # A turn parked on a host-write question would otherwise sit out
+            # the whole confirm window before it noticed the Stop (CFOP-442).
+            for cid in pending:
+                try:
+                    self.operator.resolve_host_write_confirm(cid, False, _actor(), 'stopped')
+                except Exception as e:
+                    logger.warning(f"Could not decline host-write confirm {cid} on stop: {e}")
             logger.info(f"Chat {chat_id} stop requested")
             return jsonify({'status': 'stopping'})
+
+        # Answer a host-write question (CFOP-442). A console admin session
+        # only — a token cannot answer what it was never shown — and only a
+        # question this chat asked, so an id from elsewhere cannot be
+        # approved through a chat that never showed it. Whoever answers is
+        # the approver on the change record.
+        @self.app.route('/api/chat/<chat_id>/confirm', methods=['POST'])
+        @require_console_admin()
+        def api_chat_confirm(chat_id):
+            data = request.get_json(silent=True) or {}
+            cid = str(data.get('confirm_id') or '').strip()
+            approve = data.get('approve')
+            if not cid or not isinstance(approve, bool):
+                return jsonify({'error': "'confirm_id' and a boolean 'approve' are required"}), 400
+            with self._sessions_lock:
+                session = self._chat_sessions.get(chat_id)
+                asked = bool(session) and cid in (session.get('confirms') or ())
+            if not asked:
+                return jsonify({'error': 'no such question in this chat'}), 404
+            approver = _actor()
+            outcome = self.operator.resolve_host_write_confirm(cid, approve, approver)
+            if outcome == 'answered':
+                return jsonify({'error': 'this question was already answered'}), 409
+            if outcome != 'ok':
+                return jsonify({'error': 'this question is no longer waiting (it timed out '
+                                         'or the turn ended)'}), 410
+            logger.info(f"Host-write confirm {cid} in chat {chat_id}: "
+                        f"{'approved' if approve else 'declined'} by {approver}")
+            return jsonify({'status': 'approved' if approve else 'declined', 'by': approver})
 
         # Chat sessions API
         @self.app.route('/api/chat-sessions')

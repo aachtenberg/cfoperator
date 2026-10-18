@@ -26,6 +26,12 @@ class Intent:
     investigation_id: Any = None
     risk: str = ""
     confidence: Any = None
+    # CFOP-442: set when a named person already approved the exact commands
+    # before the record existed (an admin confirming a command in the console
+    # chat). The record is then evidence of that approval, not a request for
+    # one: a backend commits it as approved instead of opening a review.
+    # None for every other intent, which keeps the merge-as-approval path.
+    approval: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -49,7 +55,13 @@ class RecordRef:
     meta: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {"ref": self.id, "url": self.url}
+        out: Dict[str, Any] = {"ref": self.id, "url": self.url}
+        # Echoed only for a pre-approved record (CFOP-442), so a client can
+        # tell a recorder that honoured the approval from one too old to know
+        # the field, which silently opened a review instead.
+        if isinstance(self.meta.get("approval"), dict):
+            out["approval"] = self.meta["approval"]
+        return out
 
 
 def utc_now() -> str:
@@ -69,8 +81,34 @@ def record_document(intent: Intent) -> Dict[str, Any]:
         "confidence": intent.confidence,
         "executor_image": intent.image,
         "flag_snapshot": intent.flag_snapshot,
+        "approval": intent.approval,
         "outcome": None,
     }
+
+
+def approval_from_body(raw: Any) -> Optional[Dict[str, Any]]:
+    """The pre-approval an /open body carries, or None (CFOP-442).
+
+    A named identity is required: an approval with nobody behind it is the
+    thing a change record exists to rule out, so a malformed one is an error
+    rather than a silent fall-back to the review path. Absent is fine.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("approval must be an object")
+    identity = str(raw.get("identity") or "").strip()
+    if not identity:
+        raise ValueError("approval.identity is required")
+    out = {
+        "identity": identity,
+        "timestamp": str(raw.get("timestamp") or "").strip() or utc_now(),
+        "state": str(raw.get("state") or "").strip() or "approved",
+    }
+    for key in ("via", "chat_session_id", "reason"):
+        if raw.get(key) not in (None, ""):
+            out[key] = raw[key]
+    return out
 
 
 def intent_from_body(body: Dict[str, Any]) -> Intent:
@@ -94,6 +132,7 @@ def intent_from_body(body: Dict[str, Any]) -> Intent:
         investigation_id=body.get("investigation_id"),
         risk=str(body.get("risk") or ""),
         confidence=body.get("confidence"),
+        approval=approval_from_body(body.get("approval")),
     )
 
 

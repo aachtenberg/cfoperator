@@ -211,3 +211,34 @@ def test_intent_accepts_legacy_image_digest():
     from shapes import intent_from_body
     intent = intent_from_body({"host": "h", "commands": [], "image_digest": "old"})
     assert intent.image == "old"
+
+
+# ---- CFOP-442: pre-approved records -----------------------------------------
+
+def test_intent_parses_a_named_approval():
+    from shapes import intent_from_body
+    intent = intent_from_body({"remediation_id": 1, "host": "h", "commands": ["x"],
+                               "approval": {"identity": " aachten ", "state": "console-confirmed",
+                                            "via": "console-chat", "ignored": "dropped"}})
+    assert intent.approval["identity"] == "aachten"
+    assert intent.approval["state"] == "console-confirmed"
+    assert intent.approval["via"] == "console-chat"
+    assert intent.approval["timestamp"]  # stamped when the client sent none
+    assert "ignored" not in intent.approval
+
+
+def test_intent_without_approval_has_none():
+    from shapes import intent_from_body
+    assert intent_from_body({"remediation_id": 1, "host": "h", "commands": ["x"]}).approval is None
+
+
+@pytest.mark.parametrize("approval", [{"state": "console-confirmed"}, {"identity": "  "}, "aachten", ["a"]])
+def test_open_refuses_an_approval_with_nobody_behind_it(server, approval):
+    """An approval that names no one is what a change record exists to rule
+    out. It is refused, not quietly downgraded to the review path."""
+    base, fake = server
+    status, body = _json("POST", f"{base}/open", {
+        "remediation_id": 5, "host": "h", "commands": ["x"], "approval": approval})
+    assert status == 400
+    assert "approval" in body["error"]
+    assert not fake.docs

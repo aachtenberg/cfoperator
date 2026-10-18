@@ -452,3 +452,103 @@ def test_run_ssh_plan_uses_the_user_it_was_given():
     argv = ran.call_args[0][0]
     assert "someoperator@controller" in argv
     assert not any("aachten" in str(a) for a in argv)
+
+
+# ---- CFOP-442: a command a console admin confirmed ---------------------------
+
+def _confirmed_order(commands=("sudo -n docker stop square-redis",), host="ubuntu-llm-01", **over):
+    order = _node_order()
+    order.update({
+        "origin": "console-chat-confirm",
+        "approved_plan": {"host": host, "commands": list(commands), "explanation": "asked in chat"},
+        "change_record_ref": "opaque-ref",
+        "change_record_url": "https://github.com/o/r/blob/main/change-records/10.json",
+        "change_record_approval": {"identity": "aachten", "timestamp": "t",
+                                   "state": "console-confirmed"},
+    })
+    order.update(over)
+    return order
+
+
+def test_confirmed_command_runs_verbatim_past_the_allowlist():
+    """docker is on no allowlist and the line has a pipe: a person read it and
+    said run, so it runs exactly as they saw it.
+
+    Mutation-check: drop the is_console_confirmed() branch in run_node_action
+    and validate_plan refuses this plan (needs-human, "safety gate").
+    """
+    cmd = "sudo -n docker ps -a --format '{{.Names}}' | grep square"
+    runs = [{"command": cmd, "returncode": 0, "stdout": "square-redis", "stderr": ""}]
+    with patch.object(entrypoint, "make_llm") as make_llm, \
+         patch.object(entrypoint, "run_ssh_plan", return_value=runs) as ssh, \
+         patch.object(entrypoint, "close_record", return_value=None) as close:
+        payload = run(_env(_confirmed_order(commands=[cmd]), CFOP_EXEC_CHANGE_URL="http://cr:8091"))
+    make_llm.assert_not_called()
+    assert ssh.call_args[0][0] == "ubuntu-llm-01"
+    assert ssh.call_args[0][1] == [cmd]
+    assert payload["status"] == "resolved"
+    assert "confirmed by aachten" in payload["detail"]
+    assert payload["pr_url"] is None  # a record file, not a PR to merge
+    assert payload["result"]["change_record"]["url"].endswith("/10.json")
+    assert payload["result"]["approval"]["identity"] == "aachten"
+    outcome = close.call_args[0][2]
+    assert outcome["status"] == "resolved" and outcome["executed"][0]["stdout"] == "square-redis"
+
+
+def test_confirmed_command_runs_with_no_allowlist_at_all():
+    """An install that declared no node_action allowlist still runs what an
+    admin confirmed: the allowlist bounds unattended plans, not people."""
+    runs = [{"command": "c", "returncode": 0, "stdout": "", "stderr": ""}]
+    env = {"CFOP_REMEDIATION_JSON": json.dumps(_confirmed_order()), "CFOP_NODE_ACTION_ENABLED": "true"}
+    with patch.object(entrypoint, "run_ssh_plan", return_value=runs):
+        payload = run(env)
+    assert payload["status"] == "resolved"
+
+
+def test_confirmed_command_still_needs_node_action_enabled():
+    env = _env(_confirmed_order())
+    env["CFOP_NODE_ACTION_ENABLED"] = "false"
+    with patch.object(entrypoint, "run_ssh_plan") as ssh:
+        payload = run(env)
+    ssh.assert_not_called()
+    assert payload["status"] == "needs-human"
+
+
+def test_confirmed_command_that_exits_non_zero_is_failed_not_needs_human():
+    """needs-human would file a tracker issue for a result the admin already has."""
+    runs = [{"command": "c", "returncode": 1, "stdout": "", "stderr": "No such container: square-redis"}]
+    with patch.object(entrypoint, "run_ssh_plan", return_value=runs), \
+         patch.object(entrypoint, "close_record", return_value=None):
+        payload = run(_env(_confirmed_order()))
+    assert payload["status"] == "failed"
+    assert "exited 1" in payload["detail"] and "No such container" in payload["detail"]
+
+
+@pytest.mark.parametrize("exc", [nodeaction.SSHError("ssh could not connect"), TimeoutError("slow")])
+def test_confirmed_command_that_cannot_run_is_failed_and_not_raised(exc):
+    """Raising would leave the outcome to main()'s generic report; a confirmed
+    command reports its own failure and is never retried."""
+    with patch.object(entrypoint, "run_ssh_plan", side_effect=exc), \
+         patch.object(entrypoint, "close_record", return_value=None) as close:
+        payload = run(_env(_confirmed_order(), CFOP_EXEC_CHANGE_URL="http://cr:8091"))
+    assert payload["status"] == "failed"
+    assert "ubuntu-llm-01" in payload["detail"]
+    assert close.call_args[0][2]["status"] == "failed"
+
+
+@pytest.mark.parametrize("override", [
+    {"origin": "investigation"},
+    {"change_record_approval": {"identity": "carol", "timestamp": "t", "state": "merged"}},
+    {"change_record_approval": {"identity": "", "timestamp": "t", "state": "console-confirmed"}},
+    {"change_record_approval": None},
+])
+def test_anything_short_of_a_confirmed_order_still_meets_the_allowlist(override):
+    """The bypass needs the origin AND a console-confirmed approval naming
+    someone. A merged PR, a missing name or another origin is an ordinary
+    node-action, and docker is not on its allowlist."""
+    order = _confirmed_order(**override)
+    with patch.object(entrypoint, "run_ssh_plan") as ssh:
+        payload = run(_env(order))
+    ssh.assert_not_called()
+    assert payload["status"] == "needs-human"
+    assert "safety gate" in payload["detail"]

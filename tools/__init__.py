@@ -13,8 +13,8 @@ Provides infrastructure monitoring tools to the LLM:
 Tools for CFOperator's single-agent architecture.
 """
 
-from dataclasses import dataclass
-from typing import Dict, Any, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Dict, Any, List, Optional, Tuple
 from urllib.parse import urlsplit
 import hashlib
 import ipaddress
@@ -27,8 +27,9 @@ import time
 import requests as _requests
 from cfshared.config import ROLE_ADMIN
 from cfshared.tool_args import redact_tool_args
+import shlex
 from . import mcp_connectors
-from .ssh import SSHTools, ssh_mutation_reason
+from .ssh import SSHTools, ssh_mutation_reason, with_sudo_for_socket_reads
 from .discovery import DiscoveryTools
 from .k8s import K8sTools
 from .git import GitTools
@@ -65,6 +66,15 @@ _VERIFY_COMMAND_GATED = {'ssh_execute': 'command'}
 # does not know database clients (psql -c "DELETE ..." passes), which is what
 # an exec into an app pod most often reaches.
 _UNATTENDED_COMMAND_GATED = {**_VERIFY_COMMAND_GATED, 'k8s_exec_pod': 'command'}
+
+# CFOP-442: the tools that change a host over SSH. On a turn that may change
+# things, a write through one of these is not run as the read identity (whose
+# sudoers refuses it anyway) and not refused either: it goes to the turn's
+# confirmer, which shows the admin the exact command and, on their yes, runs
+# it once as the write identity through an executor Job, with a change
+# record. ssh_execute qualifies only when the classifier reads its command as
+# a write; a read runs as before. The two fixed-verb tools always write.
+_HOST_WRITE_TOOLS = ('ssh_execute', 'ssh_docker_restart', 'ssh_restart_service')
 
 # Schema keys that are policy for THIS process, not part of the function
 # contract sent to a model. Stripped on the way out: a stray key is a 400 on
@@ -129,6 +139,13 @@ class ToolPolicy:
     actor_role: Optional[str] = None
     verify_only: bool = False
     unattended: bool = False
+    # CFOP-442: how this turn asks a person to confirm a host write, or None
+    # when nobody can (a token caller, every internal run). Called as
+    # ``confirm_host_write(tool=, host=, command=, reason=)`` and returns the
+    # tool result. Not part of equality: two policies that allow the same
+    # things are the same policy whoever would answer the question.
+    confirm_host_write: Optional[Callable[..., Dict[str, Any]]] = field(
+        default=None, compare=False, repr=False)
 
     def __post_init__(self):
         # An unattended run has no person behind it. With a role it would read
@@ -136,6 +153,9 @@ class ToolPolicy:
         # so unattended + admin would reopen what CFOP-160 closed.
         if self.unattended and self.actor_role is not None:
             raise ValueError("an unattended policy carries no actor_role")
+        # Nor a confirmer: there is nobody to confirm to.
+        if self.unattended and self.confirm_host_write is not None:
+            raise ValueError("an unattended policy carries no confirmer")
 
     def role_allows_mutation(self) -> bool:
         """Whether the ASKER may change things at all, ignoring the turn's mode."""
@@ -1309,6 +1329,12 @@ class ToolRegistry:
                     return {'error': policy.command_refusal(tool_name, reason),
                             'refused': True, 'tool': tool_name}
 
+        if (policy is not None and tool_name in _HOST_WRITE_TOOLS
+                and policy.allows_mutation() and self.ssh_tools is not None):
+            routed = self._route_host_write(tool_name, arguments, policy)
+            if routed is not None:
+                return routed
+
         try:
             # Defensive: handle arguments that may still be JSON strings
             if isinstance(arguments, str):
@@ -1338,6 +1364,62 @@ class ToolRegistry:
         except Exception as e:
             logger.error(f"Tool {tool_name} failed: {e}", exc_info=True)
             return {'error': str(e)}
+
+    def _route_host_write(self, tool_name: str, arguments: Any,
+                          policy: ToolPolicy) -> Optional[Dict[str, Any]]:
+        """Send a host write to the turn's confirmer, or None to run as before.
+
+        CFOP-442. Only reached on a turn that may change things. The command
+        is put in its final form first (the CFOP-437 docker/crictl rewrite,
+        the fixed-verb tools' own command), so what the admin is shown is
+        byte for byte what runs. A read through ssh_execute returns None and
+        runs as the read identity, unchanged.
+
+        No confirmer means nobody behind the turn can answer — an API token,
+        or an internal caller that passed an admin policy — and the write is
+        refused with what would have run, rather than run unseen.
+        """
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments) if arguments.strip() else {}
+            except ValueError:
+                return None  # malformed; the normal path reports it
+        args = arguments if isinstance(arguments, dict) else {}
+        host = str(args.get('host') or '').strip()
+        if tool_name == 'ssh_execute':
+            command = with_sudo_for_socket_reads(str(args.get('command') or ''))
+            try:
+                reason = ssh_mutation_reason(command)
+            except Exception as e:  # fail closed: unclassifiable is treated as a write
+                logger.warning(f"ssh_execute command could not be classified: {e}")
+                reason = "the command could not be classified"
+            if not reason:
+                return None
+        elif tool_name == 'ssh_docker_restart':
+            container = str(args.get('container') or '').strip()
+            if not container:
+                return {'error': 'container is required', 'tool': tool_name}
+            command, reason = f"sudo -n docker restart {shlex.quote(container)}", "restarts a container"
+        else:  # ssh_restart_service
+            service = str(args.get('service') or '').strip()
+            if not service:
+                return {'error': 'service is required', 'tool': tool_name}
+            command, reason = f"sudo -n systemctl restart {shlex.quote(service)}", "restarts a service"
+        if not command.strip():
+            return {'error': 'command is required', 'tool': tool_name}
+        if host not in self.ssh_tools.hosts:
+            return {'success': False, 'error': f'Unknown host: {host}',
+                    'available_hosts': list(self.ssh_tools.hosts.keys())}
+        if policy.confirm_host_write is None:
+            logger.warning("Host write refused, nobody can confirm it (%s): %s on %s",
+                           policy.describe(), tool_name, host)
+            return {'error': (f"{tool_name} would change {host} ({reason}): `{command}`. "
+                              "A host write runs once a console admin confirms that exact "
+                              "command in the chat, and nobody on this turn can confirm it "
+                              "(it came in with an API token). Say what you would run and why."),
+                    'refused': True, 'tool': tool_name}
+        logger.info("Host write awaiting confirmation: %s on %s: %s", tool_name, host, command)
+        return policy.confirm_host_write(tool=tool_name, host=host, command=command, reason=reason)
 
     def get_schemas(self, policy: Optional[ToolPolicy] = None) -> List[Dict[str, Any]]:
         """
