@@ -569,6 +569,7 @@ model)` parameters as fixtures and died at setup.
 ### Interfaces
 - [docs/auth.md](docs/auth.md) — Console users, roles, API tokens, lockout/rotation runbooks
 - [docs/mcp-server.md](docs/mcp-server.md) — MCP facade: tools, resources, prompts, scopes, host setup
+- [docs/mcp-connectors.md](docs/mcp-connectors.md) — Admin → Connectors: the console chat using tools from external MCP servers
 - [docs/slack-bridge.md](docs/slack-bridge.md) — Slack Socket Mode bot and its runtimes
 - [docs/mcp-server-plan.md](docs/mcp-server-plan.md) — MCP design/contract and phase history
 

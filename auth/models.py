@@ -254,3 +254,7 @@ EVENT_LLM_KEY = "llm.key"
 #: A per-scope model was set or reset from Admin → LLM (CFOP-122). ``target``
 #: is the scope ('sweep', 'judge:xai', …), ``detail`` the new values.
 EVENT_LLM_SCOPE = "llm.scope"
+#: An MCP connector was saved or removed from Admin → Connectors (CFOP-443).
+#: ``target`` is the connector name; ``detail`` the url, enabled flag, tool
+#: filter and header NAMES -- never a header value.
+EVENT_MCP_CONNECTOR = "mcp.connector"

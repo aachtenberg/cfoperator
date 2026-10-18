@@ -31,8 +31,8 @@ from web_auth import (
     ROLE_ADMIN, install_auth, require_console_admin, require_role, require_token_scope)
 from auth.bootstrap import init_auth_store
 from auth.models import (
-    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_LLM_KEY, EVENT_LLM_SCOPE, EVENT_REMEDIATION_ALLOWLIST,
-    EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
+    EVENT_COCKPIT_BRIDGE, EVENT_COCKPIT_SESSION, EVENT_LLM_KEY, EVENT_LLM_SCOPE, EVENT_MCP_CONNECTOR,
+    EVENT_REMEDIATION_ALLOWLIST, EVENT_TOKEN_CREATED, EVENT_TOKEN_REVOKED, ROLE_MEMBER)
 # The cockpit spawn mints a session token server-side, and it must resolve the
 # caller exactly as POST /api/auth/tokens does — same role ceiling, same audit
 # actor. Importing those helpers is deliberate: a second copy of "who is
@@ -936,6 +936,129 @@ class WebServer:
             _llm_key_audit(backend, 'cleared')
             logger.info(f"Hosted-provider key for {backend} cleared from the console; env applies")
             return jsonify({'success': True, 'provider': _llm_key_row(keys, backend)})
+
+        # ── MCP connectors (CFOP-443) ──
+        # External MCP servers whose tools the console chat may use. Stored
+        # as one agent_settings list with the headers sealed; GET never
+        # carries a header value. A save lists the server's tools at once,
+        # so the reply says whether the connector works.
+        def _connectors_module():
+            from tools import mcp_connectors
+            return mcp_connectors
+
+        def _connectors_stored():
+            """Strict: a read that fell back to "no connectors" during an
+            outage would make the next save drop every other connector."""
+            mc = _connectors_module()
+            return mc.loads(self.operator.kb.get_setting(mc.SETTING_KEY, '', strict=True))
+
+        def _connectors_payload(connectors, db_error=None):
+            mc = _connectors_module()
+            registry = getattr(self.operator, 'tools', None)
+            status = dict(getattr(registry, 'mcp_status', None) or {})
+            return {
+                'connectors': [mc.public_view(c, status.get(c['name'])) for c in connectors],
+                'storage': 'available' if mc.sealed.available(mc.HKDF_INFO) else 'unavailable',
+                'db_error': db_error,
+            }
+
+        def _connector_audit(name, action, entry=None):
+            store = getattr(self, 'auth_store', None)
+            if store is None:
+                return
+            detail = {'action': action}
+            if entry:
+                detail.update(url=entry.get('url'), enabled=bool(entry.get('enabled')),
+                              tools=list(entry.get('tools') or []),
+                              header_names=list(entry.get('header_names') or []))
+            store.record(EVENT_MCP_CONNECTOR, actor=_actor(), target=name,
+                         source_ip=request.remote_addr, **detail)
+
+        def _apply_connectors(connectors):
+            """Make the saved list live and return its status. A save that
+            cannot be applied is still saved; the next refresh retries."""
+            registry = getattr(self.operator, 'tools', None)
+            if registry is None:
+                return
+            try:
+                registry.refresh_mcp_connectors(connectors)
+            except Exception as e:
+                logger.warning(f"MCP connectors saved but not applied live: {e}")
+
+        @self.app.route('/api/settings/mcp_connectors')
+        def get_mcp_connectors():
+            """Readable by members, like the repo list: names, urls, header
+            names and status. Never a header value."""
+            try:
+                connectors = _connectors_stored()
+                db_error = None
+            except Exception as e:
+                logger.warning(f"Could not read the MCP connectors (DB down?): {e}")
+                connectors, db_error = [], 'the database is unavailable'
+            return jsonify(_connectors_payload(connectors, db_error))
+
+        @self.app.route('/api/settings/mcp_connectors/<name>', methods=['PUT'])
+        @require_role(ROLE_ADMIN)
+        def put_mcp_connector(name):
+            mc = _connectors_module()
+            try:
+                current = _connectors_stored()
+            except Exception as e:
+                # strict: a read that fell back to "no connectors" would make
+                # this save drop every other connector.
+                logger.warning(f"Could not read the MCP connectors (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
+            existing = next((c for c in current if c['name'] == name), None)
+            try:
+                entry = mc.parse_input(name, json_object(), existing)
+                updated = mc.upsert(current, entry)
+            except mc.ConnectorError as e:
+                return jsonify({'error': str(e)}), 400
+            except mc.sealed.SealUnavailable as e:
+                return jsonify({'error': f'headers not stored: {e}'}), 503
+            try:
+                self.operator.kb.set_setting(mc.SETTING_KEY, mc.dumps(updated))
+            except Exception as e:
+                logger.warning(f"Could not persist the MCP connectors (DB down?): {e}")
+                return jsonify({'error': 'not saved: the database is unavailable'}), 503
+            _connector_audit(name, 'updated' if existing else 'created', entry)
+            logger.info(f"MCP connector {name} saved from the console")
+            _apply_connectors(updated)
+            return jsonify({'success': True, **_connectors_payload(updated)})
+
+        @self.app.route('/api/settings/mcp_connectors/<name>', methods=['DELETE'])
+        @require_role(ROLE_ADMIN)
+        def delete_mcp_connector(name):
+            mc = _connectors_module()
+            try:
+                current = _connectors_stored()
+            except Exception as e:
+                logger.warning(f"Could not read the MCP connectors (DB down?): {e}")
+                return jsonify({'error': 'not removed: the database is unavailable'}), 503
+            updated, found = mc.remove(current, name)
+            if not found:
+                return jsonify({'error': f'No connector named {name}'}), 404
+            try:
+                self.operator.kb.set_setting(mc.SETTING_KEY, mc.dumps(updated))
+            except Exception as e:
+                logger.warning(f"Could not persist the MCP connectors (DB down?): {e}")
+                return jsonify({'error': 'not removed: the database is unavailable'}), 503
+            _connector_audit(name, 'removed')
+            logger.info(f"MCP connector {name} removed from the console")
+            _apply_connectors(updated)
+            return jsonify({'success': True, **_connectors_payload(updated)})
+
+        @self.app.route('/api/settings/mcp_connectors/refresh', methods=['POST'])
+        @require_role(ROLE_ADMIN)
+        def refresh_mcp_connectors():
+            """List every enabled connector's tools again, now."""
+            try:
+                current = _connectors_stored()
+            except Exception as e:
+                logger.warning(f"Could not read the MCP connectors (DB down?): {e}")
+                return jsonify({'error': 'the database is unavailable'}), 503
+            _apply_connectors(current)
+            return jsonify({'success': True, **_connectors_payload(current)})
 
         # ── Models per scope (CFOP-122) ──
         # One table of every LLM seat the agent fills unattended, each with

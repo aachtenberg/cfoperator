@@ -11602,6 +11602,14 @@ IMPORTANT:
     def _handle_chat_with_stream(self, message, history, backend, model, event_callback,
                                  tool_policy: Optional[ToolPolicy] = None):
         """Internal: one chat turn, with event_callback passed through to _chat_with_tools."""
+        # MCP connector tools go stale when a server changes its list or the
+        # database was down at startup (CFOP-443). Background, never blocks
+        # this turn; it uses whatever was listed last.
+        try:
+            if self.tools is not None:
+                self.tools.maybe_refresh_mcp_connectors()
+        except Exception as e:
+            logger.debug(f"MCP connector refresh check failed: {e}")
         system_context = self._build_chat_system_context(tool_policy=tool_policy)
 
         messages = list(history) + [{'role': 'user', 'content': message}]
