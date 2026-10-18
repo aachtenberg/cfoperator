@@ -1,7 +1,10 @@
 """GitHub change-record backend: evidence via git.
 
-open  — commit a record file + open a PR
-approval — merged-status + merger identity (or None / error if closed unmerged)
+open  — commit a record file + open a PR; or, for an intent a person already
+        approved (CFOP-442: an admin confirming the command in the console
+        chat), commit the record straight to base carrying that approval
+approval — merged-status + merger identity (or None / error if closed unmerged);
+        for a pre-approved record, the approval read from the committed file
 close — commit the execution outcome back onto the record file
 
 Approved/closed state env knobs are reserved for ticket backends (snow/jira);
@@ -86,6 +89,8 @@ class GitHubRecorder:
         return pr.get("data") or {}
 
     def open(self, intent: Intent) -> RecordRef:
+        if intent.approval:
+            return self._open_approved(intent)
         doc = record_document(intent)
         rid = intent.remediation_id
         path = f"{self.records_dir}/{rid}.json"
@@ -153,9 +158,51 @@ class GitHubRecorder:
         }
         return RecordRef(id=encode_ref(meta), url=data.get("html_url"), meta=meta)
 
+    def _open_approved(self, intent: Intent) -> RecordRef:
+        """Commit a pre-approved record straight to the base branch (CFOP-442).
+
+        A person already approved these exact commands (an admin confirming
+        them in the console chat), so there is nothing left to review: a PR
+        here would be a second approval of the same thing, and the command
+        would wait on a merge nobody is going to make. The record still
+        lands in ``records_dir`` like every other change, carrying who
+        approved it, and ``close`` commits the outcome onto it.
+        """
+        doc = record_document(intent)
+        rid = intent.remediation_id
+        path = f"{self.records_dir}/{rid}.json"
+        who = str((intent.approval or {}).get("identity") or "unknown")
+        put_body: Dict[str, Any] = {
+            "message": (f"cfop: change-record for remediation {rid} on {intent.host} "
+                        f"(approved in the console by {who})"),
+            "content": base64.b64encode(
+                json.dumps(doc, indent=2, default=str).encode("utf-8")).decode("ascii"),
+            "branch": self.base,
+        }
+        existing = self.client.get_file(self.repo, path, self.base)
+        if existing:
+            put_body["sha"] = existing[1]
+        commit = self.client.request("PUT", f"/repos/{self.repo}/contents/{path}", body=put_body)
+        if not commit.get("success"):
+            raise ChangeRecordError(f"record commit failed ({commit.get('status')})")
+        data = commit.get("data") if isinstance(commit.get("data"), dict) else {}
+        content = data.get("content") if isinstance(data.get("content"), dict) else {}
+        url = content.get("html_url") or f"https://github.com/{self.repo}/blob/{self.base}/{path}"
+        meta = {
+            "backend": "github",
+            "repo": self.repo,
+            "base": self.base,
+            "path": path,
+            "approved": True,
+            "approval": intent.approval,
+        }
+        return RecordRef(id=encode_ref(meta), url=url, meta=meta)
+
     def approval(self, ref_token: str) -> Optional[Approval]:
         from shapes import decode_ref
         meta = decode_ref(ref_token)
+        if meta.get("approved"):
+            return self._approval_from_record(meta)
         pr_number = meta.get("pr_number")
         if pr_number is None:
             raise ChangeRecordError("ref missing pr_number")
@@ -174,6 +221,31 @@ class GitHubRecorder:
         if data.get("state") == "closed":
             raise ChangeRecordError(f"change-record PR #{pr_number} closed without merge")
         return None
+
+    def _approval_from_record(self, meta: Dict[str, Any]) -> Optional[Approval]:
+        """The approval a pre-approved record carries, read from the committed
+        file on base, never from the token (CFOP-442).
+
+        The token is a handle the client hands back; the file in git is the
+        evidence. A token that claims ``approved`` for a path whose record
+        holds no approval answers "not approved", like an unmerged PR.
+        """
+        path = self._safe_path(meta)
+        got = self.client.get_file(self.repo, path, self.base)
+        if not got:
+            raise ChangeRecordError(f"pre-approved change record {path} is not on {self.base}")
+        try:
+            doc = json.loads(got[0])
+        except ValueError:
+            raise ChangeRecordError(f"change record {path} is not JSON")
+        approval = doc.get("approval") if isinstance(doc, dict) else None
+        if not isinstance(approval, dict) or not str(approval.get("identity") or "").strip():
+            return None
+        return Approval(
+            identity=str(approval["identity"]),
+            timestamp=str(approval.get("timestamp") or doc.get("opened_at") or utc_now()),
+            state=str(approval.get("state") or "approved"),
+        )
 
     def close(self, ref_token: str, outcome: Dict[str, Any]) -> None:
         from shapes import decode_ref
@@ -199,7 +271,7 @@ class GitHubRecorder:
         doc["outcome"] = outcome
         doc["closed_at"] = utc_now()
         put = self.client.request("PUT", f"/repos/{self.repo}/contents/{path}", body={
-            "message": f"cfop: close change-record {meta.get('pr_number')}",
+            "message": f"cfop: close change-record {meta.get('pr_number') or path}",
             "content": base64.b64encode(
                 json.dumps(doc, indent=2, default=str).encode("utf-8")
             ).decode("ascii"),

@@ -600,6 +600,10 @@ _REMEDIATION_MAX_ATTEMPTS = 3
 # policy resolver share one literal.
 _SUMMARY_CONFIDENCE_CAP = 0.5
 _REMEDIATION_INFLIGHT = ('claimed', 'executing')
+# CFOP-442: payload.source of a row that holds one command a named console
+# admin confirmed in the chat. Such a row runs once or not at all: it enters
+# already claimed (the drainer never sees it) and is never re-queued.
+CONSOLE_CONFIRMED_SOURCE = 'console-chat-confirm'
 # Enum the code branches on — not configurable (CFOP-133 bucket C). Adding a
 # name here does nothing without a runner, a rubric line, and a CHECK widener.
 _REMEDIATION_CLASSES = ('gitops-patch', 'k8s-action', 'k8s-imperative',
@@ -4448,6 +4452,40 @@ class KnowledgeBase:
                  confidence=confidence, status=status)
             return queue_id
 
+    def queue_confirmed_host_command(self, payload: Dict[str, Any], executor_job_name: str,
+                                     host_id: str = 'default') -> int:
+        """Record one console-confirmed host command, already claimed (CFOP-442).
+
+        Not ``queue_remediation``: that applies the auto-execute gate, which
+        asks whether a *model* may run something unattended, and a named admin
+        already answered for this command. The row enters ``claimed`` with its
+        Job name so the drainer never picks it up and the open-PR cap cannot
+        hold it, and the reaper still recovers a Job that dies. ``payload``
+        must carry ``source = CONSOLE_CONFIRMED_SOURCE``; that is what keeps
+        ``fail_remediation`` from ever re-queueing it.
+        """
+        if (payload or {}).get('source') != CONSOLE_CONFIRMED_SOURCE:
+            raise ValueError("a confirmed host command must carry source "
+                             f"{CONSOLE_CONFIRMED_SOURCE!r}")
+        with self.session_scope() as session:
+            item = RemediationQueue(
+                investigation_id=None,
+                host_id=host_id or 'default',
+                remediation_class='node-action',
+                risk='high',
+                confidence=None,
+                status='claimed',
+                priority=1,
+                payload=payload,
+                executor_job_name=executor_job_name,
+                claimed_at=datetime.now(timezone.utc),
+            )
+            session.add(item)
+            session.flush()
+            _log("info", "Confirmed host command recorded", queue_id=item.id,
+                 job=executor_job_name)
+            return item.id
+
     def find_open_remediation_by_dedupe_key(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
         """Return the non-terminal remediation row carrying ``dedupe_key``, or None.
 
@@ -4709,6 +4747,19 @@ class KnowledgeBase:
                 existing = dict(item.result or {}) if isinstance(item.result, dict) else {}
                 existing.update(result)
                 item.result = existing
+            payload = item.payload if isinstance(item.payload, dict) else {}
+            if payload.get('source') == CONSOLE_CONFIRMED_SOURCE:
+                # A confirmed command is never retried (CFOP-442). Re-queueing
+                # would hand it to the drainer, which would run it again later
+                # with nobody watching — not the command anyone approved. The
+                # reaper reaches here for a Job that died mid-run, and whether
+                # the command took effect is then unknown, which is exactly
+                # why it must not run a second time on its own.
+                item.status = 'failed'
+                item.completed_at = datetime.now(timezone.utc)
+                _log("info", "Confirmed remediation failed, not retried",
+                     queue_id=remediation_id, attempts=item.attempts)
+                return item.status
             if item.attempts >= cap:
                 item.status = 'needs-human'
                 item.completed_at = datetime.now(timezone.utc)

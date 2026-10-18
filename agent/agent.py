@@ -67,6 +67,8 @@ from change_record_client import (
     open_record as change_record_open,
 )
 from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
+from host_write import PENDING as HOST_WRITE_PENDING, HostWriteConfirmer, wait_for_row  # CFOP-442
+from knowledge_base import CONSOLE_CONFIRMED_SOURCE  # CFOP-442
 from reverify import reverify_filed_rows  # CFOP-185: re-check what was filed
 import llm_keys  # CFOP-111: the one lookup for hosted-provider API keys
 from investigation_trace import InvestigationTrace  # CFOP-324: how it got there
@@ -433,6 +435,23 @@ SSH_ACCESS_CONTRACT = (
     'and systemctl status need none. A "permission denied" from a bare docker call is the '
     'wrong command shape, not missing access.'
 )
+
+# CFOP-442: what a host write does on a turn where the admin can confirm one.
+# Said beside the contract above, so the model does not decline a change it
+# can now make, or route a write around the confirm.
+SSH_WRITE_CONFIRM_CONTRACT = (
+    'A command that changes a host (ssh_execute with a write, ssh_docker_restart, '
+    'ssh_restart_service) is not refused on this turn. The operator is shown the host and the '
+    'exact command and answers Run or Decline. On Run it executes once as the write identity, '
+    'which has passwordless sudo, through the node-action executor, and is recorded in a change '
+    'record; prefix root-only commands with sudo -n. Send one command per call so each '
+    'confirmation is for one thing. If the operator declines, do not try another way.'
+)
+
+# How long a confirmed command's Job may take before the turn stops waiting and
+# says where the result will appear. The Job itself runs on; this only bounds
+# how long a chat worker sits on it.
+CONFIRMED_JOB_WAIT_S = 240
 
 # The morning summary is authored by the cheap, unverified primary model, so a
 # mutation-class rec from it is a HYPOTHESIS, not a diagnosis. These are routed
@@ -5065,6 +5084,172 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         except Exception as e:  # noqa: BLE001
             logger.warning("could not persist change-record approval: %s", e)
         return enriched
+
+    def resolve_host_write_confirm(self, confirm_id: str, approved: bool, approver: str,
+                                   why: str = '') -> str:
+        """Answer a pending host-write question (CFOP-442): 'ok', 'unknown'
+        or 'answered'. The console route calls this; it holds no import of the
+        agent's modules, so the question table is reached through here."""
+        return HOST_WRITE_PENDING.resolve(confirm_id, approved, approver, why)
+
+    def host_write_confirm_open(self, confirm_id: str) -> bool:
+        """Whether a host-write question is still waiting for an answer."""
+        return HOST_WRITE_PENDING.is_open(confirm_id)
+
+    def _run_confirmed_host_command(self, *, tool: str, host: str, command: str, reason: str,
+                                    approver: str, decided_at: str,
+                                    session_id: Optional[int] = None) -> Dict[str, Any]:
+        """Run one command an admin confirmed in the console chat (CFOP-442).
+
+        The node-action lane, entered past its two human-review steps because
+        a named admin already did both: they read this exact command and said
+        run. What still applies: the console kill-switch (the admin's own
+        setting), and a change recorder (the audit — a confirmed command is
+        recorded like every other host change, as already approved, by them).
+
+        The row goes in already claimed, so the drainer and its open-PR cap
+        never see it; the record is opened pre-approved; the Job is spawned
+        here and its row polled until it reports. Every early exit says that
+        nothing ran, because the model is about to tell the operator.
+        """
+        def refused(msg: str) -> Dict[str, Any]:
+            return {'success': False, 'error': f"{msg} Nothing ran.", 'tool': tool,
+                    'host': host, 'command': command}
+
+        if not CFOperator._node_action_enabled(self):
+            return refused("Node-action execution is switched off (Remediations → flags), "
+                           "so a confirmed host command has nowhere to run.")
+        base_url = self._change_record_url()
+        if not base_url:
+            return refused("No change recorder is configured, and a host write is recorded "
+                           "before it runs (remediation.executor.node_action.change_record.url).")
+        if not getattr(self, 'kb', None):
+            return refused("The remediation queue is unavailable.")
+
+        approval = {
+            'identity': approver,
+            'timestamp': decided_at,
+            'state': 'console-confirmed',
+            'via': 'console-chat',
+            'chat_session_id': session_id,
+            'reason': reason,
+        }
+        plan = {'host': host, 'commands': [command],
+                'explanation': f"Confirmed in the console chat by {approver}"}
+        # Connect where ssh_execute would: the inventory address, not the
+        # name the admin was shown. The name stays on the record and the row
+        # (Bugbot on #356: an alias that only the agent's inventory resolves
+        # would otherwise send the approved command nowhere, or elsewhere).
+        hosts_cfg = ((self.config.get('infrastructure') or {}).get('hosts') or {}
+                     if isinstance(self.config, dict) else {})
+        address = str(((hosts_cfg.get(host) or {}) if isinstance(hosts_cfg, dict) else {})
+                      .get('address') or '').strip()
+        if address:
+            plan['address'] = address
+        payload = {
+            'source': CONSOLE_CONFIRMED_SOURCE,
+            'recommendation': f"Run on {host}: {command}",
+            'rendered_context': (f"Confirmed by {approver} in the console chat ({tool}); "
+                                 "no investigation ran for this row."),
+            'target': {'host': host},
+            'plan': plan,
+            'confirmed_by': approver,
+            'confirmed_at': decided_at,
+            'chat_session_id': session_id,
+            'tool': tool,
+            'classifier_reason': reason,
+        }
+        job_name = f"cfop-executor-{uuid.uuid4().hex[:10]}"
+        try:
+            rid = self.kb.queue_confirmed_host_command(payload, job_name, host_id=host)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Could not record confirmed host command on {host}: {e}")
+            return refused(f"The command could not be recorded ({e}).")
+
+        def fail(msg: str) -> Dict[str, Any]:
+            try:
+                self.kb.update_remediation_status(rid, 'failed', last_error=msg)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"Could not mark confirmed remediation #{rid} failed: {e}")
+            out = refused(msg)
+            out['remediation_id'] = rid
+            return out
+
+        ec = self._executor_config()
+        image = ec.get('image', os.getenv('CFOP_EXECUTOR_IMAGE',
+                                         'ghcr.io/aachtenberg/cfoperator-executor:main'))
+        try:
+            opened = change_record_open(base_url, {
+                "remediation_id": rid,
+                "investigation_id": None,
+                "host": host,
+                "commands": [command],
+                "justification": payload['rendered_context'],
+                "image": str(image),
+                "flag_snapshot": {"node_action.enabled": True, "change_record.url": base_url,
+                                  "origin": CONSOLE_CONFIRMED_SOURCE},
+                "risk": "high",
+                "confidence": None,
+                "approval": approval,
+            })
+        except ChangeRecordClientError as e:
+            return fail(f"The change record could not be opened ({e}).")
+        if not isinstance(opened.get('approval'), dict):
+            # A recorder from before CFOP-442 ignores the approval and opens a
+            # review PR instead. Do not wait on that merge: the admin asked for
+            # this now, and a merge hours later would run it unwatched.
+            return fail("The change recorder does not record pre-approved commands (it opened "
+                        f"a review instead: {opened.get('url') or 'no url'}); update "
+                        "cfop-changerecord and close that PR.")
+        ref, url = str(opened['ref']), opened.get('url')
+        work = {
+            "id": rid, "investigation_id": None, "host_id": host,
+            "remediation_class": "node-action", "risk": "high", "confidence": None,
+            "attempts": 0, "payload": payload, "result": None, "pr_url": None,
+            "origin": CONSOLE_CONFIRMED_SOURCE,
+            "change_record_ref": ref,
+            "change_record_url": url,
+            "change_record_approval": approval,
+            "approved_plan": plan,
+        }
+        try:
+            self.kb.update_remediation_status(
+                rid, 'claimed',
+                result={"change_record": {"ref": ref, "url": url, "plan": plan, "approval": approval}})
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Could not persist the change record on remediation #{rid}: {e}")
+        try:
+            self._spawn_remediation_executor(job_name, work)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Executor spawn failed for confirmed remediation #{rid}: {e}")
+            return fail(f"The executor Job could not be started ({e}).")
+        logger.info(f"Spawned executor {job_name} for confirmed remediation #{rid} on {host} "
+                    f"(confirmed by {approver})")
+
+        row = wait_for_row(self.kb.get_remediation, rid, timeout_s=CONFIRMED_JOB_WAIT_S)
+        if row is None:
+            return {'success': None, 'pending': True, 'remediation_id': rid, 'host': host,
+                    'command': command, 'change_record_url': url, 'confirmed_by': approver,
+                    'message': (f"Confirmed and started as remediation #{rid}, but it had not "
+                                f"reported after {CONFIRMED_JOB_WAIT_S // 60} minutes. Its result "
+                                "will appear on /remediations; do not run it again.")}
+        result = row.get('result') if isinstance(row.get('result'), dict) else {}
+        executed = result.get('executed') if isinstance(result.get('executed'), list) else []
+        last = executed[-1] if executed and isinstance(executed[-1], dict) else {}
+        return {
+            'success': row.get('status') == 'resolved',
+            'status': row.get('status'),
+            'host': host,
+            'command': command,
+            'exit_code': last.get('returncode'),
+            'stdout': last.get('stdout', ''),
+            'stderr': last.get('stderr', ''),
+            'detail': row.get('last_error') or '',
+            'remediation_id': rid,
+            'change_record_url': url,
+            'confirmed_by': approver,
+            'ran_as': 'the write identity, through an executor Job',
+        }
 
     def _build_executor_manifest(self, job_name: str, work_order: Dict[str, Any]) -> Dict[str, Any]:
         """Build the cfoperator-executor Job manifest for a claimed remediation.
@@ -11439,6 +11624,9 @@ Only return the JSON array, no other text."""
             policy_block = ''
         learning_line = ("- ALWAYS use store_learning to save solutions when you or the user resolves an issue\n"
                          if 'store_learning' in offered else '')
+        confirm_line = ('\n' + SSH_WRITE_CONFIRM_CONTRACT
+                        if tool_policy is not None and tool_policy.confirm_host_write is not None
+                        and tool_policy.allows_mutation() else '')
 
         system_context = f"""You are CFOperator, an autonomous infrastructure monitoring agent.
 
@@ -11452,7 +11640,7 @@ You have access to these tools (use them — do not claim you lack a capability 
 {policy_block}
 Important: Some services run as systemd units (e.g., ollama on ollama-gpu), not containers.
 Use ssh_list_services to see BOTH containers and systemd services on a host.
-{SSH_ACCESS_CONTRACT}
+{SSH_ACCESS_CONTRACT}{confirm_line}
 
 Your role:
 - Answer infrastructure-specific questions
@@ -11524,7 +11712,8 @@ IMPORTANT:
 
     def handle_chat_message_stream(self, message: str, history: List[Dict[str, str]], backend: str = 'auto', model: str = None,
                                    actor_role: Optional[str] = None, verify_only: bool = False,
-                                   session_id: Optional[str] = None):
+                                   session_id: Optional[str] = None,
+                                   can_confirm_host_writes: bool = False):
         """
         Run one console chat turn, yielding SSE event dicts.
 
@@ -11544,11 +11733,22 @@ IMPORTANT:
             {'event': 'error', 'data': {'error': ...}}
         """
         event_queue = queue.Queue()
-        tool_policy = ToolPolicy(actor_role=actor_role or shared_config.ROLE_MEMBER,
-                                 verify_only=verify_only)
 
         def event_callback(event_type, data):
             event_queue.put({'event': event_type, 'data': data})
+
+        # CFOP-442: a confirmer only where someone can answer it — a console
+        # admin session (the route decides, it alone knows a browser from a
+        # token) on a turn that may change things. Everywhere else a host
+        # write is refused by the registry with what would have run.
+        role = actor_role or shared_config.ROLE_MEMBER
+        confirmer = None
+        if can_confirm_host_writes and role == shared_config.ROLE_ADMIN and not verify_only:
+            def run_confirmed(**kw):
+                return self._run_confirmed_host_command(session_id=session_id, **kw)
+            confirmer = HostWriteConfirmer(event_callback, run_confirmed)
+        tool_policy = ToolPolicy(actor_role=role, verify_only=verify_only,
+                                 confirm_host_write=confirmer)
 
         def run_chat():
             # One trace per turn (CFOP-388), opened on the turn's own thread.
@@ -11588,7 +11788,9 @@ IMPORTANT:
         thread = threading.Thread(target=run_chat, daemon=True)
         thread.start()
 
-        # Yield events as they arrive
+        # Yield events as they arrive. A confirmer waiting on the operator or
+        # on its executor Job is silent by design; that is not a hang, and
+        # both waits are bounded on their own (CFOP-442).
         while True:
             try:
                 evt = event_queue.get(timeout=180)
@@ -11596,6 +11798,8 @@ IMPORTANT:
                 if evt['event'] in ('done', 'error'):
                     break
             except queue.Empty:
+                if confirmer is not None and confirmer.busy:
+                    continue
                 yield {'event': 'error', 'data': {'error': 'Timeout waiting for response'}}
                 break
 

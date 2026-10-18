@@ -412,6 +412,41 @@ When the URL is **set**:
 3. Executor runs the **approved plan** (skips LLM planning), then `POST /close`
    with per-command results.
 
+### Console-confirmed host writes (CFOP-442)
+
+An admin chatting in the console is not refused a host change. A write-shaped
+`ssh_execute` command (the same classifier unattended runs use), and every
+`ssh_docker_restart` / `ssh_restart_service`, pauses the turn and shows the
+admin the host, the exact command and why it counts as a write. **Run**
+executes that command once through this lane; **Decline**, Stop, or five
+minutes without an answer runs nothing.
+
+On Run, the agent:
+
+1. records the row already `claimed`, `payload.source: console-chat-confirm`
+   (the drainer never sees it, the open-PR cap does not apply);
+2. opens the change record **pre-approved** (`/open` with an `approval` naming
+   the admin): the GitHub recorder commits it straight to the base branch and
+   opens no PR, because a person already approved this exact command;
+3. spawns the executor Job, which runs the command verbatim as the write
+   identity. No allowlist, deny list or metacharacter rule applies: those bound
+   plans nobody read. Exit 0 is `resolved`; anything else is `failed`, never
+   retried and never `needs-human` (the admin already has the result);
+4. polls the row and hands the result back to the model in the same turn.
+
+What still applies: the node-action kill-switch, and a configured recorder (a
+confirmed command is recorded before it runs). `fail_remediation` never
+re-queues a confirmed row, so the reaper cannot run it a second time. A
+recorder from before this change ignores the approval and opens a PR; the
+agent fails the row instead of waiting on that merge.
+
+Who can confirm: a console admin **session**. A `remediate` token is an admin
+with nobody at a console, so its host writes are refused with the command that
+would have run. Members and verify-only turns never reach the confirm.
+
+The host bound is the write identity's sudoers (homelab-infra
+`ansible/files/sudoers-cfop-nodeaction`, blanket since HOMELAB-44).
+
 ### Microservice swap model
 
 One ClusterIP **Service** (`cfop-changerecord`); swap the **Deployment image** to
@@ -420,7 +455,7 @@ the 3-endpoint HTTP contract; there is no `github|snow|jira` switch in either.
 
 | image | approval meaning |
 |---|---|
-| `cfoperator-changerecord` (github) | record PR under `change-records/`; merge = approve |
+| `cfoperator-changerecord` (github) | record PR under `change-records/`; merge = approve. A pre-approved `/open` (console-confirmed) commits to base, no PR |
 | snow / jira (later) | ticket state from `CFOP_EXEC_CHANGE_APPROVED_STATE` / `_CLOSED_STATE` on the recorder |
 
 Approved/closed state names stay **env on the recorder Deployment**, not in the
@@ -578,7 +613,8 @@ Single-file diffs only (multi-file → `needs-human`), exact-context apply (drif
 decline), secret-path refusal, branch dedupe, per-tick + retry caps, read-only
 executor SA, and **human merge is the only mutation path** for GitOps classes.
 Node-actions additionally require change-record approval when
-`CFOP_EXEC_CHANGE_URL` is set.
+`CFOP_EXEC_CHANGE_URL` is set. A console-confirmed host write's approval is
+the admin who clicked Run, recorded on the change record before it runs.
 
 ## Deploy
 

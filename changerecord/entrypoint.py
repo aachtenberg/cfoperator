@@ -142,7 +142,7 @@ class ChangeRecordHandler(BaseHTTPRequestHandler):
             body = self._read_json()
             intent = intent_from_body(body)
             ref = self.recorder.open(intent)
-        except ChangeRecordError as e:
+        except (ChangeRecordError, ValueError) as e:
             self._write_json(400, {"error": str(e)})
             return
         except Exception as e:  # noqa: BLE001
