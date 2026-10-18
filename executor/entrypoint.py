@@ -459,9 +459,14 @@ def run_confirmed_command(env: Dict[str, str], work_order: Dict[str, Any]) -> Di
         return build_completion_payload(work_order, "failed", pr_url,
                                         "no target host on the confirmed command", result)
 
+    # The agent's inventory address when it sent one: where its own
+    # ssh_execute connects. ``host`` stays the name the admin was shown.
+    connect_to = str(plan.get("address") or "").strip() or host
+    if connect_to != host:
+        result["address"] = connect_to
     status, detail = "resolved", ""
     try:
-        result["executed"] = run_ssh_plan(host, commands, env)
+        result["executed"] = run_ssh_plan(connect_to, commands, env)
     except SSHError as e:
         status, detail = "failed", f"could not reach {host}: {e}"
     except Exception as e:  # noqa: BLE001 - the command must not be retried

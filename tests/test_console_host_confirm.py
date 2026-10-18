@@ -220,3 +220,41 @@ def test_the_command_is_text_never_markup():
     assert "${q.command" not in card and "${escapeHtml(q.command" not in card
     for interpolated in re.findall(r"\$\{([^}]*)\}", card):
         assert "q." not in interpolated or "escapeHtml(" in interpolated, interpolated
+
+
+def test_a_question_that_arrives_after_stop_is_declined_not_left_waiting():
+    """Bugbot on #356: a confirm the route only sees once the turn is
+    cancelled was never recorded, so Stop could not decline it, and the
+    worker sat out the whole five-minute window."""
+    client, server, op = _client()
+    release = threading.Event()
+
+    def stream(*args, **kwargs):
+        yield {"event": "tool_call", "data": {"tool": "ssh_execute", "args": {}}}
+        release.wait(2)
+        yield {"event": "confirm", "data": {"id": "late", "host": "box1", "command": "x", "reason": "r"}}
+        yield {"event": "done", "data": {"response": "ok"}}
+    op.handle_chat_message_stream.side_effect = stream
+    chat_id = client.post("/api/chat", json={"message": "stop it"}).get_json()["chat_id"]
+    for _ in range(100):
+        if server._chat_sessions[chat_id]["events"]:
+            break
+        time.sleep(0.01)
+    assert client.post(f"/api/chat/{chat_id}/stop").status_code == 200
+    release.set()
+    for _ in range(200):
+        if op.resolve_host_write_confirm.call_args_list:
+            break
+        time.sleep(0.01)
+    cid, approved, _who, why = op.resolve_host_write_confirm.call_args.args
+    assert (cid, approved, why) == ("late", False, "stopped")
+
+
+def test_a_stopped_or_finished_turn_settles_its_open_cards():
+    """Bugbot on #356: after Stop the settle event never reaches the page,
+    so the card kept offering Run for a question already closed."""
+    assert "settleOpenHostConfirms(inFlightChatId, 'stopped')" in _function("stopChat")
+    assert "settleOpenHostConfirms(chatId, 'ended')" in _function("chatSessionLost")
+    handler = _function("handleChatEvent")
+    assert handler.count("settleOpenHostConfirms(inFlightChatId, 'ended')") == 2  # done and error
+    assert "card.dataset.chatId = chatId" in _function("addHostConfirm")

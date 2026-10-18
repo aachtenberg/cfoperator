@@ -1529,6 +1529,9 @@ class WebServer:
             # remediate token is an admin with nobody at a console; its host
             # writes are refused with what would have run.
             can_confirm = current_token() is None and actor_role == ROLE_ADMIN
+            # Named on a question the worker declines by itself (a Stop that
+            # raced the question): the request context is gone by then.
+            chat_actor = _actor()
 
             chat_id = str(uuid.uuid4())[:8]
             with self._sessions_lock:
@@ -1558,6 +1561,19 @@ class WebServer:
                             if session is None:
                                 return
                             if session['cancelled']:
+                                if evt.get('event') == 'confirm':
+                                    # Asked after Stop, or before Stop could
+                                    # see it: nobody will answer it, so it is
+                                    # declined here rather than holding the
+                                    # turn for the whole window (Bugbot #356).
+                                    cid = str((evt.get('data') or {}).get('id') or '')
+                                    if cid:
+                                        try:
+                                            self.operator.resolve_host_write_confirm(
+                                                cid, False, chat_actor, 'stopped')
+                                        except Exception as e:
+                                            logger.warning(f"Could not decline host-write "
+                                                           f"confirm {cid} after stop: {e}")
                                 stop_evt = {
                                     'event': 'done',
                                     'data': {'response': '', 'stopped': True}

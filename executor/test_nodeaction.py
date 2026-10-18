@@ -552,3 +552,19 @@ def test_anything_short_of_a_confirmed_order_still_meets_the_allowlist(override)
     ssh.assert_not_called()
     assert payload["status"] == "needs-human"
     assert "safety gate" in payload["detail"]
+
+
+def test_confirmed_command_connects_to_the_inventory_address_and_records_the_name():
+    """Bugbot on #356: ssh to the address the agent's own ssh_execute uses,
+    not an inventory alias the Job may not resolve. The name stays the host
+    on the result, which is what the admin was shown."""
+    order = _confirmed_order()
+    order["approved_plan"]["address"] = "192.168.0.150"
+    runs = [{"command": "c", "returncode": 0, "stdout": "", "stderr": ""}]
+    with patch.object(entrypoint, "run_ssh_plan", return_value=runs) as ssh, \
+         patch.object(entrypoint, "close_record", return_value=None):
+        payload = run(_env(order))
+    assert ssh.call_args[0][0] == "192.168.0.150"
+    assert payload["result"]["host"] == "ubuntu-llm-01"
+    assert payload["result"]["address"] == "192.168.0.150"
+    assert "on ubuntu-llm-01" in payload["detail"]

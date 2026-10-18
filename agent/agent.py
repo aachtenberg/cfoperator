@@ -5136,6 +5136,16 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         }
         plan = {'host': host, 'commands': [command],
                 'explanation': f"Confirmed in the console chat by {approver}"}
+        # Connect where ssh_execute would: the inventory address, not the
+        # name the admin was shown. The name stays on the record and the row
+        # (Bugbot on #356: an alias that only the agent's inventory resolves
+        # would otherwise send the approved command nowhere, or elsewhere).
+        hosts_cfg = ((self.config.get('infrastructure') or {}).get('hosts') or {}
+                     if isinstance(self.config, dict) else {})
+        address = str(((hosts_cfg.get(host) or {}) if isinstance(hosts_cfg, dict) else {})
+                      .get('address') or '').strip()
+        if address:
+            plan['address'] = address
         payload = {
             'source': CONSOLE_CONFIRMED_SOURCE,
             'recommendation': f"Run on {host}: {command}",

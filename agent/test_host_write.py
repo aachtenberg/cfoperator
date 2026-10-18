@@ -125,7 +125,8 @@ def test_wait_for_row_returns_the_outcome_or_none_at_the_deadline():
 
 def _op(*, enabled=True, recorder="http://changerecord:8091", final=None):
     op = MagicMock()
-    op.config = {"remediation": {"executor": {"node_action": {"enabled": enabled}}}}
+    op.config = {"remediation": {"executor": {"node_action": {"enabled": enabled}}},
+                 "infrastructure": {"hosts": {"box1": {"address": "10.9.8.7"}}}}
     op._remediation_flag = lambda name: enabled if name == "node_action_enabled" else True
     op._executor_config = lambda: op.config["remediation"]["executor"]
     op._change_record_url = lambda: recorder
@@ -155,7 +156,9 @@ def test_a_confirmed_command_is_recorded_pre_approved_spawned_and_reported():
     out, cro = _run(op)
     payload, job = op.kb.queue_confirmed_host_command.call_args[0][:2]
     assert payload["source"] == CONSOLE_CONFIRMED_SOURCE
-    assert payload["plan"] == {"host": "box1", "commands": ["sudo -n docker stop x"],
+    # The name the admin saw, and the address ssh_execute would have used.
+    assert payload["plan"] == {"host": "box1", "address": "10.9.8.7",
+                               "commands": ["sudo -n docker stop x"],
                                "explanation": "Confirmed in the console chat by aachten"}
     assert payload["confirmed_by"] == "aachten" and payload["chat_session_id"] == 12
     intent = cro.call_args[0][1]
