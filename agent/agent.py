@@ -503,6 +503,60 @@ _IDENT_IP = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)\b')
 _IDENT_ENV = re.compile(r'\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b')
 _IDENT_ROW = re.compile(r'\b([A-Za-z][A-Za-z0-9]*_id)\W{0,3}(\d+)')
 
+# CFOP-453: the model renders one FIX target two ways on two runs --
+# `data/eccc-ingest-script-mg664c47g9` from the alert path, then
+# `eccc-ingest-script-mg664c47g9` from the sweep dispatch (live rows #314 /
+# #315) -- and the tgt- hash is over the verbatim id, so the two never meet.
+# Targets are normalized for COMPARISON only: the stored id, the hash the row
+# is keyed on and what the executor is shown stay verbatim. A kustomize
+# generator suffix is ten characters from kustomize's own alphabet (no vowels,
+# no 0/1/a/e/i/l/o/u), which is why `-production` or `-ingest` can never be
+# mistaken for one.
+_KUSTOMIZE_HASH_SUFFIX = re.compile(r'-[bcdfghkmnpqrstvwxz2456789]{10}$')
+
+
+def _normalize_target_id(target_id) -> str:
+    tid = str(target_id or '').strip().lower().strip('/')
+    return _KUSTOMIZE_HASH_SUFFIX.sub('', tid)
+
+
+def _target_identity(targets) -> frozenset:
+    """(kind, repo, normalized id) per usable FIX target; empty means "this
+    row names nothing matchable", which the caller must treat as "do not
+    fold" and never as "matches everything"."""
+    out = set()
+    for t in targets or []:
+        if not isinstance(t, dict):
+            continue
+        kind = str(t.get('kind') or '').strip().lower()
+        tid = _normalize_target_id(t.get('id'))
+        if kind and tid:
+            out.add((kind, str(t.get('repo') or '').strip().lower(), tid))
+    return frozenset(out)
+
+
+def _same_target(a, b) -> bool:
+    """Same kind and repo, and the ids equal or one is a path-segment suffix
+    of the other: `data/eccc-ingest-script` is `eccc-ingest-script`, but
+    `base/apps/kustomization.yml` is not `base/monitoring/kustomization.yml`
+    -- basename-only matching would fold two real files into one row."""
+    if a[0] != b[0] or a[1] != b[1]:
+        return False
+    x, y = a[2], b[2]
+    return x == y or x.endswith('/' + y) or y.endswith('/' + x)
+
+
+def _targets_contained(new, old) -> bool:
+    """Every target on one side has a match on the other. Containment, not
+    intersection, for the same reason as the identifier fold: two fixes that
+    each touch something the other does not are two fixes."""
+    if not new or not old:
+        return False
+
+    def covered(xs, ys):
+        return all(any(_same_target(x, y) for y in ys) for x in xs)
+    return covered(new, old) or covered(old, new)
+
 _HUMAN_ONLY_SHAPED = re.compile(
     r'\b(physically|hardware|power\s+supply|power\s+strip|sd\s+card|'
     r'replace|swap\s+it|wiring|console|hard-?cycle)\b', re.I)
@@ -6999,7 +7053,14 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         """
         try:
             new_ids = self._extract_remediation_identifiers(details.get('recommendation'))
-            if not new_ids:
+            # CFOP-453: the second basis is the FIX targets themselves. The
+            # key tiers cannot see this case -- a sweep-dispatched enqueue is
+            # keyed on its stamped title slug and an alert-path enqueue of
+            # the same FIX on the target hash, by design (CFOP-46 D / CFOP-80)
+            # -- and the identifier match above sees nothing in a
+            # recommendation that names a ConfigMap and a function.
+            new_targets = _target_identity(details.get('targets'))
+            if not new_ids and not new_targets:
                 return None
             for row in self.kb.list_open_remediations(limit=100):
                 payload = row.get('payload') if isinstance(row.get('payload'), dict) else {}
@@ -7009,15 +7070,34 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 if payload.get('dedupe_key') and \
                         payload.get('dedupe_key') == details.get('dedupe_key'):
                     continue
-                row_ids = self._extract_remediation_identifiers(payload.get('recommendation'))
-                if row_ids and (new_ids <= row_ids or row_ids <= new_ids):
+                reason = None
+                row_targets = _target_identity(payload.get('targets'))
+                if _targets_contained(new_targets, row_targets):
+                    reason = 'target'
+                    shared = sorted(t[2] for t in new_targets)
+                else:
+                    row_ids = self._extract_remediation_identifiers(payload.get('recommendation'))
+                    # Both sides non-empty: an empty set is a subset of every
+                    # set, and the early return above no longer guarantees
+                    # new_ids is populated.
+                    if new_ids and row_ids and (new_ids <= row_ids or row_ids <= new_ids):
+                        reason = 'repeat'
+                        shared = sorted(new_ids & row_ids)
+                if reason:
                     rid = row.get('id')
                     summary = str(details.get('trigger')
                                   or details.get('recommendation') or '')[:200]
-                    logger.info(f"Folding repeat remediation onto open #{rid} "
-                                f"(shared identifiers: {sorted(new_ids & row_ids)})")
+                    logger.info(f"Folding {reason} remediation onto open #{rid} "
+                                f"(shared: {shared})")
                     self.kb.record_remediation_absorbed(rid, summary)
-                    REMEDIATION_FOLDED.labels(reason='repeat').inc()
+                    # The folded enqueue's key becomes an alias of the
+                    # surviving row, so the sweep's loop-break lookup under
+                    # the dispatch key still says "already handled" tomorrow
+                    # instead of re-gathering the evidence every morning.
+                    new_key = str(details.get('dedupe_key') or '')
+                    if new_key and new_key != payload.get('dedupe_key'):
+                        self.kb.record_remediation_alias(rid, new_key)
+                    REMEDIATION_FOLDED.labels(reason=reason).inc()
                     return rid
         except Exception as e:
             logger.warning(f"Repeat-remediation fold failed (enqueuing as-is): {e}")

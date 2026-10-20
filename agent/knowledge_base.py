@@ -933,6 +933,20 @@ def _tracker_field(result, name: str) -> Optional[str]:
     return str(val) if val not in (None, '') else None
 
 
+def payload_carries_dedupe_key(payload, dedupe_key: str) -> bool:
+    """The row's own key, or one that folded onto it (CFOP-453).
+
+    Module-level and pure so the alias half is testable without a database:
+    find_open_remediation_by_dedupe_key is the only caller in production.
+    """
+    if not isinstance(payload, dict) or not dedupe_key:
+        return False
+    if payload.get('dedupe_key') == dedupe_key:
+        return True
+    aliases = payload.get('dedupe_aliases')
+    return isinstance(aliases, list) and dedupe_key in aliases
+
+
 def remediation_row_dict(r) -> Dict[str, Any]:
     """Serialize a RemediationQueue row for the read API / operator console."""
     return {
@@ -4502,7 +4516,48 @@ class KnowledgeBase:
                 RemediationQueue.status.notin_(('resolved', 'rejected')),
                 RemediationQueue.payload['dedupe_key'].astext == dedupe_key,
             ).first()
-            return remediation_row_dict(row) if row else None
+            if row:
+                return remediation_row_dict(row)
+            # CFOP-453: a row that absorbed an enqueue keyed another way
+            # carries that key as an alias, and answers for it here -- or the
+            # sweep that stamped the key re-dispatches every morning.
+            # Python-side over the bounded open set rather than a JSONB
+            # containment query: nothing exercises that operator before
+            # production, and the open set is small.
+            for cand in session.query(RemediationQueue).filter(
+                RemediationQueue.status.notin_(('resolved', 'rejected')),
+            ).order_by(RemediationQueue.created_at.desc()).limit(100):
+                if payload_carries_dedupe_key(cand.payload, dedupe_key):
+                    return remediation_row_dict(cand)
+            return None
+
+    def record_remediation_alias(self, remediation_id: int, dedupe_key: str,
+                                 limit: int = 25) -> bool:
+        """Record a dedupe key that folded onto this row (CFOP-453).
+
+        The counterpart of record_remediation_absorbed for the KEY rather than
+        the summary: find_open_remediation_by_dedupe_key answers for aliases,
+        which is what keeps the sweep/summary loop-break (CFOP-46 D) intact
+        when a dispatch-keyed enqueue folds onto a target-keyed row. Bounded
+        and de-duplicated like the absorbed list.
+        """
+        key = str(dedupe_key or '').strip()
+        if not key:
+            return False
+        with self.session_scope() as session:
+            item = session.query(RemediationQueue).filter_by(id=remediation_id).first()
+            if not item:
+                return False
+            payload = dict(item.payload or {}) if isinstance(item.payload, dict) else {}
+            aliases = list(payload.get('dedupe_aliases') or [])
+            if key == payload.get('dedupe_key') or key in aliases or len(aliases) >= limit:
+                return False
+            aliases.append(key)
+            payload['dedupe_aliases'] = aliases
+            item.payload = payload
+            _log("info", "Remediation dedupe alias recorded",
+                 queue_id=remediation_id, dedupe_key=key, alias_count=len(aliases))
+            return True
 
     def record_remediation_absorbed(self, remediation_id: int, summary: str,
                                     limit: int = 25) -> bool:

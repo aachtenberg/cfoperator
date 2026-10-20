@@ -23,7 +23,8 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent import CFOperator  # noqa: E402
-from agent.agent import _FORK_SHAPED  # noqa: E402
+from agent.agent import _FORK_SHAPED, _normalize_target_id  # noqa: E402
+from agent.knowledge_base import payload_carries_dedupe_key  # noqa: E402
 
 # --- the six live rows, verbatim -------------------------------------------
 
@@ -194,6 +195,149 @@ def test_the_fold_fails_open():
     op = _op([])
     op.kb.list_open_remediations.side_effect = RuntimeError("db down")
     assert CFOperator._absorb_repeat_remediation(op, _details(REC_69)) is None
+
+
+# ---------------------------------------------------------------------------
+# CFOP-453: the same FIX target under two keys -- live rows #314 / #315
+#
+# 2026-10-20, three minutes apart: the alert path keyed #314 on its FIX
+# targets (tgt-), the sweep dispatch keyed #315 on its stamped title slug
+# (inv-dispatch-). Both are gemma4 recommendations for one ConfigMap in one
+# repo; the ids differ only by the `data/` prefix. Payloads verbatim.
+# ---------------------------------------------------------------------------
+
+REC_314 = ("Update the `eccc-ingest` ConfigMap to implement retries with exponential "
+           "backoff in the `fetch_csv` function to handle transient external "
+           "connection resets.")
+REC_315 = ("Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry "
+           "logic with exponential backoff in the `fetch_csv` function to mitigate "
+           "these transient external connection failures.")
+TGT_314 = [{"id": "data/eccc-ingest-script-mg664c47g9", "kind": "gitops-manifest",
+            "repo": "aachtenberg/homelab-infra"}]
+TGT_315 = [{"id": "eccc-ingest-script-mg664c47g9", "kind": "gitops-manifest",
+            "repo": "aachtenberg/homelab-infra"}]
+KEY_314 = "tgt-7fafc3e87c2d09f3"
+KEY_315 = "inv-dispatch-investigate-eccc-ingest-connection-resets"
+
+
+def _trow(rid, rec, targets, key):
+    return {"id": rid, "payload": {"dedupe_key": key, "recommendation": rec,
+                                   "targets": targets}}
+
+
+def _tdetails(rec, targets, key, trigger="investigate: eccc-ingest connection resets"):
+    return {"recommendation": rec, "targets": targets, "dedupe_key": key,
+            "trigger": trigger}
+
+
+def test_the_live_pair_names_no_identifiers():
+    """Why the CFOP-78 fold declined: a ConfigMap name and a function name
+    match none of its three patterns. Both sets empty, correctly no fold."""
+    assert extract(REC_314) == frozenset()
+    assert extract(REC_315) == frozenset()
+
+
+def test_a_dispatch_keyed_repeat_folds_onto_the_target_keyed_row():
+    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
+    rid = CFOperator._absorb_repeat_remediation(op, _tdetails(REC_315, TGT_315, KEY_315))
+    assert rid == 314
+    op.kb.record_remediation_absorbed.assert_called_once()
+    assert "eccc-ingest" in op.kb.record_remediation_absorbed.call_args[0][1], (
+        "the fold must be visible on the surviving row, not silent")
+
+
+def test_the_folded_key_becomes_an_alias_of_the_surviving_row():
+    """Tomorrow's sweep asks for the dispatch key it stamped; the surviving
+    row has to answer for it or the sweep re-investigates every morning."""
+    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
+    CFOperator._absorb_repeat_remediation(op, _tdetails(REC_315, TGT_315, KEY_315))
+    op.kb.record_remediation_alias.assert_called_once_with(314, KEY_315)
+    payload = {"dedupe_key": KEY_314, "dedupe_aliases": [KEY_315]}
+    assert payload_carries_dedupe_key(payload, KEY_315)
+    assert payload_carries_dedupe_key(payload, KEY_314)
+    assert not payload_carries_dedupe_key(payload, "inv-dispatch-something-else")
+    assert not payload_carries_dedupe_key({"dedupe_key": KEY_314, "dedupe_aliases": "x"},
+                                          "x"), "a non-list alias field matches nothing"
+
+
+def test_the_fold_works_in_the_other_order_too():
+    """Had the sweep dispatch landed first, the alert-path row folds onto it."""
+    op = _op([_trow(315, REC_315, TGT_315, KEY_315)])
+    assert CFOperator._absorb_repeat_remediation(
+        op, _tdetails(REC_314, TGT_314, KEY_314)) == 315
+
+
+def test_a_regenerated_kustomize_hash_is_the_same_configmap():
+    """The ConfigMap was rebuilt with a new generator hash after #201 merged;
+    the next investigation names the new one."""
+    rebuilt = [{"id": "data/eccc-ingest-script-2g77tmm66h", "kind": "gitops-manifest",
+                "repo": "aachtenberg/homelab-infra"}]
+    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
+    assert CFOperator._absorb_repeat_remediation(
+        op, _tdetails(REC_315, rebuilt, KEY_315)) == 314
+
+
+def test_normalization_strips_only_a_kustomize_hash():
+    assert _normalize_target_id("data/eccc-ingest-script-mg664c47g9") == "data/eccc-ingest-script"
+    assert _normalize_target_id("Eccc-Ingest-Script-2g77tmm66h") == "eccc-ingest-script"
+    # Ten trailing characters that are not drawn from kustomize's alphabet
+    # (it has no vowels) are part of the name, not a generator suffix.
+    assert _normalize_target_id("eccc-ingest-production") == "eccc-ingest-production"
+    assert _normalize_target_id("api-monitoring") == "api-monitoring"
+
+
+def test_a_different_repo_is_a_different_target():
+    elsewhere = [{"id": "eccc-ingest-script-mg664c47g9", "kind": "gitops-manifest",
+                  "repo": "aachtenberg/cfoperator-deploy"}]
+    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
+    assert CFOperator._absorb_repeat_remediation(
+        op, _tdetails(REC_315, elsewhere, KEY_315)) is None
+    op.kb.record_remediation_absorbed.assert_not_called()
+
+
+def test_the_same_basename_in_another_directory_is_not_the_same_file():
+    """The reason the suffix rule is on path segments and not basenames:
+    every kustomize tree has a kustomization.yml per directory."""
+    apps = [{"id": "k3s/base/apps/kustomization.yml", "kind": "gitops-manifest",
+             "repo": "aachtenberg/homelab-infra"}]
+    monitoring = [{"id": "k3s/base/monitoring/kustomization.yml", "kind": "gitops-manifest",
+                   "repo": "aachtenberg/homelab-infra"}]
+    op = _op([_trow(1, "Pin the image tags in `kustomization.yml`", apps, "tgt-aaaa")])
+    assert CFOperator._absorb_repeat_remediation(
+        op, _tdetails("Pin the image tags in `kustomization.yml`", monitoring,
+                      "tgt-bbbb")) is None
+
+
+def test_a_fix_touching_an_extra_target_is_a_different_fix():
+    """Containment, not intersection, as for identifiers."""
+    two = TGT_314 + [{"id": "k3s/base/data/eccc-ingest.yml", "kind": "gitops-manifest",
+                      "repo": "aachtenberg/homelab-infra"}]
+    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
+    # The wider fix folds onto the narrower open row (one side contains the other)...
+    assert CFOperator._absorb_repeat_remediation(op, _tdetails(REC_315, two, KEY_315)) == 314
+    # ...but two fixes that each name a target the other does not stay apart.
+    other = [{"id": "k3s/base/data/eccc-ingest.yml", "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"}]
+    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
+    assert CFOperator._absorb_repeat_remediation(op, _tdetails(REC_315, other, KEY_315)) is None
+
+
+def test_targets_never_match_a_row_without_targets():
+    """An empty identity on either side is "names nothing", not "matches
+    everything" -- the same trap the identifier fold guards against."""
+    op = _op([_row(50, "Investigate the elevated latency further")])
+    assert CFOperator._absorb_repeat_remediation(
+        op, _tdetails(REC_315, TGT_315, KEY_315)) is None
+    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
+    assert CFOperator._absorb_repeat_remediation(
+        op, _tdetails("Investigate the elevated latency further", [], "inv-cccc")) is None
+    op.kb.list_open_remediations.assert_not_called()
+
+
+def test_an_identifier_fold_also_records_its_key_as_an_alias():
+    op = _op([_row(67, REC_67, key="inv-aaaa")])
+    assert CFOperator._absorb_repeat_remediation(op, _details(REC_69, key="inv-bbbb")) == 67
+    op.kb.record_remediation_alias.assert_called_once_with(67, "inv-bbbb")
 
 
 # ---------------------------------------------------------------------------
