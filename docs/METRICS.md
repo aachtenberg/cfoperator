@@ -321,6 +321,26 @@ live series carry. Earlier revisions of this page (and of
 `llm-observability.md`) said `prompt`/`completion`; every query written from
 them returned nothing.
 
+`input` is the whole prompt, cached or not. The Anthropic tool loop marks its
+requests for prompt caching (CFOP-461), and Anthropic then reports the cached
+part outside its own `input_tokens`; the agent adds it back so this series
+keeps the meaning it has for Ollama.
+
+```promql
+# Of those input tokens, how many the provider's prompt cache served (read)
+# or stored (write). Anthropic tool loop only.
+cfoperator_llm_cache_tokens_total{provider="anthropic", model="claude-sonnet-5-5", kind="read"}
+cfoperator_llm_cache_tokens_total{provider="anthropic", model="claude-sonnet-5-5", kind="write"}
+
+# Prompt-cache hit rate per model
+sum by (model) (rate(cfoperator_llm_cache_tokens_total{kind="read"}[1h]))
+  / sum by (model) (rate(cfoperator_llm_tokens_total{provider="anthropic", type="input"}[1h]))
+```
+
+Read tokens bill at about a tenth of the input price, and writes at 1.25×. A
+loop that keeps reading near zero has something volatile ahead of the tail of
+its prompt.
+
 ### LLM Latency
 ```promql
 # LLM request latency histogram (seconds)
@@ -524,6 +544,7 @@ shipped several examples that could never match.
 | `cfoperator_tool_result_redactions_total` | `tool_name` | the tool's registered name, as in `cfoperator_tool_calls_total` |
 | `cfoperator_llm_requests_total` | `result` | `success`, `error` |
 | `cfoperator_llm_tokens_total` | `type` | `input`, `output` |
+| `cfoperator_llm_cache_tokens_total` | `kind` | `read`, `write` |
 | `cfoperator_triage_decisions_total` | `served_by` | `triage_model`, `chain`, `short_circuit_resolution`, `short_circuit_info`, `short_circuit_noise`, `unparseable_default`, `llm_unavailable` |
 | `cfoperator_triage_model_fallbacks_total` | `reason` | `unparseable`, `exception` |
 | `cfoperator_investigation_duration_seconds` | `outcome` | as `cfoperator_investigations_total` |
