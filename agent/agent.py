@@ -1718,6 +1718,10 @@ ERROR_RATE = Counter('cfoperator_errors_total', 'Total errors')
 # LLM Observability metrics
 LLM_REQUESTS = Counter('cfoperator_llm_requests_total', 'Total LLM requests', ['provider', 'model', 'result'])
 LLM_TOKENS = Counter('cfoperator_llm_tokens_total', 'Total tokens used', ['provider', 'model', 'type'])  # type: input/output
+# The share of those input tokens a provider prompt cache served or stored
+# (CFOP-461). Already counted in LLM_TOKENS type="input"; this is the split,
+# so read / input is the hit rate.
+LLM_CACHE_TOKENS = Counter('cfoperator_llm_cache_tokens_total', 'Input tokens read from or written to the provider prompt cache', ['provider', 'model', 'kind'])  # kind: read/write
 # Buckets span 1s..600s: LLM chat turns (incl. tool-calling iterations) routinely
 # run tens of seconds and reasoning models reach several minutes. The Histogram
 # default buckets top out at 10s, so every real request landed in +Inf and
@@ -2092,6 +2096,10 @@ class _ToolLoopStats:
     cached_hits: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    # Of input_tokens, how many the provider's prompt cache served or stored
+    # (CFOP-461). Anthropic reports these outside its input_tokens.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
     learning_ids: List[str] = field(default_factory=list)
     # PRs the model opened itself through github_create_pr (html_url, in call
     # order). The tool result is the only evidence such a PR exists; a queue
@@ -2128,6 +2136,18 @@ class _ToolLoopStats:
         if reason:
             self.finish_reasons.append(str(reason))
 
+    def note_anthropic_usage(self, usage: Dict[str, Any]) -> None:
+        """Anthropic's ``input_tokens`` is only the part after the last cache
+        breakpoint; the cached part arrives as two more fields. All three go
+        into input_tokens, so it means the whole prompt here as Ollama's
+        prompt_eval_count does, and caching does not read as usage falling."""
+        read = usage.get('cache_read_input_tokens') or 0
+        write = usage.get('cache_creation_input_tokens') or 0
+        self.input_tokens += (usage.get('input_tokens') or 0) + read + write
+        self.output_tokens += usage.get('output_tokens') or 0
+        self.cache_read_tokens += read
+        self.cache_write_tokens += write
+
     def note_call(self, tool_name: str, tool_args: Any) -> None:
         try:
             key = tool_name + '|' + json.dumps(tool_args, sort_keys=True, default=str)
@@ -2145,6 +2165,8 @@ class _ToolLoopStats:
             'tool_calls': self.tool_calls,
             'input_tokens': self.input_tokens,
             'output_tokens': self.output_tokens,
+            'cache_read_tokens': self.cache_read_tokens,
+            'cache_write_tokens': self.cache_write_tokens,
             'learning_ids': self.learning_ids,
             'cached_tool_hits': self.cached_hits,
             'opened_prs': list(self.opened_prs),
@@ -2153,6 +2175,15 @@ class _ToolLoopStats:
             'history_collapses': self.history_collapses,
             'history_budget': self.history_budget,
         }
+
+
+def _prompt_cache_note(result: Dict[str, Any]) -> str:
+    """The prompt-cache share of a loop's input tokens, for its log line, or
+    '' when the provider reported none. Not the "N cached" field beside it,
+    which counts memoized tool results (CFOP-461)."""
+    read = result.get('cache_read_tokens') or 0
+    write = result.get('cache_write_tokens') or 0
+    return f" (prompt cache: {read} read, {write} written)" if read or write else ''
 
 
 def _llm_usage_attributes(provider: str, resp) -> Dict[str, Any]:
@@ -8348,7 +8379,7 @@ Only return the JSON array, no other text."""
                 f"{tool_calls}/{max_iterations} tool calls{'(limit hit)' if hit_limit else ''} | "
                 f"{cached_hits} cached | "
                 f"{len(response_text)} chars | "
-                f"tokens: {input_tokens}in/{output_tokens}out"
+                f"tokens: {input_tokens}in/{output_tokens}out{_prompt_cache_note(result)}"
             )
 
             # Parse findings from response
@@ -8617,7 +8648,7 @@ Only return the JSON array, no other text."""
                 f"{tool_calls}/{max_iterations} tool calls{'(limit hit)' if hit_limit else ''} | "
                 f"{cached_hits} cached | "
                 f"{len(response_text)} chars | "
-                f"tokens: {input_tokens}in/{output_tokens}out"
+                f"tokens: {input_tokens}in/{output_tokens}out{_prompt_cache_note(result)}"
             )
 
             return self._parse_sweep_findings(response_text)
@@ -10658,6 +10689,26 @@ Only return the JSON array, no other text."""
                 })
         return converted
 
+    @staticmethod
+    def _add_anthropic_cache_breakpoints(payload: Dict[str, Any]) -> None:
+        """Prompt-cache breakpoints for one tool-loop request (CFOP-461).
+
+        Every iteration resends tools, system and the whole history, so with
+        no breakpoint a twelve-turn sweep pays full price for its opening
+        prompt twelve times. The marker on the system block caches tools and
+        system together (tools render first). The top-level marker is the
+        automatic breakpoint: it lands on the last block, so it moves forward
+        with the history and each iteration reads what the one before wrote.
+
+        Only for a request that offers tools. One without them (the forced
+        final turn, the iteration-limit summary) shares no prefix with the
+        loop's entries, so a marker there buys only the write premium.
+        """
+        if payload.get('system'):
+            payload['system'] = [{'type': 'text', 'text': payload['system'],
+                                  'cache_control': {'type': 'ephemeral'}}]
+        payload['cache_control'] = {'type': 'ephemeral'}
+
     def _openai_compat_request_config(self, provider_type: str):
         """Resolve (api_key, chat_completions_url) for an OpenAI-compatible provider.
 
@@ -11149,6 +11200,10 @@ Only return the JSON array, no other text."""
                     LLM_TOKENS.labels(provider=provider_type, model=model, type='input').inc(result['input_tokens'])
                 if result.get('output_tokens'):
                     LLM_TOKENS.labels(provider=provider_type, model=model, type='output').inc(result['output_tokens'])
+                if result.get('cache_read_tokens'):
+                    LLM_CACHE_TOKENS.labels(provider=provider_type, model=model, kind='read').inc(result['cache_read_tokens'])
+                if result.get('cache_write_tokens'):
+                    LLM_CACHE_TOKENS.labels(provider=provider_type, model=model, kind='write').inc(result['cache_write_tokens'])
                 return result
             except Exception as e:
                 latency = time.time() - start
@@ -11444,6 +11499,7 @@ Only return the JSON array, no other text."""
                     }
                     if offered_tools:
                         payload['tools'] = anthropic_tools
+                        self._add_anthropic_cache_breakpoints(payload)
                     headers = {
                         'Content-Type': 'application/json',
                         'x-api-key': api_key,
@@ -11464,10 +11520,7 @@ Only return the JSON array, no other text."""
                     if data.get('error'):
                         raise ValueError(f"Anthropic API error: {data['error']}")
 
-                    # Extract tokens
-                    usage = data.get('usage', {})
-                    stats.input_tokens += usage.get('input_tokens', 0)
-                    stats.output_tokens += usage.get('output_tokens', 0)
+                    stats.note_anthropic_usage(data.get('usage') or {})
                     stats.note_finish(data.get('stop_reason'))
 
                     # Check for tool use in content blocks
@@ -11628,9 +11681,7 @@ Only return the JSON array, no other text."""
                 response = requests.post('https://api.anthropic.com/v1/messages', json=payload, headers=headers, timeout=120)
                 _raise_for_status_with_body(response)
                 data = response.json()
-                usage = data.get('usage', {})
-                stats.input_tokens += usage.get('input_tokens', 0)
-                stats.output_tokens += usage.get('output_tokens', 0)
+                stats.note_anthropic_usage(data.get('usage') or {})
                 summary_text = '\n'.join(b.get('text', '') for b in data.get('content', []) if b.get('type') == 'text')
             else:
                 summary_text = ''
