@@ -13,6 +13,13 @@ from typing import List, Optional, Tuple
 
 _SECRET_PATH = re.compile(r"(sealed|secret|\.env|credential|token)", re.I)
 
+# A hunk header is a bare "@@" or one that closes ("@@ -1,3 +1,4 @@", "@@ @@"),
+# optionally followed by git's section text. Any other line starting "@@" is a
+# body line fused onto the header ("@@ -    old line", never closed); reading
+# it as a header drops that line, and the hunk applies without its first
+# removal — remediation #326 shipped its command twice that way (CFOP-472).
+_HUNK_HEADER = re.compile(r"^@@(?:\s*$| .*@@)")
+
 
 def is_secret_path(path: str) -> bool:
     """Refuse to patch anything that looks secret-bearing."""
@@ -42,7 +49,7 @@ def parse_unified_diff(diff_text: str) -> Optional[Tuple[str, List[tuple]]]:
             path = raw[2:] if raw.startswith("b/") else raw
             continue
         if line.startswith("@@"):
-            if path is None:
+            if path is None or not _HUNK_HEADER.match(line):
                 return None
             # Position numbers are a hint only — apply_unified_diff verifies by
             # exact context (unique whole-file search fallback). Models routinely
