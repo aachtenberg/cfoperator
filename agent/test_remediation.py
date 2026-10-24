@@ -345,3 +345,37 @@ def test_numberless_hunk_ambiguous_context_still_declines():
     d = "--- a/f\n+++ b/f\n@@\n-a\n+A\n b\n"
     _path, hunks = parse_unified_diff(d)
     assert apply_unified_diff(text, hunks) is None
+
+
+def test_unclosed_header_with_fused_body_line_declines():
+    """Vendored twin of executor/test_diff.py's CFOP-472 guard: remediation
+    #326's diff fused its first "-" line onto the header. Read as a header,
+    the line vanishes and the hunk applies without that removal."""
+    from remediation import parse_unified_diff
+    d = ("--- a/ansible/templates/docker-backup.sh.j2\n"
+         "+++ b/ansible/templates/docker-backup.sh.j2\n"
+         "@@ -        k3s etcd-snapshot save \\\n"
+         "-            --name \"backup-${TIMESTAMP}\" \\\n"
+         "-            --dir \"${ETCD_SNAPSHOT_DIR}\" 2>>\"$LOG_FILE\" || \\\n"
+         "-            log \"    Warning: Failed to create etcd snapshot\"\n"
+         "+        k3s etcd-snapshot save \\\n"
+         "+            --name \"backup-${TIMESTAMP}\" \\\n"
+         "+            --data-dir \"${K3S_DATA_DIR}\" \\\n"
+         "+            --dir \"${ETCD_SNAPSHOT_DIR}\" 2>>\"$LOG_FILE\" || \\\n"
+         "+            error_exit \"Failed to create etcd snapshot\"\n")
+    assert parse_unified_diff(d) is None
+
+
+@pytest.mark.parametrize("header", [
+    "@@",
+    "@@ @@",
+    "@@ ... @@",
+    "@@ -2,2 +2,2 @@",
+    "@@ -2,2 +2,2 @@ def section():",
+])
+def test_closed_and_bare_headers_still_parse(header):
+    from remediation import parse_unified_diff, apply_unified_diff
+    d = f"--- a/f\n+++ b/f\n{header}\n a\n-b\n+B\n"
+    parsed = parse_unified_diff(d)
+    assert parsed is not None
+    assert apply_unified_diff("x\na\nb\n", parsed[1]) == "x\na\nB\n"
