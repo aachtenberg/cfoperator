@@ -276,7 +276,10 @@ to that name's own next value, so putting another entry's value on the wrong
 name still refuses. Whole-line `#` comments are prose, not settings: a file
 that opens `# This file is an nginx:alpine template` does not assign `nginx`
 (CFOP-495). They still count for quotes. The refusal is logged and the
-recommendation is classified instead of judged.
+recommendation is classified instead of judged. The refused FIX's targets stay
+on the row as `fold_targets`, which only the repeat fold reads. A refusal is
+about the evidence, not about which file the fix touches, and without them
+every rewording of one fix files its own row (CFOP-494).
 A quote that is neither (a log line, a pod status, a dotted
 path, a bare `value:` with no name) is `unverified`, and the FIX still
 enqueues. A failed read, a missing GitHub client, or any kind other than

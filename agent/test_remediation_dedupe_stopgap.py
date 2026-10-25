@@ -14,6 +14,8 @@ actually produce fold onto each other", and paraphrasing the fixtures would
 test my rewording instead.
 """
 
+import copy
+import json
 import os
 import sys
 from unittest.mock import MagicMock
@@ -23,8 +25,16 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent import CFOperator  # noqa: E402
-from agent.agent import _FORK_SHAPED, _normalize_target_id  # noqa: E402
+from agent.agent import (  # noqa: E402
+    _FORK_SHAPED,
+    _fold_targets,
+    _fold_targets_of,
+    _normalize_target_id,
+    _parse_structured_fix,
+)
 from agent.knowledge_base import payload_carries_dedupe_key  # noqa: E402
+from test_remediation_queue import _na_op  # noqa: E402
+from test_structured_fix import _report  # noqa: E402
 
 # --- the six live rows, verbatim -------------------------------------------
 
@@ -527,3 +537,134 @@ def test_a_committed_recommendation_keeps_confidence_at_the_choke_point():
         "remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
         "recommendation": REC_67, "host": None, "dedupe_key": "inv-ok"})
     assert op.kb.queue_remediation.call_args.kwargs["confidence"] == 0.9
+
+
+# ---------------------------------------------------------------------------
+# CFOP-494: a refused FIX keeps its subject -- live rows #334-#347
+#
+# 2026-10-25, Opus investigations of one nginx crashloop, all night. Every
+# FIX named the same file verbatim and every FIX was refused (observed
+# "contradicted" by CFOP-495's comment parse, or elided), so no row carried
+# targets, the CFOP-453 fold matched nothing, and thirteen rows were filed.
+# Investigation 4817's FIX and both recommendations are verbatim.
+# ---------------------------------------------------------------------------
+
+FIX_4817 = json.loads(r'''{"targets": [{"kind": "gitops-manifest", "id": "apps/files/freshet-dashboard/nginx.conf", "repo": "aachtenberg/freshet-deploy"}], "observed": [{"source": "k8s_get_pod_logs nginx (freshet-dashboard-5cc6665dd-k2h2b), now", "value": "nginx: [emerg] zone \"postgrest_up\" is too small in /etc/nginx/conf.d/default.conf:33"}, {"source": "k8s_get_pods apps freshet-dashboard-5cc6665dd-k2h2b", "value": "nodeName raspberrypi5; nginx CrashLoopBackOff; restartCount 19; Ready=False ContainersNotReady [nginx]; exitCode 1"}, {"source": "ssh raspberrypi5 getconf PAGESIZE", "value": "16384"}, {"source": "github_get_pr freshet-deploy #50", "value": "state open, merged_at null, 1 file changed +6/-1"}, {"source": "github_get_file_contents nginx.conf @ fix/dashboard-nginx-zone-16k-pages", "value": "zone postgrest_up 1m;"}], "steps": ["Merge freshet-deploy PR #50 (fix/dashboard-nginx-zone-16k-pages) into main", "Let the freshet-deploy image build pipeline publish the rebuilt freshet-dashboard image and bump the deployed tag", "Allow ArgoCD to sync the new image tag into the apps namespace, replacing sha-b1491d94cfbf"], "verify": {"command": "kubectl -n apps get pods -l app.kubernetes.io/name=freshet-dashboard -o wide", "expect": "the new pod is Running and Ready 1/1 on raspberrypi5 with restartCount stable (no new restarts); old 77c4b74d9d pod retired"}, "rejected": [{"alternative": "Delete/restart the crashlooping pod", "why_not": "Reschedules the same 64k config; if it lands on raspberrypi5 again it crashes identically \u2014 the zone size is the defect, not a transient state"}, {"alternative": "Cordon raspberrypi5 or add nodeAffinity to keep the pod off 16 KB-page nodes", "why_not": "Masks the bug and reduces capacity; the 1m zone is correct on all page sizes"}, {"alternative": "Edit the image tag in homelab-infra directly", "why_not": "The config lives in freshet-deploy and must be rebuilt into the image first; no fixed image exists until PR #50 merges"}], "risk": "low"}''')
+REC_4817 = ("Merge `freshet-deploy` PR #50 (`fix/dashboard-nginx-zone-16k-pages`), "
+            "which sets `zone postgrest_up 1m;` in "
+            "`apps/files/freshet-dashboard/nginx.conf`. That rebuilds the dashboard "
+            "image; once CI publishes the new tag and ArgoCD syncs it into apps, "
+            "confirm the new pod on raspberrypi5 reaches Running + Ready 1/1 with no "
+            "further restarts, and the old 77c4b74d9d pod retires.")
+REC_4822 = ("Merge freshet-deploy PR #50 (`fix/dashboard-nginx-zone-16k-pages`), "
+            "which sets `zone postgrest_up 1m;` in "
+            "`apps/files/freshet-dashboard/nginx.conf`. This rebuilds the image and "
+            "lets ArgoCD complete the rollout; the new pod will then start on 16 "
+            "KB-page nodes and the old ReplicaSet scales to 0.")
+NGINX_TARGET = [{"kind": "gitops-manifest", "id": "apps/files/freshet-dashboard/nginx.conf",
+                 "repo": "aachtenberg/freshet-deploy"}]
+# A file that disagrees with a claimed `valid=60s`, for the contradicted case.
+NGINX_RESOLVER = "resolver ${NGINX_LOCAL_RESOLVERS} valid=30s;\n"
+
+
+def _refused(how):
+    fix = copy.deepcopy(FIX_4817)
+    if how == "contradicted":
+        fix["observed"] = [{"source": "nginx.conf", "value": "valid=60s"}]
+    elif how == "elided":
+        fix["observed"][0]["value"] = 'nginx: [emerg] zone "postgrest_up" is too small ...'
+    elif how == "no-verify":
+        del fix["verify"]
+    return fix
+
+
+def _nginx_op():
+    op = _na_op()
+    op.git_repos.return_value = op.git_repos.return_value + [
+        {"name": "freshet-deploy", "github": "aachtenberg/freshet-deploy"}]
+    # What the classifier said for #335, the path a refused FIX takes.
+    op._classify_needs_action_recommendation = MagicMock(return_value={
+        "remediation_class": "gitops-patch", "risk": "low", "confidence": None,
+        "host": None, "repo": "freshet-deploy"})
+    op._read_gitops_target = lambda repo, path: NGINX_RESOLVER
+    return op
+
+
+def _nginx_feed(op, inv, rec, fix):
+    """One investigation's enqueue, shaped as production calls it: the
+    caller passes whatever _ensure_structured_fix accepted. The follow-up
+    guard is not under test, so the alert says it is already a follow-up."""
+    report = _report(fix, rec)
+    return op._queue_needs_action_remediation(
+        inv, "freshet-dashboard nginx CrashLoopBackOff on raspberrypi5",
+        {"followup_of": inv - 1}, rec, report,
+        provider="anthropic/claude-opus-4-8",
+        structured_fix=_parse_structured_fix(report, op.git_repos()))
+
+
+def test_the_live_recommendations_name_no_identifiers_and_are_not_forks():
+    """Why nothing but the target could have folded these."""
+    for rec in (REC_4817, REC_4822):
+        assert extract(rec) == frozenset()
+        assert not _FORK_SHAPED.search(rec)
+
+
+@pytest.mark.parametrize("how", ["contradicted", "elided", "no-verify"])
+def test_a_refused_fix_still_folds_its_repeat(how):
+    """The class guard: whatever refuses the FIX, the next rewording of the
+    same fix lands on the open row instead of filing another. Mutation
+    checks: stop storing fold_targets, or stop reading them in the fold,
+    and the second enqueue makes a second row."""
+    op = _nginx_op()
+    assert _nginx_feed(op, 4817, REC_4817, _refused(how)) == 9
+    first = op.kb.queue_remediation.call_args.kwargs["payload"]
+    assert first["fold_targets"] == NGINX_TARGET
+    assert "targets" not in first, "a refused FIX must not look accepted"
+    assert first["dedupe_key"].startswith("inv-"), "the key tier is unchanged"
+
+    op.kb.list_open_remediations.return_value = [{"id": 9, "payload": first}]
+    assert _nginx_feed(op, 4822, REC_4822, _refused(how)) == 9
+    assert op.kb.queue_remediation.call_count == 1
+    assert op.kb.record_remediation_absorbed.call_args[0][0] == 9
+
+
+def test_an_accepted_fix_does_not_also_carry_fold_targets():
+    op = _nginx_op()
+    op._read_gitops_target = lambda repo, path: None     # unread: not refused
+    _nginx_feed(op, 4817, REC_4817, FIX_4817)
+    payload = op.kb.queue_remediation.call_args.kwargs["payload"]
+    assert payload["targets"] == NGINX_TARGET
+    assert "fold_targets" not in payload
+
+
+def test_refused_and_accepted_rows_fold_onto_each_other():
+    """The same file is the same file, whichever side kept its FIX."""
+    accepted = {"id": 337, "payload": {"dedupe_key": "inv-337", "recommendation": REC_4817,
+                                       "targets": NGINX_TARGET}}
+    refused = {"id": 334, "payload": {"dedupe_key": "inv-334", "recommendation": REC_4817,
+                                      "fold_targets": NGINX_TARGET}}
+    op = _op([accepted])
+    assert CFOperator._absorb_repeat_remediation(op, {
+        "recommendation": REC_4822, "fold_targets": NGINX_TARGET,
+        "dedupe_key": "inv-339"}) == 337
+    op = _op([refused])
+    assert CFOperator._absorb_repeat_remediation(op, {
+        "recommendation": REC_4822, "targets": NGINX_TARGET,
+        "dedupe_key": "tgt-339"}) == 334
+
+
+def test_fold_targets_refuse_a_partial_set():
+    """Dropping an unusable target would shrink the set, and containment
+    would then fold a FIX that touches one more thing than the open row."""
+    fix = copy.deepcopy(FIX_4817)
+    fix["targets"].append({"kind": "gitops-manifest"})
+    assert _fold_targets_of(fix) == []
+    assert _fold_targets("FIX: " + json.dumps(fix)) == []
+
+
+def test_fold_targets_keep_an_unregistered_repo_verbatim():
+    fix = copy.deepcopy(FIX_4817)
+    fix["targets"][0]["repo"] = "aachtenberg/homlab-infra"
+    assert _fold_targets_of(fix, known_repos=[]) == [{
+        "kind": "gitops-manifest", "id": "apps/files/freshet-dashboard/nginx.conf",
+        "repo": "aachtenberg/homlab-infra"}]

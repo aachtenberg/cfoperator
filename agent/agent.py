@@ -1464,15 +1464,17 @@ def _is_noop_recommendation(recommendation: str) -> bool:
     return not rec or rec == 'no action needed' or rec in ('none', 'n/a', 'nothing')
 
 
-def _parse_structured_fix(response_text: str,
-                          known_repos=None) -> Optional[Dict[str, Any]]:
-    """Pull a FIX object from an investigation (or nudge) reply.
+def _fix_candidates(response_text: str):
+    """Objects that could be a reply's FIX, in the order they are tried.
 
-    Looks for ``FIX:`` JSON or a fenced json block after STATUS. A nudge
-    reply may be the object alone. Malformed → None; never salvage.
+    The ``FIX:`` marker, then a fenced json block, both after the last
+    STATUS; then the whole reply as a bare object (a nudge answer). One
+    locator for both readers, so they cannot drift apart: the parse takes
+    the first candidate that validates, the fold the first that names
+    targets (CFOP-494).
     """
     if not response_text or not str(response_text).strip():
-        return None
+        return
     text = str(response_text)
     lower = text.lower()
     region_from = 0
@@ -1481,7 +1483,6 @@ def _parse_structured_fix(response_text: str,
         region_from = status_at
     region = text[region_from:]
 
-    obj = None
     # Line-anchored FIX: — substring 'fix:' matches hotfix:/bugfix: and then
     # the next `{` (often findings JSON) fails validation and drops a real
     # FIX: later in the same STATUS region.
@@ -1492,25 +1493,87 @@ def _parse_structured_fix(response_text: str,
             nl = after.find('\n')
             after = after[nl + 1:] if nl != -1 else after[3:]
         obj = _json_object_at(after, 0)
-        if not (isinstance(obj, dict)
-                and _validate_structured_fix(obj, known_repos)):
-            obj = None
-    if obj is None:
-        fence = re.search(r'```(?:json)?\s*\n(\s*\{)', region, re.I)
-        if fence:
-            obj = _json_object_at(region, fence.start(1))
-            if not (isinstance(obj, dict)
-                    and _validate_structured_fix(obj, known_repos)):
-                obj = None
-    if obj is None:
-        stripped = text.strip()
-        if stripped.startswith('```'):
-            stripped = re.sub(r'^```(?:json)?\s*', '', stripped, count=1, flags=re.I)
-            stripped = re.sub(r'\s*```$', '', stripped)
-        if stripped.startswith('{'):
-            obj = _json_object_at(stripped, 0)
-    return (_validate_structured_fix(obj, known_repos)
-            if isinstance(obj, dict) else None)
+        if isinstance(obj, dict):
+            yield obj
+    fence = re.search(r'```(?:json)?\s*\n(\s*\{)', region, re.I)
+    if fence:
+        obj = _json_object_at(region, fence.start(1))
+        if isinstance(obj, dict):
+            yield obj
+    stripped = text.strip()
+    if stripped.startswith('```'):
+        stripped = re.sub(r'^```(?:json)?\s*', '', stripped, count=1, flags=re.I)
+        stripped = re.sub(r'\s*```$', '', stripped)
+    if stripped.startswith('{'):
+        obj = _json_object_at(stripped, 0)
+        if isinstance(obj, dict):
+            yield obj
+
+
+def _parse_structured_fix(response_text: str,
+                          known_repos=None) -> Optional[Dict[str, Any]]:
+    """Pull a FIX object from an investigation (or nudge) reply.
+
+    Looks for ``FIX:`` JSON or a fenced json block after STATUS. A nudge
+    reply may be the object alone. Malformed → None; never salvage.
+    """
+    for obj in _fix_candidates(response_text):
+        fix = _validate_structured_fix(obj, known_repos)
+        if fix:
+            return fix
+    return None
+
+
+def _fold_targets_of(obj, known_repos=None) -> List[Dict[str, str]]:
+    """One FIX object's targets as the fold reads them; [] if any is unusable.
+
+    Unusable means a target the fold could not compare. Dropping it and
+    keeping the rest would hand containment a smaller set than the FIX
+    named, and a FIX that touches one more file than an open row is a
+    different fix. An unregistered repo stays verbatim: it then matches
+    only the same unregistered repo, which is still the same claim.
+    """
+    targets = obj.get('targets') if isinstance(obj, dict) else None
+    if not isinstance(targets, list) or not targets:
+        return []
+    out = []
+    for t in targets:
+        if not isinstance(t, dict):
+            return []
+        kind = str(t.get('kind') or '').strip().lower()
+        tid = str(t.get('id') or '').strip()
+        if not kind or not tid:
+            return []
+        item = {'kind': kind, 'id': tid}
+        repo = (_resolve_fix_repo(t.get('repo'), known_repos)
+                or str(t.get('repo') or '').strip())
+        if repo:
+            item['repo'] = repo
+        out.append(item)
+    return out
+
+
+def _fold_targets(response_text: str, known_repos=None, first=None) -> List[Dict[str, str]]:
+    """What a reply's FIX names, whether or not the FIX was accepted (CFOP-494).
+
+    Identity is not evidence. A FIX refused for its evidence (elided,
+    contradicted, no verify) still says which file the fix is about, and
+    dropping that along with the rest left the target fold nothing to match:
+    thirteen filed rows for one nginx.conf on 2026-10-25, every one naming it
+    verbatim. ``first`` is an object the caller already holds, tried before
+    the reply is searched.
+
+    These ride on the row as ``payload.fold_targets`` and only
+    _absorb_repeat_remediation reads them. Never ``targets``: the executor,
+    the judge, host derivation and the tgt- key all take that key to mean a
+    FIX that was accepted.
+    """
+    head = [first] if isinstance(first, dict) else []
+    for obj in [*head, *_fix_candidates(response_text)]:
+        found = _fold_targets_of(obj, known_repos)
+        if found:
+            return found
+    return []
 
 
 def _fix_targets_dedupe_key(fix: Dict[str, Any]) -> str:
@@ -5933,6 +5996,10 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     'observed_check'):
             if details.get(key) is not None:
                 payload[key] = details[key]
+        # CFOP-494: a refused FIX's targets, for the repeat fold and nothing
+        # else. A row that kept its FIX already folds on `targets`.
+        if details.get('fold_targets') and not details.get('targets'):
+            payload['fold_targets'] = details['fold_targets']
         if details.get('opened_prs'):
             # More than one PR opened in one run: pr_url carries the last,
             # the rest stay visible in the drawer's payload.
@@ -6997,6 +7064,13 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             hints = self._classify_needs_action_recommendation(trigger, rec, alert_info,
                                                                report=response_text)
         details = dict(hints)
+        if not fix:
+            # CFOP-494: refusing the FIX refuses its evidence, not its
+            # subject. Without this the fold has nothing to match and every
+            # rewording of the same fix files its own row.
+            fold = _fold_targets(response_text, repos, first=candidate)
+            if fold:
+                details['fold_targets'] = fold
         if still_forked or was_forked:
             # Stuck fork (retry would not commit) OR a FIX that was parsed
             # before the rewrite: neither may clear the auto gate. Class stays
@@ -7105,7 +7179,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # the same FIX on the target hash, by design (CFOP-46 D / CFOP-80)
             # -- and the identifier match above sees nothing in a
             # recommendation that names a ConfigMap and a function.
-            new_targets = _target_identity(details.get('targets'))
+            # CFOP-494: a refused FIX still names its target (fold_targets).
+            new_targets = _target_identity(details.get('targets')
+                                           or details.get('fold_targets'))
             if not new_ids and not new_targets:
                 return None
             for row in self.kb.list_open_remediations(limit=100):
@@ -7117,7 +7193,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                         payload.get('dedupe_key') == details.get('dedupe_key'):
                     continue
                 reason = None
-                row_targets = _target_identity(payload.get('targets'))
+                row_targets = _target_identity(payload.get('targets')
+                                               or payload.get('fold_targets'))
                 if _targets_contained(new_targets, row_targets):
                     reason = 'target'
                     shared = sorted(t[2] for t in new_targets)
