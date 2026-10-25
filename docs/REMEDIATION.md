@@ -273,8 +273,11 @@ that key once and the claimed value is not it. A key the file assigns more
 than once is a list, not a setting — the union of every `value:` in an env
 block is not agreement. A claim that pairs `name` with `value` is compared
 to that name's own next value, so putting another entry's value on the wrong
-name still refuses. The refusal is logged and the recommendation is classified
-instead of judged. A quote that is neither (a log line, a pod status, a dotted
+name still refuses. Whole-line `#` comments are prose, not settings: a file
+that opens `# This file is an nginx:alpine template` does not assign `nginx`
+(CFOP-495). They still count for quotes. The refusal is logged and the
+recommendation is classified instead of judged.
+A quote that is neither (a log line, a pod status, a dotted
 path, a bare `value:` with no name) is `unverified`, and the FIX still
 enqueues. A failed read, a missing GitHub client, or any kind other than
 `gitops-manifest` is also `unverified` — contradiction is only decided when

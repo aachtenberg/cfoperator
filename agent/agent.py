@@ -1226,6 +1226,18 @@ _OBSERVED_ASSIGNMENT = re.compile(
     r'\{\{[^}]{0,200}\}\}|[^\s,;#]{1,200})'
 )
 
+# CFOP-495: a whole-line `#` comment is prose about the file, not something
+# the file sets. freshet-deploy's nginx.conf opens with "# This file is an
+# nginx:alpine *template*", which made `nginx = alpine` a setting, and the
+# pod's own log line `nginx: [emerg] zone ... is too small` then contradicted
+# it. Whole lines only: a trailing `#` can sit inside a quoted value
+# (`msg: "build #12"`), and cutting there would invent a contradiction.
+_COMMENT_LINE = re.compile(r'(?m)^[ \t]*#.*$')
+
+
+def _without_comment_lines(text: str) -> str:
+    return _COMMENT_LINE.sub('', text or '')
+
 
 def _norm_observed_quote(text: str) -> str:
     """Whitespace-collapsed, with spaces around = and : removed.
@@ -1386,7 +1398,10 @@ def _check_observed_against_targets(fix: Dict[str, Any], read_file) -> Dict[str,
         }
 
     blob = '\n'.join(texts)
-    file_assign = _assignment_map(blob)
+    # Quotes search the whole file: quoting the comment that explains a cap
+    # is exactly the read CFOP-89 asks for. Settings come from code lines.
+    settings = _without_comment_lines(blob)
+    file_assign = _assignment_map(settings)
     entries: List[Dict[str, str]] = []
     contradiction = None
     for item in observed:
@@ -1395,7 +1410,7 @@ def _check_observed_against_targets(fix: Dict[str, Any], read_file) -> Dict[str,
         if value and _quote_in_text(blob, value):
             entries.append({'source': source, 'result': 'verified'})
             continue
-        pair = _named_list_disagreement(blob, value)
+        pair = _named_list_disagreement(settings, value)
         if pair:
             contradiction = pair
             entries.append({'source': source, 'result': 'contradicted'})
