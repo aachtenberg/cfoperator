@@ -294,3 +294,91 @@ def test_two_settings_quoted_as_one_blob_verify_when_the_file_has_them_in_order(
         lambda repo, path: _UNIT,
     )
     assert result["status"] == "verified"
+
+
+# CFOP-495: the target of live rows #334-#347. freshet-deploy
+# apps/files/freshet-dashboard/nginx.conf at 4d89cf3 (the 64k zone the FIX
+# raised), first 36 lines verbatim -- through the upstream block.
+_NGINX_64K = """\
+# This file is an nginx:alpine *template*, not a finished config: the Dockerfile
+# ships it as /etc/nginx/templates/default.conf.template and the image's
+# entrypoint renders it to /etc/nginx/conf.d/default.conf at container start.
+# The only substitution is the NGINX_LOCAL_RESOLVERS variable on the resolver
+# line (NGINX_ENVSUBST_FILTER in the Dockerfile keeps envsubst away from
+# nginx's own variables), so `nginx -t` against this file as-is fails on that
+# one line; test the rendered conf.d/default.conf inside the image instead.
+#
+# http-context directives — valid here because the stock nginx image includes
+# conf.d/*.conf inside the http{} block.
+
+# Resolve the PostgREST name at run time, not once at config load (CFOP-227).
+# With a plain `server host:port;` nginx resolves during startup and exits
+# with `[emerg] host not found in upstream` if DNS is briefly unavailable —
+# which crashlooped this pod 19 times through the 2026-09-29 outage, taking the
+# static dashboard down with it even though only /history/ needs PostgREST.
+# NGINX_LOCAL_RESOLVERS is exported by the image's 15-local-resolvers.envsh
+# from the pod's own /etc/resolv.conf (kube-dns, 10.43.0.10 on this k3s), so
+# no cluster IP is hardcoded here. nginx's resolver ignores resolv.conf search
+# domains, which is why the upstream name below must stay fully qualified.
+resolver ${NGINX_LOCAL_RESOLVERS} valid=30s;
+resolver_timeout 5s;
+
+# Keep persistent connections to PostgREST instead of opening a fresh
+# cross-node TCP connection per /history/ request (postgrest and timescaledb
+# sit on different Pi nodes, so connection setup was a measurable cost).
+# `resolve` (open-source nginx >= 1.27.3; needs the zone) is what lets the
+# keepalive pool coexist with run-time resolution — a variable in proxy_pass
+# would also avoid the startup lookup, but it bypasses upstream{} and would
+# silently drop this pool. Until the name resolves, /history/ returns 502 and
+# everything else is served normally.
+upstream postgrest_up {
+    zone postgrest_up 64k;
+    server postgrest.data.svc.cluster.local:3000 resolve;
+    keepalive 16;
+}
+"""
+_NGINX_TARGET = [{"kind": "gitops-manifest",
+                  "id": "apps/files/freshet-dashboard/nginx.conf",
+                  "repo": "aachtenberg/freshet-deploy"}]
+# Investigation 4814's observed entry, verbatim.
+_NGINX_LOG = {"source": "k8s logs freshet-dashboard-5cc6665dd-k2h2b -c nginx --previous",
+              "value": 'nginx: [emerg] zone "postgrest_up" is too small in '
+                       '/etc/nginx/conf.d/default.conf:33'}
+
+
+def test_a_comment_line_is_not_a_setting_a_log_line_can_contradict():
+    """Every Opus FIX for the nginx crashloop quoted the pod's log line and
+    was refused: the file's first comment says `nginx:alpine`, which read as
+    the file setting nginx = alpine. Mutation check: build the assignment
+    map from the whole file again and this comes back contradicted."""
+    assert _NGINX_64K.startswith("# This file is an nginx:alpine *template*")
+    result = _check_observed_against_targets(
+        _gitops(targets=_NGINX_TARGET, observed=[_NGINX_LOG]),
+        lambda repo, path: _NGINX_64K,
+    )
+    assert result["status"] == "unverified", result["reason"]
+
+
+def test_a_comment_still_verifies_as_a_quote():
+    """Comments leave the settings, not the file: quoting the comment that
+    explains a value is the read CFOP-89 asks for."""
+    result = _check_observed_against_targets(
+        _gitops(targets=_NGINX_TARGET, observed=[{
+            "source": "nginx.conf",
+            "value": "nginx resolves during startup and exits",
+        }]),
+        lambda repo, path: _NGINX_64K,
+    )
+    assert result["status"] == "verified"
+
+
+def test_a_code_line_beside_the_comments_still_contradicts():
+    """Only whole comment lines go. The resolver line sets valid=30s, and a
+    FIX claiming 60s is still refused."""
+    result = _check_observed_against_targets(
+        _gitops(targets=_NGINX_TARGET, observed=[{
+            "source": "nginx.conf", "value": "valid=60s"}]),
+        lambda repo, path: _NGINX_64K,
+    )
+    assert result["status"] == "contradicted"
+    assert "valid=60s" in result["reason"] and "30s" in result["reason"]
