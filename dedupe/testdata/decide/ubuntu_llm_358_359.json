@@ -1,0 +1,125 @@
+{
+  "about": "CFOP-509: rows #358 and #359 carry the same key, tgt-41babd002514ea7a. #358 was rejected by re-verification 40 minutes before #359 was filed.",
+  "cases": [
+    {
+      "name": "#359 re-files #358's exact key 40 minutes after #358 was rejected",
+      "phase4": "suppress -> #358: rejected within the window",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-41babd002514ea7a",
+          "recommendation": "Investigate the physical ethernet connection and the stability of the `r8169` driver on host `ubuntu-llm-01` to prevent further network-induced pod restarts.",
+          "host": "ubuntu-llm-01",
+          "trigger": "Recent pod restarts in 'monitoring' deployment components",
+          "remediation_class": "node-action",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "ubuntu-llm-01",
+              "kind": "host"
+            }
+          ]
+        },
+        "open_rows": [],
+        "closed_rows": [
+          {
+            "id": 358,
+            "status": "rejected",
+            "payload": {
+              "dedupe_key": "tgt-41babd002514ea7a",
+              "recommendation": "Investigate the hardware and network stability of the `ubuntu-llm-01` host, specifically looking into the reported GPU/ACPI errors and network timeout issues in `dmesg` and `journalctl`.",
+              "targets": [
+                {
+                  "id": "ubuntu-llm-01",
+                  "kind": "host"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-41babd002514ea7a"
+      }
+    },
+    {
+      "name": "#359 while #358 is still open is suppressed on the exact key",
+      "note": "The target fold skips a row with the same key and leaves it to the exact tier.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-41babd002514ea7a",
+          "recommendation": "Investigate the physical ethernet connection and the stability of the `r8169` driver on host `ubuntu-llm-01` to prevent further network-induced pod restarts.",
+          "host": "ubuntu-llm-01",
+          "trigger": "Recent pod restarts in 'monitoring' deployment components",
+          "remediation_class": "node-action",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "ubuntu-llm-01",
+              "kind": "host"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 358,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-41babd002514ea7a",
+              "recommendation": "Investigate the hardware and network stability of the `ubuntu-llm-01` host, specifically looking into the reported GPU/ACPI errors and network timeout issues in `dmesg` and `journalctl`.",
+              "targets": [
+                {
+                  "id": "ubuntu-llm-01",
+                  "kind": "host"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "suppress",
+        "row_id": 358,
+        "tier": "key",
+        "dedupe_key": "tgt-41babd002514ea7a"
+      }
+    },
+    {
+      "name": "#359 while ubuntu-llm-01 is NotReady opens its node incident",
+      "note": "The host is the registered node name, so the node tier claims the row before any other tier.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-41babd002514ea7a",
+          "recommendation": "Investigate the physical ethernet connection and the stability of the `r8169` driver on host `ubuntu-llm-01` to prevent further network-induced pod restarts.",
+          "host": "ubuntu-llm-01",
+          "trigger": "Recent pod restarts in 'monitoring' deployment components",
+          "remediation_class": "node-action",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "ubuntu-llm-01",
+              "kind": "host"
+            }
+          ]
+        },
+        "open_rows": [],
+        "vocabulary": {
+          "notready_nodes": [
+            "ubuntu-llm-01"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "node-down-ubuntu-llm-01",
+        "host": "ubuntu-llm-01"
+      }
+    }
+  ]
+}

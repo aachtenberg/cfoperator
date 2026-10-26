@@ -1,0 +1,304 @@
+{
+  "about": "CFOP-494: one nginx crashloop on 2026-10-25, filed as rows #333-#347. The rows predate CFOP-494, so their stored payloads mostly carry no targets; each candidate and open row here carries what today's code stores instead: the accepted FIX's targets, or fold_targets derived by running agent._fold_targets over the investigation's reply. 12 of the 14 replies name apps/files/freshet-dashboard/nginx.conf verbatim. #343 and #344 annotate the id ('(via PR #50)', '(merge PR #50)'), so the target fold misses them today.",
+  "cases": [
+    {
+      "name": "nginx #335 lands on #334: refused FIXes fold on their target",
+      "note": "Rows #334 (investigation 4814) and #335 (4817): both FIXes were refused, both name nginx.conf.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-c44dfdcbbd2823de",
+          "recommendation": "Merge `freshet-deploy` PR #50 (`fix/dashboard-nginx-zone-16k-pages`), which sets `zone postgrest_up 1m;` in `apps/files/freshet-dashboard/nginx.conf`. That rebuilds the dashboard image; once CI publishes the new tag and ArgoCD syncs it into apps, confirm the new pod on raspberrypi5 reaches Running + Ready 1/1 with no further restarts, and the old 77c4b74d9d pod retires.",
+          "host": "raspberrypi5",
+          "trigger": "Follow-up to investigation #4816: The nginx container in apps/freshet-dashboard-5cc6665dd-k2h2b is in CrashLoopBackOff (restarted 19 times) and the pod is Running but not Ready (ContainersNotReady: nginx). nginx fails at startup becau. That pass ended with a checklist instead of running it — \"Merge freshet-deploy PR #50 (`fix/dashboard-nginx-zone-16k-pages`), which sets `zone postgrest_up 1m;` in `apps/files/freshet-dashboard/nginx.conf`. That rebuilds the image; once ArgoCD rolls the new image tag, confirm the pod on raspberrypi5 reaches Running + Ready with no further restarts.\". Run those checks now with your tools (ssh, kubectl, prometheus, logs). Conclude with either a concrete change (a FIX that modifies something) or no action with the evidence. Do not recommend further verification.",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "fold_targets": [
+            {
+              "kind": "gitops-manifest",
+              "id": "apps/files/freshet-dashboard/nginx.conf",
+              "repo": "aachtenberg/freshet-deploy"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 334,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "alert-73877eba478fec68",
+              "recommendation": "Review and merge open PR #50 (aachtenberg/freshet-deploy, branch `fix/dashboard-nginx-zone-16k-pages`), which sets `zone postgrest_up 1m` in `apps/files/freshet-dashboard/nginx.conf`. After the image rebuilds and ArgoCD syncs, confirm the new pod starts on raspberrypi5. (Optional immediate mitigation if a merge isn't possible yet: cordon raspberrypi5 so the pod reschedules onto a 4 KB-page node —",
+              "fold_targets": [
+                {
+                  "kind": "gitops-manifest",
+                  "id": "apps/files/freshet-dashboard/nginx.conf",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 334,
+        "tier": "target",
+        "shared": [
+          "apps/files/freshet-dashboard/nginx.conf"
+        ],
+        "absorbed": "Follow-up to investigation #4816: The nginx container in apps/freshet-dashboard-5cc6665dd-k2h2b is in CrashLoopBackOff (restarted 19 times) and the pod is Running but not Ready (ContainersNotReady: ng",
+        "alias": "inv-c44dfdcbbd2823de"
+      }
+    },
+    {
+      "name": "nginx #337's accepted FIX lands on refused #334",
+      "note": "Accepted targets and refused fold_targets compare the same way.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-eaa1c61d782ab33e",
+          "recommendation": "Open a PR against `aachtenberg/freshet-deploy` changing `apps/files/freshet-dashboard/nginx.conf` from `zone postgrest_up 64k;` to `zone postgrest_up 256k;`. Merging triggers `build-dashboard.yml` to rebuild/push a new `sha-` image which that repo's pipeline pins for ArgoCD to roll out; then confirm the new pod becomes Ready and the stuck `freshet-dashboard-5cc6665dd` ReplicaSet scales to 0.",
+          "host": "",
+          "trigger": "Follow-up to investigation #4819: The freshet-dashboard rollout to image sha-b1491d94cfbf is stuck in CrashLoopBackOff. The new pod's nginx exits at startup because the shared-memory zone \"postgrest_up\" is too small. The new pod (fres. That pass ended with a checklist instead of running it — \"Open a PR against `aachtenberg/freshet-deploy` changing `apps/files/freshet-dashboard/nginx.conf` line ~33 from `zone postgrest_up 64k;` to `zone postgrest_up 256k;`. Merging triggers `build-dashboard.yml` to rebuild/push a new `sha-` image and pin it into `apps/kustomization.yml`, which ArgoCD rolls out. Then confirm the new pod becomes Ready and the old ReplicaSet scales to 0.\". Run those checks now with your tools (ssh, kubectl, prometheus, logs). Conclude with either a concrete change (a FIX that modifies something) or no action with the evidence. Do not recommend further verification.",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "apps/files/freshet-dashboard/nginx.conf",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/freshet-deploy"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 334,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "alert-73877eba478fec68",
+              "recommendation": "Review and merge open PR #50 (aachtenberg/freshet-deploy, branch `fix/dashboard-nginx-zone-16k-pages`), which sets `zone postgrest_up 1m` in `apps/files/freshet-dashboard/nginx.conf`. After the image rebuilds and ArgoCD syncs, confirm the new pod starts on raspberrypi5. (Optional immediate mitigation if a merge isn't possible yet: cordon raspberrypi5 so the pod reschedules onto a 4 KB-page node —",
+              "fold_targets": [
+                {
+                  "kind": "gitops-manifest",
+                  "id": "apps/files/freshet-dashboard/nginx.conf",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 334,
+        "tier": "target",
+        "shared": [
+          "apps/files/freshet-dashboard/nginx.conf"
+        ],
+        "absorbed": "Follow-up to investigation #4819: The freshet-dashboard rollout to image sha-b1491d94cfbf is stuck in CrashLoopBackOff. The new pod's nginx exits at startup because the shared-memory zone \"postgrest_u",
+        "alias": "inv-eaa1c61d782ab33e"
+      }
+    },
+    {
+      "name": "nginx #343 annotates its target id and opens a row beside #334",
+      "note": "'apps/files/freshet-dashboard/nginx.conf (via pr #50)' is neither equal to nor a path suffix of the plain id, and the recommendation names no identifiers.",
+      "phase4": "fold onto #334: the canonical repo path inside the target id is the subject",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-a05d4ccebfe19e81",
+          "recommendation": "Merge **PR aachtenberg/freshet-deploy #50** (`zone postgrest_up 1m`) to bump the upstream shared-memory zone above raspberrypi5's 128 KB (8×16 KB) slab minimum. After the image rebuilds and ArgoCD syncs, confirm the new ReplicaSet `5cc6665dd` goes Ready and the old `77c4b74d9d` scales to 0. Close the redundant PR #51 (256k) to avoid a conflicting second change.",
+          "host": "",
+          "trigger": "The freshet-dashboard pod freshet-dashboard-5cc6665dd-k2h2b in the apps namespace is in CrashLoopBackOff. Its nginx container exits at startup because the config declares the shared-memory zone \"postgrest_up\" too small. The pod has restarted 81 times and is still not Ready.",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "apps/files/freshet-dashboard/nginx.conf (via PR #50)",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/freshet-deploy"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 334,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "alert-73877eba478fec68",
+              "recommendation": "Review and merge open PR #50 (aachtenberg/freshet-deploy, branch `fix/dashboard-nginx-zone-16k-pages`), which sets `zone postgrest_up 1m` in `apps/files/freshet-dashboard/nginx.conf`. After the image rebuilds and ArgoCD syncs, confirm the new pod starts on raspberrypi5. (Optional immediate mitigation if a merge isn't possible yet: cordon raspberrypi5 so the pod reschedules onto a 4 KB-page node —",
+              "fold_targets": [
+                {
+                  "kind": "gitops-manifest",
+                  "id": "apps/files/freshet-dashboard/nginx.conf",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-a05d4ccebfe19e81"
+      }
+    },
+    {
+      "name": "nginx #344 names the annotated file and a PR, and opens a third row",
+      "phase4": "fold onto #334",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-9210a50f78176935",
+          "recommendation": "Merge freshet-deploy PR #50 (`zone postgrest_up 64k;` → `1m` in `apps/files/freshet-dashboard/nginx.conf`); this rebuilds the image and ArgoCD rolls the new ReplicaSet. Close the duplicate PR #51. Then confirm pod `freshet-dashboard-5cc6665dd` (or its successor) goes Ready and the old `77c4b74d9d` ReplicaSet scales to 0.",
+          "host": "raspberrypi5",
+          "trigger": "Follow-up to investigation #4831: The apps/freshet-dashboard rollout is stuck. The new ReplicaSet's pod (image sha-b1491d94cfbf) is crash-looping; nginx fails on startup because the 'postgrest_up' upstream shared-memory zone is too sm. That pass ended with a checklist instead of running it — \"Merge freshet-deploy PR #50 (`zone postgrest_up 64k` → `1m`), which rebuilds the image and lets ArgoCD roll the new ReplicaSet; close the duplicate PR #51. Then confirm pod `freshet-dashboard-5cc6665dd` (or its successor) goes Ready on raspberrypi5 and the old `77c4b74d9d` ReplicaSet scales to 0. (Emergency fallback only: pin to image `sha-4d89cf3ce6e5`, which is already the serving version.)\". Run those checks now with your tools (ssh, kubectl, prometheus, logs). Conclude with either a concrete change (a FIX that modifies something) or no action with the evidence. Do not recommend further verification.",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "apps/files/freshet-dashboard/nginx.conf (merge PR #50)",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/freshet-deploy"
+            },
+            {
+              "id": "freshet-deploy PR #51 (close as duplicate)",
+              "kind": "external-system",
+              "repo": "aachtenberg/freshet-deploy"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 343,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-a05d4ccebfe19e81",
+              "recommendation": "Merge **PR aachtenberg/freshet-deploy #50** (`zone postgrest_up 1m`) to bump the upstream shared-memory zone above raspberrypi5's 128 KB (8×16 KB) slab minimum. After the image rebuilds and ArgoCD syncs, confirm the new ReplicaSet `5cc6665dd` goes Ready and the old `77c4b74d9d` scales to 0. Close the redundant PR #51 (256k) to avoid a conflicting second change.",
+              "targets": [
+                {
+                  "id": "apps/files/freshet-dashboard/nginx.conf (via PR #50)",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          },
+          {
+            "id": 334,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "alert-73877eba478fec68",
+              "recommendation": "Review and merge open PR #50 (aachtenberg/freshet-deploy, branch `fix/dashboard-nginx-zone-16k-pages`), which sets `zone postgrest_up 1m` in `apps/files/freshet-dashboard/nginx.conf`. After the image rebuilds and ArgoCD syncs, confirm the new pod starts on raspberrypi5. (Optional immediate mitigation if a merge isn't possible yet: cordon raspberrypi5 so the pod reschedules onto a 4 KB-page node —",
+              "fold_targets": [
+                {
+                  "kind": "gitops-manifest",
+                  "id": "apps/files/freshet-dashboard/nginx.conf",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-9210a50f78176935"
+      }
+    },
+    {
+      "name": "nginx #347 after the night: today's open set, newest first",
+      "note": "With today's code the night leaves #334, #343 and #344 open. #347 passes the two annotated rows and folds onto #334.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-1e2cf18f9aff8292",
+          "recommendation": "Merge PR #50 in aachtenberg/freshet-deploy (`zone postgrest_up 1m`). This rebuilds the image and ArgoCD rolls it out; the new ReplicaSet 5cc6665dd will go Ready on raspberrypi5 and the old 77c4b74d9d will scale to 0. Close the redundant PR #51 (256k) to avoid a conflicting edit to the same line. Do not just restart the pod — a restart re-renders the same undersized zone and crashes again.",
+          "host": "raspberrypi5",
+          "trigger": "The nginx container in apps/freshet-dashboard-5cc6665dd-k2h2b is in CrashLoopBackOff with 112 restarts. nginx exits on startup (exit code 1) because the shared-memory zone for the 'postgrest_up' upstream is too small. The pod shows phase Running but the nginx container is not Ready (ContainersNotReady), so the dashboard is not being served.",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "fold_targets": [
+            {
+              "kind": "gitops-manifest",
+              "id": "apps/files/freshet-dashboard/nginx.conf",
+              "repo": "aachtenberg/freshet-deploy"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 344,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "inv-9210a50f78176935",
+              "recommendation": "Merge freshet-deploy PR #50 (`zone postgrest_up 64k;` → `1m` in `apps/files/freshet-dashboard/nginx.conf`); this rebuilds the image and ArgoCD rolls the new ReplicaSet. Close the duplicate PR #51. Then confirm pod `freshet-dashboard-5cc6665dd` (or its successor) goes Ready and the old `77c4b74d9d` ReplicaSet scales to 0.",
+              "targets": [
+                {
+                  "id": "apps/files/freshet-dashboard/nginx.conf (merge PR #50)",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/freshet-deploy"
+                },
+                {
+                  "id": "freshet-deploy PR #51 (close as duplicate)",
+                  "kind": "external-system",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          },
+          {
+            "id": 343,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-a05d4ccebfe19e81",
+              "recommendation": "Merge **PR aachtenberg/freshet-deploy #50** (`zone postgrest_up 1m`) to bump the upstream shared-memory zone above raspberrypi5's 128 KB (8×16 KB) slab minimum. After the image rebuilds and ArgoCD syncs, confirm the new ReplicaSet `5cc6665dd` goes Ready and the old `77c4b74d9d` scales to 0. Close the redundant PR #51 (256k) to avoid a conflicting second change.",
+              "targets": [
+                {
+                  "id": "apps/files/freshet-dashboard/nginx.conf (via PR #50)",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          },
+          {
+            "id": 334,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "alert-73877eba478fec68",
+              "recommendation": "Review and merge open PR #50 (aachtenberg/freshet-deploy, branch `fix/dashboard-nginx-zone-16k-pages`), which sets `zone postgrest_up 1m` in `apps/files/freshet-dashboard/nginx.conf`. After the image rebuilds and ArgoCD syncs, confirm the new pod starts on raspberrypi5. (Optional immediate mitigation if a merge isn't possible yet: cordon raspberrypi5 so the pod reschedules onto a 4 KB-page node —",
+              "fold_targets": [
+                {
+                  "kind": "gitops-manifest",
+                  "id": "apps/files/freshet-dashboard/nginx.conf",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 334,
+        "tier": "target",
+        "shared": [
+          "apps/files/freshet-dashboard/nginx.conf"
+        ],
+        "absorbed": "The nginx container in apps/freshet-dashboard-5cc6665dd-k2h2b is in CrashLoopBackOff with 112 restarts. nginx exits on startup (exit code 1) because the shared-memory zone for the 'postgrest_up' upstr",
+        "alias": "inv-1e2cf18f9aff8292"
+      }
+    }
+  ]
+}

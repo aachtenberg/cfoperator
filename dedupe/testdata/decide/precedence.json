@@ -1,0 +1,455 @@
+{
+  "about": "Tier order and the edges of each tier, as _maybe_queue_remediation and the knowledge base's enqueue check decide them today. Several are quirks rather than intent; the phase4 notes say which.",
+  "cases": [
+    {
+      "name": "a fold onto another row beats the exact-key suppress",
+      "note": "The fold skips the row with the candidate's own key and keeps looking, so a row naming the same identifiers wins even though another row carries the exact key.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-same",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `k3s/base/apps/sealed-secrets/cfoperator-secrets.yml` and mount it on the event-runtime Deployment (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout until the startup WARNING is gone.",
+          "host": "",
+          "trigger": "t",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 20,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-same",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 21,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-other",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 21,
+        "tier": "identifier",
+        "shared": [
+          "CFOP_RUNTIME_TOKEN"
+        ],
+        "absorbed": "t",
+        "alias": "inv-same"
+      }
+    },
+    {
+      "name": "the exact tier reads a row's own key, not its aliases",
+      "phase4": "suppress -> #30: an alias is the same problem's key",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-x",
+          "recommendation": "Investigate the elevated latency further",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 30,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-aaaa",
+              "recommendation": "Investigate the elevated latency further",
+              "dedupe_aliases": [
+                "inv-dispatch-x"
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-dispatch-x"
+      }
+    },
+    {
+      "name": "a resolved or rejected row is not open",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-k",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `k3s/base/apps/sealed-secrets/cfoperator-secrets.yml` and mount it on the event-runtime Deployment (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout until the startup WARNING is gone.",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 40,
+            "status": "rejected",
+            "payload": {
+              "dedupe_key": "inv-k",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          },
+          {
+            "id": 41,
+            "status": "resolved",
+            "payload": {
+              "dedupe_key": "inv-j",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-k"
+      }
+    },
+    {
+      "name": "two rows that both cover it: the newest wins",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets",
+          "recommendation": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "eccc-ingest-script-mg664c47g9",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 316,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-newer",
+              "recommendation": "Update the `eccc-ingest` ConfigMap to implement retries with exponential backoff in the `fetch_csv` function to handle transient external connection resets.",
+              "targets": [
+                {
+                  "id": "data/eccc-ingest-script-mg664c47g9",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          },
+          {
+            "id": 314,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-7fafc3e87c2d09f3",
+              "recommendation": "Update the `eccc-ingest` ConfigMap to implement retries with exponential backoff in the `fetch_csv` function to handle transient external connection resets.",
+              "targets": [
+                {
+                  "id": "data/eccc-ingest-script-mg664c47g9",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 316,
+        "tier": "target",
+        "shared": [
+          "eccc-ingest-script"
+        ],
+        "absorbed": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+        "alias": "inv-dispatch-investigate-eccc-ingest-connection-resets"
+      }
+    },
+    {
+      "name": "absorbed falls back to the recommendation, cut at 200 code points",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Rotate `CFOP_RUNTIME_TOKEN` éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 67,
+        "tier": "identifier",
+        "shared": [
+          "CFOP_RUNTIME_TOKEN"
+        ],
+        "absorbed": "Rotate `CFOP_RUNTIME_TOKEN` éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+        "alias": "inv-bbbb"
+      }
+    },
+    {
+      "name": "a candidate with no key folds without an alias",
+      "request": {
+        "candidate": {
+          "dedupe_key": "",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `k3s/base/apps/sealed-secrets/cfoperator-secrets.yml` and mount it on the event-runtime Deployment (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout until the startup WARNING is gone.",
+          "host": "",
+          "trigger": "t",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 67,
+        "tier": "identifier",
+        "shared": [
+          "CFOP_RUNTIME_TOKEN"
+        ],
+        "absorbed": "t"
+      }
+    },
+    {
+      "name": "a candidate with no key and nothing to fold is new and unkeyed",
+      "request": {
+        "candidate": {
+          "dedupe_key": "",
+          "recommendation": "Investigate the elevated latency further",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new"
+      }
+    },
+    {
+      "name": "targets that name nothing usable hide the fold_targets",
+      "note": "`targets or fold_targets`: a non-empty list wins even when no entry in it is usable.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Investigate the elevated latency further",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation",
+          "targets": [
+            {
+              "kind": "gitops-manifest"
+            }
+          ],
+          "fold_targets": [
+            {
+              "kind": "gitops-manifest",
+              "id": "apps/files/freshet-dashboard/nginx.conf",
+              "repo": "aachtenberg/freshet-deploy"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 334,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Investigate the elevated latency further",
+              "fold_targets": [
+                {
+                  "kind": "gitops-manifest",
+                  "id": "apps/files/freshet-dashboard/nginx.conf",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-bbbb"
+      }
+    },
+    {
+      "name": "a row whose targets list is empty is read through its fold_targets",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Investigate the elevated latency further",
+          "host": "",
+          "trigger": "t",
+          "remediation_class": "manual",
+          "source": "investigation",
+          "targets": [
+            {
+              "kind": "gitops-manifest",
+              "id": "apps/files/freshet-dashboard/nginx.conf",
+              "repo": "aachtenberg/freshet-deploy"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 334,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Investigate the elevated latency further",
+              "targets": [],
+              "fold_targets": [
+                {
+                  "kind": "gitops-manifest",
+                  "id": "apps/files/freshet-dashboard/nginx.conf",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 334,
+        "tier": "target",
+        "shared": [
+          "apps/files/freshet-dashboard/nginx.conf"
+        ],
+        "absorbed": "t",
+        "alias": "inv-bbbb"
+      }
+    },
+    {
+      "name": "a narrower recommendation folds onto a wider open row",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Mount `CFOP_RUNTIME_TOKEN` on the event runtime",
+          "host": "",
+          "trigger": "t",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 60,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Rotate `CFOP_RUNTIME_TOKEN` after the leak on 10.0.0.14"
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 60,
+        "tier": "identifier",
+        "shared": [
+          "CFOP_RUNTIME_TOKEN"
+        ],
+        "absorbed": "t",
+        "alias": "inv-bbbb"
+      }
+    },
+    {
+      "name": "an identifier glued to a CJK letter is not one, as in Python",
+      "note": "Python's \\b is Unicode-aware. With Go's ASCII \\b this would fold onto #67.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "设置CFOP_RUNTIME_TOKEN",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-bbbb"
+      }
+    }
+  ]
+}

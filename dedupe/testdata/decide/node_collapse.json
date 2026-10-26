@@ -1,0 +1,468 @@
+{
+  "about": "CFOP-71 / CFOP-126 / CFOP-130: while a node is NotReady, every symptom naming it folds onto one node-incident row. Ported from agent/test_remediation_queue.py; the 'summary:' cases run through the morning-summary feed on the Python side.",
+  "cases": [
+    {
+      "name": "the first symptom of a NotReady node opens its incident row",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-a1b2c3",
+          "recommendation": "physically check the power and network cable",
+          "host": "raspberrypi4",
+          "trigger": "NodeUnreachable raspberrypi4",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi4"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "node-down-raspberrypi4",
+        "host": "raspberrypi4"
+      }
+    },
+    {
+      "name": "a later symptom folds onto the incident row whatever its own key",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-d4e5f6",
+          "recommendation": "check the pod",
+          "host": "raspberrypi4",
+          "trigger": "KubePodNotReady apps/immich-kiosk",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 51,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "node-down-raspberrypi4",
+              "recommendation": "physically check the power and network cable"
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi4"
+          ]
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 51,
+        "tier": "node",
+        "shared": [
+          "raspberrypi4"
+        ],
+        "absorbed": "KubePodNotReady apps/immich-kiosk"
+      }
+    },
+    {
+      "name": "a symptom on a Ready host keeps its own key",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-disk",
+          "recommendation": "look at it",
+          "host": "raspberrypi2",
+          "trigger": "t",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 51,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "node-down-raspberrypi4",
+              "recommendation": "physically check the power and network cable"
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi4"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "alert-disk"
+      }
+    },
+    {
+      "name": "a two-host target id names the NotReady one (#82)",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-4ee3c1d7214b03bd",
+          "recommendation": "physically inspect raspberrypi4 and raspberrypi5",
+          "host": "raspberrypi4, raspberrypi5",
+          "trigger": "NodeUnreachable",
+          "remediation_class": "node-action",
+          "source": "investigation",
+          "targets": [
+            {
+              "kind": "host",
+              "id": "raspberrypi4, raspberrypi5"
+            }
+          ]
+        },
+        "open_rows": [],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi5"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "node-down-raspberrypi5",
+        "host": "raspberrypi5"
+      }
+    },
+    {
+      "name": "the node tier claims the row before the identifier fold can",
+      "note": "The first NotReady symptom names 192.168.0.131:80 while the tunnel row is open. Folding it there would mean the incident row is never created.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-fresh",
+          "recommendation": "Restore connectivity to 192.168.0.131:80",
+          "host": "raspberrypi4",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 68,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "In Cloudflare Zero Trust → Networks → Tunnels → this tunnel, delete or retarget Public Hostname ingressRule=1 away from http://192.168.0.131:80; keep only reachable origins (e.g. freshet via Traefik)."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi4"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "node-down-raspberrypi4",
+        "host": "raspberrypi4"
+      }
+    },
+    {
+      "name": "the incident lookup also answers for a key carried as an alias",
+      "note": "find_open_remediation_by_dedupe_key reads aliases (CFOP-453); the exact tier does not.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-a1b2c3",
+          "recommendation": "physically check the power and network cable",
+          "host": "raspberrypi5",
+          "trigger": "NodeUnreachable raspberrypi5",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 93,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "summary-verify-raspberrypi5-connectivity",
+              "recommendation": "Check physical power supply and network cabling for raspberrypi5.",
+              "dedupe_aliases": [
+                "node-down-raspberrypi5"
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi5"
+          ]
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 93,
+        "tier": "node",
+        "shared": [
+          "raspberrypi5"
+        ],
+        "absorbed": "NodeUnreachable raspberrypi5"
+      }
+    },
+    {
+      "name": "a candidate already under the node key is suppressed, not folded",
+      "request": {
+        "candidate": {
+          "dedupe_key": "node-down-raspberrypi4",
+          "recommendation": "physically check the power and network cable",
+          "host": "raspberrypi4",
+          "trigger": "NodeUnreachable",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 51,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "node-down-raspberrypi4",
+              "recommendation": "physically check the power and network cable"
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi4"
+          ]
+        }
+      },
+      "want": {
+        "decision": "suppress",
+        "row_id": 51,
+        "tier": "key",
+        "dedupe_key": "node-down-raspberrypi4"
+      }
+    },
+    {
+      "name": "a bare name shared by two NotReady FQDNs is ambiguous and does not collapse",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-db",
+          "recommendation": "physically check the power and network cable",
+          "host": "db",
+          "trigger": "NodeUnreachable",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [],
+        "vocabulary": {
+          "notready_nodes": [
+            "db.prod.example",
+            "db.staging.example"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "alert-db"
+      }
+    },
+    {
+      "name": "a duplicated NotReady name is one node, not an ambiguity",
+      "note": "The agent's NotReady list is a set; a list carrying one FQDN twice must not make 'db' ambiguous.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-db",
+          "recommendation": "physically check the power and network cable",
+          "host": "db",
+          "trigger": "NodeUnreachable",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [],
+        "vocabulary": {
+          "notready_nodes": [
+            "db.prod.example",
+            "DB.prod.example"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "node-down-db.prod.example",
+        "host": "db.prod.example"
+      }
+    },
+    {
+      "name": "unknown tokens are passed over, never guessed at",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-x",
+          "recommendation": "physically check the power and network cable",
+          "host": "immich-kiosk, 10.0.0.9 and node",
+          "trigger": "t",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi4"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "alert-x"
+      }
+    },
+    {
+      "name": "Unicode whitespace separates hosts as Python's \\s does",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-x",
+          "recommendation": "physically check the power and network cable",
+          "host": "raspberrypi4 raspberrypi5\u001c",
+          "trigger": "t",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi5"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "node-down-raspberrypi5",
+        "host": "raspberrypi5"
+      }
+    },
+    {
+      "name": "summary: a blank host makes the node tier read the title",
+      "via": "summary",
+      "note": "CFOP-130: live rows #93 (investigation) and #94 (summary) were one dead node under two keys.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "summary-verify-raspberrypi5-connectivity",
+          "recommendation": "Check physical power supply and network cabling for raspberrypi5.",
+          "host": "",
+          "title": "Verify raspberrypi5 connectivity",
+          "trigger": "Verify raspberrypi5 connectivity",
+          "remediation_class": "manual",
+          "source": "morning-summary"
+        },
+        "open_rows": [
+          {
+            "id": 93,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "node-down-raspberrypi5",
+              "recommendation": "Check physical power supply and network cabling for raspberrypi5."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi5"
+          ]
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 93,
+        "tier": "node",
+        "shared": [
+          "raspberrypi5"
+        ],
+        "absorbed": "Verify raspberrypi5 connectivity"
+      }
+    },
+    {
+      "name": "summary: with no incident row the title opens one",
+      "via": "summary",
+      "request": {
+        "candidate": {
+          "dedupe_key": "summary-verify-raspberrypi5-connectivity",
+          "recommendation": "Check physical power supply and network cabling for raspberrypi5.",
+          "host": "",
+          "title": "Verify raspberrypi5 connectivity",
+          "trigger": "Verify raspberrypi5 connectivity",
+          "remediation_class": "manual",
+          "source": "morning-summary"
+        },
+        "open_rows": [],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi5"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "node-down-raspberrypi5",
+        "host": "raspberrypi5"
+      }
+    },
+    {
+      "name": "summary: a title naming nothing registered cannot invent a node",
+      "via": "summary",
+      "request": {
+        "candidate": {
+          "dedupe_key": "summary-verify-some-vendor-appliance-connectivity",
+          "recommendation": "Check physical power supply and network cabling for some-vendor-appliance.",
+          "host": "",
+          "title": "Verify some-vendor-appliance connectivity",
+          "trigger": "Verify some-vendor-appliance connectivity",
+          "remediation_class": "manual",
+          "source": "morning-summary"
+        },
+        "open_rows": [
+          {
+            "id": 93,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "node-down-raspberrypi5",
+              "recommendation": "Check physical power supply and network cabling for raspberrypi5."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi5"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "summary-verify-some-vendor-appliance-connectivity"
+      }
+    },
+    {
+      "name": "summary: a host that is set is read instead of the title",
+      "via": "summary",
+      "request": {
+        "candidate": {
+          "dedupe_key": "summary-verify-raspberrypi5-connectivity",
+          "recommendation": "Check physical power supply and network cabling for raspberrypi5.",
+          "host": "raspberrypi2",
+          "title": "Verify raspberrypi5 connectivity",
+          "trigger": "Verify raspberrypi5 connectivity",
+          "remediation_class": "manual",
+          "source": "morning-summary"
+        },
+        "open_rows": [
+          {
+            "id": 93,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "node-down-raspberrypi5",
+              "recommendation": "Check physical power supply and network cabling for raspberrypi5."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": [
+            "raspberrypi5"
+          ]
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "summary-verify-raspberrypi5-connectivity"
+      }
+    }
+  ]
+}

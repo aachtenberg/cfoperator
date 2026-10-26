@@ -349,6 +349,14 @@ Approve gate read the column only.
   Service; one image, `CFOP_TRACKER_BACKEND` = plane | github | jira. The agent's
   `tracker_sync` tick hands parked rows to it and mirrors the outcome back. See
   [Tracker hand-off](#tracker-hand-off-issue-trackers).
+- **Dedupe service** (`dedupe/`, Go, CFOP-509) — a stateless port of the
+  enqueue dedupe tiers: node collapse (CFOP-71), target fold (CFOP-453/494),
+  identifier fold (CFOP-78), exact key. The agent sends the candidate row, the
+  open rows and the NotReady nodes, and applies the answer (`new`, `fold` or
+  `suppress`) itself; the contract is the package doc in `dedupe/doc.go`.
+  **Not wired in yet**: the agent still decides in process. Its cases in
+  `dedupe/testdata/` also run against the Python tiers
+  (`agent/test_dedupe_parity.py`), so the two cannot drift apart unnoticed.
 - **Executor Job** (`executor/`) — portable, stdlib-only, model-swappable
   (`CFOP_EXEC_LLM_BACKEND` = anthropic | openai-compat | claude-cli), or a
   **chain** of such backends tried in order (`CFOP_EXEC_LLM_CHAIN`, from
@@ -627,7 +635,8 @@ the admin who clicked Run, recorded on the change record before it runs.
 CI (`build-cfoperator-main.yml`) builds `cfoperator`, `cfoperator-worker`,
 `cfoperator-executor`, `cfoperator-changerecord` (from `changerecord/`) and
 `cfoperator-tracker` (from `tracker/`), the last two on a floating `:main` tag
-like the worker/executor. RBAC + config live in the private
+like the worker/executor. It also builds `cfoperator-dedupe` (from `dedupe/`),
+which nothing deploys yet (CFOP-509 phase 2). RBAC + config live in the private
 `cfoperator-deploy` repo: `cfoperator-executor` read-only SA, the
 `remediation:` config block, and `cfoperator-secrets` (`GITHUB_TOKEN`,
 `ANTHROPIC_API_KEY`, `CFOP_COMPLETION_SHARED_SECRET`, and optionally

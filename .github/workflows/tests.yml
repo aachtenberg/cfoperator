@@ -126,3 +126,25 @@ jobs:
       - name: Run Go tests
         working-directory: cfassist-go
         run: go test ./...
+
+  # The dedupe service (CFOP-509), its own Go module. Its cases in
+  # dedupe/testdata/ are shared with agent/test_dedupe_parity.py, which the
+  # pytest job runs against the Python tiers it ports: the two jobs together
+  # are the parity check, so a red one here means the port disagrees.
+  gotest-dedupe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stdlib only: no go.sum, nothing to cache.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: dedupe/go.mod
+          cache: false
+
+      - name: Vet, format and test
+        working-directory: dedupe
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+          go vet ./...
+          go test ./...
