@@ -205,6 +205,29 @@ def test_an_unreadable_notready_set_still_compares(inline, monkeypatch):
     assert inline == ["agree"] and sent[0]["vocabulary"] == {"notready_nodes": []}
 
 
+def test_the_notready_set_sent_is_the_one_the_node_tier_read(inline, monkeypatch):
+    """Rows and candidate are frozen at scope entry; the inventory has to be
+    frozen too, at the read the decision used. A node coming back Ready (or
+    get_nodes failing open to the empty set) before the shadow thread runs
+    must not turn a matching decision into a disagreement (Bugbot, #362)."""
+    sent = []
+    monkeypatch.setattr(ds, "decide", lambda url, req, **kw: sent.append(req) or
+                        {"decision": "new", "dedupe_key": "node-down-raspberrypi5",
+                         "host": "raspberrypi5"})
+    op = MagicMock()
+    op._normalize_host = CFOperator._normalize_host
+    op._notready_nodes = lambda: {"raspberrypi5"}
+    op._node_incident_dedupe_key = CFOperator._node_incident_dedupe_key
+    details = {"dedupe_key": "alert-1", "host": "raspberrypi5"}
+    with ds.scope("investigation", details, url="http://dedupe.test",
+                  open_rows=lambda: [], notready=lambda: set()):  # the later read: all Ready
+        key = CFOperator._collapse_key_for_node_incident(op, details)
+        ds.note("new", 9, dedupe_key=key, host=details["host"])
+    assert key == "node-down-raspberrypi5"
+    assert sent[0]["vocabulary"] == {"notready_nodes": ["raspberrypi5"]}
+    assert inline == ["agree"]
+
+
 def test_a_backlog_behind_a_hung_service_is_skipped_not_queued(monkeypatch):
     submitted = []
     monkeypatch.setattr(ds, "_submit", lambda fn, *a: submitted.append(a))

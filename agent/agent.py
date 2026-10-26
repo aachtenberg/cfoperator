@@ -6939,6 +6939,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         if not candidates:
             return None
         down = self._notready_nodes()
+        # CFOP-514: the dedupe shadow asks the service with THIS inventory,
+        # not a later read that may have changed or failed open.
+        dedupe_shadow.note_notready(down)
         if not down:
             return None
         # CFOP-126: the host field is whatever the model wrote -- a list, a

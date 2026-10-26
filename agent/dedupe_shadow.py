@@ -18,10 +18,14 @@ One comparison, start to finish:
      - ``_absorb_repeat_remediation``: target or identifier fold;
      - ``KnowledgeBase.queue_remediation``: suppress or new.
    A contextvar carries the scope, so none of the sites' return paths changed.
-3. When the scope closes with a decision, one background thread reads the
-   NotReady set, calls ``POST /v1/decide`` and compares the answers. A slow or
-   dead service costs a log line and a count. It never delays or fails an
-   enqueue.
+3. When the scope closes with a decision, one background thread calls
+   ``POST /v1/decide`` and compares the answers. A slow or dead service costs a
+   log line and a count. It never delays or fails an enqueue. The NotReady set
+   sent is the one Python's node tier read (``note_notready``), not a later
+   read: a node flipping Ready in between, or a read failing open to the empty
+   set, would otherwise show as a disagreement the port never made. Only a
+   site whose tiers never read the set (chat, console, or a candidate with no
+   host) gets a fresh read on the shadow thread.
 
 A scope that closes without a decision asks nothing. That happens when the
 summary dispatched an investigation instead of enqueuing, when the queue feed
@@ -136,6 +140,7 @@ class _Scope:
         self.candidate = candidate
         self.open_rows = open_rows
         self.outcome: Optional[Dict[str, Any]] = None
+        self.notready: Optional[List[str]] = None
 
 
 _SCOPE: contextvars.ContextVar[Optional[_Scope]] = contextvars.ContextVar("dedupe_shadow_scope", default=None)
@@ -154,6 +159,15 @@ def note(decision: str, row_id: Optional[int] = None, *, tier: str = "",
         return
     s.outcome = {"decision": decision, "row_id": row_id, "tier": tier,
                  "dedupe_key": str(dedupe_key or ""), "host": str(host or "")}
+
+
+def note_notready(nodes: Iterable[str]) -> None:
+    """Record the NotReady set the node tier just decided with. A no-op
+    outside a scope; the first read is the one the decision used."""
+    s = _SCOPE.get()
+    if s is None or s.notready is not None:
+        return
+    s.notready = sorted({str(n).lower() for n in (nodes or ()) if n})
 
 
 def matches(python: Dict[str, Any], service: Dict[str, Any]) -> bool:
@@ -186,16 +200,19 @@ def _submit(fn: Callable[..., Any], *args: Any) -> None:
 
 
 def compare(url: str, path: str, candidate: Dict[str, Any], open_rows: List[Dict[str, Any]],
-            notready: Callable[[], Iterable[str]], python: Dict[str, Any]) -> str:
+            notready: Callable[[], Iterable[str]], python: Dict[str, Any],
+            read_by_python: Optional[List[str]] = None) -> str:
     """Ask the service and record how its answer compares. Returns the result
     label. Never raises: it runs where nothing would see an exception."""
     global _pending
     try:
-        try:
-            nodes = sorted({str(n).lower() for n in (notready() or ()) if n})
-        except Exception as e:
-            logger.debug(f"Dedupe shadow: NotReady set unreadable ({e}); sending none")
-            nodes = []
+        nodes = read_by_python
+        if nodes is None:
+            try:
+                nodes = sorted({str(n).lower() for n in (notready() or ()) if n})
+            except Exception as e:
+                logger.debug(f"Dedupe shadow: NotReady set unreadable ({e}); sending none")
+                nodes = []
         request = {"candidate": candidate, "open_rows": open_rows, "closed_rows": [],
                    "vocabulary": {"notready_nodes": nodes}}
         try:
@@ -264,7 +281,7 @@ def scope(path: str, candidate: Dict[str, Any], *, url: str,
             return
         _pending += 1
     try:
-        _submit(compare, url, path, s.candidate, s.open_rows, notready, s.outcome)
+        _submit(compare, url, path, s.candidate, s.open_rows, notready, s.outcome, s.notready)
     except Exception as e:
         with _lock:
             _pending -= 1
