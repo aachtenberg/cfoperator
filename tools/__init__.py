@@ -1985,17 +1985,23 @@ class ToolRegistry:
             payload['repo'] = slug
 
         try:
-            rid = self.operator.kb.queue_remediation(
-                remediation_class='gitops-patch',
-                payload=payload,
-                investigation_id=inv_id,
-                host_id=(host_id or '').strip() or 'default',
-                risk='low',
-                # No confidence: the auto-execute gate must not be cleared by
-                # a number the model chose. The approve below is the gate.
-                confidence=None,
-                dedupe_key=dedupe_key,
-            )
+            # CFOP-514: the same question asked of cfop-dedupe, compared and
+            # dropped; this path's own answer is still the exact key alone.
+            with self.operator._dedupe_shadow_scope('chat', {
+                    'dedupe_key': dedupe_key, 'recommendation': recommendation,
+                    'host': target.get('host'), 'remediation_class': 'gitops-patch',
+                    'source': 'console-chat'}):
+                rid = self.operator.kb.queue_remediation(
+                    remediation_class='gitops-patch',
+                    payload=payload,
+                    investigation_id=inv_id,
+                    host_id=(host_id or '').strip() or 'default',
+                    risk='low',
+                    # No confidence: the auto-execute gate must not be cleared by
+                    # a number the model chose. The approve below is the gate.
+                    confidence=None,
+                    dedupe_key=dedupe_key,
+                )
             if rid is None:
                 existing = self.operator.kb.find_open_remediation_by_dedupe_key(dedupe_key)
                 if existing:

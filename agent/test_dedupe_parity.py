@@ -11,9 +11,16 @@ the other is a parity break, not an opinion about what the right answer is.
 The Python side is driven through the real choke point,
 ``_maybe_queue_remediation``, and through ``_feed_remediations_from_summary``
 for the cases marked ``"via": "summary"`` (the node tier reading the title,
-CFOP-130). Only the knowledge base is faked, and its two queries are the
-SQL's filters: non-terminal rows, newest first, the exact check over every
-open row and the fold and alias scan over the newest 100.
+CFOP-130). Only the knowledge base's queries are faked, as the SQL's filters:
+non-terminal rows, newest first, the exact check over every open row and the
+fold and alias scan over the newest 100. The enqueue itself is the real
+``KnowledgeBase.queue_remediation`` over a fake session.
+
+Every case also runs with the CFOP-514 shadow switched on. The request the
+agent would send to cfop-dedupe must be the case's request, and comparing the
+case's answer with the decision the shadow recorded must come out ``agree``.
+The Go tests prove the service gives that answer for that request, so the two
+files together cover the shadow end to end without a Go binary here.
 """
 
 import ast
@@ -22,6 +29,7 @@ import logging
 import os
 import re
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -31,7 +39,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from agent import CFOperator  # noqa: E402
 import agent.agent as agent_mod  # noqa: E402
+import dedupe_shadow  # noqa: E402
 from agent.knowledge_base import payload_carries_dedupe_key  # noqa: E402
+from knowledge_base import KnowledgeBase  # noqa: E402
 from test_remediation_queue import _confirming_judge, _feed_op, _wire_flags  # noqa: E402
 
 TESTDATA = Path(__file__).resolve().parents[1] / "dedupe" / "testdata"
@@ -77,6 +87,9 @@ class _KB:
     def list_open_remediations(self, limit=100):
         return [{"id": r["id"], "payload": r["payload"]} for r in self.rows][:limit]
 
+    def list_open_remediations_for_dedupe(self):
+        return [{"id": r["id"], "status": r["status"], "payload": r["payload"]} for r in self.rows]
+
     def find_open_remediation_by_dedupe_key(self, key):
         if not key:
             return None
@@ -87,12 +100,43 @@ class _KB:
         return dict(row) if row else None
 
     def queue_remediation(self, **kw):
+        """The real enqueue, over a session whose one query is the own-key
+        check, so the shadow's suppress/new notes come from the real code."""
         row = self._own(kw.get("dedupe_key")) if kw.get("dedupe_key") else None
+
+        class _Query:
+            def filter(self, *a):
+                return self
+
+            def first(self):
+                return (row["id"],) if row else None
+
+        class _Session:
+            item = None
+
+            def query(self, *a):
+                return _Query()
+
+            def add(self, item):
+                self.item = item
+
+            def flush(self):
+                self.item.id = _NEW_ID
+
+        @contextmanager
+        def session_scope():
+            yield _Session()
+
+        real = KnowledgeBase.__new__(KnowledgeBase)
+        real.session_scope = session_scope
+        rid = real.queue_remediation(**kw)
         if row:
+            assert rid is None
             self.refused = (row["id"], kw)
             return None
+        assert rid == _NEW_ID
         self.queued = kw
-        return _NEW_ID
+        return rid
 
     def record_remediation_absorbed(self, rid, summary):
         self.absorbed.append((rid, summary))
@@ -121,6 +165,8 @@ def _wire_nodes(op, request):
         return rid
     op._record_absorbed_symptom = record
     op.kb = _KB(request.get("open_rows") or [])
+    op._dedupe_url = lambda: "http://cfop-dedupe.test:8093"
+    op._dedupe_shadow_scope = lambda path, d: CFOperator._dedupe_shadow_scope(op, path, d)
     return node_folds
 
 
@@ -162,6 +208,41 @@ def _via_summary(c, request):
     return op, node_folds, None
 
 
+# The candidate fields Decide reads (dedupe/decide.go); remediation_class and
+# source ride along for the logs and decide nothing.
+_DECIDED_ON = ("dedupe_key", "recommendation", "targets", "fold_targets", "host", "title", "trigger")
+
+
+def _decided_on(candidate):
+    return {k: candidate.get(k) or None for k in _DECIDED_ON}
+
+
+def _shadow_harness(monkeypatch, want):
+    """Run the shadow's comparison inline, with the case's answer standing in
+    for the service; return what it was asked and how it compared.
+
+    With CFOP_DEDUPE_LIVE_URL set, a running cfop-dedupe answers instead (and
+    CFOP_DEDUPE_SHARED_SECRET is sent as the token, if set), so the same cases
+    check the real service over HTTP:
+      (cd dedupe && CFOP_DEDUPE_PORT=18093 go run ./cmd/cfop-dedupe) &
+      CFOP_DEDUPE_LIVE_URL=http://127.0.0.1:18093 pytest agent/test_dedupe_parity.py
+    """
+    seen = {"requests": [], "results": []}
+    live = os.environ.get("CFOP_DEDUPE_LIVE_URL")
+    real_decide = dedupe_shadow.decide
+
+    def fake_decide(url, request, **kw):
+        seen["requests"].append(json.loads(json.dumps(request)))
+        if live:
+            return real_decide(live, request)
+        return {**want, "reason": "the case's answer"}
+
+    monkeypatch.setattr(dedupe_shadow, "decide", fake_decide)
+    monkeypatch.setattr(dedupe_shadow, "_submit",
+                        lambda fn, *a: seen["results"].append(fn(*a)))
+    return seen
+
+
 @pytest.mark.parametrize("case", DECIDE_CASES)
 def test_python_decides_each_shared_case_the_same_way(case, monkeypatch, caplog):
     request, want = case["request"], case["want"]
@@ -169,6 +250,7 @@ def test_python_decides_each_shared_case_the_same_way(case, monkeypatch, caplog)
     folded = MagicMock()
     monkeypatch.setattr(agent_mod, "REMEDIATION_FOLDED", folded)
     caplog.set_level(logging.INFO, logger="cfoperator")
+    shadow = _shadow_harness(monkeypatch, want)
 
     run = _via_summary if case.get("via") == "summary" else _via_investigation
     op, node_folds, rid = run(c, request)
@@ -224,6 +306,16 @@ def test_python_decides_each_shared_case_the_same_way(case, monkeypatch, caplog)
         # A fold does not choose a key for anything; the Go response omits it.
         got["dedupe_key"] = ""
     assert got == full_want
+
+    # CFOP-514: the shadow asked the service exactly this case's question, and
+    # the decision it recorded for Python agrees with the case's answer.
+    assert shadow["results"] == ["agree"], shadow["results"]
+    (sent,) = shadow["requests"]
+    assert _decided_on(sent["candidate"]) == _decided_on(c)
+    assert sent["open_rows"] == dedupe_shadow.trim_rows(
+        r for r in request.get("open_rows") or [] if r.get("status") not in _TERMINAL)
+    assert sent["vocabulary"]["notready_nodes"] == sorted(
+        {n.lower() for n in (request.get("vocabulary") or {}).get("notready_nodes") or []})
 
 
 # ---------------------------------------------------------------------------

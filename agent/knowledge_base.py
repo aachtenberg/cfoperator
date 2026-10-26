@@ -33,6 +33,7 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from cfshared.db import sqlalchemy_url
+from dedupe_shadow import note as dedupe_shadow_note
 from embedding_service import vector_literal
 
 Base = declarative_base()
@@ -4446,6 +4447,8 @@ class KnowledgeBase:
                 if existing:
                     _log("info", "Remediation dedup skip",
                          dedupe_key=dedupe_key, existing_id=existing[0])
+                    dedupe_shadow_note('suppress', existing[0], tier='key',
+                                       dedupe_key=dedupe_key)
                     return None
             item = RemediationQueue(
                 investigation_id=investigation_id,
@@ -4464,7 +4467,10 @@ class KnowledgeBase:
             _log("info", "Remediation queued", queue_id=queue_id,
                  remediation_class=remediation_class, risk=risk,
                  confidence=confidence, status=status)
-            return queue_id
+        # After the commit, so a row that never landed is not reported as one
+        # (CFOP-514's shadow comparison; a no-op outside a shadow scope).
+        dedupe_shadow_note('new', queue_id, dedupe_key=dedupe_key, host=host_id)
+        return queue_id
 
     def queue_confirmed_host_command(self, payload: Dict[str, Any], executor_job_name: str,
                                      host_id: str = 'default') -> int:
@@ -4871,6 +4877,20 @@ class KnowledgeBase:
                 RemediationQueue.status.notin_(('resolved', 'rejected'))
             ).order_by(RemediationQueue.created_at.desc()).limit(limit).all()
             return [{"id": r.id, "payload": r.payload} for r in rows]
+
+    def list_open_remediations_for_dedupe(self) -> List[Dict[str, Any]]:
+        """Every non-terminal row, newest first: id, status and payload.
+
+        The dedupe shadow's snapshot (CFOP-514). Unlike list_open_remediations
+        there is no limit: the enqueue-side exact check reads every open row,
+        and the service is sent the same set so it can apply the fold's
+        100-row window itself.
+        """
+        with self.session_scope() as session:
+            rows = session.query(RemediationQueue).filter(
+                RemediationQueue.status.notin_(('resolved', 'rejected'))
+            ).order_by(RemediationQueue.created_at.desc()).all()
+            return [{"id": r.id, "status": r.status, "payload": r.payload} for r in rows]
 
     #: Statuses the tracker tick may have to act on (CFOP-170). Everything the
     #: lifecycle table in tracker_sync.decide names, and nothing else, so an

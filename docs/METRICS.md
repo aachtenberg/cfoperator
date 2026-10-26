@@ -497,6 +497,11 @@ cfoperator_remediation_queue{status="filed"}
 
 # Re-verifying what was filed (CFOP-185): filed rows re-checked against live state
 cfoperator_remediation_reverify_total{outcome="rejected"}
+
+# The dedupe shadow (CFOP-514): each enqueue decision, asked of cfop-dedupe too.
+# Phase 3 of CFOP-509 waits on the first of these staying at zero
+sum by (path) (increase(cfoperator_dedupe_shadow_total{result="disagree"}[7d]))
+sum by (path, result) (increase(cfoperator_dedupe_shadow_total[1d]))
 ```
 
 `judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
@@ -510,6 +515,14 @@ backend other than the reporter's own vendor still has a key. The one to watch
 over time is `outcome="rejected"`: it counts diagnoses that were wrong when
 filed, which is both the value this tick returns and a standing measurement of
 how much the reporting model is confabulating.
+
+`dedupe_shadow_total` is evidence, not a fault signal. A `disagree` on
+`path="investigation"` is a port bug: that choke point runs every tier the
+service ports, so the two sides must agree, and the WARNING log line carries
+both answers. A `disagree` on the other paths is mostly the funnel's purpose:
+they skip tiers today that the service applies to everything. Each one still
+deserves a look before phase 3. `unavailable` means the service was not asked
+(down, 401, timeout). The enqueue happened regardless.
 
 ### Label values that are a closed set
 
@@ -534,6 +547,9 @@ shipped several examples that could never match.
 | `cfoperator_remediation_tracker_total` | `action` | `create`, `repark`, `comment`, `transition`, `reconcile` |
 | `cfoperator_remediation_tracker_total` | `outcome` | `ok`, `error` |
 | `cfoperator_remediation_reverify_total` | `outcome` | `resolved`, `rejected`, `open`, `skipped` |
+| `cfoperator_dedupe_shadow_total` | `path` | `investigation`, `sweep-fallback`, `summary`, `chat`, `console` |
+| `cfoperator_dedupe_shadow_total` | `result` | `agree`, `disagree`, `unavailable`, `skipped` |
+| `cfoperator_dedupe_shadow_total` | `python`, `service` | `new`, `fold`, `suppress` (`service` is `""` when the service gave no answer) |
 | `cfoperator_remediation_enqueued_total` | `eligible` | `true`, `false` (`str(bool).lower()`) |
 | `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate` |
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |

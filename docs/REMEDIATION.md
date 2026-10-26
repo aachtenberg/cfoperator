@@ -354,9 +354,21 @@ Approve gate read the column only.
   identifier fold (CFOP-78), exact key. The agent sends the candidate row, the
   open rows and the NotReady nodes, and applies the answer (`new`, `fold` or
   `suppress`) itself; the contract is the package doc in `dedupe/doc.go`.
-  **Not wired in yet**: the agent still decides in process. Its cases in
-  `dedupe/testdata/` also run against the Python tiers
-  (`agent/test_dedupe_parity.py`), so the two cannot drift apart unnoticed.
+  **Shadow mode** (CFOP-514): the agent still decides in process. Around each
+  of its five enqueue sites it also asks the service the same question about
+  the same rows, then compares the two answers and drops the service's. The
+  result is counted in `cfoperator_dedupe_shadow_total{path,result}`, and every
+  disagreement is logged at WARNING with both answers (`agent/dedupe_shadow.py`).
+  The comparison runs on a background thread, after Python has acted, so a
+  slow or dead service never delays or fails an enqueue. It is off unless
+  `CFOP_DEDUPE_URL` (or `remediation.dedupe.url`) is set, and
+  `CFOP_DEDUPE_SHARED_SECRET` is the `X-CFOP-Token`.
+  Only the investigation choke point runs every tier today, so the other paths
+  are expected to disagree wherever the service would fold. Phase 3 hands the
+  decision over once `path="investigation"` stays at zero disagreements. The
+  cases in `dedupe/testdata/` run against the Python tiers too
+  (`agent/test_dedupe_parity.py`), with the shadow on, so the two cannot drift
+  apart unnoticed.
 - **Executor Job** (`executor/`) — portable, stdlib-only, model-swappable
   (`CFOP_EXEC_LLM_BACKEND` = anthropic | openai-compat | claude-cli), or a
   **chain** of such backends tried in order (`CFOP_EXEC_LLM_CHAIN`, from
@@ -636,7 +648,9 @@ CI (`build-cfoperator-main.yml`) builds `cfoperator`, `cfoperator-worker`,
 `cfoperator-executor`, `cfoperator-changerecord` (from `changerecord/`) and
 `cfoperator-tracker` (from `tracker/`), the last two on a floating `:main` tag
 like the worker/executor. It also builds `cfoperator-dedupe` (from `dedupe/`),
-which nothing deploys yet (CFOP-509 phase 2). RBAC + config live in the private
+which the deploy bump pins to the agent's own `main-<sha>` rather than letting
+it float (CFOP-514): the shadow compares the two, so they must run one commit's
+code. RBAC + config live in the private
 `cfoperator-deploy` repo: `cfoperator-executor` read-only SA, the
 `remediation:` config block, and `cfoperator-secrets` (`GITHUB_TOKEN`,
 `ANTHROPIC_API_KEY`, `CFOP_COMPLETION_SHARED_SECRET`, and optionally
