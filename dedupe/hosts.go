@@ -20,7 +20,7 @@ const hostTokenStrip = "()[]{}<>\"'`.,;:"
 // Prometheus label: an instance label is "raspberrypi4:9100", and the port
 // has to come off before anything is compared against a node name.
 func normalizeHost(host string) string {
-	h := strings.ToLower(pyStrip(host))
+	h := pyLower(pyStrip(host))
 	if h == "" {
 		return ""
 	}
@@ -52,7 +52,7 @@ func hostCandidates(raw string) []string {
 		return r == ',' || r == ';' || pySpace(r)
 	}) {
 		tok = pyStripChars(tok, hostTokenStrip)
-		if tok == "" || hostConnectors[strings.ToLower(tok)] {
+		if tok == "" || hostConnectors[pyLower(tok)] {
 			continue
 		}
 		// "a/b" is two hosts unless it is a URL, which normalizeHost handles.
@@ -79,13 +79,13 @@ func hostCandidates(raw string) []string {
 // path guesses. Returns the REGISTERED name, because that is what the
 // recovery sweep keys on.
 func matchKnownHost(token string, known []string) string {
-	token = strings.ToLower(pyStrip(token))
+	token = pyLower(pyStrip(token))
 	if token == "" {
 		return ""
 	}
 	names := make([]string, 0, len(known))
 	for _, k := range known {
-		if n := strings.ToLower(pyStrip(k)); n != "" {
+		if n := pyLower(pyStrip(k)); n != "" {
 			names = append(names, n)
 		}
 	}
@@ -123,7 +123,7 @@ func notReadySet(names []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, n := range names {
-		n = strings.ToLower(n)
+		n = pyLower(n)
 		if n != "" && !seen[n] {
 			seen[n] = true
 			out = append(out, n)

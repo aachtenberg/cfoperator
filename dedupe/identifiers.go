@@ -2,7 +2,6 @@ package dedupe
 
 import (
 	"regexp"
-	"strings"
 	"unicode/utf8"
 )
 
@@ -103,7 +102,7 @@ func extractIdentifiers(text string) map[string]bool {
 		ids[m[0]] = true
 	}
 	for _, m := range identRow.findAll(text) {
-		ids[strings.ToLower(m[0])+":"+m[1]] = true
+		ids[pyLower(m[0])+":"+m[1]] = true
 	}
 	return ids
 }

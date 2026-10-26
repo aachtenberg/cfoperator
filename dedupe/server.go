@@ -76,13 +76,26 @@ func decodeRequest(body io.Reader) (Request, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	var req Request
-	if err := dec.Decode(&req); err != nil {
+	// The outer Candidate shadows Request's, so a missing or null candidate
+	// is told apart from an empty one. An empty one is a real candidate: the
+	// node tier can give it a key.
+	var in struct {
+		Request
+		Candidate *Candidate `json:"candidate"`
+	}
+	if err := dec.Decode(&in); err != nil {
 		return Request{}, errors.New("invalid request body: " + err.Error())
 	}
-	if dec.More() {
+	// Only EOF says the body was one value: More stops at a closing
+	// delimiter, so `{...}}` would pass it.
+	if _, err := dec.Token(); err != io.EOF {
 		return Request{}, errors.New("invalid request body: trailing data")
 	}
+	if in.Candidate == nil {
+		return Request{}, errors.New("invalid request body: no candidate")
+	}
+	req := in.Request
+	req.Candidate = *in.Candidate
 	return req, nil
 }
 

@@ -41,18 +41,29 @@ func main() {
 	// off. The agent falls back to its own exact-key check if one is lost.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+	drained := make(chan struct{})
 	go func() {
+		defer close(drained)
 		<-ctx.Done()
+		stop() // a second signal kills without waiting
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutdown)
+		if err := srv.Shutdown(shutdown); err != nil {
+			log.Warn("shutdown did not drain", "err", err)
+		}
 	}()
 
 	log.Info("cfop-dedupe listening", "addr", addr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	err := srv.ListenAndServe()
+	if !errors.Is(err, http.ErrServerClosed) {
 		log.Error("server failed", "err", err)
 		os.Exit(1)
 	}
+	// ListenAndServe returns as soon as Shutdown closes the listener, before
+	// the handlers still running have answered; returning here would exit
+	// under them.
+	<-drained
+	log.Info("cfop-dedupe stopped")
 }
 
 func env(name, fallback string) string {

@@ -11,6 +11,12 @@ import (
 // Unicode-wide where Go's regexp classes are ASCII. These helpers are the
 // Python definitions, so a parity case cannot pass in one language and fail
 // in the other on a character neither author thought about.
+//
+// Checked over every code point (the \w, \s and \d classes, and pyLower
+// alone and on each side of a capital sigma): built with Go 1.25 (Unicode
+// 15.0) they agree with Python 3.12 (15.0) everywhere. The agent runs
+// Python 3.11 (Unicode 14.0), and against it they differ only on code
+// points 14.0 left unassigned.
 
 // pySpace is str.isspace(), which is also what re's \s and str.strip() use.
 // unicode.IsSpace covers everything except U+001C..U+001F, which Python
@@ -29,6 +35,67 @@ func pyWord(r rune) bool {
 // pyStrip is str.strip() with no argument.
 func pyStrip(s string) string {
 	return strings.TrimFunc(s, pySpace)
+}
+
+// pyLower is str.lower(). strings.ToLower maps one rune to one rune; Python
+// applies the full mapping, and the two disagree in exactly two places:
+// U+0130 lowers to "i" + U+0307 (SpecialCasing.txt), and a capital sigma
+// that ends a word lowers to final sigma U+03C2 (the Final_Sigma context).
+// Every other rune lowers by the same simple mapping, so a string holding
+// neither takes the ToLower path.
+func pyLower(s string) string {
+	if !strings.ContainsRune(s, 0x130) && !strings.ContainsRune(s, 0x3a3) {
+		return strings.ToLower(s)
+	}
+	rs := []rune(s)
+	var b strings.Builder
+	b.Grow(len(s) + 1)
+	for i, r := range rs {
+		switch {
+		case r == 0x130:
+			b.WriteString("i̇")
+		case r == 0x3a3 && finalSigma(rs, i):
+			b.WriteRune(0x3c2)
+		default:
+			b.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return b.String()
+}
+
+// finalSigma is CPython's handle_capital_sigma: a cased letter before the
+// sigma and none after it, skipping case-ignorable characters both ways.
+func finalSigma(rs []rune, i int) bool {
+	j := i - 1
+	for j >= 0 && caseIgnorable(rs[j]) {
+		j--
+	}
+	if j < 0 || !cased(rs[j]) {
+		return false
+	}
+	j = i + 1
+	for j < len(rs) && caseIgnorable(rs[j]) {
+		j++
+	}
+	return j == len(rs) || !cased(rs[j])
+}
+
+// cased is Unicode's derived Cased property: Lowercase, Uppercase or Lt.
+func cased(r rune) bool {
+	return unicode.In(r, unicode.Lu, unicode.Ll, unicode.Lt,
+		unicode.Other_Lowercase, unicode.Other_Uppercase)
+}
+
+// caseIgnorable is Unicode's derived Case_Ignorable property. The
+// Word_Break values it includes (MidLetter, MidNumLet, Single_Quote) are not
+// in Go's unicode package, so their members are listed.
+func caseIgnorable(r rune) bool {
+	switch r {
+	case '\'', '.', ':', 0xb7, 0x387, 0x55f, 0x5f4, 0x2018, 0x2019, 0x2024,
+		0x2027, 0xfe13, 0xfe52, 0xfe55, 0xff07, 0xff0e, 0xff1a:
+		return true
+	}
+	return unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf, unicode.Lm, unicode.Sk)
 }
 
 // pyStripChars is str.strip(chars).

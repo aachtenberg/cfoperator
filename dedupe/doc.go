@@ -9,6 +9,7 @@
 // Contract:
 //
 //	POST /v1/decide   {candidate, open_rows, closed_rows, vocabulary} -> 200 Response
+//	                  (400 unless the body is one JSON object with a candidate)
 //	GET  /healthz     liveness (unauthenticated)
 //	GET  /livez       liveness (unauthenticated)
 //

@@ -23,7 +23,7 @@ type target struct {
 }
 
 func normalizeTargetID(raw any) string {
-	tid := strings.Trim(strings.ToLower(pyStrip(pyStrOr(raw))), "/")
+	tid := strings.Trim(pyLower(pyStrip(pyStrOr(raw))), "/")
 	return kustomizeHashSuffix.ReplaceAllString(tid, "${1}")
 }
 
@@ -37,10 +37,10 @@ func targetIdentity(targets any) map[target]bool {
 		if !ok {
 			continue
 		}
-		kind := strings.ToLower(pyStrip(pyStrOr(t["kind"])))
+		kind := pyLower(pyStrip(pyStrOr(t["kind"])))
 		tid := normalizeTargetID(t["id"])
 		if kind != "" && tid != "" {
-			out[target{kind: kind, repo: strings.ToLower(pyStrip(pyStrOr(t["repo"]))), id: tid}] = true
+			out[target{kind: kind, repo: pyLower(pyStrip(pyStrOr(t["repo"]))), id: tid}] = true
 		}
 	}
 	return out

@@ -128,13 +128,28 @@ func TestNoSecretAcceptsUnauthenticated(t *testing.T) {
 	}
 }
 
+// An empty candidate is still a candidate; only a missing one is refused.
+func TestEmptyCandidateIsNew(t *testing.T) {
+	srv := serve(t, "")
+	resp, out := post(t, srv.URL+"/v1/decide", "", `{"candidate": {}}`)
+	if resp.StatusCode != http.StatusOK || out["decision"] != "new" {
+		t.Fatalf("status %d, body %v", resp.StatusCode, out)
+	}
+}
+
 func TestBadRequests(t *testing.T) {
 	srv := serve(t, "")
 	for name, body := range map[string]string{
-		"not json":      `{"candidate":`,
-		"trailing data": `{} {}`,
-		"wrong type":    `{"candidate": {"host": 5}}`,
-		"too large":     `{"candidate": {"recommendation": "` + strings.Repeat("x", maxBody) + `"}}`,
+		"not json":         `{"candidate":`,
+		"trailing data":    `{"candidate": {}} {}`,
+		"trailing brace":   `{"candidate": {"dedupe_key": "k"}}}`,
+		"trailing bracket": `{"candidate": {"dedupe_key": "k"}}]`,
+		"no candidate":     `{"open_rows": []}`,
+		"null candidate":   `{"candidate": null}`,
+		"null body":        `null`,
+		"empty body":       ``,
+		"wrong type":       `{"candidate": {"host": 5}}`,
+		"too large":        `{"candidate": {"recommendation": "` + strings.Repeat("x", maxBody) + `"}}`,
 	} {
 		resp, out := post(t, srv.URL+"/v1/decide", "", body)
 		if resp.StatusCode != http.StatusBadRequest || out["error"] == "" {

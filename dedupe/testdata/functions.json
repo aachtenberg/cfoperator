@@ -8,6 +8,10 @@
     {"in": "raspberrypi4.local.", "want": "raspberrypi4.local"},
     {"in": " \u001craspberrypi4\u001f ", "want": "raspberrypi4"},
     {"in": "", "want": ""},
+    {"in": "P\u0130", "want": "pi\u0307"},
+    {"in": "ΟΔΥΣΣΕΥΣ:9100", "want": "οδυσσευς"},
+    {"in": "ΑΣ.Β", "want": "ασ.β"},
+    {"in": "Σ", "want": "σ"},
     {"in": null, "want": ""}
   ],
   "host_candidates": [
@@ -37,6 +41,7 @@
     {"token": "aweoriujwoedf", "known": ["aweoriujwoedf.example.com"], "want": "aweoriujwoedf.example.com"},
     {"token": "aweoriujwoedf.example.com", "known": ["aweoriujwoedf", "other"], "want": "aweoriujwoedf"},
     {"token": "immich-kiosk", "known": ["raspberrypi4"], "want": null},
+    {"token": "P\u0130", "known": ["pi"], "want": null},
     {"token": "", "known": ["raspberrypi4"], "want": null}
   ],
   "collapse_key": [
@@ -52,6 +57,7 @@
     {"host": "immich-kiosk, 10.0.0.9 and node", "notready": ["raspberrypi4"], "want_key": null, "want_node": null},
     {"host": "raspberrypi4, raspberrypi5", "notready": [], "want_key": null, "want_node": null},
     {"host": "db.prod.example", "notready": ["db.staging.example"], "want_key": null, "want_node": null},
+    {"host": "P\u0130", "notready": ["pi"], "want_key": null, "want_node": null},
     {"host": "", "notready": ["raspberrypi4"], "want_key": null, "want_node": null}
   ],
   "identifiers": [
@@ -134,6 +140,8 @@
      "want": true},
     {"a": [], "b": [{"id": "a", "kind": "k", "repo": "r"}], "want": false},
     {"a": null, "b": null, "want": false},
+    {"a": [{"id": "app\u0130", "kind": "k", "repo": "r"}], "b": [{"id": "appi", "kind": "k", "repo": "r"}], "want": false},
+    {"a": [{"id": "ΑΣ", "kind": "k", "repo": "r"}], "b": [{"id": "ασ", "kind": "k", "repo": "r"}], "want": false},
     {"a": "not a list", "b": [{"id": "a", "kind": "k", "repo": "r"}], "want": false}
   ]
 }
