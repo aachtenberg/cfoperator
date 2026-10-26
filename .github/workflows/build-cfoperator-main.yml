@@ -351,9 +351,11 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
 
   # cfoperator-dedupe: the remediation dedupe decision (dedupe/, CFOP-509).
-  # Phase 2 deploys it from the private deploy repo on the floating :main
-  # tag, as for tracker, so there is no bump step; until then nothing runs
-  # or calls it. No QEMU: the
+  # Unlike tracker it does not float on :main: bump-deploy-repo pins it to
+  # the same main-<sha> as the agent (CFOP-514). The agent compares its own
+  # decision with the service's, so both have to be the same commit's code.
+  # A stale service would report every later tier change as a disagreement.
+  # No QEMU: the
   # Dockerfile cross-compiles on the build platform and the final stage only
   # copies the static binary.
   build-dedupe:
@@ -563,7 +565,10 @@ jobs:
   bump-deploy-repo:
     # db-smoke gates the deploy: an image that cannot talk to its database is
     # never bumped (CFOP-249). tests/test_db_rollout.py pins this.
-    needs: [build-and-push, db-smoke]
+    # build-dedupe because its tag is pinned to this commit below (CFOP-514):
+    # bumping before it pushed would point the deploy at an image that does
+    # not exist yet.
+    needs: [build-and-push, build-dedupe, db-smoke]
     # Homelab deploys follow main pushes only. A v* tag build publishes images
     # for the chart/demo audience and must not touch the deploy repo — pointing
     # ArgoCD at a release tag would freeze the fleet on it.
@@ -625,8 +630,11 @@ jobs:
         env:
           DEPLOY_PAT: ${{ secrets.DEPLOY_PAT }}
         run: |
+          # The agent and cfop-dedupe move together: the dedupe shadow
+          # compares the two, so they run the same commit (CFOP-514).
           "$KUSTOMIZE" edit set image \
-            ghcr.io/aachtenberg/cfoperator=ghcr.io/aachtenberg/cfoperator:${{ needs.build-and-push.outputs.image-tag }}
+            ghcr.io/aachtenberg/cfoperator=ghcr.io/aachtenberg/cfoperator:${{ needs.build-and-push.outputs.image-tag }} \
+            ghcr.io/aachtenberg/cfoperator-dedupe=ghcr.io/aachtenberg/cfoperator-dedupe:${{ needs.build-and-push.outputs.image-tag }}
           if git diff --quiet -- kustomization.yml; then
             echo "Image tag already ${{ needs.build-and-push.outputs.image-tag }}; nothing to commit."
             exit 0

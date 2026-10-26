@@ -1905,13 +1905,19 @@ class WebServer:
                 elif not isinstance(conf, (int, float)):
                     conf = None
                 key = str(b.get('dedupe_key') or f"manual-{int(time.time())}")
-                rid = self.operator.kb.queue_remediation(
-                    remediation_class=str(b.get('remediation_class') or 'manual'),
-                    payload={'recommendation': rec, 'title': str(b.get('title') or rec[:60]),
-                             'repo': (str(b.get('repo') or '').strip() or None),
-                             'source': 'manual', 'dedupe_key': key},
-                    host_id=str(b.get('host_id') or 'default')[:64],
-                    risk=str(b.get('risk') or 'high'), confidence=conf, dedupe_key=key)
+                # CFOP-514: asked of cfop-dedupe too, compared and dropped.
+                with self.operator._dedupe_shadow_scope('console', {
+                        'dedupe_key': key, 'recommendation': rec,
+                        'host': b.get('host_id'), 'title': b.get('title'),
+                        'remediation_class': str(b.get('remediation_class') or 'manual'),
+                        'source': 'manual'}):
+                    rid = self.operator.kb.queue_remediation(
+                        remediation_class=str(b.get('remediation_class') or 'manual'),
+                        payload={'recommendation': rec, 'title': str(b.get('title') or rec[:60]),
+                                 'repo': (str(b.get('repo') or '').strip() or None),
+                                 'source': 'manual', 'dedupe_key': key},
+                        host_id=str(b.get('host_id') or 'default')[:64],
+                        risk=str(b.get('risk') or 'high'), confidence=conf, dedupe_key=key)
                 if not rid:
                     return jsonify({'status': 'deduped'}), 200
                 return jsonify(self.operator.kb.get_remediation(rid)), 201

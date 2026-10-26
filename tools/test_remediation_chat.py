@@ -565,6 +565,33 @@ class TestQueueGitopsPatch:
         assert kw["dedupe_key"]
         assert kw["payload"]["dedupe_key"] == kw["dedupe_key"]
 
+    def test_the_enqueue_is_asked_of_the_dedupe_shadow_too(self):
+        """CFOP-514: the chat path's own answer is still the exact key alone,
+        and the same question goes to cfop-dedupe around the enqueue, so its
+        by-design disagreements are counted under path=chat."""
+        from contextlib import contextmanager
+        op, reg = self._happy()
+        log = []
+
+        @contextmanager
+        def scope(path, details):
+            log.append(("enter", path, dict(details)))
+            yield None
+            log.append(("exit",))
+        op._dedupe_shadow_scope = scope
+        op.kb.queue_remediation.side_effect = lambda **kw: log.append(("queue",)) or 7
+        reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
+            "target": {"namespace": "plane", "name": "plane-api-wl", "host": "aa-ubuntu-01"}})
+        assert [e[0] for e in log] == ["enter", "queue", "exit"]
+        _, path, cand = log[0]
+        kw = op.kb.queue_remediation.call_args.kwargs
+        assert path == "chat"
+        assert cand == {"dedupe_key": kw["dedupe_key"],
+                        "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
+                        "host": "aa-ubuntu-01", "remediation_class": "gitops-patch",
+                        "source": "console-chat"}
+
     def test_the_same_ask_twice_reports_the_open_row(self):
         op, reg = _registry()
         op.kb.queue_remediation.return_value = None      # deduped

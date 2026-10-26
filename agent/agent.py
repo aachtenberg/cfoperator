@@ -19,6 +19,7 @@ import uuid
 import yaml
 import logging
 import copy
+import functools
 import hashlib
 import subprocess
 from dataclasses import dataclass, field
@@ -67,6 +68,7 @@ from change_record_client import (
     open_record as change_record_open,
 )
 from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
+import dedupe_shadow  # CFOP-514: every enqueue decision, asked of cfop-dedupe too
 from host_write import PENDING as HOST_WRITE_PENDING, HostWriteConfirmer, wait_for_row  # CFOP-442
 from knowledge_base import CONSOLE_CONFIRMED_SOURCE  # CFOP-442
 from reverify import reverify_filed_rows  # CFOP-185: re-check what was filed
@@ -1664,6 +1666,21 @@ def _match_known_host(token: str, known) -> Optional[str]:
         logger.debug("Host token %r matches %d registered nodes (%s); ambiguous, not folding",
                      token, len(hits), ', '.join(sorted(hits)))
     return None
+
+
+def _dedupe_shadowed(path: str):
+    """Run a method that decides one enqueue from ``details`` inside a dedupe
+    shadow scope (CFOP-514). A decorator rather than a ``with`` in the body so
+    the choke point's many return paths stay exactly as they were; the scope
+    only observes. Called unbound in tests (``CFOperator.m(op, ...)``), which
+    is why it goes through ``self`` and not a closure over the class."""
+    def wrap(fn):
+        @functools.wraps(fn)
+        def inner(self, investigation_id, details, *args, **kwargs):
+            with self._dedupe_shadow_scope(path, details):
+                return fn(self, investigation_id, details, *args, **kwargs)
+        return inner
+    return wrap
 
 
 def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
@@ -4930,6 +4947,26 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             return env_url.rstrip('/')
         return str(self._tracker_config().get('url') or '').strip().rstrip('/')
 
+    def _dedupe_url(self) -> str:
+        """Base URL of the cfop-dedupe Service, or '' when unset (CFOP-514).
+
+        Env first (wired into the agent Deployment), then
+        ``remediation.dedupe.url``. Unset turns the shadow comparison off and
+        changes nothing else: phase 2 only asks, it never acts on the answer.
+        """
+        env_url = (os.getenv('CFOP_DEDUPE_URL') or '').strip()
+        if env_url:
+            return env_url.rstrip('/')
+        rcfg = self.config.get('remediation', {}) if isinstance(self.config, dict) else {}
+        dcfg = rcfg.get('dedupe') if isinstance(rcfg, dict) else None
+        return str((dcfg or {}).get('url') or '').strip().rstrip('/') if isinstance(dcfg, dict) else ''
+
+    def _dedupe_shadow_scope(self, path: str, details: Dict[str, Any]):
+        """One shadow comparison around one enqueue decision; see dedupe_shadow.py."""
+        return dedupe_shadow.scope(path, details, url=self._dedupe_url(),
+                                   open_rows=self.kb.list_open_remediations_for_dedupe,
+                                   notready=self._notready_nodes)
+
     def _console_base_url(self) -> str:
         """Public console URL for links in tracker items, or '' (no link).
 
@@ -5850,6 +5887,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         )
         REMEDIATION_ENQUEUED.labels(source=source, remediation_class=nc, eligible=str(elig).lower()).inc()
 
+    @_dedupe_shadowed('investigation')
     def _maybe_queue_remediation(self, investigation_id: Optional[int],
                                  details: Dict[str, Any]) -> Optional[int]:
         """Enqueue a remediation from structured classification hints.
@@ -6901,6 +6939,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         if not candidates:
             return None
         down = self._notready_nodes()
+        # CFOP-514: the dedupe shadow asks the service with THIS inventory,
+        # not a later read that may have changed or failed open.
+        dedupe_shadow.note_notready(down)
         if not down:
             return None
         # CFOP-126: the host field is whatever the model wrote -- a list, a
@@ -7221,6 +7262,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     if new_key and new_key != payload.get('dedupe_key'):
                         self.kb.record_remediation_alias(rid, new_key)
                     REMEDIATION_FOLDED.labels(reason=reason).inc()
+                    dedupe_shadow.note('fold', rid,
+                                       tier='target' if reason == 'target' else 'identifier')
                     return rid
         except Exception as e:
             logger.warning(f"Repeat-remediation fold failed (enqueuing as-is): {e}")
@@ -7301,6 +7344,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             summary = str(details.get('trigger') or details.get('recommendation') or '')[:200]
             if rid and summary:
                 self.kb.record_remediation_absorbed(rid, summary)
+            if rid:
+                dedupe_shadow.note('fold', rid, tier='node')
             return rid
         except Exception as e:
             logger.warning(f"Could not fold symptom onto node incident {node_key}: {e}")
@@ -7502,27 +7547,33 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     # open its own row beside the incident. Same rewrite, same
                     # fail-open behaviour.
                     sweep_host = f.get('resource_name') or f.get('namespace')
-                    node_key = self._collapse_key_for_node_incident({'host': sweep_host})
-                    if node_key and node_key != key:
-                        absorbed = self._record_absorbed_symptom(
-                            node_key, {'trigger': title, 'recommendation': rec})
-                        if absorbed:
+                    # CFOP-514: asked of cfop-dedupe too, before the node tier
+                    # writes anything; see dedupe_shadow.py.
+                    with self._dedupe_shadow_scope('sweep-fallback', {
+                            'dedupe_key': key, 'recommendation': rec, 'host': sweep_host,
+                            'title': title, 'trigger': title, 'remediation_class': 'manual',
+                            'source': 'morning-summary/sweep'}):
+                        node_key = self._collapse_key_for_node_incident({'host': sweep_host})
+                        if node_key and node_key != key:
+                            absorbed = self._record_absorbed_symptom(
+                                node_key, {'trigger': title, 'recommendation': rec})
+                            if absorbed:
+                                handled += 1
+                                continue
+                            key = node_key
+                            payload['dedupe_key'] = node_key
+                        rid = self.kb.queue_remediation(
+                            remediation_class='manual',
+                            payload=payload,
+                            host_id=str(f.get('resource_name') or f.get('namespace') or 'default')[:64],
+                            risk=risk,
+                            confidence=None,
+                            dedupe_key=key,
+                        )
+                        if rid:
+                            enq += 1
                             handled += 1
-                            continue
-                        key = node_key
-                        payload['dedupe_key'] = node_key
-                    rid = self.kb.queue_remediation(
-                        remediation_class='manual',
-                        payload=payload,
-                        host_id=str(f.get('resource_name') or f.get('namespace') or 'default')[:64],
-                        risk=risk,
-                        confidence=None,
-                        dedupe_key=key,
-                    )
-                    if rid:
-                        enq += 1
-                        handled += 1
-                        self._count_enqueued('morning-summary/sweep', 'manual', risk, None)
+                            self._count_enqueued('morning-summary/sweep', 'manual', risk, None)
                 except Exception as e:
                     logger.error(f"sweep->remediation enqueue failed: {e}", exc_info=True)
         if handled:
@@ -7621,95 +7672,103 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # over, never guessed at -- so feeding it a title cannot invent a
             # match. Fails open throughout: a KB or inventory error means
             # today's behaviour, never a lost finding.
-            host = r.get('host')
-            node_details = {'host': host or title}
-            node_key = self._collapse_key_for_node_incident(node_details)
-            if node_key and node_key != key:
-                absorbed = self._record_absorbed_symptom(
-                    node_key, {'trigger': title, 'recommendation': rec})
-                if absorbed:
-                    logger.info(f"Folding summary rec '{title}' onto node "
-                                f"incident #{absorbed} ({node_key})")
-                    continue
-                # No incident row yet -- this rec opens it, under the node key
-                # and named for the matched node, so the investigation feed's
-                # later enqueue folds onto THIS row. It enqueues rather than
-                # dispatches for the reason above: the answer is already known.
-                key = node_key
-                host = node_details['host']
-            # 'investigate' findings are evidence-gathering the agent does itself.
-            # A mutation-class rec from the summary is an UNVERIFIED hypothesis
-            # (cheap model, no enforced grounding), so route it the same way:
-            # the deep tier verifies it and only a grounded finding becomes a
-            # remediation — never a high-confidence host action straight from a
-            # summary hunch. Mislabelled 'manual' with investigate-shaped text
-            # (check/verify/monitor/…) is also dispatched — the cheap model
-            # often defaults to manual for "check CoreDNS" style items.
-            # Only genuinely human-only manuals still queue.
-            #
-            # Deliberate policy split with the sweep path (CFOP-53): the sweep
-            # feed runs mutation-shaped recs through the dedicated CFOP-48
-            # classifier (fresh call, shared rubric, escalation ladder) and its
-            # verdict can auto-queue. The class labels HERE are the summary
-            # model's own JSON self-labels — no second opinion — which is why
-            # they are dispatch-only. Trust the classifier's classification,
-            # not the summarizer's; do not "unify" the two feeds by loosening
-            # this one.
-            # ``and not node_key``: the node tier already claimed this rec above,
-            # and dispatching would spend a deep-tier call to re-derive what the
-            # incident row already says. The node tier is asked first and no tier
-            # below it gets a say -- the same precedence _maybe_queue_remediation
-            # applies when it skips the CFOP-78 fold on a node-key match.
-            route_investigate = (
-                rclass == 'investigate'
-                or rclass in _SUMMARY_MUTATION_CLASSES
-                or (rclass == 'manual' and self._recommendation_is_investigate_shaped(rec))
-            ) and not node_key
-            if route_investigate:
-                # CFOP-46 D: same loop-break as the sweep path — an open
-                # remediation row under this key means an earlier dispatch
-                # already landed needs_action; don't re-gather the evidence.
-                dispatch_key = self._dispatch_dedupe_key(str(r.get('host') or ''), title)
-                open_row = self._open_remediation_for_key(dispatch_key)
-                if open_row:
-                    logger.info(
-                        f"Skipping re-investigation of '{title}': remediation "
-                        f"#{open_row.get('id')} (investigation "
-                        f"#{open_row.get('investigation_id')}) is still open")
+            # CFOP-514: the shadow scope opens before the node tier, so the
+            # service is asked about the rows as this rec found them. A rec the
+            # summary dispatches instead of enqueuing decides nothing and asks
+            # nothing.
+            with self._dedupe_shadow_scope('summary', {
+                    'dedupe_key': key, 'recommendation': rec, 'host': r.get('host'),
+                    'title': title, 'trigger': title, 'remediation_class': rclass,
+                    'source': 'morning-summary'}):
+                host = r.get('host')
+                node_details = {'host': host or title}
+                node_key = self._collapse_key_for_node_incident(node_details)
+                if node_key and node_key != key:
+                    absorbed = self._record_absorbed_symptom(
+                        node_key, {'trigger': title, 'recommendation': rec})
+                    if absorbed:
+                        logger.info(f"Folding summary rec '{title}' onto node "
+                                    f"incident #{absorbed} ({node_key})")
+                        continue
+                    # No incident row yet -- this rec opens it, under the node key
+                    # and named for the matched node, so the investigation feed's
+                    # later enqueue folds onto THIS row. It enqueues rather than
+                    # dispatches for the reason above: the answer is already known.
+                    key = node_key
+                    host = node_details['host']
+                # 'investigate' findings are evidence-gathering the agent does itself.
+                # A mutation-class rec from the summary is an UNVERIFIED hypothesis
+                # (cheap model, no enforced grounding), so route it the same way:
+                # the deep tier verifies it and only a grounded finding becomes a
+                # remediation — never a high-confidence host action straight from a
+                # summary hunch. Mislabelled 'manual' with investigate-shaped text
+                # (check/verify/monitor/…) is also dispatched — the cheap model
+                # often defaults to manual for "check CoreDNS" style items.
+                # Only genuinely human-only manuals still queue.
+                #
+                # Deliberate policy split with the sweep path (CFOP-53): the sweep
+                # feed runs mutation-shaped recs through the dedicated CFOP-48
+                # classifier (fresh call, shared rubric, escalation ladder) and its
+                # verdict can auto-queue. The class labels HERE are the summary
+                # model's own JSON self-labels — no second opinion — which is why
+                # they are dispatch-only. Trust the classifier's classification,
+                # not the summarizer's; do not "unify" the two feeds by loosening
+                # this one.
+                # ``and not node_key``: the node tier already claimed this rec above,
+                # and dispatching would spend a deep-tier call to re-derive what the
+                # incident row already says. The node tier is asked first and no tier
+                # below it gets a say -- the same precedence _maybe_queue_remediation
+                # applies when it skips the CFOP-78 fold on a node-key match.
+                route_investigate = (
+                    rclass == 'investigate'
+                    or rclass in _SUMMARY_MUTATION_CLASSES
+                    or (rclass == 'manual' and self._recommendation_is_investigate_shaped(rec))
+                ) and not node_key
+                if route_investigate:
+                    # CFOP-46 D: same loop-break as the sweep path — an open
+                    # remediation row under this key means an earlier dispatch
+                    # already landed needs_action; don't re-gather the evidence.
+                    dispatch_key = self._dispatch_dedupe_key(str(r.get('host') or ''), title)
+                    open_row = self._open_remediation_for_key(dispatch_key)
+                    if open_row:
+                        logger.info(
+                            f"Skipping re-investigation of '{title}': remediation "
+                            f"#{open_row.get('id')} (investigation "
+                            f"#{open_row.get('investigation_id')}) is still open")
+                        continue
+                    try:
+                        # Preserve mutation-class proposals for the investigator;
+                        # investigate / mislabelled-manual get no suffix.
+                        suffix = (f" [proposed: {rclass}]"
+                                  if rclass in _SUMMARY_MUTATION_CLASSES else '')
+                        self.enqueue_investigation({'summary': f"{title}: {rec}{suffix}"[:300],
+                                                    'source': 'summary-investigate',
+                                                    'host': r.get('host'),
+                                                    'dedupe_key': dispatch_key})
+                        dispatched += 1
+                    except Exception as e:
+                        logger.warning(f"could not dispatch investigation for '{title}': {e}")
                     continue
                 try:
-                    # Preserve mutation-class proposals for the investigator;
-                    # investigate / mislabelled-manual get no suffix.
-                    suffix = (f" [proposed: {rclass}]"
-                              if rclass in _SUMMARY_MUTATION_CLASSES else '')
-                    self.enqueue_investigation({'summary': f"{title}: {rec}{suffix}"[:300],
-                                                'source': 'summary-investigate',
-                                                'host': r.get('host'),
-                                                'dedupe_key': dispatch_key})
-                    dispatched += 1
+                    payload = {'recommendation': rec, 'title': title,
+                               'target': {'host': host},
+                               'repo': (str(r.get('repo') or '').strip() or None),
+                               'source': 'morning-summary', 'dedupe_key': key}
+                    if provider:
+                        payload['provider'] = provider
+                    rid = self.kb.queue_remediation(
+                        remediation_class=rclass,
+                        payload=payload,
+                        host_id=str(host or 'default')[:64],
+                        risk=risk,
+                        confidence=conf,
+                        dedupe_key=key,
+                    )
+                    if rid:
+                        enq += 1
+                        self._count_enqueued('morning-summary', rclass, risk, conf)
                 except Exception as e:
-                    logger.warning(f"could not dispatch investigation for '{title}': {e}")
-                continue
-            try:
-                payload = {'recommendation': rec, 'title': title,
-                           'target': {'host': host},
-                           'repo': (str(r.get('repo') or '').strip() or None),
-                           'source': 'morning-summary', 'dedupe_key': key}
-                if provider:
-                    payload['provider'] = provider
-                rid = self.kb.queue_remediation(
-                    remediation_class=rclass,
-                    payload=payload,
-                    host_id=str(host or 'default')[:64],
-                    risk=risk,
-                    confidence=conf,
-                    dedupe_key=key,
-                )
-                if rid:
-                    enq += 1
-                    self._count_enqueued('morning-summary', rclass, risk, conf)
-            except Exception as e:
-                logger.error(f"summary->remediation enqueue failed: {e}", exc_info=True)
+                    logger.error(f"summary->remediation enqueue failed: {e}", exc_info=True)
         if enq or dispatched:
             logger.info(f"Morning summary: queued {enq} remediation(s), "
                         f"dispatched {dispatched} investigation(s)")
