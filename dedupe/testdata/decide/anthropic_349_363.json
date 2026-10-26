@@ -1,0 +1,311 @@
+{
+  "about": "CFOP-509: 'top up Anthropic credits', filed five times on 2026-10-25/26 under four target ids for one provider. #350 was the operator's won't-fix (CFOP-490), recorded as a resolve. Texts verbatim from rows #349-#363.",
+  "cases": [
+    {
+      "name": "#350 names the provider 'Anthropic API' while #349 says 'anthropic-api'",
+      "phase4": "fold onto #349: configured-provider subject",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-c6294d992280c0e4",
+          "recommendation": "Top up the Anthropic API account with sufficient credits.",
+          "host": "",
+          "trigger": "cfoperator service is failing due to insufficient Anthropic API credits.",
+          "remediation_class": "external-system",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "Anthropic API",
+              "kind": "external-system"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 349,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-1802d3698e828314",
+              "recommendation": "Top up the Anthropic API credit balance in the Anthropic console.",
+              "targets": [
+                {
+                  "id": "anthropic-api",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-c6294d992280c0e4"
+      }
+    },
+    {
+      "name": "#354 re-files #349's exact key once #349 and #350 are closed",
+      "note": "Resolved rows re-admit a recurrence (CFOP-46 D).",
+      "phase4": "suppress -> #350 if the won't-fix is recorded as a reject",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-1802d3698e828314",
+          "recommendation": "Top up the Anthropic API account credits via the Anthropic Console (Plans & Billing).",
+          "host": "",
+          "trigger": "cfoperator is failing to process LLM requests due to insufficient Anthropic API credits.",
+          "remediation_class": "external-system",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "anthropic-api",
+              "kind": "external-system"
+            }
+          ]
+        },
+        "open_rows": [],
+        "closed_rows": [
+          {
+            "id": 350,
+            "status": "resolved",
+            "payload": {
+              "dedupe_key": "tgt-c6294d992280c0e4",
+              "recommendation": "Top up the Anthropic API account with sufficient credits.",
+              "targets": [
+                {
+                  "id": "Anthropic API",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          },
+          {
+            "id": 349,
+            "status": "resolved",
+            "payload": {
+              "dedupe_key": "tgt-1802d3698e828314",
+              "recommendation": "Top up the Anthropic API credit balance in the Anthropic console.",
+              "targets": [
+                {
+                  "id": "anthropic-api",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-1802d3698e828314"
+      }
+    },
+    {
+      "name": "#354 while #349 is still open is suppressed on the exact key",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-1802d3698e828314",
+          "recommendation": "Top up the Anthropic API account credits via the Anthropic Console (Plans & Billing).",
+          "host": "",
+          "trigger": "cfoperator is failing to process LLM requests due to insufficient Anthropic API credits.",
+          "remediation_class": "external-system",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "anthropic-api",
+              "kind": "external-system"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 349,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-1802d3698e828314",
+              "recommendation": "Top up the Anthropic API credit balance in the Anthropic console.",
+              "targets": [
+                {
+                  "id": "anthropic-api",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "suppress",
+        "row_id": 349,
+        "tier": "key",
+        "dedupe_key": "tgt-1802d3698e828314"
+      }
+    },
+    {
+      "name": "#355 says 'Anthropic API Account' while #354 is open",
+      "phase4": "fold onto #354: configured-provider subject",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-42d78e20f663d32c",
+          "recommendation": "Add credits to the Anthropic API account via the Anthropic dashboard (Plans & Billing).",
+          "host": "",
+          "trigger": "cfoperator is failing to access Anthropic API due to insufficient credits",
+          "remediation_class": "external-system",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "Anthropic API Account",
+              "kind": "external-system"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 354,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-1802d3698e828314",
+              "recommendation": "Top up the Anthropic API account credits via the Anthropic Console (Plans & Billing).",
+              "targets": [
+                {
+                  "id": "anthropic-api",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-42d78e20f663d32c"
+      }
+    },
+    {
+      "name": "#363 a day later, with every Anthropic row closed and no FIX target",
+      "note": "Investigation 4877's reply has no FIX, so the row carries no targets at all.",
+      "phase4": "suppress -> #350: rejected window (a won't-fix is a reject) and provider subject",
+      "request": {
+        "candidate": {
+          "dedupe_key": "alert-e2af5c3be8a41dc8",
+          "recommendation": "Top up the Anthropic API credit balance to restore the functionality of `cfoperator` investigations.",
+          "host": "",
+          "trigger": "cfoperator investigation runs ending in InvestigationFailed",
+          "remediation_class": "external-system",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 362,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-cd6c088b80653715",
+              "recommendation": "Increase the Nginx `resolver_timeout` by mounting a custom Nginx configuration via a ConfigMap to the `freshet-dashboard` deployment.",
+              "targets": [
+                {
+                  "id": "freshet-dashboard-configmap",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                },
+                {
+                  "id": "freshet-dashboard-deployment",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          },
+          {
+            "id": 361,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-d5c02f89c0280fe8",
+              "recommendation": "Add a `nodeSelector` to the `freshet-dashboard` deployment in the `apps` namespace to ensure it only runs on nodes with `network=wired`.",
+              "targets": [
+                {
+                  "id": "apps/freshet-dashboard",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "closed_rows": [
+          {
+            "id": 355,
+            "status": "resolved",
+            "payload": {
+              "dedupe_key": "tgt-42d78e20f663d32c",
+              "recommendation": "Add credits to the Anthropic API account via the Anthropic dashboard (Plans & Billing).",
+              "targets": [
+                {
+                  "id": "Anthropic API Account",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          },
+          {
+            "id": 354,
+            "status": "resolved",
+            "payload": {
+              "dedupe_key": "tgt-1802d3698e828314",
+              "recommendation": "Top up the Anthropic API account credits via the Anthropic Console (Plans & Billing).",
+              "targets": [
+                {
+                  "id": "anthropic-api",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          },
+          {
+            "id": 350,
+            "status": "resolved",
+            "payload": {
+              "dedupe_key": "tgt-c6294d992280c0e4",
+              "recommendation": "Top up the Anthropic API account with sufficient credits.",
+              "targets": [
+                {
+                  "id": "Anthropic API",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          },
+          {
+            "id": 349,
+            "status": "resolved",
+            "payload": {
+              "dedupe_key": "tgt-1802d3698e828314",
+              "recommendation": "Top up the Anthropic API credit balance in the Anthropic console.",
+              "targets": [
+                {
+                  "id": "anthropic-api",
+                  "kind": "external-system"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "alert-e2af5c3be8a41dc8"
+      }
+    }
+  ]
+}

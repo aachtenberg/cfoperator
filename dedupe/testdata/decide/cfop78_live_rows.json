@@ -1,0 +1,273 @@
+{
+  "about": "CFOP-78: rows #67-#72 on 2026-08-23. The same token fix three times across two models, the same stale tunnel rule twice, and one unrelated fork. Recommendations verbatim, as in agent/test_remediation_dedupe_stopgap.py.",
+  "cases": [
+    {
+      "name": "#69 (grok) rewords #67 (grok) and folds on its identifiers",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `k3s/base/apps/sealed-secrets/cfoperator-secrets.yml` and mount it on the event-runtime Deployment (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout until the startup WARNING is gone.",
+          "host": "",
+          "trigger": "event-runtime fail-open",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 67,
+        "tier": "identifier",
+        "shared": [
+          "CFOP_RUNTIME_TOKEN"
+        ],
+        "absorbed": "event-runtime fail-open",
+        "alias": "inv-bbbb"
+      }
+    },
+    {
+      "name": "#71 (gemma4) rewords #67 (grok) and folds across models",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to `cfoperator-secrets` and update the `cfoperator-event-runtime` Deployment to inject it, then restart the deployment.",
+          "host": "",
+          "trigger": "event-runtime fail-open",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 67,
+        "tier": "identifier",
+        "shared": [
+          "CFOP_RUNTIME_TOKEN"
+        ],
+        "absorbed": "event-runtime fail-open",
+        "alias": "inv-bbbb"
+      }
+    },
+    {
+      "name": "#70 folds onto #68: both spell the tunnel rule's port",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Remove or retarget the Cloudflare Zero Trust ingress rule for `192.168.0.131:80` in the Cloudflare Dashboard.",
+          "host": "",
+          "trigger": "cloudflared origin unreachable",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 68,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "In Cloudflare Zero Trust → Networks → Tunnels → this tunnel, delete or retarget Public Hostname ingressRule=1 away from http://192.168.0.131:80; keep only reachable origins (e.g. freshet via Traefik)."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 68,
+        "tier": "identifier",
+        "shared": [
+          "192.168.0.131:80"
+        ],
+        "absorbed": "cloudflared origin unreachable",
+        "alias": "inv-bbbb"
+      }
+    },
+    {
+      "name": "#72 shares nothing with the token or tunnel rows",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Truncate or chunk the text content for `learning_id 2368` in the underlying database to fit within the model's context window, or update the `embedding_service` configuration to use a model with a larger context window.",
+          "host": "",
+          "trigger": "event-runtime fail-open",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 68,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaa8",
+              "recommendation": "In Cloudflare Zero Trust → Networks → Tunnels → this tunnel, delete or retarget Public Hostname ingressRule=1 away from http://192.168.0.131:80; keep only reachable origins (e.g. freshet via Traefik)."
+            }
+          },
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaa7",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-bbbb"
+      }
+    },
+    {
+      "name": "a recommendation naming nothing never folds onto everything",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Investigate the elevated latency further",
+          "host": "",
+          "trigger": "event-runtime fail-open",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-bbbb"
+      }
+    },
+    {
+      "name": "an open row naming nothing is never a fold target",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone.",
+          "host": "",
+          "trigger": "event-runtime fail-open",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 50,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-bbbb"
+      }
+    },
+    {
+      "name": "one shared identifier is not containment",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed secrets and mount it at 192.168.0.150",
+          "host": "",
+          "trigger": "event-runtime fail-open",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 60,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Rotate `CFOP_RUNTIME_TOKEN` and `CFOP_API_TOKEN` after the leak on 10.0.0.14"
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-bbbb"
+      }
+    },
+    {
+      "name": "an exact-key repeat is left to the exact tier",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-same",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `k3s/base/apps/sealed-secrets/cfoperator-secrets.yml` and mount it on the event-runtime Deployment (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout until the startup WARNING is gone.",
+          "host": "",
+          "trigger": "event-runtime fail-open",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 67,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-same",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "suppress",
+        "row_id": 67,
+        "tier": "key",
+        "dedupe_key": "inv-same"
+      }
+    }
+  ]
+}

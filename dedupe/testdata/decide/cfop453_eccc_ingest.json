@@ -1,0 +1,380 @@
+{
+  "about": "CFOP-453: rows #314 and #315 on 2026-10-20, one ConfigMap under a target key and a dispatch key. Payloads verbatim, as in agent/test_remediation_dedupe_stopgap.py.",
+  "cases": [
+    {
+      "name": "#315 (dispatch key) folds onto #314 (target key)",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets",
+          "recommendation": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+          "host": "",
+          "trigger": "investigate: eccc-ingest connection resets",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "eccc-ingest-script-mg664c47g9",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 314,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-7fafc3e87c2d09f3",
+              "recommendation": "Update the `eccc-ingest` ConfigMap to implement retries with exponential backoff in the `fetch_csv` function to handle transient external connection resets.",
+              "targets": [
+                {
+                  "id": "data/eccc-ingest-script-mg664c47g9",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 314,
+        "tier": "target",
+        "shared": [
+          "eccc-ingest-script"
+        ],
+        "absorbed": "investigate: eccc-ingest connection resets",
+        "alias": "inv-dispatch-investigate-eccc-ingest-connection-resets"
+      }
+    },
+    {
+      "name": "#314 folds onto #315 when the dispatch landed first",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-7fafc3e87c2d09f3",
+          "recommendation": "Update the `eccc-ingest` ConfigMap to implement retries with exponential backoff in the `fetch_csv` function to handle transient external connection resets.",
+          "host": "",
+          "trigger": "investigate: eccc-ingest connection resets",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "data/eccc-ingest-script-mg664c47g9",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 315,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets",
+              "recommendation": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+              "targets": [
+                {
+                  "id": "eccc-ingest-script-mg664c47g9",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 315,
+        "tier": "target",
+        "shared": [
+          "data/eccc-ingest-script"
+        ],
+        "absorbed": "investigate: eccc-ingest connection resets",
+        "alias": "tgt-7fafc3e87c2d09f3"
+      }
+    },
+    {
+      "name": "a regenerated kustomize hash is the same ConfigMap",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets",
+          "recommendation": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+          "host": "",
+          "trigger": "investigate: eccc-ingest connection resets",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "data/eccc-ingest-script-2g77tmm66h",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 314,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-7fafc3e87c2d09f3",
+              "recommendation": "Update the `eccc-ingest` ConfigMap to implement retries with exponential backoff in the `fetch_csv` function to handle transient external connection resets.",
+              "targets": [
+                {
+                  "id": "data/eccc-ingest-script-mg664c47g9",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 314,
+        "tier": "target",
+        "shared": [
+          "data/eccc-ingest-script"
+        ],
+        "absorbed": "investigate: eccc-ingest connection resets",
+        "alias": "inv-dispatch-investigate-eccc-ingest-connection-resets"
+      }
+    },
+    {
+      "name": "the same id in another repo is another target",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets",
+          "recommendation": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+          "host": "",
+          "trigger": "investigate: eccc-ingest connection resets",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "eccc-ingest-script-mg664c47g9",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/cfoperator-deploy"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 314,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-7fafc3e87c2d09f3",
+              "recommendation": "Update the `eccc-ingest` ConfigMap to implement retries with exponential backoff in the `fetch_csv` function to handle transient external connection resets.",
+              "targets": [
+                {
+                  "id": "data/eccc-ingest-script-mg664c47g9",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets"
+      }
+    },
+    {
+      "name": "the same basename in another directory is another file",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-bbbb",
+          "recommendation": "Pin the image tags in `kustomization.yml`",
+          "host": "",
+          "trigger": "investigate: eccc-ingest connection resets",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "k3s/base/monitoring/kustomization.yml",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 1,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-aaaa",
+              "recommendation": "Pin the image tags in `kustomization.yml`",
+              "targets": [
+                {
+                  "id": "k3s/base/apps/kustomization.yml",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-bbbb"
+      }
+    },
+    {
+      "name": "a wider fix folds onto the narrower open row",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets",
+          "recommendation": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+          "host": "",
+          "trigger": "investigate: eccc-ingest connection resets",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "data/eccc-ingest-script-mg664c47g9",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            },
+            {
+              "id": "k3s/base/data/eccc-ingest.yml",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 314,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-7fafc3e87c2d09f3",
+              "recommendation": "Update the `eccc-ingest` ConfigMap to implement retries with exponential backoff in the `fetch_csv` function to handle transient external connection resets.",
+              "targets": [
+                {
+                  "id": "data/eccc-ingest-script-mg664c47g9",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 314,
+        "tier": "target",
+        "shared": [
+          "data/eccc-ingest-script",
+          "k3s/base/data/eccc-ingest.yml"
+        ],
+        "absorbed": "investigate: eccc-ingest connection resets",
+        "alias": "inv-dispatch-investigate-eccc-ingest-connection-resets"
+      }
+    },
+    {
+      "name": "two fixes that each touch something the other does not stay apart",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets",
+          "recommendation": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+          "host": "",
+          "trigger": "investigate: eccc-ingest connection resets",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "k3s/base/data/eccc-ingest.yml",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 314,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "tgt-7fafc3e87c2d09f3",
+              "recommendation": "Update the `eccc-ingest` ConfigMap to implement retries with exponential backoff in the `fetch_csv` function to handle transient external connection resets.",
+              "targets": [
+                {
+                  "id": "data/eccc-ingest-script-mg664c47g9",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets"
+      }
+    },
+    {
+      "name": "targets never match a row without targets",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets",
+          "recommendation": "Update the `eccc-ingest-script-mg664c47g9` ConfigMap to implement retry logic with exponential backoff in the `fetch_csv` function to mitigate these transient external connection failures.",
+          "host": "",
+          "trigger": "investigate: eccc-ingest connection resets",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "eccc-ingest-script-mg664c47g9",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 50,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-dispatch-investigate-eccc-ingest-connection-resets"
+      }
+    }
+  ]
+}

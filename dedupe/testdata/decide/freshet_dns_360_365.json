@@ -1,0 +1,239 @@
+{
+  "about": "CFOP-509: freshet-dashboard nginx DNS timeouts, 2026-10-25/26. Two different fixes (nodeSelector #360/#361, resolver_timeout #362/#365) and target ids the model invented differently each run. Texts verbatim from rows #360-#365 and investigation 4886.",
+  "cases": [
+    {
+      "name": "#361 re-proposes #360's nodeSelector after the judge rejected it",
+      "note": "A rejected row is terminal, so nothing blocks the repeat (CFOP-46 D). The targets also differ in kind and repo.",
+      "phase4": "suppress -> #360: rejected within the window, same workload subject",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-d5c02f89c0280fe8",
+          "recommendation": "Add a `nodeSelector` to the `freshet-dashboard` deployment in the `apps` namespace to ensure it only runs on nodes with `network=wired`.",
+          "host": "",
+          "trigger": "freshet-dashboard nginx cannot resolve its backend service postgrest.data.svc.cluster.local — DNS lookups time out repeatedly (110: Operation timed out) every ~6 minutes for 6+ hours, so the dashboard cannot reach its PostgREST API.",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "apps/freshet-dashboard",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [],
+        "closed_rows": [
+          {
+            "id": 360,
+            "status": "rejected",
+            "payload": {
+              "dedupe_key": "inv-a62a25db34da8dc9",
+              "recommendation": "Add a nodeSelector to the `freshet-dashboard` deployment to ensure it only runs on nodes with `network: wired`.",
+              "fold_targets": [
+                {
+                  "id": "apps/freshet-dashboard",
+                  "kind": "k8s-object",
+                  "repo": "aachtenberg/freshet-deploy"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-d5c02f89c0280fe8"
+      }
+    },
+    {
+      "name": "#362's resolver_timeout fix stands beside #361's nodeSelector",
+      "phase4": "fold onto #361: one incident, the second fix recorded as an absorbed alternative",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-cd6c088b80653715",
+          "recommendation": "Increase the Nginx `resolver_timeout` by mounting a custom Nginx configuration via a ConfigMap to the `freshet-dashboard` deployment.",
+          "host": "",
+          "trigger": "freshet-dashboard nginx intermittently fails to resolve its PostgREST backend (postgrest.data.svc.cluster.local) with DNS 'Operation timed out (110)' errors, recurring every ~5-15 minutes for over 12 hours.",
+          "remediation_class": "gitops-patch",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "freshet-dashboard-configmap",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            },
+            {
+              "id": "freshet-dashboard-deployment",
+              "kind": "gitops-manifest",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 361,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-d5c02f89c0280fe8",
+              "recommendation": "Add a `nodeSelector` to the `freshet-dashboard` deployment in the `apps` namespace to ensure it only runs on nodes with `network=wired`.",
+              "targets": [
+                {
+                  "id": "apps/freshet-dashboard",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-cd6c088b80653715"
+      }
+    },
+    {
+      "name": "investigation 4886 folds onto #362 when the target names match",
+      "note": "The live fold at 11:04 on 2026-10-26. Row #362 really carries this absorbed text and this alias.",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-dispatch-raspberrypi5-fix-freshet-dashboard-dns",
+          "recommendation": "Verify the status of the `freshet-dashboard` pod in the `apps` namespace and investigate the network/WiFi stability on `raspberrypi5`. If the pod is running on `raspberrypi5`, increase the Nginx `resolver_timeout` in the deployment configuration to handle transient network latency.",
+          "targets": [
+            {
+              "kind": "gitops-manifest",
+              "id": "freshet-dashboard-deployment",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ],
+          "host": "",
+          "trigger": "Fix freshet-dashboard DNS: Investigate CoreDNS and pod logs for timeout patterns during wifi instability",
+          "remediation_class": "gitops-patch",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 362,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-cd6c088b80653715",
+              "recommendation": "Increase the Nginx `resolver_timeout` by mounting a custom Nginx configuration via a ConfigMap to the `freshet-dashboard` deployment.",
+              "targets": [
+                {
+                  "id": "freshet-dashboard-configmap",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                },
+                {
+                  "id": "freshet-dashboard-deployment",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          },
+          {
+            "id": 361,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-d5c02f89c0280fe8",
+              "recommendation": "Add a `nodeSelector` to the `freshet-dashboard` deployment in the `apps` namespace to ensure it only runs on nodes with `network=wired`.",
+              "targets": [
+                {
+                  "id": "apps/freshet-dashboard",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "fold",
+        "row_id": 362,
+        "tier": "target",
+        "shared": [
+          "freshet-dashboard-deployment"
+        ],
+        "absorbed": "Fix freshet-dashboard DNS: Investigate CoreDNS and pod logs for timeout patterns during wifi instability",
+        "alias": "inv-dispatch-raspberrypi5-fix-freshet-dashboard-dns"
+      }
+    },
+    {
+      "name": "#365 names the same ConfigMap as #362 another way and opens a row",
+      "note": "'configmap,freshet-dashboard-nginx' (k8s-object) against 'freshet-dashboard-configmap' (gitops-manifest). Neither exists in homelab-infra.",
+      "phase4": "fold onto #362: same workload subject",
+      "request": {
+        "candidate": {
+          "dedupe_key": "tgt-eab8dac15c82fafc",
+          "recommendation": "Check the Nginx configuration for `freshet-dashboard` to increase the `resolver_timeout` and inspect CoreDNS logs for resolution latency.",
+          "host": "",
+          "trigger": "freshet-dashboard is unable to resolve postgrest.data.svc.cluster.local, causing request timeouts.",
+          "remediation_class": "k8s-action",
+          "source": "investigation",
+          "targets": [
+            {
+              "id": "configmap,freshet-dashboard-nginx",
+              "kind": "k8s-object",
+              "repo": "aachtenberg/homelab-infra"
+            }
+          ]
+        },
+        "open_rows": [
+          {
+            "id": 362,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-cd6c088b80653715",
+              "recommendation": "Increase the Nginx `resolver_timeout` by mounting a custom Nginx configuration via a ConfigMap to the `freshet-dashboard` deployment.",
+              "targets": [
+                {
+                  "id": "freshet-dashboard-configmap",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                },
+                {
+                  "id": "freshet-dashboard-deployment",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          },
+          {
+            "id": 361,
+            "status": "filed",
+            "payload": {
+              "dedupe_key": "tgt-d5c02f89c0280fe8",
+              "recommendation": "Add a `nodeSelector` to the `freshet-dashboard` deployment in the `apps` namespace to ensure it only runs on nodes with `network=wired`.",
+              "targets": [
+                {
+                  "id": "apps/freshet-dashboard",
+                  "kind": "gitops-manifest",
+                  "repo": "aachtenberg/homelab-infra"
+                }
+              ]
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "tgt-eab8dac15c82fafc"
+      }
+    }
+  ]
+}

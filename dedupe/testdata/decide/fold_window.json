@@ -1,0 +1,1667 @@
+{
+  "about": "The fold and the alias lookup read the newest 100 open rows (list_open_remediations(limit=100)); the exact-key check reads every open row.",
+  "cases": [
+    {
+      "name": "the fold reads only the newest 100 open rows",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-bbbb",
+          "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `k3s/base/apps/sealed-secrets/cfoperator-secrets.yml` and mount it on the event-runtime Deployment (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout until the startup WARNING is gone.",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 1100,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-000",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1099,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-001",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1098,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-002",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1097,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-003",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1096,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-004",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1095,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-005",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1094,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-006",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1093,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-007",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1092,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-008",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1091,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-009",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1090,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-010",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1089,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-011",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1088,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-012",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1087,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-013",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1086,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-014",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1085,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-015",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1084,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-016",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1083,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-017",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1082,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-018",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1081,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-019",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1080,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-020",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1079,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-021",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1078,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-022",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1077,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-023",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1076,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-024",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1075,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-025",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1074,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-026",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1073,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-027",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1072,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-028",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1071,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-029",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1070,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-030",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1069,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-031",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1068,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-032",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1067,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-033",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1066,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-034",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1065,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-035",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1064,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-036",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1063,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-037",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1062,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-038",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1061,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-039",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1060,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-040",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1059,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-041",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1058,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-042",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1057,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-043",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1056,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-044",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1055,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-045",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1054,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-046",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1053,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-047",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1052,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-048",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1051,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-049",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1050,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-050",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1049,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-051",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1048,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-052",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1047,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-053",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1046,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-054",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1045,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-055",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1044,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-056",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1043,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-057",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1042,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-058",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1041,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-059",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1040,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-060",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1039,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-061",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1038,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-062",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1037,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-063",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1036,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-064",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1035,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-065",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1034,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-066",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1033,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-067",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1032,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-068",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1031,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-069",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1030,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-070",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1029,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-071",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1028,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-072",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1027,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-073",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1026,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-074",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1025,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-075",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1024,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-076",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1023,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-077",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1022,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-078",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1021,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-079",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1020,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-080",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1019,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-081",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1018,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-082",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1017,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-083",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1016,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-084",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1015,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-085",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1014,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-086",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1013,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-087",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1012,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-088",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1011,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-089",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1010,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-090",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1009,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-091",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1008,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-092",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1007,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-093",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1006,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-094",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1005,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-095",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1004,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-096",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1003,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-097",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1002,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-098",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1001,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-099",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1000,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-aaaa",
+              "recommendation": "Add `CFOP_RUNTIME_TOKEN` to sealed `cfoperator-secrets` and mount it on `k3s/base/apps/cfoperator-event-runtime.yml` (`secretKeyRef: {name: cfoperator-secrets, key: CFOP_RUNTIME_TOKEN}`), then ArgoCD-sync/rollout so the startup WARNING is gone."
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "new",
+        "dedupe_key": "inv-bbbb"
+      }
+    },
+    {
+      "name": "the exact tier reads every open row",
+      "request": {
+        "candidate": {
+          "dedupe_key": "inv-oldest",
+          "recommendation": "Investigate the elevated latency further",
+          "host": "",
+          "trigger": "",
+          "remediation_class": "manual",
+          "source": "investigation"
+        },
+        "open_rows": [
+          {
+            "id": 1100,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-000",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1099,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-001",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1098,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-002",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1097,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-003",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1096,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-004",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1095,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-005",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1094,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-006",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1093,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-007",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1092,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-008",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1091,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-009",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1090,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-010",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1089,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-011",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1088,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-012",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1087,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-013",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1086,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-014",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1085,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-015",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1084,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-016",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1083,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-017",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1082,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-018",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1081,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-019",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1080,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-020",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1079,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-021",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1078,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-022",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1077,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-023",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1076,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-024",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1075,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-025",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1074,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-026",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1073,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-027",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1072,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-028",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1071,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-029",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1070,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-030",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1069,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-031",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1068,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-032",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1067,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-033",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1066,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-034",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1065,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-035",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1064,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-036",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1063,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-037",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1062,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-038",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1061,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-039",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1060,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-040",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1059,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-041",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1058,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-042",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1057,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-043",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1056,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-044",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1055,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-045",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1054,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-046",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1053,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-047",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1052,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-048",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1051,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-049",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1050,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-050",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1049,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-051",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1048,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-052",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1047,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-053",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1046,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-054",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1045,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-055",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1044,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-056",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1043,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-057",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1042,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-058",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1041,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-059",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1040,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-060",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1039,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-061",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1038,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-062",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1037,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-063",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1036,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-064",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1035,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-065",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1034,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-066",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1033,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-067",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1032,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-068",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1031,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-069",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1030,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-070",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1029,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-071",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1028,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-072",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1027,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-073",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1026,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-074",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1025,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-075",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1024,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-076",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1023,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-077",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1022,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-078",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1021,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-079",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1020,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-080",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1019,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-081",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1018,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-082",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1017,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-083",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1016,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-084",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1015,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-085",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1014,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-086",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1013,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-087",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1012,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-088",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1011,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-089",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1010,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-090",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1009,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-091",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1008,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-092",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1007,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-093",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1006,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-094",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1005,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-095",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1004,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-096",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1003,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-097",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1002,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-098",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1001,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-filler-099",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          },
+          {
+            "id": 1000,
+            "status": "needs-human",
+            "payload": {
+              "dedupe_key": "inv-oldest",
+              "recommendation": "Investigate the elevated latency further"
+            }
+          }
+        ],
+        "vocabulary": {
+          "notready_nodes": []
+        }
+      },
+      "want": {
+        "decision": "suppress",
+        "row_id": 1000,
+        "tier": "key",
+        "dedupe_key": "inv-oldest"
+      }
+    }
+  ]
+}
