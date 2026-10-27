@@ -67,6 +67,11 @@ DEDUPE_REQUEST_SECONDS = Histogram(
     'cfoperator_dedupe_request_seconds',
     'Agent calls to cfop-dedupe POST /v1/decide (CFOP-538)',
     ['outcome'], buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0))
+# Both children exist from startup at zero, so the first failed call reads as
+# an increase (homelab-infra's CFOperatorDedupeFallback alerts on it) instead
+# of as a new series, which increase() cannot see.
+for _outcome in ("ok", "error"):
+    DEDUPE_REQUEST_SECONDS.labels(outcome=_outcome)
 
 
 class DedupeClientError(RuntimeError):

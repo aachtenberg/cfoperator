@@ -185,6 +185,23 @@ def test_count_labels_the_decision_a_site_acted_on():
     assert _decisions("console", "new", "", "fallback") == before + 1
 
 
+def test_the_error_series_exists_before_the_first_error():
+    """The fallback alert is increase(..._count{outcome="error"}[1h]) > 0. A
+    child created by the first failure starts at 1, and increase() reads no
+    change from it, so the first failure would never alert. A fresh process,
+    because this one has already seen errors."""
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    out = subprocess.run(
+        [sys.executable, "-c", "import dedupe_client\n"
+         "from prometheus_client import generate_latest\n"
+         "print(generate_latest().decode())"],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join([here, os.path.dirname(here)])},
+        capture_output=True, text=True, check=True).stdout
+    assert 'cfoperator_dedupe_request_seconds_count{outcome="error"} 0.0' in out
+    assert 'cfoperator_dedupe_request_seconds_count{outcome="ok"} 0.0' in out
+
+
 def test_rows_are_trimmed_to_what_the_tiers_read():
     rows = [{"id": 1, "status": "queued", "investigation_id": 5,
              "payload": {"dedupe_key": "k", "recommendation": "r", "rendered_context": "x" * 5000,
