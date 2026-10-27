@@ -356,7 +356,10 @@ Approve gate read the column only.
   nodes; the service answers `new` (with the key and host the row takes),
   `fold` (onto `row_id`, with the line and alias to record there) or
   `suppress`; the agent applies the answer under `_remediation_lock`, held from
-  the snapshot to the insert, so two enqueues cannot both be told "new". The
+  the snapshot to the insert, so two enqueues cannot both be told "new". It is
+  never held across a model call: a row the CFOP-70 judge must see is decided
+  before the judge and again after it, and a fold or repeat whose row closed
+  during the call is asked again rather than applied to a closed row. The
   contract is the package doc in `dedupe/doc.go`; the agent's half is
   `agent/dedupe_client.py` and `CFOperator._dedupe_decide`.
   When the service cannot answer, the knowledge base's exact-key check decides

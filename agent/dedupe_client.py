@@ -51,7 +51,8 @@ CANDIDATE_FIELDS = ("dedupe_key", "recommendation", "targets", "fold_targets", "
 #: decides and the enqueue goes on.
 TIMEOUT = 2.0
 
-_TERMINAL = ("resolved", "rejected")
+#: Statuses that end a row: its key stops matching, a fold cannot land on it.
+TERMINAL = ("resolved", "rejected")
 
 # path: investigation | sweep-fallback | summary | chat | console.
 # decision: new | fold | suppress. tier: node | target | identifier | key, or
@@ -138,7 +139,7 @@ def fallback(candidate: Dict[str, Any], open_rows: Optional[List[Dict[str, Any]]
     if key:
         for row in open_rows or []:
             payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
-            if row.get("status") not in _TERMINAL and payload.get("dedupe_key") == key:
+            if row.get("status") not in TERMINAL and payload.get("dedupe_key") == key:
                 return {"decision": "suppress", "row_id": row.get("id"), "tier": "key",
                         "dedupe_key": key, "reason": f"open row #{row.get('id')} already carries {key}"}
     return {"decision": "new", "dedupe_key": key, "reason": "exact key only: no open row carries it"}

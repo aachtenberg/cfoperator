@@ -1600,17 +1600,109 @@ def _match_known_host(token: str, known) -> Optional[str]:
     return None
 
 
-def _under_remediation_lock(fn):
-    """Run a method that decides and applies one enqueue under
-    ``self._remediation_lock`` (CFOP-538). A decorator rather than a ``with``
-    in the body so the choke point's many return paths stay as they were.
-    Called unbound in tests (``CFOperator.m(op, ...)``), which is why it goes
-    through ``self`` and not a closure over the class."""
-    @functools.wraps(fn)
-    def inner(self, *args, **kwargs):
-        with self._remediation_lock:
-            return fn(self, *args, **kwargs)
-    return inner
+# The choke point's pieces (CFOP-538): module level, like the helpers
+# beside them, so a test's MagicMock operator runs the real ones.
+
+def _adopt_dedupe_decision(details: Dict[str, Any], decision: Dict[str, Any],
+                           given_key, given_host, rclass) -> None:
+    """Write a "new" answer's key and host onto ``details``, from what the
+    caller gave (a second decision must not inherit the first's rewrite).
+
+    Mutated IN PLACE, deliberately: _queue_needs_action_remediation falls
+    back to _open_remediation_for_key(details['dedupe_key']) when the
+    choke point returns None, and with a local copy it would look up the
+    pre-collapse per-alert key and report "none proposed" while the
+    incident row sits there under the node key. Every caller builds
+    details fresh, so there is no aliasing to worry about.
+    """
+    dedupe_key = str(decision.get('dedupe_key') or '') or None
+    if dedupe_key != (str(given_key or '') or None):
+        logger.info(f"Enqueuing {rclass} for {given_host} under "
+                    f"{dedupe_key}: {decision.get('reason')}")
+        details['dedupe_key'] = dedupe_key
+    else:
+        details['dedupe_key'] = given_key
+    # The incident row is about the NODE: host_id and target.host must
+    # name the registered node (the console shows host_id; the executor's
+    # ssh target has to be one real host, not "raspberrypi4,
+    # raspberrypi5"). payload['targets'] keeps the ids as the model wrote
+    # them.
+    details['host'] = decision.get('host') or given_host
+
+
+def _remediation_payload(details: Dict[str, Any], decision: Dict[str, Any]) -> tuple:
+    """The new row's payload and its ``decided_by``, from ``details``."""
+    dedupe_key = str(details.get('dedupe_key') or '') or None
+    payload = {
+        'recommendation': str(details.get('recommendation') or ''),
+        'rendered_context': str(details.get('report') or '')[:5000],
+        'proposed_diff': str(details.get('proposed_diff') or ''),
+        'target': {'host': details.get('host')},
+    }
+    # Reporting LLM (provider/model) — same format as investigation findings.
+    provider = details.get('provider')
+    if provider:
+        payload['provider'] = str(provider)
+    repo = str(details.get('repo') or '').strip()
+    if repo:
+        payload['repo'] = repo
+    if details.get('source'):
+        payload['source'] = str(details['source'])
+    if dedupe_key:
+        payload['dedupe_key'] = dedupe_key
+    payload['dedupe'] = {'source': decision['source'], 'reason': decision.get('reason')}
+    # CFOP-80: structured FIX rides beside target.host, never replaces it.
+    for key in ('targets', 'observed', 'steps', 'verify', 'rejected',
+                'observed_check'):
+        if details.get(key) is not None:
+            payload[key] = details[key]
+    # CFOP-494: a refused FIX's targets, for the repeat fold and nothing
+    # else. A row that kept its FIX already folds on `targets`.
+    if details.get('fold_targets') and not details.get('targets'):
+        payload['fold_targets'] = details['fold_targets']
+    if details.get('opened_prs'):
+        # More than one PR opened in one run: pr_url carries the last,
+        # the rest stay visible in the drawer's payload.
+        payload['opened_prs'] = list(details['opened_prs'])
+    # Which models actually made the call, recorded on the row. Before
+    # CFOP-70 the only LLM identity on a remediation was the
+    # *investigation's* provider, so reconstructing which model decided to
+    # open a PR took a code read of the provider chain. 'provider' keeps
+    # its existing meaning (the reporting LLM) so the console row does not
+    # silently change referent.
+    decided_by: Dict[str, Any] = {}
+    if details.get('classifier_model'):
+        decided_by['classifier'] = {
+            'backend': str(details.get('classifier_backend') or ''),
+            'model': str(details.get('classifier_model') or ''),
+        }
+    return payload, decided_by
+
+
+def _apply_judge_verdict(payload: Dict[str, Any], decided_by: Dict[str, Any],
+                         verdict: Dict[str, Any], nclass: str, nrisk: str, confidence):
+    """Record the verdict on the row; the confidence it may carry."""
+    decided_by['judge'] = {'backend': verdict.get('backend'),
+                           'model': verdict.get('model'),
+                           'verdict': verdict.get('verdict'),
+                           'reason': verdict.get('reason')}
+    if verdict.get('peers'):
+        decided_by['judge']['peers'] = verdict['peers']
+    if verdict.get('verdict') != 'confirm':
+        # Null the confidence rather than inflate the risk: it is the
+        # one field that can never clear the gate (the eligibility test
+        # requires confidence is not None), and it leaves the
+        # classifier's honest risk assessment visible on the row
+        # instead of overwriting it with a fiction. reject is closed
+        # after the insert; downgrade stays parked (CFOP-165).
+        disposition = ("closed" if verdict.get('verdict') == 'reject'
+                       else "parked for human review")
+        logger.warning(
+            f"Mutation judge {verdict.get('verdict')}: {nclass}/{nrisk} "
+            f"{disposition} — {verdict.get('reason')}")
+        confidence = None
+        payload['judge_reason'] = str(verdict.get('reason') or '')
+    return confidence
 
 
 def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
@@ -2437,11 +2529,10 @@ class CFOperator:
         # applies its answer. Without it, an investigation finishing while a
         # console POST lands could both be told "new" for the same problem.
         # In-process is enough: the single-agent advisory lock already makes
-        # this the only process that enqueues. Re-entrant because the
-        # classified sweep lane enqueues through the choke point. Held across
-        # the CFOP-70 judge, which only auto-eligible rows reach; another
-        # enqueue waits for it, as investigations already wait on
-        # _investigation_lock.
+        # this the only process that enqueues. Never held across a model
+        # call: the choke point releases it for the CFOP-70 judge and decides
+        # again after (_maybe_queue_remediation). Re-entrant so a site that
+        # holds it can call another that takes it.
         self._remediation_lock = threading.RLock()
         # SIGTERM (CFOP-394). Work that must land whole -- an HTTP-triggered
         # investigation through its post-back, the morning summary through
@@ -4915,21 +5006,51 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         summary dispatching an investigation); it counts once it does act.
         """
         cand = dedupe_client.candidate_from(candidate)
-        try:
-            rows = dedupe_client.trim_rows(self.kb.list_open_remediations_for_dedupe())
-        except Exception as e:
-            logger.warning(f"Open remediations unreadable for the dedupe decision ({path}): {e}")
-            rows = None
-        # The node tier reads the host, or the title when the host is blank
-        # (the summary's rule, CFOP-130). No host-shaped token, no inventory
-        # read, as before the service decided.
-        nodes: List[str] = []
-        if rows is not None and _host_candidates(cand.get('host') or cand.get('title')):
-            nodes = sorted({str(n).lower() for n in (self._notready_nodes() or ()) if n})
-        decision = dedupe_client.resolve(self._dedupe_url(), path, cand, rows, nodes)
+        stale: set = set()
+        for _attempt in range(2):
+            try:
+                rows = dedupe_client.trim_rows(self.kb.list_open_remediations_for_dedupe())
+            except Exception as e:
+                logger.warning(f"Open remediations unreadable for the dedupe decision ({path}): {e}")
+                rows = None
+            # The node tier reads the host, or the title when the host is
+            # blank (the summary's rule, CFOP-130). No host-shaped token, no
+            # inventory read, as before the service decided.
+            nodes: List[str] = []
+            if rows is not None and _host_candidates(cand.get('host') or cand.get('title')):
+                nodes = sorted({str(n).lower() for n in (self._notready_nodes() or ()) if n})
+            decision = dedupe_client.resolve(self._dedupe_url(), path, cand, rows, nodes)
+            # The row a fold or a repeat names has to be open still. Nothing
+            # that closes rows (the recovery sweep, the console, the executor)
+            # takes the lock, and the call above can take seconds: a fold
+            # recorded on a row closed meanwhile would vanish with it, and the
+            # enqueue it stood for with it. A closed row means the snapshot is
+            # stale, so ask again about the rows as they are now; a fold names
+            # no key or host of its own, so "new" would have to guess both.
+            rid = decision.get('row_id')
+            if decision['decision'] == 'new' or self._dedupe_row_open(rid):
+                break
+            logger.info(f"Dedupe ({path}): #{rid} closed while the decision was made; asking again")
+            stale.add(rid)
+        else:
+            # Closed under two decisions running: the exact key, over the
+            # latest rows minus the ones seen closing.
+            decision = {**dedupe_client.fallback(cand, [r for r in rows or [] if r.get('id') not in stale]),
+                        'source': 'fallback', 'error': 'stale'}
         if count:
             dedupe_client.count(path, decision)
         return decision
+
+    def _dedupe_row_open(self, rid) -> bool:
+        """Whether the row a decision named is still there and not closed. An
+        unreadable row keeps the decision: a duplicate is what a wrong guess
+        here would cost."""
+        try:
+            row = self.kb.get_remediation(rid)
+        except Exception as e:
+            logger.warning(f"Could not re-read remediation #{rid} for the dedupe decision: {e}")
+            return True
+        return bool(row) and row.get('status') not in dedupe_client.TERMINAL
 
     def _apply_dedupe_fold(self, decision: Dict[str, Any]) -> Optional[int]:
         """Record a fold on the surviving row; its id.
@@ -5876,7 +5997,6 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         )
         REMEDIATION_ENQUEUED.labels(source=source, remediation_class=nc, eligible=str(elig).lower()).inc()
 
-    @_under_remediation_lock
     def _maybe_queue_remediation(self, investigation_id: Optional[int],
                                  details: Dict[str, Any]) -> Optional[int]:
         """Enqueue a remediation from structured classification hints.
@@ -5947,186 +6067,143 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         # attributable to it lands on one incident row), the CFOP-453/494
         # target fold and the CFOP-78 identifier fold (the same problem
         # re-found under other wording), then the exact key.
-        decision = self._dedupe_decide('investigation', details)
-        if decision['decision'] == 'fold':
-            absorbed = self._apply_dedupe_fold(decision)
-            if pr_url:
-                # CFOP-116: the PR must not vanish with the fold. The
-                # surviving row is the one an operator acts on, so it carries
-                # the link and leaves the executor's reach; a row with a
-                # driver keeps its own, and the PR is then genuinely
-                # untracked -- say so.
-                try:
-                    stamped = self._stamp_opened_pr(self.kb.get_remediation(absorbed), pr_url)
-                except Exception as e:
-                    stamped = False
-                    logger.warning(f"Could not stamp PR {pr_url} on remediation #{absorbed}: {e}")
-                if not stamped:
-                    logger.warning(f"PR {pr_url} was opened for a remediation folded onto "
-                                   f"#{absorbed}; no row tracks it")
-            # The caller links to the surviving row instead of reporting
-            # nothing proposed.
-            return absorbed
-        if decision['decision'] == 'suppress':
-            # Already queued under this key. None, as queue_remediation has
-            # always answered a repeat: callers look the open row up by key.
-            logger.info(f"Remediation dedup skip: open #{decision.get('row_id')} "
-                        f"carries {decision.get('dedupe_key')}")
-            return None
-        dedupe_key = str(decision.get('dedupe_key') or '') or None
-        # Mutated IN PLACE, deliberately: _queue_needs_action_remediation falls
-        # back to _open_remediation_for_key(details['dedupe_key']) when this
-        # returns None, and with a local copy it would look up the
-        # pre-collapse per-alert key and report "none proposed" while the
-        # incident row sits there under the node key. Every caller builds
-        # details fresh, so there is no aliasing to worry about.
-        if dedupe_key != (str(details.get('dedupe_key') or '') or None):
-            logger.info(f"Enqueuing {rclass} for {details.get('host')} under "
-                        f"{dedupe_key}: {decision.get('reason')}")
-            details['dedupe_key'] = dedupe_key
-        if decision.get('host'):
-            # The incident row is about the NODE: host_id and target.host must
-            # name the registered node (the console shows host_id; the
-            # executor's ssh target has to be one real host, not
-            # "raspberrypi4, raspberrypi5"). payload['targets'] keeps the ids
-            # as the model wrote them.
-            details['host'] = decision['host']
-        payload = {
-            'recommendation': str(details.get('recommendation') or ''),
-            'rendered_context': str(details.get('report') or '')[:5000],
-            'proposed_diff': str(details.get('proposed_diff') or ''),
-            'target': {'host': details.get('host')},
-        }
-        # Reporting LLM (provider/model) — same format as investigation findings.
-        provider = details.get('provider')
-        if provider:
-            payload['provider'] = str(provider)
-        repo = str(details.get('repo') or '').strip()
-        if repo:
-            payload['repo'] = repo
-        source = str(details.get('source') or 'deep-investigation')
-        if details.get('source'):
-            payload['source'] = source
-        if dedupe_key:
-            payload['dedupe_key'] = dedupe_key
-        payload['dedupe'] = {'source': decision['source'], 'reason': decision.get('reason')}
-        # CFOP-80: structured FIX rides beside target.host, never replaces it.
-        for key in ('targets', 'observed', 'steps', 'verify', 'rejected',
-                    'observed_check'):
-            if details.get(key) is not None:
-                payload[key] = details[key]
-        # CFOP-494: a refused FIX's targets, for the repeat fold and nothing
-        # else. A row that kept its FIX already folds on `targets`.
-        if details.get('fold_targets') and not details.get('targets'):
-            payload['fold_targets'] = details['fold_targets']
-        if details.get('opened_prs'):
-            # More than one PR opened in one run: pr_url carries the last,
-            # the rest stay visible in the drawer's payload.
-            payload['opened_prs'] = list(details['opened_prs'])
-        # Which models actually made the call, recorded on the row. Before
-        # CFOP-70 the only LLM identity on a remediation was the
-        # *investigation's* provider, so reconstructing which model decided to
-        # open a PR took a code read of the provider chain. 'provider' keeps
-        # its existing meaning (the reporting LLM) so the console row does not
-        # silently change referent.
-        decided_by: Dict[str, Any] = {}
-        if details.get('classifier_model'):
-            decided_by['classifier'] = {
-                'backend': str(details.get('classifier_backend') or ''),
-                'model': str(details.get('classifier_model') or ''),
-            }
-
-        # CFOP-70: the frontier-model gate. Fires only on a row that would
-        # otherwise auto-execute — remediation_is_auto_eligible IS the risk
-        # surface, so it is the whole condition. Testing membership of
-        # _SUMMARY_MUTATION_CLASSES as well would add nothing (the auto classes
-        # are a subset) while giving the two tuples a way to drift apart.
+        #
+        # The decision and the insert happen under _remediation_lock, and the
+        # judge does not: it is a frontier call per provider, and the console,
+        # the chat tool and the summary feed must not wait on it. So a row the
+        # judge has to see is decided twice, before the judge (a fold or a
+        # repeat skips it) and again after, against the rows as they are by
+        # then. Anything that landed while the judge ran is folded onto, as if
+        # the two enqueues had been serial. Nothing is inserted unjudged in
+        # between: a parked row is what the tracker tick files (CFOP-170).
+        # The candidate is the details as the caller gave them, both times.
+        original = dedupe_client.candidate_from(details)
+        given_key, given_host = details.get('dedupe_key'), details.get('host')
         nclass, nrisk = normalize_remediation_fields(str(rclass), risk)
-        verdict = None
         policy = _auto_policy_of(self)
-        if remediation_is_auto_eligible(
-                nclass, nrisk, confidence,
-                classes=policy.auto_classes,
-                min_confidence=policy.min_confidence):
-            try:
-                verdict = self._judge_mutation_remediation(details, nclass, nrisk, confidence)
-            except Exception as e:
-                # _judge_mutation_remediation catches its own transport errors,
-                # so reaching here means a bug in the gate itself. Park the row:
-                # a broken gate must not become an open gate, and the caller in
-                # _queue_needs_action_remediation does not wrap this call, so
-                # letting it escape would abort the enqueue and lose the row.
-                logger.error(f"Mutation judge raised, parking for human review: {e}",
-                             exc_info=True)
-                REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
-                verdict = {'verdict': 'downgrade', 'backend': None, 'model': None,
-                           'reason': f"judge error ({e}); parked rather than executed unattended"}
-            if not isinstance(verdict, dict):
-                # The gate must not trust its own return shape either. A
-                # non-dict here (a stray early return, a refactor, a test
-                # monkeypatch) would AttributeError out of this method and,
-                # since the needs_action caller does not wrap it, lose the row
-                # — the same escape the raise path above already had to fix.
-                logger.error(f"Mutation judge returned {type(verdict).__name__}, "
-                             "not a verdict; parking for human review")
-                REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
-                verdict = {'verdict': 'downgrade', 'backend': None, 'model': None,
-                           'reason': "judge returned no verdict; parked rather than "
-                                     "executed unattended"}
-            decided_by['judge'] = {'backend': verdict.get('backend'),
-                                   'model': verdict.get('model'),
-                                   'verdict': verdict.get('verdict'),
-                                   'reason': verdict.get('reason')}
-            if verdict.get('peers'):
-                decided_by['judge']['peers'] = verdict['peers']
-            if verdict.get('verdict') != 'confirm':
-                # Null the confidence rather than inflate the risk: it is the
-                # one field that can never clear the gate (the eligibility test
-                # requires confidence is not None), and it leaves the
-                # classifier's honest risk assessment visible on the row
-                # instead of overwriting it with a fiction. reject is closed
-                # after the insert; downgrade stays parked (CFOP-165).
-                disposition = ("closed" if verdict.get('verdict') == 'reject'
-                               else "parked for human review")
-                logger.warning(
-                    f"Mutation judge {verdict.get('verdict')}: {nclass}/{nrisk} "
-                    f"{disposition} — {verdict.get('reason')}")
-                confidence = None
-                payload['judge_reason'] = str(verdict.get('reason') or '')
-        if decided_by:
-            payload['decided_by'] = decided_by
-        try:
-            rid = self.kb.queue_remediation(
-                remediation_class=str(rclass),
-                payload=payload,
-                investigation_id=investigation_id,
-                # String(64) column — a long k8s resource name would reject the
-                # INSERT, dropping the row after classification succeeded.
-                host_id=str(details.get('host') or 'default')[:64],
-                risk=risk,
-                confidence=confidence,
-                dedupe_key=dedupe_key,
-                pr_url=pr_url,
-            )
-            if rid:
-                self._count_enqueued(source, str(rclass), risk, confidence)
-                if verdict is not None and verdict.get('verdict') == 'reject':
-                    # Recorded, then closed. Dropping it silently would hide the
-                    # fact that something proposed a wrong change; 'rejected' is
-                    # terminal, so the dedupe key stops matching and a genuine
-                    # recurrence is judged afresh rather than suppressed forever
-                    # by one rejection.
+        judged = not remediation_is_auto_eligible(
+            nclass, nrisk, confidence,
+            classes=policy.auto_classes, min_confidence=policy.min_confidence)
+        verdict = None
+        while True:
+            with self._remediation_lock:
+                decision = self._dedupe_decide('investigation', original, count=False)
+                if decision['decision'] == 'new':
+                    _adopt_dedupe_decision(details, decision, given_key, given_host, rclass)
+                if decision['decision'] != 'new' or judged:
+                    dedupe_client.count('investigation', decision)
+                    if decision['decision'] == 'fold':
+                        if verdict is not None:
+                            logger.info(f"Remediation #{decision.get('row_id')} landed while the "
+                                        "judge ran; folding onto it instead")
+                        return self._fold_choke_point(decision, pr_url)
+                    if decision['decision'] == 'suppress':
+                        # Already queued under this key. None, as
+                        # queue_remediation has always answered a repeat:
+                        # callers look the open row up by key.
+                        logger.info(f"Remediation dedup skip: open #{decision.get('row_id')} "
+                                    f"carries {decision.get('dedupe_key')}")
+                        return None
+                    dedupe_key = str(details.get('dedupe_key') or '') or None
+                    payload, decided_by = _remediation_payload(details, decision)
+                    confidence_now = confidence
+                    if verdict is not None:
+                        confidence_now = _apply_judge_verdict(
+                            payload, decided_by, verdict, nclass, nrisk, confidence)
+                    if decided_by:
+                        payload['decided_by'] = decided_by
                     try:
-                        self.kb.update_remediation_status(
-                            rid, 'rejected',
-                            last_error=f"mutation judge rejected: {verdict.get('reason')}")
+                        rid = self.kb.queue_remediation(
+                            remediation_class=str(rclass),
+                            payload=payload,
+                            investigation_id=investigation_id,
+                            # String(64) column — a long k8s resource name would reject the
+                            # INSERT, dropping the row after classification succeeded.
+                            host_id=str(details.get('host') or 'default')[:64],
+                            risk=risk,
+                            confidence=confidence_now,
+                            dedupe_key=dedupe_key,
+                            pr_url=pr_url,
+                        )
+                        if rid:
+                            self._count_enqueued(payload.get('source') or 'deep-investigation',
+                                                 str(rclass), risk, confidence_now)
+                            if verdict is not None and verdict.get('verdict') == 'reject':
+                                # Recorded, then closed. Dropping it silently would hide the
+                                # fact that something proposed a wrong change; 'rejected' is
+                                # terminal, so the dedupe key stops matching and a genuine
+                                # recurrence is judged afresh rather than suppressed forever
+                                # by one rejection.
+                                try:
+                                    self.kb.update_remediation_status(
+                                        rid, 'rejected',
+                                        last_error=f"mutation judge rejected: {verdict.get('reason')}")
+                                except Exception as e:
+                                    logger.error(f"Could not close judge-rejected remediation #{rid}: {e}")
+                        return rid
                     except Exception as e:
-                        logger.error(f"Could not close judge-rejected remediation #{rid}: {e}")
-            return rid
+                        logger.error(f"Failed to queue remediation from investigation #{investigation_id}: {e}",
+                                     exc_info=True)
+                        return None
+            # CFOP-70, outside the lock: only a row that would otherwise
+            # auto-execute reaches here, and it is decided again afterwards.
+            verdict = self._judge_for_enqueue(details, nclass, nrisk, confidence)
+            judged = True
+
+    def _fold_choke_point(self, decision: Dict[str, Any], pr_url: Optional[str]) -> Optional[int]:
+        """Apply a fold at the choke point; the surviving row's id, which the
+        caller links to instead of reporting nothing proposed."""
+        absorbed = self._apply_dedupe_fold(decision)
+        if pr_url:
+            # CFOP-116: the PR must not vanish with the fold. The surviving
+            # row is the one an operator acts on, so it carries the link and
+            # leaves the executor's reach; a row with a driver keeps its own,
+            # and the PR is then genuinely untracked -- say so.
+            try:
+                stamped = self._stamp_opened_pr(self.kb.get_remediation(absorbed), pr_url)
+            except Exception as e:
+                stamped = False
+                logger.warning(f"Could not stamp PR {pr_url} on remediation #{absorbed}: {e}")
+            if not stamped:
+                logger.warning(f"PR {pr_url} was opened for a remediation folded onto "
+                               f"#{absorbed}; no row tracks it")
+        return absorbed
+
+    def _judge_for_enqueue(self, details: Dict[str, Any], nclass: str, nrisk: str,
+                           confidence) -> Dict[str, Any]:
+        """CFOP-70: the frontier-model gate's verdict on a row that would
+        otherwise auto-execute — remediation_is_auto_eligible IS the risk
+        surface, so it is the whole condition. Testing membership of
+        _SUMMARY_MUTATION_CLASSES as well would add nothing (the auto classes
+        are a subset) while giving the two tuples a way to drift apart. Never
+        raises and always returns a verdict dict: a broken gate parks."""
+        verdict = None
+        try:
+            verdict = self._judge_mutation_remediation(details, nclass, nrisk, confidence)
         except Exception as e:
-            logger.error(f"Failed to queue remediation from investigation #{investigation_id}: {e}",
+            # _judge_mutation_remediation catches its own transport errors,
+            # so reaching here means a bug in the gate itself. Park the row:
+            # a broken gate must not become an open gate, and the caller in
+            # _queue_needs_action_remediation does not wrap this call, so
+            # letting it escape would abort the enqueue and lose the row.
+            logger.error(f"Mutation judge raised, parking for human review: {e}",
                          exc_info=True)
-            return None
+            REMEDIATION_JUDGE.labels(verdict='unavailable').inc()
+            verdict = {'verdict': 'downgrade', 'backend': None, 'model': None,
+                       'reason': f"judge error ({e}); parked rather than executed unattended"}
+        if not isinstance(verdict, dict):
+            # The gate must not trust its own return shape either. A
+            # non-dict here (a stray early return, a refactor, a test
+            # monkeypatch) would AttributeError out of this method and,
+            # since the needs_action caller does not wrap it, lose the row
+            # — the same escape the raise path above already had to fix.
+            logger.error(f"Mutation judge returned {type(verdict).__name__}, "
+                         "not a verdict; parking for human review")
+            REMEDIATION_JUDGE.labels(verdict='unparseable').inc()
+            verdict = {'verdict': 'downgrade', 'backend': None, 'model': None,
+                       'reason': "judge returned no verdict; parked rather than "
+                                 "executed unattended"}
+        return verdict
 
     # The judge answers a DIFFERENT question than the classifier. The classifier
     # asks "what shape is this fix?"; the judge asks "should this change be made,

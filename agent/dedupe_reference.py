@@ -223,9 +223,15 @@ def serve(url: str, request: Dict[str, Any], **_kw) -> Dict[str, Any]:
 
 def wire(op, url: str = TEST_URL):
     """Give a MagicMock operator the real enqueue funnel: the lock, the
-    decision and the fold, answered through ``serve`` (agent/conftest.py)."""
+    decision and the fold, answered through ``serve`` (agent/conftest.py),
+    and the choke point's methods around them."""
     op._remediation_lock = threading.RLock()
     op._dedupe_url = lambda: url
     op._dedupe_decide = lambda path, cand, **kw: CFOperator._dedupe_decide(op, path, cand, **kw)
     op._apply_dedupe_fold = lambda d: CFOperator._apply_dedupe_fold(op, d)
+    op._dedupe_row_open = lambda rid: CFOperator._dedupe_row_open(op, rid)
+    # The choke point's own pieces, which a bare MagicMock would answer with
+    # mocks (CFOP-538 split them out when the judge left the lock).
+    op._fold_choke_point = lambda d, pr_url: CFOperator._fold_choke_point(op, d, pr_url)
+    op._judge_for_enqueue = lambda *a: CFOperator._judge_for_enqueue(op, *a)
     return op

@@ -5,10 +5,9 @@ the dedupe tiers, so every new site picked a different one and the duplicates
 came through whichever door was weakest. Now cfop-dedupe decides for all of
 them, and this file fails if a site stops asking:
 
-- every ``.queue_remediation(`` call outside the tests sits under the enqueue
-  lock (a ``with ..._remediation_lock:`` block, or a method decorated
-  ``@_under_remediation_lock``), after a ``_dedupe_decide`` call in the same
-  function, so the insert applies the answer to the rows that answer was
+- every ``.queue_remediation(`` call outside the tests sits in a
+  ``with ..._remediation_lock:`` block, after a ``_dedupe_decide`` call in the
+  same function, so the insert applies the answer to the rows that answer was
   about;
 - nothing builds a ``RemediationQueue`` row except
   ``KnowledgeBase.queue_remediation`` and ``queue_confirmed_host_command``.
@@ -62,9 +61,7 @@ def enqueues_outside_the_funnel(src):
 
     def visit(node, fn, locked):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            fn = node
-            locked = any(getattr(d, "id", getattr(d, "attr", "")) == "_under_remediation_lock"
-                         for d in node.decorator_list)
+            fn, locked = node, False
         if isinstance(node, ast.With) and any(_is_lock(i.context_expr) for i in node.items):
             locked = True
         if isinstance(node, ast.Call) and getattr(node.func, "attr", "") == "queue_remediation":
@@ -130,9 +127,6 @@ def test_the_guard_passes_a_funnelled_enqueue():
     assert enqueues_outside_the_funnel(
         "def f(self):\n    with self._remediation_lock:\n        d = self._dedupe_decide('x', {})\n"
         "        self.kb.queue_remediation('manual', {})\n") == []
-    assert enqueues_outside_the_funnel(
-        "@_under_remediation_lock\ndef f(self):\n    d = self._dedupe_decide('x', {})\n"
-        "    self.kb.queue_remediation('manual', {})\n") == []
 
 
 def test_the_guard_sees_another_row_builder():

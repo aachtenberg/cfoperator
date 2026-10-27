@@ -347,3 +347,119 @@ def test_a_fold_that_cannot_be_recorded_is_still_a_fold():
     op.kb.record_remediation_absorbed.side_effect = RuntimeError("db blip")
     assert CFOperator._apply_dedupe_fold(op, {"decision": "fold", "row_id": 3, "tier": "target",
                                               "absorbed": "x", "alias": "k"}) == 3
+
+
+# ---------------------------------------------------------------------------
+# A row that closes while the decision is made (#363 review)
+# ---------------------------------------------------------------------------
+
+_TGT = [{"kind": "gitops-manifest", "id": "apps/x/deploy.yaml", "repo": "o/homelab-infra"}]
+_ROW5 = {"id": 5, "status": "needs-human", "payload": {"dedupe_key": "tgt-old", "targets": _TGT}}
+
+
+def test_a_fold_onto_a_row_closed_meanwhile_asks_again():
+    """Nothing that closes rows takes the enqueue lock. A fold recorded on a
+    row the recovery sweep closed during the call would vanish with it."""
+    op = _op()
+    op.kb.list_open_remediations_for_dedupe.side_effect = [[_ROW5], []]
+    op.kb.get_remediation.return_value = {"id": 5, "status": "resolved"}
+    before = _decisions("investigation", "new", "", "service")
+    d = CFOperator._dedupe_decide(op, "investigation", {"dedupe_key": "tgt-new", "targets": _TGT})
+    assert (d["decision"], d["dedupe_key"], d["source"]) == ("new", "tgt-new", "service")
+    assert len(dedupe_reference.REQUESTS) == 2, "the stale answer was asked again"
+    assert dedupe_reference.REQUESTS[1]["open_rows"] == []
+    assert _decisions("investigation", "new", "", "service") == before + 1, "counted once"
+
+
+def test_a_repeat_of_a_row_closed_meanwhile_asks_again():
+    row = {"id": 6, "status": "queued", "payload": {"dedupe_key": "k"}}
+    op = _op()
+    op.kb.list_open_remediations_for_dedupe.side_effect = [[row], []]
+    op.kb.get_remediation.return_value = None    # gone
+    d = CFOperator._dedupe_decide(op, "console", {"dedupe_key": "k"})
+    assert (d["decision"], d["dedupe_key"]) == ("new", "k")
+
+
+def test_rows_closing_under_two_decisions_leave_the_exact_key_to_decide():
+    op = _op([_ROW5])
+    op.kb.get_remediation.return_value = {"id": 5, "status": "rejected"}
+    d = CFOperator._dedupe_decide(op, "investigation", {"dedupe_key": "tgt-new", "targets": _TGT})
+    assert (d["decision"], d["source"], d["error"]) == ("new", "fallback", "stale")
+    assert len(dedupe_reference.REQUESTS) == 2
+
+
+def test_a_row_still_open_keeps_the_fold_and_an_unreadable_one_does_too():
+    op = _op([_ROW5])
+    op.kb.get_remediation.return_value = {"id": 5, "status": "filed"}
+    assert CFOperator._dedupe_decide(op, "investigation", {"dedupe_key": "n", "targets": _TGT})["row_id"] == 5
+    op.kb.get_remediation.side_effect = RuntimeError("db blip")
+    assert CFOperator._dedupe_decide(op, "investigation", {"dedupe_key": "n", "targets": _TGT})["row_id"] == 5
+
+
+# ---------------------------------------------------------------------------
+# The judge runs outside the lock, and the rows are asked about again after
+# (#363 review)
+# ---------------------------------------------------------------------------
+
+def _eligible(**extra):
+    return {"remediation_class": "gitops-patch", "risk": "low", "confidence": 0.9,
+            "recommendation": "Raise the readinessProbe timeout to 5s in apps/x/deploy.yaml",
+            "host": None, "dedupe_key": "tgt-new", "targets": _TGT, **extra}
+
+
+def _choke_op():
+    from test_remediation_queue import _confirming_judge, _wire_flags
+    op = _confirming_judge(_wire_flags(MagicMock()))
+    op.config = {"remediation": {"queue_feed": True}}
+    op.kb.queue_remediation.return_value = 99
+    op.kb.list_open_remediations_for_dedupe.return_value = []
+    op._count_enqueued = MagicMock()
+    return op
+
+
+def test_the_judge_runs_outside_the_lock():
+    """The console, the chat tool and the summary feed wait on this lock; a
+    judge failing over between providers must not hold them."""
+    op = _choke_op()
+    free = []
+
+    def judge(*a):
+        t = threading.Thread(target=lambda: free.append(
+            op._remediation_lock.acquire(blocking=False) and (op._remediation_lock.release() or True)))
+        t.start()
+        t.join()
+        return {"verdict": "confirm", "reason": "ok", "model": "m"}
+    op._judge_mutation_remediation = MagicMock(side_effect=judge)
+    assert CFOperator._maybe_queue_remediation(op, 5, _eligible()) == 99
+    assert free == [True], "the lock was held while the judge ran"
+    assert op.kb.queue_remediation.call_args.kwargs["confidence"] == 0.9
+    assert len(dedupe_reference.REQUESTS) == 2, "decided before the judge and again after"
+
+
+def test_a_row_that_lands_while_the_judge_runs_is_folded_onto():
+    """The exclusion the lock is for: two enqueues of one fix make one row,
+    whichever order they arrive in."""
+    op = _choke_op()
+
+    def judge(*a):
+        # Another enqueue of the same fix lands meanwhile.
+        op.kb.list_open_remediations_for_dedupe.return_value = [
+            {"id": 77, "status": "queued", "payload": {"dedupe_key": "inv-other", "targets": _TGT}}]
+        return {"verdict": "confirm", "reason": "ok", "model": "m"}
+    op._judge_mutation_remediation = MagicMock(side_effect=judge)
+    folds = _decisions("investigation", "fold", "target", "service")
+    news = _decisions("investigation", "new", "", "service")
+    assert CFOperator._maybe_queue_remediation(op, 5, _eligible()) == 77
+    op.kb.queue_remediation.assert_not_called()
+    op.kb.record_remediation_alias.assert_called_once_with(77, "tgt-new")
+    assert _decisions("investigation", "fold", "target", "service") == folds + 1
+    assert _decisions("investigation", "new", "", "service") == news, (
+        "the decision the judge sat between is not one the site acted on")
+
+
+def test_a_fold_never_reaches_the_judge():
+    op = _choke_op()
+    op.kb.list_open_remediations_for_dedupe.return_value = [_ROW5]
+    assert CFOperator._maybe_queue_remediation(op, 5, _eligible()) == 5
+    op._judge_mutation_remediation.assert_not_called()
+    assert len(dedupe_reference.REQUESTS) == 1
