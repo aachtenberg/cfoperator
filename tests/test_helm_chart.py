@@ -338,3 +338,77 @@ def test_the_agent_deployment_is_pinned_to_one_replica_and_recreate():
     strategy = re.search(r"^  strategy:\s*\n\s+type:\s*(\w+)", spec, re.M)
     assert strategy and strategy.group(1) == "Recreate", (
         "agent Deployment must use strategy Recreate so a rollout never overlaps two agents")
+
+
+# ---- cfop-dedupe (CFOP-538) --------------------------------------------------
+
+def _between(text: str, start: str, end: str = "{{- end }}") -> str:
+    assert start in text, f"{start!r} is gone"
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_dedupe_ships_by_default():
+    """After the cutover the service decides every enqueue; an install without
+    it falls back to the exact-key check alone, which is the regression this
+    chart exists to avoid. On unless an operator turns it off."""
+    values = yaml.safe_load((CHART / "values.yaml").read_text())
+    assert values["dedupe"]["enabled"] is True
+    assert values["dedupe"]["replicas"] >= 2, "one replica is a gap on every rollout and drain"
+    dedupe = (CHART / "templates" / "dedupe.yaml").read_text()
+    assert dedupe.lstrip().startswith("{{- if .Values.dedupe.enabled }}"), (
+        "every cfop-dedupe resource must sit behind dedupe.enabled")
+
+
+def test_the_agent_names_dedupe_only_when_it_is_installed():
+    """CFOP_DEDUPE_URL pointing at a Service the chart did not render would
+    send every enqueue to the fallback with a connection error each time."""
+    agent = (CHART / "templates" / "agent.yaml").read_text()
+    gated = _between(agent, "{{- if .Values.dedupe.enabled }}")
+    for name in ("CFOP_DEDUPE_URL", "CFOP_DEDUPE_SHARED_SECRET"):
+        assert agent.count(name) == 1 and name in gated, f"{name} must be set only under dedupe.enabled"
+
+
+def test_the_agent_service_and_container_agree_on_the_dedupe_port():
+    """One port, named once: the URL the agent calls, the Service port and the
+    containerPort/CFOP_DEDUPE_PORT all come from the same helper, so a port
+    change cannot leave the agent calling a closed one."""
+    helper = 'include "cfoperator.dedupePort" .'
+    agent = (CHART / "templates" / "agent.yaml").read_text()
+    dedupe = (CHART / "templates" / "dedupe.yaml").read_text()
+    url = [ln for ln in agent.splitlines() if "-dedupe:" in ln]
+    assert len(url) == 1 and helper in url[0], url
+    # The Service's port and the containerPort; the probes name the port
+    # ("port: http"), so they follow the containerPort without a number.
+    for marker in (r"^      port: ", r"^\s+containerPort: "):
+        lines = [ln for ln in dedupe.splitlines() if re.match(marker, ln)]
+        assert lines and all(helper in ln for ln in lines), (marker, lines)
+    probes = [ln.strip() for ln in dedupe.splitlines() if re.match(r"^\s{8,}port: ", ln)]
+    assert probes and set(probes) == {"port: http"}, probes
+    port_env = _between(dedupe, "name: CFOP_DEDUPE_PORT", "- name:")
+    assert helper in port_env
+
+
+def test_the_dedupe_pod_has_no_identity_and_no_writable_root():
+    """It decides from what the agent sends: no API token, no RBAC, a
+    read-only root and a non-root user (the image is a static binary as
+    10001). Bound to no Role, so a later rule cannot hand it one quietly."""
+    dedupe = (CHART / "templates" / "dedupe.yaml").read_text()
+    assert dedupe.count("automountServiceAccountToken: false") == 2, (
+        "both the ServiceAccount and the pod spec must refuse the token")
+    for setting in ("runAsNonRoot: true", "runAsUser: 10001", "readOnlyRootFilesystem: true",
+                    "allowPrivilegeEscalation: false"):
+        assert setting in dedupe, f"cfop-dedupe lost {setting}"
+    assert "kind: PodDisruptionBudget" in dedupe and "maxUnavailable: 0" in dedupe
+    rbac = (CHART / "templates" / "rbac.yaml").read_text()
+    assert "-dedupe" not in rbac, "nothing in the chart may bind a role to cfop-dedupe"
+
+
+def test_the_agent_and_dedupe_share_one_generated_secret():
+    """The token the agent sends and the one cfop-dedupe checks must be the
+    same value; one key in the generated Secret, read by both."""
+    secrets_t = (CHART / "templates" / "secrets.yaml").read_text()
+    assert "dedupe-secret:" in secrets_t and 'keptSecretValue" (list . "dedupe-secret"' in secrets_t
+    for template in ("agent.yaml", "dedupe.yaml"):
+        text = (CHART / "templates" / template).read_text()
+        block = _between(text, "name: CFOP_DEDUPE_SHARED_SECRET", "- name:")
+        assert "key: dedupe-secret" in block, f"{template} reads another key"

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 // AuthHeader carries the shared secret, as for cfop-tracker and changerecord.
@@ -42,10 +43,18 @@ func Handler(secret string, log *slog.Logger) http.Handler {
 			return
 		}
 		resp := Decide(req)
-		log.Info("decided",
+		attrs := []any{
 			"decision", resp.Decision, "tier", resp.Tier, "row_id", resp.RowID,
 			"source", req.Candidate.Source, "dedupe_key", req.Candidate.DedupeKey,
-			"open_rows", len(req.OpenRows))
+			"open_rows", len(req.OpenRows),
+		}
+		// The agent's dedupe.decide span sends its context (CFOP-538), so a
+		// trace leads to this line. Logged, not traced: the decision is
+		// in-memory work the caller's span already brackets.
+		if id := traceID(r.Header.Get("traceparent")); id != "" {
+			attrs = append(attrs, "trace_id", id)
+		}
+		log.Info("decided", attrs...)
 		writeJSON(w, http.StatusOK, resp)
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +74,44 @@ func checkAuth(got, want string) string {
 		return "Invalid " + AuthHeader + " header"
 	}
 	return ""
+}
+
+// traceID is the trace id of a W3C traceparent header
+// (version-traceid-parentid-flags, lowercase hex), or "" for anything else:
+// absent, malformed, version ff, or an all-zero trace or parent id, which the
+// spec makes invalid. Version 00 is exactly 55 characters; a later version may
+// append fields after the flags, so only 00 is held to the exact length.
+func traceID(header string) string {
+	parts := strings.Split(strings.TrimSpace(header), "-")
+	if len(parts) < 4 {
+		return ""
+	}
+	version, trace, parent, flags := parts[0], parts[1], parts[2], parts[3]
+	if !isLowerHex(version, 2) || version == "ff" || !isLowerHex(flags, 2) {
+		return ""
+	}
+	if version == "00" && len(parts) != 4 {
+		return ""
+	}
+	if !isLowerHex(trace, 32) || !isLowerHex(parent, 16) {
+		return ""
+	}
+	if strings.Trim(trace, "0") == "" || strings.Trim(parent, "0") == "" {
+		return ""
+	}
+	return trace
+}
+
+func isLowerHex(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, c := range s {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // decodeRequest reads one Request. Numbers stay json.Number so a payload

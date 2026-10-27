@@ -498,10 +498,12 @@ cfoperator_remediation_queue{status="filed"}
 # Re-verifying what was filed (CFOP-185): filed rows re-checked against live state
 cfoperator_remediation_reverify_total{outcome="rejected"}
 
-# The dedupe shadow (CFOP-514): each enqueue decision, asked of cfop-dedupe too.
-# Phase 3 of CFOP-509 waits on the first of these staying at zero
-sum by (path) (increase(cfoperator_dedupe_shadow_total{result="disagree"}[7d]))
-sum by (path, result) (increase(cfoperator_dedupe_shadow_total[1d]))
+# The dedupe funnel (CFOP-538): who decided each enqueue, and what
+sum by (path, decision, tier) (increase(cfoperator_dedupe_decisions_total[1d]))
+# Enqueues the exact key decided because cfop-dedupe could not (outage duplicates)
+sum by (path) (increase(cfoperator_dedupe_decisions_total{source="fallback"}[1h]))
+# The agent's call to the service, failures included
+histogram_quantile(0.95, sum by (le) (rate(cfoperator_dedupe_request_seconds_bucket[1h])))
 ```
 
 `judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
@@ -516,13 +518,19 @@ over time is `outcome="rejected"`: it counts diagnoses that were wrong when
 filed, which is both the value this tick returns and a standing measurement of
 how much the reporting model is confabulating.
 
-`dedupe_shadow_total` is evidence, not a fault signal. A `disagree` on
-`path="investigation"` is a port bug: that choke point runs every tier the
-service ports, so the two sides must agree, and the WARNING log line carries
-both answers. A `disagree` on the other paths is mostly the funnel's purpose:
-they skip tiers today that the service applies to everything. Each one still
-deserves a look before phase 3. `unavailable` means the service was not asked
-(down, 401, timeout). The enqueue happened regardless.
+`dedupe_decisions_total` counts each enqueue decision a site acted on: a row
+inserted, folded onto an open row, or suppressed as a repeat. A morning-summary
+rec that is dispatched as an investigation instead is not counted, because
+nothing was enqueued. `source="fallback"` is the one worth an alert: cfop-dedupe
+could not answer (down, timed out, refused, unparseable), so the exact key alone
+decided and a reworded repeat or a node symptom could have opened its own row.
+The enqueue happened regardless; the WARNING log line says why the service
+failed, and the row carries `payload.dedupe.source`. `source="unconfigured"`
+means no service URL is set at all, which compose and the chart never leave
+unset. `dedupe_request_seconds` is timed by the agent, so a timeout or a
+refused connection shows there even though the service never saw it. Each
+decision is also a `dedupe.decide` span under the enqueuing site's trace, and
+the service's log line for it carries that `trace_id`.
 
 ### Label values that are a closed set
 
@@ -539,7 +547,7 @@ shipped several examples that could never match.
 | `cfoperator_sweeps_total` | `mode` | `proactive`, `reactive` |
 | `cfoperator_remediation_queue` | `status` | the ten queue states — `queued`, `claimed`, `executing`, `pr-open`, `verifying`, `resolved`, `failed`, `needs-human`, `filed`, `rejected` |
 | `cfoperator_remediation_classifier_total` | `result` | `ok`, `nudged`, `escalated`, `degraded` |
-| `cfoperator_remediation_folded_total` | `reason` | `repeat`, `fork_committed`, `fork_stuck`, `investigate_followup` |
+| `cfoperator_remediation_folded_total` | `reason` | `target`, `repeat`, `fork_committed`, `fork_stuck`, `investigate_followup` |
 | `cfoperator_node_action_refused_total` | `reason` | `no_commands`, `too_many`, `empty`, `no_allowlist`, `metachar`, `unparseable`, `sudo_form`, `denied_binary`, `not_allowlisted`, `systemctl_verb` |
 | `cfoperator_remediation_judge_total` | `verdict` | `confirm`, `downgrade`, `reject`, `unavailable`, `unparseable`, `self-review-skipped` |
 | `cfoperator_remediation_executor_spawned_total` | `result` | `ok`, `capped`, `failed` |
@@ -547,9 +555,11 @@ shipped several examples that could never match.
 | `cfoperator_remediation_tracker_total` | `action` | `create`, `repark`, `comment`, `transition`, `reconcile` |
 | `cfoperator_remediation_tracker_total` | `outcome` | `ok`, `error` |
 | `cfoperator_remediation_reverify_total` | `outcome` | `resolved`, `rejected`, `open`, `skipped` |
-| `cfoperator_dedupe_shadow_total` | `path` | `investigation`, `sweep-fallback`, `summary`, `chat`, `console` |
-| `cfoperator_dedupe_shadow_total` | `result` | `agree`, `disagree`, `unavailable`, `skipped` |
-| `cfoperator_dedupe_shadow_total` | `python`, `service` | `new`, `fold`, `suppress` (`service` is `""` when the service gave no answer) |
+| `cfoperator_dedupe_decisions_total` | `path` | `investigation`, `sweep-fallback`, `summary`, `chat`, `console` |
+| `cfoperator_dedupe_decisions_total` | `decision` | `new`, `fold`, `suppress` |
+| `cfoperator_dedupe_decisions_total` | `tier` | `node`, `target`, `identifier`, `key`, `""` (a new row) |
+| `cfoperator_dedupe_decisions_total` | `source` | `service`, `fallback`, `unconfigured` |
+| `cfoperator_dedupe_request_seconds` | `outcome` | `ok`, `error` |
 | `cfoperator_remediation_enqueued_total` | `eligible` | `true`, `false` (`str(bool).lower()`) |
 | `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate` |
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |

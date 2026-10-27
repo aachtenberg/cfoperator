@@ -68,7 +68,7 @@ from change_record_client import (
     open_record as change_record_open,
 )
 from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
-import dedupe_shadow  # CFOP-514: every enqueue decision, asked of cfop-dedupe too
+import dedupe_client  # CFOP-538: cfop-dedupe decides every remediation enqueue
 from host_write import PENDING as HOST_WRITE_PENDING, HostWriteConfirmer, wait_for_row  # CFOP-442
 from knowledge_base import CONSOLE_CONFIRMED_SOURCE  # CFOP-442
 from reverify import reverify_filed_rows  # CFOP-185: re-check what was filed
@@ -190,7 +190,8 @@ REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remedia
 # provider) | degraded (ladder exhausted -> manual/high). CFOP-48: how often
 # each rung rescues a classification, so the ladder is tuned on data.
 REMEDIATION_CLASSIFIER = Counter('cfoperator_remediation_classifier_total', 'needs_action classifier outcomes', ['result'])
-# reason: repeat (identifier fold onto an open row, CFOP-78) |
+# reason: target (FIX-target fold onto an open row, CFOP-453) |
+# repeat (identifier fold onto an open row, CFOP-78) |
 # fork_committed (a forked recommendation was rewritten to one action) |
 # fork_stuck (the rewrite refused; the row is capped out of the auto gate) |
 # investigate_followup (a checklist rec became a follow-up investigation
@@ -489,75 +490,6 @@ _FORK_SHAPED = re.compile(
     r'adjust|modify|patch|upgrade|downgrade|enable|disable|replace|move|'
     r'retarget|recreate)\b'
     r'|(?:^|\.\s+)(?:Alternatively|Either)\b')
-
-# Hard identifiers a recommendation names — the things two differently-worded
-# recommendations for the same fix reliably share (CFOP-78). Deliberately only
-# shapes with near-zero prose collision: dotted-quad IPs, UPPER_SNAKE env/config
-# keys (the underscore requirement keeps out STATUS/ERROR/HTTP), and
-# <table>_id <n> row references. Bare hostnames and workload names are NOT
-# extracted: "needs-human" and "grok-4.6" are dash-words too, and a false fold
-# hides a real incident, which is strictly worse than a duplicate row.
-# The port stays when present: this cluster runs many services per address,
-# so a bare IP is a weak identity — "restart nginx on 192.168.0.131" and the
-# stale tunnel rule for 192.168.0.131:80 are different problems on one box.
-# Both live tunnel rows spell the port, so they still fold.
-_IDENT_IP = re.compile(r'\b(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)\b')
-_IDENT_ENV = re.compile(r'\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b')
-_IDENT_ROW = re.compile(r'\b([A-Za-z][A-Za-z0-9]*_id)\W{0,3}(\d+)')
-
-# CFOP-453: the model renders one FIX target two ways on two runs --
-# `data/eccc-ingest-script-mg664c47g9` from the alert path, then
-# `eccc-ingest-script-mg664c47g9` from the sweep dispatch (live rows #314 /
-# #315) -- and the tgt- hash is over the verbatim id, so the two never meet.
-# Targets are normalized for COMPARISON only: the stored id, the hash the row
-# is keyed on and what the executor is shown stay verbatim. A kustomize
-# generator suffix is ten characters from kustomize's own alphabet (no vowels,
-# no 0/1/a/e/i/l/o/u), which is why `-production` or `-ingest` can never be
-# mistaken for one.
-_KUSTOMIZE_HASH_SUFFIX = re.compile(r'-[bcdfghkmnpqrstvwxz2456789]{10}$')
-
-
-def _normalize_target_id(target_id) -> str:
-    tid = str(target_id or '').strip().lower().strip('/')
-    return _KUSTOMIZE_HASH_SUFFIX.sub('', tid)
-
-
-def _target_identity(targets) -> frozenset:
-    """(kind, repo, normalized id) per usable FIX target; empty means "this
-    row names nothing matchable", which the caller must treat as "do not
-    fold" and never as "matches everything"."""
-    out = set()
-    for t in targets or []:
-        if not isinstance(t, dict):
-            continue
-        kind = str(t.get('kind') or '').strip().lower()
-        tid = _normalize_target_id(t.get('id'))
-        if kind and tid:
-            out.add((kind, str(t.get('repo') or '').strip().lower(), tid))
-    return frozenset(out)
-
-
-def _same_target(a, b) -> bool:
-    """Same kind and repo, and the ids equal or one is a path-segment suffix
-    of the other: `data/eccc-ingest-script` is `eccc-ingest-script`, but
-    `base/apps/kustomization.yml` is not `base/monitoring/kustomization.yml`
-    -- basename-only matching would fold two real files into one row."""
-    if a[0] != b[0] or a[1] != b[1]:
-        return False
-    x, y = a[2], b[2]
-    return x == y or x.endswith('/' + y) or y.endswith('/' + x)
-
-
-def _targets_contained(new, old) -> bool:
-    """Every target on one side has a match on the other. Containment, not
-    intersection, for the same reason as the identifier fold: two fixes that
-    each touch something the other does not are two fixes."""
-    if not new or not old:
-        return False
-
-    def covered(xs, ys):
-        return all(any(_same_target(x, y) for y in ys) for x in xs)
-    return covered(new, old) or covered(old, new)
 
 _HUMAN_ONLY_SHAPED = re.compile(
     r'\b(physically|hardware|power\s+supply|power\s+strip|sd\s+card|'
@@ -1565,8 +1497,8 @@ def _fold_targets(response_text: str, known_repos=None, first=None) -> List[Dict
     verbatim. ``first`` is an object the caller already holds, tried before
     the reply is searched.
 
-    These ride on the row as ``payload.fold_targets`` and only
-    _absorb_repeat_remediation reads them. Never ``targets``: the executor,
+    These ride on the row as ``payload.fold_targets`` and only cfop-dedupe's
+    target fold reads them (CFOP-538). Never ``targets``: the executor,
     the judge, host derivation and the tgt- key all take that key to mean a
     FIX that was accepted.
     """
@@ -1668,19 +1600,17 @@ def _match_known_host(token: str, known) -> Optional[str]:
     return None
 
 
-def _dedupe_shadowed(path: str):
-    """Run a method that decides one enqueue from ``details`` inside a dedupe
-    shadow scope (CFOP-514). A decorator rather than a ``with`` in the body so
-    the choke point's many return paths stay exactly as they were; the scope
-    only observes. Called unbound in tests (``CFOperator.m(op, ...)``), which
-    is why it goes through ``self`` and not a closure over the class."""
-    def wrap(fn):
-        @functools.wraps(fn)
-        def inner(self, investigation_id, details, *args, **kwargs):
-            with self._dedupe_shadow_scope(path, details):
-                return fn(self, investigation_id, details, *args, **kwargs)
-        return inner
-    return wrap
+def _under_remediation_lock(fn):
+    """Run a method that decides and applies one enqueue under
+    ``self._remediation_lock`` (CFOP-538). A decorator rather than a ``with``
+    in the body so the choke point's many return paths stay as they were.
+    Called unbound in tests (``CFOperator.m(op, ...)``), which is why it goes
+    through ``self`` and not a closure over the class."""
+    @functools.wraps(fn)
+    def inner(self, *args, **kwargs):
+        with self._remediation_lock:
+            return fn(self, *args, **kwargs)
+    return inner
 
 
 def _hints_from_structured_fix(fix: Dict[str, Any]) -> Dict[str, Any]:
@@ -2502,6 +2432,17 @@ class CFOperator:
         self._enqueue_dedup_ttl = float(ooda_cfg.get('investigation_dedup_ttl_seconds', 3600))
         self._enqueue_dedup_keys: Dict[str, float] = {}
         self._enqueue_dedup_lock = threading.Lock()
+        # CFOP-538: one remediation enqueue at a time, from the snapshot of
+        # open rows cfop-dedupe is asked about to the insert or fold that
+        # applies its answer. Without it, an investigation finishing while a
+        # console POST lands could both be told "new" for the same problem.
+        # In-process is enough: the single-agent advisory lock already makes
+        # this the only process that enqueues. Re-entrant because the
+        # classified sweep lane enqueues through the choke point. Held across
+        # the CFOP-70 judge, which only auto-eligible rows reach; another
+        # enqueue waits for it, as investigations already wait on
+        # _investigation_lock.
+        self._remediation_lock = threading.RLock()
         # SIGTERM (CFOP-394). Work that must land whole -- an HTTP-triggered
         # investigation through its post-back, the morning summary through
         # its sent-marker -- counts itself in _in_flight, which the shutdown
@@ -4951,8 +4892,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         """Base URL of the cfop-dedupe Service, or '' when unset (CFOP-514).
 
         Env first (wired into the agent Deployment), then
-        ``remediation.dedupe.url``. Unset turns the shadow comparison off and
-        changes nothing else: phase 2 only asks, it never acts on the answer.
+        ``remediation.dedupe.url``. Unset, nothing is asked and the exact key
+        alone decides every enqueue (``source="unconfigured"``): compose and
+        the chart run the service, so that is a bare dev run (CFOP-538).
         """
         env_url = (os.getenv('CFOP_DEDUPE_URL') or '').strip()
         if env_url:
@@ -4961,11 +4903,58 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         dcfg = rcfg.get('dedupe') if isinstance(rcfg, dict) else None
         return str((dcfg or {}).get('url') or '').strip().rstrip('/') if isinstance(dcfg, dict) else ''
 
-    def _dedupe_shadow_scope(self, path: str, details: Dict[str, Any]):
-        """One shadow comparison around one enqueue decision; see dedupe_shadow.py."""
-        return dedupe_shadow.scope(path, details, url=self._dedupe_url(),
-                                   open_rows=self.kb.list_open_remediations_for_dedupe,
-                                   notready=self._notready_nodes)
+    def _dedupe_decide(self, path: str, candidate: Dict[str, Any], *,
+                       count: bool = True) -> Dict[str, Any]:
+        """Whether this enqueue is new, a fold onto an open row, or already
+        queued, as cfop-dedupe decides it (CFOP-538); see dedupe_client.py.
+
+        Call under ``self._remediation_lock`` and apply the answer before
+        releasing it. Every site asks the same question and gets every tier:
+        before CFOP-509 each picked its own subset of them. ``count`` False is
+        for a site that may act on something other than the answer (the
+        summary dispatching an investigation); it counts once it does act.
+        """
+        cand = dedupe_client.candidate_from(candidate)
+        try:
+            rows = dedupe_client.trim_rows(self.kb.list_open_remediations_for_dedupe())
+        except Exception as e:
+            logger.warning(f"Open remediations unreadable for the dedupe decision ({path}): {e}")
+            rows = None
+        # The node tier reads the host, or the title when the host is blank
+        # (the summary's rule, CFOP-130). No host-shaped token, no inventory
+        # read, as before the service decided.
+        nodes: List[str] = []
+        if rows is not None and _host_candidates(cand.get('host') or cand.get('title')):
+            nodes = sorted({str(n).lower() for n in (self._notready_nodes() or ()) if n})
+        decision = dedupe_client.resolve(self._dedupe_url(), path, cand, rows, nodes)
+        if count:
+            dedupe_client.count(path, decision)
+        return decision
+
+    def _apply_dedupe_fold(self, decision: Dict[str, Any]) -> Optional[int]:
+        """Record a fold on the surviving row; its id.
+
+        The absorbed line is what makes a fold visible: the operator sees
+        that twelve alerts were one dead node (CFOP-71). The alias keeps the
+        folded key answering for the surviving row, so the sweep's loop-break
+        lookup under it still says "already handled" (CFOP-453). Recording
+        either can fail without undoing the fold: the decision is made, and
+        enqueuing a second row because a note did not save would bring back
+        the duplicate the fold exists to stop.
+        """
+        rid = decision.get('row_id')
+        tier = decision.get('tier') or ''
+        logger.info(f"Folding onto open #{rid} ({tier}): {decision.get('reason')}")
+        try:
+            if decision.get('absorbed'):
+                self.kb.record_remediation_absorbed(rid, decision['absorbed'])
+            if decision.get('alias'):
+                self.kb.record_remediation_alias(rid, decision['alias'])
+        except Exception as e:
+            logger.warning(f"Folded onto #{rid}, but recording the fold failed: {e}")
+        if tier in ('target', 'identifier'):
+            REMEDIATION_FOLDED.labels(reason='target' if tier == 'target' else 'repeat').inc()
+        return rid
 
     def _console_base_url(self) -> str:
         """Public console URL for links in tracker items, or '' (no link).
@@ -5887,7 +5876,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         )
         REMEDIATION_ENQUEUED.labels(source=source, remediation_class=nc, eligible=str(elig).lower()).inc()
 
-    @_dedupe_shadowed('investigation')
+    @_under_remediation_lock
     def _maybe_queue_remediation(self, investigation_id: Optional[int],
                                  details: Dict[str, Any]) -> Optional[int]:
         """Enqueue a remediation from structured classification hints.
@@ -5904,12 +5893,12 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         ``payload['dedupe_key']`` and does not inject it itself.
 
         This is the single choke point both feeds converge on, so it is also
-        where the two gates live:
+        where the gates live:
 
-          - CFOP-71 collapse: while a node is NotReady, symptoms attributable
-            to it fold onto one node-incident row.
-          - CFOP-78 fold: a re-found problem lands on the open row already
-            covering it (hard-identifier containment). Fails open.
+          - Dedupe (CFOP-538): cfop-dedupe decides whether this is new, a fold
+            onto an open row (the CFOP-71 node collapse, the CFOP-453 target
+            fold, the CFOP-78 identifier fold) or an exact-key repeat. An
+            outage leaves the exact key to decide. See _dedupe_decide.
           - CFOP-78 fork cap: a recommendation still offering alternatives
             cannot carry a confidence, so it can never auto-execute.
           - CFOP-70 judge: a row that would auto-execute is reviewed by a
@@ -5952,65 +5941,56 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         pr_url = str(details.get('pr_url') or '').strip() or None
         if pr_url and confidence is not None:
             confidence = None
-        dedupe_key = str(details.get('dedupe_key') or '') or None
-        # CFOP-71: while a node is NotReady, every symptom attributable to it
-        # folds onto one node-incident row rather than opening its own. The
-        # rewrite happens here, above the key, because the symptoms each carry
-        # a legitimately DIFFERENT key — collapsing inside the key function
-        # cannot see them as one incident.
-        node_key = self._collapse_key_for_node_incident(details)
-        if node_key and node_key != dedupe_key:
-            logger.info(f"Folding {rclass} for {details.get('host')} onto node incident "
-                        f"{node_key} (node is NotReady)")
-            absorbed = self._record_absorbed_symptom(node_key, details)
-            if absorbed:
-                # An incident row already exists; this symptom is now recorded
-                # on it. Return its id so the caller links to the incident
-                # instead of reporting nothing proposed.
-                if pr_url:
-                    # CFOP-116: the PR must not vanish with the fold. The
-                    # incident row is the one an operator acts on, so it
-                    # carries the link and leaves the executor's reach; a row
-                    # with a driver keeps its own, and the PR is then
-                    # genuinely untracked — say so.
-                    try:
-                        stamped = self._stamp_opened_pr(self.kb.get_remediation(absorbed), pr_url)
-                    except Exception as e:
-                        stamped = False
-                        logger.warning(f"Could not stamp PR {pr_url} on node incident "
-                                       f"#{absorbed}: {e}")
-                    if not stamped:
-                        logger.warning(f"PR {pr_url} was opened for a symptom folded onto node "
-                                       f"incident #{absorbed}; no row tracks it")
-                return absorbed
-            dedupe_key = node_key
-            # Mutated IN PLACE, deliberately: _queue_needs_action_remediation
-            # falls back to _open_remediation_for_key(details['dedupe_key'])
-            # when this returns None, and with a local copy it would look up
-            # the pre-collapse per-alert key and report "none proposed" while
-            # the incident row sits there under the node key. Every caller
-            # builds details fresh, so there is no aliasing to worry about.
-            details['dedupe_key'] = node_key
-            # details['host'] is already the registered node name here --
-            # _collapse_key_for_node_incident wrote it when it matched
-            # (CFOP-126), so host_id and target.host below name the node.
-        # CFOP-78: the same problem re-found under different wording folds onto
-        # the open row instead of standing beside it. Skipped ENTIRELY while
-        # the node collapse claims the row: with no incident row yet, the
-        # FIRST NotReady symptom would otherwise be matched by identifier
-        # against every other open row — a rec naming 192.168.0.131 while a
-        # tunnel row is open would be absorbed there, and the node-incident
-        # row would never be created. The node tier owns the row outright;
-        # identifier matching is only for rows no tier above wants.
-        absorbed_repeat = None if node_key else self._absorb_repeat_remediation(details)
-        if absorbed_repeat:
+        # CFOP-538: cfop-dedupe decides, before the judge, so a fold or a
+        # repeat never costs a frontier call. The tiers it runs, in order: the
+        # CFOP-71 node collapse (while a node is NotReady every symptom
+        # attributable to it lands on one incident row), the CFOP-453/494
+        # target fold and the CFOP-78 identifier fold (the same problem
+        # re-found under other wording), then the exact key.
+        decision = self._dedupe_decide('investigation', details)
+        if decision['decision'] == 'fold':
+            absorbed = self._apply_dedupe_fold(decision)
             if pr_url:
+                # CFOP-116: the PR must not vanish with the fold. The
+                # surviving row is the one an operator acts on, so it carries
+                # the link and leaves the executor's reach; a row with a
+                # driver keeps its own, and the PR is then genuinely
+                # untracked -- say so.
                 try:
-                    self._stamp_opened_pr(self.kb.get_remediation(absorbed_repeat), pr_url)
+                    stamped = self._stamp_opened_pr(self.kb.get_remediation(absorbed), pr_url)
                 except Exception as e:
-                    logger.warning(f"Could not stamp PR {pr_url} on remediation "
-                                   f"#{absorbed_repeat}: {e}")
-            return absorbed_repeat
+                    stamped = False
+                    logger.warning(f"Could not stamp PR {pr_url} on remediation #{absorbed}: {e}")
+                if not stamped:
+                    logger.warning(f"PR {pr_url} was opened for a remediation folded onto "
+                                   f"#{absorbed}; no row tracks it")
+            # The caller links to the surviving row instead of reporting
+            # nothing proposed.
+            return absorbed
+        if decision['decision'] == 'suppress':
+            # Already queued under this key. None, as queue_remediation has
+            # always answered a repeat: callers look the open row up by key.
+            logger.info(f"Remediation dedup skip: open #{decision.get('row_id')} "
+                        f"carries {decision.get('dedupe_key')}")
+            return None
+        dedupe_key = str(decision.get('dedupe_key') or '') or None
+        # Mutated IN PLACE, deliberately: _queue_needs_action_remediation falls
+        # back to _open_remediation_for_key(details['dedupe_key']) when this
+        # returns None, and with a local copy it would look up the
+        # pre-collapse per-alert key and report "none proposed" while the
+        # incident row sits there under the node key. Every caller builds
+        # details fresh, so there is no aliasing to worry about.
+        if dedupe_key != (str(details.get('dedupe_key') or '') or None):
+            logger.info(f"Enqueuing {rclass} for {details.get('host')} under "
+                        f"{dedupe_key}: {decision.get('reason')}")
+            details['dedupe_key'] = dedupe_key
+        if decision.get('host'):
+            # The incident row is about the NODE: host_id and target.host must
+            # name the registered node (the console shows host_id; the
+            # executor's ssh target has to be one real host, not
+            # "raspberrypi4, raspberrypi5"). payload['targets'] keeps the ids
+            # as the model wrote them.
+            details['host'] = decision['host']
         payload = {
             'recommendation': str(details.get('recommendation') or ''),
             'rendered_context': str(details.get('report') or '')[:5000],
@@ -6029,6 +6009,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             payload['source'] = source
         if dedupe_key:
             payload['dedupe_key'] = dedupe_key
+        payload['dedupe'] = {'source': decision['source'], 'reason': decision.get('reason')}
         # CFOP-80: structured FIX rides beside target.host, never replaces it.
         for key in ('targets', 'observed', 'steps', 'verify', 'rejected',
                     'observed_check'):
@@ -6910,6 +6891,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
     def _collapse_key_for_node_incident(self, details: Dict[str, Any]) -> Optional[str]:
         """The node-incident key for this row, or None to enqueue independently.
 
+        Since CFOP-538 no enqueue asks this: cfop-dedupe decides every one, with
+        the same rule ported to Go (dedupe/hosts.go). It stays for the CFOP-108
+        checklist veto, which asks whether a node incident would claim a rec
+        before anything is enqueued at all.
+
         One dead node fires many DIFFERENT alerts — node unreachable, deployment
         not ready, four pod-not-ready-30m, ArgoCD metrics absent, promtail
         memory. Each has its own legitimate Alertmanager fingerprint and
@@ -6939,9 +6925,6 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         if not candidates:
             return None
         down = self._notready_nodes()
-        # CFOP-514: the dedupe shadow asks the service with THIS inventory,
-        # not a later read that may have changed or failed open.
-        dedupe_shadow.note_notready(down)
         if not down:
             return None
         # CFOP-126: the host field is whatever the model wrote -- a list, a
@@ -7183,92 +7166,6 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         slug = re.sub(r'[^a-z0-9]+', '-', f"{host} {title}".lower()).strip('-')[:80]
         return f"inv-dispatch-{slug}"
 
-    @staticmethod
-    def _extract_remediation_identifiers(text) -> frozenset:
-        """The hard identifiers a recommendation names, as a set.
-
-        Empty means "this text names nothing matchable" — and the caller must
-        treat that as "do not fold", never as "matches everything".
-        """
-        raw = str(text or '')
-        ids = set()
-        for match in _IDENT_IP.finditer(raw):
-            ids.add(match.group(1))
-        for match in _IDENT_ENV.finditer(raw):
-            ids.add(match.group(0))
-        for match in _IDENT_ROW.finditer(raw):
-            ids.add(f"{match.group(1).lower()}:{match.group(2)}")
-        return frozenset(ids)
-
-    def _absorb_repeat_remediation(self, details: Dict[str, Any]) -> Optional[int]:
-        """Fold a re-found problem onto the open row already covering it.
-
-        The dedupe key's prose-hash tier misses any rewording — six live rows
-        for three problems on 2026-08-23, across two models — so this matches
-        on what rewordings reliably share: the hard identifiers the
-        recommendation names. Containment either way counts as the same
-        problem; disjoint or empty sets never fold. Same posture as the
-        CFOP-71 node collapse this sits beside: the fold happens ABOVE the
-        key, is recorded visibly on the surviving row, and FAILS OPEN — worst
-        case a duplicate row, which is today's behaviour.
-        """
-        try:
-            new_ids = self._extract_remediation_identifiers(details.get('recommendation'))
-            # CFOP-453: the second basis is the FIX targets themselves. The
-            # key tiers cannot see this case -- a sweep-dispatched enqueue is
-            # keyed on its stamped title slug and an alert-path enqueue of
-            # the same FIX on the target hash, by design (CFOP-46 D / CFOP-80)
-            # -- and the identifier match above sees nothing in a
-            # recommendation that names a ConfigMap and a function.
-            # CFOP-494: a refused FIX still names its target (fold_targets).
-            new_targets = _target_identity(details.get('targets')
-                                           or details.get('fold_targets'))
-            if not new_ids and not new_targets:
-                return None
-            for row in self.kb.list_open_remediations(limit=100):
-                payload = row.get('payload') if isinstance(row.get('payload'), dict) else {}
-                # Exact-key repeats already have a working path (the KB's
-                # enqueue-side suppression + _open_remediation_for_key); this
-                # fold exists for the rows that path cannot see.
-                if payload.get('dedupe_key') and \
-                        payload.get('dedupe_key') == details.get('dedupe_key'):
-                    continue
-                reason = None
-                row_targets = _target_identity(payload.get('targets')
-                                               or payload.get('fold_targets'))
-                if _targets_contained(new_targets, row_targets):
-                    reason = 'target'
-                    shared = sorted(t[2] for t in new_targets)
-                else:
-                    row_ids = self._extract_remediation_identifiers(payload.get('recommendation'))
-                    # Both sides non-empty: an empty set is a subset of every
-                    # set, and the early return above no longer guarantees
-                    # new_ids is populated.
-                    if new_ids and row_ids and (new_ids <= row_ids or row_ids <= new_ids):
-                        reason = 'repeat'
-                        shared = sorted(new_ids & row_ids)
-                if reason:
-                    rid = row.get('id')
-                    summary = str(details.get('trigger')
-                                  or details.get('recommendation') or '')[:200]
-                    logger.info(f"Folding {reason} remediation onto open #{rid} "
-                                f"(shared: {shared})")
-                    self.kb.record_remediation_absorbed(rid, summary)
-                    # The folded enqueue's key becomes an alias of the
-                    # surviving row, so the sweep's loop-break lookup under
-                    # the dispatch key still says "already handled" tomorrow
-                    # instead of re-gathering the evidence every morning.
-                    new_key = str(details.get('dedupe_key') or '')
-                    if new_key and new_key != payload.get('dedupe_key'):
-                        self.kb.record_remediation_alias(rid, new_key)
-                    REMEDIATION_FOLDED.labels(reason=reason).inc()
-                    dedupe_shadow.note('fold', rid,
-                                       tier='target' if reason == 'target' else 'identifier')
-                    return rid
-        except Exception as e:
-            logger.warning(f"Repeat-remediation fold failed (enqueuing as-is): {e}")
-        return None
-
     def _commit_forked_recommendation(self, trigger: str, recommendation: str,
                                       report: str = '') -> tuple:
         """Make a fork-shaped recommendation commit to one action.
@@ -7324,32 +7221,6 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             logger.warning(f"Fork commit retry failed: {e}")
         REMEDIATION_FOLDED.labels(reason='fork_stuck').inc()
         return rec, True
-
-    def _record_absorbed_symptom(self, node_key: str,
-                                 details: Dict[str, Any]) -> Optional[int]:
-        """Note a folded symptom on the open node-incident row; its id, or None.
-
-        None means no incident row exists yet, so the caller enqueues one. The
-        row keeps the list because a collapse that silently discards its inputs
-        reads as "one arbitrary symptom won the race" — the operator should be
-        able to see that twelve alerts were one dead node, which is the whole
-        finding of CFOP-71. Fails open (None) like every other read on this
-        path: worst case a second row is created, which is today's behaviour.
-        """
-        try:
-            existing = self.kb.find_open_remediation_by_dedupe_key(node_key)
-            if not existing:
-                return None
-            rid = existing.get('id')
-            summary = str(details.get('trigger') or details.get('recommendation') or '')[:200]
-            if rid and summary:
-                self.kb.record_remediation_absorbed(rid, summary)
-            if rid:
-                dedupe_shadow.note('fold', rid, tier='node')
-            return rid
-        except Exception as e:
-            logger.warning(f"Could not fold symptom onto node incident {node_key}: {e}")
-            return None
 
     def _open_remediation_for_key(self, dedupe_key: str) -> Optional[Dict[str, Any]]:
         """Non-terminal remediation row carrying this dedupe key, or None.
@@ -7541,31 +7412,32 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     if provider:
                         payload['provider'] = provider
                     # This path enqueues directly rather than through
-                    # _maybe_queue_remediation, so it would otherwise miss the
-                    # CFOP-71 collapse: a morning-summary echo of a node that is
-                    # already down ("physically check the power cable") would
-                    # open its own row beside the incident. Same rewrite, same
-                    # fail-open behaviour.
+                    # _maybe_queue_remediation, and before CFOP-538 that cost
+                    # it every tier but a copy of the CFOP-71 node collapse.
+                    # The same question now, the same answer: a morning-summary
+                    # echo of a node that is already down ("physically check
+                    # the power cable") lands on the incident row, and a
+                    # reworded repeat on the row it repeats.
                     sweep_host = f.get('resource_name') or f.get('namespace')
-                    # CFOP-514: asked of cfop-dedupe too, before the node tier
-                    # writes anything; see dedupe_shadow.py.
-                    with self._dedupe_shadow_scope('sweep-fallback', {
+                    with self._remediation_lock:
+                        decision = self._dedupe_decide('sweep-fallback', {
                             'dedupe_key': key, 'recommendation': rec, 'host': sweep_host,
                             'title': title, 'trigger': title, 'remediation_class': 'manual',
-                            'source': 'morning-summary/sweep'}):
-                        node_key = self._collapse_key_for_node_incident({'host': sweep_host})
-                        if node_key and node_key != key:
-                            absorbed = self._record_absorbed_symptom(
-                                node_key, {'trigger': title, 'recommendation': rec})
-                            if absorbed:
-                                handled += 1
-                                continue
-                            key = node_key
-                            payload['dedupe_key'] = node_key
+                            'source': 'morning-summary/sweep'})
+                        if decision['decision'] == 'fold':
+                            self._apply_dedupe_fold(decision)
+                            handled += 1
+                            continue
+                        if decision['decision'] == 'suppress':
+                            continue
+                        key = str(decision.get('dedupe_key') or '') or key
+                        payload['dedupe_key'] = key
+                        payload['dedupe'] = {'source': decision['source'],
+                                             'reason': decision.get('reason')}
                         rid = self.kb.queue_remediation(
                             remediation_class='manual',
                             payload=payload,
-                            host_id=str(f.get('resource_name') or f.get('namespace') or 'default')[:64],
+                            host_id=str(decision.get('host') or sweep_host or 'default')[:64],
                             risk=risk,
                             confidence=None,
                             dedupe_key=key,
@@ -7663,39 +7535,36 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # time, and the same order _maybe_queue_remediation uses: the node
             # tier is asked first and no tier below it gets a say.
             #
-            # Matched on host-or-title deliberately. _collapse_key_for_node_incident
-            # reads only details['host'], and this feed does emit recs with an
-            # empty host (the model puts the node in the title instead), so a
-            # blank host must not blind the fold. CFOP-126's _host_candidates
-            # tokenizes the string and _match_known_host accepts only tokens
+            # Matched on host-or-title deliberately: this feed does emit recs
+            # with an empty host (the model puts the node in the title
+            # instead), so a blank host must not blind the fold. The service
+            # reads the title when the host is blank, and accepts only tokens
             # naming a registered NotReady node -- an unknown word is passed
-            # over, never guessed at -- so feeding it a title cannot invent a
-            # match. Fails open throughout: a KB or inventory error means
-            # today's behaviour, never a lost finding.
-            # CFOP-514: the shadow scope opens before the node tier, so the
-            # service is asked about the rows as this rec found them. A rec the
-            # summary dispatches instead of enqueuing decides nothing and asks
-            # nothing.
-            with self._dedupe_shadow_scope('summary', {
-                    'dedupe_key': key, 'recommendation': rec, 'host': r.get('host'),
-                    'title': title, 'trigger': title, 'remediation_class': rclass,
-                    'source': 'morning-summary'}):
+            # over, never guessed at -- so a title cannot invent a match.
+            #
+            # CFOP-538: the decision is asked under the enqueue lock, about the
+            # rows as this rec found them, and counted only once the rec is
+            # enqueued or folded: a dispatched rec acts on something else, and
+            # leaves the lock before it dispatches.
+            with self._remediation_lock:
                 host = r.get('host')
-                node_details = {'host': host or title}
-                node_key = self._collapse_key_for_node_incident(node_details)
-                if node_key and node_key != key:
-                    absorbed = self._record_absorbed_symptom(
-                        node_key, {'trigger': title, 'recommendation': rec})
-                    if absorbed:
-                        logger.info(f"Folding summary rec '{title}' onto node "
-                                    f"incident #{absorbed} ({node_key})")
-                        continue
+                decision = self._dedupe_decide('summary', {
+                    'dedupe_key': key, 'recommendation': rec, 'host': host,
+                    'title': title, 'trigger': title, 'remediation_class': rclass,
+                    'source': 'morning-summary'}, count=False)
+                node_claimed = decision.get('tier') == 'node' or bool(decision.get('host'))
+                if decision['decision'] == 'fold' and decision.get('tier') == 'node':
+                    dedupe_client.count('summary', decision)
+                    absorbed = self._apply_dedupe_fold(decision)
+                    logger.info(f"Folding summary rec '{title}' onto node incident #{absorbed}")
+                    continue
+                if node_claimed:
                     # No incident row yet -- this rec opens it, under the node key
                     # and named for the matched node, so the investigation feed's
                     # later enqueue folds onto THIS row. It enqueues rather than
                     # dispatches for the reason above: the answer is already known.
-                    key = node_key
-                    host = node_details['host']
+                    key = str(decision.get('dedupe_key') or '') or key
+                    host = decision.get('host') or host
                 # 'investigate' findings are evidence-gathering the agent does itself.
                 # A mutation-class rec from the summary is an UNVERIFIED hypothesis
                 # (cheap model, no enforced grounding), so route it the same way:
@@ -7714,7 +7583,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 # they are dispatch-only. Trust the classifier's classification,
                 # not the summarizer's; do not "unify" the two feeds by loosening
                 # this one.
-                # ``and not node_key``: the node tier already claimed this rec above,
+                # ``and not node_claimed``: the node tier already claimed this rec above,
                 # and dispatching would spend a deep-tier call to re-derive what the
                 # incident row already says. The node tier is asked first and no tier
                 # below it gets a say -- the same precedence _maybe_queue_remediation
@@ -7723,52 +7592,62 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     rclass == 'investigate'
                     or rclass in _SUMMARY_MUTATION_CLASSES
                     or (rclass == 'manual' and self._recommendation_is_investigate_shaped(rec))
-                ) and not node_key
-                if route_investigate:
-                    # CFOP-46 D: same loop-break as the sweep path — an open
-                    # remediation row under this key means an earlier dispatch
-                    # already landed needs_action; don't re-gather the evidence.
-                    dispatch_key = self._dispatch_dedupe_key(str(r.get('host') or ''), title)
-                    open_row = self._open_remediation_for_key(dispatch_key)
-                    if open_row:
-                        logger.info(
-                            f"Skipping re-investigation of '{title}': remediation "
-                            f"#{open_row.get('id')} (investigation "
-                            f"#{open_row.get('investigation_id')}) is still open")
+                ) and not node_claimed
+                if not route_investigate:
+                    dedupe_client.count('summary', decision)
+                    if decision['decision'] == 'fold':
+                        self._apply_dedupe_fold(decision)
+                        continue
+                    if decision['decision'] == 'suppress':
                         continue
                     try:
-                        # Preserve mutation-class proposals for the investigator;
-                        # investigate / mislabelled-manual get no suffix.
-                        suffix = (f" [proposed: {rclass}]"
-                                  if rclass in _SUMMARY_MUTATION_CLASSES else '')
-                        self.enqueue_investigation({'summary': f"{title}: {rec}{suffix}"[:300],
-                                                    'source': 'summary-investigate',
-                                                    'host': r.get('host'),
-                                                    'dedupe_key': dispatch_key})
-                        dispatched += 1
+                        payload = {'recommendation': rec, 'title': title,
+                                   'target': {'host': host},
+                                   'repo': (str(r.get('repo') or '').strip() or None),
+                                   'source': 'morning-summary', 'dedupe_key': key,
+                                   'dedupe': {'source': decision['source'],
+                                              'reason': decision.get('reason')}}
+                        if provider:
+                            payload['provider'] = provider
+                        rid = self.kb.queue_remediation(
+                            remediation_class=rclass,
+                            payload=payload,
+                            host_id=str(host or 'default')[:64],
+                            risk=risk,
+                            confidence=conf,
+                            dedupe_key=key,
+                        )
+                        if rid:
+                            enq += 1
+                            self._count_enqueued('morning-summary', rclass, risk, conf)
                     except Exception as e:
-                        logger.warning(f"could not dispatch investigation for '{title}': {e}")
+                        logger.error(f"summary->remediation enqueue failed: {e}", exc_info=True)
+                    continue
+            if route_investigate:
+                # CFOP-46 D: same loop-break as the sweep path — an open
+                # remediation row under this key means an earlier dispatch
+                # already landed needs_action; don't re-gather the evidence.
+                dispatch_key = self._dispatch_dedupe_key(str(r.get('host') or ''), title)
+                open_row = self._open_remediation_for_key(dispatch_key)
+                if open_row:
+                    logger.info(
+                        f"Skipping re-investigation of '{title}': remediation "
+                        f"#{open_row.get('id')} (investigation "
+                        f"#{open_row.get('investigation_id')}) is still open")
                     continue
                 try:
-                    payload = {'recommendation': rec, 'title': title,
-                               'target': {'host': host},
-                               'repo': (str(r.get('repo') or '').strip() or None),
-                               'source': 'morning-summary', 'dedupe_key': key}
-                    if provider:
-                        payload['provider'] = provider
-                    rid = self.kb.queue_remediation(
-                        remediation_class=rclass,
-                        payload=payload,
-                        host_id=str(host or 'default')[:64],
-                        risk=risk,
-                        confidence=conf,
-                        dedupe_key=key,
-                    )
-                    if rid:
-                        enq += 1
-                        self._count_enqueued('morning-summary', rclass, risk, conf)
+                    # Preserve mutation-class proposals for the investigator;
+                    # investigate / mislabelled-manual get no suffix.
+                    suffix = (f" [proposed: {rclass}]"
+                              if rclass in _SUMMARY_MUTATION_CLASSES else '')
+                    self.enqueue_investigation({'summary': f"{title}: {rec}{suffix}"[:300],
+                                                'source': 'summary-investigate',
+                                                'host': r.get('host'),
+                                                'dedupe_key': dispatch_key})
+                    dispatched += 1
                 except Exception as e:
-                    logger.error(f"summary->remediation enqueue failed: {e}", exc_info=True)
+                    logger.warning(f"could not dispatch investigation for '{title}': {e}")
+                continue
         if enq or dispatched:
             logger.info(f"Morning summary: queued {enq} remediation(s), "
                         f"dispatched {dispatched} investigation(s)")

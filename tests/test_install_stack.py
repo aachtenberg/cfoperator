@@ -42,6 +42,16 @@ SCRIPT = REPO_ROOT / "scripts" / "install.sh"
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "build-cfoperator-main.yml"
 IMAGE = "ghcr.io/aachtenberg/cfoperator:v9.9.9"
 
+
+def _siblings(image):
+    """The release's other images, as the release-stack job names them: the
+    same tag (and digest form) on the sibling repository (CFOP-538)."""
+    return {"cfoperator-dedupe:local": image.replace("/cfoperator:", "/cfoperator-dedupe:", 1)}
+
+
+def _build(image, pointer):
+    return release_bundle.build(image, pointer, images=_siblings(image))
+
 #: What the script needs besides docker. Linked into a private bin dir so the
 #: test controls exactly which docker exists.
 TOOLS = ("sh", "curl", "sha256sum", "tar", "gzip", "sed", "grep", "cut", "mktemp",
@@ -58,6 +68,8 @@ case "$1" in
 	pull)
 		# Ctrl-C arriving while a step succeeds: the installer must stop there.
 		[ -z "${DOCKER_PULL_SIGNAL:-}" ] || kill -INT "$PPID"
+		# One image of several that cannot be pulled (a sibling release image).
+		[ "${DOCKER_PULL_FAIL_REF:-}" != "$2" ] || exit 1
 		exit "${DOCKER_PULL_EXIT:-0}" ;;
 	run)
 		# Play the wizard: write .env into whatever is mounted at /out.
@@ -84,7 +96,7 @@ def release(tmp_path):
     """A GitHub-shaped release download path holding a real bundle."""
     www = tmp_path / "www"
     pointer = www / "cfoperator-latest"
-    release_bundle.build(IMAGE, pointer)
+    _build(IMAGE, pointer)
     digest = hashlib.sha256((pointer / release_bundle.ASSET).read_bytes()).hexdigest()
     (pointer / "checksums.txt").write_text(f"{digest}  {release_bundle.ASSET}\n")
     server = http.server.ThreadingHTTPServer(
@@ -215,6 +227,11 @@ def test_a_first_install_configures_in_the_pinned_image_then_starts(machine, rel
 
     calls = docker_calls(machine)
     assert f"pull {IMAGE}" in calls, calls
+    # Every release image is pulled before anything is installed, not by
+    # compose up afterwards (CFOP-538's cfop-dedupe is the second one).
+    for ref in _siblings(IMAGE).values():
+        assert f"pull {ref}" in calls, calls
+        assert calls.index(f"pull {ref}") < calls.index("compose up -d"), calls
     [init] = [c for c in calls if c.startswith("run ")]
     uid_gid = f"{os.getuid()}:{os.getgid()}"
     assert f"--user {uid_gid}" in init, f"init must write .env as the invoking user: {init}"
@@ -347,7 +364,7 @@ def test_a_digest_pinned_bundle_is_installed_by_digest(machine, release):
     _with_docker(machine)
     pointer, base_url = release
     pinned = IMAGE + "@sha256:" + "ab" * 32
-    release_bundle.build(pinned, pointer)
+    _build(pinned, pointer)
     digest = hashlib.sha256((pointer / release_bundle.ASSET).read_bytes()).hexdigest()
     (pointer / "checksums.txt").write_text(f"{digest}  {release_bundle.ASSET}\n")
     proc = run(machine, base_url=base_url)
@@ -366,6 +383,27 @@ def test_the_bundle_pins_the_pushed_digest_not_just_the_tag():
     [bundle] = [s for s in jobs["release-stack"]["steps"] if s.get("name") == "Build the bundle"]
     image = bundle["env"]["IMAGE"]
     assert image.endswith("@${{ needs.build-and-push.outputs.image-digest }}"), image
+
+
+def test_every_other_built_image_is_named_and_pinned_by_the_release():
+    """The class: a compose service that builds from source needs its own
+    release image, by digest, from a job the release waits for. Without one
+    release_bundle.py refuses the bundle, so this fails here first (CFOP-538)."""
+    compose = yaml.safe_load((REPO_ROOT / release_bundle.COMPOSE).read_text())["services"]
+    others = sorted({s["image"] for s in compose.values()
+                     if "build" in s and s.get("image") != release_bundle.MAIN_LOCAL_IMAGE})
+    assert others, "the repo compose builds only cfoperator:local; revisit this test"
+    jobs = _jobs()
+    [bundle] = [s for s in jobs["release-stack"]["steps"] if s.get("name") == "Build the bundle"]
+    for local in others:
+        flag = [ln for ln in bundle["run"].splitlines() if f'--image-for "{local}=$' in ln]
+        assert flag, f"the release does not name an image for {local}: {bundle['run']}"
+        var = flag[0].split(f'{local}=$', 1)[1].split('"', 1)[0]
+        ref = bundle["env"][var]
+        job = ref.split("needs.", 1)[1].split(".", 1)[0]
+        assert ref.endswith(f"@${{{{ needs.{job}.outputs.image-digest }}}}"), ref
+        assert job in jobs["release-stack"]["needs"], f"release-stack does not wait for {job}"
+        assert "steps.build.outputs.digest" in jobs[job]["outputs"].get("image-digest", "")
 
 
 def test_only_the_newest_final_release_moves_the_pointer():
@@ -414,7 +452,7 @@ def test_an_upgrade_keeps_local_edits_to_bundled_files_as_bak(machine, release):
     # The next release pins a different image, so docker-compose.yml changes
     # without anyone having edited it.
     newer = IMAGE.replace("v9.9.9", "v9.9.10")
-    release_bundle.build(newer, pointer)
+    _build(newer, pointer)
     digest = hashlib.sha256((pointer / release_bundle.ASSET).read_bytes()).hexdigest()
     (pointer / "checksums.txt").write_text(f"{digest}  {release_bundle.ASSET}\n")
 
@@ -434,7 +472,7 @@ def test_an_upgrade_keeps_local_edits_to_bundled_files_as_bak(machine, release):
 
 
 def _republish(pointer, image):
-    release_bundle.build(image, pointer)
+    _build(image, pointer)
     digest = hashlib.sha256((pointer / release_bundle.ASSET).read_bytes()).hexdigest()
     (pointer / "checksums.txt").write_text(f"{digest}  {release_bundle.ASSET}\n")
 
@@ -449,6 +487,21 @@ def test_an_image_that_cannot_be_pulled_changes_nothing(machine, release):
     assert proc.returncode != 0 and "nothing was changed" in proc.stderr, proc.stderr
     assert (machine["dir"] / "docker-compose.yml").read_text() == before, \
         "the running install's files must be untouched when its replacement cannot be pulled"
+
+
+def test_a_sibling_image_that_cannot_be_pulled_changes_nothing(machine, release):
+    """cfoperator-dedupe is the release's second image (CFOP-538): pulled by
+    compose up instead, a failure would come after the files were replaced."""
+    _with_docker(machine)
+    pointer, base_url = release
+    assert run(machine, base_url=base_url).returncode == 0
+    before = (machine["dir"] / "docker-compose.yml").read_text()
+    newer = IMAGE.replace("v9.9.9", "v9.9.10")
+    _republish(pointer, newer)
+    [sibling] = _siblings(newer).values()
+    proc = run(machine, base_url=base_url, DOCKER_PULL_FAIL_REF=sibling)
+    assert proc.returncode != 0 and sibling in proc.stderr and "nothing was changed" in proc.stderr, proc.stderr
+    assert (machine["dir"] / "docker-compose.yml").read_text() == before
 
 
 def test_a_second_installer_in_the_same_directory_is_refused(machine, release):

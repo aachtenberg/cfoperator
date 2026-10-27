@@ -1985,31 +1985,43 @@ class ToolRegistry:
             payload['repo'] = slug
 
         try:
-            # CFOP-514: the same question asked of cfop-dedupe, compared and
-            # dropped; this path's own answer is still the exact key alone.
-            with self.operator._dedupe_shadow_scope('chat', {
+            op = self.operator
+            # CFOP-538: cfop-dedupe decides, under the enqueue lock. An ask that
+            # repeats an open row, under any wording, lands on that row rather
+            # than beside it. No host goes to the node tier: an operator's ask
+            # is a request, not a symptom of a dead node, and an incident row
+            # keyed node-down-<host> is closed by the recovery sweep.
+            with op._remediation_lock:
+                decision = op._dedupe_decide('chat', {
                     'dedupe_key': dedupe_key, 'recommendation': recommendation,
-                    'host': target.get('host'), 'remediation_class': 'gitops-patch',
-                    'source': 'console-chat'}):
-                rid = self.operator.kb.queue_remediation(
-                    remediation_class='gitops-patch',
-                    payload=payload,
-                    investigation_id=inv_id,
-                    host_id=(host_id or '').strip() or 'default',
-                    risk='low',
-                    # No confidence: the auto-execute gate must not be cleared by
-                    # a number the model chose. The approve below is the gate.
-                    confidence=None,
-                    dedupe_key=dedupe_key,
-                )
+                    'remediation_class': 'gitops-patch', 'source': 'console-chat'})
+                rid = None
+                if decision['decision'] == 'new':
+                    payload['dedupe'] = {'source': decision['source'],
+                                         'reason': decision.get('reason')}
+                    rid = op.kb.queue_remediation(
+                        remediation_class='gitops-patch',
+                        payload=payload,
+                        investigation_id=inv_id,
+                        host_id=(host_id or '').strip() or 'default',
+                        risk='low',
+                        # No confidence: the auto-execute gate must not be cleared by
+                        # a number the model chose. The approve below is the gate.
+                        confidence=None,
+                        dedupe_key=dedupe_key,
+                    )
+                elif decision['decision'] == 'fold':
+                    op._apply_dedupe_fold(decision)
             if rid is None:
-                existing = self.operator.kb.find_open_remediation_by_dedupe_key(dedupe_key)
+                existing = (op.kb.get_remediation(decision['row_id']) if decision.get('row_id')
+                            else op.kb.find_open_remediation_by_dedupe_key(dedupe_key))
                 if existing:
                     return {'success': False, 'duplicate': True,
                             'remediation': self._trim_remediation_for_tool(existing),
                             'message': (f"This fix is already queued as remediation "
                                         f"#{existing.get('id')} ({existing.get('status')}). "
-                                        'Nothing new was created.')}
+                                        'Nothing new was created.'),
+                            'reason': decision.get('reason')}
                 return {'error': 'A matching remediation is already open; nothing was queued.'}
 
             # The console's Approve, through the one implementation of it.

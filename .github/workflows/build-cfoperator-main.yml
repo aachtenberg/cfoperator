@@ -360,6 +360,11 @@ jobs:
   # copies the static binary.
   build-dedupe:
     runs-on: ubuntu-latest
+    # The release bundle pins this image by tag and digest beside the agent's
+    # (CFOP-538: the compose trial runs cfop-dedupe too).
+    outputs:
+      image-tag: ${{ steps.tag.outputs.tag }}
+      image-digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -379,12 +384,16 @@ jobs:
           IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator-dedupe
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            echo "tags=$IMAGE:$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            tag="$GITHUB_REF_NAME"
+            echo "tags=$IMAGE:$tag" >> "$GITHUB_OUTPUT"
           else
-            echo "tags=$IMAGE:main,$IMAGE:main-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            tag="main-${GITHUB_SHA::7}"
+            echo "tags=$IMAGE:main,$IMAGE:$tag" >> "$GITHUB_OUTPUT"
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Build and push dedupe
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: dedupe/
@@ -458,7 +467,7 @@ jobs:
   # database. tests/test_install_stack.py pins both the `needs` and the order
   # of the pointer refresh below.
   release-stack:
-    needs: [build-and-push, db-smoke]
+    needs: [build-and-push, build-dedupe, db-smoke]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
@@ -476,9 +485,11 @@ jobs:
       - name: Build the bundle
         env:
           IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator:${{ needs.build-and-push.outputs.image-tag }}@${{ needs.build-and-push.outputs.image-digest }}
+          DEDUPE_IMAGE: ghcr.io/${{ github.repository_owner }}/cfoperator-dedupe:${{ needs.build-dedupe.outputs.image-tag }}@${{ needs.build-dedupe.outputs.image-digest }}
         run: |
           pip install pyyaml
-          python scripts/release_bundle.py --image "$IMAGE" --out dist
+          python scripts/release_bundle.py --image "$IMAGE" \
+            --image-for "cfoperator-dedupe:local=$DEDUPE_IMAGE" --out dist
           cd dist && sha256sum cfoperator-compose.tar.gz > checksums.txt
 
       - name: Version number for the pin

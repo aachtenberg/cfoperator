@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import sys
+import threading
 from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -214,6 +215,8 @@ def _operator(config=None):
     op.kb = MagicMock()
     op.kb.start_investigation.return_value = 11
     op.tools = MagicMock()
+    # __init__ is skipped; the enqueue funnel holds this (CFOP-538).
+    op._remediation_lock = threading.RLock()
     return op
 
 

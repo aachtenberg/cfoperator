@@ -1905,21 +1905,34 @@ class WebServer:
                 elif not isinstance(conf, (int, float)):
                     conf = None
                 key = str(b.get('dedupe_key') or f"manual-{int(time.time())}")
-                # CFOP-514: asked of cfop-dedupe too, compared and dropped.
-                with self.operator._dedupe_shadow_scope('console', {
+                rclass = str(b.get('remediation_class') or 'manual')
+                op = self.operator
+                # CFOP-538: cfop-dedupe decides, under the enqueue lock, so an
+                # operator-authored row that repeats an open one lands on it.
+                # No host or title goes to the node tier: an operator's row is
+                # a request, not a symptom of a dead node, and an incident row
+                # keyed node-down-<host> is closed by the recovery sweep.
+                with op._remediation_lock:
+                    decision = op._dedupe_decide('console', {
                         'dedupe_key': key, 'recommendation': rec,
-                        'host': b.get('host_id'), 'title': b.get('title'),
-                        'remediation_class': str(b.get('remediation_class') or 'manual'),
-                        'source': 'manual'}):
-                    rid = self.operator.kb.queue_remediation(
-                        remediation_class=str(b.get('remediation_class') or 'manual'),
-                        payload={'recommendation': rec, 'title': str(b.get('title') or rec[:60]),
-                                 'repo': (str(b.get('repo') or '').strip() or None),
-                                 'source': 'manual', 'dedupe_key': key},
-                        host_id=str(b.get('host_id') or 'default')[:64],
-                        risk=str(b.get('risk') or 'high'), confidence=conf, dedupe_key=key)
+                        'remediation_class': rclass, 'source': 'manual'})
+                    rid = None
+                    if decision['decision'] == 'new':
+                        rid = op.kb.queue_remediation(
+                            remediation_class=rclass,
+                            payload={'recommendation': rec, 'title': str(b.get('title') or rec[:60]),
+                                     'repo': (str(b.get('repo') or '').strip() or None),
+                                     'source': 'manual', 'dedupe_key': key,
+                                     'dedupe': {'source': decision['source'],
+                                                'reason': decision.get('reason')}},
+                            host_id=str(b.get('host_id') or 'default')[:64],
+                            risk=str(b.get('risk') or 'high'), confidence=conf, dedupe_key=key)
+                    elif decision['decision'] == 'fold':
+                        op._apply_dedupe_fold(decision)
                 if not rid:
-                    return jsonify({'status': 'deduped'}), 200
+                    return jsonify({'status': 'deduped', 'decision': decision['decision'],
+                                    'remediation_id': decision.get('row_id'),
+                                    'reason': decision.get('reason')}), 200
                 return jsonify(self.operator.kb.get_remediation(rid)), 201
             except Exception as e:
                 logger.error(f"create remediation failed: {e}", exc_info=True)

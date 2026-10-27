@@ -18,6 +18,15 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
 {{- end -}}
 
+{{/* cfop-dedupe's image follows the agent's tag unless pinned on its own. */}}
+{{- define "cfoperator.dedupeImage" -}}
+{{ .Values.dedupe.image.repository }}:{{ .Values.dedupe.image.tag | default .Values.image.tag | default .Chart.AppVersion }}
+{{- end -}}
+
+{{/* The one port cfop-dedupe listens on, its Service exposes and the agent's
+     CFOP_DEDUPE_URL names. */}}
+{{- define "cfoperator.dedupePort" -}}8093{{- end -}}
+
 {{/* Fail early when the two hard requirements are missing (CFOP-30: an LLM
      and a Prometheus URL; notify is deliberately optional — a blank webhook
      leaves that sink off rather than half-configured).

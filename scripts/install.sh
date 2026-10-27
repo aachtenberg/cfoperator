@@ -211,6 +211,13 @@ echo "Pulling ${image}…"
 docker pull "$image" >/dev/null || die "could not pull ${image}; nothing was changed.
   An arm64 or amd64 build is published for each release; another
   architecture is not supported."
+# The release's other images (cfoperator-dedupe, CFOP-538), for the same
+# reason: compose up would otherwise pull them after the files had changed.
+for ref in $(sed -n 's|^[[:space:]]*image:[[:space:]]*\([^[:space:]]*/cfoperator-[a-z0-9-]*:[^[:space:]]*\)[[:space:]]*$|\1|p' \
+	"$tmp/stage/docker-compose.yml" | sort -u); do
+	echo "Pulling ${ref}…"
+	docker pull "$ref" >/dev/null || die "could not pull ${ref}; nothing was changed."
+done
 
 # .env is never in the bundle, so an upgrade cannot overwrite it. Bundled files
 # can be edited too (deploy/compose/config.yaml is mounted into the services),

@@ -127,10 +127,11 @@ jobs:
         working-directory: cfassist-go
         run: go test ./...
 
-  # The dedupe service (CFOP-509), its own Go module. Its cases in
-  # dedupe/testdata/ are shared with agent/test_dedupe_parity.py, which the
-  # pytest job runs against the Python tiers it ports: the two jobs together
-  # are the parity check, so a red one here means the port disagrees.
+  # The dedupe service (CFOP-509), its own Go module, which decides every
+  # remediation enqueue (CFOP-538). Its cases in dedupe/testdata/ are shared
+  # with agent/test_dedupe_parity.py, which the pytest job runs against the
+  # agent's Python model of the service and through its enqueue sites: the two
+  # jobs together are the parity check, so a red one here means they disagree.
   gotest-dedupe:
     runs-on: ubuntu-latest
     steps:

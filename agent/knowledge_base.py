@@ -33,7 +33,6 @@ from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from cfshared.db import sqlalchemy_url
-from dedupe_shadow import note as dedupe_shadow_note
 from embedding_service import vector_literal
 
 Base = declarative_base()
@@ -4419,7 +4418,11 @@ class KnowledgeBase:
 
         ``dedupe_key`` suppresses duplicates: if a non-terminal row already
         carries the same key, returns None instead of enqueuing again — so a
-        recurring sweep finding doesn't pile up daily. The match runs against
+        recurring sweep finding doesn't pile up daily. Since CFOP-538 every
+        caller asks cfop-dedupe first (CFOperator._dedupe_decide), so this check
+        is the backstop, and the whole decision while the service is down.
+        Nothing but the agent's enqueue sites may call this
+        (tests/test_dedupe_funnel.py). The match runs against
         ``payload['dedupe_key']``, which this function does NOT inject — the
         caller must put the key in the payload as well as the kwarg, or the
         key silently never matches anything.
@@ -4447,8 +4450,6 @@ class KnowledgeBase:
                 if existing:
                     _log("info", "Remediation dedup skip",
                          dedupe_key=dedupe_key, existing_id=existing[0])
-                    dedupe_shadow_note('suppress', existing[0], tier='key',
-                                       dedupe_key=dedupe_key)
                     return None
             item = RemediationQueue(
                 investigation_id=investigation_id,
@@ -4467,9 +4468,6 @@ class KnowledgeBase:
             _log("info", "Remediation queued", queue_id=queue_id,
                  remediation_class=remediation_class, risk=risk,
                  confidence=confidence, status=status)
-        # After the commit, so a row that never landed is not reported as one
-        # (CFOP-514's shadow comparison; a no-op outside a shadow scope).
-        dedupe_shadow_note('new', queue_id, dedupe_key=dedupe_key, host=host_id)
         return queue_id
 
     def queue_confirmed_host_command(self, payload: Dict[str, Any], executor_job_name: str,

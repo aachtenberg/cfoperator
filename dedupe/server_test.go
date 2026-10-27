@@ -173,3 +173,56 @@ func TestBadRequests(t *testing.T) {
 		t.Errorf("unknown path: status %d", resp.StatusCode)
 	}
 }
+
+// The decision line carries the caller's trace id (CFOP-538), so a trace in
+// Tempo leads to the pod log for the same decision. Only a valid traceparent
+// is trusted: anything else is logged without one rather than as garbage.
+func TestDecisionLogCarriesTraceID(t *testing.T) {
+	const (
+		trace  = "4bf92f3577b34da6a3ce929d0e0e4736"
+		parent = "00f067aa0ba902b7"
+	)
+	for _, tc := range []struct {
+		name, header, want string
+	}{
+		{"valid", "00-" + trace + "-" + parent + "-01", trace},
+		{"unsampled is still a trace", "00-" + trace + "-" + parent + "-00", trace},
+		{"a later version with an extra field", "01-" + trace + "-" + parent + "-01-x", trace},
+		{"absent", "", ""},
+		{"all-zero trace id", "00-" + strings.Repeat("0", 32) + "-" + parent + "-01", ""},
+		{"all-zero parent id", "00-" + trace + "-" + strings.Repeat("0", 16) + "-01", ""},
+		{"version ff", "ff-" + trace + "-" + parent + "-01", ""},
+		{"version 00 with an extra field", "00-" + trace + "-" + parent + "-01-x", ""},
+		{"uppercase hex", "00-" + strings.ToUpper(trace) + "-" + parent + "-01", ""},
+		{"short trace id", "00-" + trace[:31] + "-" + parent + "-01", ""},
+		{"not hex", "00-" + strings.Repeat("g", 32) + "-" + parent + "-01", ""},
+		{"too few fields", "00-" + trace + "-" + parent, ""},
+	} {
+		var buf strings.Builder
+		srv := httptest.NewServer(Handler("", slog.New(slog.NewTextHandler(&buf, nil))))
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/v1/decide",
+			strings.NewReader(`{"candidate": {"dedupe_key": "k"}}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tc.header != "" {
+			req.Header.Set("traceparent", tc.header)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		srv.Close()
+		line := buf.String()
+		if !strings.Contains(line, "msg=decided") {
+			t.Fatalf("%s: no decision line logged: %q", tc.name, line)
+		}
+		if tc.want != "" && !strings.Contains(line, "trace_id="+tc.want) {
+			t.Errorf("%s: want trace_id=%s in %q", tc.name, tc.want, line)
+		}
+		if tc.want == "" && strings.Contains(line, "trace_id=") {
+			t.Errorf("%s: logged a trace id it should have refused: %q", tc.name, line)
+		}
+	}
+}

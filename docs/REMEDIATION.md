@@ -349,26 +349,29 @@ Approve gate read the column only.
   Service; one image, `CFOP_TRACKER_BACKEND` = plane | github | jira. The agent's
   `tracker_sync` tick hands parked rows to it and mirrors the outcome back. See
   [Tracker hand-off](#tracker-hand-off-issue-trackers).
-- **Dedupe service** (`dedupe/`, Go, CFOP-509) — a stateless port of the
-  enqueue dedupe tiers: node collapse (CFOP-71), target fold (CFOP-453/494),
-  identifier fold (CFOP-78), exact key. The agent sends the candidate row, the
-  open rows and the NotReady nodes, and applies the answer (`new`, `fold` or
-  `suppress`) itself; the contract is the package doc in `dedupe/doc.go`.
-  **Shadow mode** (CFOP-514): the agent still decides in process. Around each
-  of its five enqueue sites it also asks the service the same question about
-  the same rows, then compares the two answers and drops the service's. The
-  result is counted in `cfoperator_dedupe_shadow_total{path,result}`, and every
-  disagreement is logged at WARNING with both answers (`agent/dedupe_shadow.py`).
-  The comparison runs on a background thread, after Python has acted, so a
-  slow or dead service never delays or fails an enqueue. It is off unless
-  `CFOP_DEDUPE_URL` (or `remediation.dedupe.url`) is set, and
+- **Dedupe service** (`dedupe/`, Go, CFOP-509) — decides every remediation
+  enqueue (CFOP-538): node collapse (CFOP-71), target fold (CFOP-453/494),
+  identifier fold (CFOP-78), exact key, in that order, for all five sites
+  alike. The agent sends the candidate row, the open rows and the NotReady
+  nodes; the service answers `new` (with the key and host the row takes),
+  `fold` (onto `row_id`, with the line and alias to record there) or
+  `suppress`; the agent applies the answer under `_remediation_lock`, held from
+  the snapshot to the insert, so two enqueues cannot both be told "new". The
+  contract is the package doc in `dedupe/doc.go`; the agent's half is
+  `agent/dedupe_client.py` and `CFOperator._dedupe_decide`.
+  When the service cannot answer, the knowledge base's exact-key check decides
+  instead and the row says so (`payload.dedupe.source = "fallback"`): an
+  outage can let a duplicate through, never lose a row, and nothing waits for
+  the service to come back. `cfoperator_dedupe_decisions_total{source}` counts
+  who decided; see [METRICS.md](METRICS.md). The chat tool and the console's
+  POST give the node tier no host: an operator's ask is a request, not a
+  symptom of a dead node. `CFOP_DEDUPE_URL` (or `remediation.dedupe.url`) names
+  the service, which compose and the chart run beside the agent, and
   `CFOP_DEDUPE_SHARED_SECRET` is the `X-CFOP-Token`.
-  Only the investigation choke point runs every tier today, so the other paths
-  are expected to disagree wherever the service would fold. Phase 3 hands the
-  decision over once `path="investigation"` stays at zero disagreements. The
-  cases in `dedupe/testdata/` run against the Python tiers too
-  (`agent/test_dedupe_parity.py`), with the shadow on, so the two cannot drift
-  apart unnoticed.
+  The cases in `dedupe/testdata/` run against the Go tiers and against the
+  agent's Python model of them (`agent/dedupe_reference.py`, test-only), and
+  through the agent's real enqueue sites (`agent/test_dedupe_parity.py`).
+  `tests/test_dedupe_funnel.py` fails if an enqueue escapes the funnel.
 - **Executor Job** (`executor/`) — portable, stdlib-only, model-swappable
   (`CFOP_EXEC_LLM_BACKEND` = anthropic | openai-compat | claude-cli), or a
   **chain** of such backends tried in order (`CFOP_EXEC_LLM_CHAIN`, from
