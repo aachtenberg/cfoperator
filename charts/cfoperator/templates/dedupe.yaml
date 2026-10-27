@@ -1,0 +1,118 @@
+{{- if .Values.dedupe.enabled }}
+{{/* cfop-dedupe (CFOP-509/538): the remediation dedupe decision. The agent
+     sends one candidate row with the open rows and applies the answer under
+     its own lock, so replicas never race and this service holds no state, no
+     database credential and no Kubernetes identity. Mirrors the cfoperator-deploy
+     manifest: 2 replicas, a rollout that never drops below them, and a PDB. */}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-dedupe
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+    app.kubernetes.io/component: dedupe
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-dedupe
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+    app.kubernetes.io/component: dedupe
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: cfoperator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: dedupe
+  ports:
+    - name: http
+      port: {{ include "cfoperator.dedupePort" . }}
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-dedupe
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+    app.kubernetes.io/component: dedupe
+spec:
+  replicas: {{ .Values.dedupe.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cfoperator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: dedupe
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cfoperator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: dedupe
+    spec:
+      serviceAccountName: {{ include "cfoperator.fullname" . }}-dedupe
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dedupe
+          image: {{ include "cfoperator.dedupeImage" . }}
+          imagePullPolicy: {{ .Values.dedupe.image.pullPolicy | default .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ include "cfoperator.dedupePort" . }}
+          env:
+            - name: CFOP_DEDUPE_PORT
+              value: {{ include "cfoperator.dedupePort" . | quote }}
+            - name: CFOP_DEDUPE_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: dedupe-secret
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 20
+            failureThreshold: 3
+          {{- with .Values.dedupe.resources }}
+          resources:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "cfoperator.fullname" . }}-dedupe
+  labels:
+{{ include "cfoperator.labels" . | indent 4 }}
+    app.kubernetes.io/component: dedupe
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cfoperator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: dedupe
+{{- end }}

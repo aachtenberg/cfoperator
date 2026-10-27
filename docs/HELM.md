@@ -76,6 +76,12 @@ install NOTES show the exact command).
   retires this.
 - The bootstrap Job runs in `CFOP_BOOTSTRAP_DB_ONLY` mode: schema, pgvector,
   admin seeding only.
+- cfop-dedupe (`dedupe.enabled`, on by default) runs as 2 replicas with a
+  PodDisruptionBudget, and its shared secret is chart-generated like the
+  runtime's bearer. Compose runs one container and leaves the secret unset
+  unless `.env` sets `CFOP_DEDUPE_SHARED_SECRET`. Either way the agent falls
+  back to its exact-key check while the service is unreachable. The image
+  follows `image.tag` unless `dedupe.image.tag` pins it.
 
 ## Uninstall / reinstall
 

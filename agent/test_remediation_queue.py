@@ -27,17 +27,19 @@ from agent.agent import (  # noqa: E402
     _llm_provider_tag,
 )
 import agent.agent as agent_mod  # noqa: E402
+import dedupe_reference  # noqa: E402
 
 
 def _wire_flags(op):
     """Make op._remediation_flag read op.config (config-only), like the real method
     (a bare MagicMock would return a truthy mock and defeat the gating).
 
-    The CFOP-78 pre-enqueue steps are wired real for the same reason: a bare
-    MagicMock returns a truthy mock from _absorb_repeat_remediation (every
-    enqueue would "fold" onto a mock id) and an ununpackable one from
-    _commit_forked_recommendation. The real methods fail open against the
-    MagicMock kb — which is itself the behaviour under test elsewhere."""
+    The pre-enqueue steps are wired real for the same reason: a bare
+    MagicMock returns a mock "decision" from _dedupe_decide and an
+    ununpackable one from _commit_forked_recommendation. The dedupe funnel is
+    the real one (CFOP-538), answered by the service's model
+    (dedupe_reference.py); a MagicMock kb has no open rows, so it decides new
+    unless a test gives it some through list_open_remediations_for_dedupe."""
     def _flag(name):
         rcfg = op.config.get('remediation') or {}
         if name == 'node_action_enabled':
@@ -46,9 +48,7 @@ def _wire_flags(op):
             return bool(na.get('enabled'))
         return bool(rcfg.get(name))
     op._remediation_flag = _flag
-    op._extract_remediation_identifiers = CFOperator._extract_remediation_identifiers
-    op._absorb_repeat_remediation = (
-        lambda details: CFOperator._absorb_repeat_remediation(op, details))
+    dedupe_reference.wire(op)
     op._commit_forked_recommendation = (
         lambda t, r, report='': CFOperator._commit_forked_recommendation(op, t, r, report=report))
     return op
@@ -2681,7 +2681,8 @@ _RPI4_SYMPTOMS = [
 
 
 def _nodes_op(nodes):
-    """Op whose cluster reports these nodes, wired with the real collapse."""
+    """Op whose cluster reports these nodes, wired with the real collapse:
+    the inventory read is the agent's, the decision the service's model's."""
     op = _wire_flags(MagicMock())
     op.config = {"remediation": {"queue_feed": True}}
     op.tools.k8s_tools.get_nodes.return_value = {"success": True, "nodes": nodes}
@@ -2690,8 +2691,7 @@ def _nodes_op(nodes):
     op._node_incident_dedupe_key = CFOperator._node_incident_dedupe_key
     op._collapse_key_for_node_incident = (
         lambda d: CFOperator._collapse_key_for_node_incident(op, d))
-    op._record_absorbed_symptom = (
-        lambda key, d: CFOperator._record_absorbed_symptom(op, key, d))
+    op.kb.list_open_remediations_for_dedupe.return_value = []
     op._count_enqueued = MagicMock()
     _confirming_judge(op)
     return op
@@ -2705,7 +2705,6 @@ def test_symptoms_of_a_notready_node_collapse_onto_one_row():
     op = _nodes_op(_RPI4_DOWN)
     op.kb.queue_remediation.return_value = 51
     # First symptom: no incident row yet, so one is created.
-    op.kb.find_open_remediation_by_dedupe_key.return_value = None
     first = CFOperator._maybe_queue_remediation(op, 2253, {
         "remediation_class": "manual", "risk": "high", "confidence": None,
         "recommendation": "physically check the power and network cable",
@@ -2717,7 +2716,7 @@ def test_symptoms_of_a_notready_node_collapse_onto_one_row():
     assert op.kb.queue_remediation.call_args.kwargs["payload"]["dedupe_key"] == "node-down-raspberrypi4"
 
     # Every later symptom folds onto it — no second row, whatever its own key.
-    op.kb.find_open_remediation_by_dedupe_key.return_value = {"id": 51}
+    op.kb.list_open_remediations_for_dedupe.return_value = [{"id": 51, "status": "needs-human", "payload": {"dedupe_key": "node-down-raspberrypi4"}}]
     op.kb.queue_remediation.reset_mock()
     for trigger, key in _RPI4_SYMPTOMS[1:]:
         rid = CFOperator._maybe_queue_remediation(op, 2260, {
@@ -3085,11 +3084,12 @@ def test_judge_returning_a_non_verdict_parks_instead_of_escaping():
 
 
 def test_folded_symptom_links_to_the_incident_even_when_absorb_fails_open():
-    # _record_absorbed_symptom fails open (None) on a transient KB error or a
-    # race with a sibling symptom's row creation. The enqueue is then refused
-    # by the KB's own dedupe, and the caller's fallback lookup must use the
-    # COLLAPSED key — with the pre-collapse per-alert key it reports "none
-    # proposed" while the incident row sits there under the node key.
+    # The service saw no incident row (a sibling symptom's row landed after
+    # the snapshot), so it answers "new, under the node key". The KB's own
+    # exact-key check then refuses the insert, and the caller's fallback
+    # lookup must use the COLLAPSED key — with the pre-collapse per-alert key
+    # it reports "none proposed" while the incident row sits there under the
+    # node key.
     op = _nodes_op(_RPI4_DOWN)
     op._investigation_dedupe_key = CFOperator._investigation_dedupe_key
     op._maybe_queue_remediation = lambda i, d: CFOperator._maybe_queue_remediation(op, i, d)
@@ -3097,7 +3097,6 @@ def test_folded_symptom_links_to_the_incident_even_when_absorb_fails_open():
     op._classify_needs_action_recommendation = MagicMock(return_value={
         "remediation_class": "manual", "risk": "high", "confidence": None,
         "host": "raspberrypi4", "repo": None})
-    op._record_absorbed_symptom = lambda k, d: None      # fails open
     op.kb.queue_remediation.return_value = None          # KB dedupe refuses
     op.kb.find_open_remediation_by_dedupe_key = (
         lambda key: {"id": 51} if key == "node-down-raspberrypi4" else None)
@@ -3231,15 +3230,23 @@ def test_sweep_human_only_recs_also_fold_onto_a_node_incident():
         lambda d: CFOperator._collapse_key_for_node_incident(op, d))
     op._normalize_host = CFOperator._normalize_host
     op._node_incident_dedupe_key = CFOperator._node_incident_dedupe_key
-    op._record_absorbed_symptom = lambda k, d: 51   # incident row already open
-
     reports = [{"findings": [{
-        "severity": "critical", "finding": "raspberrypi4 is unreachable",
-        "recommendation": "physically check the power and network cable",
+        "id": "f-rpi4", "severity": "critical", "finding": "raspberrypi4 is unreachable",
+        "remediation": "physically check the power and network cable",
         "resource_name": "raspberrypi4", "namespace": "kube-system",
     }]}]
+    # Before the incident row exists, this echo opens it, named for the node.
+    op.kb.list_open_remediations_for_dedupe.return_value = []
+    op._feed_remediations_from_sweeps(reports)
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["dedupe_key"] == "node-down-raspberrypi4" and kw["host_id"] == "raspberrypi4"
+    # Once it does, the echo lands on it.
+    op.kb.queue_remediation.reset_mock()
+    op.kb.list_open_remediations_for_dedupe.return_value = [
+        {"id": 51, "status": "needs-human", "payload": {"dedupe_key": "node-down-raspberrypi4"}}]
     op._feed_remediations_from_sweeps(reports)
     op.kb.queue_remediation.assert_not_called()   # folded, not a 13th row
+    assert op.kb.record_remediation_absorbed.call_args.args == (51, "raspberrypi4 is unreachable")
 
 
 # ---- CFOP-108: a checklist is not a fix -------------------------------------
@@ -3395,7 +3402,7 @@ def test_a_notready_hosts_checklist_folds_onto_the_node_incident():
     op._classify_needs_action_recommendation = MagicMock(return_value={
         "remediation_class": "node-action", "risk": "low", "confidence": 0.7,
         "host": "raspberrypi4", "repo": None})
-    op._record_absorbed_symptom = lambda k, d: 51
+    op.kb.list_open_remediations_for_dedupe.return_value = [{"id": 51, "status": "needs-human", "payload": {"dedupe_key": "node-down-raspberrypi4"}}]  # incident row open
     op.kb.find_open_remediation_by_dedupe_key.return_value = None
     rid = CFOperator._queue_needs_action_remediation(
         op, 2266, "KubePodNotReady", {"fingerprint": "abc123"},
@@ -3641,8 +3648,8 @@ def _folding_op():
     """An enqueue that the CFOP-71 node collapse folds onto incident row #51."""
     op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": True}}
-    op._collapse_key_for_node_incident = lambda d: "node-raspberrypi4"
-    op._record_absorbed_symptom = lambda k, d: 51   # incident row already open
+    op._notready_nodes = lambda: {"raspberrypi4"}
+    op.kb.list_open_remediations_for_dedupe.return_value = [{"id": 51, "status": "needs-human", "payload": {"dedupe_key": "node-down-raspberrypi4"}}]  # incident row open
     op._stamp_opened_pr = lambda row, url: CFOperator._stamp_opened_pr(op, row, url)
     return op
 
@@ -3702,17 +3709,18 @@ def _summary_with_host(host):
 def _summary_nodes_op(nodes, open_rows=None):
     """A summary-feed op whose cluster reports these nodes.
 
-    _feed_op already wires the real collapse (via _no_node_incident); this only
-    gives it a readable inventory plus the absorb helper, so the fold can
-    actually fire instead of taking the fail-open path.
+    _feed_op already wires the real inventory read and the dedupe funnel; this
+    gives it a readable inventory and open rows, keyed as given, so the fold
+    can actually fire instead of taking the fail-open path.
     """
     op = _feed_op()
     op.tools.k8s_tools.get_nodes.return_value = {"success": True, "nodes": nodes}
     op._node_incident_dedupe_key = CFOperator._node_incident_dedupe_key
-    op._record_absorbed_symptom = (
-        lambda key, d: CFOperator._record_absorbed_symptom(op, key, d))
     rows = open_rows or {}
     op.kb.find_open_remediation_by_dedupe_key.side_effect = lambda k: rows.get(k)
+    op.kb.list_open_remediations_for_dedupe.return_value = [
+        {"id": r["id"], "status": "needs-human", "payload": {"dedupe_key": k}}
+        for k, r in rows.items()]
     return op
 
 
@@ -3814,6 +3822,23 @@ def test_summary_still_investigates_an_investigate_shaped_rec_for_a_ready_host()
         op, _summary_investigate_shaped("raspberrypi5"), []) == 0
     op.enqueue_investigation.assert_called_once()
     op.kb.queue_remediation.assert_not_called()
+
+
+def test_summary_counts_a_decision_only_when_it_acts_on_it():
+    """CFOP-538: the summary asks before it routes, so the node tier can claim
+    a rec it would otherwise dispatch. A rec it then dispatches anyway was not
+    enqueued, and counting its "new" would read as rows that never existed."""
+    import dedupe_client
+    counted = lambda: dedupe_client.DEDUPE_DECISIONS.labels(
+        path="summary", decision="new", tier="", source="service")._value.get()
+    op = _summary_nodes_op(_ALL_READY)
+    before = counted()
+    CFOperator._feed_remediations_from_summary(op, _summary_investigate_shaped("raspberrypi5"), [])
+    op.enqueue_investigation.assert_called_once()
+    assert counted() == before, "a dispatched rec was counted as a decision"
+    CFOperator._feed_remediations_from_summary(op, _summary_with_host("raspberrypi5"), [])
+    op.kb.queue_remediation.assert_called_once()
+    assert counted() == before + 1
 
 
 @pytest.mark.parametrize("summary_for", [_summary_with_host,

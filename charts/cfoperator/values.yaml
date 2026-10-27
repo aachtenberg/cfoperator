@@ -149,6 +149,24 @@ cockpit:
   # The terminal `cfassist attach --spawn` path is unaffected either way.
   fallbackHost: ""
 
+# cfop-dedupe (CFOP-509/538): decides whether a remediation the agent is about
+# to enqueue is new or belongs on a row already open. Stateless, no database,
+# no Kubernetes access. Off, the agent falls back to its exact-key check: a
+# reworded duplicate or a NotReady node's symptoms then open rows of their own.
+dedupe:
+  enabled: true
+  # Two replicas under a RollingUpdate and a PodDisruptionBudget, so an
+  # upgrade or a node drain never leaves the agent without an answer.
+  replicas: 2
+  image:
+    repository: ghcr.io/aachtenberg/cfoperator-dedupe
+    # Empty follows image.tag: the build publishes both images under the same
+    # tags (:main, :main-<sha>, v<version>), and the two are one commit's code.
+    tag: ""
+    # Empty follows image.pullPolicy.
+    pullPolicy: ""
+  resources: {}
+
 agent:
   resources: {}
 eventRuntime:

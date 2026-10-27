@@ -12,6 +12,15 @@ The fixtures below are those six rows' actual recommendation texts, verbatim.
 That is deliberate: the guard being tested is "the rewordings real models
 actually produce fold onto each other", and paraphrasing the fixtures would
 test my rewording instead.
+
+Since CFOP-538 the fold is cfop-dedupe's, so whether two rows fold is decided
+by the service and pinned by its shared cases in dedupe/testdata/decide/,
+which the Go tests and test_dedupe_parity.py both run. What stays here is what
+the agent still owns: fork detection and commitment, the choke point's caps,
+the fold targets a FIX carries onto its row, and the end-to-end CFOP-494 path.
+The identifier helpers are exercised through dedupe_reference, the service's
+Python model, because these verbatim rows are the clearest statement of why
+the fold rule is what it is.
 """
 
 import copy
@@ -29,9 +38,9 @@ from agent.agent import (  # noqa: E402
     _FORK_SHAPED,
     _fold_targets,
     _fold_targets_of,
-    _normalize_target_id,
     _parse_structured_fix,
 )
+import dedupe_reference  # noqa: E402
 from agent.knowledge_base import payload_carries_dedupe_key  # noqa: E402
 from test_remediation_queue import _na_op  # noqa: E402
 from test_structured_fix import _report  # noqa: E402
@@ -61,7 +70,7 @@ REC_72 = ("Truncate or chunk the text content for `learning_id 2368` in the "
           "update the `embedding_service` configuration to use a model with a "
           "larger context window.")
 
-extract = CFOperator._extract_remediation_identifiers
+extract = dedupe_reference.extract_identifiers
 
 
 # ---------------------------------------------------------------------------
@@ -117,94 +126,25 @@ def test_distinct_problems_do_not_contain_each_other():
 
 
 # ---------------------------------------------------------------------------
-# the fold
+# the fold -- now the service's (CFOP-538)
+#
+# These were tests of _absorb_repeat_remediation. Each decision is a shared
+# case in dedupe/testdata/decide/cfop78_live_rows.json, built from the same
+# rows:
+#   a reworded repeat folds onto the open row     "#69 (grok) rewords #67 (grok) ..."
+#   a third model's rewording still folds          "#71 (gemma4) rewords #67 (grok) ..."
+#   a distinct problem does not fold               "#72 shares nothing with the token or tunnel rows"
+#   no identifiers is no fold, not every fold      "a recommendation naming nothing never folds onto everything"
+#   an open row naming nothing is no fold target   "an open row naming nothing is never a fold target"
+#   one shared identifier is not the same problem  "one shared identifier is not containment"
+#   an exact-key repeat is left to the exact tier  "an exact-key repeat is left to the exact tier"
+# A fold that cannot read the open rows is the fallback's (the exact key):
+# test_dedupe_client.py::test_an_unreadable_snapshot_falls_back_without_asking.
 # ---------------------------------------------------------------------------
-
-def _op(open_rows):
-    op = MagicMock()
-    op._extract_remediation_identifiers = extract
-    op.kb.list_open_remediations.return_value = open_rows
-    op.kb.record_remediation_absorbed.return_value = True
-    return op
 
 
 def _row(rid, rec, key="inv-aaaa"):
-    return {"id": rid, "payload": {"dedupe_key": key, "recommendation": rec}}
-
-
-def _details(rec, key="inv-bbbb", trigger="event-runtime fail-open"):
-    return {"recommendation": rec, "dedupe_key": key, "trigger": trigger}
-
-
-def test_a_reworded_repeat_folds_onto_the_open_row():
-    op = _op([_row(67, REC_67)])
-    rid = CFOperator._absorb_repeat_remediation(op, _details(REC_69))
-    assert rid == 67
-    op.kb.record_remediation_absorbed.assert_called_once()
-    summary = op.kb.record_remediation_absorbed.call_args[0][1]
-    assert "event-runtime fail-open" in summary, (
-        "the fold must be visible on the surviving row, not silent")
-
-
-def test_a_third_model_rewording_still_folds():
-    """gemma4's #71 against grok's #67 — the cross-model case that actually
-    happened."""
-    op = _op([_row(67, REC_67)])
-    assert CFOperator._absorb_repeat_remediation(op, _details(REC_71)) == 67
-
-
-def test_a_distinct_problem_does_not_fold():
-    op = _op([_row(67, REC_67), _row(68, REC_68)])
-    assert CFOperator._absorb_repeat_remediation(op, _details(REC_72)) is None
-    op.kb.record_remediation_absorbed.assert_not_called()
-
-
-def test_no_identifiers_means_no_fold_not_fold_onto_everything():
-    """An empty set is a subset of every set. If the guard on the NEW side
-    ever goes, a vague recommendation folds onto whatever row happens to be
-    newest — silently discarding a real finding."""
-    op = _op([_row(67, REC_67)])
-    assert CFOperator._absorb_repeat_remediation(
-        op, _details("Investigate the elevated latency further")) is None
-    op.kb.list_open_remediations.assert_not_called()
-
-
-def test_an_open_row_with_no_identifiers_is_never_a_fold_target():
-    """Same trap from the other side: the OPEN row's empty set is a subset of
-    the new row's identifiers."""
-    op = _op([_row(50, "Investigate the elevated latency further")])
-    assert CFOperator._absorb_repeat_remediation(op, _details(REC_67)) is None
-
-
-def test_a_shared_identifier_alone_is_not_the_same_problem():
-    """The conservative line: containment, not intersection. Two rows that
-    each name something the other does not are two problems that happen to
-    touch the same object — folding them hides one. This is the test that
-    makes loosening `<=` to `&` fail."""
-    op = _op([_row(60, "Rotate `CFOP_RUNTIME_TOKEN` and `CFOP_API_TOKEN` "
-                      "after the leak on 10.0.0.14")])
-    rid = CFOperator._absorb_repeat_remediation(
-        op, _details("Add `CFOP_RUNTIME_TOKEN` to sealed secrets and mount it "
-                     "at 192.168.0.150"))
-    assert rid is None
-    op.kb.record_remediation_absorbed.assert_not_called()
-
-
-def test_an_exact_key_repeat_is_left_to_the_existing_path():
-    """The KB's enqueue-side suppression already handles same-key rows and the
-    caller links via _open_remediation_for_key; folding here would grow the
-    payload for a case that is not broken."""
-    op = _op([_row(67, REC_67, key="inv-same")])
-    assert CFOperator._absorb_repeat_remediation(
-        op, _details(REC_69, key="inv-same")) is None
-
-
-def test_the_fold_fails_open():
-    """A dedupe optimisation must never be the reason a real problem goes
-    unrecorded — the CFOP-71 posture, inherited deliberately."""
-    op = _op([])
-    op.kb.list_open_remediations.side_effect = RuntimeError("db down")
-    assert CFOperator._absorb_repeat_remediation(op, _details(REC_69)) is None
+    return {"id": rid, "status": "needs-human", "payload": {"dedupe_key": key, "recommendation": rec}}
 
 
 # ---------------------------------------------------------------------------
@@ -230,14 +170,13 @@ KEY_314 = "tgt-7fafc3e87c2d09f3"
 KEY_315 = "inv-dispatch-investigate-eccc-ingest-connection-resets"
 
 
-def _trow(rid, rec, targets, key):
-    return {"id": rid, "payload": {"dedupe_key": key, "recommendation": rec,
-                                   "targets": targets}}
-
-
-def _tdetails(rec, targets, key, trigger="investigate: eccc-ingest connection resets"):
-    return {"recommendation": rec, "targets": targets, "dedupe_key": key,
-            "trigger": trigger}
+# Each decision these rows drove is a shared case in
+# dedupe/testdata/decide/cfop453_eccc_ingest.json: the dispatch-keyed repeat
+# folding onto the target-keyed row and the other way round, a regenerated
+# kustomize hash, another repo, the same basename in another directory, a
+# wider fix against two fixes that each touch something else, and targets
+# never matching a row without them. The alias each fold records is in the
+# cases' answers too.
 
 
 def test_the_live_pair_names_no_identifiers():
@@ -247,107 +186,24 @@ def test_the_live_pair_names_no_identifiers():
     assert extract(REC_315) == frozenset()
 
 
-def test_a_dispatch_keyed_repeat_folds_onto_the_target_keyed_row():
-    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
-    rid = CFOperator._absorb_repeat_remediation(op, _tdetails(REC_315, TGT_315, KEY_315))
-    assert rid == 314
-    op.kb.record_remediation_absorbed.assert_called_once()
-    assert "eccc-ingest" in op.kb.record_remediation_absorbed.call_args[0][1], (
-        "the fold must be visible on the surviving row, not silent")
+def test_normalization_strips_only_a_kustomize_hash():
+    assert dedupe_reference.normalize_target_id("data/eccc-ingest-script-mg664c47g9") == "data/eccc-ingest-script"
+    assert dedupe_reference.normalize_target_id("Eccc-Ingest-Script-2g77tmm66h") == "eccc-ingest-script"
+    # Ten trailing characters that are not drawn from kustomize's alphabet
+    # (it has no vowels) are part of the name, not a generator suffix.
+    assert dedupe_reference.normalize_target_id("eccc-ingest-production") == "eccc-ingest-production"
+    assert dedupe_reference.normalize_target_id("api-monitoring") == "api-monitoring"
 
 
-def test_the_folded_key_becomes_an_alias_of_the_surviving_row():
+def test_an_alias_answers_for_the_surviving_row():
     """Tomorrow's sweep asks for the dispatch key it stamped; the surviving
     row has to answer for it or the sweep re-investigates every morning."""
-    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
-    CFOperator._absorb_repeat_remediation(op, _tdetails(REC_315, TGT_315, KEY_315))
-    op.kb.record_remediation_alias.assert_called_once_with(314, KEY_315)
     payload = {"dedupe_key": KEY_314, "dedupe_aliases": [KEY_315]}
     assert payload_carries_dedupe_key(payload, KEY_315)
     assert payload_carries_dedupe_key(payload, KEY_314)
     assert not payload_carries_dedupe_key(payload, "inv-dispatch-something-else")
     assert not payload_carries_dedupe_key({"dedupe_key": KEY_314, "dedupe_aliases": "x"},
                                           "x"), "a non-list alias field matches nothing"
-
-
-def test_the_fold_works_in_the_other_order_too():
-    """Had the sweep dispatch landed first, the alert-path row folds onto it."""
-    op = _op([_trow(315, REC_315, TGT_315, KEY_315)])
-    assert CFOperator._absorb_repeat_remediation(
-        op, _tdetails(REC_314, TGT_314, KEY_314)) == 315
-
-
-def test_a_regenerated_kustomize_hash_is_the_same_configmap():
-    """The ConfigMap was rebuilt with a new generator hash after #201 merged;
-    the next investigation names the new one."""
-    rebuilt = [{"id": "data/eccc-ingest-script-2g77tmm66h", "kind": "gitops-manifest",
-                "repo": "aachtenberg/homelab-infra"}]
-    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
-    assert CFOperator._absorb_repeat_remediation(
-        op, _tdetails(REC_315, rebuilt, KEY_315)) == 314
-
-
-def test_normalization_strips_only_a_kustomize_hash():
-    assert _normalize_target_id("data/eccc-ingest-script-mg664c47g9") == "data/eccc-ingest-script"
-    assert _normalize_target_id("Eccc-Ingest-Script-2g77tmm66h") == "eccc-ingest-script"
-    # Ten trailing characters that are not drawn from kustomize's alphabet
-    # (it has no vowels) are part of the name, not a generator suffix.
-    assert _normalize_target_id("eccc-ingest-production") == "eccc-ingest-production"
-    assert _normalize_target_id("api-monitoring") == "api-monitoring"
-
-
-def test_a_different_repo_is_a_different_target():
-    elsewhere = [{"id": "eccc-ingest-script-mg664c47g9", "kind": "gitops-manifest",
-                  "repo": "aachtenberg/cfoperator-deploy"}]
-    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
-    assert CFOperator._absorb_repeat_remediation(
-        op, _tdetails(REC_315, elsewhere, KEY_315)) is None
-    op.kb.record_remediation_absorbed.assert_not_called()
-
-
-def test_the_same_basename_in_another_directory_is_not_the_same_file():
-    """The reason the suffix rule is on path segments and not basenames:
-    every kustomize tree has a kustomization.yml per directory."""
-    apps = [{"id": "k3s/base/apps/kustomization.yml", "kind": "gitops-manifest",
-             "repo": "aachtenberg/homelab-infra"}]
-    monitoring = [{"id": "k3s/base/monitoring/kustomization.yml", "kind": "gitops-manifest",
-                   "repo": "aachtenberg/homelab-infra"}]
-    op = _op([_trow(1, "Pin the image tags in `kustomization.yml`", apps, "tgt-aaaa")])
-    assert CFOperator._absorb_repeat_remediation(
-        op, _tdetails("Pin the image tags in `kustomization.yml`", monitoring,
-                      "tgt-bbbb")) is None
-
-
-def test_a_fix_touching_an_extra_target_is_a_different_fix():
-    """Containment, not intersection, as for identifiers."""
-    two = TGT_314 + [{"id": "k3s/base/data/eccc-ingest.yml", "kind": "gitops-manifest",
-                      "repo": "aachtenberg/homelab-infra"}]
-    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
-    # The wider fix folds onto the narrower open row (one side contains the other)...
-    assert CFOperator._absorb_repeat_remediation(op, _tdetails(REC_315, two, KEY_315)) == 314
-    # ...but two fixes that each name a target the other does not stay apart.
-    other = [{"id": "k3s/base/data/eccc-ingest.yml", "kind": "gitops-manifest",
-              "repo": "aachtenberg/homelab-infra"}]
-    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
-    assert CFOperator._absorb_repeat_remediation(op, _tdetails(REC_315, other, KEY_315)) is None
-
-
-def test_targets_never_match_a_row_without_targets():
-    """An empty identity on either side is "names nothing", not "matches
-    everything" -- the same trap the identifier fold guards against."""
-    op = _op([_row(50, "Investigate the elevated latency further")])
-    assert CFOperator._absorb_repeat_remediation(
-        op, _tdetails(REC_315, TGT_315, KEY_315)) is None
-    op = _op([_trow(314, REC_314, TGT_314, KEY_314)])
-    assert CFOperator._absorb_repeat_remediation(
-        op, _tdetails("Investigate the elevated latency further", [], "inv-cccc")) is None
-    op.kb.list_open_remediations.assert_not_called()
-
-
-def test_an_identifier_fold_also_records_its_key_as_an_alias():
-    op = _op([_row(67, REC_67, key="inv-aaaa")])
-    assert CFOperator._absorb_repeat_remediation(op, _details(REC_69, key="inv-bbbb")) == 67
-    op.kb.record_remediation_alias.assert_called_once_with(67, "inv-bbbb")
 
 
 # ---------------------------------------------------------------------------
@@ -494,30 +350,28 @@ def _choke_op(**flags):
     op = _confirming_judge(_no_node_incident(_wire_flags(MagicMock())))
     op.config = {"remediation": {"queue_feed": True, **flags}}
     op.kb.queue_remediation.return_value = 99
-    op.kb.list_open_remediations.return_value = []
+    op.kb.list_open_remediations_for_dedupe.return_value = []
     return op
 
 
 def test_the_fold_is_skipped_while_the_node_collapse_owns_the_row():
     """The first NotReady symptom arrives before any incident row exists. If
-    the identifier fold runs on it, a rec naming 192.168.0.131 while the
-    tunnel row is open is absorbed THERE — and the node-incident row is never
-    created. The node tier owns the row outright."""
+    the identifier fold ran on it, a rec naming 192.168.0.131 while the
+    tunnel row is open would be absorbed THERE, and the node-incident row
+    never created. The decision is the service's ("the node tier claims the
+    row before the identifier fold can"); this pins that the choke point
+    then opens the incident row, under the node's key and name."""
     op = _choke_op()
-    op._collapse_key_for_node_incident = lambda details: "node-down-raspberrypi4"
-    op._record_absorbed_symptom = lambda key, details: None   # no incident row yet
-    op.kb.list_open_remediations.return_value = [
-        _row(68, REC_68)]  # an open row sharing the IP
-    fold_calls = []
-    real = CFOperator._absorb_repeat_remediation
-    op._absorb_repeat_remediation = (
-        lambda details: fold_calls.append(1) or real(op, details))
+    op._notready_nodes = lambda: {"raspberrypi4"}
+    op.kb.list_open_remediations_for_dedupe.return_value = [_row(68, REC_68)]
     rid = CFOperator._maybe_queue_remediation(op, 5, {
         "remediation_class": "manual", "risk": "high", "confidence": None,
         "recommendation": "Restore connectivity to 192.168.0.131:80",
         "host": "raspberrypi4", "dedupe_key": "inv-fresh"})
-    assert fold_calls == [], "the identifier fold ran on a node-incident row"
     assert rid == 99, "the incident row must still be created"
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["dedupe_key"] == "node-down-raspberrypi4" and kw["host_id"] == "raspberrypi4"
+    op.kb.record_remediation_absorbed.assert_not_called()
 
 
 def test_a_fork_reaching_the_choke_point_cannot_carry_confidence():
@@ -613,8 +467,8 @@ def test_the_live_recommendations_name_no_identifiers_and_are_not_forks():
 def test_a_refused_fix_still_folds_its_repeat(how):
     """The class guard: whatever refuses the FIX, the next rewording of the
     same fix lands on the open row instead of filing another. Mutation
-    checks: stop storing fold_targets, or stop reading them in the fold,
-    and the second enqueue makes a second row."""
+    check: stop storing fold_targets and the second enqueue makes a second
+    row. Reading them is the service's target fold (nginx_334_347.json)."""
     op = _nginx_op()
     assert _nginx_feed(op, 4817, REC_4817, _refused(how)) == 9
     first = op.kb.queue_remediation.call_args.kwargs["payload"]
@@ -622,7 +476,8 @@ def test_a_refused_fix_still_folds_its_repeat(how):
     assert "targets" not in first, "a refused FIX must not look accepted"
     assert first["dedupe_key"].startswith("inv-"), "the key tier is unchanged"
 
-    op.kb.list_open_remediations.return_value = [{"id": 9, "payload": first}]
+    op.kb.list_open_remediations_for_dedupe.return_value = [
+        {"id": 9, "status": "needs-human", "payload": first}]
     assert _nginx_feed(op, 4822, REC_4822, _refused(how)) == 9
     assert op.kb.queue_remediation.call_count == 1
     assert op.kb.record_remediation_absorbed.call_args[0][0] == 9
@@ -637,20 +492,9 @@ def test_an_accepted_fix_does_not_also_carry_fold_targets():
     assert "fold_targets" not in payload
 
 
-def test_refused_and_accepted_rows_fold_onto_each_other():
-    """The same file is the same file, whichever side kept its FIX."""
-    accepted = {"id": 337, "payload": {"dedupe_key": "inv-337", "recommendation": REC_4817,
-                                       "targets": NGINX_TARGET}}
-    refused = {"id": 334, "payload": {"dedupe_key": "inv-334", "recommendation": REC_4817,
-                                      "fold_targets": NGINX_TARGET}}
-    op = _op([accepted])
-    assert CFOperator._absorb_repeat_remediation(op, {
-        "recommendation": REC_4822, "fold_targets": NGINX_TARGET,
-        "dedupe_key": "inv-339"}) == 337
-    op = _op([refused])
-    assert CFOperator._absorb_repeat_remediation(op, {
-        "recommendation": REC_4822, "targets": NGINX_TARGET,
-        "dedupe_key": "tgt-339"}) == 334
+# Refused and accepted rows folding onto each other is the service's:
+# "nginx #335 lands on #334" and "nginx #337's accepted FIX lands on refused
+# #334" in dedupe/testdata/decide/nginx_334_347.json.
 
 
 def test_fold_targets_refuse_a_partial_set():

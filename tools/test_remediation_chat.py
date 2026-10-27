@@ -1,5 +1,6 @@
 """Chat tools for the remediation queue and investigation-by-id (CFOP-22 B)."""
 
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,9 +15,18 @@ from tools.github import GitHubTools
 ADMIN = ToolPolicy(actor_role="admin")
 
 
+def _new(path, cand, **kw):
+    return {"decision": "new", "dedupe_key": cand.get("dedupe_key"), "source": "service",
+            "reason": "no open row covers it"}
+
+
 def _registry():
     op = MagicMock()
     op.config = {"infrastructure": {"hosts": {}}, "search": {}}
+    # The enqueue funnel (CFOP-538): the service's answer is "new" unless a
+    # test says otherwise; the dedupe rules themselves are agent/'s to test.
+    op._remediation_lock = threading.RLock()
+    op._dedupe_decide = MagicMock(side_effect=_new)
     # Avoid constructing real SSH/k8s/git clients — empty hosts is enough.
     reg = ToolRegistry(op)
     return op, reg
@@ -565,32 +575,55 @@ class TestQueueGitopsPatch:
         assert kw["dedupe_key"]
         assert kw["payload"]["dedupe_key"] == kw["dedupe_key"]
 
-    def test_the_enqueue_is_asked_of_the_dedupe_shadow_too(self):
-        """CFOP-514: the chat path's own answer is still the exact key alone,
-        and the same question goes to cfop-dedupe around the enqueue, so its
-        by-design disagreements are counted under path=chat."""
-        from contextlib import contextmanager
+    def test_the_enqueue_asks_cfop_dedupe_under_the_lock(self):
+        """CFOP-538: the service decides, under the enqueue lock, and the
+        node tier is given no host: an operator's ask is a request, not a
+        symptom of a dead node."""
         op, reg = self._happy()
         log = []
 
-        @contextmanager
-        def scope(path, details):
-            log.append(("enter", path, dict(details)))
-            yield None
-            log.append(("exit",))
-        op._dedupe_shadow_scope = scope
-        op.kb.queue_remediation.side_effect = lambda **kw: log.append(("queue",)) or 7
+        class _Lock:
+            def __enter__(self):
+                log.append("lock")
+
+            def __exit__(self, *a):
+                log.append("unlock")
+        op._remediation_lock = _Lock()
+        op._dedupe_decide.side_effect = lambda path, cand, **kw: log.append(("decide", path, cand)) or _new(path, cand)
+        op.kb.queue_remediation.side_effect = lambda **kw: log.append("queue") or 7
         reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
             "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
             "target": {"namespace": "plane", "name": "plane-api-wl", "host": "aa-ubuntu-01"}})
-        assert [e[0] for e in log] == ["enter", "queue", "exit"]
-        _, path, cand = log[0]
+        assert [e if isinstance(e, str) else e[0] for e in log] == ["lock", "decide", "queue", "unlock"]
+        _, path, cand = log[1]
         kw = op.kb.queue_remediation.call_args.kwargs
         assert path == "chat"
         assert cand == {"dedupe_key": kw["dedupe_key"],
                         "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds.",
-                        "host": "aa-ubuntu-01", "remediation_class": "gitops-patch",
-                        "source": "console-chat"}
+                        "remediation_class": "gitops-patch", "source": "console-chat"}
+        assert kw["payload"]["dedupe"] == {"source": "service", "reason": "no open row covers it"}
+
+    @pytest.mark.parametrize("answer", [
+        {"decision": "fold", "row_id": 7, "tier": "identifier", "absorbed": "x",
+         "reason": "same identifiers as open row #7", "source": "service"},
+        {"decision": "suppress", "row_id": 7, "tier": "key",
+         "reason": "open row #7 already carries it", "source": "service"},
+    ])
+    def test_an_ask_the_service_says_is_queued_reports_that_row(self, answer):
+        op, reg = self._happy()
+        op._dedupe_decide.side_effect = lambda path, cand, **kw: answer
+        op.kb.get_remediation.return_value = {"id": 7, "status": "needs-human", "payload": {}}
+        out = reg.execute("queue_gitops_patch", policy=ADMIN, arguments={
+            "recommendation": "Raise the plane-api readinessProbe timeout to 5 seconds."})
+        assert out["duplicate"] is True and "#7" in out["message"]
+        assert out["reason"] == answer["reason"]
+        op.kb.queue_remediation.assert_not_called()
+        op.kb.update_remediation_status.assert_not_called()
+        op.kb.get_remediation.assert_called_with(7)
+        if answer["decision"] == "fold":
+            op._apply_dedupe_fold.assert_called_once_with(answer)
+        else:
+            op._apply_dedupe_fold.assert_not_called()
 
     def test_the_same_ask_twice_reports_the_open_row(self):
         op, reg = _registry()

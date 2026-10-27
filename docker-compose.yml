@@ -105,6 +105,11 @@ services:
       # The runtime's bearer, when set in .env. Both services get it: the
       # agent is a caller of the runtime's POST /alert (CFOP-214).
       CFOP_RUNTIME_TOKEN: ${CFOP_RUNTIME_TOKEN:-}
+      # Every remediation enqueue asks cfop-dedupe whether it is new or
+      # belongs on an open row (CFOP-538). Unreachable, the agent falls back
+      # to its exact-key check, so this never blocks an enqueue.
+      CFOP_DEDUPE_URL: http://cfop-dedupe:8093
+      CFOP_DEDUPE_SHARED_SECRET: ${CFOP_DEDUPE_SHARED_SECRET:-}
     volumes:
       - ./deploy/compose/config.yaml:/app/config.yaml:ro
       - shared-run:/shared:ro
@@ -121,6 +126,22 @@ services:
         condition: service_healthy
       bootstrap:
         condition: service_completed_successfully
+      # Started, not healthy: the image is a static binary on scratch, with no
+      # shell for a healthcheck, and the agent's fallback covers a slow start.
+      cfop-dedupe:
+        condition: service_started
+    restart: unless-stopped
+
+  # The remediation dedupe decision (dedupe/, CFOP-509): stateless and
+  # database-free. The agent sends one candidate row with the open rows and
+  # applies the answer itself. Not published: only the agent calls it.
+  cfop-dedupe:
+    build: ./dedupe
+    image: cfoperator-dedupe:local
+    environment:
+      # Unset (the trial default) accepts any caller on the compose network.
+      # Set in .env, the agent sends it too.
+      CFOP_DEDUPE_SHARED_SECRET: ${CFOP_DEDUPE_SHARED_SECRET:-}
     restart: unless-stopped
 
   event-runtime:

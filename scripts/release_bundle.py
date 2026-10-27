@@ -6,7 +6,10 @@ downloads this bundle, verifies it, runs ``cfoperator init`` inside the image
 and starts the stack. The repo's ``docker-compose.yml`` cannot be shipped as it
 is, because its cfoperator services are ``build: .`` — they need the source
 tree. The bundle carries a rendered copy instead, identical except that every
-built service pulls the release's image.
+built service pulls the release's image. cfop-dedupe (CFOP-538) builds from
+``./dedupe`` as ``cfoperator-dedupe:local`` and pulls its own release image,
+named with ``--image-for``; a built service with no release image named fails
+the release.
 
 Rendering is a text transform, not a YAML round trip, so the compose file's
 comments (which are most of its documentation) survive into the bundle. The
@@ -19,7 +22,8 @@ The bundle's file list is derived, not listed: the compose files, every
 relative bind-mount source they name, and ``.env.example``. A mount added to
 the compose file later travels with the bundle without this script changing.
 
-    python scripts/release_bundle.py --image ghcr.io/OWNER/cfoperator:v1.2.3 --out dist
+    python scripts/release_bundle.py --image ghcr.io/OWNER/cfoperator:v1.2.3 \
+        --image-for cfoperator-dedupe:local=ghcr.io/OWNER/cfoperator-dedupe:v1.2.3 --out dist
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ import subprocess
 import sys
 import tarfile
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Mapping, Optional
 
 import yaml
 
@@ -49,7 +53,10 @@ OVERLAYS = ("docker-compose.extras.yml",)
 EXTRA_FILES = (".env.example",)
 
 _BUILD_LINE = re.compile(r"^[ \t]+build:[ \t]*\S.*\n", re.M)
-_LOCAL_IMAGE_LINE = re.compile(r"^([ \t]+image:[ \t]*)cfoperator:local[ \t]*$", re.M)
+_LOCAL_IMAGE_LINE = re.compile(r"^([ \t]+image:[ \t]*)([a-z0-9][a-z0-9._-]*:local)[ \t]*$", re.M)
+#: The local image ``--image`` replaces. Every other built service's local
+#: image needs its own ``--image-for``.
+MAIN_LOCAL_IMAGE = "cfoperator:local"
 
 
 class BundleError(Exception):
@@ -67,13 +74,19 @@ def _header(image: str) -> str:
     )
 
 
-def render(text: str, image: str) -> str:
-    """The compose file ``text`` with every ``build:`` replaced by ``image``.
+def render(text: str, image: str, images: Optional[Mapping[str, str]] = None) -> str:
+    """The compose file ``text`` with every ``build:`` replaced by its release
+    image: ``image`` for ``cfoperator:local``, and ``images[local]`` for any
+    other built service's local image.
 
     Raises BundleError when the parsed result is anything other than the
-    source with exactly that change.
+    source with exactly that change, or a built service's local image has no
+    release image.
     """
-    rendered = _LOCAL_IMAGE_LINE.sub(lambda m: m.group(1) + image, _BUILD_LINE.sub("", text))
+    mapping = {**(images or {}), MAIN_LOCAL_IMAGE: image}
+    rendered = _LOCAL_IMAGE_LINE.sub(
+        lambda m: m.group(1) + mapping[m.group(2)] if m.group(2) in mapping else m.group(0),
+        _BUILD_LINE.sub("", text))
     source = yaml.safe_load(text) or {}
     result = yaml.safe_load(rendered) or {}
 
@@ -81,13 +94,18 @@ def render(text: str, image: str) -> str:
     built = []
     for name, service in (expected.get("services") or {}).items():
         if isinstance(service, dict) and "build" in service:
+            local = service.get("image")
+            if local not in mapping:
+                raise BundleError(
+                    f"{name} builds {local!r}, and no release image was given for it "
+                    f"(--image-for {local or '<its image>'}=REF)")
             del service["build"]
-            service["image"] = image
+            service["image"] = mapping[local]
             built.append(name)
     if result != expected:
         raise BundleError(
             "rendering changed more than build/image, or missed a build: — "
-            "every built service must be `build: .` followed by `image: cfoperator:local`")
+            "every built service must be a one-line `build:` followed by `image: <name>:local`")
     leftover = [n for n, s in (result.get("services") or {}).items()
                 if isinstance(s, dict) and "build" in s]
     if leftover:
@@ -137,7 +155,8 @@ def _walk(root: Path, rel: str) -> Iterable[str]:
         yield rel
 
 
-def build(image: str, out: Path, root: Path = ROOT) -> Path:
+def build(image: str, out: Path, root: Path = ROOT,
+          images: Optional[Mapping[str, str]] = None) -> Path:
     """Write ``out/ASSET`` and return its path.
 
     Reproducible: fixed mtimes, owners and modes, sorted entries, and a gzip
@@ -153,7 +172,7 @@ def build(image: str, out: Path, root: Path = ROOT) -> Path:
             for name in _walk(root, rel):
                 data = (root / name).read_bytes()
                 if name in compose_files:
-                    data = render(data.decode("utf-8"), image).encode("utf-8")
+                    data = render(data.decode("utf-8"), image, images).encode("utf-8")
                 info = tarfile.TarInfo(name)
                 info.size = len(data)
                 info.mode = 0o644
@@ -185,10 +204,24 @@ def should_move_pointer(tag: str, tags: Iterable[str]) -> bool:
     return all(version >= other for other in finals)
 
 
+def _ref_error(ref: str) -> Optional[str]:
+    """Why ``ref`` cannot be pinned in a bundle, or None."""
+    if "@" in ref and not _DIGEST.search(ref):
+        # An empty build output would give "repo:tag@", and that must fail the
+        # release rather than ship a bundle no install can pull.
+        return f"digest is not @sha256:<64 hex>: {ref!r}"
+    if ":" not in ref.rsplit("/", 1)[-1]:
+        return f"{ref!r} needs an explicit tag; a bundle must not float"
+    return None
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--image",
                         help="the release image every built service pulls, e.g. ghcr.io/OWNER/cfoperator:v1.2.3")
+    parser.add_argument("--image-for", action="append", default=[], metavar="LOCAL=REF",
+                        help="the release image a service built as LOCAL pulls, e.g. "
+                             "cfoperator-dedupe:local=ghcr.io/OWNER/cfoperator-dedupe:v1.2.3")
     parser.add_argument("--out", default="dist", help="directory to write the bundle into")
     parser.add_argument("--should-move-pointer", metavar="TAG",
                         help="exit 0 if TAG is the newest final v* tag in this checkout, else 1")
@@ -199,16 +232,21 @@ def main(argv=None) -> int:
         return 0 if should_move_pointer(args.should_move_pointer, tags) else 1
     if not args.image:
         parser.error("--image is required")
-    if "@" in args.image and not _DIGEST.search(args.image):
-        # An empty build output would give "repo:tag@", and that must fail the
-        # release rather than ship a bundle no install can pull.
-        print(f"error: --image digest is not @sha256:<64 hex>: {args.image!r}", file=sys.stderr)
-        return 2
-    if ":" not in args.image.rsplit("/", 1)[-1]:
-        print("error: --image needs an explicit tag; a bundle must not float", file=sys.stderr)
-        return 2
+    images = {}
+    for pair in args.image_for:
+        local, sep, ref = pair.partition("=")
+        if not sep or not local.endswith(":local") or not ref:
+            print(f"error: --image-for wants LOCAL=REF with LOCAL ending :local, got {pair!r}",
+                  file=sys.stderr)
+            return 2
+        images[local] = ref
+    for flag, ref in [("--image", args.image), *(("--image-for", r) for r in images.values())]:
+        problem = _ref_error(ref)
+        if problem:
+            print(f"error: {flag} {problem}", file=sys.stderr)
+            return 2
     try:
-        path = build(args.image, Path(args.out))
+        path = build(args.image, Path(args.out), images=images)
     except BundleError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

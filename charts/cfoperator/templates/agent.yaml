@@ -114,6 +114,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "cfoperator.fullname" . }}-generated
                   key: runtime-token
+{{- if .Values.dedupe.enabled }}
+            - name: CFOP_DEDUPE_URL
+              value: http://{{ include "cfoperator.fullname" . }}-dedupe:{{ include "cfoperator.dedupePort" . }}
+            - name: CFOP_DEDUPE_SHARED_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cfoperator.fullname" . }}-generated
+                  key: dedupe-secret
+{{- end }}
 {{- if eq .Values.profile "remediate" }}
             - name: GITHUB_TOKEN
               valueFrom:

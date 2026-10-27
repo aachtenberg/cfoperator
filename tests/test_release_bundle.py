@@ -23,6 +23,10 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import release_bundle as rb  # noqa: E402
 
 IMAGE = "ghcr.io/aachtenberg/cfoperator:v9.9.9"
+DEDUPE = "ghcr.io/aachtenberg/cfoperator-dedupe:v9.9.9"
+#: The other built images the repo compose names, and the release image each
+#: pulls (cfop-dedupe, CFOP-538).
+IMAGES = {"cfoperator-dedupe:local": DEDUPE}
 
 
 def _services(text):
@@ -31,12 +35,13 @@ def _services(text):
 
 def test_the_repo_compose_renders_to_pull_only_with_nothing_else_changed():
     source_text = (REPO_ROOT / rb.COMPOSE).read_text()
-    source, rendered = _services(source_text), _services(rb.render(source_text, IMAGE))
+    source, rendered = _services(source_text), _services(rb.render(source_text, IMAGE, IMAGES))
     built = [n for n, s in source.items() if "build" in s]
     assert built, "the trial compose builds its cfoperator services; if it stopped, revisit this bundle"
     assert not [n for n, s in rendered.items() if "build" in s]
+    release = {rb.MAIN_LOCAL_IMAGE: IMAGE, **IMAGES}
     for name in built:
-        assert rendered[name]["image"] == IMAGE, name
+        assert rendered[name]["image"] == release[source[name]["image"]], name
         expected = {k: v for k, v in source[name].items() if k not in ("build", "image")}
         assert {k: v for k, v in rendered[name].items() if k != "image"} == expected, name
     for name in set(source) - set(built):
@@ -46,7 +51,7 @@ def test_the_repo_compose_renders_to_pull_only_with_nothing_else_changed():
 def test_rendering_keeps_the_compose_files_comments():
     source_text = (REPO_ROOT / rb.COMPOSE).read_text()
     comments = [ln.strip() for ln in source_text.splitlines() if ln.strip().startswith("#")]
-    rendered = rb.render(source_text, IMAGE)
+    rendered = rb.render(source_text, IMAGE, IMAGES)
     missing = [c for c in comments if c not in rendered]
     assert not missing, f"the compose file's comments are its documentation: {missing[:3]}"
 
@@ -62,6 +67,20 @@ def test_rendering_keeps_the_compose_files_comments():
 def test_a_compose_shape_the_transform_does_not_understand_fails_loudly(compose, why):
     with pytest.raises(rb.BundleError):
         rb.render(compose, IMAGE)
+
+
+def test_a_built_service_without_a_release_image_fails_the_release():
+    """The class this guards: a service added to the compose that builds from
+    source. Rendered without a release image for it, the installed file would
+    either keep `build:` (no source tree to build from) or name a local image
+    no machine has, so the release must stop instead (CFOP-538)."""
+    source_text = (REPO_ROOT / rb.COMPOSE).read_text()
+    with pytest.raises(rb.BundleError, match="cfoperator-dedupe:local"):
+        rb.render(source_text, IMAGE)
+    two = ("services:\n  a:\n    build: .\n    image: cfoperator:local\n"
+           "  b:\n    build: ./b\n    image: cfoperator-b:local\n")
+    rendered = _services(rb.render(two, IMAGE, {"cfoperator-b:local": "ghcr.io/x/cfoperator-b:v1"}))
+    assert rendered == {"a": {"image": IMAGE}, "b": {"image": "ghcr.io/x/cfoperator-b:v1"}}
 
 
 def test_the_bundle_carries_every_relative_mount_in_the_repo():
@@ -103,20 +122,40 @@ def test_a_mount_whose_source_is_missing_fails_the_release(tmp_path):
 
 
 def test_the_bundle_is_reproducible_and_pulls_only(tmp_path):
-    first = rb.build(IMAGE, tmp_path / "a").read_bytes()
-    second = rb.build(IMAGE, tmp_path / "b").read_bytes()
+    first = rb.build(IMAGE, tmp_path / "a", images=IMAGES).read_bytes()
+    second = rb.build(IMAGE, tmp_path / "b", images=IMAGES).read_bytes()
     assert first == second, "the same commit and image must give the same checksum"
 
     with tarfile.open(fileobj=io.BytesIO(first)) as tar:
         assert set(tar.getnames()) >= set(rb.bundle_files()) - {"deploy"}
         assert ".env" not in tar.getnames(), "an upgrade must never be able to overwrite .env"
         compose = tar.extractfile(rb.COMPOSE).read().decode()
-    assert "build:" not in compose and IMAGE in compose
+    assert "build:" not in compose and IMAGE in compose and DEDUPE in compose
 
 
 def test_a_floating_image_is_refused(capsys):
     assert rb.main(["--image", "ghcr.io/aachtenberg/cfoperator", "--out", "unused"]) == 2
     assert "explicit tag" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("pair,why", [
+    ("cfoperator-dedupe:local=ghcr.io/aachtenberg/cfoperator-dedupe", "explicit tag"),
+    ("cfoperator-dedupe:local=" + DEDUPE + "@sha256:abc", "sha256"),
+    ("cfoperator-dedupe=" + DEDUPE, "LOCAL=REF"),
+    ("cfoperator-dedupe:local", "LOCAL=REF"),
+])
+def test_an_image_for_ref_is_held_to_the_same_rules(pair, why, capsys, tmp_path):
+    assert rb.main(["--image", IMAGE, "--image-for", pair, "--out", str(tmp_path)]) == 2
+    assert why in capsys.readouterr().err
+    assert not (tmp_path / rb.ASSET).exists()
+
+
+def test_the_cli_renders_every_built_image(tmp_path):
+    assert rb.main(["--image", IMAGE, "--image-for", f"cfoperator-dedupe:local={DEDUPE}",
+                    "--out", str(tmp_path)]) == 0
+    with tarfile.open(tmp_path / rb.ASSET) as tar:
+        compose = _services(tar.extractfile(rb.COMPOSE).read().decode())
+    assert compose["cfop-dedupe"]["image"] == DEDUPE and compose["agent"]["image"] == IMAGE
 
 
 @pytest.mark.parametrize("tag,expected", [
@@ -133,7 +172,7 @@ def test_the_pointer_moves_only_for_the_newest_final_release(tag, expected):
 
 def test_a_digest_pinned_image_renders_whole():
     pinned = IMAGE + "@sha256:" + "ab" * 32
-    rendered = rb.render((REPO_ROOT / rb.COMPOSE).read_text(), pinned)
+    rendered = rb.render((REPO_ROOT / rb.COMPOSE).read_text(), pinned, IMAGES)
     assert f"image: {pinned}\n" in rendered
 
 

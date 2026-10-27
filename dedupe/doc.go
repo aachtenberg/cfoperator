@@ -1,6 +1,7 @@
 // Package dedupe decides whether a remediation the agent is about to enqueue
 // is new, belongs on a row that is already open, or is already queued
-// (CFOP-509).
+// (CFOP-509). Every enqueue site asks it (CFOP-538); while it cannot answer,
+// the agent's exact-key check decides alone.
 //
 // The service is stateless and only decides. The agent sends everything the
 // decision needs and applies the answer under its own lock, so two replicas
@@ -15,7 +16,9 @@
 //
 // When CFOP_DEDUPE_SHARED_SECRET is set, /v1/decide requires X-CFOP-Token
 // (the same idiom as cfop-tracker and changerecord). Unset, requests are
-// accepted and the server says so once at startup.
+// accepted and the server says so once at startup. A valid W3C traceparent
+// header on /v1/decide adds its trace id to the decision's log line as
+// trace_id; the service records no spans of its own.
 //
 // Request fields:
 //
@@ -47,9 +50,10 @@
 //     row's payload.absorbed and payload.dedupe_aliases.
 //   - reason / shared: why, and the subject both rows name.
 //
-// Phase 1 is a parity port: the tiers decide exactly as the agent's
-// _maybe_queue_remediation and the knowledge base's enqueue check do on
-// origin/main. testdata/ holds the cases, and agent/test_dedupe_parity.py runs
-// the same files against the Python code, so a case one side fails is a
-// parity break rather than a matter of opinion.
+// The tiers are a port of the ones the agent ran in process until CFOP-538,
+// and decide exactly as they did. testdata/ holds the cases. The Go tests run
+// them through Decide, and agent/test_dedupe_parity.py runs the same files
+// through the agent's Python model of this service (which every other agent
+// test is answered by) and through the agent's real enqueue sites, so a case
+// one side fails is a break rather than a matter of opinion.
 package dedupe
