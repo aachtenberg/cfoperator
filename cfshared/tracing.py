@@ -126,8 +126,9 @@ def init_tracing(config: Optional[Mapping[str, Any]],
     # the exporter's own argument wants the full signal path.
     exporter = OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces") if endpoint else OTLPSpanExporter()
     provider.add_span_processor(BatchSpanProcessor(exporter))
-    # Global as well, so CFOP-317's auto-instrumentation lands in the same
-    # provider rather than a second, unexported one.
+    # Global as well, so any library instrumentation added later lands in the
+    # same provider rather than a second, unexported one. None is installed
+    # today; the spans are all hand-made.
     trace.set_tracer_provider(provider)
     use_provider(provider)
     logger.info(f"[TRACING] exporting spans as service.name={service_name} to "

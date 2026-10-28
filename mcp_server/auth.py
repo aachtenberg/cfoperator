@@ -4,9 +4,11 @@ stdio transport: the process belongs to the local user; scopes come straight
 from CFOP_MCP_SCOPES and there is no token exchange.
 
 streamable-http transport: every request must carry a bearer token. Given an
-AuthStore, the token is resolved against the database and its own scopes ride
-along on the ASGI scope, so two clients hitting the same process no longer
-share one grant. Without a store — or for a secret the database does not know —
+AuthStore, the token is resolved against the database and its identity rides
+along on the ASGI scope, so revocation, expiry and the audit trail are per
+token. Tool dispatch does not read it yet: ``guarded`` checks the process-wide
+CFOP_MCP_SCOPES, so two clients hitting the same process still share one grant
+(CFOP-548; see ``acting_token`` below). Without a store — or for a secret the database does not know —
 the shared CFOP_MCP_TOKEN still passes, because the deployment that mints
 per-token credentials and the one that rolls the sealed secret are not the same
 day.

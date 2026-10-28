@@ -3,16 +3,24 @@
 **In one paragraph:** alert triage used to run on `gemma4:26b` and took ~5.5s per
 alert. On 2026-08-20 we fine-tuned Mistral's `Ministral-3-14B-Instruct-2512` on
 451 real homelab investigations, using QLoRA under [unsloth](https://unsloth.ai)
-on a Windows RTX 5080, and got a model that matches gemma4's perfect eval score
-at **~0.71s on the same suite — roughly 8x faster** — while being small enough to sit in VRAM
-*next to* gemma4 so nothing swaps. It has served production triage since that
-day as `cfop-triage-ministral3:v1-q4`. This page is the model card: what it is,
-how it was made, how to rebuild it, and how to turn it off.
+on a Windows RTX 5080, and got a model that matched gemma4's perfect eval score
+at **~0.71s on the same suite — roughly 8x faster** — at a size (~8GB) chosen to
+sit in VRAM *next to* gemma4. That was v1, `cfop-triage-ministral3:v1-q4`.
+Its reasons turned out to be four canned strings (CFOP-153), and four data
+generations later **`cfop-triage-ministral3:v5-q4` has served production triage
+since 2026-09-03**: the same perfect action score at ~1.0s (~5x faster than
+gemma4), with reasons grounded in the alert and no fabricated precedents.
+`v1-q4` stays registered as the rollback. v6, which is v5 retrained with one
+hostname scrubbed from its data, is the generation published to Hugging Face.
+This page is the model card: what each generation is, how it was made, how to
+rebuild it, and how to turn it off.
 
-**If you only need one thing:** the deployable artifact is
-`/mnt/nas-backup/cfoperator-finetune/mistral-trained-01/ministral-3-14b-instruct-2512.Q4_K_M.gguf`
-on the NAS, and [Rebuilding from the NAS](#rebuilding-from-the-nas) turns it back
-into a running model in two commands.
+**If you only need one thing:** the deployed artifact is
+`/mnt/nas-backup/unsloth/cfoperator-v6/cfop-triage-v5-gguf/ministral-3-14b-instruct-2512.Q4_K_M.gguf`
+on the NAS, the v1 rollback is
+`/mnt/nas-backup/cfoperator-finetune/mistral-trained-01/ministral-3-14b-instruct-2512.Q4_K_M.gguf`,
+and [Rebuilding from the NAS](#rebuilding-from-the-nas) turns them back into
+running models in two commands.
 
 ---
 
@@ -20,13 +28,15 @@ into a running model in two commands.
 
 | | |
 |---|---|
-| **Deployed tag** | `cfop-triage-ministral3:v1-q4` (Q4_K_M, ~8.2GB) |
-| **Archival tag** | `cfop-triage-ministral3:v1` (Q8_0, ~14.4GB) |
+| **Deployed tag** | `cfop-triage-ministral3:v5-q4` (Q4_K_M, ~8.2GB), since 2026-09-03 |
+| **Archival tag** | `cfop-triage-ministral3:v5-q8` (Q8_0, ~14.4GB) |
+| **Rollback tag** | `cfop-triage-ministral3:v1-q4` (v1, deployed 2026-08-20 → 2026-09-03; its Q8_0 is `:v1`) |
+| **Published** | v6 on Hugging Face (see the inventory below); not deployed |
 | **Serves** | `POST /v1/triage` only — one JSON verdict per alert |
-| **Host** | ollama on `ubuntu-llm-01` / k3s node `headless-gpu` (192.168.0.150) |
+| **Host** | the ollama host `llm.triage_url` names (CFOP-175), or `llm.primary.url` when that is unset. The homelab's is the RTX 5060 Ti box. The backup disk every Modelfile's `FROM` reads is on `ubuntu-llm-01` / k3s node `headless-gpu` (10.0.0.14) |
 | **Activated by** | `llm.triage_model` in cfoperator config (CFOP-57/58) |
 | **Base model** | `unsloth/Ministral-3-14B-Instruct-2512-unsloth-bnb-4bit` |
-| **Trained** | 2026-08-20, RTX 5080 16GB, unsloth studio, ~17 min |
+| **Trained** | v5: 2026-09-03, RTX 5060 Ti 16GB, unsloth studio, 123 steps. v1: 2026-08-20, RTX 5080 16GB, ~17 min |
 
 It classifies an alert into `log_only` / `notify` / `investigate` / `escalate`.
 That is the *entire* job.
@@ -36,12 +46,13 @@ Ministral's native `[TOOL_CALLS]name[ARGS]{json}` wire format
 (ollama/ollama#16934, #17550), which is exactly why the fine-tune was scoped to
 triage in the first place. Investigations stay on `llm.primary` (gemma4:26b).
 If you ever see cfassist's status bar reading
-`ollama:cfop-triage-ministral3:v1-q4`, that is a misconfiguration — switch it
+`ollama:cfop-triage-ministral3:<tag>`, that is a misconfiguration — switch it
 back with `/model`.
 
 **It does not go through llm-gateway.** Standing decision: triage calls an
-ollama host directly — `_triage_url()`, which is `llm.triage_url` when set and
-`llm.primary.url` otherwise (CFOP-175), never the gateway.
+ollama host directly — `_triage_url()`, which is the DB setting `triage_url`
+when one is written, then `llm.triage_url`, then `llm.primary.url` (CFOP-175),
+never the gateway.
 
 ---
 
@@ -51,14 +62,15 @@ This is the section to read when something is lost.
 
 | Artifact | Location | Notes |
 |---|---|---|
-| Q4_K_M GGUF (deployed) | NAS `/mnt/nas-backup/cfoperator-finetune/mistral-trained-01/ministral-3-14b-instruct-2512.Q4_K_M.gguf` | 8,239,067,360 bytes |
-| Q8_0 GGUF (archival) | same directory, `...Q8_0.gguf` | 14,359,310,560 bytes |
-| BF16 mmproj | same directory, `...BF16-mmproj.gguf` | Vision projector. **Unused** — triage is text-only |
-| Export metadata | same directory, `export_metadata.json` | Records the base model id |
-| Training data | NAS `/mnt/nas-backup/cfoperator-finetune/{triage_train,triage_val,triage_conflicts}` | Also in the gitignored `benchmarks/datasets/` |
-| ollama blobs | `ubuntu-llm-01:~/.ollama/models/blobs/` | Q4 layer `sha256-49ef257d…`, Q8 layer `sha256-3a249212…` |
-| Modelfile | `benchmarks/Modelfile.cfop-triage` (this repo) | Reconstructed from `ollama show --modelfile` |
-| Eval results | `benchmarks/triage_eval_cfop_triage_ministral3_v1*.json` | Committed |
+| v5 Q4_K_M + Q8_0 GGUFs (deployed, archival) | NAS `/mnt/nas-backup/unsloth/cfoperator-v6/cfop-triage-v5-gguf/` | Beside the v5 dataset and YAML. Every generation from v2 has its own `unsloth/cfoperator-v<N>/` folder, numbered one ahead of the data generation |
+| v1 Q4_K_M GGUF (rollback) | NAS `/mnt/nas-backup/cfoperator-finetune/mistral-trained-01/ministral-3-14b-instruct-2512.Q4_K_M.gguf` | 8,239,067,360 bytes |
+| v1 Q8_0 GGUF (archival) | same directory, `...Q8_0.gguf` | 14,359,310,560 bytes |
+| v1 BF16 mmproj | same directory, `...BF16-mmproj.gguf` | Vision projector. **Unused** — triage is text-only |
+| v1 export metadata | same directory, `export_metadata.json` | Records the base model id |
+| v1 training data | NAS `/mnt/nas-backup/cfoperator-finetune/{triage_train,triage_val,triage_conflicts}` | Also in the gitignored `benchmarks/datasets/` |
+| v1 ollama blobs | `ubuntu-llm-01:~/.ollama/models/blobs/` | Q4 layer `sha256-49ef257d…`, Q8 layer `sha256-3a249212…` |
+| Modelfiles | `benchmarks/Modelfile.cfop-triage` (v1, reconstructed from `ollama show --modelfile`), then one per generation, `benchmarks/Modelfile.cfop-triage-<gen>` | `-q8` variants for v4 onward and the 8B v3/v4 |
+| Eval results | `benchmarks/triage_eval_cfop_triage_ministral3_v*.json` | Committed, every generation |
 | **Training run** (adapter, checkpoints, args) | NAS `/mnt/nas-backup/cfoperator-finetune/training-run-1787248524/` | 668MB. Archived 2026-09-02 off the training box |
 | **Hugging Face mirror** | [`aachtenberg/cfop-triage-ministral3-14b-v6`](https://huggingface.co/aachtenberg/cfop-triage-ministral3-14b-v6), published 2026-10-08 by [`hf/publish.sh`](../hf/publish.sh) with `VERSION=v6` from the NAS `cfoperator-v7/` folder (CFOP-274, CFOP-277). The Hub's LFS sha256 for both GGUFs and the adapter were checked against `hf/v6.sha256` after the upload. v5 is never published. | Q4 + Q8 GGUFs, the generation's Modelfile, the card in [`hf/README.md`](../hf/README.md), and the adapter when `ADAPTER_DIR` is given. Gated three ways: [`hf/scan_dataset.py`](../hf/scan_dataset.py) must find nothing secret-shaped in the train/val set, which must itself match the dataset lines of `hf/v6.sha256`; every artifact must match that manifest, computed once on the NAS host from the gated files (size is no check: every generation's GGUFs are byte-for-byte the same size); and the Modelfile must not carry the `NOT YET GATED` marker. The dataset itself is never published. |
 
@@ -84,11 +96,16 @@ empty; only `_1787248524` has weights. Nothing else needed archiving.
 
 **Known single points of failure:**
 
-1. Nothing in `homelab-infra` provisions this model. A rebuilt `ubuntu-llm-01`
-   comes back **without** it, and triage silently falls back to the standard
-   chain at ~8x the latency. There is no alert for this. See
-   [Rebuilding from the NAS](#rebuilding-from-the-nas), and consider an ansible
-   task for it.
+1. Nothing in `homelab-infra` provisions this model. A rebuilt triage host
+   comes back **without** it, and triage falls back to the standard chain at
+   ~5x the latency. That is no longer silent (CFOP-163): every `run_triage`
+   exit counts into `cfoperator_triage_decisions_total{served_by,model}` and
+   every skipped attempt into `cfoperator_triage_model_fallbacks_total{reason}`
+   ([METRICS.md](METRICS.md#triage-decisions)), and the homelab's Prometheus
+   alerts on both (`TriageServedByChain`, `TriageModelFallbacks`, rules in
+   homelab-infra). A deployment without those rules has the counters and no
+   page. See [Rebuilding from the NAS](#rebuilding-from-the-nas), and consider
+   an ansible task for it.
 2. The NAS is a single USB disk on `headless-gpu`. It **is** replicated to iDrive
    e2 — the `nas-cloud-backup` timer rsyncs all of `/mnt/nas-backup` daily with
    only three media excludes, and the GGUFs and dataset are confirmed present in
@@ -322,17 +339,16 @@ consumer-GPU training run.
    export to a UNC path itself (its process has no share credentials:
    `WinError 1326`).
 
-Also: unsloth studio's API is token-authed and was reachable over the LAN
-(**`http://192.168.0.110:8888`** as of 2026-09-02 — this document previously
-said `.115`; verify before trusting it, the box is DHCP. Token in
-`/tmp/unsloth.token` **on the cfoperator host**, not the training box), which is how the
-exports were driven remotely. `/api/train/progress` is a long-poll that never
-returned data remotely; `/api/train/runs` gives status only. The studio host is
-a workstation, not always on — treat LAN access as opportunistic.
+Also: unsloth studio's API is token-authed and reachable over the LAN, which
+is how the exports are driven remotely; the addresses, tokens and call sequence
+are in the runbook's [§6 Export](triage-retrain-runbook.md#6-export).
+`/api/train/progress` is a long-poll that never returned data remotely;
+`/api/train/runs` gives status only. The studio hosts are workstations, not
+always on — treat LAN access as opportunistic.
 
 **Why Windows and not the GPU node?** unsloth has no ROCm support, and
-`ubuntu-llm-01`'s 7900 XTX serves production triage. The 5080 was the only
-CUDA card available.
+`ubuntu-llm-01`'s 7900 XTX is the production inference card. The Windows boxes
+(the 5080, and from v3 the 5060 Ti) are the CUDA cards available.
 
 ---
 
@@ -349,35 +365,34 @@ weights. To do that it needs the **fp16 base, which is not the bnb-4bit model
 training used**: the first export on a box downloads it (16.6 GB for the 8B,
 26 GB for the 14B) into the HF cache, and that download, not the merge, is
 most of the wall-clock. Later exports on the same box skip it. Tokens are the
-per-card `UNSLOTH_<card>_TRAINING_TOKEN` entries in `repos/cfoperator/.env`;
-the v1-era `/tmp/unsloth.token` and `192.168.0.115` are gone.
+per-card `UNSLOTH_<card>_TRAINING_TOKEN` entries in `repos/cfoperator/.env`,
+not the v1-era `/tmp/unsloth.token`.
 
 `Q8_0` is the archival reference and `Q4_K_M` the deployment candidate; both
 clear the same gate before either ships. The export folder is copied by hand
 to `/mnt/nas-backup/unsloth/cfoperator-v<N>/` — a local exFAT disk on the dev
 box, not a NAS — beside the dataset and YAML that produced it, and imported
-with that generation's Modelfile (`benchmarks/Modelfile.cfop-triage-<gen>`):
-
-```bash
-ollama create cfop-triage-ministral3:8b-v3-q4 -f benchmarks/Modelfile.cfop-triage-8b-v3
-```
-
-`ollama create` reads the whole file off the exFAT disk at ~30 MB/s and
-hashes it, so budget 5–10 minutes and run it detached from anything with a
-timeout.
+with that generation's Modelfile (`benchmarks/Modelfile.cfop-triage-<gen>`) by
+the steps in the runbook's
+[§7 Import](triage-retrain-runbook.md#7-import-on-ubuntu-llm-01).
 
 The Modelfile reuses the **base model's exact chat template** — the fine-tune
-was trained against it, and a paraphrased template would not transfer. It also
-sets `PARSER ministral` and `PARAMETER temperature 0.15`.
+was trained against it, and a paraphrased template would not transfer (§7 has
+the byte-for-byte check). It also sets `PARSER ministral` and
+`PARAMETER temperature 0.15`.
 
-**The 0.15 is mostly decorative.** Both the production triage path
-(`_chat_with_tools`, ollama branch) and `benchmarks/triage_eval.py` send
-`temperature: 0.7` explicitly in the request, which overrides the Modelfile
-default. Every eval number in this document was measured at 0.7, and the
-zero-variance result across runs was obtained at 0.7 — not at a low sampling
-temperature. The 0.15 applies only to ad-hoc `ollama run`. Nothing currently
-asserts that the eval and production literals agree; that is a Tier 0 item in
-the [eval v2 plan](triage-eval-v2-plan.md).
+**The 0.15 is the temperature that applies.** Both the production triage path
+(`_chat_with_tools`, ollama branch) and `benchmarks/triage_eval.py` build the
+request with `_ollama_chat_payload`, which puts `temperature: 0.7` at the top
+level of the `/api/chat` body. Ollama reads sampling parameters from `options`
+only, so that 0.7 is ignored and the Modelfile's 0.15 governs. A deployment
+that sets `llm.primary.num_ctx` is the exception: it sends `options`, and
+`options.temperature` 0.7 then applies. Every eval number in this document was
+measured on the default path, at each model's Modelfile temperature (0.15 for
+the fine-tunes); the v6 leak gate is the one run that also measured 0.7 in
+`options`. The two sides cannot drift apart unnoticed:
+`agent/test_triage_eval_contract.py` (CFOP-314) asserts that the harness sends
+`run_triage`'s request body key for key, with and without `num_ctx`.
 
 ---
 
@@ -425,7 +440,8 @@ Ministral 14B is the result.
 
 Two latency columns because the suites differ in prompt size and the numbers are
 not interchangeable. The like-for-like comparison against the incumbent is the
-14-case column: **5.53s → 0.71s, ~7.8x.** The soak column is the steady-state
+14-case column: **5.53s → 0.71s, ~7.8x** for v1, and 5.53s → 1.04s, ~5.3x,
+for the deployed v5. The soak column is the steady-state
 figure on the two hard cases and is what production most resembles.
 
 The base model's two failure classes were both the **notify shortcut**, taken
@@ -438,23 +454,17 @@ shortcut about 63% of the time. At ×50, such a fault escapes with probability
 ~1.5%. Both hard cases passed 50/50 on both quantizations.
 
 **Q4 vs Q8.** Q4_K_M lost nothing measurable and is faster (0.62s vs 0.80s mean;
-its max latency is also far tighter on the soak, 0.72s vs 3.77s). At ~8GB it **co-resides in
-24GiB VRAM with gemma4:26b**, so triage and investigation never swap models —
-that co-residency, not the raw latency, is the main reason Q4 is the deployment
-artifact. Q8_0 is kept purely as the archival reference.
+its max latency is also far tighter on the soak, 0.72s vs 3.77s). In August the
+deciding reason was VRAM, not latency: at ~8GB of weights it was expected to
+**co-reside in 24GiB with gemma4:26b** on `ubuntu-llm-01`, so that triage and
+investigation would never swap models, and that is why Q4 became the
+deployment artifact. The expectation did not hold — loaded at its 32k context
+the 14B takes ~13GB, the two evicted each other (investigation #2400), and
+CFOP-175 moved triage to a host of its own. Q4 still ships; Q8_0 is kept
+purely as the archival reference.
 
-Re-running the gate:
-
-```bash
-PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v1-q4 --runs 3 \
-  --output benchmarks/triage_eval_<name>.json
-
-PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v1-q4 --runs 50 \
-  --only precedent-monitoring,critical-narrow \
-  --output benchmarks/triage_eval_<name>_soak_x50.json
-```
+Re-running the gate — 14 cases × 36 and the ×50 hard-case soak, for both
+quants — is the runbook's [§8 Gate](triage-retrain-runbook.md#8-gate).
 
 ---
 
@@ -501,8 +511,11 @@ is: one place. Traced against the consuming code (not the portable stubs):
 So this is an **activity-feed / audit-log** regression. Slack never carried the
 reason and the investigation record never stored it. That narrows CFOP-153 but
 does not close it — the timeline is the place an operator looks to see *why* an
-alert was routed the way it was. Either way `triage_eval.py` cannot see it — it
-scores `action` and JSON validity only.
+alert was routed the way it was. The v1 harness could not see it either: it
+scored `action` and JSON validity only. Its CFOP-314 rewrite grades the reason
+(no v1 canned string, grounded in the alert, no fabricated citation) and fails
+a confidence that is a pure function of the action, so this exact shape now
+fails the gate.
 
 **`confidence` is a label alias, not a confidence.** Anything thresholding on it
 is thresholding on the action. Audit result: two consumers.
@@ -573,21 +586,15 @@ work.
 All 100 soak runs went to `precedent-monitoring` and `critical-narrow`, and
 **both expect `investigate`** — the 75% majority class. The likeliest failure mode
 given this training set is an over-`investigate` bias, and it is invisible there.
-The only guard is the 14-case screen at ×3, where a 10%-rate regression on a
-`log_only` case escapes ~73% of the time (0.9³).
-
-Run this before trusting any retrain:
-
-```bash
-PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v1-q4 --runs 50 \
-  --only watchdog,smoke-test-pod,tmp-pod-critical,known-sdcard,precedent-resolved-oom
-```
+v1's only guard was the 14-case screen at ×3, where a 10%-rate regression on a
+`log_only` case escapes ~73% of the time (0.9³). The gate now runs every case
+at ×36 (runbook [§8](triage-retrain-runbook.md#8-gate)), where the same
+regression escapes ~2% of the time (0.9³⁶).
 
 ### What a v2 should change
 
 1. ~~Generate varied, alert-grounded `reason` text instead of four templates~~ —
-   **done (CFOP-153).** See [v2 dataset](#v2-dataset-cfop-153) below.
+   **done (CFOP-153).** See [v2, v3 and v4 datasets](#v2-v3-and-v4-datasets-cfop-153) below.
 2. ~~Fix the `Labels` stopword-extraction bug.~~ — **done (CFOP-153).**
 3. Vary the similar-past block 0–3 and carry real severity, so training shape
    matches serving shape.
@@ -943,24 +950,29 @@ hostname, and a config change is a rollout of both workloads.
 
 ## Deployment, rollback, and the restart gotcha
 
-The wiring landed in **PR #144 / `5a4d88f`** (CFOP-57). Activation is one line in
-the cfoperator config (`cfoperator-deploy` commit `1f517e7`):
-
-```yaml
-llm:
-  triage_model: cfop-triage-ministral3:v1-q4
-```
+The wiring landed in **PR #144 / `5a4d88f`** (CFOP-57): activation is one key,
+`llm.triage_model`, in the cfoperator config. `cfoperator-deploy` commit
+`1f517e7` set it to `v1-q4` on 2026-08-20, and `v5-q4` replaced that on
+2026-09-03. The steps for switching a tag, checking it is live and rolling it
+back are the runbook's [§9 Deploy](triage-retrain-runbook.md#9-deploy); this
+section records how the key behaves and why.
 
 Semantics:
 
-- When set, triage tries this model first and **falls back to the normal chain on
-  any failure or unparseable response**. Unparseable output is not an outage.
+- When set, triage tries this model first, on the host `_triage_url()`
+  resolves, and **falls back to the normal chain on any failure or unparseable
+  response**. Unparseable output is not an outage, and neither is a missing
+  tag: both show up in the fallback counters, not as errors.
 - When unset, triage uses the primary chain unchanged. Investigations are never
   affected either way.
 - The console's Admin → LLM tab overrides it live (DB beats config; `off` there
   disables it despite the config key).
-- **Rollback is deleting the line.** The key is inert on any image without the
-  wiring, so config and image can be deployed in either order.
+- **Deleting the line turns the fine-tune off; pointing it at the previous tag
+  rolls back.** The key is inert on any image without the wiring, so config and
+  image can be deployed in either order.
+- Some alerts never reach the model. Resolution notices, known noise names
+  (`smoke-test-`, `tmp-`, Watchdog; CFOP-162) and severity=info (CFOP-161) are
+  decided in code and come back with `model: null`.
 
 **The restart gotcha is history since CFOP-151** (`cfoperator-deploy` #25). The
 key now lives in `files/config.yaml`, which feeds a `configMapGenerator` named
@@ -978,22 +990,15 @@ and `event-runtime.yaml` both annotate the pod with `checksum/config` (a sha256
 of the rendered ConfigMap), so a `helm upgrade` that changes config rolls both
 deployments by itself. Chart users should not cargo-cult the restart. The Helm
 deployment names also differ (`{release}-cfoperator-agent` /
-`{release}-cfoperator-event-runtime`), so the command above is homelab-specific
-twice over.
-
-Verifying it is live — the response names the model that served it:
-
-```json
-{"action":"log_only","backend":"ollama","confidence":0.9,
- "model":"cfop-triage-ministral3:v1-q4","reason":"known noise pattern (test pod)"}
-```
+`{release}-cfoperator-event-runtime`), so a homelab `kubectl` line does not
+carry over either.
 
 ---
 
 ## Rebuilding from the NAS
 
-If `ubuntu-llm-01` is rebuilt, or the ollama blobs are lost, this is the whole
-recovery. No retraining required.
+If the triage host or `ubuntu-llm-01` is rebuilt, or the ollama blobs are
+lost, this is the whole recovery. No retraining required.
 
 ```bash
 # On ubuntu-llm-01, with /mnt/nas-backup mounted:
@@ -1001,17 +1006,19 @@ ollama create cfop-triage-ministral3:v5-q4 \
   -f /path/to/cfoperator/benchmarks/Modelfile.cfop-triage-v5      # the deployed model
 ollama create cfop-triage-ministral3:v1-q4 \
   -f /path/to/cfoperator/benchmarks/Modelfile.cfop-triage         # the rollback target
-
-# Confirm it answers, then re-run the gate:
-PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v5-q4 --runs 3 --output /tmp/verify.json
 ```
+
+Then confirm it answers by re-running the gate against that host (runbook
+[§8](triage-retrain-runbook.md#8-gate)).
 
 Each Modelfile's `FROM` points at its generation's NAS folder
 (`unsloth/cfoperator-v6/cfop-triage-v5-gguf/` for v5, `mistral-trained-01/` for
-v1), so the only prerequisite is the NAS mount. Every generation's Q8_0 sits
-beside its Q4 with a `-q8` Modelfile (`Modelfile.cfop-triage-v5-q8`); for v1,
-change `FROM` to the `Q8_0.gguf` file and tag it `:v1`.
+v1), so on `ubuntu-llm-01` the only prerequisite is the NAS mount. Production
+reads the tag from the host `llm.triage_url` names, which in the homelab is not
+that box; runbook [§9](triage-retrain-runbook.md#9-deploy) covers getting the
+tag there. The Q8_0 sits beside the Q4 with a `-q8` Modelfile from v4 onward
+(`Modelfile.cfop-triage-v5-q8`), and for the 8B v3 and v4; for v1, change
+`FROM` to the `Q8_0.gguf` file and tag it `:v1`.
 
 ---
 
@@ -1019,11 +1026,12 @@ change `FROM` to the `Q8_0.gguf` file and tag it `:v1`.
 
 Carried over from the v1 session plus the 2026-09-02 review; none are blocking:
 
-- **Eval v2** — the test suite that would have caught the `reason`/`confidence`
-  regression and the majority-class soak blind spot. Tiered plan, power
-  calculations, counterfactual pairs, and a promotion gate in
-  [docs/triage-eval-v2-plan.md](triage-eval-v2-plan.md). First step is a
-  no-code soak of the `log_only`/`notify` cases.
+- **The rest of eval v2.** Tier 0 contract tests, the Tier 3 reason and
+  confidence graders, the p95 latency gate and 36 runs per case landed in
+  CFOP-314. Still open: counterfactual pairs, new Tier 1 cases, shape variants,
+  adversarial cases, shadow replay, the deployed-system integration test,
+  `--baseline` / `--compare`, and the live Modelfile check. The status block
+  of [docs/triage-eval-v2-plan.md](triage-eval-v2-plan.md) is the current list.
 - **Expose the triage timeout as a config/Helm knob.** A dedicated timeout
   already exists: `CFOP_TRIAGE_TIMEOUT_SECONDS` on event_runtime's HTTP client
   (since #39; code default **5s** when unset, and the homelab's
@@ -1033,20 +1041,14 @@ Carried over from the v1 session plus the 2026-09-02 review; none are blocking:
   `CFOP_TRIAGE_*` at all — so a chart install silently runs at 5s.
 - **Helm support for `llm.triage_model`** — the key works in raw config; the
   chart does not expose it.
-- **Ansible provisioning** of the ollama tag on `ubuntu-llm-01`, so a node
-  rebuild does not silently drop triage back to the slow chain.
-- **A triage-model health check.** The failure mode with no signal today is
-  `llm.triage_model` set but the tag absent: cfoperator falls back silently and
-  triage just gets slower. Triage responses already carry the serving `model`
-  field, so alerting on "triage served by something other than the configured
-  model" is cheap.
-- **Confirm `cfoperator-finetune/` is in the NAS→iDrive backup set**, at minimum
-  the 668MB `training-run-1787248524/`.
+- **Ansible provisioning** of the ollama tag on the triage host, so a rebuild
+  does not drop triage back to the slow chain.
+- **A deployed-system test for the fallback.** The metrics and the homelab's
+  alert rules (CFOP-163, above) now show `llm.triage_model` set but the tag
+  absent; what is still missing is the eval plan's Tier 7 check, a test
+  against the live stack that `/v1/triage` answers with the configured model.
 - **Archive the run directory on every future training run**, off the training
   box, before anything else. v1's survived by luck.
-- **v2 retrain** once `triage_conflicts.json` accumulates enough rows to be worth
-  it, ideally with a less lopsided class balance for `escalate` and `log_only`.
-  It can resume from the archived adapter rather than retraining from base.
 - **Tool calling stays out of scope** until ollama ships a working ministral
   tool-call parser (ollama/ollama#16934, #17550). No historical tool transcripts
   exist to train on anyway — `investigation_events` were never written.
@@ -1054,8 +1056,9 @@ Carried over from the v1 session plus the 2026-09-02 review; none are blocking:
 ## See also
 
 - [`docs/triage-retrain-runbook.md`](triage-retrain-runbook.md) — the ordered
-  procedure for producing a new tag. This page is the record of what v1 *is*;
-  that one is what you follow with the training box in front of you.
+  procedure for producing a new tag, and for deploying and rolling it back.
+  This page is the record of what each generation *is*; that one is what you
+  follow with the training box in front of you.
 
 - [`benchmarks/ministral-3-14b-baseline.md`](../benchmarks/ministral-3-14b-baseline.md) — the before/after benchmark write-up
 - [`scripts/build_triage_dataset.py`](../scripts/build_triage_dataset.py) — dataset builder, and the authority on label derivation

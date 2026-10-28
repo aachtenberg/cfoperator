@@ -96,7 +96,7 @@ done
 PYTHONPATH="$PWD" python -m pytest observability auth
 ```
 
-`test_tool_calling.py` needs a live LLM and is excluded from CI.
+`benchmarks/tool_calling_bench.py` needs a live LLM and is not a test suite, so CI never collects it.
 
 ## Version
 Current version is tracked in `VERSION` file. Update when releasing.

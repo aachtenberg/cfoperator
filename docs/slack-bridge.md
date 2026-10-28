@@ -2,10 +2,10 @@
 
 `bridge/` connects to Slack over **Socket Mode** (outbound websocket — the
 homelab exposes nothing) and answers mentions/DMs with the CFOperator agent
-via the `LocalCfopRuntime`. Threads keep conversational history; messages
-starting with `investigate:` enqueue an asynchronous investigation instead
-of a chat. Outbound alert paging stays on event_runtime webhooks — the
-bridge owns conversations only.
+through a pluggable runtime, `LocalCfopRuntime` by default. Threads keep
+conversational history; messages starting with `investigate:` enqueue an
+asynchronous investigation instead of a chat. Outbound alert paging stays on
+event_runtime webhooks — the bridge owns conversations only.
 
 ## Slack app setup (one-time, ~15 min)
 
@@ -27,10 +27,12 @@ bridge owns conversations only.
 | `SLACK_BOT_TOKEN` | — | required, `xoxb-...` |
 | `SLACK_APP_TOKEN` | — | required, `xapp-...` (Socket Mode) |
 | `CFOP_AGENT_URL` | `http://127.0.0.1:8083` | agent base URL |
+| `CFOP_API_TOKEN` | — | required for the local runtime against an authenticated agent: the bridge's own console API token (`/admin?tab=tokens`, `investigate` scope), sent as `Authorization: Bearer`. Without it every mention answers 401 |
 | `CFOP_BRIDGE_RUNTIME` | `local` | `local` (agent chat API) or `anthropic` (Claude over MCP tools) |
 | `CFOP_BRIDGE_CHAT_TIMEOUT` | `300` | per-turn agent deadline (s, local runtime) |
 | `CFOP_BRIDGE_MAX_HISTORY_TURNS` | `10` | thread history cap |
 | `CFOP_BRIDGE_ESCALATION_MODEL` | `claude-opus-5` | model for the `claude:` per-message prefix (local runtime) |
+| `CFOP_BRIDGE_LOG_LEVEL` | `INFO` | logs go to stderr |
 
 ### anthropic runtime (phase 3)
 
@@ -42,7 +44,7 @@ call leaving the cluster. Same Slack app, one env flip.
 |---------|---------|-------|
 | `ANTHROPIC_API_KEY` | — | required (already in `cfoperator-secrets`) |
 | `CFOP_MCP_TOKEN` | — | required; bearer for cfoperator-mcp (from the `cfoperator-mcp` Secret) |
-| `CFOP_MCP_URL` | `http://cfoperator-mcp.apps.svc:8090/mcp` | |
+| `CFOP_MCP_URL` | `http://cfoperator-mcp.apps.svc.cluster.local:8090/mcp` | |
 | `CFOP_BRIDGE_ANTHROPIC_MODEL` | `claude-opus-5` | adaptive thinking on; refusal fallbacks enabled on opus-5/fable |
 | `CFOP_BRIDGE_MAX_TOOL_ITERATIONS` | `15` | cap on the tool loop per turn |
 
@@ -51,16 +53,18 @@ per-token API cost; `local` stays free on the in-cluster model. `investigate:`
 prefix is a `local`-runtime feature — under `anthropic`, Claude decides itself
 when to call `start_investigation`.
 
-Run locally: `SLACK_BOT_TOKEN=... SLACK_APP_TOKEN=... python -m bridge`
+Run locally: `SLACK_BOT_TOKEN=... SLACK_APP_TOKEN=... CFOP_AGENT_URL=... CFOP_API_TOKEN=... python -m bridge`
 
 ## Deployment (live since 2026-07-29)
 
 Deployed as `cfoperator-bridge` in `apps` (cfoperator-deploy repo): same
 image as the agent, `Recreate` strategy (two connected bridges would
 double-answer every mention), amd64-pinned, no Service (Socket Mode is
-outbound-only). The anthropic-runtime creds (`ANTHROPIC_API_KEY`,
-`CFOP_MCP_TOKEN`) are already wired from existing Secrets, so switching
-runtimes is a one-line change of `CFOP_BRIDGE_RUNTIME` in the manifest.
+outbound-only). The local runtime's `CFOP_API_TOKEN` is the bridge's own
+console token, so revoking it silences the bridge alone. The anthropic-runtime
+creds (`ANTHROPIC_API_KEY`, `CFOP_MCP_TOKEN`) are already wired from existing
+Secrets, so switching runtimes is a one-line change of `CFOP_BRIDGE_RUNTIME`
+in the manifest.
 Reference shape:
 
 ```bash
@@ -77,6 +81,8 @@ containers:
     env:
       - name: CFOP_AGENT_URL
         value: http://cfoperator.apps.svc.cluster.local:8083
+      - name: CFOP_API_TOKEN
+        valueFrom: { secretKeyRef: { name: cfoperator-secrets, key: CFOP_API_TOKEN_BRIDGE } }
       - name: SLACK_BOT_TOKEN
         valueFrom: { secretKeyRef: { name: cfoperator-bridge, key: bot_token } }
       - name: SLACK_APP_TOKEN
@@ -120,8 +126,10 @@ The same per-call model selection is exposed to every MCP host via
 
 ## Design notes
 
-- Runtimes are pluggable behind `AgentRuntime` (bridge/runtimes/base.py):
-  phase 3 adds Cursor / Anthropic runtimes without touching slack_app.py.
+- Runtimes are pluggable behind `AgentRuntime` (`bridge/runtimes/base.py`):
+  the Anthropic runtime arrived in phase 3 without touching `slack_app.py`. A
+  Cursor runtime was deferred; the reasons are under "Not built" in
+  [mcp-server.md](mcp-server.md#not-built).
 - Events are acked immediately and processed on worker threads; Slack
   event_id redeliveries are deduped (LRU).
 - Replies are chunked under Slack's 4k message limit on line boundaries.

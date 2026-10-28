@@ -205,8 +205,9 @@ def eligible_peers(op, row: Dict[str, Any]) -> List[Tuple[str, str]]:
     Returns every eligible peer, not just the first, because the caller walks
     them itself. It must: ``_chat_with_tools_with_fallback`` would be the
     obvious way to get failover, and it is exactly wrong here -- its chain is
-    ``chosen -> ollama -> groq -> xai``, so an unreachable frontier peer lands
-    the pass on the local primary whose judgement is the thing under review.
+    ``chosen -> ollama -> groq -> xai -> anthropic -> openrouter``, so an
+    unreachable frontier peer lands the pass on the local primary whose
+    judgement is the thing under review.
 
     An empty list is "skip this row", never a verdict.
     """

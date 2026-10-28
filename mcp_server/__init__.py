@@ -5,6 +5,6 @@ MCP tools and resources so any MCP host (Claude Desktop, Cursor, CLI, CI) can
 work the fleet without a direct line to the agent. Facade only: every tool is
 a thin call to an existing agent route; no OODA loop or LLM lives here.
 
-See docs/mcp-server-plan.md for the contract and docs/mcp-server.md for host
-setup.
+See docs/mcp-server.md for the contract, host setup, and the design
+decisions behind it.
 """

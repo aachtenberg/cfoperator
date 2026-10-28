@@ -9,17 +9,22 @@
     "  cfoperator       — stdio; the host launches `python -m mcp_server` locally.",
     "                     Needs this repo checked out and its requirements installed,",
     "                     plus a reachable agent (kubectl -n apps port-forward",
-    "                     svc/cfoperator 8083:8083). CFOP_MCP_SCOPES is the grant.",
+    "                     svc/cfoperator 8083:8083). CFOP_MCP_SCOPES is the grant;",
+    "                     CFOP_API_TOKEN is the console token (/admin?tab=tokens)",
+    "                     the server presents to the agent, without which every",
+    "                     call answers 401.",
     "  cfoperator-http  — Streamable HTTP against an already-deployed MCP server.",
-    "                     Nothing to install. The bearer is resolved against the",
-    "                     console's auth_api_tokens table, so the *token's* own scopes",
-    "                     apply and CFOP_MCP_SCOPES is not consulted.",
+    "                     Nothing to install. The bearer is verified per token",
+    "                     against the console's auth_api_tokens table, so it can be",
+    "                     revoked alone, but the scope ceiling is still that server's",
+    "                     own CFOP_MCP_SCOPES, not the token's scopes (CFOP-548).",
     "",
     "Scopes are a ladder: remediate > investigate > read. 'read' is enough to work an",
     "incident (list/get investigations, list/get remediations, search knowledge);",
     "'investigate' adds triage_alert / start_investigation / ask_sre. Never put",
-    "'remediate' in a shared host config — approve/reject belong to a deliberate",
-    "human action, not to an agent's tool loop."
+    "'remediate' in a shared host config — approve/reject/resolve and",
+    "triage_investigation belong to a deliberate human action, not to an agent's",
+    "tool loop."
   ],
   "mcpServers": {
     "cfoperator": {

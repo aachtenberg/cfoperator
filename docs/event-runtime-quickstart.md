@@ -10,7 +10,7 @@ flowchart TD
     end
 
     HTTP --> Worker
-    Sources -->|poll| Engine
+    Sources -->|poll| Worker
 
     subgraph Worker["Background Worker Queue"]
         direction LR
@@ -23,11 +23,11 @@ flowchart TD
     subgraph Engine["Event Runtime Engine"]
         direction TB
         Receive["Receive Alert"] --> Policies
-        Policies["Alert Policies<br/>(dedupe, cooldown)"]
+        Policies["Alert Policies<br/>(cooldown, recurrence)"]
         Policies -->|suppressed| Audit
         Policies -->|allowed| Gate
         Gate{"Severity<br/>Gate"}
-        Gate -->|INFO| LogOnly["Log Only"]
+        Gate -->|"INFO (unless a resolution)"| LogOnly["Log Only"]
         Gate -->|WARNING/CRITICAL| Context
 
         subgraph Context["Context Enrichment"]
@@ -37,28 +37,30 @@ flowchart TD
             K3sCtx["K3s Cluster Stats<br/>(kube-state-metrics,<br/>cAdvisor)"]
         end
 
-        Context --> Decision["HTTPTriageDecisionEngine<br/>(POST /v1/triage to agent)"]
-        Decision --> TriageCache["Triage result cache<br/>(per-alert TTL)"]
-        Decision --> Route{"Triage action"}
+        Context --> Decision["HTTPTriageDecisionEngine<br/>(POST /v1/triage to agent;<br/>portable engine without one)"]
+        Decision --> TriageCache["Triage result cache<br/>(per-fingerprint TTL)"]
+        Decision --> Route{"Decided action"}
+        Decision -.->|deep tier on| EscRoute["EscalationRoutingDecisionEngine<br/>(host escalate → deep_investigate,<br/>other escalate → notify)"]
+        EscRoute -.-> Route
         Route -->|log_only| LogOnly
         Route -->|notify| NotifyOnly["notify handler<br/>(no investigation)"]
-        Route -->|investigate / escalate| Handler{"Action<br/>Handler?"}
-        Handler -->|missing| Fail["Record action_missing"]
-        Handler -->|found| Execute["Execute Action<br/>(HTTPInvestigateActionHandler<br/>or stub)"]
-        Execute --> Schedule["Schedule Follow-up<br/>Tasks (optional)"]
+        Route -->|"investigate / deep_investigate / escalate"| Handler{"Action<br/>Handler?"}
+        Handler -->|"missing (escalate, deep tier off)"| Fail["Record action_missing"]
+        Handler -->|found| Execute["Execute Action<br/>(HTTPInvestigateActionHandler,<br/>DeepInvestigationActionHandler, or stub)"]
+        Execute --> Schedule["Schedule Follow-up<br/>Tasks (portable engine only)"]
     end
 
     Execute -.->|CFOP_AGENT_URL set| AgentDispatch["POST /v1/investigate<br/>to CFOperator agent<br/>(HTTPInvestigateActionHandler)"]
     AgentDispatch -.-> AgentLoop["Agent runs LLM<br/>investigation with tools"]
     AgentLoop -.->|POST /v1/investigations/<br/>{alert_id}/complete<br/>(X-CFOP-Token)| Completion["record_external_<br/>action_completion()"]
     Completion --> Audit
-    Completion --> Notify["Notification Sinks<br/>(Slack, Discord)<br/><i>tagged 'triaged by &lt;backend&gt;/&lt;model&gt;'</i>"]
+    Completion -->|"Investigated by provider"| Notify["Notification Sinks<br/>(Slack, Discord, ntfy)"]
 
     LogOnly --> Audit
     Fail --> Audit
     Execute --> Audit
     NotifyOnly --> Audit
-    NotifyOnly --> Notify
+    NotifyOnly -->|"triaged by backend/model"| Notify
     Schedule --> Scheduler["Scheduler<br/>(JSON fallback or APScheduler backend)"]
 
     subgraph Audit["State Sink (audit trail)"]
@@ -83,21 +85,22 @@ flowchart TD
 
 ### Alert Processing Flow
 
-1. **Intake** — alerts arrive via `POST /alert` (async to worker queue) or from polled alert sources
+1. **Intake** — alerts arrive via `POST /alert` or from polled alert sources. Both go through the background worker queue while workers are running (`CFOP_EVENT_RUNTIME_WORKER_COUNT`, default `1`), and straight to the engine when it is `0`.
 2. **Policy Gating** — pluggable policies evaluate the alert (e.g., fingerprint-based duplicate suppression with configurable cooldown)
-3. **Severity Gate** — INFO alerts are logged without invoking the decision engine
+3. **Severity Gate** — INFO alerts are logged without invoking the decision engine. The exception is an INFO alert carrying `details.resolution` (the agent's "finding cleared" notice): it passes the gate so triage can short-circuit it to a `Resolved:` notification without an LLM call.
 4. **Context Enrichment** — pluggable providers attach investigation context:
    - Host context (hostname, PID)
    - Bare-metal OS stats (local `/proc`, SSH, Prometheus node-exporter)
-   - K3s cluster stats (node conditions, pod counts, CPU/memory usage, restart counts via kube-state-metrics + cAdvisor)
-5. **Triage Decision** — `HTTPTriageDecisionEngine` POSTs the alert to the agent's `/v1/triage` so the LLM classifies it into one of `log_only` / `notify` / `investigate` / `escalate`. The agent's response includes which provider actually served the classification (`triage_backend` + `triage_model`), which is stored in `Decision.params` for downstream attribution. Results are cached per-alert with a short TTL so duplicate firings don't re-call the LLM.
+   - K3s cluster stats (node conditions, pod counts, CPU/memory usage, restart counts via kube-state-metrics + cAdvisor), from the `k3s` provider
+5. **Triage Decision** — with `CFOP_AGENT_URL` set, `HTTPTriageDecisionEngine` POSTs the alert to the agent's `/v1/triage` so the LLM classifies it into one of `log_only` / `notify` / `investigate` / `escalate`. The agent answers with `action`, `reason` and `confidence`, plus the provider that served the classification as `backend` and `model`; the runtime stores those two in `Decision.params` as `triage_backend` and `triage_model` for downstream attribution. Successful results are cached per alert fingerprint for 300 s so duplicate firings don't re-call the LLM. A failed call, a timeout included, becomes `investigate` with confidence `0` and is not cached, so a triage outage does not lock that answer in. Without `CFOP_AGENT_URL`, the portable `OpenReasoningDecisionEngine` decides instead, from `details.requested_action` (default `investigate`).
 6. **Action Execution** — the runtime routes by triage action:
    - `log_only` — record-only; no notification, no investigation.
    - `notify` — single-line Slack/Discord notification, no LLM investigation. The notification renders `triaged by <backend>/<model>` so operators can see which LLM made the call.
-   - `investigate` / `escalate` — dispatched to the matched action handler. With `CFOP_AGENT_URL` set, `HTTPInvestigateActionHandler` POSTs the alert to the CFOperator agent's `/v1/investigate` and returns a quiet (non-notifying) `ActionResult`. Without it, the default stub handler runs (records intent only).
-7. **Scheduling** — follow-up checks are persisted to the scheduler store and polled back into the runtime as synthetic alerts when they become due
+   - `investigate` — dispatched to the `investigate` handler. With `CFOP_AGENT_URL` set, `HTTPInvestigateActionHandler` POSTs the alert to the CFOperator agent's `/v1/investigate` and returns a quiet (non-notifying) `ActionResult`. Without it, the default stub handler runs (records intent only).
+   - `escalate` — has no handler of its own. With the [deep-investigation tier](deep-investigation.md) on, `EscalationRoutingDecisionEngine` rewrites it before dispatch: a host-shaped alert becomes `deep_investigate` (an ephemeral forensics Job), and anything else becomes `escalate_fallback_action` (default `notify`). With the tier off, which is the code default, an `escalate` verdict finds no handler: the runtime records `action_missing`, the alert ends `status: failed`, and no notification is sent.
+7. **Scheduling (portable engine only)** — follow-up checks a decision carries are persisted to the scheduler store and polled back into the runtime as synthetic alerts when they become due. Only `OpenReasoningDecisionEngine` reads them, from the alert's `details.scheduled_tasks` (and records `details.requested_checks` alongside). `HTTPTriageDecisionEngine` builds its decision without either, so with `CFOP_AGENT_URL` set those fields are ignored.
 8. **Audit** — every step emits append-only domain events to the local JSONL outbox, with background replay to PostgreSQL when configured
-9. **Completion Post-Back (delegated investigations only)** — when the agent finishes its LLM investigation, it POSTs the completed `ActionResult` to `/v1/investigations/{alert_id}/complete` with the `X-CFOP-Token` header. The runtime records an `action_completed` event tagged `source=external` and fires the single Slack/Discord notification with the real outcome, including the `triaged by …` attribution line carried through from the original triage decision.
+9. **Completion Post-Back (delegated investigations only)** — when the agent finishes its LLM investigation, it POSTs the completed `ActionResult` to `/v1/investigations/{alert_id}/complete` with the `X-CFOP-Token` header. The runtime records an `action_completed` event tagged `source=external` and fires the single notification with the real outcome. The original triage `Decision` is no longer in scope on this path, so the notification names the model that investigated (`Investigated by: <provider>`, from the result's `details.provider`) and has no `triaged by` line. That line appears only on notifications sent in-process, such as a `notify` verdict's.
 
 ## Minimal Setup
 
@@ -153,6 +156,7 @@ event_runtime:
 
 ## Endpoints
 
+- `GET /livez` — liveness only; answers without touching the runtime
 - `GET /health`
 - `GET /history?limit=50`
 - `GET /activity?limit=25&status=&action=` — the newest alerts with their full timelines (the legacy feed; served from the read model below)
@@ -198,11 +202,13 @@ python3 -m pip install fastapi uvicorn prometheus-client
 uvicorn event_runtime.fastapi_app:build_app --factory --host 0.0.0.0 --port 8080
 ```
 
-The runtime core is the same. Only the HTTP adapter changes.
+The runtime core is the same, but the ASGI adapter serves the HTTP surface only. It runs no poll loop, so polled alert sources (`CFOP_EVENT_RUNTIME_ALERTMANAGER_URL`, due scheduled follow-ups, plugins such as Dynatrace) are never polled and the heartbeat never beats. Use the stdlib server when the runtime has to poll.
 
 If `prometheus-client` is missing, `GET /metrics` falls back to a placeholder response instead of exporting runtime series.
 
 ## Example Alert
+
+This example drives the portable decision engine, the one that runs without `CFOP_AGENT_URL`: it reads `requested_action`, `requested_checks` and `scheduled_tasks` from `details`. With an agent configured, triage decides the action and those fields are ignored. With `CFOP_RUNTIME_TOKEN` set, add `-H "Authorization: Bearer $CFOP_RUNTIME_TOKEN"`.
 
 ```bash
 curl -X POST http://127.0.0.1:8080/alert \
@@ -234,12 +240,16 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_OUTBOX_DIR`: override outbox storage path
 - `CFOP_EVENT_RUNTIME_SCHEDULE_DIR`: override scheduled task storage path
 - `CFOP_EVENT_RUNTIME_PG_DSN`: optional PostgreSQL DSN for remote event persistence
-- `CFOP_EVENT_RUNTIME_REPLAY_INTERVAL_SECONDS`: optional replay interval for syncing outbox events to PostgreSQL
+- `CFOP_EVENT_RUNTIME_PG_ENABLED`: force PostgreSQL persistence on or off; `0` disables it even with a DSN set. See [Optional PostgreSQL Persistence](#optional-postgresql-persistence)
+- `CFOP_EVENT_RUNTIME_PG_TABLE_NAME`: event table name, default `event_runtime_events`
+- `CFOP_EVENT_RUNTIME_REPLAY_INTERVAL_SECONDS`: how often the outbox is replayed to PostgreSQL, default `30`
 - `CFOP_EVENT_RUNTIME_SCHEDULER_BACKEND`: scheduler backend selection, `json-file` or `apscheduler`
 - `CFOP_EVENT_RUNTIME_APSCHEDULER_JOBSTORE_URL`: optional explicit APScheduler SQLAlchemy job store URL
 - `CFOP_EVENT_RUNTIME_APSCHEDULER_SPOOL_PATH`: optional path for fired APScheduler runs waiting to be polled into alerts
 - `CFOP_EVENT_RUNTIME_APSCHEDULER_MISFIRE_GRACE_SECONDS`: grace window for delayed APScheduler runs, default `300`
 - `CFOP_EVENT_RUNTIME_DEDUPE_COOLDOWN_SECONDS`: duplicate suppression window in seconds, default `300`, set to `0` to disable
+- `CFOP_EVENT_RUNTIME_RECURRENCE_WINDOW_SECONDS`: how long an identical recurring alert stays quiet after it first got through, default `21600` (6 h), set to `0` to disable recurrence suppression
+- `CFOP_EVENT_RUNTIME_RECURRENCE_CRITICAL_SECONDS`: the same window for critical alerts, default `1800` (30 min), shorter so a critical keeps reminding
 - `CFOP_EVENT_RUNTIME_WORKER_COUNT`: background worker count, default `1`, set to `0` to force synchronous processing
 - `CFOP_EVENT_RUNTIME_MAX_QUEUE_SIZE`: max in-memory queued jobs, default `1000`
 - `CFOP_EVENT_RUNTIME_MAX_RETRIES`: attempts for a job whose handler raised, default `2`. A retry skips the alert policies, which already admitted the alert
@@ -249,10 +259,22 @@ curl -X POST http://127.0.0.1:8080/alert \
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_ENABLED`: enable bare-metal host observability plugins, default `1`
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_JSON`: inline JSON config for bare-metal observability providers
 - `CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_CONFIG_PATH`: path to a JSON config file for bare-metal observability providers
-- `CFOP_AGENT_URL`: base URL of the CFOperator agent (e.g. `http://cfoperator.apps.svc.cluster.local:8083`). When set, the runtime registers `HTTPInvestigateActionHandler` in place of the default stub for the `investigate` action, so every `investigate` decision is dispatched to the agent over HTTP. Unsetting it falls back to the stub.
-- `CFOP_RUNTIME_TOKEN`: bearer token enforced on the HTTP surface — `POST /alert` (which enqueues LLM investigations) plus the `/history`, `/activity`, `/scheduled` and `/jobs` read endpoints that replay the fleet's incident history. `/livez`, `/health`, `/metrics` and the completion endpoint (separately authenticated) stay open. When unset, those routes accept unauthenticated requests and a warning is logged at startup. Compared via `secrets.compare_digest`. Set it on the agent as well: the agent sends it on its `/alert` forwards (`event_runtime/client.py`).
+- `CFOP_AGENT_URL`: base URL of the CFOperator agent (e.g. `http://cfoperator.apps.svc.cluster.local:8083`). Setting it changes two things: the decision engine becomes `HTTPTriageDecisionEngine`, which asks the agent's `/v1/triage`, and `HTTPInvestigateActionHandler` replaces the stub for the `investigate` action, so every `investigate` decision is dispatched to the agent over HTTP. Unsetting it falls back to the portable decision engine and the stub.
+- `CFOP_API_TOKEN`: bearer token the runtime sends on its calls into the agent (`/v1/triage`, `/v1/investigate`). The agent's API requires it. Without it no header is sent and the agent answers every call with 401, so triage defaults every alert to `investigate` with confidence 0 and the dispatch fails as rejected.
+- `CFOP_TRIAGE_TIMEOUT_SECONDS`: timeout for the `/v1/triage` call, default `5`. That suits a fast hosted triage model. A local model can take 30–90 s per classification, and below that every fresh alert's triage times out and defaults to `investigate`, which quietly turns the triage tier off.
+- `CFOP_RUNTIME_TOKEN`: bearer token enforced on every route except `/livez`, `/health`, `/metrics` and the completion endpoint (separately authenticated). That covers `POST /alert` (which enqueues LLM investigations) and the read endpoints that replay the fleet's incident history: `/history`, `/activity`, `/v1/alerts`, `/v1/alerts/<alert_id>`, `/scheduled` and `/jobs`. When unset, those routes accept unauthenticated requests and a warning is logged at startup. Compared via `secrets.compare_digest`. Set it on the agent as well: the agent sends it on its `/alert` forwards (`event_runtime/client.py`).
 - `CFOP_EVENT_RUNTIME_PLUGINS`: plugins to load after the built-ins, as comma-separated `module` or `module:callable` entries (callable defaults to `register`). A named plugin that cannot be loaded stops the runtime at startup. See [External Plugins](#external-plugins).
 - `CFOP_COMPLETION_SHARED_SECRET`: shared secret enforced on `POST /v1/investigations/{alert_id}/complete`. Callers must send a matching `X-CFOP-Token` header. When unset, the endpoint accepts unauthenticated posts (portable deployments without an agent stay runnable) and logs a warning at startup. Compared via `secrets.compare_digest` to avoid timing attacks.
+- `CFOP_EVENT_RUNTIME_ALERTMANAGER_URL`: when set, the runtime polls this Alertmanager as an alert source, every `--poll-interval` seconds (default `30`; the stdlib server only, see [Optional ASGI Mode](#optional-asgi-mode))
+- `CFOP_EVENT_RUNTIME_RESOLUTION_NOTIFICATIONS`: send one `Resolved:` notice when an escalated alert clears, default `true`
+- `CFOP_DIGEST_LOW_SEVERITY`: route resolutions, recovered `monitoring` and `info` outcomes to the digest instead of real-time notification, default on; `0` sends every completion in real time. See [noise-reduction.md](noise-reduction.md)
+- `CFOP_EVENT_RUNTIME_LOG_LEVEL`: log level, default `INFO`
+
+Notification sinks come from `observability.notifications` in `config.yaml`, the block the agent reads. When that yields no sink, the runtime falls back to `SLACK_WEBHOOK_URL`, `DISCORD_WEBHOOK_URL`, and `NTFY_URL` with `NTFY_TOPIC` (plus the optional `NTFY_TOKEN`, `NTFY_TITLE`, `NTFY_TIMEOUT`, `NTFY_PRIORITY_MAP`, `NTFY_TAGS_MAP` and `NTFY_DEFAULT_PRIORITY`).
+
+Git change context and the GitHub action handlers (`open_pr`, `comment_issue`, `investigate_code`) are registered only when repos are configured: `CFOP_GIT_REPOS_JSON` first, then the console's repo registry in the database, then `git.repos` in `config.yaml`. They authenticate with `CFOP_GITHUB_TOKEN` (falling back to `GITHUB_TOKEN`, then `git.github.token`) against `CFOP_GITHUB_API_URL` (default `https://api.github.com`). The list is read at startup, so a repo linked in the console reaches the runtime on its next restart.
+
+The deep-investigation tier's `CFOP_DEEP_*` overrides are described in [deep-investigation.md](deep-investigation.md#tuning), with every key in [config-reference.md](config-reference.md).
 
 The runtime also reads bare-metal host observability config from `config.yaml` when PyYAML is available. It looks for `event_runtime.host_observability` first, then `observability.host_observability`. You can point the runtime at a specific file with `CONFIG_PATH=/path/to/config.yaml` or `python3 -m event_runtime --config /path/to/config.yaml`.
 
@@ -265,12 +287,14 @@ Supported provider types:
 - `local`: zero-dependency stats from the current host via stdlib and `/proc`
 - `ssh`: configured remote hosts over SSH
 - `prometheus`: discovered or configured node-exporter targets from Prometheus
+- `k3s`: cluster stats from the kube-state-metrics and cAdvisor series a Prometheus already scrapes (node conditions, pod counts, restart offenders, per-node CPU and memory)
 
 Discovery model:
 
 - `local` always discovers the runtime host
 - `ssh` discovers the configured host list
 - `prometheus` can auto-discover targets with `up{job=~"node-exporter|node_exporter"} == 1`
+- `k3s` discovers cluster nodes from `kube_node_info`
 - discovery is refreshed periodically at `refresh_interval_seconds`, default `300`; set it to `0` to refresh on every alert
 
 Example config file:
@@ -422,6 +446,7 @@ Key metric families include:
 - `cfoperator_event_runtime_host_discovery_runs_total`
 - `cfoperator_event_runtime_host_discovered_targets`
 - `cfoperator_event_runtime_host_observation_runs_total`
+- `cfoperator_event_runtime_last_poll_timestamp_seconds{source}` — when each alert source last polled without error. Read it as an age: `CFOperatorEventRuntimePollStalled` fires when it goes stale, which catches a runtime that is up and scraped while its poll loop fails every cycle. For the failure that takes the in-cluster Prometheus down with the runtime, `event_runtime.heartbeat` pushes to a dead-man's-switch URL you own after each clean poll cycle (CFOP-152; see [config-reference.md](config-reference.md)).
 - `cfoperator_event_runtime_completion_requests_total{outcome}` — outcome label: `recorded`, `auth_missing`, `auth_invalid`, `bad_request`, `error`. Inbound to `POST /v1/investigations/{alert_id}/complete`. Auth-related labels surfacing > 0 indicates someone is trying to hit the endpoint without (or with the wrong) `X-CFOP-Token`.
 
 Import [grafana/event-runtime-dashboard.json](../grafana/event-runtime-dashboard.json) into Grafana to observe alert throughput, queue health, replay behavior, scheduled follow-up tasks, and end-to-end latency.
@@ -598,9 +623,37 @@ export DT_API_URL=https://<env>.live.dynatrace.com   # derived from DT_ENVIRONME
 
 - The portable mode is intentionally minimal and safe.
 - It records and schedules work locally.
-- Remote sinks, richer context providers, and Kubernetes-backed schedulers can be added later without changing the runtime boundary.
+- New sinks, context providers and schedulers plug in through the same plugin roles (see [External Plugins](#external-plugins)) without changing the runtime boundary.
 - Bare-metal observability is pluggable and can be purely local, explicitly configured, or discovery-driven depending on the providers you enable.
 - ASGI mode is optional and should be treated as an adapter, not a required dependency.
 - Optional PostgreSQL persistence does not change the runtime rule that local durability comes first.
 - Background workers improve intake latency but do not change the core runtime decision flow.
 - Worker job state is persisted locally so queued alerts survive restart by default.
+
+## History and design decisions
+
+The runtime was built beside the agent, under `event_runtime/`, as a modular replacement for monolithic event handling. Its founding requirement was that alert intake, the severity gate and safe actions keep working when PostgreSQL is down, on a host with nothing but Python 3.11. Persistence is a sink, not a prerequisite.
+
+Decisions that still hold:
+
+- **Local durability first.** The local outbox is the write boundary. `CompositeStateSink` succeeds if at least one durable sink succeeds, and remote writes are idempotent by `event_id`, so replay is always safe. A database outage costs the history view its speed, never intake.
+- **Adapters are transport-only.** The stdlib server and the FastAPI adapter wrap the same `EventRuntime` and own no business logic. That is why ASGI mode is optional and the zero-dependency path stays first-class.
+- **Capabilities, not checklists.** Context plugins expose capabilities, not a mandatory ordered script, and the decision engine chooses which lines of inquiry matter for a given alert. Hard constraints are limited to platform safety boundaries: the severity gate, allowlisted actions, execution budgets, and tenant or namespace scope. This keeps the system from degenerating into spaghetti code with hidden if-else trees for every alert type.
+- **Interface rules.** Plugins communicate through runtime models, not through each other's concrete classes, and runtime code depends on plugin interfaces, never on implementations. State sinks never block alert intake on remote availability. Every mutation in the runtime emits a domain event. Scheduling is a separate capability, not a side effect hidden inside an action or decision engine. Work the model asks for runs from templates under policy, never as shell strings the model builds inline; the deep-investigation worker's `worker/templates/` and its tool ceiling are that rule in practice.
+- **Migrate by building beside.** The plan was to leave the agent's own loop untouched, route one ingress path into the runtime first, then move event sources over one at a time. Only part of that move happened, which is why the agent still checks Alertmanager in its own loop and forwards its sweep findings and `Resolved:` notices to `POST /alert` instead of the runtime owning those sources.
+
+Rejected along the way: PostgreSQL as a hard dependency (an outage would have stopped triage), per-alert-type checklists in the engine (the spaghetti above), and letting the model compose recurring checks as raw shell (unreviewable, and not bounded by any allowlist).
+
+Trail:
+
+- 2026-04-07: scaffold, portable bootstrap, ASGI adapter, PostgreSQL replay sink, duplicate suppression, and the background worker queue with jobs persisted across restarts.
+- 2026-05-26: `HTTPInvestigateActionHandler` and the completion post-back replace the `investigate` stub when `CFOP_AGENT_URL` is set.
+- 2026-05-27: `HTTPTriageDecisionEngine` replaces the portable engine for triage when an agent is configured.
+- 2026-06-04/05: digest routing and recurrence suppression ([noise-reduction.md](noise-reduction.md), Tier 2).
+- 2026-06-11: the deep-investigation tier and its boot-forensics route ([deep-investigation.md](deep-investigation.md)).
+- 2026-08-05: `CFOP_RUNTIME_TOKEN` closes the HTTP surface.
+- 2026-09-02: per-source poll timestamps and the outbound heartbeat (CFOP-152).
+- 2026-09-24: external plugins (`CFOP_EVENT_RUNTIME_PLUGINS`).
+- 2026-09-26: the per-alert read model behind `/v1/alerts` (CFOP-215).
+
+Not built, and not planned: a Kubernetes event watcher source (Alertmanager and the scheduler are the only built-in sources, with Dynatrace an optional plugin); Prometheus and Loki context providers beyond the node-exporter and `k3s` host stats; scheduler backends for Kubernetes CronJobs, or CronJob alert producers; destructive action handlers in the runtime (mutation lives in the agent's remediation path and the executor, and every change there has a named human behind it, see [REMEDIATION.md](REMEDIATION.md#safety-model)); retiring the agent's sweep, which is still the main source of findings; the LLM proposing recurring checks through triage (only the portable engine reads `scheduled_tasks`); and a degraded health flag for a growing outbox (the nearest signals are the replay checkpoints in `/health` and `lagging` on `/v1/alerts`).

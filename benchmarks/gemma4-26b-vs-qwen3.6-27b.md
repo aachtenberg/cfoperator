@@ -6,7 +6,7 @@
 
 Three axes, matching the established methodology (see `qwen3.6-27b-tool-calling.md`):
 
-1. **Tool-calling** — T1/T2/T3 suite (`test_tool_calling.py` via `scripts/test_model_local.py`)
+1. **Tool-calling** — T1/T2/T3 suite (`benchmarks/tool_calling_bench.py` via `scripts/test_model_local.py`)
 2. **Triage classification** — exact production prompt + parser from `agent.run_triage`
    (8 ground-truth alerts × 3 runs; JSON validity + action accuracy + latency)
 3. **Inference latency** — `benchmarks/ollama_latency_bench.py`, 5 iterations + 1 warmup

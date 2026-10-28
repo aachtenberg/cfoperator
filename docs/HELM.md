@@ -37,8 +37,11 @@ bundled by default; `postgres.bundled: false` + `postgres.external.*` brings
 your own (it must allow `CREATE EXTENSION vector`, or embeddings stay off).
 
 Admin credentials: username `admin`; the password is generated and printed
-once by the bootstrap Job — `kubectl logs job/<release>-bootstrap` (the
-install NOTES show the exact command).
+once by the bootstrap Job — `kubectl -n <ns> logs job/<fullname>-bootstrap`
+(the install NOTES show the exact command). Every resource is named from
+`<fullname>`, which is `<release>-cfoperator`, or just `<release>` when the
+release name already contains `cfoperator` (so `helm install cfoperator …`
+gives `cfoperator-bootstrap`).
 
 ## Profiles
 
@@ -50,7 +53,27 @@ install NOTES show the exact command).
   write access to exactly one resource: batch Jobs in the release namespace
   (create for the drainer, delete for the reaper). Executor Jobs themselves
   have no RBAC — their only output is a GitHub PR and a completion callback;
-  the human gate is the merge button.
+  the human gate is the merge button. The cockpit values below are separate
+  grants and are not implied by either profile.
+
+## Cockpit values
+
+All off by default. What the cockpit is, its tiers, and the hand-deployed
+equivalent of each value are in [cockpit.md](cockpit.md).
+
+| Value | Default | Effect |
+|---|---|---|
+| `cockpit.enabled` | `false` | Tier 1 (`cfassist attach --spawn` into a pod). Creates the read-only `cfoperator-cockpit` identity and grants the agent Jobs plus `create` (only) on Secrets in the release namespace. |
+| `cockpit.ssh.secretName` | `""` | Secret holding the private key the agent uses to reach hosts outside the cluster (tiers 2/3). Mounted on the agent at `/cockpit-ssh` with `CFOP_COCKPIT_SSH_SECRET_DIR` set. Takes effect only with `cockpit.enabled`. |
+| `cockpit.ssh.user` | `sre` | `CFOP_COCKPIT_SSH_USER`, the login for hosts whose `infrastructure.hosts` entry sets none. Set only together with `ssh.secretName`. |
+| `cockpit.hostAgentUrl` | `""` | `CFOP_COCKPIT_HOST_AGENT_URL`, the agent address a session on a host calls. A host-tier spawn is refused until it is set. |
+| `cockpit.fallbackHost` | `""` | `CFOP_COCKPIT_FALLBACK_HOST`, the `infrastructure.hosts` name the browser drawer lands on when the affected machine cannot have a session. |
+| `cockpit.bridgePodAttach` | `false` | Grants the agent `create` on `pods/attach` in the release namespace, for browser terminals into cockpit pods. Needs `cockpit.enabled`, and pairs with the runtime `cockpit.bridge_pod_tier`. |
+
+The chart's ConfigMap writes no `cockpit:` or `infrastructure:` block and the
+chart takes no extra env, so the host inventory the host tiers resolve names
+against, and the runtime bridge keys (`bridge_enabled`, `bridge_origins`,
+`bridge_pod_tier`), cannot be set from values today.
 
 ## What differs from the compose trial
 
@@ -92,7 +115,7 @@ old database and the pods loop on `password authentication failed`. Either
 delete the PVC for a truly fresh start:
 
 ```bash
-kubectl -n <ns> delete pvc data-<release>-postgres-0
+kubectl -n <ns> delete pvc data-<fullname>-postgres-0
 ```
 
 or set `postgres.password` explicitly so it survives reinstalls.

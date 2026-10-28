@@ -6,8 +6,9 @@ Small project, no ceremony. Issues and PRs both welcome.
 
 **`pytest` at the repo root does not work, and the way it fails looks like a
 real bug.** Several trees ship a top-level module of the same name
-(`nodeaction`, `entrypoint`, `server`), and most directories use bare imports
-that need their own directory on `sys.path`, so a single collection run
+(`entrypoint` in five of them, `llm` in two, and test files such as
+`test_entrypoint.py` and `test_contract.py`), and most directories use bare
+imports that need their own directory on `sys.path`, so a single collection run
 collides.
 
 Each directory is its own invocation:
@@ -17,21 +18,36 @@ pip install -r requirements.txt pytest
 
 # Per-directory suites: the directory itself, then the repo root
 for d in agent tools event_runtime executor changerecord tracker discovery worker mcp_server/tests bridge/tests; do
-    PYTHONPATH="$d:$PWD" pytest "$d" -q || break
+    PYTHONPATH="$PWD/$d:$PWD" python -m pytest "$d" -q || break
 done
 
-# observability and auth are the exceptions — repo root ONLY.
-# Putting their directory on the path lets observability/docker.py shadow the
-# real `docker` package, and auth/tokens.py shadow anything of that name.
-PYTHONPATH="$PWD" pytest observability auth -q
+# observability, auth and integrations are the exceptions — repo root ONLY.
+# Their tests use absolute imports. Putting observability/ on the path lets
+# observability/docker.py shadow the real `docker` package, and auth/tokens.py
+# shadow anything of that name.
+PYTHONPATH="$PWD" python -m pytest observability -q
+PYTHONPATH="$PWD" python -m pytest auth -q
+PYTHONPATH="$PWD" python -m pytest integrations -q
 
 # Everything else lives in tests/ and collects as one directory
-PYTHONPATH="$PWD" pytest tests -q
+PYTHONPATH="$PWD" python -m pytest tests -q
+
+# The two Go modules, each its own CI job
+(cd cfassist-go && go test ./...)
+(cd dedupe && test -z "$(gofmt -l .)" && go vet ./... && go test ./...)
 ```
 
 `.github/workflows/tests.yml` is the authoritative version of the above. If it
 disagrees with this file, it wins — mirror it rather than inventing an
-invocation.
+invocation. CI also runs a pgvector Postgres for the suites that test real SQL
+(`tests/test_alert_store_pg.py`, `tests/test_db_rollout.py`). Locally they skip
+unless `CFOP_TEST_PG_DSN` names one; in CI a missing DSN fails them instead, so
+losing the service cannot turn into a green run that tested nothing.
+
+`benchmarks/tool_calling_bench.py` is a live-LLM benchmark, not a suite — run it
+directly. It used to sit at the root as `test_tool_calling.py` and had to be
+excluded from CI by hand, because pytest read its `def test_model(host, url,
+model)` parameters as fixtures and died at setup.
 
 **Missing dependencies surface as confusing failures rather than clean skips.**
 A missing `prometheus-client` makes `event_runtime.telemetry` drop
@@ -65,15 +81,18 @@ nothing and pass having checked nothing.
 
 ## The one architectural rule
 
-**The agent proposes; a human disposes.** It may open a pull request. It may not
-mutate a running cluster. Any change that moves an action across that line needs
-to be a conversation first, however well-gated it looks — that boundary is the
-reason the thing is trustworthy enough to run unattended.
+**The agent proposes; a human disposes.** CFOperator never changes anything
+unattended: every change has a named human behind it, and
+[SECURITY.md](SECURITY.md#design-limits-not-vulnerabilities) lists exactly who
+and where. Any change that moves an action across that line — a new way for
+something to change without one of those people — needs to be a conversation
+first, however well-gated it looks. That boundary is the reason the thing is
+trustworthy enough to run unattended.
 
 ## Console UI
 
-Five static pages in `ui/`, no build step, no framework. The header is shared
-via `ui/nav.js` — **don't hand-roll one on a new page**, add the mount and the
+Six console pages in `ui/` (plus `login.html`), no build step, no framework.
+The header is shared via `ui/nav.js` — **don't hand-roll one on a new page**, add the mount and the
 script (`test_console_nav.py` enforces this). Pages needing the current user
 should `await CFOP.me()` rather than re-fetching `/api/auth/me`; since `nav.js`
 is deferred, a page's own bootstrap must run on `DOMContentLoaded`.

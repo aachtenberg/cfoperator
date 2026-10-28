@@ -30,9 +30,13 @@ have separate ones with different ideas about defaults, which is how they drifte
 
 ### Consequences worth knowing
 
-* A malformed or non-mapping `config.yaml` logs an error and falls back to
-  defaults rather than raising at import time. A stack trace three layers into
-  startup is harder to diagnose than a running agent saying what it ignored.
+* A `config.yaml` that exists but does not parse, or is not a mapping, stops
+  the process with a `ConfigError` instead of starting on defaults. A mounted
+  file is a stated intent: a pod quietly running on defaults would report
+  healthy with empty Prometheus and Loki URLs and every remediation flag off,
+  and a pod that refuses to start is the louder, cheaper failure. A missing
+  file is a supported way to run (defaults, `profile: investigate`), and an
+  empty file means no overrides.
 * Sections you omit are still present in the resolved config, with default
   values. Code reading `config.get('x', {}).get('y')` gets the default, not
   `None`.
@@ -91,12 +95,18 @@ breaking change to existing configs for cosmetic gain.
 |---|---|---|
 | SSH host inventory / hybrid fleet | `infrastructure.hosts`, `event_runtime.host_observability.providers` | [infrastructure-config.md](infrastructure-config.md) |
 | Deep-investigation tier | `event_runtime.deep_investigation` | [deep-investigation.md](deep-investigation.md) |
-| Remediation queue, executor, PRs | `remediation` | [remediation-pipeline.md](remediation-pipeline.md) |
+| Remediation queue, executor, PRs | `remediation` | [REMEDIATION.md](REMEDIATION.md) |
 | Incident cockpit (`attach --spawn`) | `cockpit` | [cockpit.md](cockpit.md) |
-| Git / GitHub repo mapping | `git` | [remediation-pipeline.md](remediation-pipeline.md) |
+| Git / GitHub repo mapping | `git` | [REMEDIATION.md](REMEDIATION.md) |
 | Event-runtime persistence & scheduling | `event_runtime.persistence`, `event_runtime.scheduler` | [event-runtime-quickstart.md](event-runtime-quickstart.md) |
 | MCP server | env-driven | [mcp-server.md](mcp-server.md) |
 | Slack Socket Mode bridge | env-driven | [slack-bridge.md](slack-bridge.md) |
+
+The TimescaleDB telemetry tool (`timescale_query`) is env-driven too. It is
+registered only when `TIMESCALE_PASSWORD` is set, and reads `TIMESCALE_HOST`
+(default `timescaledb.data.svc.cluster.local`), `TIMESCALE_PORT` (5432),
+`TIMESCALE_DB` (`sensors`) and `TIMESCALE_USER` (`cfoperator_ro`). Those
+defaults name this project's own database, so anywhere else set them all.
 
 ## The full config
 
@@ -113,24 +123,30 @@ annotated kitchen sink that `config.yaml.example` used to be.
 # at startup and runs with that backend off. See docs/infrastructure-config.md
 # for the shipped / planned / not-planned matrix and for what can be extended.
 observability:
-  # Metrics backend. Shipped: prometheus
+  # Metrics backend. Shipped: prometheus. An empty or absent url is the off
+  # state. The query timeout is fixed in code (30s): a `timeout:` key here is
+  # not read.
   metrics:
     backend: prometheus
     url: http://prometheus:9090
-    timeout: 30
 
-  # Logs backend. Shipped: loki
+  # Logs backend. Shipped: loki. Optional: without a url there are no log
+  # queries and nothing else changes. Same fixed 30s query timeout.
   logs:
     backend: loki
     url: http://loki:3100
-    timeout: 30
 
   # Container runtimes - one or many (like notifications).
   # Shipped: kubernetes, docker, prometheus (bare-metal discovery)
   containers:
     - backend: kubernetes
+      # Optional on this entry: kubeconfig and context. Unset here, the
+      # top-level `kubernetes:` block below is used; unset there too, kubectl's
+      # own default applies (the pod's service account, or KUBECONFIG).
+      # kubeconfig: ~/.kube/config
+      # context: homelab
     - backend: prometheus    # bare-metal Docker via Prometheus discovery + SSH
-      ssh_user: sre
+      ssh_user: sre          # the default when omitted
     # - backend: docker      # direct Docker API
     #   hosts:
     #     local: unix:///var/run/docker.sock
@@ -141,7 +157,10 @@ observability:
     backend: alertmanager
     url: http://alertmanager:9093
 
-  # Notifications backend - choose one or many:
+  # Notifications backend - choose one or many. Both processes read this one
+  # list. The agent sends to slack, discord and alertmanager; the event
+  # runtime sends to slack, discord and ntfy. Each skips an entry it has no
+  # sink for, so ntfy reaches you only through the event runtime.
   notifications:
     - backend: slack
       webhook_url: ${SLACK_WEBHOOK_URL}
@@ -156,10 +175,13 @@ observability:
     #   tags_map:      {info: information_source, warning: warning, critical: rotating_light}
     #   title: "CFOperator Event Runtime"
     #   timeout: 10
+    #   default_priority: "3"    # for a severity priority_map does not name
     - backend: ntfy
       url: ${NTFY_URL}
       topic: ${NTFY_TOPIC}
       token: ${NTFY_TOKEN}
+    # - backend: alertmanager    # agent only: posts its notifications as
+    #   url: http://alertmanager:9093  # alerts; defaults to observability.alerts.url
 
   # OpenTelemetry tracing for investigations, triage and LLM calls. Off by
   # default; off means the SDK is never imported and nothing is exported.
@@ -173,6 +195,13 @@ observability:
     enabled: false
     # endpoint: http://tempo:4318
     # service_name: cfoperator
+
+# kubectl settings for the Kubernetes tools and the kubernetes container
+# backend. Both keys are optional; unset, kubectl's own default applies (in a
+# pod, its service account).
+# kubernetes:
+#   kubeconfig: ~/.kube/config
+#   context: homelab
 
 # LLM Configuration
 llm:
@@ -216,7 +245,7 @@ llm:
       model: deepseek-v4-pro # also the registry default when this entry is absent
       api_key: ${DEEPSEEK_API_KEY}
     - provider: anthropic
-      model: claude-3-5-sonnet-20241022
+      model: claude-opus-4-8   # the id the code pins elsewhere (executor, judge)
       api_key: ${ANTHROPIC_API_KEY}
     - provider: openrouter   # LAST rung of the escalation chain — see note
       model: deepseek/deepseek-v4-pro  # also the registry default
@@ -233,9 +262,11 @@ llm:
   # ask_sre(backend=...)) resolves to when no model is chosen in the console.
   # DeepSeek and OpenRouter have registry defaults (deepseek-v4-pro,
   # deepseek/deepseek-v4-pro), so their entries are optional; the key is
-  # enough. The mutation judge (remediation.judge below) does NOT read this
-  # list: it pins its own floor model per provider in code, and OpenRouter
-  # is not a judge peer. (CFOP-104)
+  # enough. Groq, xAI, Gemini and Anthropic have none: with no entry here and
+  # no model picked in Admin → LLM, that rung is skipped even with a key, so
+  # the entry's model is the one that runs. The mutation judge
+  # (remediation.judge below) does NOT read this list: it pins its own floor
+  # model per provider in code, and OpenRouter is not a judge peer. (CFOP-104)
 
   # Optional dedicated triage classifier (an ollama model tag, served from
   # the triage host — llm.triage_url below, which defaults to llm.primary.url).
@@ -254,7 +285,8 @@ llm:
   # but restarts nothing, so changing this key needs a manual rollout restart.
   # The Helm chart annotates both Deployments with checksum/config and rolls
   # them on `helm upgrade` by itself — chart users need no manual restart.
-  # triage_model: cfop-triage-ministral3:v1-q4
+  # This installation runs v5-q4; v1-q4 stays registered as the rollback.
+  # triage_model: cfop-triage-ministral3:v5-q4
 
   # Models per scope (CFOP-122). Each unattended path can run on its own
   # (backend, model) instead of riding the chat default: `sweep` (the
@@ -297,7 +329,7 @@ llm:
   # points elsewhere, changing the triage MODEL from Admin offers the wrong
   # host's models — set the model in YAML alongside triage_url, or pull the
   # same tags on both hosts.
-  # triage_url: http://192.168.0.232:11434
+  # triage_url: http://10.0.0.16:11434
 
   # Whole-chain circuit breaker (CFOP-321). After failure_threshold walks of
   # the provider chain in which every rung failed, within window_seconds, LLM
@@ -332,6 +364,24 @@ ooda:
   # Reactive mode: check for alerts every N seconds
   alert_check_interval: 10
 
+  # Poll observability.alerts.url every alert_check_interval and investigate
+  # what fires. Default true. Set false where the event runtime is the alert
+  # intake and drives investigations over POST /v1/investigate.
+  # reactive_poll: true
+  #
+  # The POST /v1/investigate queue. Past this many waiting, a request gets a
+  # 503, which event_runtime waits out and resends. Default 32.
+  # investigation_queue_size: 32
+  # A retry carrying the same idempotency_key (or alert_id) inside this window
+  # is absorbed instead of queued twice. In memory, so a restart clears it.
+  # Default 3600.
+  # investigation_dedup_ttl_seconds: 3600
+  #
+  # How often the loop logs its "OODA heartbeat:" line, so a quiet agent still
+  # shows it is alive. Default 300; a heartbeat_interval console setting
+  # (30-3600) wins.
+  # heartbeat_interval_seconds: 300
+
   # Tier-1 noise reduction (see docs/noise-reduction.md). When an alert is about
   # a recoverable runtime condition (restart/terminated/exit-code/not-ready/
   # crashloop/oom, or a readiness/liveness/startup probe failure) and the pod is
@@ -360,6 +410,13 @@ ooda:
   # HTTP round trip, and a filed row's world changes in hours. Floor 60,
   # ceiling 86400; a `remediation_reverify_interval` DB setting wins over this.
   remediation_reverify_interval_seconds: 900
+
+  # The other remediation ticks, in seconds. Each has a console setting of the
+  # same name without `_seconds` that wins over it, clamped to the range shown.
+  # remediation_drain_interval_seconds: 60     # start executor Jobs (10-3600)
+  # remediation_reap_interval_seconds: 300     # requeue dead leases (60-3600)
+  # remediation_verify_interval_seconds: 300   # reconcile open PRs (30-3600)
+  # remediation_tracker_interval_seconds: 60   # tracker hand-off (30-3600)
 
   # On SIGTERM (a deploy), how long the agent waits for in-flight traced work
   # (a sweep, an investigation, a chat turn) to finish before ending what is
@@ -393,11 +450,26 @@ ooda:
     # missed summary beats a duplicate one, which re-feeds the
     # remediation queue.
 
+# Parallel sweeps (optional). With two or more enabled instances listed here,
+# the sweep phases fan out across them instead of running one after another
+# on the primary; below two available, the sweep runs sequentially. The
+# console can switch an instance off live (kept in the ollama_pool_disabled
+# setting).
+# ollama_pool:
+#   instances:
+#     - name: gpu-a
+#       url: http://10.0.0.14:11434
+#       model: gemma4:26b
+
 # Chat Interface
 chat:
   enabled: true
   port: 8083
-  websocket: true
+  # Tool-call rounds a console chat turn may take before the forced final
+  # answer, and the cap for any tool loop that does not set its own. Default
+  # 10; a max_tool_iterations console setting (1-50) wins over it. Sweep
+  # phases have their own cap, ooda.sweep.max_iterations.
+  # max_tool_iterations: 10
   # Max chars of a single tool result appended to the LLM context. Oversized
   # output (kubectl dumps, Loki log floods) is clipped to the head plus a
   # marker, so one fat result can't inflate every later turn. Default 6000.
@@ -435,6 +507,11 @@ chat:
   # by any member whatever the model was. Default true; false only for an
   # all-local setup whose operator wants raw values (CFOP-272).
   redact_tool_results: true
+
+# Web search (optional). With a SearXNG base URL set, the agent registers a
+# `web_search` tool; without one the tool does not exist.
+# search:
+#   url: http://searxng:8080
 
 # Investigations
 investigations:
@@ -483,7 +560,10 @@ event_runtime:
       table_name: event_runtime_events
       # dsn: ${CFOP_EVENT_RUNTIME_PG_DSN}  # optional override; defaults to top-level database config
   host_observability:
-    enabled: true
+    # On unless CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_ENABLED is 0/false/no/off;
+    # an `enabled:` key here is not read. CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_JSON,
+    # or a JSON file named by CFOP_EVENT_RUNTIME_HOST_OBSERVABILITY_CONFIG_PATH,
+    # replaces this whole block.
     refresh_interval_seconds: 300
     default_to_local: true
     include_discovered_targets: true
@@ -494,8 +574,11 @@ event_runtime:
       #     edge-01:
       #       address: 10.0.0.10
       #       ssh:
-      #         user: aachten
+      #         user: sre
       #         key_path: ${HOME}/.ssh/id_ed25519
+      #   connect_timeout: 5             # seconds; defaults shown
+      #   command_timeout: 15
+      #   strict_host_key_checking: false
       # - type: prometheus
       #   url: http://prometheus:9090
       #   discover: true
@@ -509,30 +592,38 @@ event_runtime:
   # the affected host (journalctl, dmesg, disk health) and posts its report
   # back through the normal completion path. Read-only by design; proposed
   # fixes flow through the existing remediation PR gates.
+  #
+  # Every key below has the CFOP_DEEP_* override named beside it, and a set
+  # env var wins over the YAML. The values shown are the defaults.
   deep_investigation:
     enabled: false                      # CFOP_DEEP_INVESTIGATION_ENABLED
     image: ghcr.io/aachtenberg/cfoperator-worker:main   # CFOP_DEEP_WORKER_IMAGE
     namespace: apps                     # CFOP_DEEP_JOB_NAMESPACE
-    service_account: cfoperator-worker  # read-only SA the Job runs as
-    secrets_name: cfoperator-secrets    # holds ANTHROPIC_API_KEY + completion secret
-    ssh_secret_name: cfop-forensics-ssh # dedicated forensics SSH keypair
-    ssh_user: ""                        # REQUIRED — no default; the tier refuses without it
+    service_account: cfoperator-worker  # CFOP_DEEP_SERVICE_ACCOUNT; read-only SA the Job runs as
+    secrets_name: cfoperator-secrets    # CFOP_DEEP_SECRETS_NAME; holds ANTHROPIC_API_KEY + completion secret
+    image_pull_secret: ghcr-pull-secret # CFOP_DEEP_IMAGE_PULL_SECRET
+    ssh_secret_name: cfop-forensics-ssh # CFOP_DEEP_SSH_SECRET_NAME; dedicated forensics SSH keypair
+    ssh_user: ""                        # CFOP_DEEP_SSH_USER; REQUIRED — no default; the tier refuses without it
     # Where the Job posts its report back (event runtime service URL).
     # Required — the tier stays off without it. CFOP_DEEP_COMPLETION_BASE_URL
     completion_base_url: ""
-    # agent_url: ""                     # defaults to CFOP_AGENT_URL (KB ingest)
+    # agent_url: ""                     # CFOP_DEEP_AGENT_URL, else CFOP_AGENT_URL (KB ingest)
     max_concurrent: 2                   # CFOP_DEEP_MAX_CONCURRENT
     daily_budget: 10                    # CFOP_DEEP_DAILY_BUDGET (launches/day)
-    active_deadline_seconds: 900        # hard Job kill
-    claude_timeout_seconds: 600         # claude -p timeout (margin for post-back)
-    ttl_seconds_after_finished: 21600   # finished Jobs visible for 6h
-    default_template: host-forensics    # worker prompt template
+    # Where the daily_budget count is kept. Empty means
+    # $CFOP_EVENT_RUNTIME_DIR/deep-investigation/budget.json, and that
+    # directory defaults to ~/.cfoperator/event-runtime.
+    # budget_state_path: ""             # CFOP_DEEP_BUDGET_STATE_PATH
+    active_deadline_seconds: 900        # CFOP_DEEP_ACTIVE_DEADLINE_SECONDS; hard Job kill
+    claude_timeout_seconds: 600         # CFOP_DEEP_CLAUDE_TIMEOUT; claude -p timeout (margin for post-back)
+    ttl_seconds_after_finished: 21600   # CFOP_DEEP_TTL_SECONDS; finished Jobs visible for 6h
+    default_template: host-forensics    # CFOP_DEEP_TEMPLATE; worker prompt template
     default_model: claude-opus-4-8      # CFOP_DEEP_MODEL (haiku/sonnet = cost knob)
     routing:
       confidence_threshold: 0.4         # CFOP_DEEP_CONFIDENCE_THRESHOLD
-      route_escalate: true              # host-shaped escalate -> deep_investigate
-      route_low_confidence_investigate: true
-      escalate_fallback_action: notify  # non-host escalate verdicts
+      route_escalate: true              # CFOP_DEEP_ROUTE_ESCALATE; host-shaped escalate -> deep_investigate
+      route_low_confidence_investigate: true   # CFOP_DEEP_ROUTE_LOW_CONFIDENCE
+      escalate_fallback_action: notify  # CFOP_DEEP_ESCALATE_FALLBACK; non-host escalate verdicts
       # Unclean-reboot alerts (details.boot_forensics, posted by the on-host
       # oneshot) skip triage and go straight to the worker with the
       # boot-forensics template. CFOP_DEEP_ROUTE_BOOT_FORENSICS
@@ -581,7 +672,7 @@ git:
         - monitoring
 
 # Remediation (Phase B) — turn a verified needs_action investigation into a
-# concrete fix proposal. See docs/remediation-pipeline.md.
+# concrete fix proposal. See docs/REMEDIATION.md#components.
 #
 # Defaults OFF, and `profile: investigate` forces every flag here off regardless
 # of what is written.
@@ -598,7 +689,10 @@ remediation:
   open_prs: false          # open a PR on the manifest repo (human merges it)
   deep_open_prs: false     # deep-investigation diffs -> PRs (same gates + shared cap)
   default_repo: my-manifests    # which `git.repos[].name` owns manifests to patch
+                                # (absent, the proposer falls back to
+                                # homelab-infra, this project's own repo)
   max_open_prs: 3
+  max_drain_per_tick: 3         # executor Jobs the drainer may start per tick
   # How a change reaches YOUR cluster (CFOP-148). This is the one thing an
   # investigating model cannot work out for itself and must not guess: a fleet
   # deployed through GitOps and a box you `kubectl apply` to want opposite
@@ -691,10 +785,48 @@ remediation:
   summary_confidence_cap: 0.5   # morning-summary hunches; investigation-fed rows are not clamped
   lease_timeout_s: 1800         # reaper: in-flight executor Jobs older than this are presumed dead
   max_attempts: 3
-  # Where and how the drain runs executor Jobs. Only the keys below are new
-  # with CFOP-315; the Helm chart's ConfigMap fills in the rest (namespace,
-  # image, git_repo, completion_base_url, llm, ...).
+  # cfop-dedupe (CFOP-538): decides whether an enqueue is new or belongs on a
+  # row already open. CFOP_DEDUPE_URL wins over this key, and compose and the
+  # Helm chart set it for you (with CFOP_DEDUPE_SHARED_SECRET). Unset, nothing
+  # is asked and the agent's exact-key check alone decides.
+  # dedupe:
+  #   url: http://cfop-dedupe:8093
+  # Where and how the drain runs executor Jobs, one per queue row. Every key
+  # is optional. The defaults shown are this project's own deployment, so an
+  # install elsewhere sets namespace, secrets_name, git_repo and
+  # completion_base_url; the Helm chart's ConfigMap fills those in for you.
+  # The LLM chain and node-action are described in docs/REMEDIATION.md#components.
   # executor:
+  #   namespace: apps             # or CFOP_EXECUTOR_NAMESPACE
+  #   image: ghcr.io/aachtenberg/cfoperator-executor:main  # or CFOP_EXECUTOR_IMAGE
+  #   service_account: cfoperator-executor
+  #   secrets_name: cfoperator-secrets  # GITHUB_TOKEN, ANTHROPIC_API_KEY,
+  #                               # CFOP_COMPLETION_SHARED_SECRET
+  #   image_pull_secret: ghcr-pull-secret
+  #   completion_base_url: http://cfoperator.apps.svc.cluster.local:8083/v1/remediations
+  #                               # or CFOP_EXECUTOR_COMPLETION_BASE_URL
+  #   git_repo: aachtenberg/homelab-infra  # or CFOP_GIT_REPO; a row's own
+  #                               # repo wins over both
+  #   git_base: main
+  #   ttl_seconds_after_finished: 3600
+  #   active_deadline_seconds: 900
+  #   llm:                        # passed to the Job as CFOP_EXEC_LLM_*
+  #     backend: anthropic
+  #     model: ""
+  #     base_url: ""
+  #     chain: []                 # ordered rungs (CFOP_EXEC_LLM_CHAIN)
+  #   node_action:                # gated host fixes over SSH
+  #     enabled: false            # the console kill-switch overrides it live
+  #     allow_binaries: []        # the ceiling; none declared refuses every
+  #     allow_systemctl_verbs: [] # node-action, and the console only narrows
+  #     max_commands: 4
+  #     ssh_secret: cfop-forensics-ssh
+  #     ssh_user: ""
+  #     model: claude-opus-4-8    # its own floor, never the executor's model
+  #     llm_chain: []             # a host action falls back only if this says so
+  #     change_record:
+  #       url: ""                 # or CFOP_EXEC_CHANGE_URL. Unset, every
+  #                               # node-action parks at needs-human
   #   image_pull_policy: Always   # default. Never/IfNotPresent runs a locally
   #                               # loaded image (the kind e2e builds its own)
   #   github_api_url: ""          # unset = api.github.com; set for GitHub
@@ -759,6 +891,7 @@ cockpit:
   namespace: apps
   image: ghcr.io/aachtenberg/cfoperator-cockpit:main
   service_account: cfoperator-cockpit   # read-only; needs the chart's cockpit.enabled
+  image_pull_secret: ghcr-pull-secret
   agent_url: http://cfoperator.apps.svc.cluster.local:8083   # what the POD calls
   ttl_seconds: 14400          # activeDeadlineSeconds — the session, and its token
   ttl_after_finished_seconds: 3600
@@ -829,6 +962,7 @@ cockpit:
   # bridge_enabled: false
   # bridge_port: 8084
   # bridge_bind: 0.0.0.0
+  # bridge_max_sessions: 2    # terminals carried at once; one more is refused as busy
   #
   # Which pages may open a terminal. There is NO default and no wildcard: with
   # this unset the bridge refuses to listen at all rather than starting up and
@@ -875,12 +1009,7 @@ cockpit:
   # is hostNetwork, so netpol is unenforceable). This port needs the same
   # treatment — see DEPLOYMENT.md.
 
-# Skills
-skills:
-  directory: ./skills
-  enabled:
-    - investigate-container
-    - investigate-code-change
-    - why-restart
-    - compare-hosts
+# Skills are not configured here. Every subdirectory of ./skills (relative
+# to the working directory, /app in the image) that holds a SKILL.md is loaded
+# at startup, and no key selects, disables or relocates them.
 ```

@@ -7,7 +7,10 @@ healthy 20h, restartCount 1, exit 255) should never page red.
 **Principle:** **red = "broken right now and a human must act."** Almost nothing
 clears that bar. Everything else is recorded quietly, batched into a digest, or
 downgraded. Severity = urgency-to-act, gated on *current* state, surfaced on a
-channel proportional to severity.
+channel proportional to severity. The real-time gate does not hold critical
+alerts to that bar: severity `critical` always pages, even when the
+investigation concluded `resolved`, because `_is_realtime_worthy` checks
+severity before outcome (Tier 2c below).
 
 The levers mostly already exist (triage, `file-backed-cooldown`, finding-status
 API `acknowledged`/`false_positive`, the morning-summary digest) — they're just
@@ -15,7 +18,7 @@ not tuned for signal.
 
 ## Tiers
 
-### Tier 1 — kill the biggest noise class (deterministic, in the agent)  ← building now
+### Tier 1 — kill the biggest noise class (deterministic, in the agent)
 Both gate on the same precise condition: **the alert is about a recoverable
 runtime condition (restart / terminated / exit code / not-ready / crashloop /
 oomkill) AND the pod is healthy right now.** A healthy pod that's genuinely
@@ -101,10 +104,10 @@ here — power-outage aftermath, SD flakiness).
   (`find_service_failure_patterns`) via `is_ephemeral_job_pod()`. A completed
   job is success, not drift.
 - **Tier 2c (severity→channel): shipped.** Real-time Slack now only for act-now
-  classes (critical, escalated, needs_action, failed, and plain warning
-  findings). Routed to the digest (suppressed real-time, still in
-  activity/history + morning summary): resolutions, recovered `monitoring`,
-  `resolved`, and `info`. Two surfaces gated:
+  classes (critical at any outcome, escalated, needs_action, failed, and plain
+  warning findings). Routed to the digest (suppressed real-time, still in
+  activity/history + morning summary), when the severity is below critical:
+  resolutions, recovered `monitoring`, `resolved`, and `info`. Two surfaces gated:
   - event_runtime completions/findings — `_is_realtime_worthy()`; toggle with
     `CFOP_DIGEST_LOW_SEVERITY=0` (default on).
   - agent correlation insights — stored as learnings, suppressed real-time;
@@ -117,9 +120,10 @@ here — power-outage aftermath, SD flakiness).
   re-emit findings every ~90–150 min; the 5-min cooldown was too short.
   Escalations bypass automatically (severity is part of the fingerprint, so
   warning→critical is a new fingerprint). Toggle via
-  `CFOP_EVENT_RUNTIME_RECURRENCE_WINDOW_SECONDS` (0 disables).
-  Not yet: honoring `acknowledged`/`false_positive` finding status (needs the
-  agent to skip those at post-time) — small follow-on.
+  `CFOP_EVENT_RUNTIME_RECURRENCE_WINDOW_SECONDS` (default 21600, 0 disables);
+  the critical window is `CFOP_EVENT_RUNTIME_RECURRENCE_CRITICAL_SECONDS`
+  (default 1800). Dismissed findings (`acknowledged`/`false_positive`) never
+  reach this policy: the agent skips them at post time (Tier 3 below).
 - **Tier 3 (learn known noise): shipped (deterministic form).** Dismissals
   (`acknowledged`/`false_positive`) now generalize at the *pattern* level via a
   count-insensitive signature (`normalize_finding_signature`: digits→N) — so

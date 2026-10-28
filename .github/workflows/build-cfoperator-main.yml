@@ -36,7 +36,7 @@ on:
       # shipped only as a release binary. CFOP-35 bakes it into the cockpit
       # image (cockpit/Dockerfile builds it from source), so ignoring it would
       # mean a cfassist fix never reaches the cockpit pods. The cost is that a
-      # CLI-only change now rebuilds the other three images too.
+      # CLI-only change now rebuilds the other six images too.
       # Only paths that are NOT baked into the image belong here. A path the
       # Dockerfile COPYs must trigger a rebuild, or a change to it silently
       # never deploys. test_dockerfile_image.py enforces this.
@@ -352,9 +352,11 @@ jobs:
 
   # cfoperator-dedupe: the remediation dedupe decision (dedupe/, CFOP-509).
   # Unlike tracker it does not float on :main: bump-deploy-repo pins it to
-  # the same main-<sha> as the agent (CFOP-514). The agent compares its own
-  # decision with the service's, so both have to be the same commit's code.
-  # A stale service would report every later tier change as a disagreement.
+  # the same main-<sha> as the agent (CFOP-514). The service decides what
+  # the agent enqueues (CFOP-538), and the request it reads and the answer
+  # the agent applies are one contract (dedupe/doc.go), held to the same
+  # dedupe/testdata/ cases on both sides at each commit. A service from
+  # another commit would decide by tiers the agent was never tested against.
   # No QEMU: the
   # Dockerfile cross-compiles on the build platform and the final stage only
   # copies the static binary.
@@ -641,8 +643,9 @@ jobs:
         env:
           DEPLOY_PAT: ${{ secrets.DEPLOY_PAT }}
         run: |
-          # The agent and cfop-dedupe move together: the dedupe shadow
-          # compares the two, so they run the same commit (CFOP-514).
+          # The agent and cfop-dedupe move together: the service decides
+          # what the agent enqueues and the two share one contract
+          # (dedupe/doc.go), so they run the same commit (CFOP-514, CFOP-538).
           "$KUSTOMIZE" edit set image \
             ghcr.io/aachtenberg/cfoperator=ghcr.io/aachtenberg/cfoperator:${{ needs.build-and-push.outputs.image-tag }} \
             ghcr.io/aachtenberg/cfoperator-dedupe=ghcr.io/aachtenberg/cfoperator-dedupe:${{ needs.build-and-push.outputs.image-tag }}

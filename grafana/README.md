@@ -1,143 +1,222 @@
-# CFOperator Grafana Dashboard
+# CFOperator Grafana Dashboards
 
-Comprehensive monitoring dashboard for CFOperator fleet-wide infrastructure intelligence.
+Two boards ship here, both byte-identical mirrors of the copies the homelab
+provisions (see [Installation](#installation)):
 
-An additional dashboard for the modular event runtime lives in [event-runtime-dashboard.json](event-runtime-dashboard.json). It focuses on alert throughput, queue depth, queue latency, replay health, runtime error paths, scheduled follow-up visibility, and (new) the completion endpoint that receives ActionResult post-backs from the agent.
+- [cfoperator-dashboard.json](cfoperator-dashboard.json), **CFOperator Fleet
+  Monitoring**: the agent, its LLM calls, investigations, sweeps, and the
+  fleet it watches.
+- [event-runtime-dashboard.json](event-runtime-dashboard.json), **CFOperator
+  Event Runtime**: alert throughput, queue and replay health, triage decisions,
+  the completion endpoint, host observability and the cluster.
 
-## Dashboard Features
+This page describes what is on each board and how to read it. What each metric
+means, its labels and the values they take are in
+[docs/METRICS.md](../docs/METRICS.md). How the LLM panels relate to the
+homelab-only boards (LLM & Triage, Remediation, Traces) is in
+[docs/llm-observability.md](../docs/llm-observability.md#reading-the-dashboards)
+and [docs/OBSERVABILITY.md](../docs/OBSERVABILITY.md).
 
-### Top Row - Key Metrics (Stats)
-- **CFOperator Uptime** - How long the agent has been running
-- **Agent Status** - UP/DOWN indicator (green/red background)
-- **Monitored Hosts** - Count of hosts being monitored
-- **Running Containers** - Total containers across fleet
-- **Error Rate** - Errors per second (5m window)
-- **Tools Available** - Number of registered tools (should be 18)
+## CFOperator Fleet Monitoring
 
-### Second Row - LLM Observability
-- **LLM Request Rate** - Requests per minute by provider (Ollama, Groq, Gemini, etc.)
-- **LLM Error Rate** - Percentage of failed LLM requests
-- **Token Usage** - Tokens per minute (prompt + completion)
-- **LLM Latency (p95)** - 95th percentile latency by provider
-- **Fallback Activations** - How often fallback chain activates
-- **Cache Hit Rate** - Embedding cache hit percentage
+Refreshes every 10 seconds over the last hour. Variables: `datasource`
+(Prometheus), `loki`, and `level`, the filter for the live log panel.
 
-### Third Row - Activity Graphs
-- **OODA Loop Activity** - OODA cycles, reactive sweeps, proactive sweeps
-- **Tool Usage by Type** - Which tools are being called most often
+### Top row
+- **CFOperator Uptime** — seconds since the agent started.
+- **Agent Status** — Prometheus scrape health of the agent
+  (`up{namespace="apps", app="cfoperator"}`). UP means `/metrics` answered on
+  the last scrape. The selector matches the homelab's Kubernetes discovery;
+  adjust it to your scrape labels.
+- **Monitored Hosts**, **Running Containers** — fleet size as the agent last
+  counted it.
+- **Error Rate (5m)** — per-second rate of `cfoperator_errors_total`; yellow at
+  1, red at 5.
+- **Tools Available** — tools registered in the agent. The number depends on
+  which integrations are configured.
 
-### Fourth Row - LLM Deep Dive
-- **LLM Requests by Provider** - Time series of requests to each LLM provider
-- **Token Usage by Provider** - Stacked area chart showing prompt and completion tokens
-- **LLM Latency Heatmap** - P50, P90, P99 latency by provider
-- **Fallback Chain Activity** - Which fallbacks are activating (Ollama → Groq, etc.)
+### Activity and LLM
+- **OODA Loop Activity** — OODA cycles, reactive sweeps and proactive sweeps
+  per second. A flat line means the main loop has stopped.
+- **Tool Usage by Type** — tool calls per second by tool name.
+- **LLM Requests/sec by Provider**, **LLM Tokens/sec (Input/Output)**,
+  **LLM Latency (p50/p95/p99)** by provider, **LLM Errors by Provider**,
+  **LLM Fallback Activations**.
+- **Total LLM Requests (All Time)** — a raw counter sum, so "all time" means
+  since the agent last restarted.
+
+The LLM panels count tool-loop calls only. The mutation judge and the other
+one-shot completions are not in them
+([docs/llm-observability.md](../docs/llm-observability.md#where-the-numbers-come-from)).
+
+### Investigations & Knowledge Base
+PostgreSQL panels, except Tool Success Rate:
+- **Investigations (24h)**, **Total Learnings** (not deprecated),
+  **Investigation Velocity (by Outcome)**, **Knowledge Base Growth**.
+- **Embedding Coverage** — share of completed investigations with a stored
+  embedding for semantic search; red below 50%, green from 95%.
+- **Tool Success Rate** — `result="success"` over all tool calls since the
+  agent started; yellow from 80%, green from 95%.
 
 ### HTTP Investigation Pipeline
-Surfaces the path from event_runtime → agent for alert-driven investigations. Useful when `ooda.reactive_poll: false` and the agent is being driven over HTTP.
-- **Investigation Queue Depth** - Pending HTTP investigations on the agent worker. Green < 8, yellow < 24, red ≥ 24 (default queue size is 32). Rising values mean the agent's single worker thread is falling behind the LLM throughput it can sustain.
-- **Queue Rejections (1h)** - 503s when the queue was full. event_runtime's worker retries with backoff, so non-zero here is operationally tolerable but indicates sustained saturation.
-- **Post-back Success (1h)** - `cfoperator_investigation_postback_total{status="ok"}` over the last hour. Should track the investigation completion rate.
-- **Post-back Failures (1h)** - Any status other than `ok` (`http_401`, `http_5xx`, `transport_error`, ...). Non-zero means the agent finished an investigation but couldn't durably hand the result back to event_runtime.
-- **Pipeline Time Series** - Queue depth as a line plus post-back outcomes per minute split by status label, so you can see where the bottleneck or failure pattern is over time.
+Surfaces the path from event_runtime → agent for alert-driven investigations.
+Useful when `ooda.reactive_poll: false` and the agent is being driven over
+HTTP.
+- **Investigation Queue Depth** — pending HTTP investigations on the agent
+  worker. Green below 8, yellow below 24, red from 24 (the queue holds
+  `ooda.investigation_queue_size`, default 32). Rising values mean the agent's
+  single worker thread is falling behind the LLM throughput it can sustain.
+- **Queue Rejections (1h)** — 503s when the queue was full. event_runtime's
+  worker waits a 503 out with backoff, so non-zero here is tolerable but means
+  sustained saturation.
+- **Post-back Success (1h)** — `cfoperator_investigation_postback_total{status="ok"}`
+  over the last hour. Should track the investigation completion rate.
+- **Post-back Failures (1h)** — any other status (`http_<code>`,
+  `transport_error`). Non-zero means the agent finished an investigation but
+  could not hand the result back to event_runtime.
+- **HTTP Investigation Pipeline** time series — queue depth as a line plus
+  post-back outcomes per minute by status, so the bottleneck or failure pattern
+  shows over time.
 
-### Fifth Row - Infrastructure Health
-- **CPU Usage by Host** - CPU % for each host in your fleet
-- **Memory Usage by Host** - Memory % for all hosts
+### Hosts
+- **CPU Usage by Host**, **Memory Usage by Host** — node-exporter series
+  (`node_cpu_seconds_total`, `node_memory_*`), not cfoperator's own.
+
+### Log panels
+All on Loki, from the agent's JSON log lines
+(`{namespace="apps", container="cfoperator"}`):
+- **CFOperator Logs (Live)** — every line, filtered by the `level` variable
+  (`INFO|WARN|ERROR`, `WARN|ERROR`, `ERROR`, `.*`). The filter is a regex over
+  the raw line, so `WARN` also matches Python's `WARNING`.
+- **Errors & Warnings** — lines whose parsed `level` matches
+  `error|warn|ERROR|WARN`. That match is anchored: it catches `ERROR` from the
+  Python loggers and `error`/`warn` from the modules that print their own JSON,
+  but not Python's `WARNING`. Use the live panel with `WARN|ERROR` for every
+  warning.
+- **Agent & Tools Activity** — components `cfoperator`, `tools` and
+  `embedding_service`: the OODA loop, sweeps, investigations, tool calls.
+- **LLM & Knowledge Base** — components `llm_fallback`, `knowledge_base` and
+  `embedding_service`.
+- **Sweep Logs** — lines matching `Parallel sweep|sweep_graph|Fan-out|Phase`
+  (in the Sweep Findings section below).
 
 ### Sweep Findings & Recommendations
-- **Open Findings** - Active unresolved sweep findings
-- **Latest Sweep Severity** - Most recent sweep severity level
-- **Sweeps (24h)** - Total sweeps in last 24 hours
-- **Last Sweep** - Timestamp of most recent sweep
-- **Sweep Findings Table** - Detailed table of all sweep findings with severity, remediation
-- **Findings Over Time** - Trend of findings by severity (critical/warning/info)
-
-- **Sweep Duration (p50 / p95)** - Wall time of the sweep, by mode
-- **Sweep Logs** - Filtered logs for sweep activity (parallel sweeps, sweep_graph, fan-out)
+- **Open Findings**, **Latest Sweep Severity**, **Sweeps (24h)**, **Last Sweep**,
+  the **Sweep Findings** table and **Findings Over Time (by Severity)** — from
+  PostgreSQL (`sweep_reports`).
+- **Sweep Duration (p50 / p95)** — wall time of the sweep, by mode.
+- **Sweep Logs** — see above.
 
 ### Embedding & Log Metrics
-- **Embedding Request Rate** - Rate of embedding generation requests (success/error)
-- **Embedding Cache Hit Rate** - Ratio of cache hits to total embedding lookups
-- **Log Messages by Level** - Log message rate broken down by ERROR/WARN/INFO
+- **Embedding Request Rate** — `success` and `error` embedding requests; the
+  `truncated` and `unembeddable` results are not charted
+  ([docs/METRICS.md](../docs/METRICS.md#embedding-operations)).
+- **Embedding Cache Hit Rate** — embedding cache hits over all lookups. This
+  is the embedding cache, not an LLM prompt cache.
+- **Log Messages by Level** — `log_messages_total` for `ERROR`, `WARNING` and
+  `INFO`. It counts the Python loggers only; lines a module prints as its own
+  JSON are not in it.
 
 ### Correlation Analysis
-- **Service Correlations** - Total learned service failure correlations
-- **Event Correlations (24h)** - Correlated events detected in last 24 hours
-- **Max Correlation Strength** - Highest correlation strength score (0-1)
-- **Metric Snapshots (24h)** - Infrastructure metric snapshots captured
-- **Service Failure Patterns** - Table of services that fail together, ordered by frequency
-- **Event Correlations Over Time** - Hourly trend of detected correlations
-- **Recent Event Correlations** - Table with correlation strength and root cause candidates
+PostgreSQL panels:
+- **Service Correlations** — total learned service failure correlations.
+- **Event Correlations (24h)** — correlated events detected in the last 24 hours.
+- **Max Correlation Strength** — highest correlation strength score (0-1).
+- **Metric Snapshots (24h)** — infrastructure metric snapshots captured.
+- **Service Failure Patterns** — services that fail together, ordered by frequency.
+- **Event Correlations Over Time** — hourly trend of detected correlations.
+- **Recent Event Correlations** — correlation strength and root cause candidates.
 
 ### Notification History
-- **Notifications Sent (24h)** - Count of notifications sent in last 24 hours
-- **Notification Success Rate** - Delivery success percentage
-- **Unread Notifications** - Notifications not yet marked as read
-- **Notifications Over Time** - Stacked bar chart by severity (critical/warning/info)
-- **Recent Notifications** - Table of recent notifications with delivery status
+PostgreSQL panels:
+- **Notifications Sent (24h)**.
+- **Notification Success Rate** — delivered share over the last 24 hours.
+- **Unread Notifications** — not yet marked as read (last 7 days).
+- **Notifications Over Time** — stacked by severity.
+- **Recent Notifications** — with delivery status.
 
-### Log Panels (Comprehensive Coverage)
+## CFOperator Event Runtime
 
-#### 1. CFOperator Logs (Live)
-- **Purpose**: All agent logs with filterable level
-- **Features**: JSON parsed, formatted as `timestamp [level] component: message`
-- **Filter**: Use `$level` variable dropdown (top of dashboard)
-  - All logs: `INFO|WARN|ERROR`
-  - Important only: `WARN|ERROR`
-  - Errors only: `ERROR`
+Refreshes every 30 seconds over the last six hours. Variables: `datasource`
+(Prometheus), `loki`, and `postgres`.
 
-#### 2. OODA Loop Activity
-- **Purpose**: Track OODA cycle execution
-- **Shows**:
-  - Sweep start/completion
-  - Investigation triggers
-  - Alert processing
-  - Proactive/reactive mode switches
+- **Top row**: Runtime Up (`up{app="cfoperator-event-runtime"}`), Alerts /
+  Minute, Queue Depth, Oldest Queued Age.
+- **Throughput and queue**: alert outcomes, p95 alert processing latency,
+  tracked jobs by state, queue wait and processing p95, queue rejections,
+  replay attempts and replayed events by sink, recorded event types.
+- **Host Observability**: host discovery runs, discovered targets, host
+  observation runs, by provider.
+- **K3s Cluster**: node conditions, pod counts and phases by node, CPU and
+  memory against allocatable, container restarts, pods and nodes not ready.
+  These read kube-state-metrics and cAdvisor, not anything cfoperator emits.
+- **Logs**: the agent's log stream, and error and warning lines from the
+  `monitoring` namespace.
+- **Audit Trail**: decision rate by action, outcomes by action, suppressed and
+  logged alerts, completed actions, and a **Scheduled Tasks** table read from
+  PostgreSQL.
 
-#### 3. Tool Execution Logs
-- **Purpose**: See what tools are being executed
-- **Shows**:
-  - Tool calls (ssh_execute, docker_list, etc.)
-  - Tool results
-  - SSH connections
-  - Docker operations
+### Alert Triage
 
-#### 4. Errors & Warnings
-- **Purpose**: Focus on problems
-- **Shows**: Only ERROR and WARN level logs
-- **Use case**: Quick triage of issues
+Surfaces the LLM-driven triage classifier (closes
+[#15](https://github.com/aachtenberg/cfoperator/issues/15)). With triage
+enabled (`CFOP_AGENT_URL` set, so `HTTPTriageDecisionEngine` is registered),
+every alert goes through `POST /v1/triage` on the agent before any
+investigation runs. The one exception is an unclean-reboot alert, which the
+deep tier routes straight to boot forensics without a triage call. The classifier returns one of four actions, and this
+section is the operational view of that decision stream, read from
+`cfoperator_event_runtime_decisions_total{action}`.
 
-#### 5. LLM Activity
-- **Purpose**: Track LLM usage
-- **Shows**:
-  - LLM API calls
-  - Chat messages
-  - Embedding generation
-  - Fallback chain switches
+- **Investigated (1h)** — alerts sent to a full LLM investigation: the
+  expensive path.
+- **Notify Only (1h)** — alerts the classifier judged operator-relevant but not
+  worth investigating: a notification, no investigation.
+- **Log Only (1h)** — known noise (test pods, the Alertmanager Watchdog, ...).
+  Recorded, and no notification is sent.
+- **Escalated (1h)** — high-impact alerts. Yellow from 1, red from 3, since
+  sustained escalations mean ongoing impact.
+- **% Triaged Away (1h)** — every decision other than `investigate`, over all
+  decisions. Higher means triage is saving more LLM work; yellow below 20%,
+  green from 20%, blue from 50% (very high; sanity-check the rubric if it
+  stays there).
+- **Triage Decisions by Action** — one line per action, per minute.
 
-#### 6. Fleet Discovery & SSH Activity
-- **Purpose**: Monitor fleet-wide operations
-- **Shows**:
-  - Host pings
-  - SSH connections
-  - Discovery scans
-  - Remote command execution
+With the deep-investigation tier on, the runtime also counts
+`deep_investigate`, and an `escalate` on a workload alert is counted as the
+action it was aliased to (`notify` by default). No stat shows
+`deep_investigate` on its own: it appears in the per-action time series, and
+"% Triaged Away" counts it as triaged away although it is the most expensive
+path ([docs/METRICS.md](../docs/METRICS.md#label-values-that-are-a-closed-set)).
 
-#### 7. Knowledge Base Activity
-- **Purpose**: Track learning and memory
-- **Shows**:
-  - Investigation creation/completion
-  - Learning extraction
-  - Vector embedding operations
-  - Database queries
+Operational signals:
+- If `Investigated (1h)` is close to the total, triage is being conservative,
+  or there is no precedent in the embeddings index yet. Expected in the first
+  day after deployment.
+- If `Log Only (1h)` is growing while real incidents are getting paged, the
+  classifier may be over-filtering. The rubric is
+  `CFOperator._triage_system_prompt` in `agent/agent.py`.
+- If `Escalated (1h)` is non-zero, treat it as the most urgent signal on the
+  board.
 
-## Dashboard Variables
+### Completion Endpoint
 
-- **$level** - Log level filter (dropdown at top)
-  - `INFO|WARN|ERROR` - All important logs
-  - `WARN|ERROR` - Warnings and errors
-  - `ERROR` - Errors only
-  - `.*` - Everything (debug included)
+Health of `POST /v1/investigations/{alert_id}/complete`, the endpoint the agent
+posts completed ActionResults back through, read from
+`cfoperator_event_runtime_completion_requests_total{outcome}`.
+
+- **Completion Requests (1h)** — everything that reached the endpoint. Should
+  track investigation completions.
+- **Recorded (1h)** — accepted and recorded. Each one sends the completion
+  notification with the real outcome.
+- **Auth Failures (1h)** — `auth_missing` plus `auth_invalid`. Non-zero is a
+  security signal: something reached the endpoint without the right
+  `X-CFOP-Token`. With `CFOP_COMPLETION_SHARED_SECRET` set on both workloads
+  this should stay at zero.
+- **Bad Requests (1h)** — a malformed body, an alert_id mismatch, or invalid
+  JSON. Non-zero usually means the agent and event_runtime have drifted on the
+  payload shape.
+- **Completion Requests by Outcome** — one line per outcome, per minute, so a
+  regression shows when it started.
 
 ## Installation
 
@@ -165,34 +244,35 @@ curl -X POST http://<grafana-host>:3000/api/dashboards/db \
 
 ## Required Data Sources
 
-These dashboards require three data sources configured in Grafana:
-
 ### 1. Prometheus
-- **Name**: `prometheus` (lowercase, no spaces)
 - **URL**: `http://<prometheus-host>:9090`
 - **Access**: Server (default)
 
-Both boards select Prometheus through the `datasource` dashboard variable.
+Both boards select Prometheus through the `datasource` dashboard variable, so
+any Prometheus datasource works whatever its name. It has to scrape the agent
+(`:8083/metrics`) and the event runtime (`:8080/metrics`); the scrape config is
+in [docs/METRICS.md](../docs/METRICS.md#prometheus-configuration).
 
 ### 2. Loki
-- **Name**: `loki` (lowercase, no spaces)
 - **URL**: `http://<loki-host>:3100`
 - **Access**: Server (default)
 
-Both boards select Loki through the `loki` dashboard variable.
+Both boards select Loki through the `loki` dashboard variable. The log panels
+filter on the `namespace` and `container` stream labels a Kubernetes log
+shipper adds.
 
 ### 3. PostgreSQL
 
 The two boards wire PostgreSQL differently, so they are not interchangeable
 at import time.
 
-**Fleet (`cfoperator-dashboard.json`)** — Sweep Findings, Correlation Analysis,
-and Notification History panels hard-code uid `sre-postgres`. That is the uid
-the homelab Grafana is provisioned with (`SRE PostgreSQL` in homelab-infra's
-`grafana-configmap.yml`). A datasource *variable* of type
-`grafana-postgresql-datasource` would also match TimescaleDB, and with an
-empty `current` Grafana picks whichever sorts first — which is why the
-homelab copy keeps this uid explicit. Grafana's import prompt will not offer
+**Fleet (`cfoperator-dashboard.json`)** — the Investigations & Knowledge Base,
+Sweep Findings, Correlation Analysis and Notification History panels hard-code
+uid `sre-postgres`. That is the uid the homelab Grafana is provisioned with
+(`SRE PostgreSQL` in homelab-infra's `datasources.yaml`). A datasource
+*variable* of type `grafana-postgresql-datasource` would also match TimescaleDB,
+and with an empty `current` Grafana picks whichever sorts first — which is why
+the homelab copy keeps this uid explicit. Grafana's import prompt will not offer
 it; on import elsewhere, create a PostgreSQL datasource with uid
 `sre-postgres`, or remap the panels after import.
 
@@ -200,195 +280,102 @@ it; on import elsewhere, create a PostgreSQL datasource with uid
 uses the `postgres` dashboard variable (`${postgres}`). Pick the PostgreSQL
 datasource when Grafana prompts on import.
 
-- **Host**: `<postgres-host>:5434` (homelab nodePort; in-cluster
-  `sre-postgres.data.svc.cluster.local:5432`)
-- **Database**: `sre_knowledge`
+- **Database**: `sre_knowledge`, the agent's knowledge base
+- **Host**: in the homelab, `sre-postgres.data.svc.cluster.local:5432` in
+  cluster, or NodePort 30434 from outside it
 
-## Metrics Reference
+### PostgreSQL tables the boards read
 
-CFOperator should expose these metrics (add to agent.py if not present):
-
-```python
-from prometheus_client import Counter, Gauge, Histogram
-
-# OODA metrics
-OODA_CYCLES = Counter('cfoperator_ooda_cycles_total', 'Total OODA cycles executed')
-SWEEPS = Counter('cfoperator_sweeps_total', 'Total sweeps', ['mode'])  # mode: reactive/proactive
-
-# Tool metrics
-TOOL_CALLS = Counter('cfoperator_tool_calls_total', 'Tool executions', ['tool_name', 'result'])
-TOOLS_REGISTERED = Gauge('cfoperator_tools_registered', 'Number of registered tools')
-
-# Investigation metrics
-INVESTIGATIONS = Counter('cfoperator_investigations_total', 'Total investigations', ['outcome'])
-
-# Log metrics
-LOG_MESSAGES = Counter('log_messages_total', 'Log messages', ['level', 'component'])
-
-# Embedding metrics
-EMBEDDING_REQUESTS = Counter('cfoperator_embedding_requests_total', 'Embedding requests', ['result'])
-EMBEDDING_CACHE_HITS = Counter('cfoperator_embedding_cache_hits_total', 'Embedding cache hits', ['result'])
-
-# Sweep duration metrics
-SWEEP_DURATION = Histogram('cfoperator_sweep_duration_seconds', 'Sweep duration', ['mode'])
-```
-
-### PostgreSQL Tables Used by Dashboard
-
-The Correlation Analysis and Notification History panels query these tables directly:
-
-- `service_correlations` — Learned service failure patterns (which services fail together)
-- `event_correlations` — Correlated events with strength scores and root cause candidates
-- `metric_snapshots` — Infrastructure metric snapshots captured during investigations
-- `notification_history` — Notification delivery audit trail
-- `sweep_reports` — Sweep findings and recommendations
-- `investigations` — Investigation outcomes and tool calls
-- `investigation_learnings` — Extracted learnings by type
-
-## Dashboard Sections Explained
-
-### Why These Panels Matter
-
-**Top Stats**: At-a-glance health check. If any stat is red/yellow, investigate.
-
-**OODA Loop Graph**: Should show consistent activity. If flat, agent may be stuck.
-
-**Tool Usage**: Shows which tools CFOperator uses most. High SSH activity = fleet troubleshooting.
-
-**CPU/Memory by Host**: Spot host issues before they become problems.
-
-**Live Logs**: Your primary troubleshooting panel. Use level filter to focus.
-
-**Specialized Log Panels**: Each panel focuses on one aspect:
-- OODA = agent logic
-- Tools = what it's doing
-- Errors = what's broken
-- LLM = AI activity
-- SSH = fleet operations
-- Knowledge Base = learning/memory
+- Fleet: `investigations`, `investigation_learnings`,
+  `investigation_embeddings`, `sweep_reports`, `service_correlations`,
+  `event_correlations`, `metric_snapshots`, `notification_history`.
+- Event Runtime: `event_runtime_events` and `apscheduler_jobs` (Scheduled
+  Tasks).
 
 ## Typical Troubleshooting Workflows
 
 ### "Is CFOperator working?"
-1. Check **Agent Status** stat (should be green "UP")
-2. Check **OODA Loop Activity** graph (should show regular activity)
-3. Scan **Errors & Warnings** panel (should be mostly empty)
+1. Check **Agent Status** (should be green "UP").
+2. Check **OODA Loop Activity** (should show regular activity).
+3. Scan **CFOperator Logs (Live)** with level `WARN|ERROR`.
 
 ### "Why did the agent restart?"
-1. Set time range to include restart
-2. Check **Errors & Warnings** panel for crash logs
-3. Check **CFOperator Logs (Live)** for "Starting" message
-4. Look at logs before restart for clues
+1. Set the time range to include the restart.
+2. Check **CFOperator Logs (Live)** with level `WARN|ERROR` for crash logs, and
+   for the startup messages after them.
+3. Read the logs before the restart for clues.
 
 ### "What's the agent doing right now?"
-1. Check **OODA Loop Activity** panel (see current sweep/investigation)
-2. Check **Tool Execution Logs** panel (see active tool calls)
-3. Check **Live Logs** with level=`.*` (see everything)
+1. Check **OODA Loop Activity** and **Tool Usage by Type**.
+2. Check **Agent & Tools Activity** for the current sweep, investigation and
+   tool calls.
+3. Check **CFOperator Logs (Live)** with level `.*` to see everything.
 
 ### "Why is a host having issues?"
-1. Check **CPU/Memory by Host** for the affected host
-2. Check **Fleet Discovery & SSH Activity** for SSH errors
-3. Check **Tool Execution Logs** for failed ssh_* calls
-4. Use Loki filter: `{container="cfoperator"} |= "<hostname>"`
+1. Check **CPU Usage by Host** / **Memory Usage by Host** for the affected host.
+2. Check **Agent & Tools Activity** for failed `ssh_*` calls.
+3. Use a Loki filter: `{container="cfoperator"} |= "<hostname>"`.
 
 ### "Is the LLM working?"
-1. Check **LLM Activity** panel for recent calls
-2. Check **Errors & Warnings** for LLM errors
-3. Look for "fallback" in logs (indicates Ollama failed, used Groq)
-
-## Auto-Refresh
-
-Dashboard auto-refreshes every 10 seconds by default.
-
-You can change this in the top-right:
-- 10s (default) - Good for active troubleshooting
-- 30s - Normal monitoring
-- 1m - Background monitoring
-- 5m - Long-term trending
+1. Check **LLM Errors by Provider** and **LLM Fallback Activations**.
+2. Search **CFOperator Logs (Live)** for `[FALLBACK]`: the chain logs each
+   rung it tries and each one that fails, under component `cfoperator`. The
+   `llm_fallback` lines in **LLM & Knowledge Base** are the bookkeeping behind
+   it: providers put in cooldown, and the circuit breaker opening.
+3. [docs/llm-observability.md](../docs/llm-observability.md#debugging-with-metrics)
+   has the queries for slow, failing and token-heavy LLM calls.
 
 ## Tips & Tricks
 
-### Pro Tip: Use Time Shift
-Click and drag on any graph to zoom into that time range. All panels will sync.
+### Zoom in on a time range
+Click and drag on any graph to zoom into that time range. All panels follow.
 
-### Pro Tip: Correlate Logs with Metrics
-1. Notice spike in **Tool Usage** graph at 14:35
-2. Shift-click time range around 14:35
-3. All log panels now show what happened during spike
+### Correlate logs with metrics
+1. Notice a spike in **Tool Usage by Type** at 14:35.
+2. Drag across the time range around 14:35.
+3. Every log panel now shows what happened during the spike.
 
-### Pro Tip: Export Logs
-Click three dots (⋮) on any log panel → Inspect → Data → Download CSV
+### Export logs
+Click the three dots (⋮) on any log panel → Inspect → Data → Download CSV.
 
-### Pro Tip: Create Alerts
-Any metric panel can have alerts:
-1. Edit panel
-2. Alert tab
-3. Create alert rule
-4. Example: "Alert if error rate > 5/sec for 5min"
+### Create alerts
+Any metric panel can have an alert:
+1. Edit the panel.
+2. Open the Alert tab.
+3. Create an alert rule, e.g. "error rate > 5/sec for 5 min".
+
+[docs/METRICS.md](../docs/METRICS.md#alerting-examples) has alert examples, and
+the event runtime ships rules in
+[observability/event-runtime-alert-rules.yml](../observability/event-runtime-alert-rules.yml).
 
 ## Troubleshooting Dashboard Issues
 
 ### "Panels show 'No data'"
-- **Check**: Are Prometheus/Loki data sources configured?
-- **Check**: Is CFOperator exposing metrics? (`curl http://localhost:8083/metrics`)
-- **Check**: Is promtail shipping logs? (check Loki)
+- **Check**: are the Prometheus / Loki / PostgreSQL datasources configured and
+  selected in the board's variables?
+- **Check**: is the agent exposing metrics? (`curl http://<cfoperator-host>:8083/metrics`)
+- **Check**: is the log shipper sending the pod's logs to Loki?
 
 ### "Metrics missing"
-- **Solution**: Add Prometheus client to agent.py (see Metrics Reference above)
-- **Solution**: Ensure CFOperator has /metrics endpoint
+- A labelled metric appears on `/metrics` only after its first observation, so
+  a counter that has not fired since the pod started is absent, not removed.
+  [docs/METRICS.md](../docs/METRICS.md) lists every metric and where it is
+  declared.
 
 ### "Logs not showing"
-- **Check**: Is container named "cfoperator"? (panel filters by this)
-- **Check**: Are logs JSON formatted? (panels expect JSON)
-- **Check**: Is promtail running? (check with: docker ps | grep promtail)
+- **Check**: is the container named `cfoperator` in namespace `apps`? The panels
+  filter on both; edit the stream selector if yours differ.
+- **Check**: are the logs JSON? The panels parse them with `| json`.
 
 ## Customization
 
-Feel free to customize this dashboard:
+Feel free to customize these dashboards:
 
 - Add panels for specific hosts
 - Add panels for specific containers
 - Add alert annotations
 - Change refresh intervals
-- Add more variables (e.g., $host filter)
-
-## Event Runtime — Alert Triage
-
-New section in [event-runtime-dashboard.json](event-runtime-dashboard.json) that surfaces the LLM-driven triage classifier (closes [#15](https://github.com/aachtenberg/cfoperator/issues/15)). With triage enabled (`CFOP_AGENT_URL` set, `HTTPTriageDecisionEngine` registered), every alert flows through `POST /v1/triage` on the agent before any investigation runs. The classifier returns one of four actions; this section is the operational view of that decision stream.
-
-Powered by the existing labeled counter:
-```promql
-cfoperator_event_runtime_decisions_total{action="log_only|notify|investigate|escalate"}
-```
-
-Panels:
-- **Investigated (1h)** — full LLM-investigation alerts. This is the current "expensive" path.
-- **Notify Only (1h)** — alerts the LLM judged operator-relevant but not investigation-worthy. Slack gets a single-line `[severity] <summary>` notification, no LLM investigation.
-- **Log Only (1h)** — known noise (test pods, Alertmanager Watchdog, etc.). Silent — recorded but no Slack.
-- **Escalated (1h)** — high-impact alerts. Threshold-colored: green=0, yellow≥1, red≥3 since sustained escalations mean ongoing impact.
-- **% Triaged Away (1h)** — `(notify + log_only + escalate) / total * 100`. The efficacy headline: higher means triage is saving more LLM work. Green ≥ 20%, blue ≥ 50% (very high — sanity-check the rubric if you see this for long).
-- **Triage Decisions by Action (per minute)** — Time series, one line per action. Shows the live mix and where it's drifting over time.
-
-Operational signals:
-- If `Investigated (1h)` ≈ total decisions, triage is being conservative (or there's no precedent yet in the embeddings index). Acceptable in the first day after deployment.
-- If `Log Only (1h)` is non-zero and growing while real incidents are getting paged, the LLM might be over-classifying. Tune the rubric in `agent/agent.py` → `run_triage` → `system_prompt`.
-- If `Escalated (1h)` is non-zero, treat as the most urgent signal regardless of other panels.
-
-## Event Runtime — Completion Endpoint
-
-New section in [event-runtime-dashboard.json](event-runtime-dashboard.json) that surfaces health of `POST /v1/investigations/{alert_id}/complete` — the endpoint event_runtime exposes for the agent to post completed ActionResults back through.
-
-Powered by a single labeled counter:
-```promql
-cfoperator_event_runtime_completion_requests_total{outcome="recorded|auth_missing|auth_invalid|bad_request|error"}
-```
-
-Panels:
-- **Completion Requests (1h)** - Total inbound to the endpoint. Should track investigation completions.
-- **Recorded (1h)** - Successful recordings. Each one fires the single Slack/Discord notification with the real outcome.
-- **Auth Failures (1h)** - `auth_missing` + `auth_invalid` combined. Non-zero is a security signal: it means something on the cluster network tried to hit the endpoint without (or with the wrong) X-CFOP-Token. With `CFOP_COMPLETION_SHARED_SECRET` properly set on both pods this should be flat zero. Sustained non-zero values warrant investigation.
-- **Bad Requests (1h)** - Malformed body, alert_id mismatch, or invalid JSON. Non-zero usually means the agent and event_runtime have drifted on the wire shape (`{"alert": ..., "result": ...}`).
-- **Completion Requests by Outcome (per minute)** - Time series with one line per outcome label so you can see when a regression started.
+- Add more variables (e.g., a `$host` filter)
 
 ## Related Dashboards
 

@@ -1,14 +1,15 @@
 # Triage fine-tune — retrain runbook
 
 **Ordered procedure for producing a new `cfop-triage-ministral3` tag.**
-[`triage-fine-tune.md`](triage-fine-tune.md) is the model card: what v1 *is*,
-why, and every archived value. This is the thing you follow with the training
-box in front of you. Where the two disagree about a v1 fact, the model card
+[`triage-fine-tune.md`](triage-fine-tune.md) is the model card: what each
+generation *is*, why, and every archived value. This is the thing you follow
+with the training box in front of you. Where the two disagree about a v1 fact, the model card
 wins — it was read back from the archived run.
 
-Written for the **v2 (CFOP-153) retrain**, which is the first use. Steps 1–3
-happen on the cfoperator host; 4–6 on the Windows training box; 7–9 on
-`ubuntu-llm-01`.
+Written for the **v2 (CFOP-153) retrain** and followed for every generation
+since (v2–v6). Steps 1–3 happen on the cfoperator host; 4–6 on a Windows
+training box; 7–8 on `ubuntu-llm-01`, where the backup disk is mounted; 9 is a
+`cfoperator-deploy` commit, after the tag is on the host that serves triage.
 
 ---
 
@@ -16,11 +17,12 @@ happen on the cfoperator host; 4–6 on the Windows training box; 7–9 on
 
 | | |
 |---|---|
-| Training box | Windows, RTX 5080 16GB, unsloth studio (LAN API on `:8888`) |
+| Training box | one of two Windows boxes, RTX 5080 16GB or RTX 5060 Ti 16GB (v5 and v6 trained on the 5060 Ti), unsloth studio (LAN API on `:8888`) |
 | Base model | `unsloth/Ministral-3-14B-Instruct-2512-unsloth-bnb-4bit` |
-| Serving host | ollama on `ubuntu-llm-01` / k3s node `headless-gpu` |
-| Incumbent | `cfop-triage-ministral3:v1-q4` — **leave it serving throughout** |
-| Rollback | one config line; see [model card](triage-fine-tune.md#deployment-rollback-and-the-restart-gotcha) |
+| Import and gate host | ollama on `ubuntu-llm-01` / k3s node `headless-gpu`, which has the backup disk |
+| Serving host | the ollama host `llm.triage_url` names (CFOP-175), else `llm.primary.url`; the homelab's is the RTX 5060 Ti box |
+| Incumbent | `cfop-triage-ministral3:v5-q4` — **leave it serving throughout** |
+| Rollback | one config line; see [§9](#9-deploy) |
 
 The incumbent stays deployed until the candidate clears the gate. Nothing in
 this runbook touches production until step 9.
@@ -41,8 +43,11 @@ constraints push the same way:
 - **Training** must fit 16 GB alongside the Windows compositor. The 14B at
   4-bit is ~10.4 GB of weights and spent an evening fighting for headroom
   (§5). An 8B is roughly half that.
-- **Serving** co-resides with `gemma4:26b` (18 GB) on a 24 GB card, so the
-  triage model's ~8.2 GB is the thing squeezing it.
+- **Serving** runs on whatever ollama host `llm.triage_url` names; the homelab's
+  is a 16 GB card. Before CFOP-175 moved it there, the triage model shared
+  `ubuntu-llm-01`'s 24 GB card with `gemma4:26b` (18 GB), and its ~8.2 GB was
+  the thing squeezing it. A smaller model still helps any host whose card it
+  shares.
 
 `triage_eval.py` scores base models directly — the model card records
 `ministral-3:14b` (base) at **37/42, hard cases 4/12 + 4/12, 0.93s**. That row
@@ -118,7 +123,7 @@ Offline variant, if you already have an investigation dump:
 ```bash
 PYTHONPATH=agent:. .venv/bin/python scripts/build_triage_dataset.py \
   --from-file dump.json --out-dir benchmarks/datasets \
-  --embed-url http://192.168.0.150:11434
+  --embed-url http://10.0.0.14:11434
 ```
 
 The builder's docstring is the authority on label derivation and leakage
@@ -311,9 +316,9 @@ It is a divergence check, not a quality measure. `triage_eval.py` is the gate.
 Studio's API does this without the UI; the box does not need a screen. Tokens
 are in `repos/cfoperator/.env` (`UNSLOTH_5080_TRAINING_TOKEN`,
 `UNSLOTH_5060_TRAINING_TOKEN`); pull them inline so they never land in a
-transcript. `<box>` is whatever DHCP gave the box today — the 5080 was
-`.110` in the morning and `.112` by the afternoon; the 5060 has stayed on
-`.232`. **Studio's "LAN access" toggle is off again after every relaunch**, so
+transcript. `<box>` is whatever DHCP gave the box today — the 5080 has
+changed address within a single day, while the 5060 Ti has kept its lease
+(`10.0.0.16`). **Studio's "LAN access" toggle is off again after every relaunch**, so
 if 8888 is closed on a box the operator can otherwise reach, that is the first
 thing to ask for; a ping sweep plus a 445/3389 probe finds a moved box, and a
 host that answers ARP but drops every port is Windows on a "Public" network
@@ -321,7 +326,7 @@ profile after a new lease (set it to Private).
 
 ```bash
 T=$(grep '^UNSLOTH_5080_TRAINING_TOKEN=' .env | cut -d= -f2- | tr -d '\r"')
-H="Authorization: Bearer $T"; B=http://192.168.0.110:8888
+H="Authorization: Bearer $T"; B=http://<box>:8888
 
 # 1. the run's output_dir, then its final checkpoint
 curl -s -H "$H" $B/api/train/runs | jq -r '.runs[0] | .id, .status, .output_dir'   # {"runs":[...]}, newest first
@@ -394,8 +399,12 @@ timestamp — poll `stat -c %Y` until it is older than a couple of minutes
 before `ollama create`, or the import hashes a half-written file.
 
 ```bash
-ollama create cfop-triage-ministral3:v2-q4 -f benchmarks/Modelfile.cfop-triage-v2
+ollama create cfop-triage-ministral3:v<N>-q4 -f benchmarks/Modelfile.cfop-triage-v<N>
 ```
+
+`ollama create` reads the whole file off the exFAT disk at ~30 MB/s and
+hashes it, so budget 5–10 minutes and run it detached from anything with a
+timeout.
 
 **Write a NEW Modelfile per generation; do not repoint the old one.**
 `Modelfile.cfop-triage` is the documented NAS recovery path for v1 ("if
@@ -420,39 +429,66 @@ print("identical:", a == b)
 EOF
 ```
 
-Use a **new tag**. Do not reuse `:v1-q4`: the incumbent must stay intact and
-servable for rollback.
+Use a **new tag**. Do not reuse the incumbent's (`:v5-q4` today) or any
+earlier one: the incumbent must stay intact and servable for rollback.
 
 ## 8. Gate
 
+Run it against the host the candidate is loaded on (`--url`, default
+`http://localhost:11434`), with the deployment's triage timeout in the
+environment:
+
 ```bash
+export CFOP_TRIAGE_TIMEOUT_SECONDS=120   # the homelab's value; unset is the 5 s code default
 PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-  --model cfop-triage-ministral3:v3-q4 --runs 36 \
-  --output benchmarks/triage_eval_cfop_triage_ministral3_v3_q4.json
+  --model cfop-triage-ministral3:v<N>-q4 \
+  --output benchmarks/triage_eval_cfop_triage_ministral3_v<N>_q4.json
+
+# the hard-case soak
+PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
+  --model cfop-triage-ministral3:v<N>-q4 --runs 50 \
+  --only precedent-monitoring,critical-narrow \
+  --output benchmarks/triage_eval_cfop_triage_ministral3_v<N>_q4_soak.json
 ```
 
-`--runs 36` rather than 3: 3 runs detect an 8%-rate fault only 22% of the time,
-36 detect it 95%. The reasoning is in
+Then the first command again for the `-q8` tag. The manual `triage-eval.yml`
+workflow runs the same 14-case gate from the homelab runner, with the timeout
+already set to 120 s.
+
+`--runs` defaults to 36 rather than 3: 3 runs detect an 8%-rate fault only 22%
+of the time, 36 detect it 95%. The reasoning is in
 [`triage-eval-v2-plan.md`](triage-eval-v2-plan.md).
 
-Minimum bar, matching what v1 cleared: **42/42 on the 14-case screen, 24/24 on
-the hard cases, 100/100 soak, 100% JSON valid**, and Q4/Q8 agreeing on every
-case.
-
-**The gate now grades the reason too.** Two lines were added after v2 passed
-it at 98.4% while fabricating:
+**The bar is the harness's own verdict:** a `GATE PASS` line and exit status 0.
+It passes only when every case is at 100% of its expected answers, JSON is 100%
+valid, no reason is a v1 canned string or cites an object absent from its
+prompt, at least 90% of reasons are grounded in the alert, confidence is not a
+pure function of the action, and every case's p95 latency is under
+`CFOP_TRIAGE_TIMEOUT_SECONDS`. That variable is read exactly as event_runtime
+reads it, so a shell without it judges against 5 s; the export above is not
+optional. Two things a single run cannot judge complete the bar: the ×50 soak
+clean (100/100), and Q4 and Q8 agreeing on every case. The v6 Q4 gate,
+re-graded from its committed JSON with `--replay` (no model needed):
 
 ```
-Reason grounded  504/504 (100.0%)
-Fabricated cites   0/504 (0.0%)
+JSON valid       100.0%
+Action accuracy  100.0%
+Reason grounded  100.0%   canned 0   distinct 25
+Fabricated cites 0.0%
+Confidence       by action {'log_only': [0.9, 0.92, 0.93], 'notify': [0.85, 0.86, 0.87, 0.88], 'investigate': [0.47, 0.48, 0.62], 'escalate': [0.88]}
+                 0 run(s) in the deep-tier reroute band (0 < c < 0.4)
+Latency          mean 0.84s  p95 1.09s  p99 1.09s  max 1.18s
+                 gate: p95 < 120.0s (CFOP_TRIAGE_TIMEOUT_SECONDS)
+GATE             PASS  action_every_case_100pct=ok, json_valid_100pct=ok, reason_none_canned=ok, reason_grounded_90pct=ok, reason_none_fabricated=ok, confidence_not_action_alias=ok, latency_p95_under_timeout=ok
 ```
 
-**`Fabricated cites` must be 0, regardless of action accuracy.** On v2 it read
-41.7% — `novel-oom` scored 36/36 on the action while every reason cited a pod
-that does not exist. Note the first line passed v2 too: a reason can name the
+**A fabricated citation fails the gate, whatever the action accuracy.** On v2
+`Fabricated cites` read 41.7%: `novel-oom` scored 36/36 on the action while
+every reason cited a pod that does not exist, and the harness of the time
+passed it at 98.4%. `Reason grounded` passed v2 too — a reason can name the
 real pod *and* invent a precedent. Grounding is not the absence of fabrication.
 Every fabricating run is also printed inline as it happens (`FABRICATED <name>`),
-even when the action was right. Reasons are persisted in the JSON now, so an
+even when the action was right. Reasons are persisted in the JSON, so an
 audit can be retroactive.
 
 **Fabrication that lands only on block-less cases is a data-shape gap, not a
@@ -475,12 +511,11 @@ detached (`setsid nohup … &`) and watch the log.
 
 **Fabrication on `info-novel-cert` alone was the severity=info gap** (v4): the
 history has no info-level alerts (they are never investigated), so no real row
-taught notify-without-a-precedent. v5 covers it with synthetic rows (§1). For
-perspective on how much of production this touches: this homelab defines no
-info-level Prometheus rule yet, and what reaches triage at `info` today is the
-Alertmanager Watchdog (its `severity: none` maps to info) and the resolution
-alerts `run_triage` already short-circuits — so the shape is the rubric's, not
-yet the fleet's.
+taught notify-without-a-precedent. v5 covers it with synthetic rows (§1). In
+production the shape no longer reaches the model at all: `run_triage` decides
+severity=info in code (CFOP-161), and known noise names, the Watchdog among
+them, before that (CFOP-162). The eval still sends both shapes, because it
+scores the model, not the short-circuit.
 
 Then read a few reasons with your own eyes — the checks are narrow by design:
 
@@ -498,14 +533,47 @@ cause. `tmp-pod-critical` is where the 8B v3 fell over (0/36 — severity
 
 ## 9. Deploy
 
-One line in `cfoperator-deploy` (`llm.triage_model`), then watch both workloads
-roll — `cfoperator-config` is a `configMapGenerator`, so the content hash moves
-the pod template and ArgoCD rolls it; no manual restart. Details and the
-rollback path are in the model card's
-[Deployment section](triage-fine-tune.md#deployment-rollback-and-the-restart-gotcha).
+**First put the tag on the host that serves triage.** That is the ollama host
+`llm.triage_url` names (CFOP-175), which in the homelab is the 5060 Ti box, not
+`ubuntu-llm-01` where §7 imported it. Either copy the GGUF over, hash it
+against the source (§7) and `ollama create` there, or create the tag on
+another ollama and copy its finished blobs and manifest into the host's model
+store, then restart ollama. The 5060 Ti box needs the second: `ollama create`
+of the ~8 GB Q4 there wedged the machine under its IO.
 
-**Rollback is the same line pointed back at `:v1-q4`**, which is why step 7
-insists on a new tag.
+Then one line in `cfoperator-deploy`:
+
+```yaml
+llm:
+  triage_model: cfop-triage-ministral3:v<N>-q4
+```
+
+and watch both workloads roll — `cfoperator-config` is a `configMapGenerator`,
+so the content hash moves the pod template and ArgoCD rolls `cfoperator` and
+`cfoperator-event-runtime` together; no manual restart. The model card's
+[Deployment section](triage-fine-tune.md#deployment-rollback-and-the-restart-gotcha)
+has the key's semantics and why the restart is no longer needed.
+
+**Check it on the metrics.**
+`cfoperator_triage_decisions_total{served_by="triage_model",model="<new tag>"}`
+should climb as alerts arrive, and `cfoperator_triage_model_fallbacks_total`
+should stay flat ([METRICS.md](METRICS.md#triage-decisions)). A `/v1/triage`
+response also names the model that served it, as v5 does here on the eval's
+`novel-oom` alert:
+
+```json
+{"action":"investigate","backend":"ollama","confidence":0.62,
+ "model":"cfop-triage-ministral3:v5-q4","reason":"paperless-ngx-7d9c4b8f5-nq2wm: nothing similar listed — needs a first look"}
+```
+
+but only for an alert the model sees. Resolution notices, noise names
+(`smoke-test-`, `tmp-`, Watchdog) and severity=info are decided in code and
+come back with `"model": null`, so a test-pod alert proves nothing.
+
+**Rollback is the same line pointed back at the previous tag** — `:v5-q4`
+today, with `:v1-q4` still registered behind it — which is why step 7 insists
+on a new tag. Deleting the line turns the fine-tune off and leaves triage on
+the primary chain.
 
 ---
 
@@ -519,4 +587,4 @@ insists on a new tag.
 | Training far slower than ~17 min | **Check watts first.** High util + low watts = the two env vars are missing (§5). Not VRAM, not `gradient_checkpointing`, not sequence length — all three were investigated and none was the cause. |
 | Run dies at a random early step | Same cause as above, most likely |
 | Model lost, no retrain wanted | [Rebuilding from the NAS](triage-fine-tune.md#rebuilding-from-the-nas) — two commands |
-| `/v1/triage` returns the primary's name | Tag missing on the host; nothing asserts this today (eval plan Tier 7) |
+| `/v1/triage` returns the primary's name | The tag is missing on the host `llm.triage_url` names, or that host is down (a sleeping 5060 Ti box looks the same). `cfoperator_triage_model_fallbacks_total{reason="exception"}` climbs and the homelab's `TriageServedByChain` alert fires; there is still no integration test for it (eval plan Tier 7) |

@@ -10,9 +10,10 @@ read the Slack alert, open a terminal, start a coding agent, and type "check
 investigation 1889" so it can go query the API itself. That works, and it beats
 the console, which is why it is worth productizing rather than arguing with.
 
-Seven pieces. The first six are the path from an alert to a session; the
+Eight pieces. The first six are the path from an alert to a session; the
 seventh is what happens when there is no alert and no id — you ssh'd into a
-box and typed `cfassist`.
+box and typed `cfassist`; the eighth opens the same session from the console
+instead of a terminal.
 
 ## 1. The alert tells you the command
 
@@ -119,8 +120,10 @@ credential.
    Pi, and a stock Raspberry Pi OS has no `gh`. `CFASSIST_VERSION=0.10.0` pins a
    release; `cd cfassist-go && make build` builds from source.
 
-1. Mint a token at `<console>/admin?tab=tokens`. **`read` scope is enough** —
-   attach never writes (see below).
+1. Mint a token at `<console>/admin?tab=tokens` with scope `investigate`.
+   An interactive session works at that scope: it mints an `investigate`
+   session token (below) and writes back what it found on exit (§6). `read`
+   is enough only for `--print` and a one-shot question, which just fetch.
 2. Point cfassist at the agent, either by environment:
 
    ```bash
@@ -138,6 +141,10 @@ credential.
    > at the agent — natural enough against a port-forward — sends prompts to
    > CFOperator as if it were a model server, and fails confusingly rather than
    > loudly. Precedence is `--agent-url` → config file → `CFOP_AGENT_URL`.
+   > The token is read from the same rung the URL came from, because a token
+   > belongs to the agent that minted it (CFOP-166): an address from
+   > `--agent-url` or `CFOP_AGENT_URL` takes `CFOP_API_TOKEN` ahead of
+   > `cfoperator.token`.
 
    …or in `~/.cfassist/config.yaml`:
 
@@ -148,7 +155,8 @@ credential.
      timeout: 30
    ```
 
-   Config values win; the environment fills in whatever the file leaves blank.
+   With the address coming from the file, the file's token wins too, and
+   `CFOP_API_TOKEN` fills in only when the file leaves the token blank.
    These are the same variable names `mcp_server` reads, so a workstation
    already set up for MCP needs nothing new.
 
@@ -227,7 +235,7 @@ ssh raspberrypi2 cfassist attach 2612 --print          # briefs
   far less than a token at rest on the disk. Attach itself uses the shorter-lived
   session token it mints from yours.
 
-### attach is read-only, and structurally so
+### attach's API client is read-only, and structurally so
 
 The client refuses any HTTP method that is not GET, in the transport itself
 (`cfassist-go/internal/cfoperator/client.go`, `allowedMethods`) rather than by
@@ -252,8 +260,9 @@ lifetime, `CFOP_API_TOKEN` — the variable every client and child process
 actually reads — is overwritten with the minted secret, so children inherit
 the dying credential instead of the operator's standing one. On clean exit
 the token is revoked and the environment restored; TTL covers unclean exits —
-a leaked cockpit token from yesterday is useless today. Mint and revoke land
-in the audit log with the investigation id.
+a leaked cockpit token from yesterday is useless today. The mint lands in the
+audit log with the investigation id; the revoke records the token id and its
+label, which is where `cockpit-inv-<id>` still names the investigation.
 
 `--remediate` *requests* the remediate scope; the server's role→scope ceiling
 decides (a member can never mint above their own ceiling). `--print` and
@@ -265,42 +274,25 @@ The mint/revoke calls deliberately do not go through the read-only client:
 they use their own transport (`sessiontoken.go`) whose allowlist is exactly
 `POST /api/auth/tokens` and `DELETE /api/auth/tokens/<id>`, so the GET-only
 guard above stays intact and this client can't be bent toward approve/reject
-either.
+either. Write-back on exit (§6) is built the same way: its own transport,
+admitting only the two POSTs it makes.
 
 ## 3. Any MCP client as the cockpit
 
 cfassist is the first-class vehicle, not the only one. CFOperator briefs *any*
 agent, and MCP is the neutral contract: the live MCP server exposes the same
-investigations, remediations and knowledge base as tools, resources and skill
-prompts.
-
-Copy [`examples/cfoperator.mcp.json`](examples/cfoperator.mcp.json) to `.mcp.json`
-in your working directory (or merge the `cfoperator` entry into your host's
-config), keep the stdio *or* the HTTP entry, and delete the other. Then:
+investigations, remediations and knowledge base as tools and resources, so the
+id the alert printed works there too:
 
 ```
 > read cfop://investigations/1889 and tell me what the agent already checked
 ```
 
-For Claude Code specifically, the equivalent one-liners:
-
-```bash
-# stdio, against a port-forwarded agent
-claude mcp add cfoperator -e CFOP_AGENT_URL=http://127.0.0.1:8083 -- python -m mcp_server
-
-# HTTP, against the deployed MCP server
-claude mcp add --transport http cfoperator http://10.0.0.14:8090/mcp \
-  --header "Authorization: Bearer $(kubectl -n apps get secret cfoperator-mcp -o jsonpath='{.data.token}' | base64 -d)"
-```
-
-Tools, resources, prompts, the scope ladder and the per-token scope semantics
-are all documented in [mcp-server.md](mcp-server.md) — this page does not
-restate them.
-
-**Keep `remediate` out of a shared host config.** `read` works an incident;
-`investigate` adds triage and `ask_sre`; `remediate` hands an agent the approve
-button. If you need a remediate-capable consumer, give it its own deployment,
-its own token and its own scope rather than widening the shared one.
+Copy [`examples/cfoperator.mcp.json`](examples/cfoperator.mcp.json) to `.mcp.json`
+in your working directory and keep one of its two entries. The Claude Code
+one-liners, the tools, resources and prompts, and the scope ladder are in
+[mcp-server.md](mcp-server.md). Keep `remediate` out of a shared host config:
+it hands an agent the approve button, and that page says what to do instead.
 
 ## 4. `--spawn`: the session on the affected infrastructure (CFOP-35)
 
@@ -317,7 +309,8 @@ briefed session running inside it:
 
 ```
 cockpit spawned: apps/cfop-cockpit-1889-142233 (pinned to node raspberrypi4)
-session token cfop_9f2a… — pod and token expire in 4h0m0s
+  target: from the remediation queued off this investigation
+session token cfop_9f2a… — session and token expire in 4h0m0s
 attaching (kubectl attach -it -n apps job/cfop-cockpit-1889-142233) — detach with ctrl-p ctrl-q; exit ends the cockpit
 ```
 
@@ -372,10 +365,12 @@ Members keep plain `attach`.
 **The terminal is yours.** The agent hands back coordinates — as argv, never as
 a command string to hand a shell — and the attach runs on your machine with
 your credentials: `kubectl attach -it` in the cluster, `ssh -t` outside it. No
-service account in this system holds `pods/exec` or `pods/attach`, and the
-ladder deliberately does not add one — an operator spawning a cockpit from a
-laptop already has that access. The agent-side PTY bridge is only needed by the
-console drawer (CFOP-59), and that is where that RBAC decision belongs.
+service account in this system holds `pods/exec`, and by default none holds
+`pods/attach`: the terminal path needs neither, because an operator spawning a
+cockpit from a laptop already has that access. The one exception belongs to the
+console drawer (CFOP-59), which made that RBAC decision: Phase B's opt-in grant
+of `create` on `pods/attach` to the agent, in the release namespace, behind its
+own chart value (§8).
 
 ### Enabling it
 
@@ -480,9 +475,12 @@ helm upgrade cfoperator charts/cfoperator \
 
 `cfop-forensics-ssh` is the keypair the deep-investigation worker and the
 node-action executor already use, so on an existing install this secret exists
-already. Deploying by hand instead? [DEPLOYMENT.md](DEPLOYMENT.md) has the
-manifest change (mount the secret at `/cockpit-ssh`, set
-`CFOP_COCKPIT_SSH_SECRET_DIR` and `CFOP_COCKPIT_SSH_USER`).
+already. Deploying by hand instead? `charts/cfoperator/templates/agent.yaml`
+shows what those two values add — the secret mounted at `/cockpit-ssh`, and
+`CFOP_COCKPIT_SSH_SECRET_DIR` and `CFOP_COCKPIT_SSH_USER` set. The manifests in
+[DEPLOYMENT.md](DEPLOYMENT.md) need none of it: their `ssh-perms`
+initContainer already stages that key at `/root/.ssh/id_rsa`, which every
+`infrastructure.hosts` entry's `key_path` points at.
 
 **3. Tell the session how to call home.** This one is easy to miss and the
 spawn refuses without it, on purpose.
@@ -492,16 +490,19 @@ cockpit:
   host_agent_url: http://10.0.0.14:8083   # the agent, as the FLEET sees it
 ```
 
-`cockpit.agent_url` — the one that already exists — is *what the pod calls*,
-and it defaults to cluster DNS. A Pi cannot resolve
-`cfoperator.apps.svc.cluster.local`, so a host-tier session set up with it
-would attach fine and then fail to fetch its own briefing: a briefed session
-with no briefing, discovered from inside. One knob cannot serve both runtimes,
-so tiers 2/3 get their own, and a spawn that would use a cluster-only name is
-refused up front with this key named.
+On Helm it is `--set cockpit.hostAgentUrl=…`. `cockpit.agent_url` is what the
+*pod* calls, and it defaults to cluster DNS that a Pi cannot resolve, so a
+host-tier session given it would attach and then fail to fetch its own
+briefing. Tiers 2/3 therefore get their own key, and a spawn that would use a
+cluster-only name is refused up front with that key named. Both keys, and the
+rest of the `cockpit` block, are in [config-reference.md](config-reference.md).
 
-The same applies to `llm.primary.url`, for the same reason and without the
-guard: it has to be an address the fleet can reach, not `127.0.0.1`.
+The same applies to the model the session talks to, `cockpit.llm_url`, which
+defaults to `llm.primary.url`: it has to be an address the session can reach.
+A pod or a `--tier container` session given a loopback one is refused at
+spawn, because in its own network namespace that address is itself. Tiers
+`host` and `ssh` are not checked — there, loopback is right whenever ollama
+runs on that host, and wrong on every other one.
 
 **4. Check it took.** Name the host and the rung explicitly, so the test is of
 the ssh key and nothing else:
@@ -513,9 +514,10 @@ cfassist attach 1889 --spawn --host raspberrypi5 --tier ssh
 `--tier ssh` is the useful smoke test: it is the rung every reachable host has,
 so it works even on a machine with no docker and no systemd. Read the first two
 lines of output — they say which machine and which tier, which is the whole
-question. If you get `could not be probed (Permission denied (publickey))`,
-step 2 has not landed; if you get `is not in infrastructure.hosts`, step 1 has
-not; and if you get `only resolves inside the cluster`, step 3 has not.
+question. If you get `the capability probe failed: Permission denied
+(publickey)`, step 2 has not landed; if you get `is not in
+infrastructure.hosts`, step 1 has not; and if you get `only resolves inside the
+cluster`, step 3 has not.
 
 Fixed one of them? Just run it again. A failed probe is cached for seconds, not
 minutes, precisely so that mounting the key and retrying works the way you
@@ -630,8 +632,8 @@ Two flags, both `--spawn` only. Passing either without `--spawn` is refused
 rather than ignored — a plain `attach` already runs on your machine, so there
 would be nothing for them to act on.
 
-**`--host <name>` picks the machine.** Resolution is a heuristic over the
-remediation rows and the trigger text, and you can see things it cannot:
+**`--host <name>` picks the machine.** Resolution reads the remediation rows,
+the investigation's FIX block and its text, and you can see things it cannot:
 
 ```bash
 cfassist attach 1889 --spawn --host raspberrypi5
@@ -684,8 +686,10 @@ ssh sre@10.0.0.15 'rm -rf /tmp/cfop-cockpit-1889'
 ssh sre@10.0.0.20 'docker rm -f cfop-cockpit-1889'
 ```
 
-Every artifact is named `cfop-cockpit-<investigation-id>`, on every tier and in
-every runtime, so one name finds the pod, the container and the directory.
+Every artifact's name starts `cfop-cockpit-<investigation-id>`, on every tier
+and in every runtime. The container and the session directory are exactly that
+name; the tier-1 Job adds a `-<HHMMSS>` suffix, so it is found by its
+`cfop-cockpit=<investigation-id>` label instead.
 
 Two cockpits may run at once *per runtime*: two in the cluster, and two on each
 host. The host half is not tidiness — every session mints a token onto a
@@ -711,9 +715,9 @@ can change it without a redeploy.
 | `kubectl create failed: jobs is forbidden` | tier 1's RBAC is not applied | see the CFOP-35 section in [DEPLOYMENT.md](DEPLOYMENT.md) |
 | `could not fetch cfassist-linux-arm64 from cfassist-v<version> …; is the release tagged?` | the pinned cfassist version has no published release | tag it, or pin an older one with `CFOP_COCKPIT_CFASSIST_VERSION` |
 | `only resolves inside the cluster … set cockpit.host_agent_url` | the session would have been told to call the pod's address | setup step 3 |
-| `cockpit concurrency cap reached` | two cockpits are already running — in the cluster, or on that host | exit one (the message names them), or attach without `--spawn` |
+| `cockpit concurrency cap reached` | two cockpits are already running — in the cluster, or on that host | exit one (on the host tiers the message names them), or attach without `--spawn` |
 | `spawning a cockpit is admin-only` | you are a member | ask an admin, or use plain `attach` — the briefing is the same |
-| the session starts but the model never answers | the session cannot reach the LLM | check `llm.primary.url` is an address reachable *from the fleet*, not `127.0.0.1` |
+| the session starts but the model never answers | the session cannot reach the LLM | check `cockpit.llm_url` (default: `llm.primary.url`) is an address reachable *from the fleet*, not `127.0.0.1` |
 | the briefing renders, keystrokes echo, nothing responds, ctrl-c does nothing | the session's deadline wrapper put it in a background process group, so it cannot read the terminal. The wrapper is generated by the **agent** into `/tmp/cfop-cockpit-<id>/run` (or the container's argv) — it is not part of the cfassist binary, so upgrading cfassist on your machine changes nothing | escape with ssh's own `Enter ~ .`. Re-spawning alone will not help: `_existing_session` hands back the same runner for that investigation. Delete it **on the host** — `rm -rf /tmp/cfop-cockpit-<id>` (or `docker rm -f cfop-cockpit-<id>`) — then spawn again once an agent containing the `timeout --foreground` fix is deployed |
 | the session starts but the briefing is empty or errors | the session cannot reach the agent | same shape as the row above, for `cockpit.host_agent_url` |
 | you fixed the cause and the same error came back | not the probe cache — failures are only held for seconds | look again: the message names what it actually tried |
@@ -744,13 +748,26 @@ anywhere". The order that actually works is:
 1. `--host` on the command, if you gave one;
 2. the `host_id` of a remediation queued off this investigation — that one *is*
    derived from the finding;
-3. a configured host named in the trigger or the findings, matched on whole
-   names so `raspberrypi4` never matches `raspberrypi45`;
-4. none, in which case tier 1 spawns unpinned, as it always did.
+3. the investigation's own FIX target: the first `host` in the structured
+   `findings.fix.targets` the model wrote alongside its prose. It is taken as
+   written, even when it is not in `infrastructure.hosts`, so an inventory miss
+   is reported as one (the troubleshooting rows above) rather than matched to
+   some other configured box the text happens to mention;
+4. a configured host named in the trigger or the findings, matched on whole
+   names so `raspberrypi4` never matches `raspberrypi45`. Findings keys that
+   record where a check ran *from* (`source`) are left out of the match;
+5. none, in which case tier 1 spawns unpinned, as it always did.
 
-Guessing beyond the configured inventory has no upside: an unconfigured name has
-no address and no credential, so the spawn would fail one step later anyway —
-and a wrong guess puts you on the wrong machine mid-incident.
+The FIX target outranks the text because of investigation #2339 (CFOP-142).
+Its findings carried `"source": "ssh_execute (raspberrypi)"`, which names the
+box a check ran from, and matching the text first put the cockpit on
+`raspberrypi` while the incident was on `raspberrypi5` — a different physical
+machine.
+
+The text match stays inside the configured inventory. Guessing beyond it has no
+upside: an unconfigured name has no address and no credential, so the spawn
+would fail one step later anyway — and a wrong guess puts you on the wrong
+machine mid-incident.
 
 ### How the runtime gets chosen
 
@@ -758,7 +775,7 @@ For a cluster node under `auto`, nothing here runs: a node is tier 1, and
 probing it would spend a round trip confirming a decision already made. (The
 console drawer is the one exception — with Phase B off it cannot use a pod, so
 its `auto` probes a node that is also an inventory host and takes the host
-tier; see [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console).)
+tier; see [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console-cfop-59).)
 In every other case — including whenever a host tier is *explicitly asked for*, node or
 not — one ssh round trip asks the host what it has: architecture, `docker`, `podman`,
 `systemd-run`, whether there is a systemd manager to own a transient unit — and
@@ -882,8 +899,9 @@ cfassist drops a half-filled learning before sending it, so you get a warning
 instead of a silent no-op:
 
 ```
-warning: the session's learning was not stored: refusing to store a learning
-  with no trigger condition — it would be auto-deprecated and never retrieved
+warning: the session's learning was not stored: "Stale CIFS handle after a NAS
+  reboot" is missing applies_when — a learning with no trigger condition would
+  be auto-deprecated and never retrieved
 ```
 
 ### When the model cannot summarize
@@ -1249,7 +1267,7 @@ ticket, the TTL, kill, and the audit line are the same as the host tiers.
   when you turn on both `cockpit.bridge_pod_tier` (runtime) and the chart's
   `cockpit.bridgePodAttach` (which grants the agent `create` on pods/attach in
   the release namespace) — see
-  [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console).
+  [Opening a cockpit from the console](#8-opening-a-cockpit-from-the-console-cfop-59).
   With neither, a node that is also an `infrastructure.hosts` entry gets a
   host-tier cockpit (CFOP-98); an investigation with no reachable host lands on
   `cockpit.fallback_host` when one is named (CFOP-177), and otherwise says so

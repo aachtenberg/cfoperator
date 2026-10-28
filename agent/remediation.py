@@ -20,7 +20,9 @@ Design notes / safety:
     pod blocked *solely* by an untolerated taint is proposed — and even then
     it goes out as a dry-run / human-reviewed PR, never auto-applied.
 
-See docs/remediation-pipeline.md for the full design.
+docs/REMEDIATION.md says where this sits in the pipeline (Components,
+Phase-B proposer) and why it was built this way (History and design
+decisions).
 """
 
 from __future__ import annotations
