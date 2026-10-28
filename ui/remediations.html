@@ -584,7 +584,7 @@ function setFilter(s){ filter=s; paint(); }
 function searchInput(v){ Q=String(v||'').trim(); paint(); }
 
 // ---- pipeline flags + run-feed ----
-const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify',queue_tracker:'tracker',queue_reverify:'re-verify',node_action_enabled:'node-action'};
+const FLAG_LABEL = {queue_feed:'feed',queue_drain:'drain',queue_reap:'reap',queue_verify:'verify',queue_tracker:'tracker',queue_reverify:'re-verify',node_action_enabled:'node-action',model_dedupe:'model-dedupe',model_dedupe_fold:'model-folds'};
 async function loadFlags(){
   let f; try{ f = await (await fetch('/api/remediation/flags')).json(); }catch(e){ return; }
   document.getElementById('flags').innerHTML = Object.keys(FLAG_LABEL).map(k=>

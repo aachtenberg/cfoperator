@@ -278,6 +278,9 @@ llm:
   #     model: gemma4:26b
   #   classifier:
   #     backend: groq
+  #   dedupe:                   # CFOP-545, with remediation.model_dedupe on
+  #     backend: openrouter
+  #     model: anthropic/claude-haiku-5.5
   #   handoff:
   #     backend: anthropic
   #     model: claude-opus-5-5
@@ -675,6 +678,18 @@ remediation:
     min_age_seconds: 3600       # leave a just-filed row alone; its evidence is fresh
     recheck_after_seconds: 86400  # an `open` row rotates daily, not every tick
     max_iterations: 10          # tool rounds per row
+  # CFOP-545: the dedupe model step. When the cfop-dedupe tiers say an enqueue
+  # is new and open rows exist, ask a model whether it is the same fix as one
+  # of them, reworded (the class no exact tier can match). Asked outside the
+  # enqueue lock, for the investigation, sweep-fallback and summary paths only;
+  # chat and console asks are the operator's and are never folded by a model.
+  # model_dedupe alone is shadow: the answer lands on the row as
+  # payload.dedupe.model and nothing folds. model_dedupe_fold lets an answer
+  # fold the row onto the one it named, if that row is still open. The model is
+  # the `dedupe` scope under llm.scopes (or Admin → LLM), any backend. Score a
+  # seat first with benchmarks/dedupe_model_eval.py.
+  model_dedupe: false
+  model_dedupe_fold: false
   # CFOP-133 / CFOP-128 / CFOP-131. Which classes may auto-execute, and the
   # numbers around that gate. Omitting the block keeps gitops-patch and
   # node-action at 0.8. An empty `classes` list disables auto-execution.

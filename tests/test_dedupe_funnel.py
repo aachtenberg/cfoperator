@@ -134,6 +134,69 @@ def test_the_guard_sees_another_row_builder():
 
 
 # ---------------------------------------------------------------------------
+# The model step (CFOP-545)
+# ---------------------------------------------------------------------------
+
+#: The paths the model step serves. Chat and the console are operator asks,
+#: exempt as they are from the node tier.
+_MODEL_PATHS = {"investigation", "sweep-fallback", "summary"}
+
+
+def model_step_problems(src):
+    """(line, why) for each place this module's source breaks the model
+    step's rules: ``_dedupe_model_hint`` called under ``_remediation_lock`` (a
+    model call held under the lock), a model path decided without the hint,
+    or an operator path given one."""
+    out = []
+
+    def visit(node, locked):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            locked = False
+        if isinstance(node, ast.With) and any(_is_lock(i.context_expr) for i in node.items):
+            locked = True
+        if isinstance(node, ast.Call):
+            attr = getattr(node.func, "attr", "")
+            if attr == "_dedupe_model_hint" and locked:
+                out.append((node.lineno, "model asked under _remediation_lock"))
+            if attr == "_dedupe_decide" and node.args and isinstance(node.args[0], ast.Constant):
+                path = node.args[0].value
+                hinted = any(k.arg == "hint" for k in node.keywords)
+                if path in _MODEL_PATHS and not hinted:
+                    out.append((node.lineno, f"{path} decided without the model's hint"))
+                if path not in _MODEL_PATHS and hinted:
+                    out.append((node.lineno, f"{path} is an operator ask, given a hint"))
+        for child in ast.iter_child_nodes(node):
+            visit(child, locked)
+    visit(ast.parse(src), False)
+    return out
+
+
+def test_the_model_is_never_asked_under_the_lock_and_only_for_unattended_paths():
+    problems, paths = [], set()
+    for rel, src in _sources():
+        if "_dedupe_decide(" not in src and "_dedupe_model_hint(" not in src:
+            continue
+        problems += [f"{rel}:{line} ({why})" for line, why in model_step_problems(src)]
+        paths |= {c.args[0].value for c in _calls(ast.parse(src), "_dedupe_decide")
+                  if c.args and isinstance(c.args[0], ast.Constant)}
+    # Every site seen: if this fails, the scan is broken, not the code.
+    assert _MODEL_PATHS | {"chat", "console"} <= paths, paths
+    assert not problems, problems
+
+
+@pytest.mark.parametrize("src, line, why", [
+    ("def f(self):\n    with self._remediation_lock:\n        h = self._dedupe_model_hint('summary', {})\n"
+     "        self._dedupe_decide('summary', {}, hint=h)\n", 3, "model asked under _remediation_lock"),
+    ("def f(self):\n    with self._remediation_lock:\n        self._dedupe_decide('investigation', {})\n",
+     3, "investigation decided without the model's hint"),
+    ("def f(self):\n    h = self._dedupe_model_hint('chat', {})\n    with self._remediation_lock:\n"
+     "        self._dedupe_decide('chat', {}, hint=h)\n", 4, "chat is an operator ask, given a hint"),
+])
+def test_the_model_step_guard_sees_a_broken_rule(src, line, why):
+    assert model_step_problems(src) == [(line, why)]
+
+
+# ---------------------------------------------------------------------------
 # The console's POST /api/remediations
 # ---------------------------------------------------------------------------
 

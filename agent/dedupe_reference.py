@@ -221,12 +221,20 @@ def serve(url: str, request: Dict[str, Any], **_kw) -> Dict[str, Any]:
     return decide(request)
 
 
-def wire(op, url: str = TEST_URL):
+def wire(op, url: str = TEST_URL, *, model_step: bool = False):
     """Give a MagicMock operator the real enqueue funnel: the lock, the
     decision and the fold, answered through ``serve`` (agent/conftest.py),
-    and the choke point's methods around them."""
+    and the choke point's methods around them.
+
+    ``model_step`` False is the model_dedupe flag off (CFOP-545): no hint is
+    asked for. True binds the real ``_dedupe_model_hint``, which reads the
+    flags and the ``dedupe`` seat off ``op`` like any other caller would."""
     op._remediation_lock = threading.RLock()
     op._dedupe_url = lambda: url
+    op._dedupe_nodes = lambda cand: CFOperator._dedupe_nodes(op, cand)
+    op._dedupe_apply_hint = lambda *a: CFOperator._dedupe_apply_hint(op, *a)
+    op._dedupe_model_hint = ((lambda path, cand: CFOperator._dedupe_model_hint(op, path, cand))
+                             if model_step else (lambda path, cand: None))
     op._dedupe_decide = lambda path, cand, **kw: CFOperator._dedupe_decide(op, path, cand, **kw)
     op._apply_dedupe_fold = lambda d: CFOperator._apply_dedupe_fold(op, d)
     op._dedupe_row_open = lambda rid: CFOperator._dedupe_row_open(op, rid)

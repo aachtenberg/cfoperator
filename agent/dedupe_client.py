@@ -55,9 +55,10 @@ TIMEOUT = 2.0
 TERMINAL = ("resolved", "rejected")
 
 # path: investigation | sweep-fallback | summary | chat | console.
-# decision: new | fold | suppress. tier: node | target | identifier | key, or
-# '' for a new row. source: service | fallback (the service could not answer
-# and the exact key decided) | unconfigured (no service URL is set).
+# decision: new | fold | suppress. tier: node | target | identifier | key |
+# model (CFOP-545), or '' for a new row. source: service | fallback (the
+# service could not answer and the exact key decided) | unconfigured (no
+# service URL is set) | model (the dedupe model step folded it).
 DEDUPE_DECISIONS = Counter(
     'cfoperator_dedupe_decisions_total',
     'Remediation enqueue decisions, by who made them (CFOP-538)',
