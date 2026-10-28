@@ -3468,8 +3468,11 @@ class KnowledgeBase:
                     LEFT JOIN investigation_embeddings ie ON i.id = ie.investigation_id
                     WHERE (
                         ie.investigation_id IS NULL
+                        -- '\S': the builder strips the response and writes no
+                        -- Findings: line for a blank one, so a blank must not
+                        -- qualify or the row is re-selected on every sweep.
                         OR (ie.embedding_text NOT LIKE '%Findings:%'
-                            AND COALESCE(i.findings->>'response', '') <> '')
+                            AND COALESCE(i.findings->>'response', '') ~ '\S')
                     )
                     AND i.outcome NOT IN ('in_progress', 'retry')
                     -- A run whose tool loop stopped before any verdict

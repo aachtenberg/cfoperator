@@ -152,6 +152,16 @@ def check_knowledge_base(url):
         unindexed = {row["id"] for row in kb.get_unindexed_investigations(limit=100)}
         assert inv_id not in unindexed, "a re-indexed row was selected again"
         assert monitoring in unindexed, "an unembedded 'monitoring' investigation was not backfilled"
+        # A blank response produces no Findings: line (the builder strips it),
+        # so a row already embedded with one must not qualify for re-indexing
+        # or it is re-selected on every sweep (PR #364 review).
+        blank = kb.start_investigation("db smoke blank response")
+        kb.update_investigation(blank, findings={"response": " \n\t "}, outcome="monitoring")
+        kb.store_investigation_embedding(
+            blank, [0.001 * i for i in range(EMBEDDING_DIM)], "db-smoke",
+            "Issue: db smoke blank response\nOutcome: monitoring")
+        assert blank not in {row["id"] for row in kb.get_unindexed_investigations(limit=100)}, \
+            "a row with a whitespace-only response was selected for re-indexing"
         learning_id = kb.store_learning({"learning_type": "insight", "title": "db smoke",
                                          "description": "the knowledge base round-trips a write"})
         assert learning_id, "store_learning returned no id"
