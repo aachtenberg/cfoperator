@@ -289,3 +289,32 @@ def test_the_sweep_fallback_folds_on_the_models_answer():
     assert handled == 1
     op.kb.queue_remediation.assert_not_called()
     assert op.kb.record_remediation_absorbed.call_args.args[0] == 400
+
+
+def _node_details():
+    return {**CAND_401, "host": "raspberrypi4", "risk": "med", "confidence": None}
+
+
+def test_a_row_opening_a_node_incident_is_never_shown_to_the_model():
+    """#365 review: with a node NotReady and no incident row yet, the tiers'
+    "new" is this row becoming the incident row. They skip their own folds
+    for it, and a model fold onto any other row would mean the incident row
+    is never created."""
+    op = _op(fold=True)
+    op._notready_nodes = MagicMock(return_value={"raspberrypi4"})
+    assert CFOperator._maybe_queue_remediation(op, 4946, _node_details()) == 402
+    op._chat_with_tools_with_fallback.assert_not_called()
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["host_id"] == "raspberrypi4" and "raspberrypi4" in kw["dedupe_key"]
+
+
+def test_a_node_that_goes_notready_after_the_hint_still_gets_its_incident_row():
+    op = _op(fold=True)
+    asks = iter([set()])
+    op._notready_nodes = MagicMock(side_effect=lambda: next(asks, {"raspberrypi4"}))
+    assert CFOperator._maybe_queue_remediation(op, 4946, _node_details()) == 402
+    op._chat_with_tools_with_fallback.assert_called_once()
+    kw = op.kb.queue_remediation.call_args.kwargs
+    assert kw["host_id"] == "raspberrypi4" and "raspberrypi4" in kw["dedupe_key"]
+    assert kw["payload"]["dedupe"]["model"]["row_id"] == 400, "what the model said is still recorded"
+    op.kb.record_remediation_absorbed.assert_not_called()

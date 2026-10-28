@@ -386,7 +386,9 @@ Approve gate read the column only.
   `model_dedupe_fold` also on, the funnel folds the enqueue onto the named
   row under the lock (`tier="model"`, the model's sentence in the reason), if
   that row is still open. A failed, malformed or out-of-set answer inserts
-  the row. Chat and console asks are never shown to it. The seat is any
+  the row. Chat and console asks are never shown to it, and neither is a row
+  the node tier is opening as a NotReady node's incident row: the tiers skip
+  their own folds for that row, and so does the model. The seat is any
   backend the chain knows, set under Admin → LLM; `agent/dedupe_model.py`
   holds the prompt, and `benchmarks/dedupe_model_eval.py` scores a seat
   against the operator's own duplicate notes before it is used.

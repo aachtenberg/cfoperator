@@ -5091,7 +5091,10 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             return None
         pre = dedupe_client.resolve(self._dedupe_url(), path, cand,
                                     dedupe_client.trim_rows(rows), self._dedupe_nodes(cand))
-        if pre['decision'] != 'new':
+        # A "new" with a host is the node tier opening a NotReady node's
+        # incident row (#365 review): the service skips its own folds for it,
+        # and so does this step, or the incident row would never be created.
+        if pre['decision'] != 'new' or pre.get('host'):
             return None
         seat = self._scope_llm('dedupe')
 
@@ -5116,6 +5119,11 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         decision = {**decision, 'model': note}
         rid = hint.get('row_id')
         if hint.get('outcome') != 'fold' or hint.get('mode') != 'fold':
+            return decision
+        if decision.get('host'):
+            # The node went NotReady after the hint was asked, and this row
+            # is now its incident row; see _dedupe_model_hint.
+            logger.info(f"Dedupe model ({path}): the node tier owns this row; not folding onto #{rid}")
             return decision
         if not self._dedupe_row_open(rid):
             logger.info(f"Dedupe model ({path}): #{rid} closed since it was asked; inserting")
