@@ -138,6 +138,30 @@ def check_knowledge_base(url):
         unindexed = {row["id"] for row in kb.get_unindexed_investigations(limit=100)}
         assert plain_failure in unindexed, "the backfill query returned nothing it should have"
         assert no_verdict not in unindexed, "the backfill would embed a no-verdict investigation"
+        # CFOP-542: inv_id above was stored with the pre-fix text ("db smoke",
+        # no Findings: line) while its findings carry a response, so the
+        # backfill must pick it up again; once re-stored with a Findings:
+        # line it must drop out. A 'monitoring' row with no embedding at all
+        # (the outcome the agent actually emits) must be picked up too.
+        assert inv_id in unindexed, "a trigger-only embedding was not selected for re-indexing"
+        kb.store_investigation_embedding(
+            inv_id, [0.001 * i for i in range(EMBEDDING_DIM)], "db-smoke",
+            "Issue: db smoke\nOutcome: monitoring\nFindings: db smoke")
+        monitoring = kb.start_investigation("db smoke monitoring")
+        kb.update_investigation(monitoring, findings={"response": "watching"}, outcome="monitoring")
+        unindexed = {row["id"] for row in kb.get_unindexed_investigations(limit=100)}
+        assert inv_id not in unindexed, "a re-indexed row was selected again"
+        assert monitoring in unindexed, "an unembedded 'monitoring' investigation was not backfilled"
+        # A blank response produces no Findings: line (the builder strips it),
+        # so a row already embedded with one must not qualify for re-indexing
+        # or it is re-selected on every sweep (PR #364 review).
+        blank = kb.start_investigation("db smoke blank response")
+        kb.update_investigation(blank, findings={"response": " \n\t "}, outcome="monitoring")
+        kb.store_investigation_embedding(
+            blank, [0.001 * i for i in range(EMBEDDING_DIM)], "db-smoke",
+            "Issue: db smoke blank response\nOutcome: monitoring")
+        assert blank not in {row["id"] for row in kb.get_unindexed_investigations(limit=100)}, \
+            "a row with a whitespace-only response was selected for re-indexing"
         learning_id = kb.store_learning({"learning_type": "insight", "title": "db smoke",
                                          "description": "the knowledge base round-trips a write"})
         assert learning_id, "store_learning returned no id"

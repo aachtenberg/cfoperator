@@ -552,12 +552,41 @@ class EmbeddingService:
         """Clear the embedding cache."""
         self._cache.clear()
 
+    #: findings keys that are never embedded. ``provider`` and ``tool_calls``
+    #: are bookkeeping, not meaning; ``fix`` is structured evidence the FIX
+    #: contract checks; ``similar_past`` is what the orient phase cited, and
+    #: embedding it would make a row similar to its citations rather than to
+    #: its own diagnosis; ``stop_reason``/``error``/``opened_prs`` are run
+    #: mechanics. Listed so a reviewer can see the exclusion is a decision.
+    FINDINGS_KEYS_NOT_EMBEDDED = frozenset({
+        'provider', 'tool_calls', 'fix', 'similar_past', 'stop_reason',
+        'error', 'opened_prs', 'preflight_skip', 'deep', 'host',
+        'outcome_verification', 'proposal', 'remediation_id',
+    })
+
+    #: The line that marks a text built from the agent's real findings shape
+    #: (CFOP-542). get_unindexed_investigations re-selects a stored row whose
+    #: embedding_text lacks it while its findings carry a response, which is
+    #: how rows embedded before the fix get their diagnosis indexed.
+    FINDINGS_MARKER = "Findings:"
+
     def create_investigation_text(self, investigation: Dict[str, Any]) -> str:
         """
         Create embeddable text from investigation data.
 
-        Combines trigger, findings summary, and key learnings into a
-        single text optimized for semantic similarity.
+        One text per investigation: trigger, outcome, the recommendation and
+        the model's full response, in that order. The order is load-bearing:
+        generate_embedding head-truncates at the model's bound (CFOP-84), the
+        response is up to 5000 chars, so anything that must survive
+        truncation goes before it.
+
+        CFOP-542: the first version read ``summary``/``hypothesis``/
+        ``evidence``/``learnings``/``actions`` out of findings. The agent has
+        never written any of those -- every path stores ``response`` and
+        ``recommendation`` -- so for its whole life this produced
+        ``Issue: <trigger>\nOutcome: <outcome>`` and the diagnosis was stored
+        but unsearchable. The legacy keys are still honoured for a dict that
+        carries them; the live keys are what make the text.
 
         Args:
             investigation: Dict with trigger, findings, outcome keys
@@ -572,11 +601,16 @@ class EmbeddingService:
         if trigger:
             parts.append(f"Issue: {trigger}")
 
-        # Findings
+        # Outcome goes second, before anything long enough to be truncated.
+        outcome = investigation.get("outcome", "")
+        if outcome:
+            parts.append(f"Outcome: {outcome}")
+
         findings = investigation.get("findings", {})
         if isinstance(findings, dict):
-            # Summary or hypothesis
-            summary = findings.get("summary", "") or findings.get("hypothesis", "")
+            # Summary: the legacy keys first, else the agent's recommendation.
+            summary = (findings.get("summary", "") or findings.get("hypothesis", "")
+                       or findings.get("recommendation", ""))
             if summary:
                 parts.append(f"Summary: {summary}")
 
@@ -601,14 +635,16 @@ class EmbeddingService:
                     actions = "; ".join(str(a) for a in actions[:5])
                 parts.append(f"Actions: {actions}")
 
+            # The model's full response, last: it is the long part, and the
+            # recommendation above already carries its conclusion in case the
+            # bound cuts into it.
+            response = findings.get("response", "")
+            if isinstance(response, str) and response.strip():
+                parts.append(f"{self.FINDINGS_MARKER} {response.strip()}")
+
         elif isinstance(findings, str) and findings:
             # Sometimes findings is just a string
-            parts.append(f"Findings: {findings}")
-
-        # Outcome
-        outcome = investigation.get("outcome", "")
-        if outcome:
-            parts.append(f"Outcome: {outcome}")
+            parts.append(f"{self.FINDINGS_MARKER} {findings}")
 
         return "\n".join(parts)
 

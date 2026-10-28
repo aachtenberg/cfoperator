@@ -3441,7 +3441,21 @@ class KnowledgeBase:
 
     def get_unindexed_investigations(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        Get investigations that don't have embeddings yet.
+        Get investigations whose embedding is missing or predates CFOP-542.
+
+        Two kinds of row come back. A finished investigation with no
+        embedding row at all: write-time embedding failed (service down) or
+        the run predates it. And one whose stored embedding_text has no
+        ``Findings:`` line while its findings carry a response: it was
+        embedded by the builder that read keys the agent never wrote, so its
+        vector is the trigger alone. store_investigation_embedding upserts on
+        investigation_id, so the second kind is re-indexed in place.
+
+        The outcome filter used to be ('resolved', 'escalated', 'failed') --
+        none of which the agent emits in practice (it says 'monitoring' and
+        'needs_action'), so a row that missed write-time embedding was never
+        backfilled. Every terminal outcome qualifies now; only the open ones
+        ('in_progress', 'retry') are left alone.
 
         Returns:
             List of investigation dicts needing embedding
@@ -3452,8 +3466,15 @@ class KnowledgeBase:
                     SELECT i.id, i.trigger, i.findings, i.outcome, i.started_at
                     FROM investigations i
                     LEFT JOIN investigation_embeddings ie ON i.id = ie.investigation_id
-                    WHERE ie.investigation_id IS NULL
-                    AND i.outcome IN ('resolved', 'escalated', 'failed')
+                    WHERE (
+                        ie.investigation_id IS NULL
+                        -- '\S': the builder strips the response and writes no
+                        -- Findings: line for a blank one, so a blank must not
+                        -- qualify or the row is re-selected on every sweep.
+                        OR (ie.embedding_text NOT LIKE '%Findings:%'
+                            AND COALESCE(i.findings->>'response', '') ~ '\S')
+                    )
+                    AND i.outcome NOT IN ('in_progress', 'retry')
                     -- A run whose tool loop stopped before any verdict
                     -- (CFOP-271) is skipped at write time; the backfill must
                     -- not embed it on the next sweep either.
