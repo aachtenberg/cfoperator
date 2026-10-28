@@ -26,7 +26,9 @@ D (a different fix on the same subject). **Only D counts as a wrong fold.**
 ## Results
 
 One run per case. Wrong = D verdicts only. Latency is the median and p95 of
-a whole call. Ollama ran alone, one request at a time, on the shared card.
+a whole call. Ollama ran one request at a time on headless-gpu's 24 GB
+card: gemma4 alone, qwen3.5:9b swapping with the agent's own gemma4
+(below).
 
 | seat | caught /28 | unmarked dups found | borderline | **wrong** | p50 s | p95 s |
 |---|---|---|---|---|---|---|
@@ -43,6 +45,7 @@ a whole call. Ollama ran alone, one request at a time, on the shared card.
 | openrouter:qwen/qwen3.8-27b | 24 | 25 | 2 | **0** | 10.0 | 24.8 |
 | openrouter:qwen/qwen3-30b-a3b | 19 | 21 | 1 | **0** | 7.1 | 25.1 |
 | ollama:gemma4:26b | 24 | 26 | 3 | 1 | 12.7 | 31.2 |
+| ollama:qwen3.5:9b | 23 | 22 | 2 | 1 | 30.4 | 148.0 |
 | deepseek:deepseek-v4-pro | 23 | 24 | 3 | 1 | 10.0 | 42.1 |
 | openrouter:openai/gpt-5.4-nano | 22 | 23 | 2 | 1 | 4.0 | 6.0 |
 | gemini:gemini-3-flash-preview | 25 | 28 | 6 | 2 | 1.1 | 1.4 |
@@ -56,17 +59,25 @@ a whole call. Ollama ran alone, one request at a time, on the shared card.
 
 ## Reading it
 
-- **Most seats can do this.** Twelve of 23 made no wrong fold on the 60
+- **Most seats can do this.** Twelve of 24 made no wrong fold on the 60
   hardest negatives and caught 19 to 25 of 28 labelled duplicates. Zero in 60 bounds
   the wrong-fold rate at about 5% (the rule of three), on the hardest cases
   in the queue.
 - **Size is not what matters, reasoning is.** gpt-oss-20b (about 3.6B active
-  parameters) and qwen3.5-9b (9B dense) made no wrong fold. A model that small
-  fits beside the triage model on a 16 GB card; its 87 s median here is
-  OpenRouter's provider and its thinking, not a local measurement. Ministral 8B and grok-4.20 non-reasoning
+  parameters) and qwen3.5-9b (9B dense) made no wrong fold through hosted
+  providers. Ministral 8B and grok-4.20 non-reasoning
   catch as many duplicates but fold different fixes on the same host
   (Ministral 8B merged a fan-control fix with an ollama memory limit, and an
   IPv6 firewall change with a pod-log check). They are not safe seats.
+- **qwen3.5:9b locally** (Q4_K_M) caught 23 and made one wrong fold. Its
+  reason for #352 described #351, the same nginx zone fix, but it named
+  #350, the row before it. Through OpenRouter the same model made none; one
+  run per case cannot tell quantization from chance. Its 30 s median is
+  mostly thinking. It does not fit beside gemma4:26b: Ollama predicts
+  9.2 GiB for it at a 32k context and 7.2 GiB at 16k, against 7.3 GiB free,
+  and evicts at both. Over the run the two models swapped 45 times, and the
+  agent's own gemma4 calls paid for the reloads. A second local model needs
+  its own card.
 - **The misses are mostly defensible.** Every seat misses #222 against #220.
   Those are two fixes for one problem (a DaemonSet dnsPolicy, and
   NetworkManager on the hosts), closed against one issue: the label is
