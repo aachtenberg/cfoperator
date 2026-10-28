@@ -1,20 +1,32 @@
 # Triage eval v2 — what the next version of the tests should cover
 
-> **Status (2026-10-15, CFOP-314).** Landed: Tier 0 contract tests
-> (`agent/test_triage_eval_contract.py`), which hold the harness to the bytes
-> `run_triage` sends — the harness now *calls* `CFOperator._triage_system_prompt()`
-> and `_triage_user_message()` and builds its body with `_ollama_chat_payload()`
-> instead of copying them; the Tier 3 `reason` and `confidence` graders; the
-> latency SLO against the configured `CFOP_TRIAGE_TIMEOUT_SECONDS`; `--runs`
-> defaulting to 36 with the power printed; a `gate` block in the result JSON
-> with a non-zero exit on failure; `--replay` to re-grade a committed result
-> without a model; and the manual `triage-eval.yml` job on the homelab runner.
-> Found on the way: after CFOP-313 framed the prompt, the old regex extraction
-> captured only its first line, so every run between 2026-10-09 and 2026-10-15
-> scored a one-line system prompt — exactly the drift Tier 0 exists to catch.
-> Still open, in the plan's own order: counterfactual pairs and new Tier 1
-> cases (each needs a rubric citation), Tier 4 shape variants, Tier 6 shadow
-> replay, `--baseline` diffs, and the live Modelfile check.
+> **Status (2026-10-28).** Landed in CFOP-314 (2026-10-15): Tier 0 contract
+> tests (`agent/test_triage_eval_contract.py`), which hold the harness to the
+> bytes `run_triage` sends — the harness now *calls*
+> `CFOperator._triage_system_prompt()` and `_triage_user_message()` and builds
+> its body with `_ollama_chat_payload()` instead of copying them; the Tier 3
+> `reason` graders (not canned, alert-grounded ≥ 90%, no fabricated citation)
+> and the confidence-alias check; `reason` persisted on every result row (the
+> raw text of an unparseable reply with `--keep-raw`); the count of runs in the
+> deep-tier reroute band, printed; the latency SLO, gated on each case's p95
+> against the configured `CFOP_TRIAGE_TIMEOUT_SECONDS`; `--runs` defaulting to
+> 36 with the power printed; `--num-ctx`, to score the way a deployment that
+> sets `llm.primary.num_ctx` runs; a `gate` block in the result JSON with a
+> non-zero exit on failure; `--replay` to re-grade a committed result without
+> a model; and the manual `triage-eval.yml` job on the homelab runner. Found on
+> the way: after CFOP-313 framed the prompt, the old regex extraction captured
+> only its first line, so every run between 2026-10-09 and 2026-10-15 scored a
+> one-line system prompt — exactly the drift Tier 0 exists to catch. Tier 3's
+> distinctness across the suite is computed and printed but not gated. Still
+> open, in tier order: new Tier 1 cases (each needs a rubric
+> citation; the suite is still the 14), Tier 2 counterfactual pairs, Tier 4
+> shape variants, Tier 5 adversarial cases, Tier 6 shadow replay, Tier 7
+> deployed-system integration, `--baseline` diffs, `--compare` quantization
+> parity, and the live Modelfile check.
+>
+> **The rest of this page is the plan as written in September 2026.** Where it
+> says "today" or "the current suite" it means the v1 harness; the status
+> above is what is true now.
 
 **In plain terms:** the current triage test suite (`benchmarks/triage_eval.py`)
 is a good test of *whether the model picks the right action*. It is honest, it
@@ -59,11 +71,11 @@ measurement (95%).
 | # | Gap | What slipped through |
 |---|---|---|
 | 1 | **`reason` is not scored.** | The fine-tune emits one of four canned strings; the suite scored 42/42. |
-| 2 | **`confidence` is not scored.** | Fine-tune confidence is a 1:1 alias of the action (0.80/0.85/0.90). The deep-investigation tier reroutes on `0 < confidence < 0.4` — a path that is inert for both the fine-tune (≥0.80) and gemma4 (≥0.95). Nothing tests that assumption. |
+| 2 | **`confidence` is not scored.** | Fine-tune confidence is a 1:1 alias of the action (0.80/0.85/0.90). The deep-investigation tier reroutes on `0 < confidence < 0.4` — a path that is inert for both the fine-tune (≥0.80) and gemma4 (≥0.9). Nothing tests that assumption. |
 | 3 | **Soak runs are concentrated on the majority class.** | All 100 soak runs went to two cases that both expect `investigate` — the 75% training majority. An over-investigate bias is invisible there. |
 | 4 | **Uneven statistical power.** | 3 runs on 12 cases, 50 on 2. At 3 runs a 10%-rate regression on a `log_only` case escapes 73% of the time. |
 | 5 | **No latency SLO, and no knowledge of the deployed timeout.** | event_runtime times out triage at `CFOP_TRIAGE_TIMEOUT_SECONDS`, resolving to `investigate` / confidence 0, uncached. The **code default is 5s** when the env is unset — which is what a Helm or compose install gets, since neither sets it. The **homelab's `cfoperator-deploy` sets 120s**, and this repo's own earlier write-ups (`benchmarks/gemma4-26b-vs-qwen3.6-27b.md`, `qwen3.8-27b-vs-gemma4-26b.md`) benchmark against 120s. At 120s, gemma4's 12.59s max and the Q8 fine-tune's 11.12s do **not** time out; at 5s both would. The suite reports mean and max and never reads the configured value, so it cannot say which world it is in. (The Q4 fine-tune's 3.4s max is one cold-start run — `watchdog` run 0; its soak max is 0.72s. It clears either threshold.) |
-| 6 | **Sampling parameters are not asserted.** | Eval and production both send `temperature: 0.7` — but only by coincidence of two hard-coded literals. The Modelfile says 0.15 and is overridden by both. Nothing checks they agree. |
+| 6 | **Sampling parameters are not asserted.** | Eval and production both send `temperature: 0.7`, two hard-coded literals that agree by coincidence — and both send it at the top level of the `/api/chat` body, where Ollama does not read it, so the Modelfile's 0.15 is what applies to both. Nothing checks either fact. |
 | 7 | **Input-shape robustness is accidental.** | The training set had exactly 3 precedents in 100% of rows and severity `unknown` in 90%; 10/14 eval cases have 0 precedents and real severity. The model generalised — but the suite did not *design* for that, it got lucky. |
 | 8 | **Fallback paths are never exercised end-to-end.** | Unparseable output → standard chain; tag absent → standard chain. Unit tests exist in `agent/test_triage.py`; the benchmark never checks the deployed system takes them. |
 | 9 | **No regression diff.** | Absolute scores only. "v2 is 42/42" says nothing about which cases changed answer or latency vs v1. |
@@ -272,14 +284,15 @@ integration version confirms the wiring, not the code.
   latency p50/p95/max) against a previous run; exit non-zero if any case
   regressed. Every promotion decision is a diff, not a score.
 - **Latency SLO assertion, against the *configured* timeout.** Report
-  p50/p95/p99/max and fail if p99 ≥ `CFOP_TRIAGE_TIMEOUT_SECONDS`, **reading the
-  same env var production reads, with the same 5s default when unset**, and
-  printing which value was used. The distinction is the whole point: against the
-  homelab's 120s every model in `benchmarks/` passes; against the 5s a chart
-  install gets, gemma4 and the Q8 fine-tune fail on their tail. A p99 assertion
-  that hard-codes either number is wrong for the other deployment. Treat "p99
-  exceeds the *unset* default" as a separate warning, so an operator who never
-  set the env learns that before the first tail call does.
+  p50/p95/p99/max and fail if a case's p95 ≥ `CFOP_TRIAGE_TIMEOUT_SECONDS`,
+  **reading the same env var production reads, with the same 5s default when
+  unset**, and printing which value was used. The distinction is the whole
+  point: against the homelab's 120s every model in `benchmarks/` passes;
+  against the 5s a chart install gets, gemma4 and the Q8 fine-tune fail on
+  their tail. A latency assertion that hard-codes either number is wrong for
+  the other deployment. Treat "p95 exceeds the *unset* default" as a separate
+  warning, so an operator who never set the env learns that before the first
+  tail call does.
 - **Quantization parity** — `--compare <tag-a> <tag-b>` runs both and reports
   any case where they differ. Q4 vs Q8 today: none. Keep it that way on purpose.
 - ~~**Emit the training-template list** from `build_triage_dataset.py` (it owns
@@ -288,7 +301,8 @@ integration version confirms the wiring, not the code.
   reasons are generated per alert. The not-canned check therefore has to compare
   against a *frozen historical constant* (the four v1 templates, kept in the
   eval as the thing a regression would look like), not against a live import.
-  `tests/test_build_triage_dataset.py` holds that list as `V1_CANNED_REASONS`.
+  `benchmarks/triage_eval.py` holds that list as `V1_CANNED_REASONS`, and
+  `tests/test_build_triage_dataset.py` imports it from there.
 - **`--runs` default → 36**, with the low-run warning retained for anyone who
   passes less.
 
@@ -302,24 +316,22 @@ All of these, or it does not ship:
 4. Tier 3: `reason` not-canned rate 100%, alert-grounded rate ≥ 90%, confidence
    not an action alias. (For v1 these are *known failing* and tracked in
    CFOP-153; the gate applies from the next model.)
-5. Latency p99 < the configured `CFOP_TRIAGE_TIMEOUT_SECONDS` (homelab: 120s;
-   unset default: 5s — the gate prints which); Q4/Q8 parity on every case.
+5. Latency p95 < the configured `CFOP_TRIAGE_TIMEOUT_SECONDS` on every case
+   (homelab: 120s; unset default: 5s — the gate prints which); Q4/Q8 parity on
+   every case.
 6. Tier 6 shadow: disagreement queue adjudicated, no disagreement where the
    candidate is wrong and the incumbent right on an `escalate` or `log_only`.
 
 ## What to do first
 
-1. **Today, no code:** soak the `log_only`/`notify` cases the v1 gate never
-   stressed —
-   ```bash
-   PYTHONPATH=agent:. .venv/bin/python benchmarks/triage_eval.py \
-     --model cfop-triage-ministral3:v1-q4 --runs 36 \
-     --only watchdog,smoke-test-pod,tmp-pod-critical,known-sdcard,precedent-resolved-oom,info-severity,info-novel-cert
-   ```
-2. **Small change:** persist `reason` and raw text in `results` (nothing in Tier
-   3 can run without it), `--runs` default 36, the not-canned `reason` check,
-   the latency SLO line reading the configured timeout, and the Tier 0
-   temperature assertion. One afternoon.
+1. ~~**Today, no code:** soak the `log_only`/`notify` cases the v1 gate never
+   stressed.~~ **Superseded (CFOP-314):** every case now runs at ×36 by
+   default, these included.
+2. ~~**Small change:** persist `reason` and raw text in `results`, `--runs`
+   default 36, the not-canned `reason` check, the latency SLO line reading the
+   configured timeout, and the Tier 0 temperature assertion.~~ **Done
+   (CFOP-314)**; raw text is kept only for unparseable replies, with
+   `--keep-raw`.
 3. **Medium:** counterfactual pairs and the new Tier 1 cases. Each needs a
    `rubric` citation, which is the slow and valuable part.
 4. **Larger:** shape variants (Tier 4) and the shadow replay (Tier 6). The
@@ -329,5 +341,5 @@ All of these, or it does not ship:
 
 - [`docs/triage-fine-tune.md`](triage-fine-tune.md) — the model card, including
   the data analysis these gaps come from
-- [`benchmarks/triage_eval.py`](../benchmarks/triage_eval.py) — the v1 harness
+- [`benchmarks/triage_eval.py`](../benchmarks/triage_eval.py) — the harness
 - CFOP-153 — the `reason`/`confidence` regression this plan would have caught

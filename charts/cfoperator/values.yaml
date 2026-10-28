@@ -22,8 +22,10 @@ profile: investigate
 
 image:
   repository: ghcr.io/aachtenberg/cfoperator
-  # The build workflow publishes :main and :main-<sha> — release-versioned
-  # image tags don't exist yet, so the appVersion is NOT a valid default here.
+  # The build workflow publishes :main and :main-<sha> on every merge, and a
+  # release tag publishes :v<version> (e.g. :v1.0.9). appVersion carries no
+  # leading v, so it names no image and is NOT a valid default here. To pin a
+  # release, set tag: v1.0.9.
   tag: main
   # Always because the default tag floats: IfNotPresent would pin whichever
   # :main a node pulled first, and `helm upgrade` would silently never move.
@@ -67,7 +69,8 @@ notify:
 admin:
   username: admin
   # Empty: the bootstrap Job generates one and prints it ONCE in its log
-  # (kubectl logs job/<release>-cfoperator-bootstrap).
+  # (kubectl logs job/<fullname>-bootstrap; <fullname> is the release name,
+  # with -cfoperator appended unless the release name already contains it).
   password: ""
 
 postgres:
@@ -96,7 +99,7 @@ console:
 # Only read when profile: remediate.
 remediate:
   gitRepo: ""        # owner/repo the executor opens PRs against — REQUIRED
-  githubToken: ""    # PR credential — REQUIRED (or pre-create the secret)
+  githubToken: ""    # PR credential — REQUIRED: rendering fails without it
   executorImage: ghcr.io/aachtenberg/cfoperator-executor:main
   # Executor Jobs also read ANTHROPIC_API_KEY from the remediate secret when
   # set; llm.anthropicApiKey is reused for it automatically.
@@ -122,10 +125,10 @@ cockpit:
   # Tiers 2/3 of the ladder (CFOP-36): a cockpit on a host that is not in the
   # cluster — a docker container, or the released cfassist under a transient
   # systemd unit. Both are reached by ssh from the agent, so unlike tier 1 they
-  # need a key in the agent pod. Separate from `enabled` because it is a
-  # different grant: `enabled` lets the agent create Jobs in its own namespace,
-  # this one gives it a credential to log in to machines with. Off unless a
-  # secret is named.
+  # need a key in the agent pod. It needs `enabled` as well, and is named
+  # separately because it is a different grant: `enabled` lets the agent create
+  # Jobs in its own namespace, this one gives it a credential to log in to
+  # machines with. Off unless a secret is named.
   #
   # The secret holds the private key (any filename; the first key in the secret
   # is used, matching the executor's `cfop-forensics-ssh` convention). The user

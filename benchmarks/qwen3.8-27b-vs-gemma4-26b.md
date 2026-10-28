@@ -6,7 +6,7 @@
 
 Three axes, matching the established methodology (see `gemma4-26b-vs-qwen3.6-27b.md`):
 
-1. **Tool-calling** — T1/T2/T3 suite (`test_tool_calling.py` via `scripts/test_model_local.py`)
+1. **Tool-calling** — T1/T2/T3 suite (`benchmarks/tool_calling_bench.py` via `scripts/test_model_local.py`)
 2. **Triage classification** — exact production prompt + parser (`benchmarks/triage_eval.py`,
    8 ground-truth alerts × 3 runs)
 3. **Inference latency** — `benchmarks/ollama_latency_bench.py`, 5 iterations + 1 warmup

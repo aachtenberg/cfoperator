@@ -1,333 +1,85 @@
 # LLM Observability in CFOperator
 
-CFOperator provides comprehensive observability for LLM operations through Prometheus metrics.
+How to read what the agent's LLM layer is doing: which backend answered and
+why, what it cost, how the judges behave, and where one investigation's time
+went. The metrics themselves — names, labels, the values each label takes, and
+example queries — are in [METRICS.md](METRICS.md#llm-observability-metrics),
+and this page links there rather than repeating them. The alert examples are in
+[METRICS.md](METRICS.md#llm-issues).
 
-## Metrics Available
+## Where the numbers come from
 
-### LLM Request Tracking
+Apart from the one-shot completions below, every LLM call the agent makes goes
+through one wrapper, the tool loop `_chat_with_tools` in `agent/agent.py`:
+investigations, sweep phases, sweep finding verification, triage, console chat
+turns, the morning summary and re-verification. One call on one provider is one
+`cfoperator_llm_requests_total` increment, and the same wrapper records its
+latency, its tokens and how the loop stopped (`cfoperator_tool_loop_stops_total`).
+A failure is counted as `result="error"` and as
+`cfoperator_llm_errors_total{error_type}`, where `error_type` is the exception's
+class: `HTTPError` covers a 429, a 5xx and a rejected key alike, because
+providers are called over plain HTTP rather than through a vendor SDK. The
+classified kind (`timeout`, `rate_limit`, `auth`, `bad_request`, ...) is on the
+failed `chat` span as `cfop.llm.error_kind`.
+
+Two things are not in the `cfoperator_llm_*` counters:
+
+- **The one-shot completions** that bypass the tool loop: the mutation judge,
+  the node-action planner, correlation analysis and learnings extraction. Each
+  is a `chat {model}` span with `cfop.llm.purpose` set, carrying its token
+  counts, and that is the only place they show (see
+  [Tracing](#tracing-opentelemetry-opt-in)). With tracing off, their calls and
+  token spend are not measured at all.
+- **Embeddings**, which have their own `cfoperator_embedding_*` counters.
+
+## The fallback chain
+
+Callers that must not fail on one provider's bad minute go through
+`_chat_with_tools_with_fallback`, which walks the configured chain: the
+selected provider first, then the other local ones, then paid providers when
+the `allow_paid_escalation` setting allows. Each rung is its own
+`_chat_with_tools` call, so a call that failed on Ollama and answered on Groq
+reads as one Ollama error, one Groq success and one
+`cfoperator_llm_fallbacks_total{from_provider="ollama", to_provider="groq"}`.
+A selected provider skipped before the walk starts (no key, no model picked)
+counts as a fallback too, from the skipped provider to the first rung.
+
+Provider reliability, compared across the chain:
 
 ```promql
-# Total LLM requests by provider, model, and result (success/error)
-cfoperator_llm_requests_total{provider="ollama", model="qwen3:14b", result="success"}
-
-# Example query: Success rate by provider
-rate(cfoperator_llm_requests_total{result="success"}[5m])
-/ rate(cfoperator_llm_requests_total[5m])
-
-# Example query: Requests per minute by provider
-rate(cfoperator_llm_requests_total[5m]) * 60
+sum by (provider) (rate(cfoperator_llm_requests_total{result="success"}[1h]))
+/
+sum by (provider) (rate(cfoperator_llm_requests_total[1h]))
 ```
 
-### Token Usage
+Rotations per call and the most common paths are in
+[METRICS.md](METRICS.md#fallback-chain), and the circuit breaker that stops the
+walk when every rung keeps failing in
+[METRICS.md](METRICS.md#chain-circuit-breaker). An exhausted walk raises the
+last rung's error to the caller; an investigation refused that way, or by an open
+breaker, is stored `failed`.
+
+## Cost and token accounting
+
+`cfoperator_llm_tokens_total` counts `type="input"` and `type="output"` per
+provider and model. Input is the whole prompt, cached or not: for the
+Anthropic tool loop the agent adds the prompt-cache read and write tokens back
+into input, and `cfoperator_llm_cache_tokens_total{kind}` carries the split, so
+read over input is the hit rate ([METRICS.md](METRICS.md#token-usage)). Cached
+reads and writes are not priced like plain input, so a cost figure for
+Anthropic should price the cached share separately.
+
+Nothing in the agent knows a price. Multiply by your own rates; the figures
+below are placeholders, not anyone's price list:
 
 ```promql
-# Total tokens used by provider, model, and type (input/output)
-cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="input"}
-cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="output"}
-
-# Example query: Total tokens per hour
-rate(cfoperator_llm_tokens_total[1h]) * 3600
-
-# Example query: Token efficiency (output tokens / input tokens)
-sum(rate(cfoperator_llm_tokens_total{type="output"}[5m]))
-/ sum(rate(cfoperator_llm_tokens_total{type="input"}[5m]))
-```
-
-### LLM Latency
-
-```promql
-# LLM request latency histogram (seconds)
-cfoperator_llm_latency_seconds{provider="ollama", model="qwen3:14b"}
-
-# Example query: 95th percentile latency
-histogram_quantile(0.95,
-  rate(cfoperator_llm_latency_seconds_bucket[5m])
-)
-
-# Example query: Average latency by provider
-rate(cfoperator_llm_latency_seconds_sum[5m])
-/ rate(cfoperator_llm_latency_seconds_count[5m])
-```
-
-### LLM Errors
-
-```promql
-# LLM errors by provider and error type
-cfoperator_llm_errors_total{provider="ollama", error_type="ConnectionError"}
-cfoperator_llm_errors_total{provider="groq", error_type="RateLimitError"}
-
-# Example query: Error rate by provider
-rate(cfoperator_llm_errors_total[5m])
-
-# Example query: Most common error types
-topk(5, sum by (error_type) (
-  rate(cfoperator_llm_errors_total[1h])
-))
-```
-
-### LLM Fallback Chain
-
-```promql
-# Fallback activations (from_provider → to_provider)
-cfoperator_llm_fallbacks_total{from_provider="ollama", to_provider="groq"}
-
-# Example query: Fallback frequency
-rate(cfoperator_llm_fallbacks_total[5m])
-
-# Example query: Most common fallback paths
-topk(5, sum by (from_provider, to_provider) (
-  rate(cfoperator_llm_fallbacks_total[1h])
-))
-```
-
-### Empty Final Responses
-
-Some models — gemma4:26b most of all — end the tool loop with a message that
-has neither tool calls nor text. `_handle_empty_final` sends one nudge and
-grants a bonus round; a second empty raises `EmptyLLMResponseError` and rotates
-the provider chain. This counter is how you tell those two apart per model,
-which is the number to look at when picking a local model.
-
-```promql
-# Empty finals by provider, model, and disposition
-#   nudged    = first empty; nudge sent, usually recovered (a formatting quirk)
-#   exhausted = second empty; provider chain rotated (the model failing the task)
-cfoperator_llm_empty_final_responses_total{provider="ollama", model="gemma4:26b", disposition="nudged"}
-
-# Example query: what fraction of chat turns need a second prompt, per model?
-# cfoperator_llm_requests_total is incremented once per _chat_with_tools call
-# (success and error alike), so it is the right denominator.
-sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="nudged"}[1h]))
-/ sum by (model) (rate(cfoperator_llm_requests_total[1h]))
-
-# Example query: how often the nudge FAILS to rescue the turn — the
-# model-quality signal, as opposed to the formatting-quirk signal above
-sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="exhausted"}[1h]))
-/ sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="nudged"}[1h]))
-
-# Example query: models that burn provider rotations on empty finals
-topk(5, sum by (provider, model) (
-  rate(cfoperator_llm_empty_final_responses_total{disposition="exhausted"}[24h])
-))
-```
-
-Both series are cumulative counters reset by every agent restart, so read them
-as rates over a window — a raw total says nothing about a model's behaviour.
-
-### Embedding Operations
-
-```promql
-# Embedding generation requests (success/error)
-cfoperator_embedding_requests_total{result="success"}
-cfoperator_embedding_requests_total{result="error"}       # retryable: timeout, endpoint down, model missing
-cfoperator_embedding_requests_total{result="truncated"}   # embedded, but from a head-truncated input (CFOP-81)
-cfoperator_embedding_requests_total{result="unembeddable"} # the input can never fit; not retried
-
-# Embedding cache performance (hit/miss)
-cfoperator_embedding_cache_hits_total{result="hit"}
-cfoperator_embedding_cache_hits_total{result="miss"}
-
-# Example query: Cache hit rate
-rate(cfoperator_embedding_cache_hits_total{result="hit"}[5m])
-/ rate(cfoperator_embedding_cache_hits_total[5m])
-```
-
-## Grafana Dashboard Panels
-
-### LLM Request Volume (Time Series)
-
-```promql
-# Stacked by provider
-sum by (provider) (
-  rate(cfoperator_llm_requests_total{result="success"}[5m])
-)
-```
-
-### LLM Error Rate (Time Series)
-
-```promql
-# Overall error rate (percentage)
-(
-  sum(rate(cfoperator_llm_errors_total[5m]))
-  /
-  sum(rate(cfoperator_llm_requests_total[5m]))
-) * 100
-```
-
-### Token Usage by Provider (Time Series)
-
-```promql
-# Total tokens/min by provider
-sum by (provider) (
-  rate(cfoperator_llm_tokens_total[5m])
-) * 60
-```
-
-### LLM Latency by Provider (Heatmap)
-
-```promql
-# 50th, 90th, 99th percentile
-histogram_quantile(0.50,
-  sum by (provider, le) (
-    rate(cfoperator_llm_latency_seconds_bucket[5m])
-  )
-)
-```
-
-### Fallback Chain Activity (Bar Gauge)
-
-```promql
-# Fallbacks in last hour
-sum by (from_provider, to_provider) (
-  increase(cfoperator_llm_fallbacks_total[1h])
-)
-```
-
-### Cost Estimation (Stat Panel)
-
-```promql
-# Estimated cost (customize rates per provider)
-# Example: Groq @ $0.50/1M tokens
+# Estimated cost of one provider over the last hour, at $0.50 per 1M tokens
 (
   sum(increase(cfoperator_llm_tokens_total{provider="groq"}[1h]))
   / 1000000
 ) * 0.50
-```
 
-## Alerting Rules
-
-### High LLM Error Rate
-
-```yaml
-- alert: HighLLMErrorRate
-  expr: |
-    (
-      sum(rate(cfoperator_llm_errors_total[5m]))
-      /
-      sum(rate(cfoperator_llm_requests_total[5m]))
-    ) > 0.1
-  for: 5m
-  labels:
-    severity: warning
-  annotations:
-    summary: "LLM error rate above 10%"
-    description: "{{ $value | humanizePercentage }} of LLM requests are failing"
-```
-
-### LLM Provider Down
-
-```yaml
-- alert: LLMProviderDown
-  expr: |
-    rate(cfoperator_llm_errors_total{error_type="ConnectionError"}[5m]) > 0
-    and
-    rate(cfoperator_llm_requests_total{result="success"}[5m]) == 0
-  for: 2m
-  labels:
-    severity: critical
-  annotations:
-    summary: "LLM provider {{ $labels.provider }} unreachable"
-```
-
-### Excessive Fallbacks
-
-```yaml
-- alert: ExcessiveLLMFallbacks
-  expr: |
-    rate(cfoperator_llm_fallbacks_total[10m]) > 1
-  for: 10m
-  labels:
-    severity: warning
-  annotations:
-    summary: "Frequent LLM fallback activations"
-    description: "Primary LLM may be unstable"
-```
-
-### Token Budget Exhaustion
-
-```yaml
-- alert: TokenBudgetExhausted
-  expr: |
-    sum(increase(cfoperator_llm_tokens_total{provider="groq"}[1h]))
-    > 50000
-  labels:
-    severity: warning
-  annotations:
-    summary: "Token usage for {{ $labels.provider }} exceeds budget"
-```
-
-## Implementation Example
-
-### Instrumenting LLM Calls
-
-```python
-from prometheus_client import Counter, Histogram
-import time
-
-LLM_REQUESTS = Counter('cfoperator_llm_requests_total',
-                       'LLM requests',
-                       ['provider', 'model', 'result'])
-LLM_LATENCY = Histogram('cfoperator_llm_latency_seconds',
-                        'LLM latency',
-                        ['provider', 'model'])
-
-def call_llm(provider, model, prompt):
-    start = time.time()
-    try:
-        result = llm_client.chat(prompt)
-
-        # Track success
-        LLM_REQUESTS.labels(
-            provider=provider,
-            model=model,
-            result='success'
-        ).inc()
-
-        # Track latency
-        latency = time.time() - start
-        LLM_LATENCY.labels(
-            provider=provider,
-            model=model
-        ).observe(latency)
-
-        return result
-
-    except Exception as e:
-        # Track error
-        LLM_REQUESTS.labels(
-            provider=provider,
-            model=model,
-            result='error'
-        ).inc()
-        raise
-```
-
-### Tracking Fallbacks
-
-```python
-def try_llm_with_fallback(prompt):
-    """Try primary LLM, fallback to secondary on failure."""
-    try:
-        return call_llm('ollama', 'qwen3:14b', prompt)
-    except Exception:
-        # Track fallback
-        LLM_FALLBACKS.labels(
-            from_provider='ollama',
-            to_provider='groq'
-        ).inc()
-
-        # Try fallback
-        return call_llm('groq', 'llama-3.3-70b', prompt)
-```
-
-## Monitoring Patterns
-
-### 1. Cost Tracking
-
-Track token usage and multiply by provider rates:
-
-```promql
-# Total estimated monthly cost
+# Estimated cost over 30 days, with a per-provider rate attached by label
 sum(
   sum by (provider) (
     increase(cfoperator_llm_tokens_total[30d])
@@ -335,91 +87,118 @@ sum(
   *
   on(provider) group_left
   label_replace(
-    vector(0.50),  # Groq rate per 1M tokens
+    vector(0.50),  # rate per 1M tokens
     "provider", "groq", "", ""
   )
 ) / 1000000
 ```
 
-### 2. Provider Reliability
+A token total undercounts by whatever the one-shot completions spent (see
+[Where the numbers come from](#where-the-numbers-come-from)). With tracing on,
+the `chat` spans whose `cfop.llm.purpose` is `judge` carry the judge's share in
+`gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`.
 
-Compare success rates across providers:
+## Picking a local model
 
-```promql
-# Success rate by provider
-sum by (provider) (
-  rate(cfoperator_llm_requests_total{result="success"}[1h])
-)
-/
-sum by (provider) (
-  rate(cfoperator_llm_requests_total[1h])
-)
-```
+Some models — gemma4:26b most of all — end the tool loop with a message that
+has neither tool calls nor text. `_handle_empty_final` sends one nudge and
+grants a bonus round; a second empty raises `EmptyLLMResponseError` and rotates
+the provider chain. `cfoperator_llm_empty_final_responses_total{disposition}`
+tells those two apart per model, and it is the number to look at when choosing
+a local model: `nudged` is a formatting quirk the loop absorbs, `exhausted` is
+the model failing the task. The per-model rate queries are in
+[METRICS.md](METRICS.md#empty-final-responses). Read them next to latency by
+model. How loops end (`cfoperator_tool_loop_stops_total`) has no model label,
+but every `chat` span carries `cfop.llm.stop_reason`, so
+`{ span.cfop.llm.stop_reason =~ "cap|stagnation" }` in Tempo shows which models
+run out of budget rather than answering.
 
-### 3. Performance Comparison
+## The judges
 
-Which provider is fastest?
+Three places ask a model whether another model was right, and they are
+measured differently:
 
-```promql
-# Average latency by provider
-avg by (provider) (
-  rate(cfoperator_llm_latency_seconds_sum[1h])
-  /
-  rate(cfoperator_llm_latency_seconds_count[1h])
-)
-```
+- **The mutation judge** (CFOP-70) reviews every remediation that would
+  execute unattended. It is a one-shot completion, so it is not in the
+  `cfoperator_llm_*` counters; its verdicts are
+  `cfoperator_remediation_judge_total{verdict}`, and its calls are the
+  `chat` spans with `cfop.llm.purpose = "judge"`. It fails closed: a run of
+  `unavailable` or `unparseable` means auto-execution has stopped and rows are
+  parking for a human, and `refused` is a configured peer rejecting the request
+  while a lower one answers ([METRICS.md](METRICS.md#remediation-pipeline-metrics)).
+- **Sweep finding verification** re-checks each sweep finding with tool access
+  before it is published. It runs the tool loop, so it is in the request, token
+  and loop-stop counters, and the per-sweep counts are on the
+  `sweep.verify_findings` span ([METRICS.md](METRICS.md#sweep-finding-verification)).
+- **Re-verification** (CFOP-185) re-checks filed rows against live state. It
+  runs the tool loop too; its outcomes are
+  `cfoperator_remediation_reverify_total{outcome}` and each pass is a
+  `reverify` trace. It fails open, so `skipped` is rows left filed, not a
+  stopped pipeline.
 
-### 4. Fallback Chain Health
+## Reading the dashboards
 
-Are fallbacks too frequent?
+**`CFOperator Fleet Monitoring`** (`grafana/cfoperator-dashboard.json`) has the
+LLM panels near the top: requests per second by provider, tokens per
+second by direction, latency p50/p95/p99 by provider, errors by provider,
+fallback activations, and "Total LLM Requests (All Time)". That last one is a
+raw counter sum, so "all time" means since the agent last restarted.
 
-```promql
-# Fallback rate (should be low)
-sum(rate(cfoperator_llm_fallbacks_total[1h]))
-/
-sum(rate(cfoperator_llm_requests_total[1h]))
-```
+**`CFOperator — LLM & Triage`** is provisioned from homelab-infra (CFOP-163 /
+HOMELAB-17) and is the drilldown. Its triage row answers whether the fast path
+is actually being taken: the share served by the dedicated triage model, triage
+p95, model fallbacks, decisions that defaulted to investigate, short-circuits
+and deep reroutes. Its LLM row is mostly per model: requests, p95 latency,
+tokens by direction and empty finals by disposition per model, the error ratio
+per provider, and fallback rotations next to errors by type. Below those are
+investigation outcomes and duration, and the inference host's GPU and Ollama
+residency: a latency jump with evictions beside it points at two models
+evicting each other from VRAM rather than at the provider.
 
-## Integration with Grafana
+**`CFOperator — Traces`** (homelab-infra, HOMELAB-37) charts span metrics that
+Tempo derives from the traces, so its "LLM calls, by model" counts every
+`chat` span, the one-shot completions included: the place where the judge's
+call volume shows next to the tool loop's.
 
-Add these panels to the CFOperator dashboard:
-
-1. **LLM Request Volume** - Line graph of requests/min by provider
-2. **Token Usage** - Stacked area chart of prompt + completion tokens
-3. **LLM Latency** - Heatmap showing p50, p90, p99 by provider
-4. **Error Rate** - Single stat showing current error percentage
-5. **Fallback Activity** - Bar gauge showing fallback frequency
-6. **Cost Estimate** - Stat panel with estimated monthly cost
-7. **Provider Health** - Table showing success rate, latency, error count per provider
-
-## Debugging with Metrics
+## Debugging with metrics
 
 ### "Why is my LLM slow?"
 
 ```promql
-# Check if specific provider is slow
+# p95 per model on one provider
 histogram_quantile(0.95,
-  rate(cfoperator_llm_latency_seconds_bucket{provider="ollama"}[5m])
+  sum by (le, model) (rate(cfoperator_llm_latency_seconds_bucket{provider="ollama"}[5m]))
 )
 
 # Compare across providers
-topk(3, avg by (provider) (
-  rate(cfoperator_llm_latency_seconds_sum[5m])
-  / rate(cfoperator_llm_latency_seconds_count[5m])
-))
+topk(3,
+  sum by (provider) (rate(cfoperator_llm_latency_seconds_sum[5m]))
+  / sum by (provider) (rate(cfoperator_llm_latency_seconds_count[5m]))
+)
 ```
+
+Latency is observed on failures too, so a provider timing out reads as slow.
+Check `cfoperator_llm_errors_total{error_type="ReadTimeout"}` before blaming the
+model.
 
 ### "Why did my investigation fail?"
 
 ```promql
-# Check recent LLM errors
+# Recent LLM errors
 topk(5, sum by (provider, error_type) (
   increase(cfoperator_llm_errors_total[10m])
 ))
 
-# Check if fallback chain activated
-increase(cfoperator_llm_fallbacks_total[10m])
+# Did the chain rotate, or did the breaker open?
+sum by (from_provider, to_provider) (increase(cfoperator_llm_fallbacks_total[10m]))
+cfoperator_llm_circuit_state
 ```
+
+The investigation's own record says which: `findings.error` holds the
+breaker's or the last provider's message, or "no verdict" when the loop
+stopped before a `STATUS:` line, with `findings.stop_reason` saying whether
+that was the budget, stagnation or an error. Its trace shows each rung that
+was tried.
 
 ### "Am I using too many tokens?"
 
@@ -427,15 +206,18 @@ increase(cfoperator_llm_fallbacks_total[10m])
 # Tokens per hour
 sum(rate(cfoperator_llm_tokens_total[1h])) * 3600
 
-# Token breakdown by operation type
+# By direction (input/output)
 sum by (type) (
   rate(cfoperator_llm_tokens_total[1h])
 )
+
+# By model and direction, the way the LLM & Triage board shows it
+sum by (model, type) (rate(cfoperator_llm_tokens_total[15m])) * 60
 ```
 
 ## Tracing (OpenTelemetry, opt-in)
 
-The metrics above say how the LLM layer behaves in aggregate. A trace says
+The metrics say how the LLM layer behaves in aggregate. A trace says
 where one investigation's time went: which rung of the fallback chain answered,
 how long each failed rung took before it gave up, and which tool calls the
 model waited on.
@@ -561,7 +343,7 @@ investigation
 ├─ investigation.verify_outcome
 ├─ investigation.structured_fix    └─ llm_chain …   (the FIX nudge, when needed)
 ├─ investigation.propose_remediation
-├─ investigation.queue_remediation └─ llm_chain …   (the classifier)
+├─ investigation.queue_remediation └─ llm_chain …   (the classifier), dedupe.decide
 ├─ investigation.extract_learnings └─ chat …        (purpose=learnings)
 └─ embed_investigation             └─ embeddings …
 ```
@@ -569,6 +351,14 @@ investigation
 `embeddings {model}` wraps each Ollama `/api/embeddings` round trip, wherever
 it happens (orient, the sweep backfill, embed_investigation). A cache hit makes
 no span.
+
+Every remediation enqueue asks cfop-dedupe whether it is new (CFOP-538), and
+that call is a `dedupe.decide` span under whichever trace enqueued it -- an
+investigation's `investigation.queue_remediation`, the morning summary, a chat
+turn -- or a root of its own for a console enqueue or a run-feed call, which
+have no trace above them. It carries `cfop.dedupe.path`, `decision`, `tier`,
+`source` and `row_id`, and the service's own log line for the decision carries
+the same `trace_id`.
 
 The one-shot completions that bypass the tool loop are `chat {model}` spans
 too, with `cfop.llm.purpose` set to `judge`, `node_action_plan`, `correlations`
@@ -593,8 +383,12 @@ characters. `agent/test_llm_tracing.py::test_llm_spans_never_contain_prompts`
 holds this line.
 
 Not traced yet:
-- trace context across the event_runtime → agent HTTP hop (CFOP-317);
-- tool spans outside the chat loop (CFOP-323).
+- the sweep → runtime leg (CFOP-323): a finding the sweep forwards to the event
+  runtime starts a new `alert` trace instead of continuing the sweep's, because
+  the agent's call to the runtime carries no `traceparent`;
+- the remediation executor (CFOP-323) and the deep-investigation Job, neither of
+  which uses the tracing module;
+- tool calls made outside the chat loop (CFOP-323).
 
 ### Finding traces
 
@@ -609,11 +403,3 @@ In Grafana Explore, on the Tempo datasource:
 { span.gen_ai.request.model = "gemma4:26b" && duration > 30s }
 { status = error && span.gen_ai.operation.name = "chat" }
 ```
-
-## Next Steps
-
-1. Add LLM metrics to Grafana dashboard
-2. Set up alerting for high error rates and excessive fallbacks
-3. Monitor token usage to optimize prompts
-4. Track cost trends for budget planning
-5. Compare provider performance to optimize fallback chain order

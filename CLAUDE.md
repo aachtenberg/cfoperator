@@ -163,22 +163,23 @@ regression. If something fails in a way that seems unrelated to your change,
 check the dep before chasing it.
 
 **The suite cannot run as one flat `pytest`.** Several trees ship a top-level
-module of the same name (`nodeaction`, `entrypoint`, `server`), and most
+module of the same name (`entrypoint` in five, `llm` in two), and most
 directories use bare imports needing their own directory on `sys.path`, so a
 single collection run collides. Each directory is its own invocation with
-`PYTHONPATH=<dir>:<repo-root>`. `observability` and `auth` are the exceptions —
-repo root only, because putting their directory on the path lets
+`PYTHONPATH=<dir>:<repo-root>`. `observability`, `auth` and `integrations` are
+the exceptions — repo root only. Putting the first two on the path lets
 `observability/docker.py` shadow the real `docker` package and `auth/tokens.py`
-shadow anything of that name.
+shadow anything of that name; `integrations` uses absolute
+`from integrations...` imports.
 
 `.github/workflows/tests.yml` is the authoritative list of what runs and how.
 Mirror it rather than inventing an invocation.
 
 ## Console UI conventions
 
-Five static pages in `ui/`, no build step, no framework, no outbound network
-(a CDN reference hangs rather than fails, and the console is what gets opened
-when the WAN is down). No exceptions: third-party code is vendored under
+Six console pages in `ui/` plus `login.html`, no build step, no framework, no
+outbound network (a CDN reference hangs rather than fails, and the console is
+what gets opened when the WAN is down). No exceptions: third-party code is vendored under
 `ui/vendor/` through `scripts/vendor_ui.py` and its hashed manifest, and
 `test_console_vendor.py` fails on any `http(s)://` in any page.
 

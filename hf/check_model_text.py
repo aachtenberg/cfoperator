@@ -114,7 +114,7 @@ def eval_prompts() -> list[tuple[str, str, str]]:
     sys.path.insert(0, str(REPO_ROOT / "benchmarks"))
     import triage_eval  # noqa: E402  (imports agent.agent; needs PYTHONPATH=agent:.)
 
-    system_prompt = triage_eval.load_production_system_prompt()
+    system_prompt = triage_eval.production_system_prompt()
     return [(f"eval:{c['name']}", system_prompt, triage_eval.build_user_message(c)) for c in triage_eval.CASES]
 
 

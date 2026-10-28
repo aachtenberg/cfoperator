@@ -1,7 +1,15 @@
 # Ollama Tool-Calling Benchmark Results
 
+> **Snapshot.** Dated results: the main run is 2026-02-13, and the Qwen3-Coder
+> consistency rows are 2026-04-04. Models, hosts and the provider chain have
+> all changed since. The current chain is in
+> [config-reference.md](config-reference.md); the current primary model and how
+> it was chosen are in
+> [`benchmarks/gemma4-26b-vs-qwen3.6-27b.md`](../benchmarks/gemma4-26b-vs-qwen3.6-27b.md)
+> and [`benchmarks/qwen3.8-27b-vs-gemma4-26b.md`](../benchmarks/qwen3.8-27b-vs-gemma4-26b.md).
+
 **Date:** 2026-02-13
-**Test harness:** `test_tool_calling.py`
+**Test harness:** [`benchmarks/tool_calling_bench.py`](../benchmarks/tool_calling_bench.py)
 **Hosts tested:** 3 Ollama instances (GPU server, RTX 5080 desktop, CPU desktop)
 **Models tested:** 12 (current run) / 22 (cumulative across runs)
 
@@ -219,13 +227,13 @@ CFOperator is designed as a local-first autonomous agent — it runs an OODA loo
 
 ### CFOperator's approach: hybrid fallback
 
-CFOperator uses a provider chain — Ollama first, with Groq and Claude as fallbacks:
+In February 2026 CFOperator's provider chain was Ollama first, with Groq and Claude as fallbacks:
 
 ```
 Ollama (local, free) → Groq (fast, cheap) → Claude (reliable, expensive)
 ```
 
-The OODA loop and sweeps run on Ollama because they're high-volume, structured, and latency-tolerant (a sweep every 30 minutes doesn't need sub-second response). Chat interactions fall back to commercial APIs when Ollama is busy or returns poor results. Correlation analysis — which benefits most from reasoning depth — could justify routing to a stronger model, but currently runs on Ollama to keep costs at zero.
+The OODA loop and sweeps ran on Ollama because they're high-volume, structured, and latency-tolerant (a sweep every 30 minutes doesn't need sub-second response). Chat interactions fell back to commercial APIs when Ollama was busy or returned poor results. Correlation analysis — which benefits most from reasoning depth — could have justified routing to a stronger model, but ran on Ollama to keep costs at zero. The chain has grown since (`config.yaml.example` ships seven providers); [config-reference.md](config-reference.md) has the current one.
 
 ### The bottom line
 

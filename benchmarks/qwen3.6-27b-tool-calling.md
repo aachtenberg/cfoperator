@@ -1,6 +1,6 @@
 # Tool-Calling Capability — qwen3.6:27b vs qwen3-coder:latest
 
-**Suite:** CFOperator T1/T2/T3 (`test_tool_calling.py`, run via `scripts/test_model_local.py`)
+**Suite:** CFOperator T1/T2/T3 (`benchmarks/tool_calling_bench.py`, then named `test_tool_calling.py`, run via `scripts/test_model_local.py`)
 **Endpoint:** `http://localhost:11434` (ubuntu-llm-01) | **Date:** 2026-05-19
 
 Evaluated `qwen3.6:27b` as a candidate `llm.primary.model`, compared against the

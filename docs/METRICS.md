@@ -138,14 +138,20 @@ time() - max by (provider) (cfoperator_event_runtime_host_discovery_timestamp_se
 
 ### Suggested Alert Rules
 
-Import or adapt [observability/event-runtime-alert-rules.yml](../observability/event-runtime-alert-rules.yml) for the portable runtime. It includes alerts for:
+Import or adapt [observability/event-runtime-alert-rules.yml](../observability/event-runtime-alert-rules.yml) for the portable runtime. Its `cfoperator-event-runtime` group alerts on:
 
-- runtime down
+- runtime down (`up{}`, not the self-reported gauge)
+- a source that has stopped polling successfully (the age of `last_poll_timestamp_seconds`)
 - queue rejection rate
 - sustained queue age
 - replay failures
 - stale host discovery
 - host observation failures
+
+A second group, `cfoperator-k3s-cluster`, holds node and pod health rules (node
+not ready, memory or disk pressure, crash-looping pods, CPU or memory near
+allocatable, pods not ready). Those read kube-state-metrics and cAdvisor
+series, not anything cfoperator emits.
 
 ## Core Agent Metrics
 
@@ -227,9 +233,9 @@ redaction off and with it this counter.
 
 ### Investigation Tracking
 ```promql
-# Investigations by outcome (resolved/escalated/monitoring/failed/in_progress)
+# Investigations by terminal outcome (the values are in the closed-set table below)
 cfoperator_investigations_total{outcome="resolved"}
-cfoperator_investigations_total{outcome="escalated"}
+cfoperator_investigations_total{outcome=~"escalated?"}   # both spellings; see the table
 
 # Started, and wall time by terminal outcome (CFOP-163). Before this the
 # duration went to Postgres only; p95 investigation time had no PromQL.
@@ -283,8 +289,12 @@ cfoperator_errors_total
 
 # Log messages by level
 log_messages_total{level="ERROR", component="cfoperator"}
-log_messages_total{level="WARN", component="cfoperator"}
+log_messages_total{level="WARNING", component="cfoperator"}
 ```
+
+`level` is Python's level name (`DEBUG`, `INFO`, `WARNING`, `ERROR`,
+`CRITICAL`), so `WARN` matches nothing. `component` is the logger's name:
+`cfoperator` for the agent's main logger, a module name for the rest.
 
 ### Ollama Pool
 ```promql
@@ -309,11 +319,28 @@ cfoperator_llm_requests_total{provider="ollama", model="qwen3:14b", result="succ
 cfoperator_llm_requests_total{provider="groq", model="llama-3.3-70b", result="error"}
 ```
 
+One request is one `_chat_with_tools` call on one provider: a whole tool loop,
+however many rounds it took. Every caller of the loop counts here
+(investigations, sweep phases and finding verification, triage, chat turns,
+the morning summary, re-verification). The one-shot completions that bypass
+the loop — the mutation judge, the node-action planner, correlation analysis
+and learnings extraction — are not in any `cfoperator_llm_*` series; their
+token counts are on their `chat` spans when tracing is on
+([llm-observability.md](llm-observability.md#tracing-opentelemetry-opt-in)).
+`provider` is the provider type (`ollama`, `groq`, `anthropic`, ...), not a
+host.
+
 ### Token Usage
 ```promql
 # Tokens by provider, model, and type (input/output)
 cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="input"}
 cfoperator_llm_tokens_total{provider="ollama", model="qwen3:14b", type="output"}
+```
+
+```promql
+# Output tokens per input token
+sum(rate(cfoperator_llm_tokens_total{type="output"}[5m]))
+  / sum(rate(cfoperator_llm_tokens_total{type="input"}[5m]))
 ```
 
 The `type` values are `input` and `output` — what the code emits and what the
@@ -345,19 +372,46 @@ its prompt.
 ```promql
 # LLM request latency histogram (seconds)
 cfoperator_llm_latency_seconds{provider="ollama", model="qwen3:14b"}
+
+# Average latency by provider
+sum by (provider) (rate(cfoperator_llm_latency_seconds_sum[5m]))
+  / sum by (provider) (rate(cfoperator_llm_latency_seconds_count[5m]))
 ```
+
+Observed on failures too, so a provider that times out shows its timeout here.
+Buckets run from 1s to 600s.
 
 ### LLM Errors
 ```promql
-# LLM errors by provider and error type
+# LLM errors by provider and exception class
 cfoperator_llm_errors_total{provider="ollama", error_type="ConnectionError"}
-cfoperator_llm_errors_total{provider="groq", error_type="RateLimitError"}
+cfoperator_llm_errors_total{provider="groq", error_type="HTTPError"}
+
+# Most common error types
+topk(5, sum by (error_type) (rate(cfoperator_llm_errors_total[1h])))
 ```
+
+`error_type` is the exception's class name. Providers are called over plain
+HTTP with `requests`, not a vendor SDK, so a 429, a 5xx and a rejected key all
+arrive as `HTTPError`; the others are mostly `ReadTimeout`, `ConnectionError`,
+`ValueError` (an API key that is not set, or an error object in a 200 reply)
+and `EmptyLLMResponseError`. Which kind of failure it was (`timeout`,
+`rate_limit`, `auth`, `bad_request`, ...) is on the failed `chat` span as
+`cfop.llm.error_kind`, not on this counter. Every error is also counted as
+`cfoperator_llm_requests_total{result="error"}`, so either works as the
+numerator of an error rate — summed by `provider` first, because the two
+carry different labels and divide to nothing unaggregated.
 
 ### Fallback Chain
 ```promql
 # Fallback activations (from_provider → to_provider)
 cfoperator_llm_fallbacks_total{from_provider="ollama", to_provider="groq"}
+
+# Most common fallback paths
+topk(5, sum by (from_provider, to_provider) (rate(cfoperator_llm_fallbacks_total[1h])))
+
+# Rotations per tool-loop call
+sum(rate(cfoperator_llm_fallbacks_total[1h])) / sum(rate(cfoperator_llm_requests_total[1h]))
 ```
 
 Observed at the provider rotation in `_chat_with_tools_with_fallback` since
@@ -398,7 +452,23 @@ cfoperator_llm_empty_final_responses_total{provider="ollama", model="gemma4:26b"
 | `nudged` | First empty of the turn. `EMPTY_RESPONSE_NUDGE` was appended and one bonus round granted. | A formatting quirk the loop absorbs — the benchmark recovered 19/19 this way. Costs one extra round-trip. |
 | `exhausted` | Second empty. `EmptyLLMResponseError` raised, provider chain rotates. | The model failing the task. Costs a whole extra provider attempt. |
 
-See `docs/llm-observability.md` for the per-model rate queries.
+```promql
+# What fraction of tool-loop calls needed a second prompt, per model
+sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="nudged"}[1h]))
+  / sum by (model) (rate(cfoperator_llm_requests_total[1h]))
+
+# How often the nudge FAILED to rescue the turn: the model-quality signal
+sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="exhausted"}[1h]))
+  / sum by (model) (rate(cfoperator_llm_empty_final_responses_total{disposition="nudged"}[1h]))
+
+# Models that burn provider rotations on empty finals
+topk(5, sum by (provider, model) (rate(cfoperator_llm_empty_final_responses_total{disposition="exhausted"}[24h])))
+```
+
+`cfoperator_llm_requests_total` is the denominator because it counts once per
+`_chat_with_tools` call, success and error alike. Both are counters reset by
+every agent restart, so read them as rates over a window; a raw total says
+nothing about a model.
 
 ### Tool Loop Stops
 ```promql
@@ -458,6 +528,10 @@ cfoperator_embedding_requests_total{result="unembeddable"} # the input can never
 # Embedding cache performance
 cfoperator_embedding_cache_hits_total{result="hit"}
 cfoperator_embedding_cache_hits_total{result="miss"}
+
+# Cache hit rate
+sum(rate(cfoperator_embedding_cache_hits_total{result="hit"}[5m]))
+  / sum(rate(cfoperator_embedding_cache_hits_total[5m]))
 ```
 
 ## Remediation Pipeline Metrics
@@ -508,7 +582,12 @@ histogram_quantile(0.95, sum by (le) (rate(cfoperator_dedupe_request_seconds_buc
 
 `judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
 `verdict="unavailable"` or `verdict="unparseable"` means auto-execution has
-quietly stopped and everything is parking for a human.
+quietly stopped and everything is parking for a human. `verdict="refused"`
+(CFOP-118) is a peer that was reached and rejected the request — a 4xx other
+than 408/429: a rejected parameter, a retired model id, a bad key. The walk
+moves on to the next peer, so rows still get judged, but a steady rate means a
+configured judge is broken behind a healthy one. One row can count a `refused`
+and then the verdict of the peer that answered.
 
 `reverify_total` is the mirror image, and reads the opposite way: that tick
 fails *open*, so a run of `outcome="skipped"` is not a stopped pipeline, it is
@@ -549,10 +628,10 @@ shipped several examples that could never match.
 | `cfoperator_remediation_classifier_total` | `result` | `ok`, `nudged`, `escalated`, `degraded` |
 | `cfoperator_remediation_folded_total` | `reason` | `target`, `repeat`, `fork_committed`, `fork_stuck`, `investigate_followup` |
 | `cfoperator_node_action_refused_total` | `reason` | `no_commands`, `too_many`, `empty`, `no_allowlist`, `metachar`, `unparseable`, `sudo_form`, `denied_binary`, `not_allowlisted`, `systemctl_verb` |
-| `cfoperator_remediation_judge_total` | `verdict` | `confirm`, `downgrade`, `reject`, `unavailable`, `unparseable`, `self-review-skipped` |
+| `cfoperator_remediation_judge_total` | `verdict` | `confirm`, `downgrade`, `reject`, `unavailable`, `unparseable`, `self-review-skipped`, `refused` |
 | `cfoperator_remediation_executor_spawned_total` | `result` | `ok`, `capped`, `failed` |
 | `cfoperator_remediation_outcome_total` | `outcome` | `resolved`, `rejected` |
-| `cfoperator_remediation_tracker_total` | `action` | `create`, `repark`, `comment`, `transition`, `reconcile` |
+| `cfoperator_remediation_tracker_total` | `action` | `create`, `repark`, `refile`, `comment`, `transition`, `reconcile` |
 | `cfoperator_remediation_tracker_total` | `outcome` | `ok`, `error` |
 | `cfoperator_remediation_reverify_total` | `outcome` | `resolved`, `rejected`, `open`, `skipped` |
 | `cfoperator_dedupe_decisions_total` | `path` | `investigation`, `sweep-fallback`, `summary`, `chat`, `console` |
@@ -561,7 +640,7 @@ shipped several examples that could never match.
 | `cfoperator_dedupe_decisions_total` | `source` | `service`, `fallback`, `unconfigured` |
 | `cfoperator_dedupe_request_seconds` | `outcome` | `ok`, `error` |
 | `cfoperator_remediation_enqueued_total` | `eligible` | `true`, `false` (`str(bool).lower()`) |
-| `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate` |
+| `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate`, and `deep_investigate` when the deep tier is on. Counted after the tier's rewrite: a rerouted decision is `deep_investigate` here and its original action is in `deep_reroutes_total`, and a workload alert's `escalate` is counted as the fallback it was aliased to (`notify` by default) |
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |
 | `cfoperator_event_runtime_completion_requests_total` | `outcome` | `recorded`, `auth_missing`, `auth_invalid`, `bad_request`, `error` |
 | `cfoperator_tool_calls_total` | `result` | `success`, `error` |
@@ -573,6 +652,7 @@ shipped several examples that could never match.
 | `cfoperator_llm_cache_tokens_total` | `kind` | `read`, `write` |
 | `cfoperator_triage_decisions_total` | `served_by` | `triage_model`, `chain`, `short_circuit_resolution`, `short_circuit_info`, `short_circuit_noise`, `unparseable_default`, `llm_unavailable` |
 | `cfoperator_triage_model_fallbacks_total` | `reason` | `unparseable`, `exception` |
+| `cfoperator_investigations_total` | `outcome` | `resolved`, `needs_action`, `monitoring`, `escalated`, `failed`; an escalation the deep tier ran arrives as `escalate` (the knowledge base stores it as `escalated`), so `outcome=~"escalated?"` counts both. `in_progress` is a stored state, never a label |
 | `cfoperator_investigation_duration_seconds` | `outcome` | as `cfoperator_investigations_total` |
 | `cfoperator_morning_summary_runs_total` | `result` | `ok`, `error` |
 | `cfoperator_remediation_human_decisions_total` | `decision` | `approve`, `reject` |
@@ -589,16 +669,23 @@ tool name, a scheduler class — and are not enumerable from the source.
 
 ## Sweep Finding Verification
 
-The LLM judge that verifies sweep findings logs its activity (no dedicated Prometheus metrics — uses existing LLM request counters):
+Sweep findings pass two stages before they are published: a deterministic
+ground-truth filter against cluster state, then an LLM check of each finding
+with tool access. Neither has a dedicated Prometheus metric; both log:
 
 ```
 # Log lines to watch for:
-"Finding verification: 8 → 5 (3 filtered)"   # Summary line (INFO)
+"Ground-truth filter: 8 → 6 (2 suppressed)"    # Stage 1 summary (INFO)
+"Finding verification: 6 → 5 (1 filtered)"    # Stage 2 summary (INFO); adds ", N kept at the tool cap" / ", N kept after stagnation"
 "Judge filtered: <finding text>"               # Each filtered finding (INFO)
 "Finding verification failed, returning unfiltered: ..."  # Graceful degradation (WARNING)
 ```
 
-The judge's LLM call is tracked by existing `cfoperator_llm_requests_total` and `cfoperator_llm_tokens_total` metrics.
+Each per-finding check is a tool loop, so it is counted by
+`cfoperator_llm_requests_total`, `cfoperator_llm_tokens_total` and
+`cfoperator_tool_loop_stops_total`. The counts per sweep (`cfop.verify.kept`,
+`capped`, `stagnated`, `suppressed`) are on the `sweep.verify_findings` span
+([llm-observability.md](llm-observability.md#what-a-trace-contains)).
 
 ## Common Queries
 
@@ -643,13 +730,13 @@ sum(rate(cfoperator_tool_calls_total{result="success"}[5m]))
 # LLM requests per minute
 rate(cfoperator_llm_requests_total[5m]) * 60
 
-# LLM error rate
-rate(cfoperator_llm_errors_total[5m])
-/ rate(cfoperator_llm_requests_total[5m])
+# LLM error rate by provider (aggregate first: the two metrics carry different labels)
+sum by (provider) (rate(cfoperator_llm_errors_total[5m]))
+/ sum by (provider) (rate(cfoperator_llm_requests_total[5m]))
 
 # P95 latency by provider
 histogram_quantile(0.95,
-  rate(cfoperator_llm_latency_seconds_bucket[5m])
+  sum by (le, provider) (rate(cfoperator_llm_latency_seconds_bucket[5m]))
 )
 
 # Token usage per hour
@@ -696,8 +783,8 @@ cfoperator_tools_registered
 ```yaml
 - alert: HighToolFailureRate
   expr: |
-    rate(cfoperator_tool_calls_total{result="error"}[5m])
-    / rate(cfoperator_tool_calls_total[5m]) > 0.1
+    sum(rate(cfoperator_tool_calls_total{result="error"}[5m]))
+    / sum(rate(cfoperator_tool_calls_total[5m])) > 0.1
   for: 5m
   labels:
     severity: warning
@@ -709,21 +796,39 @@ cfoperator_tools_registered
 ```yaml
 - alert: LLMHighErrorRate
   expr: |
-    rate(cfoperator_llm_errors_total[5m])
-    / rate(cfoperator_llm_requests_total[5m]) > 0.2
+    sum by (provider) (rate(cfoperator_llm_errors_total[5m]))
+    / sum by (provider) (rate(cfoperator_llm_requests_total[5m])) > 0.2
   for: 5m
   labels:
     severity: warning
   annotations:
-    summary: "LLM error rate above 20%"
+    summary: "LLM provider {{ $labels.provider }}: error rate above 20%"
+
+- alert: LLMProviderDown
+  expr: |
+    sum by (provider) (rate(cfoperator_llm_errors_total{error_type="ConnectionError"}[5m])) > 0
+    unless
+    sum by (provider) (rate(cfoperator_llm_requests_total{result="success"}[5m])) > 0
+  for: 2m
+  labels:
+    severity: critical
+  annotations:
+    summary: "LLM provider {{ $labels.provider }} unreachable"
 
 - alert: ExcessiveFallbacks
-  expr: rate(cfoperator_llm_fallbacks_total[10m]) > 1
+  expr: sum(rate(cfoperator_llm_fallbacks_total[10m])) * 60 > 2
   for: 10m
   labels:
     severity: warning
   annotations:
-    summary: "Frequent LLM fallbacks"
+    summary: "More than two LLM fallback rotations a minute"
+
+- alert: LLMTokenBudgetExceeded
+  expr: sum by (provider) (increase(cfoperator_llm_tokens_total{provider="groq"}[1h])) > 50000
+  labels:
+    severity: warning
+  annotations:
+    summary: "Token usage for {{ $labels.provider }} exceeds its hourly budget"
 
 - alert: LLMCircuitOpen
   expr: increase(cfoperator_llm_circuit_opens_total[15m]) > 0
@@ -733,27 +838,38 @@ cfoperator_tools_registered
     summary: "Every LLM provider failed repeatedly; investigations are failing fast"
 ```
 
-## Grafana Dashboard
+Ratios here aggregate both sides before dividing. Without the `sum`, PromQL
+matches series one-to-one on every label: the tool ratio would divide each
+`result="error"` series by itself and read 1.0 on any single error, and the LLM
+ratio would match nothing, because `cfoperator_llm_errors_total` carries
+`error_type` where `cfoperator_llm_requests_total` carries `model` and
+`result`. `ExcessiveFallbacks` counts per minute; the earlier per-second
+threshold of 1 asked for 600 rotations in ten minutes.
 
-Import the dashboard JSON from `grafana/cfoperator-dashboard.json` which includes:
+## Grafana Dashboards
 
-### Top Stats
-- Uptime, Status, Monitored Hosts, Running Containers, Error Rate, Tools
+Two boards ship in `grafana/`, byte-identical to the copies the homelab
+provisions ([grafana/README.md](../grafana/README.md) has the import steps):
 
-### LLM Observability
-- LLM Request Rate, Error Rate, Token Usage, Latency, Fallbacks, Cache Hit Rate
+- **`CFOperator Fleet Monitoring`** (`grafana/cfoperator-dashboard.json`):
+  uptime, status, monitored hosts, running containers, error rate and tool
+  count; OODA loop activity and tool usage; LLM requests by provider, tokens by
+  direction, latency p50/p95/p99, errors by provider, fallback activations;
+  investigations and the knowledge base; the HTTP investigation pipeline (queue
+  depth, rejections, post-backs); CPU and memory by host; sweep findings and
+  sweep duration; embedding requests and cache hit rate; log messages by level;
+  correlation analysis; notification history; and Loki log panels (live logs,
+  errors and warnings, agent and tools, LLM and knowledge base, sweep logs). The
+  investigation, knowledge-base, findings, correlation and notification panels
+  query PostgreSQL, not Prometheus.
+- **`CFOperator Event Runtime`** (`grafana/event-runtime-dashboard.json`):
+  alert throughput, outcomes and latency; queue depth, wait, processing time and
+  rejections; replay by sink; recorded event types; triage decisions by action;
+  the completion endpoint; host observability; k3s cluster health; logs; and an
+  audit trail of decisions and outcomes.
 
-### Activity Graphs
-- OODA Loop Activity, Tool Usage by Type
-
-### LLM Deep Dive
-- Requests by Provider, Token Usage, Latency Heatmap, Fallback Chain
-
-### Infrastructure Health
-- CPU Usage by Host, Memory Usage by Host
-
-### Log Panels
-- Live Logs, OODA Activity, Tool Execution, Errors, LLM Activity, Fleet Discovery, Knowledge Base
+The LLM & Triage, Remediation and Traces boards are provisioned from
+homelab-infra only; [OBSERVABILITY.md](OBSERVABILITY.md) says what each is for.
 
 ## Prometheus Configuration
 
@@ -798,7 +914,20 @@ curl http://localhost:8083/metrics | grep cfoperator_llm
 
 ## Metrics Implementation
 
-All metrics are defined in [agent.py](agent.py) using `prometheus_client`:
+Metrics are declared with `prometheus_client` at module level, next to the
+code that observes them:
+
+- the agent package, [agent/](../agent/): most of them in `agent/agent.py`;
+  the Ollama pool and sweep timing in `agent/ollama_pool.py`; the dedupe
+  funnel in `agent/dedupe_client.py`; the tracker hand-off in
+  `agent/tracker_sync.py`; re-verification in `agent/reverify.py`. The agent
+  serves them from the `/metrics` route in `web_server.py`, on the console port.
+- the event runtime, `event_runtime/telemetry.py`, served from its own
+  `/metrics` on the runtime port.
+
+`tests/test_docs_metrics_coverage.py` fails when a declared metric is missing
+from this page, and `tests/test_metrics_conventions.py` when one is declared
+and never observed, or is a timestamp gauge without a label. In `agent/agent.py`:
 
 ```python
 from prometheus_client import Counter, Gauge, Histogram, Info
@@ -811,8 +940,6 @@ AGENT_UPTIME = Gauge('cfoperator_uptime_seconds', ...)
 LLM_REQUESTS = Counter('cfoperator_llm_requests_total', ..., ['provider', 'model', 'result'])
 LLM_LATENCY = Histogram('cfoperator_llm_latency_seconds', ..., ['provider', 'model'])
 ```
-
-Metrics are updated throughout the OODA loop and tool execution.
 
 ## Next Steps
 

@@ -21,10 +21,12 @@ the other two columns as intent, not as configuration you can write today.
 The shipped metrics/logs/containers/alerts backends are exactly the names the
 agent accepts in `_init_observability_backends` (`agent/agent.py`), and
 `tests/test_docs_extension.py` holds this table to that list. Notifications
-are wired in two places. The agent itself sends to `slack` and `discord` (and
-can post to Alertmanager) from `observability.notifications`. The event runtime
-has its own sinks, and `ntfy` exists only there. If this table and the code
-ever disagree, the code is right and this table is a bug.
+are wired in two places, both reading the one `observability.notifications`
+list. The agent sends to `slack` and `discord` (and can post to Alertmanager).
+The event runtime has its own sinks for `slack`, `discord` and `ntfy`, and
+`ntfy` exists only there; each process skips an entry it has no sink for. If
+this table and the code ever disagree, the code is right and this table is a
+bug.
 
 | Capability | Shipped | Planned | Not planned |
 |---|---|---|---|
@@ -88,6 +90,12 @@ infrastructure:
         - prometheus       # Scrapes metrics
         - loki            # Collects logs
         - docker          # Runs containers
+      # What baseline drift expects to find running here. Each entry names a
+      # container the sweep looks for in the Docker or Prometheus container
+      # backend's listing, and a missing one is a finding.
+      services:
+        - name: grafana
+          container: grafana
 
     # Worker hosts
     raspberrypi2:
@@ -131,7 +139,7 @@ allowlist of reads, and need not be passwordless for anything else.**
 
 #### Setup SSH Key Authentication
 
-On the CFOperator host (raspberrypi3):
+On the CFOperator host (raspberrypi in the example above):
 
 ```bash
 # Generate SSH key if you don't have one
@@ -140,7 +148,7 @@ ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
 # Copy to each worker host
 ssh-copy-id user@10.0.0.2
 ssh-copy-id user@10.0.0.3
-ssh-copy-id user@10.0.0.4
+ssh-copy-id user@10.0.0.5
 
 # Test passwordless login
 ssh user@10.0.0.2 'echo "Success"'
@@ -196,7 +204,9 @@ symlink's path never matches. A probe for such a command is how you find out.
 
 ### Observability Backend Configuration
 
-CFOperator connects to your existing observability infrastructure:
+CFOperator connects to your existing observability infrastructure. Every key
+and its default is in [config-reference.md](config-reference.md#the-full-config);
+this is the shape for a fleet like the one above:
 
 ```yaml
 observability:
@@ -204,75 +214,62 @@ observability:
   metrics:
     backend: prometheus
     url: http://10.0.0.1:9090
-    timeout: 30
 
   # Logs. Shipped: loki
   logs:
     backend: loki
     url: http://10.0.0.1:3100
-    timeout: 30
 
-  # Containers - multiple backends possible.
+  # Containers - a list, one entry per backend.
   # Shipped: kubernetes, docker, prometheus (bare-metal discovery)
   containers:
-    backend: docker
-    hosts:
-      local: unix:///var/run/docker.sock
-      # If remote Docker APIs are exposed:
-      # node-2: tcp://10.0.0.2:2375
-      # node-3: tcp://10.0.0.3:2375
+    - backend: docker
+      hosts:
+        local: unix:///var/run/docker.sock
+        # If remote Docker APIs are exposed:
+        # node-2: tcp://10.0.0.2:2375
+        # node-3: tcp://10.0.0.3:2375
+    # - backend: kubernetes     # if you have a cluster
 
-  # Kubernetes (if you have a cluster)
-  # kubernetes:
-  #   kubeconfig: ~/.kube/config
-  #   contexts:
-  #     - homelab-cluster
+# kubectl settings, top level rather than under observability. One context,
+# not a list; unset, kubectl's own default applies.
+# kubernetes:
+#   kubeconfig: ~/.kube/config
+#   context: homelab-cluster
 ```
 
 ## Discovery: How CFOperator Learns Your Infrastructure
 
 ### 1. Static Configuration (config.yaml)
 
-You explicitly define hosts in `infrastructure.hosts`. This is the **source of truth**.
+`infrastructure.hosts` names hosts explicitly. It is optional, and it is what
+the SSH tools, host discovery and baseline drift act on: a host the inventory
+does not name cannot be reached over SSH.
 
-### 2. Dynamic Discovery (Prometheus Service Discovery)
+### 2. Dynamic Discovery (Prometheus)
 
-If you use Prometheus, CFOperator can discover hosts automatically:
-
-```python
-# Query Prometheus for all monitored targets
-targets = prometheus_query('up{job="node-exporter"}')
-# Discovers: raspberrypi, raspberrypi2, raspberrypi3, raspberrypi4
-```
-
-This gives CFOperator:
-- Which hosts are monitored
-- Which exporters are running where
-- Current up/down status
+The event runtime's `prometheus` host provider
+(`event_runtime.host_observability.providers`) finds hosts from node-exporter
+targets, querying `up{job=~"node-exporter|node_exporter"} == 1` (the
+`job_pattern` is configurable). The `k3s` provider finds nodes from
+`kube_node_info`. That gives triage which hosts are monitored and whether each
+is up, with no inventory.
 
 ### 3. Container Discovery
 
-CFOperator discovers containers by:
+Each configured container backend lists containers its own way:
 
-1. **Docker API** - List containers on each Docker host
-2. **Kubernetes API** - List pods in each namespace
-3. **Prometheus metrics** - Parse `container_*` metrics to find containers
+1. **Docker API** (`docker`) - the containers on each host in its `hosts` map
+2. **Kubernetes API** (`kubernetes`) - pods, through kubectl
+3. **Prometheus metrics** (`prometheus`) - Telegraf's
+   `docker_container_status_uptime_ns`, with logs fetched over SSH
 
-Example:
-```python
-# CFOperator discovers:
-- raspberrypi: 16 containers (influxdb, loki, prometheus, grafana, ...)
-- raspberrypi2: 5 containers (immich-server, immich-ml, redis, postgres, ...)
-- raspberrypi3: 3 containers (homeassistant, zigbee2mqtt, mosquitto, ...)
-- raspberrypi4: 2 containers (pihole, unbound, ...)
-```
+### 4. Services
 
-### 4. Service Discovery
-
-CFOperator learns about services from:
-- **Systemd** - `systemctl list-units --type=service` via SSH
-- **Docker Compose** - Parse `docker-compose.yml` files
-- **Kubernetes** - Query Services and Ingresses
+There is no service-discovery pass. An investigation looks services up as it
+needs them: the Kubernetes tools list Services and Ingresses, and on a host in
+the inventory the model can run `systemctl` over SSH. Nothing parses
+`docker-compose.yml` files.
 
 ## How CFOperator Uses This Information
 
@@ -288,20 +285,21 @@ CFOperator learns about services from:
    - Query Prometheus: `container_memory_usage_bytes{name="immich-ml"}`
    - SSH to Pi2: `docker logs immich-ml --tail 100`
    - Check disk: `df -h /var/lib/docker`
-   - Restart if needed: `docker restart immich-ml`
+4. **Propose, never apply**: an investigation is read-only, and CFOperator
+   changes nothing unattended. A fix it recommends becomes a remediation with
+   a named human behind it: the merge of its GitOps PR, the merge of the
+   change-record PR a host action opens, or an admin confirming the command
+   in the console ([REMEDIATION.md](REMEDIATION.md)).
 
 ### Proactive Mode (Deep Sweeps)
 
-Every 30 minutes, CFOperator:
+Every 30 minutes by default (`ooda.sweep_interval`), CFOperator:
 
-1. **Sweeps all hosts**:
-   ```python
-   for host in infrastructure.hosts:
-       - Check system metrics (CPU, memory, disk)
-       - List running containers/services
-       - Compare to baseline
-       - Look for anomalies
-   ```
+1. **Sweeps in phases**, each switchable under `ooda.sweep`: metrics (PromQL
+   against the metrics backend), logs, containers (every container backend),
+   baseline drift (the inventory's `services` against what is running), and
+   learning consolidation. None of it needs an inventory except baseline
+   drift.
 
 2. **Correlates across fleet**:
    - "Pi2 and Pi3 both restarted at same time" → power issue?
@@ -394,25 +392,27 @@ Prometheus sees both, or run an agent per site.
 ## Next Steps
 
 1. **Verify SSH access** to all hosts
-2. **Ensure passwordless sudo** on all hosts
+2. **Allow the sudo reads** (above) without a password on all hosts
 3. **Test observability backends** (Prometheus, Loki, etc.)
-4. **Add hosts to config.yaml**
-5. **Restart CFOperator** to pick up new configuration
+4. **Add hosts to config.yaml**. The compose stack mounts
+   `deploy/compose/config.yaml`; to keep your edit across upgrades, mount your
+   own file from `docker-compose.override.yml`
+   ([DEPLOYMENT.md](DEPLOYMENT.md#local--non-production))
+5. **Restart the agent** to pick up the new configuration: config is read at
+   start
 6. **Monitor logs** to see host discovery
 
 ```bash
-# Check SSH access
-for host in raspberrypi2 raspberrypi3 raspberrypi4; do
+# Check SSH access and one allowlisted read
+for host in raspberrypi2 raspberrypi3 ollama-gpu; do
     echo "Testing $host..."
-    ssh user@$host 'echo "OK" && sudo echo "SUDO OK"'
+    ssh user@$host 'echo "OK" && sudo -n /usr/bin/dmesg -T >/dev/null && echo "SUDO READ OK"'
 done
 
-# Restart CFOperator
-cd ~/repos/cfoperator
-docker compose restart
-
-# Watch logs
-docker logs -f cfoperator
+# From the directory holding docker-compose.yml (~/cfoperator for an
+# installer stack): restart the agent and watch it
+docker compose restart agent
+docker compose logs -f agent
 ```
 
 ## Troubleshooting
@@ -436,10 +436,12 @@ sudo ufw allow 22
 Error: sudo: a password is required
 ```
 
-Fix: Add NOPASSWD to sudoers:
+Fix: add the read that prompted to the host's sudoers drop-in (see
+[Setup Passwordless Sudo, for reads only](#setup-passwordless-sudo-for-reads-only)),
+not `NOPASSWD: ALL`, then validate it:
 ```bash
 ssh user@10.0.0.2
-echo "user ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/user
+sudo visudo -cf /etc/sudoers.d/cfop-reader
 ```
 
 ### Host not in config

@@ -1,6 +1,13 @@
 # Local LLMs vs Claude Haiku 
 ## Real-World Ops Tool Calling
 
+> **Snapshot, 2026-04-04.** The verdicts below are April's. The primary model
+> has moved since: to `qwen3.6:27b`, then to `gemma4:26b` on 2026-07-09
+> ([`benchmarks/gemma4-26b-vs-qwen3.6-27b.md`](../benchmarks/gemma4-26b-vs-qwen3.6-27b.md)),
+> which [`benchmarks/qwen3.8-27b-vs-gemma4-26b.md`](../benchmarks/qwen3.8-27b-vs-gemma4-26b.md)
+> kept as primary on 2026-08-16. The provider chain a deployment runs is in
+> [config-reference.md](config-reference.md).
+
 | Capability | Qwen3-Coder | GLM-4.7-Flash | Mistral Small | Qwen 3 | Claude Haiku |
 |--|-------------|---------------|---------------|--------|--------------|
 | Size | 30B-A3B MoE | 30B-A3B MoE | 3.2 (24B) | (14B) | (Cloud) |
@@ -60,4 +67,4 @@ Qwen3-Coder is significantly faster at analysis and reasoning tasks while mainta
 | Agent Host | headless-gpu (k3s node) |
 
 **Task:** Autonomous infrastructure monitoring — Prometheus, Loki, Kubernetes, Docker, SSH
-**Result:** Qwen3-Coder replaces GLM-4.7-Flash as primary production model. Cloud fallback exists but rarely fires.
+**Result (April 2026):** Qwen3-Coder replaced GLM-4.7-Flash as the primary production model. Cloud fallback existed but rarely fired.

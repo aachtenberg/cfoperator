@@ -987,12 +987,18 @@ class RemediationQueue(Base):
     The row IS the executor's state, so the Job stays stateless and a dead
     Job's stale lease is reaped back to 'queued' (see requeue_stale_remediations).
 
-    Lifecycle:
-        queued -> claimed -> executing -> {pr-open -> verifying ->} resolved
+    Lifecycle (docs/REMEDIATION.md, "Remediation queue state machine"):
+        queued -> claimed -> pr-open -> resolved (merged) | rejected (closed)
+        claimed -> resolved (a host plan ran clean) | needs-human (parked)
         pr-open on entry when the investigation opened the PR itself (CFOP-116)
-        any in-flight state -> failed -> (retry) queued | needs-human
-        pr-open -> rejected (human closed the PR)
+        claimed on entry for a console-confirmed host command (CFOP-442)
+        retry: fail_remediation re-queues under the attempt cap, else
+            needs-human; it never passes through 'failed'
+        failed is terminal: the executor raised (CFOP-554), or a confirmed
+            command exited non-zero
+        needs-human -> filed (tracker) | queued (Approve)
         any state -> resolved | rejected (operator closes it in the console)
+        'executing' and 'verifying' are in the status set but never written.
     Non-auto-eligible recommendations are recorded directly as 'needs-human'
     so the queue is the single ledger of everything that wants doing.
     """

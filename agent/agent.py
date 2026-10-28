@@ -3834,7 +3834,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # a real (human-merge-gated) PR. Never touches the running cluster
             # either way. Conservative by design — it mostly turns a vague
             # "needs_action" into either a candidate patch or a precise decline
-            # reason (see remediation.py + the design doc).
+            # reason (see remediation.py and docs/REMEDIATION.md, Components).
             proposal = self._maybe_propose_remediation(outcome, alert_info, trigger)
 
             # CFOP-46: a needs_action recommendation must land somewhere
@@ -4435,9 +4435,10 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         """Phase-B: for a confirmed needs_action pod, build a dry-run remediation
         proposal (patch candidate or precise decline). Returns a Proposal or None.
 
-        Off unless ``remediation.enabled`` is set in config. Never opens a PR in
-        this build — ``open_prs`` is plumbed through but the live path is a
-        deferred TODO in remediation.py.
+        Off unless ``remediation.enabled`` is set in config. With
+        ``remediation.open_prs`` (or ``deep_open_prs``) it opens the PR itself,
+        capped by ``max_open_prs``; that PR gets no queue row (CFOP-551). See
+        docs/REMEDIATION.md, Components.
         """
         if outcome != 'needs_action':
             return None

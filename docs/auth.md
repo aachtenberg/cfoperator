@@ -64,75 +64,66 @@ that created it.
 | `CFOP_SESSION_SECRET` | — | Signs session cookies; without it, cookies break on restart and across replicas |
 | `CFOP_AUTH_DISABLED` | unset | Opens the console entirely. **Local docker-compose only** — it logs a loud warning on every start |
 | `CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` | — | Legacy credentials, now the bootstrap path for the first admin |
-| `CFOP_API_TOKEN` | — | **Retired 2026-08-09.** Was the legacy shared bearer. Each service now mounts its own database token *as* this variable name; the plain shared key no longer exists. Leaving it unset is correct — setting it re-enables a shared credential that belongs to no user |
+| `CFOP_API_TOKEN` | — | **Retired on the agent 2026-08-09.** Was the legacy shared bearer. Each calling service now mounts its own database token *as* this variable name (see [Service tokens](#service-tokens)); the plain shared key no longer exists. On the agent, leaving it unset is correct — setting it re-enables a shared credential that belongs to no user |
 
-## Rolling it out
+## Service tokens
 
-The deploy that ships this code is not a lockout and not a flag day.
+Each machine caller holds its own token, minted at `/admin?tab=tokens` with the
+least scope that works, sealed into `homelab-infra/secrets/.env.secrets`, and
+mounted on that service *as* `CFOP_API_TOKEN`, so the callers' code did not
+change when the shared token went:
 
-1. **Ship the image.** On start, the agent creates the auth tables. If there are
-   no users, it seeds the first admin from `CFOP_UI_USERNAME` /
-   `CFOP_UI_PASSWORD_HASH` — the hash is copied verbatim, so the existing
-   password keeps working.
-2. **Create per-person accounts** at `/admin?tab=users`, and have people log in
-   as themselves.
-3. **Mint per-service tokens** at `/admin?tab=tokens`, one per caller, each with
-   the least scope that works:
+| Service | Scope | Why |
+|---------|-------|-----|
+| `event_runtime` | `investigate` | calls `/v1/triage` and `/v1/investigate` |
+| `bridge` (local runtime) | `investigate` | drives the agent chat API and the `investigate:` enqueue |
+| `cfoperator-mcp` | `remediate` | the facade exposes approve, reject, resolve and investigation triage, which are admin-only routes |
 
-   | Service | Scope |
-   |---------|-------|
-   | `event_runtime` | `investigate` |
-   | `bridge` (local runtime) | `investigate` |
-   | `cfoperator-mcp` | as deployed, up to `remediate` |
+Revoking one stops that service alone.
 
-   Put each in `homelab-infra/secrets/.env.secrets`, re-seal, and roll the
-   deployments.
-4. **Retire the shared token.** *(Done 2026-08-09 — kept here as the method.)*
-   Every use of `CFOP_API_TOKEN` writes an audit row, so this is a question with
-   an answer rather than a guess. **Do not just count rows** — two different
-   credentials write the same `token.legacy_used` event:
+### Checking for shared-credential use
 
-   | Writer | Credential | `source_ip` |
-   |--------|------------|-------------|
-   | `web_auth.py` | shared `CFOP_API_TOKEN` | always set |
-   | `mcp_server/auth.py` | `CFOP_MCP_TOKEN` (separate credential) | never set |
+Every use of a shared credential writes an audit row, so "is anything still
+using it?" is a question with an answer rather than a guess. **Do not just
+count rows** — two different credentials write the same `token.legacy_used`
+event:
 
-   So filter on `source_ip`, and compare against the roll timestamp rather than
-   expecting zero — historical rows do not age out:
+| Writer | Credential | `source_ip` |
+|--------|------------|-------------|
+| `web_auth.py` | shared `CFOP_API_TOKEN` on the agent | always set |
+| `mcp_server/auth.py` | `CFOP_MCP_TOKEN` (separate credential) | never set |
 
-   ```bash
-   # from a pod holding a scoped token; never from the agent pod, whose own
-   # credential used to be the shared one — reading the API there wrote the very
-   # rows this check counts
-   kubectl -n apps exec deploy/cfoperator-mcp -- python3 -c "
-   import os,urllib.request,json
-   r=urllib.request.Request(os.environ['CFOP_AGENT_URL']+'/api/auth/audit?event=token.legacy_used',
-       headers={'Authorization':'Bearer '+os.environ['CFOP_API_TOKEN']})
-   rows=json.load(urllib.request.urlopen(r))['audit']
-   print(len([e for e in rows if e.get('source_ip') and e['created_at'] > '<roll-timestamp>']))"
-   ```
+So filter on `source_ip`, and compare against a timestamp rather than expecting
+zero — historical rows do not age out. `/api/auth/audit` is admin-only, so the
+check needs an admin session or a token carrying `remediate`. The
+`cfoperator-mcp` pod's own token does:
 
-   When that stays at zero, remove `CFOP_API_TOKEN` — **manifest first, secret
-   second**, the reverse of the order used when the keys were added. Adding
-   needed secret-first because a manifest referencing a missing key is
-   `CreateContainerConfigError`; removing inverts it, since dropping the key
-   while a manifest still references it leaves a dangling `secretKeyRef` that
-   only breaks at the next restart, and under `strategy: Recreate` that restart
-   is an outage.
+```bash
+kubectl -n apps exec deploy/cfoperator-mcp -- python3 -c "
+import os,urllib.request,json
+r=urllib.request.Request(os.environ['CFOP_AGENT_URL']+'/api/auth/audit?event=token.legacy_used',
+    headers={'Authorization':'Bearer '+os.environ['CFOP_API_TOKEN']})
+rows=json.load(urllib.request.urlopen(r))['audit']
+print(len([e for e in rows if e.get('source_ip') and e['created_at'] > '<since-timestamp>']))"
+```
 
-   Then remove `CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH` — once a real admin
-   exists, bootstrap is skipped, so deleting them is a no-op rather than a
-   lockout.
+### Removing a key a deployment references
 
-At every step the previous state keeps working. There is no window where a
-service is broken waiting for the next step.
+Manifest first, secret second — the reverse of adding one. Adding needs the
+secret first because a manifest referencing a missing key is
+`CreateContainerConfigError`. Removing inverts it: dropping the key while a
+manifest still references it leaves a dangling `secretKeyRef` that only breaks
+at the next restart, and under `strategy: Recreate` that restart is an outage.
 
 ## Failure modes
 
-**Database unreachable at startup.** The console falls back to legacy
-environment credentials and logs the error. Users and tokens are unavailable
-until it recovers. This is not a fall-open: legacy mode still demands the
-environment credentials, and without those every non-exempt route returns 503.
+**Database unreachable at startup.** The auth store is opened once, when the
+agent starts. If that fails, the console falls back to legacy environment
+credentials and logs the error — and legacy mode needs `CFOP_UI_USERNAME`,
+`CFOP_UI_PASSWORD_HASH` and `CFOP_API_TOKEN` all set. The documented deploy sets
+none of them, so every non-exempt route returns 503, only `/api/health` and
+`/metrics` answer, and it stays that way until the pod restarts with the
+database reachable. This is not a fall-open.
 
 **Database unreachable mid-request.** 503, never 401 and never 2xx. A lookup
 that cannot run is an outage, not "no such user" — answering 401 would send a
@@ -185,13 +176,18 @@ People change their own password and manage their own tokens at `/account`.
 `/api/health` and `/metrics` stay open — kubelet probes and the Prometheus
 scrape, both read-only, both broken by gating for no benefit.
 
-The `/v1/*` endpoints are not role-gated. They are machine callbacks from
-executor Jobs, the deep-investigation worker, and `event_runtime`, and they
-authenticate with the `X-CFOP-Token` completion secret via their own check. That
-secret is deliberately scoped to those paths only: it is injected into every
+The `/v1/*` endpoints are not role-gated. They are machine callbacks, and a
+role check would 403 every one of them and strand remediations mid-flight.
+Four of them — `/v1/deep-investigations`, `/v1/remediations/<id>/complete`,
+`/v1/remediations/feed-sweeps` and `/v1/remediations/feed-summary` — are called
+by executor Jobs and the deep-investigation worker, and authenticate with the
+`X-CFOP-Token` completion secret via their own check. That secret is
+deliberately honoured on those four paths only: it is injected into every
 disposable executor Job pod, so honouring it anywhere else would turn the
-lowest-privilege credential in the system into a full console credential. A role
-check here would 403 every callback and strand remediations mid-flight.
+lowest-privilege credential in the system into a full console credential.
+`/v1/investigate` and `/v1/triage` do not take the completion secret. They sit
+behind the ordinary console gate (a bearer token or a session), and
+`event_runtime` calls them with its own `investigate` token.
 
 The reverse direction has its own gate. The event runtime's HTTP surface is
 guarded by `CFOP_RUNTIME_TOKEN`, a static bearer rather than a database token
@@ -207,3 +203,14 @@ gating the page would only mean a member sees a 403 instead of a page that
 correctly shows them their own tokens (or a banner pointing them at
 `/account`). The Admin nav link is filtered client-side for non-admins.
 Legacy `/users` and `/tokens` redirect into `/admin`.
+
+## History
+
+Shipped 2026-08-05 (#105) with no flag day, so every step left the previous
+state working. On first start the agent created the auth tables and seeded the
+first admin from `CFOP_UI_USERNAME` / `CFOP_UI_PASSWORD_HASH`, copying the hash
+verbatim so the existing password kept working. Per-person accounts and
+per-service tokens followed. The shared `CFOP_API_TOKEN` was retired on
+2026-08-09, once the legacy-use count above stayed at zero after the roll, and
+the bootstrap pair was then dropped from the agent. That removal was a no-op
+rather than a lockout, because bootstrap is skipped once any user exists.

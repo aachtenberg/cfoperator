@@ -1,8 +1,12 @@
 # Remediation & auto-heal
 
 How CFOperator turns an observed problem into an autonomous (human-gated) fix.
-Read-only toward the cluster end to end — the **only** mutation is a GitHub PR a
-human merges, which ArgoCD then syncs.
+CFOperator never changes anything unattended. Every change has a named human
+behind it: the merge on a GitOps PR, which ArgoCD then syncs; the merge of a
+change-record PR for a host action (a `node-action` is refused outright when no
+change recorder is configured, see
+[Imperative lane change records](#imperative-lane-change-records)); or an admin
+confirming a command in the console.
 
 ## TL;DR
 
@@ -37,7 +41,7 @@ flowchart TB
   subgraph AG[cfoperator agent pod]
     INV["Investigation pipeline + deep tier"]
     Q[("RemediationQueue (postgres)")]
-    WK["worker thread: reaper / drainer / verify"]
+    WK["worker thread: reaper / drainer / verify / tracker / re-verify"]
     WEB["web UI :8083 — console + read APIs"]
     INV -->|"mechanizable rec"| Q
     Q --> WK
@@ -90,10 +94,13 @@ sequenceDiagram
 
 ## The FIX contract
 
-Everything above starts with one object. An investigation that ends
+The investigation feed starts with one object. An investigation that ends
 `needs_action` is asked to emit a **FIX** beside its prose recommendation — a
 typed description of the change it is proposing. The FIX is what decides the
 remediation's class, risk and confidence; the prose is what a human reads.
+One older path acts on the same investigation without it: the Phase-B
+toleration proposer, which opens its own PR and never reaches the queue (see
+*Components*).
 
 Before it existed the queue was fed by classifying free-form English, which is
 why several parsers still sit upstream of it (see *Feeds*). The FIX replaces
@@ -140,6 +147,10 @@ refused if:
 - **`observed` is missing or empty**, or an entry is not an object, or lacks
   either `source` or `value` — every one of these is logged with its reason
   and the target ids
+- an `observed` value contains `...` or `…` (logged the same way): an elided
+  quote is the failure between empty and fabricated. Row #97 quoted a real log
+  line with the timestamps that would have refuted its FIX replaced by `...`,
+  and looked like evidence while carrying none (CFOP-155)
 - a **`gitops-manifest` target has no resolvable `repo`** — omitted, empty, or
   a value absent from the git registry are refused alike
 
@@ -184,7 +195,7 @@ guidance to the model, not a check, so a misspelled or future kind degrades
 quietly rather than being refused.
 
 Confidence is deliberately stingy. **Only** a single-target `gitops-manifest`
-at `risk: low` gets `0.8` — the one shape that can clear the auto gate.
+at `risk: low` gets `0.8` — the one FIX shape that can clear the auto gate.
 Everything else gets `None` and parks, including every multi-target FIX. The
 local primary reports 1.0 on calls it got wrong, so high confidence is not
 inferred from the model's own certainty.
@@ -213,8 +224,12 @@ that describe a delivery path that does not exist there.
 default** — `none` renders no guidance at all, which is exactly the prompt that
 shipped before. `gitops` names the configured repo (resolved through the git
 registry, so it is the same slug the executor uses) and steers manifest-
-expressible work to `gitops-manifest`; `direct` says there is no manifest repo
-and steers to `k8s-object` / `k8s-imperative`. Nothing about a specific syncer
+expressible work to `gitops-manifest`; `direct` says there is no manifest
+repo, steers in-cluster work to `k8s-imperative`, and forbids `k8s-object` as
+well as `gitops-manifest`. `k8s-object` maps to `k8s-action`, which the
+executor also delivers as a PR, so an approved row of that class would still
+drain into the PR path a direct site does not have; `k8s-imperative` is the
+class that parks with a legible message. Nothing about a specific syncer
 is baked in: `tool` is free text that only shapes wording, and a cluster that
 is neither GitOps nor k3s is served by `direct` or by saying nothing.
 
@@ -298,24 +313,36 @@ stateDiagram-v2
   [*] --> queued: auto-eligible (low-risk + mechanizable + conf≥0.8)
   [*] --> needs_human: not eligible
   [*] --> pr_open: the investigation opened the PR itself
+  [*] --> claimed: console-confirmed host command (CFOP-442)
   queued --> claimed: drainer
-  claimed --> executing: executor
-  executing --> pr_open: PR opened
-  executing --> needs_human: no clean single-file diff
+  claimed --> pr_open: executor opened the PR
+  claimed --> resolved: host command plan ran clean
+  claimed --> needs_human: executor parked it, no change recorder, or attempt cap
+  claimed --> failed: executor raised, or a confirmed command exited non-zero
+  claimed --> queued: lease expired or spawn failed (attempts < cap), approval pending
   pr_open --> resolved: PR merged (verify)
   pr_open --> rejected: PR closed unmerged (verify)
-  executing --> failed: error
-  failed --> queued: retry < cap
-  failed --> needs_human: retry cap
-  claimed --> queued: lease expired (reaper)
+  needs_human --> queued: Approve
   needs_human --> filed: no PR, queue_tracker on (item filed)
   filed --> resolved: item done in the tracker
   filed --> rejected: item cancelled or deleted in the tracker
   filed --> queued: Approve
   resolved --> [*]
   rejected --> [*]
+  failed --> [*]
   needs_human --> [*]
 ```
+
+The executor reports straight from `claimed`. `executing` and `verifying` are
+in the status set and the open-PR cap counts them, but nothing writes either.
+A retry never passes through `failed`: under the attempt cap
+`fail_remediation` writes `queued` directly (a reaped lease or a spawn that
+failed), and at the cap `needs-human`. A change-record approval that is not in
+yet returns the row to `queued` without spending an attempt. `failed` is
+terminal and nothing retries it: an executor that raised posts it on the
+callback (the Job has `backoffLimit: 0`), and a console-confirmed command ends
+there when it exits non-zero, because re-running it would run a command nobody
+is watching. Reclassify re-gates a failed row by hand.
 
 A PR the investigation opens itself — the model calls `github_create_pr` and
 then recommends merging it — enters as `pr-open` carrying the URL, the state the
@@ -334,6 +361,9 @@ Approve gate read the column only.
   `fail_remediation`, `requeue_stale_remediations`, `reclassify_remediation`,
   `list/get/count`). Pure auto-gate: `remediation_is_auto_eligible`.
 - **Feeds** → the queue / investigation pipeline:
+  - `needs_action` investigations (`_queue_needs_action_remediation`, CFOP-46):
+    the class comes from a valid FIX, otherwise from the CFOP-48 classifier;
+    a PR the model opened itself enters as `pr-open` (CFOP-116)
   - deep-investigation results carrying `remediation_class` (`_maybe_queue_remediation`)
   - morning-summary recommendations (`_feed_remediations_from_summary`) — prose,
     not FIX objects; the summary path does not emit a FIX,
@@ -342,9 +372,32 @@ Approve gate read the column only.
     recs go through the **CFOP-48 classifier + auto-queue gates** (CFOP-53) —
     only genuinely human-shaped recs enqueue directly as `manual`, and classifier
     degrade/failure falls back to that manual path rather than dropping a finding
+  - the console chat's `queue_gitops_patch` tool (CFOP-160), which runs only
+    on a turn an admin asked for and only queues `gitops-patch`
   - manual operator-authored: `POST /api/remediations`
-- **Worker thread** (`_remediation_worker_loop`) — reaper · drainer · verify ·
-  tracker, off the OODA loop so a long sweep can't starve them.
+- **Phase-B proposer** (`agent/remediation.py`, `_maybe_propose_remediation`)
+  — the oldest path, and the only one that opens a PR without a queue row. On
+  a `needs_action` investigation about an unschedulable pod it either proposes
+  a toleration or declines with the reason: `hostNetwork` / `hostPort` with
+  "free ports" declines, a pinned pod whose node is full declines, and only a
+  non-pinned pod blocked solely by an untolerated taint gets a patch.
+  `remediation.enabled` turns it on as a dry run (the candidate or the decline
+  rides on the investigation result); `open_prs` opens a real PR on a
+  `cfop/remediate-<namespace>-<workload>` branch of `default_repo`;
+  `max_open_prs` (3) caps it, counting every open `cfop/remediate-` PR on
+  GitHub, the executor's included. When it opens one, the queue feed
+  enqueues nothing ("not enqueuing a second driver"), so that PR is tracked
+  only by branch dedupe and the cap: the reconciler never sees it, and it does
+  not count against the drainer's cap, which is read from queue rows
+  (CFOP-551). `deep_open_prs` routes a deep-investigation diff through the
+  same gates and stamps the PR URL on that run's queue row when one was
+  written, without moving it to `pr-open`. `enabled`, `open_prs` and
+  `deep_open_prs` are in `REMEDIATION_FLAGS`, so they need the `remediate`
+  scope; unlike the queue flags they are config only, not console toggles.
+- **Worker thread** (`_remediation_worker_loop`) — reaper · recovered-node
+  close (CFOP-71) · drainer · PR verify · cockpit reaper · tracker ·
+  re-verify · daily trace prune (CFOP-324), each on its own interval, off the
+  OODA loop so a long sweep can't starve them.
 - **Tracker service** (`tracker/`) — stdlib sibling behind the `cfop-tracker`
   Service; one image, `CFOP_TRACKER_BACKEND` = plane | github | jira. The agent's
   `tracker_sync` tick hands parked rows to it and mirrors the outcome back. See
@@ -376,9 +429,11 @@ Approve gate read the column only.
   through the agent's real enqueue sites (`agent/test_dedupe_parity.py`).
   `tests/test_dedupe_funnel.py` fails if an enqueue escapes the funnel.
 - **Executor Job** (`executor/`) — portable, stdlib-only, model-swappable
-  (`CFOP_EXEC_LLM_BACKEND` = anthropic | openai-compat | claude-cli), or a
-  **chain** of such backends tried in order (`CFOP_EXEC_LLM_CHAIN`, from
-  `remediation.executor.llm.chain`): a rung is skipped on an HTTP error (body
+  (`CFOP_EXEC_LLM_BACKEND` = `anthropic` | `openai` | `claude-cli`; `openai`
+  is the OpenAI-compatible shape, covering Ollama, vLLM, llm-gateway,
+  OpenRouter and OpenAI itself), or a **chain** of such backends tried in
+  order (`CFOP_EXEC_LLM_CHAIN`, from `remediation.executor.llm.chain`): a
+  rung is skipped on an HTTP error (body
   kept, so an exhausted credit balance reads as one), an unreachable endpoint, a
   timeout or a bad response, and the completion's `result.llm` says which rung
   answered and why the earlier ones did not. Host actions do not inherit the
@@ -404,13 +459,16 @@ they toggle live (no redeploy) from the console pipeline bar.
 | `queue_tracker` | file parked rows to the issue tracker (`needs-human` without a PR → `filed`), mirror PR-open rows, close rows the tracker closed |
 
 Auto-execute gate (enqueue → `queued` vs `needs-human`): class in
-`remediation.auto.classes` (default `{gitops-patch}`) **and**
+`remediation.auto.classes` (default `[gitops-patch, node-action]`) **and**
 `risk == low` **and** `confidence ≥ remediation.auto.min_confidence` (default
-0.8). The list is config, not a code tuple, so adding `node-action` is a
-ConfigMap edit (CFOP-131). `k8s-action` left the default (CFOP-128); putting
-it back is the CFOP-61 unknown, not a stamp. Park-only classes
-(`k8s-imperative`, `data-fix`, `external-system`, `manual`) cannot be added
-from config.
+0.8). The list is config, not a code tuple. `node-action` joined the default
+in CFOP-131: the executor has a path for it, and its confidence comes from the
+investigation classifier, not a FIX stamp (a `host` FIX still stamps `None`).
+Auto-eligible there still means a change record a human approves before
+anything runs; a site that wants host actions parked for Approve first removes
+it. `k8s-action` left the default (CFOP-128); putting it back is the CFOP-61
+unknown, not a stamp. Park-only classes (`k8s-imperative`, `data-fix`,
+`external-system`, `manual`) cannot be added from config.
 
 A class is auto-eligible only if the executor can run it. `k8s-action` means
 "expressible as a manifest edit" — the executor applies it by opening a PR.
@@ -423,9 +481,10 @@ cannot exist. See CFOP-61.
 ## Imperative lane change records
 
 `node-action` remediations run a gated command plan over SSH. Console approve
-still escalates the queue row. For evidence-grade approval, deploy the
-**changerecord** microservice (`changerecord/`) and point the agent at it with
-`CFOP_EXEC_CHANGE_URL` (also under `remediation.executor.node_action.change_record.url`).
+still escalates the queue row; the approval that lets a plan run is a change
+record, from the **changerecord** microservice (`changerecord/`), which the
+agent finds through `CFOP_EXEC_CHANGE_URL` (also under
+`remediation.executor.node_action.change_record.url`).
 
 When the URL is **unset**, a `node-action` is **refused**: the row is parked at
 `needs-human` naming the setting to configure, and nothing is spawned (CFOP-131).
@@ -514,7 +573,7 @@ given up on. Now the row is **handed off**.
 | row | tracker item | row after |
 |---|---|---|
 | `needs-human`, no PR | created, **priority low** | `filed` — out of the active list, into the console's *Filed to tracker* section with its key |
-| `needs-human` with a PR, or `pr-open` | created, **priority high**, linked to the PR | unchanged; the PR reconciler still owns it |
+| `needs-human` with a PR, or `pr-open` | created, **priority high**, linked to the PR | unchanged; a `pr-open` row stays the PR reconciler's, a `needs-human` one stays parked |
 | `filed`, item marked done in the tracker | — | `resolved` (`result.resolved_by = tracker`) |
 | `filed`, item cancelled or deleted | — | `rejected` |
 | `filed`, Approve in the console | told "handed to the executor" | `queued` (the usual path; a decline re-parks and re-files) |
@@ -587,8 +646,9 @@ wrong one to ask. No eligible peer means the row is left filed.
 
 The tick calls `_chat_with_tools` per peer and walks the rung itself, rather
 than `_chat_with_tools_with_fallback` — that wrapper's chain is
-`chosen → ollama → groq → xai`, so an unreachable frontier peer would land the
-pass on the local primary whose judgement is the thing under review. Failover
+`chosen → ollama → groq → xai → anthropic → openrouter`, so an unreachable
+frontier peer would land the pass on the local primary whose judgement is the
+thing under review. Failover
 is on unreachability only: a peer that *answered* badly does not advance, and
 the note names the peer that actually replied, never the one we meant to ask.
 
@@ -644,9 +704,10 @@ address for links; never guessed, omitted when unset), `max_tracker_per_tick`,
 Single-file diffs only (multi-file → `needs-human`), exact-context apply (drift →
 decline), secret-path refusal, branch dedupe, per-tick + retry caps, read-only
 executor SA, and **human merge is the only mutation path** for GitOps classes.
-Node-actions additionally require change-record approval when
-`CFOP_EXEC_CHANGE_URL` is set. A console-confirmed host write's approval is
-the admin who clicked Run, recorded on the change record before it runs.
+Node-actions additionally require change-record approval, and are refused
+outright when `CFOP_EXEC_CHANGE_URL` is unset (CFOP-131). A console-confirmed
+host write's approval is the admin who clicked Run, recorded on the change
+record before it runs.
 
 ## Deploy
 
@@ -655,9 +716,11 @@ CI (`build-cfoperator-main.yml`) builds `cfoperator`, `cfoperator-worker`,
 `cfoperator-tracker` (from `tracker/`), the last two on a floating `:main` tag
 like the worker/executor. It also builds `cfoperator-dedupe` (from `dedupe/`),
 which the deploy bump pins to the agent's own `main-<sha>` rather than letting
-it float (CFOP-514): the shadow compares the two, so they must run one commit's
-code. RBAC + config live in the private
-`cfoperator-deploy` repo: `cfoperator-executor` read-only SA, the
+it float (CFOP-514): the service decides what the agent enqueues (CFOP-538),
+and the request it reads and the answer the agent applies are one contract
+(`dedupe/doc.go`), held to the same `dedupe/testdata/` cases on both sides at
+each commit, so they must run one commit's code. RBAC + config live in the
+private `cfoperator-deploy` repo: `cfoperator-executor` read-only SA, the
 `remediation:` config block, and `cfoperator-secrets` (`GITHUB_TOKEN`,
 `ANTHROPIC_API_KEY`, `CFOP_COMPLETION_SHARED_SECRET`, and optionally
 `CFOP_CHANGERECORD_SHARED_SECRET`). Wire `CFOP_EXEC_CHANGE_URL` and the
@@ -681,3 +744,89 @@ secret PR first, manifest PR second. After an executor code change, wait for the
 - Executor declines genuinely multi-file fixes (single-file gate) → `needs-human`.
 - Orphaned `in_progress` investigations after a pod roll (in-memory queue) — a
   startup reaper for stale rows would mop these up (not yet built).
+
+## History and design decisions
+
+The pipeline began in June 2026 as one narrow proposer (unschedulable pod →
+toleration PR) and grew the queue, the executor and the FIX contract around
+it. The design doc for that first phase is folded in here; what it got right
+still holds, and what it planned and never built is listed so it stops being
+rediscovered.
+
+**Decisions that still hold.**
+
+- **A PR, not `kubectl edit`.** The homelab cluster is pure ArgoCD GitOps, so
+  git is the source of truth: an imperative change to a resource's spec is
+  drift, and ArgoCD reverts it within minutes. A declarative fix therefore
+  goes branch → commit → PR → human merge → sync. The PR is not a nicety; it
+  is the only mechanism that sticks, and the merge is the safety valve.
+- **Decline first, and read before proposing.** The first real case
+  (adguardhome, 2026-06-04) looked like a missing toleration and was not: the
+  pod was pinned and on `hostNetwork`, and was unschedulable because of a
+  host-port conflict. The naive toleration would have pushed a DNS server onto
+  a tainted GPU node. That is where the proposer's decline rules come from,
+  and later the FIX contract's `observed` field and the observed check.
+- **The agent drives remediation off the investigation, not the event
+  runtime.** `_TRIAGE_VALID_ACTIONS` (`event_runtime/http_actions.py`) is
+  frozen to `log_only`, `notify`, `investigate`, `escalate`; `open_pr` is a
+  registered handler (`event_runtime/github_actions.py`) that triage cannot
+  select. The investigation result carries the evidence a fix needs, and a
+  triage decision does not.
+- **A claimed `resolved` is checked (B1).** `_verify_investigation_outcome`
+  re-reads the pod an alert pins to and downgrades `resolved` to
+  `needs_action` when the pod is not healthy, because the model can call an
+  alert resolved having only recommended the fix.
+- **The agent's PR token is its own.** The runtime `GITHUB_TOKEN` in
+  `cfoperator-secrets` has `repo` scope and is distinct from CI's
+  `DEPLOY_PAT`, so turning on `open_prs` needed no new credential.
+- **No silent caps.** When the pipeline declines (low confidence, too big,
+  secret-adjacent, capped) it says why. That survives as the proposer's decline
+  reasons and the executor's `needs-human` detail strings.
+
+**Rejected.**
+
+- **Auto-merge for the lowest-risk classes**, planned for a Phase C. Dropped
+  rather than built: the merge is the named human behind a GitOps change, and
+  the lowest-risk classes are exactly the ones the auto gate already drains
+  with nobody watching, so auto-merging them would remove the last person in
+  the loop.
+- **Imperative fixes that auto-apply once trusted.** The first design had two
+  classes, imperative ("kick it": restart a pod directly) and declarative
+  (PR-gated), and expected the first to run unattended eventually. Unattended
+  runs observe and do not change (CFOP-240): a pod restart parks as
+  `k8s-imperative`, and a host restart is a `node-action` behind a change
+  record or a console-confirmed write. The two classes became seven queue
+  classes and six FIX kinds.
+
+**Trail.**
+
+- 2026-06-04 — Phase A (`STATUS` + `RECOMMENDATION`, the `needs_action`
+  outcome), B1, and the Phase-B proposer, enabled in prod as a dry run.
+- 2026-06-05 — `max_open_prs`; the write path smoke-tested against
+  homelab-infra (PR #40); `open_prs` on.
+- 2026-06-11 — the deep-investigation tier; `deep_open_prs` puts its diffs
+  through the same gates.
+- 2026-06-18 — the remediation queue and the portable executor (#44), which
+  writes its own single-file diff, so a new fix shape stopped needing a
+  proposer of its own.
+- 2026-08-18 — the whole chain ran live for the first time (investigation →
+  classifier → row #42 → Approve → executor → homelab-infra PR #97), after
+  CFOP-48 to CFOP-51 fell to that run.
+- 2026-08-23 — the FIX contract (CFOP-80) replaces classifying prose on the
+  investigation feed.
+- 2026-08-31 — a `node-action` with no change recorder is refused (CFOP-131).
+- 2026-09-30 — unattended runs observe and do not change (CFOP-240).
+
+**Not built.**
+
+- `open_pr` in the event runtime's triage vocabulary: not needed while the
+  agent drives remediation off the investigation result.
+- More proposer fix classes (resource limits, image pins): superseded by the
+  executor's diff pass, which handles any single-file manifest edit. The
+  proposer stays toleration-only.
+- Watching the finding clear after a merge. The reconciler resolves the row on
+  merge and enqueues a `verify remediation #N` investigation, but nothing reads
+  that investigation's outcome back onto the row, so a merge that did not fix
+  the condition shows up only as that investigation's own outcome, never as a
+  reopened row.
+- Queue tracking for the proposer's own PRs (CFOP-551).
