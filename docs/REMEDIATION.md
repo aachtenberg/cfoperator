@@ -428,6 +428,23 @@ Approve gate read the column only.
   agent's Python model of them (`agent/dedupe_reference.py`, test-only), and
   through the agent's real enqueue sites (`agent/test_dedupe_parity.py`).
   `tests/test_dedupe_funnel.py` fails if an enqueue escapes the funnel.
+  **The model step** (CFOP-545) covers what the tiers cannot: the same fix
+  written twice in different words, or with its target named a different way
+  (#400–#402 named plane-pgdb three ways for one `ON DELETE CASCADE`). With
+  `remediation.model_dedupe` on, an investigation, sweep-fallback or summary
+  enqueue that the tiers call new is shown to the `dedupe` LLM seat with the
+  open rows, before the lock is taken, and the model names the row it
+  duplicates or none, with one sentence why. In shadow mode that answer is
+  recorded on the new row (`payload.dedupe.model`) and changes nothing. With
+  `model_dedupe_fold` also on, the funnel folds the enqueue onto the named
+  row under the lock (`tier="model"`, the model's sentence in the reason), if
+  that row is still open. A failed, malformed or out-of-set answer inserts
+  the row. Chat and console asks are never shown to it, and neither is a row
+  the node tier is opening as a NotReady node's incident row: the tiers skip
+  their own folds for that row, and so does the model. The seat is any
+  backend the chain knows, set under Admin → LLM; `agent/dedupe_model.py`
+  holds the prompt, and `benchmarks/dedupe_model_eval.py` scores a seat
+  against the operator's own duplicate notes before it is used.
 - **Executor Job** (`executor/`) — portable, stdlib-only, model-swappable
   (`CFOP_EXEC_LLM_BACKEND` = `anthropic` | `openai` | `claude-cli`; `openai`
   is the OpenAI-compatible shape, covering Ollama, vLLM, llm-gateway,

@@ -125,6 +125,10 @@ REMEDIATION_FLAGS = (
     # CFOP-185: re-verification closes rows, which is a remediate-scope act
     # even though every check it runs is read-only.
     "queue_reverify",
+    # CFOP-545: the dedupe model step. model_dedupe asks and records the
+    # answer (shadow); model_dedupe_fold lets the answer fold a row.
+    "model_dedupe",
+    "model_dedupe_fold",
 )
 
 

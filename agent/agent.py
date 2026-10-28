@@ -69,6 +69,7 @@ from change_record_client import (
 )
 from tracker_sync import sync_tracker  # CFOP-170: the hand-off tick
 import dedupe_client  # CFOP-538: cfop-dedupe decides every remediation enqueue
+import dedupe_model  # CFOP-545: a model asks whether a 'new' is a reworded open row
 from host_write import PENDING as HOST_WRITE_PENDING, HostWriteConfirmer, wait_for_row  # CFOP-442
 from knowledge_base import CONSOLE_CONFIRMED_SOURCE  # CFOP-442
 from reverify import reverify_filed_rows  # CFOP-185: re-check what was filed
@@ -192,6 +193,7 @@ REMEDIATION_ENQUEUED = Counter('cfoperator_remediation_enqueued_total', 'Remedia
 REMEDIATION_CLASSIFIER = Counter('cfoperator_remediation_classifier_total', 'needs_action classifier outcomes', ['result'])
 # reason: target (FIX-target fold onto an open row, CFOP-453) |
 # repeat (identifier fold onto an open row, CFOP-78) |
+# model (the dedupe model named the open row, CFOP-545) |
 # fork_committed (a forked recommendation was rewritten to one action) |
 # fork_stuck (the rewrite refused; the row is capped out of the auto gate) |
 # investigate_followup (a checklist rec became a follow-up investigation
@@ -340,6 +342,11 @@ LLM_SCOPES = {
              'hint': 'where a plain console chat session starts; auto = the global selection'},
     'handoff': {'label': 'Handed rows',
                 'hint': 'where an Ask-console session (a remediation or investigation row) starts'},
+    # CFOP-545: one-shot, asked only when the dedupe tiers said new and the
+    # model_dedupe flag is on. Any backend, so a hosted seat is one console
+    # change away; the chain default is wherever 'auto' resolves.
+    'dedupe': {'label': 'Dedupe',
+               'hint': 'one-shot: is a new FIX the same change as an open row (model_dedupe flag)'},
 }
 
 # Model-name tokens that mark a vendor's FAST tier, refused in the judge seat
@@ -1630,6 +1637,16 @@ def _adopt_dedupe_decision(details: Dict[str, Any], decision: Dict[str, Any],
     details['host'] = decision.get('host') or given_host
 
 
+def _dedupe_note(decision: Dict[str, Any]) -> Dict[str, Any]:
+    """``payload.dedupe`` for a new row: who decided and why, and what the
+    dedupe model said when it was asked (CFOP-545), shadow answers included,
+    so the row shows what the model made of it."""
+    note = {'source': decision['source'], 'reason': decision.get('reason')}
+    if decision.get('model'):
+        note['model'] = decision['model']
+    return note
+
+
 def _remediation_payload(details: Dict[str, Any], decision: Dict[str, Any]) -> tuple:
     """The new row's payload and its ``decided_by``, from ``details``."""
     dedupe_key = str(details.get('dedupe_key') or '') or None
@@ -1650,7 +1667,7 @@ def _remediation_payload(details: Dict[str, Any], decision: Dict[str, Any]) -> t
         payload['source'] = str(details['source'])
     if dedupe_key:
         payload['dedupe_key'] = dedupe_key
-    payload['dedupe'] = {'source': decision['source'], 'reason': decision.get('reason')}
+    payload['dedupe'] = _dedupe_note(decision)
     # CFOP-80: structured FIX rides beside target.host, never replaces it.
     for key in ('targets', 'observed', 'steps', 'verify', 'rejected',
                 'observed_check'):
@@ -4481,7 +4498,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             return None
 
     _REMEDIATION_FLAGS = ('queue_feed', 'queue_drain', 'queue_reap', 'queue_verify',
-                          'queue_tracker', 'queue_reverify', 'node_action_enabled')
+                          'queue_tracker', 'queue_reverify', 'node_action_enabled',
+                          'model_dedupe', 'model_dedupe_fold')
 
     # ── Per-scope models (CFOP-122) ──────────────────────────────────────
     # The chat default is one (backend, model); the unattended paths each
@@ -4995,8 +5013,17 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         dcfg = rcfg.get('dedupe') if isinstance(rcfg, dict) else None
         return str((dcfg or {}).get('url') or '').strip().rstrip('/') if isinstance(dcfg, dict) else ''
 
+    def _dedupe_nodes(self, cand: Dict[str, Any]) -> List[str]:
+        """The NotReady nodes the node tier is sent. It reads the host, or the
+        title when the host is blank (the summary's rule, CFOP-130). No
+        host-shaped token, no inventory read, as before the service decided."""
+        if not _host_candidates(cand.get('host') or cand.get('title')):
+            return []
+        return sorted({str(n).lower() for n in (self._notready_nodes() or ()) if n})
+
     def _dedupe_decide(self, path: str, candidate: Dict[str, Any], *,
-                       count: bool = True) -> Dict[str, Any]:
+                       count: bool = True,
+                       hint: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Whether this enqueue is new, a fold onto an open row, or already
         queued, as cfop-dedupe decides it (CFOP-538); see dedupe_client.py.
 
@@ -5005,6 +5032,8 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         before CFOP-509 each picked its own subset of them. ``count`` False is
         for a site that may act on something other than the answer (the
         summary dispatching an investigation); it counts once it does act.
+        ``hint`` is the model step's answer, asked before the lock
+        (``_dedupe_model_hint``); it can only turn a "new" into a fold.
         """
         cand = dedupe_client.candidate_from(candidate)
         stale: set = set()
@@ -5014,12 +5043,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             except Exception as e:
                 logger.warning(f"Open remediations unreadable for the dedupe decision ({path}): {e}")
                 rows = None
-            # The node tier reads the host, or the title when the host is
-            # blank (the summary's rule, CFOP-130). No host-shaped token, no
-            # inventory read, as before the service decided.
-            nodes: List[str] = []
-            if rows is not None and _host_candidates(cand.get('host') or cand.get('title')):
-                nodes = sorted({str(n).lower() for n in (self._notready_nodes() or ()) if n})
+            nodes = self._dedupe_nodes(cand) if rows is not None else []
             decision = dedupe_client.resolve(self._dedupe_url(), path, cand, rows, nodes)
             # The row a fold or a repeat names has to be open still. Nothing
             # that closes rows (the recovery sweep, the console, the executor)
@@ -5038,9 +5062,84 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # latest rows minus the ones seen closing.
             decision = {**dedupe_client.fallback(cand, [r for r in rows or [] if r.get('id') not in stale]),
                         'source': 'fallback', 'error': 'stale'}
+        if hint and decision['decision'] == 'new':
+            decision = self._dedupe_apply_hint(path, cand, decision, hint)
         if count:
             dedupe_client.count(path, decision)
         return decision
+
+    def _dedupe_model_hint(self, path: str, candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """What the dedupe model says about this enqueue (CFOP-545), or None
+        when the ``model_dedupe`` flag is off or there was nothing to ask.
+
+        Call it BEFORE taking ``_remediation_lock``: it is a model call, and
+        the lock is never held across one. It asks the service first,
+        uncounted, so a fold or repeat the tiers already see costs no model
+        call. The answer is only a hint; ``_dedupe_decide`` re-decides under
+        the lock and applies it there. See dedupe_model.py.
+        """
+        if not self._remediation_flag('model_dedupe'):
+            return None
+        cand = dedupe_client.candidate_from(candidate)
+        try:
+            # Untrimmed: the model reads the host the payload names, which the
+            # service's contract leaves out.
+            rows = list(self.kb.list_open_remediations_for_dedupe() or [])
+        except Exception as e:
+            logger.warning(f"Open remediations unreadable for the dedupe model ({path}): {e}")
+            return None
+        if not rows:
+            return None
+        pre = dedupe_client.resolve(self._dedupe_url(), path, cand,
+                                    dedupe_client.trim_rows(rows), self._dedupe_nodes(cand))
+        # A "new" with a host is the node tier opening a NotReady node's
+        # incident row (#365 review): the service skips its own folds for it,
+        # and so does this step, or the incident row would never be created.
+        if pre['decision'] != 'new' or pre.get('host'):
+            return None
+        seat = self._scope_llm('dedupe')
+
+        def call(messages, system):
+            return self._chat_with_tools_with_fallback(
+                messages=messages, system_context=system,
+                backend=seat['backend'], model=seat['model'],
+                max_iterations=1, tool_policy=UNATTENDED)
+
+        mode = 'fold' if self._remediation_flag('model_dedupe_fold') else 'shadow'
+        answer = dedupe_model.ask(call, cand, rows, mode=mode)
+        logger.info(f"Dedupe model ({path}, {mode}, {answer.get('backend')}/{answer.get('model')}): "
+                    f"{answer['outcome']} #{answer.get('row_id')} {answer.get('reason')}")
+        return answer
+
+    def _dedupe_apply_hint(self, path: str, cand: Dict[str, Any],
+                           decision: Dict[str, Any], hint: Dict[str, Any]) -> Dict[str, Any]:
+        """A "new" decision with the model's answer applied: noted on the
+        decision always (the row records what the model said), a fold only in
+        fold mode and only onto a row that is still open."""
+        note = {k: hint.get(k) for k in ('mode', 'outcome', 'row_id', 'reason', 'backend', 'model')}
+        decision = {**decision, 'model': note}
+        rid = hint.get('row_id')
+        if hint.get('outcome') != 'fold' or hint.get('mode') != 'fold':
+            return decision
+        if decision.get('host'):
+            # The node went NotReady after the hint was asked, and this row
+            # is now its incident row; see _dedupe_model_hint.
+            logger.info(f"Dedupe model ({path}): the node tier owns this row; not folding onto #{rid}")
+            return decision
+        if not self._dedupe_row_open(rid):
+            logger.info(f"Dedupe model ({path}): #{rid} closed since it was asked; inserting")
+            return decision
+        key = cand.get('dedupe_key')
+        return {
+            'decision': 'fold', 'row_id': rid, 'tier': 'model', 'source': 'model',
+            'reason': (f"same fix as open row #{rid}, per {hint.get('backend')}/{hint.get('model')}: "
+                       f"{hint.get('reason')}"),
+            # The service's absorbed line: the trigger, or the
+            # recommendation, at its 200 characters.
+            'absorbed': str(cand.get('trigger') or cand.get('recommendation') or '')[:200],
+            'alias': key if key and key != hint.get('row_key') else None,
+            'model': note,
+        }
 
     def _dedupe_row_open(self, rid) -> bool:
         """Whether the row a decision named is still there and not closed. An
@@ -5074,8 +5173,9 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 self.kb.record_remediation_alias(rid, decision['alias'])
         except Exception as e:
             logger.warning(f"Folded onto #{rid}, but recording the fold failed: {e}")
-        if tier in ('target', 'identifier'):
-            REMEDIATION_FOLDED.labels(reason='target' if tier == 'target' else 'repeat').inc()
+        if tier in ('target', 'identifier', 'model'):
+            REMEDIATION_FOLDED.labels(
+                reason={'target': 'target', 'identifier': 'repeat'}.get(tier, tier)).inc()
         return rid
 
     def _console_base_url(self) -> str:
@@ -6086,9 +6186,12 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             nclass, nrisk, confidence,
             classes=policy.auto_classes, min_confidence=policy.min_confidence)
         verdict = None
+        # CFOP-545: the model step, asked once and outside the lock; both
+        # decisions below apply it against the rows as they are by then.
+        hint = self._dedupe_model_hint('investigation', original)
         while True:
             with self._remediation_lock:
-                decision = self._dedupe_decide('investigation', original, count=False)
+                decision = self._dedupe_decide('investigation', original, count=False, hint=hint)
                 if decision['decision'] == 'new':
                     _adopt_dedupe_decision(details, decision, given_key, given_host, rclass)
                 if decision['decision'] != 'new' or judged:
@@ -7497,11 +7600,13 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                     # the power cable") lands on the incident row, and a
                     # reworded repeat on the row it repeats.
                     sweep_host = f.get('resource_name') or f.get('namespace')
-                    with self._remediation_lock:
-                        decision = self._dedupe_decide('sweep-fallback', {
-                            'dedupe_key': key, 'recommendation': rec, 'host': sweep_host,
+                    cand = {'dedupe_key': key, 'recommendation': rec, 'host': sweep_host,
                             'title': title, 'trigger': title, 'remediation_class': 'manual',
-                            'source': 'morning-summary/sweep'})
+                            'source': 'morning-summary/sweep'}
+                    # CFOP-545: the model step, before the lock.
+                    hint = self._dedupe_model_hint('sweep-fallback', cand)
+                    with self._remediation_lock:
+                        decision = self._dedupe_decide('sweep-fallback', cand, hint=hint)
                         if decision['decision'] == 'fold':
                             self._apply_dedupe_fold(decision)
                             handled += 1
@@ -7510,8 +7615,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                             continue
                         key = str(decision.get('dedupe_key') or '') or key
                         payload['dedupe_key'] = key
-                        payload['dedupe'] = {'source': decision['source'],
-                                             'reason': decision.get('reason')}
+                        payload['dedupe'] = _dedupe_note(decision)
                         rid = self.kb.queue_remediation(
                             remediation_class='manual',
                             payload=payload,
@@ -7624,12 +7728,22 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
             # rows as this rec found them, and counted only once the rec is
             # enqueued or folded: a dispatched rec acts on something else, and
             # leaves the lock before it dispatches.
-            with self._remediation_lock:
-                host = r.get('host')
-                decision = self._dedupe_decide('summary', {
-                    'dedupe_key': key, 'recommendation': rec, 'host': host,
+            #
+            # CFOP-545: only a rec this feed would enqueue asks the dedupe
+            # model, and before the lock, so whether it routes is settled
+            # here (the policy is spelled out at route_investigate below). A
+            # dispatched rec becomes an investigation, which asks when it
+            # enqueues.
+            routes = (rclass == 'investigate'
+                      or rclass in _SUMMARY_MUTATION_CLASSES
+                      or (rclass == 'manual' and self._recommendation_is_investigate_shaped(rec)))
+            host = r.get('host')
+            cand = {'dedupe_key': key, 'recommendation': rec, 'host': host,
                     'title': title, 'trigger': title, 'remediation_class': rclass,
-                    'source': 'morning-summary'}, count=False)
+                    'source': 'morning-summary'}
+            hint = None if routes else self._dedupe_model_hint('summary', cand)
+            with self._remediation_lock:
+                decision = self._dedupe_decide('summary', cand, count=False, hint=hint)
                 node_claimed = decision.get('tier') == 'node' or bool(decision.get('host'))
                 if decision['decision'] == 'fold' and decision.get('tier') == 'node':
                     dedupe_client.count('summary', decision)
@@ -7666,11 +7780,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 # incident row already says. The node tier is asked first and no tier
                 # below it gets a say -- the same precedence _maybe_queue_remediation
                 # applies when it skips the CFOP-78 fold on a node-key match.
-                route_investigate = (
-                    rclass == 'investigate'
-                    or rclass in _SUMMARY_MUTATION_CLASSES
-                    or (rclass == 'manual' and self._recommendation_is_investigate_shaped(rec))
-                ) and not node_claimed
+                route_investigate = routes and not node_claimed
                 if not route_investigate:
                     dedupe_client.count('summary', decision)
                     if decision['decision'] == 'fold':
@@ -7683,8 +7793,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                                    'target': {'host': host},
                                    'repo': (str(r.get('repo') or '').strip() or None),
                                    'source': 'morning-summary', 'dedupe_key': key,
-                                   'dedupe': {'source': decision['source'],
-                                              'reason': decision.get('reason')}}
+                                   'dedupe': _dedupe_note(decision)}
                         if provider:
                             payload['provider'] = provider
                         rid = self.kb.queue_remediation(

@@ -4904,18 +4904,21 @@ class KnowledgeBase:
             return [{"id": r.id, "payload": r.payload} for r in rows]
 
     def list_open_remediations_for_dedupe(self) -> List[Dict[str, Any]]:
-        """Every non-terminal row, newest first: id, status and payload.
+        """Every non-terminal row, newest first: id, status, class, host and
+        payload.
 
-        The dedupe shadow's snapshot (CFOP-514). Unlike list_open_remediations
+        The dedupe funnel's snapshot (CFOP-538). Unlike list_open_remediations
         there is no limit: the enqueue-side exact check reads every open row,
         and the service is sent the same set so it can apply the fold's
-        100-row window itself.
+        100-row window itself. The service is sent id, status and payload
+        only; class and host are for the model step (CFOP-545).
         """
         with self.session_scope() as session:
             rows = session.query(RemediationQueue).filter(
                 RemediationQueue.status.notin_(('resolved', 'rejected'))
             ).order_by(RemediationQueue.created_at.desc()).all()
-            return [{"id": r.id, "status": r.status, "payload": r.payload} for r in rows]
+            return [{"id": r.id, "status": r.status, "remediation_class": r.remediation_class,
+                     "host_id": r.host_id, "payload": r.payload} for r in rows]
 
     #: Statuses the tracker tick may have to act on (CFOP-170). Everything the
     #: lifecycle table in tracker_sync.decide names, and nothing else, so an

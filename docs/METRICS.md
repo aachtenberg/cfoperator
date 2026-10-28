@@ -578,6 +578,11 @@ sum by (path, decision, tier) (increase(cfoperator_dedupe_decisions_total[1d]))
 sum by (path) (increase(cfoperator_dedupe_decisions_total{source="fallback"}[1h]))
 # The agent's call to the service, failures included
 histogram_quantile(0.95, sum by (le) (rate(cfoperator_dedupe_request_seconds_bucket[1h])))
+# The dedupe model step (CFOP-545): what it said, and whether it could act on it
+sum by (mode, outcome) (increase(cfoperator_dedupe_model_total[1d]))
+# The folds it made, among everyone else's
+sum by (path) (increase(cfoperator_dedupe_decisions_total{tier="model"}[1d]))
+histogram_quantile(0.95, sum by (le) (rate(cfoperator_dedupe_model_seconds_bucket[1d])))
 ```
 
 `judge_total` is worth an alert: the CFOP-70 judge fails closed, so a rising
@@ -611,6 +616,21 @@ refused connection shows there even though the service never saw it. Each
 decision is also a `dedupe.decide` span under the enqueuing site's trace, and
 the service's log line for it carries that `trace_id`.
 
+`dedupe_model_total` counts the model step's answers (CFOP-545). The step is
+asked only when the tiers said new and the `model_dedupe` flag is on, so it is
+silent until someone turns the flag on. `mode="shadow"` answers change nothing:
+the row is inserted, and `payload.dedupe.model` records the row the model named
+and why, which is what to read before turning `model_dedupe_fold` on. In
+`mode="fold"`, an `outcome="fold"` becomes a decision with `tier="model"` and
+`source="model"`, unless the row it named closed meanwhile. `malformed` and
+`error` both mean the row was inserted as new: a model that cannot answer can
+let a duplicate through, never lose a row. `dedupe_model_seconds` times the
+whole call through the chain, failovers included, on whichever seat the
+`dedupe` scope names. With the flag on, an enqueue asks cfop-dedupe twice
+(once before the lock, to see whether the model is needed at all; that one is
+not counted in `dedupe_decisions_total`), so `dedupe_request_seconds_count`
+roughly doubles.
+
 ### Label values that are a closed set
 
 Verified against every `.labels()` call site. A query using a value absent from
@@ -626,7 +646,7 @@ shipped several examples that could never match.
 | `cfoperator_sweeps_total` | `mode` | `proactive`, `reactive` |
 | `cfoperator_remediation_queue` | `status` | the ten queue states — `queued`, `claimed`, `executing`, `pr-open`, `verifying`, `resolved`, `failed`, `needs-human`, `filed`, `rejected` |
 | `cfoperator_remediation_classifier_total` | `result` | `ok`, `nudged`, `escalated`, `degraded` |
-| `cfoperator_remediation_folded_total` | `reason` | `target`, `repeat`, `fork_committed`, `fork_stuck`, `investigate_followup` |
+| `cfoperator_remediation_folded_total` | `reason` | `target`, `repeat`, `model`, `fork_committed`, `fork_stuck`, `investigate_followup` |
 | `cfoperator_node_action_refused_total` | `reason` | `no_commands`, `too_many`, `empty`, `no_allowlist`, `metachar`, `unparseable`, `sudo_form`, `denied_binary`, `not_allowlisted`, `systemctl_verb` |
 | `cfoperator_remediation_judge_total` | `verdict` | `confirm`, `downgrade`, `reject`, `unavailable`, `unparseable`, `self-review-skipped`, `refused` |
 | `cfoperator_remediation_executor_spawned_total` | `result` | `ok`, `capped`, `failed` |
@@ -636,9 +656,12 @@ shipped several examples that could never match.
 | `cfoperator_remediation_reverify_total` | `outcome` | `resolved`, `rejected`, `open`, `skipped` |
 | `cfoperator_dedupe_decisions_total` | `path` | `investigation`, `sweep-fallback`, `summary`, `chat`, `console` |
 | `cfoperator_dedupe_decisions_total` | `decision` | `new`, `fold`, `suppress` |
-| `cfoperator_dedupe_decisions_total` | `tier` | `node`, `target`, `identifier`, `key`, `""` (a new row) |
-| `cfoperator_dedupe_decisions_total` | `source` | `service`, `fallback`, `unconfigured` |
+| `cfoperator_dedupe_decisions_total` | `tier` | `node`, `target`, `identifier`, `key`, `model`, `""` (a new row) |
+| `cfoperator_dedupe_decisions_total` | `source` | `service`, `fallback`, `unconfigured`, `model` |
 | `cfoperator_dedupe_request_seconds` | `outcome` | `ok`, `error` |
+| `cfoperator_dedupe_model_total` | `mode` | `shadow`, `fold` |
+| `cfoperator_dedupe_model_total` | `outcome` | `fold`, `none`, `malformed`, `error` |
+| `cfoperator_dedupe_model_seconds` | `outcome` | `fold`, `none`, `malformed`, `error` |
 | `cfoperator_remediation_enqueued_total` | `eligible` | `true`, `false` (`str(bool).lower()`) |
 | `cfoperator_event_runtime_decisions_total` | `action` | `log_only`, `notify`, `investigate`, `escalate`, and `deep_investigate` when the deep tier is on. Counted after the tier's rewrite: a rerouted decision is `deep_investigate` here and its original action is in `deep_reroutes_total`, and a workload alert's `escalate` is counted as the fallback it was aliased to (`notify` by default) |
 | `cfoperator_event_runtime_scheduled_tasks_total` | `result` | `success`, `error` |
