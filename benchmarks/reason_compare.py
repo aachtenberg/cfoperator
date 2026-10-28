@@ -37,7 +37,7 @@ def main():
         ap.error(f"unknown case {a.case!r}; have: "
                  + ", ".join(c["name"] for c in te.CASES))
 
-    sysp = te.load_production_system_prompt()
+    sysp = te.production_system_prompt()
     user = te.build_user_message(case)
 
     print(f"case     : {case['name']}")
@@ -48,21 +48,16 @@ def main():
 
     for model in a.models:
         for run in range(a.runs):
-            text, secs, err = te.call_ollama(a.url, model, sysp, user, a.timeout)
+            payload = te.build_payload(model, sysp, user)
+            text, secs, err = te.call_ollama(a.url, payload, a.timeout)
             tag = f"{model}" + (f" [{run}]" if a.runs > 1 else "")
             if err:
                 print(f"\n{tag}\n  ERROR {err}")
                 continue
-            parsed = None
             try:
-                parsed = te._parse(text) if hasattr(te, "_parse") else None
+                parsed = json.loads(text[text.index("{"):text.rindex("}") + 1])
             except Exception:
-                parsed = None
-            if parsed is None:
-                try:
-                    parsed = json.loads(text[text.index("{"):text.rindex("}") + 1])
-                except Exception:
-                    parsed = {}
+                parsed = {}
             print(f"\n{tag}   ({secs}s)")
             print(f"  action     : {parsed.get('action')}")
             print(f"  confidence : {parsed.get('confidence')}")

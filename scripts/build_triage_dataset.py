@@ -107,7 +107,7 @@ sys.path.insert(0, os.path.join(_REPO_ROOT, "agent"))
 sys.path.insert(0, _REPO_ROOT)
 sys.path.insert(0, os.path.join(_REPO_ROOT, "benchmarks"))
 
-import triage_eval  # noqa: E402  (load_production_system_prompt, CASES)
+import triage_eval  # noqa: E402  (production_system_prompt, CASES)
 
 
 # ── Fetch ─────────────────────────────────────────────────────────────────────
@@ -1002,7 +1002,7 @@ def main():
                          "(default: %(default)s)")
     args = ap.parse_args()
 
-    system_prompt = triage_eval.load_production_system_prompt()
+    system_prompt = triage_eval.production_system_prompt()
 
     if args.from_file:
         with open(args.from_file) as f:
