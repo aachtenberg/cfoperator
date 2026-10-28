@@ -15126,7 +15126,6622 @@
      "seconds": 1.77
     }
    ]
+  },
+  {
+   "seat": "openrouter:qwen/qwen3.5-9b",
+   "summary": {
+    "caught": 24,
+    "missed": 3,
+    "wrong-row": 0,
+    "correct": 34,
+    "false-fold": 0,
+    "unmarked-dup": 25,
+    "borderline": 2,
+    "malformed": 0,
+    "error": 0,
+    "duplicates": 28,
+    "distinct": 60,
+    "wrong_folds": 0,
+    "recall": 0.857,
+    "p50_s": 86.64,
+    "p95_s": 242.03
+   },
+   "results": [
+    {
+     "case": 19,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      17
+     ],
+     "row_id": 17,
+     "grade": "caught",
+     "seconds": 56.4
+    },
+    {
+     "case": 69,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67
+     ],
+     "row_id": 67,
+     "grade": "caught",
+     "seconds": 11.41
+    },
+    {
+     "case": 71,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67,
+      69
+     ],
+     "row_id": 69,
+     "grade": "caught",
+     "seconds": 108.99
+    },
+    {
+     "case": 94,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      93
+     ],
+     "row_id": 93,
+     "grade": "caught",
+     "seconds": 8.53
+    },
+    {
+     "case": 222,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 47.94
+    },
+    {
+     "case": 224,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222
+     ],
+     "row_id": 220,
+     "grade": "caught",
+     "seconds": 107.46
+    },
+    {
+     "case": 227,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224
+     ],
+     "row_id": 224,
+     "grade": "caught",
+     "seconds": 118.61
+    },
+    {
+     "case": 228,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224,
+      227
+     ],
+     "row_id": 224,
+     "grade": "caught",
+     "seconds": 224.89
+    },
+    {
+     "case": 315,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      314
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 158.19
+    },
+    {
+     "case": 335,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 25.94
+    },
+    {
+     "case": 336,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 122.07
+    },
+    {
+     "case": 337,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 179.93
+    },
+    {
+     "case": 338,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337
+     ],
+     "row_id": 337,
+     "grade": "caught",
+     "seconds": 34.29
+    },
+    {
+     "case": 339,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 281.67
+    },
+    {
+     "case": 340,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 134.67
+    },
+    {
+     "case": 342,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340
+     ],
+     "row_id": 340,
+     "grade": "caught",
+     "seconds": 199.67
+    },
+    {
+     "case": 343,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 66.09
+    },
+    {
+     "case": 344,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 151.52
+    },
+    {
+     "case": 345,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344
+     ],
+     "row_id": 341,
+     "grade": "unmarked-dup",
+     "seconds": 281.87
+    },
+    {
+     "case": 346,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345
+     ],
+     "row_id": 345,
+     "grade": "caught",
+     "seconds": 246.67
+    },
+    {
+     "case": 347,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345,
+      346
+     ],
+     "row_id": 346,
+     "grade": "caught",
+     "seconds": 242.03
+    },
+    {
+     "case": 355,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      354
+     ],
+     "row_id": 354,
+     "grade": "caught",
+     "seconds": 96.09
+    },
+    {
+     "case": 365,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      362
+     ],
+     "row_id": 362,
+     "grade": "caught",
+     "seconds": 25.93
+    },
+    {
+     "case": 371,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 20.11
+    },
+    {
+     "case": 373,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361,
+      371
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 80.4
+    },
+    {
+     "case": 378,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      373
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 197.88
+    },
+    {
+     "case": 401,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 60.71
+    },
+    {
+     "case": 402,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400,
+      401
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 157.38
+    },
+    {
+     "case": 272,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 204.47
+    },
+    {
+     "case": 258,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 256,
+     "grade": "unmarked-dup",
+     "seconds": 100.1
+    },
+    {
+     "case": 79,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 45.47
+    },
+    {
+     "case": 215,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 127.9
+    },
+    {
+     "case": 204,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 182.98
+    },
+    {
+     "case": 158,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 63.93
+    },
+    {
+     "case": 198,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 108.58
+    },
+    {
+     "case": 247,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 108.43
+    },
+    {
+     "case": 54,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 129.8
+    },
+    {
+     "case": 55,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 54,
+     "grade": "unmarked-dup",
+     "seconds": 200.5
+    },
+    {
+     "case": 53,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 52,
+     "grade": "unmarked-dup",
+     "seconds": 61.58
+    },
+    {
+     "case": 57,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 55,
+     "grade": "unmarked-dup",
+     "seconds": 61.81
+    },
+    {
+     "case": 62,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 57,
+     "grade": "unmarked-dup",
+     "seconds": 50.24
+    },
+    {
+     "case": 59,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 97.7
+    },
+    {
+     "case": 64,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 62,
+     "grade": "unmarked-dup",
+     "seconds": 272.82
+    },
+    {
+     "case": 60,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 59,
+     "grade": "unmarked-dup",
+     "seconds": 27.11
+    },
+    {
+     "case": 9,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 3,
+     "grade": "unmarked-dup",
+     "seconds": 121.8
+    },
+    {
+     "case": 52,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 204.42
+    },
+    {
+     "case": 48,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 46,
+     "grade": "unmarked-dup",
+     "seconds": 40.0
+    },
+    {
+     "case": 209,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 131.54
+    },
+    {
+     "case": 341,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 340,
+     "grade": "unmarked-dup",
+     "seconds": 178.87
+    },
+    {
+     "case": 58,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "borderline",
+     "seconds": 76.77
+    },
+    {
+     "case": 61,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 120.73
+    },
+    {
+     "case": 182,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 29.85
+    },
+    {
+     "case": 186,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 76.66
+    },
+    {
+     "case": 305,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.63
+    },
+    {
+     "case": 319,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 318,
+     "grade": "unmarked-dup",
+     "seconds": 133.69
+    },
+    {
+     "case": 256,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 111.43
+    },
+    {
+     "case": 21,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 131.24
+    },
+    {
+     "case": 202,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 100.14
+    },
+    {
+     "case": 265,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 156.14
+    },
+    {
+     "case": 31,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 25.74
+    },
+    {
+     "case": 153,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 127.45
+    },
+    {
+     "case": 304,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 303,
+     "grade": "unmarked-dup",
+     "seconds": 60.7
+    },
+    {
+     "case": 206,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 197,
+     "grade": "borderline",
+     "seconds": 67.34
+    },
+    {
+     "case": 144,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 45.87
+    },
+    {
+     "case": 205,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 43.95
+    },
+    {
+     "case": 27,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 42.71
+    },
+    {
+     "case": 18,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.86
+    },
+    {
+     "case": 244,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 29.33
+    },
+    {
+     "case": 23,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 23.16
+    },
+    {
+     "case": 332,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 19.55
+    },
+    {
+     "case": 152,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 50.89
+    },
+    {
+     "case": 109,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 160.41
+    },
+    {
+     "case": 212,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 75.88
+    },
+    {
+     "case": 13,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 39.82
+    },
+    {
+     "case": 30,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 21.27
+    },
+    {
+     "case": 16,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 80.05
+    },
+    {
+     "case": 353,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 24.54
+    },
+    {
+     "case": 73,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 70,
+     "grade": "unmarked-dup",
+     "seconds": 115.26
+    },
+    {
+     "case": 352,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 351,
+     "grade": "unmarked-dup",
+     "seconds": 92.82
+    },
+    {
+     "case": 63,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 31.0
+    },
+    {
+     "case": 250,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 249,
+     "grade": "unmarked-dup",
+     "seconds": 88.1
+    },
+    {
+     "case": 323,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 321,
+     "grade": "unmarked-dup",
+     "seconds": 81.72
+    },
+    {
+     "case": 251,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 64.5
+    },
+    {
+     "case": 191,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 187,
+     "grade": "unmarked-dup",
+     "seconds": 17.09
+    },
+    {
+     "case": 245,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 242,
+     "grade": "unmarked-dup",
+     "seconds": 122.39
+    },
+    {
+     "case": 190,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 189,
+     "grade": "unmarked-dup",
+     "seconds": 33.04
+    },
+    {
+     "case": 298,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 85.19
+    },
+    {
+     "case": 65,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 63,
+     "grade": "unmarked-dup",
+     "seconds": 110.77
+    }
+   ]
+  },
+  {
+   "seat": "openrouter:qwen/qwen3-14b",
+   "summary": {
+    "caught": 24,
+    "missed": 3,
+    "wrong-row": 0,
+    "correct": 39,
+    "false-fold": 0,
+    "unmarked-dup": 21,
+    "borderline": 1,
+    "malformed": 0,
+    "error": 0,
+    "duplicates": 28,
+    "distinct": 60,
+    "wrong_folds": 0,
+    "recall": 0.857,
+    "p50_s": 10.57,
+    "p95_s": 55.57
+   },
+   "results": [
+    {
+     "case": 19,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      17
+     ],
+     "row_id": 17,
+     "grade": "caught",
+     "seconds": 15.23
+    },
+    {
+     "case": 69,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67
+     ],
+     "row_id": 67,
+     "grade": "caught",
+     "seconds": 11.39
+    },
+    {
+     "case": 71,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67,
+      69
+     ],
+     "row_id": 69,
+     "grade": "caught",
+     "seconds": 24.91
+    },
+    {
+     "case": 94,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      93
+     ],
+     "row_id": 93,
+     "grade": "caught",
+     "seconds": 8.58
+    },
+    {
+     "case": 222,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 6.08
+    },
+    {
+     "case": 224,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222
+     ],
+     "row_id": 220,
+     "grade": "caught",
+     "seconds": 7.98
+    },
+    {
+     "case": 227,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224
+     ],
+     "row_id": 224,
+     "grade": "caught",
+     "seconds": 55.57
+    },
+    {
+     "case": 228,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224,
+      227
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 35.59
+    },
+    {
+     "case": 315,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      314
+     ],
+     "row_id": 314,
+     "grade": "caught",
+     "seconds": 17.35
+    },
+    {
+     "case": 335,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 11.36
+    },
+    {
+     "case": 336,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 17.61
+    },
+    {
+     "case": 337,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 65.18
+    },
+    {
+     "case": 338,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337
+     ],
+     "row_id": 337,
+     "grade": "caught",
+     "seconds": 33.75
+    },
+    {
+     "case": 339,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 46.76
+    },
+    {
+     "case": 340,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 36.81
+    },
+    {
+     "case": 342,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340
+     ],
+     "row_id": 340,
+     "grade": "caught",
+     "seconds": 21.0
+    },
+    {
+     "case": 343,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 32.31
+    },
+    {
+     "case": 344,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 28.58
+    },
+    {
+     "case": 345,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344
+     ],
+     "row_id": 341,
+     "grade": "unmarked-dup",
+     "seconds": 9.29
+    },
+    {
+     "case": 346,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345
+     ],
+     "row_id": 344,
+     "grade": "caught",
+     "seconds": 51.49
+    },
+    {
+     "case": 347,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345,
+      346
+     ],
+     "row_id": 346,
+     "grade": "caught",
+     "seconds": 96.42
+    },
+    {
+     "case": 355,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      354
+     ],
+     "row_id": 354,
+     "grade": "caught",
+     "seconds": 6.12
+    },
+    {
+     "case": 365,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      362
+     ],
+     "row_id": 362,
+     "grade": "caught",
+     "seconds": 4.51
+    },
+    {
+     "case": 371,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 6.47
+    },
+    {
+     "case": 373,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361,
+      371
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 13.03
+    },
+    {
+     "case": 378,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      373
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 8.9
+    },
+    {
+     "case": 401,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 7.23
+    },
+    {
+     "case": 402,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400,
+      401
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 35.58
+    },
+    {
+     "case": 272,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 38.62
+    },
+    {
+     "case": 258,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 256,
+     "grade": "unmarked-dup",
+     "seconds": 15.05
+    },
+    {
+     "case": 79,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.5
+    },
+    {
+     "case": 215,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.53
+    },
+    {
+     "case": 204,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.69
+    },
+    {
+     "case": 158,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.94
+    },
+    {
+     "case": 198,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 12.0
+    },
+    {
+     "case": 247,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.62
+    },
+    {
+     "case": 54,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 15.84
+    },
+    {
+     "case": 55,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 54,
+     "grade": "unmarked-dup",
+     "seconds": 28.03
+    },
+    {
+     "case": 53,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 16.81
+    },
+    {
+     "case": 57,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 55,
+     "grade": "unmarked-dup",
+     "seconds": 15.21
+    },
+    {
+     "case": 62,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 57,
+     "grade": "unmarked-dup",
+     "seconds": 8.86
+    },
+    {
+     "case": 59,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 26.26
+    },
+    {
+     "case": 64,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 62,
+     "grade": "unmarked-dup",
+     "seconds": 15.02
+    },
+    {
+     "case": 60,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.32
+    },
+    {
+     "case": 9,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 3,
+     "grade": "unmarked-dup",
+     "seconds": 4.62
+    },
+    {
+     "case": 52,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 20.23
+    },
+    {
+     "case": 48,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 17.63
+    },
+    {
+     "case": 209,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 14.16
+    },
+    {
+     "case": 341,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 340,
+     "grade": "unmarked-dup",
+     "seconds": 56.46
+    },
+    {
+     "case": 58,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "borderline",
+     "seconds": 14.06
+    },
+    {
+     "case": 61,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.74
+    },
+    {
+     "case": 182,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.55
+    },
+    {
+     "case": 186,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.13
+    },
+    {
+     "case": 305,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.65
+    },
+    {
+     "case": 319,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.69
+    },
+    {
+     "case": 256,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.01
+    },
+    {
+     "case": 21,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.94
+    },
+    {
+     "case": 202,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 15.52
+    },
+    {
+     "case": 265,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.46
+    },
+    {
+     "case": 31,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.66
+    },
+    {
+     "case": 153,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.42
+    },
+    {
+     "case": 304,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 303,
+     "grade": "unmarked-dup",
+     "seconds": 5.87
+    },
+    {
+     "case": 206,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 57.51
+    },
+    {
+     "case": 144,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.81
+    },
+    {
+     "case": 205,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 12.73
+    },
+    {
+     "case": 27,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.47
+    },
+    {
+     "case": 18,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.68
+    },
+    {
+     "case": 244,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.28
+    },
+    {
+     "case": 23,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.25
+    },
+    {
+     "case": 332,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.69
+    },
+    {
+     "case": 152,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.46
+    },
+    {
+     "case": 109,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.92
+    },
+    {
+     "case": 212,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.61
+    },
+    {
+     "case": 13,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.87
+    },
+    {
+     "case": 30,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.41
+    },
+    {
+     "case": 16,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.45
+    },
+    {
+     "case": 353,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 14.98
+    },
+    {
+     "case": 73,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 68,
+     "grade": "unmarked-dup",
+     "seconds": 10.73
+    },
+    {
+     "case": 352,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 351,
+     "grade": "unmarked-dup",
+     "seconds": 22.01
+    },
+    {
+     "case": 63,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 7.24
+    },
+    {
+     "case": 250,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 249,
+     "grade": "unmarked-dup",
+     "seconds": 16.05
+    },
+    {
+     "case": 323,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 321,
+     "grade": "unmarked-dup",
+     "seconds": 9.11
+    },
+    {
+     "case": 251,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 11.01
+    },
+    {
+     "case": 191,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 187,
+     "grade": "unmarked-dup",
+     "seconds": 6.93
+    },
+    {
+     "case": 245,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 242,
+     "grade": "unmarked-dup",
+     "seconds": 6.23
+    },
+    {
+     "case": 190,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 189,
+     "grade": "unmarked-dup",
+     "seconds": 8.09
+    },
+    {
+     "case": 298,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.87
+    },
+    {
+     "case": 65,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 14.02
+    }
+   ]
+  },
+  {
+   "seat": "openrouter:qwen/qwen3-30b-a3b",
+   "summary": {
+    "caught": 19,
+    "missed": 8,
+    "wrong-row": 0,
+    "correct": 39,
+    "false-fold": 0,
+    "unmarked-dup": 21,
+    "borderline": 1,
+    "malformed": 0,
+    "error": 0,
+    "duplicates": 28,
+    "distinct": 60,
+    "wrong_folds": 0,
+    "recall": 0.679,
+    "p50_s": 7.08,
+    "p95_s": 25.12
+   },
+   "results": [
+    {
+     "case": 19,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      17
+     ],
+     "row_id": 17,
+     "grade": "caught",
+     "seconds": 10.85
+    },
+    {
+     "case": 69,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67
+     ],
+     "row_id": 67,
+     "grade": "caught",
+     "seconds": 8.42
+    },
+    {
+     "case": 71,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67,
+      69
+     ],
+     "row_id": 69,
+     "grade": "caught",
+     "seconds": 20.77
+    },
+    {
+     "case": 94,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      93
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 8.61
+    },
+    {
+     "case": 222,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 4.73
+    },
+    {
+     "case": 224,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222
+     ],
+     "row_id": 220,
+     "grade": "caught",
+     "seconds": 13.92
+    },
+    {
+     "case": 227,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 6.81
+    },
+    {
+     "case": 228,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224,
+      227
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 11.81
+    },
+    {
+     "case": 315,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      314
+     ],
+     "row_id": 314,
+     "grade": "caught",
+     "seconds": 13.52
+    },
+    {
+     "case": 335,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 10.83
+    },
+    {
+     "case": 336,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 15.76
+    },
+    {
+     "case": 337,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 29.04
+    },
+    {
+     "case": 338,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337
+     ],
+     "row_id": 337,
+     "grade": "caught",
+     "seconds": 10.53
+    },
+    {
+     "case": 339,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 35.66
+    },
+    {
+     "case": 340,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 25.62
+    },
+    {
+     "case": 342,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340
+     ],
+     "row_id": 340,
+     "grade": "caught",
+     "seconds": 18.3
+    },
+    {
+     "case": 343,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 9.66
+    },
+    {
+     "case": 344,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343
+     ],
+     "row_id": 343,
+     "grade": "caught",
+     "seconds": 25.12
+    },
+    {
+     "case": 345,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344
+     ],
+     "row_id": 341,
+     "grade": "unmarked-dup",
+     "seconds": 9.94
+    },
+    {
+     "case": 346,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345
+     ],
+     "row_id": 344,
+     "grade": "caught",
+     "seconds": 11.7
+    },
+    {
+     "case": 347,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345,
+      346
+     ],
+     "row_id": 346,
+     "grade": "caught",
+     "seconds": 8.86
+    },
+    {
+     "case": 355,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      354
+     ],
+     "row_id": 354,
+     "grade": "caught",
+     "seconds": 2.99
+    },
+    {
+     "case": 365,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      362
+     ],
+     "row_id": 362,
+     "grade": "caught",
+     "seconds": 16.66
+    },
+    {
+     "case": 371,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 2.92
+    },
+    {
+     "case": 373,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361,
+      371
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 11.9
+    },
+    {
+     "case": 378,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      373
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 6.52
+    },
+    {
+     "case": 401,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 3.85
+    },
+    {
+     "case": 402,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400,
+      401
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 6.23
+    },
+    {
+     "case": 272,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.85
+    },
+    {
+     "case": 258,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 256,
+     "grade": "unmarked-dup",
+     "seconds": 10.44
+    },
+    {
+     "case": 79,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.61
+    },
+    {
+     "case": 215,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.02
+    },
+    {
+     "case": 204,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.22
+    },
+    {
+     "case": 158,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.8
+    },
+    {
+     "case": 198,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.86
+    },
+    {
+     "case": 247,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.94
+    },
+    {
+     "case": 54,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 5.86
+    },
+    {
+     "case": 55,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 54,
+     "grade": "unmarked-dup",
+     "seconds": 3.87
+    },
+    {
+     "case": 53,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 52,
+     "grade": "unmarked-dup",
+     "seconds": 3.73
+    },
+    {
+     "case": 57,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 55,
+     "grade": "unmarked-dup",
+     "seconds": 15.53
+    },
+    {
+     "case": 62,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 57,
+     "grade": "unmarked-dup",
+     "seconds": 9.37
+    },
+    {
+     "case": 59,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 11.76
+    },
+    {
+     "case": 64,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 62,
+     "grade": "unmarked-dup",
+     "seconds": 6.55
+    },
+    {
+     "case": 60,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.49
+    },
+    {
+     "case": 9,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 3,
+     "grade": "unmarked-dup",
+     "seconds": 8.49
+    },
+    {
+     "case": 52,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 10.62
+    },
+    {
+     "case": 48,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.95
+    },
+    {
+     "case": 209,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.62
+    },
+    {
+     "case": 341,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 338,
+     "grade": "unmarked-dup",
+     "seconds": 33.65
+    },
+    {
+     "case": 58,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.83
+    },
+    {
+     "case": 61,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.5
+    },
+    {
+     "case": 182,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.87
+    },
+    {
+     "case": 186,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.21
+    },
+    {
+     "case": 305,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.74
+    },
+    {
+     "case": 319,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.94
+    },
+    {
+     "case": 256,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.77
+    },
+    {
+     "case": 21,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.95
+    },
+    {
+     "case": 202,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.71
+    },
+    {
+     "case": 265,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.46
+    },
+    {
+     "case": 31,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.35
+    },
+    {
+     "case": 153,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.79
+    },
+    {
+     "case": 304,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 303,
+     "grade": "unmarked-dup",
+     "seconds": 7.97
+    },
+    {
+     "case": 206,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 197,
+     "grade": "borderline",
+     "seconds": 22.5
+    },
+    {
+     "case": 144,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.04
+    },
+    {
+     "case": 205,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.79
+    },
+    {
+     "case": 27,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.7
+    },
+    {
+     "case": 18,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.35
+    },
+    {
+     "case": 244,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.01
+    },
+    {
+     "case": 23,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.75
+    },
+    {
+     "case": 332,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.11
+    },
+    {
+     "case": 152,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.07
+    },
+    {
+     "case": 109,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.73
+    },
+    {
+     "case": 212,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.09
+    },
+    {
+     "case": 13,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.83
+    },
+    {
+     "case": 30,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.13
+    },
+    {
+     "case": 16,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.12
+    },
+    {
+     "case": 353,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 13.32
+    },
+    {
+     "case": 73,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 68,
+     "grade": "unmarked-dup",
+     "seconds": 10.96
+    },
+    {
+     "case": 352,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 351,
+     "grade": "unmarked-dup",
+     "seconds": 14.55
+    },
+    {
+     "case": 63,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 4.12
+    },
+    {
+     "case": 250,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 249,
+     "grade": "unmarked-dup",
+     "seconds": 3.75
+    },
+    {
+     "case": 323,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 11.77
+    },
+    {
+     "case": 251,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.07
+    },
+    {
+     "case": 191,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 187,
+     "grade": "unmarked-dup",
+     "seconds": 4.42
+    },
+    {
+     "case": 245,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 242,
+     "grade": "unmarked-dup",
+     "seconds": 6.63
+    },
+    {
+     "case": 190,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 189,
+     "grade": "unmarked-dup",
+     "seconds": 8.42
+    },
+    {
+     "case": 298,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.89
+    },
+    {
+     "case": 65,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 6.63
+    }
+   ]
+  },
+  {
+   "seat": "openrouter:qwen/qwen3.6-35b-a3b",
+   "summary": {
+    "caught": 26,
+    "missed": 1,
+    "wrong-row": 0,
+    "correct": 28,
+    "false-fold": 3,
+    "unmarked-dup": 24,
+    "borderline": 6,
+    "malformed": 0,
+    "error": 0,
+    "duplicates": 28,
+    "distinct": 60,
+    "wrong_folds": 3,
+    "recall": 0.929,
+    "p50_s": 19.96,
+    "p95_s": 46.17
+   },
+   "results": [
+    {
+     "case": 19,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      17
+     ],
+     "row_id": 17,
+     "grade": "caught",
+     "seconds": 13.04
+    },
+    {
+     "case": 69,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67
+     ],
+     "row_id": 67,
+     "grade": "caught",
+     "seconds": 15.95
+    },
+    {
+     "case": 71,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67,
+      69
+     ],
+     "row_id": 69,
+     "grade": "caught",
+     "seconds": 12.51
+    },
+    {
+     "case": 94,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      93
+     ],
+     "row_id": 93,
+     "grade": "caught",
+     "seconds": 11.47
+    },
+    {
+     "case": 222,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 6.53
+    },
+    {
+     "case": 224,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222
+     ],
+     "row_id": 220,
+     "grade": "caught",
+     "seconds": 16.41
+    },
+    {
+     "case": 227,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224
+     ],
+     "row_id": 224,
+     "grade": "caught",
+     "seconds": 19.32
+    },
+    {
+     "case": 228,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224,
+      227
+     ],
+     "row_id": 227,
+     "grade": "caught",
+     "seconds": 42.3
+    },
+    {
+     "case": 315,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      314
+     ],
+     "row_id": 314,
+     "grade": "caught",
+     "seconds": 15.1
+    },
+    {
+     "case": 335,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 24.84
+    },
+    {
+     "case": 336,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 20.25
+    },
+    {
+     "case": 337,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 11.25
+    },
+    {
+     "case": 338,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337
+     ],
+     "row_id": 337,
+     "grade": "caught",
+     "seconds": 9.41
+    },
+    {
+     "case": 339,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 19.67
+    },
+    {
+     "case": 340,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339
+     ],
+     "row_id": 339,
+     "grade": "caught",
+     "seconds": 16.11
+    },
+    {
+     "case": 342,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340
+     ],
+     "row_id": 339,
+     "grade": "caught",
+     "seconds": 138.29
+    },
+    {
+     "case": 343,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 13.7
+    },
+    {
+     "case": 344,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343
+     ],
+     "row_id": 343,
+     "grade": "caught",
+     "seconds": 29.13
+    },
+    {
+     "case": 345,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344
+     ],
+     "row_id": 341,
+     "grade": "unmarked-dup",
+     "seconds": 23.38
+    },
+    {
+     "case": 346,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345
+     ],
+     "row_id": 344,
+     "grade": "caught",
+     "seconds": 37.7
+    },
+    {
+     "case": 347,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345,
+      346
+     ],
+     "row_id": 346,
+     "grade": "caught",
+     "seconds": 34.4
+    },
+    {
+     "case": 355,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      354
+     ],
+     "row_id": 354,
+     "grade": "caught",
+     "seconds": 6.32
+    },
+    {
+     "case": 365,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      362
+     ],
+     "row_id": 362,
+     "grade": "caught",
+     "seconds": 30.92
+    },
+    {
+     "case": 371,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 15.08
+    },
+    {
+     "case": 373,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361,
+      371
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 17.12
+    },
+    {
+     "case": 378,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      373
+     ],
+     "row_id": 373,
+     "grade": "caught",
+     "seconds": 26.84
+    },
+    {
+     "case": 401,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 19.16
+    },
+    {
+     "case": 402,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400,
+      401
+     ],
+     "row_id": 401,
+     "grade": "caught",
+     "seconds": 22.44
+    },
+    {
+     "case": 272,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 268,
+     "grade": "borderline",
+     "seconds": 25.1
+    },
+    {
+     "case": 258,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 256,
+     "grade": "unmarked-dup",
+     "seconds": 88.82
+    },
+    {
+     "case": 79,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.26
+    },
+    {
+     "case": 215,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 46.17
+    },
+    {
+     "case": 204,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 15.4
+    },
+    {
+     "case": 158,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.36
+    },
+    {
+     "case": 198,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 43.77
+    },
+    {
+     "case": 247,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 28.69
+    },
+    {
+     "case": 54,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 19.46
+    },
+    {
+     "case": 55,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 54,
+     "grade": "unmarked-dup",
+     "seconds": 11.66
+    },
+    {
+     "case": 53,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 52,
+     "grade": "unmarked-dup",
+     "seconds": 6.51
+    },
+    {
+     "case": 57,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 55,
+     "grade": "unmarked-dup",
+     "seconds": 13.27
+    },
+    {
+     "case": 62,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 32.96
+    },
+    {
+     "case": 59,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 31.98
+    },
+    {
+     "case": 64,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 62,
+     "grade": "unmarked-dup",
+     "seconds": 12.06
+    },
+    {
+     "case": 60,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 26.26
+    },
+    {
+     "case": 9,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 3,
+     "grade": "unmarked-dup",
+     "seconds": 9.54
+    },
+    {
+     "case": 52,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 11.05
+    },
+    {
+     "case": 48,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 46,
+     "grade": "unmarked-dup",
+     "seconds": 16.46
+    },
+    {
+     "case": 209,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 207,
+     "grade": "borderline",
+     "seconds": 35.39
+    },
+    {
+     "case": 341,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 338,
+     "grade": "unmarked-dup",
+     "seconds": 39.35
+    },
+    {
+     "case": 58,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "borderline",
+     "seconds": 41.24
+    },
+    {
+     "case": 61,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 15.42
+    },
+    {
+     "case": 182,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 16.26
+    },
+    {
+     "case": 186,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 185,
+     "grade": "borderline",
+     "seconds": 23.42
+    },
+    {
+     "case": 305,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 13.66
+    },
+    {
+     "case": 319,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 318,
+     "grade": "unmarked-dup",
+     "seconds": 28.54
+    },
+    {
+     "case": 256,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 241,
+     "grade": "borderline",
+     "seconds": 23.98
+    },
+    {
+     "case": 21,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 34.0
+    },
+    {
+     "case": 202,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 197,
+     "grade": "false-fold",
+     "seconds": 25.0
+    },
+    {
+     "case": 265,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 262,
+     "grade": "false-fold",
+     "seconds": 47.98
+    },
+    {
+     "case": 31,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 31.12
+    },
+    {
+     "case": 153,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.47
+    },
+    {
+     "case": 304,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 303,
+     "grade": "unmarked-dup",
+     "seconds": 12.22
+    },
+    {
+     "case": 206,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 197,
+     "grade": "borderline",
+     "seconds": 42.2
+    },
+    {
+     "case": 144,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.59
+    },
+    {
+     "case": 205,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 22.59
+    },
+    {
+     "case": 27,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 16.96
+    },
+    {
+     "case": 18,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 14.17
+    },
+    {
+     "case": 244,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 36.32
+    },
+    {
+     "case": 23,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 13.86
+    },
+    {
+     "case": 332,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 28.7
+    },
+    {
+     "case": 152,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 15.31
+    },
+    {
+     "case": 109,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 28.03
+    },
+    {
+     "case": 212,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 32.66
+    },
+    {
+     "case": 13,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 15.34
+    },
+    {
+     "case": 30,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.11
+    },
+    {
+     "case": 16,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 20.46
+    },
+    {
+     "case": 353,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 45.49
+    },
+    {
+     "case": 73,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 70,
+     "grade": "unmarked-dup",
+     "seconds": 9.87
+    },
+    {
+     "case": 352,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 351,
+     "grade": "unmarked-dup",
+     "seconds": 40.31
+    },
+    {
+     "case": 63,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 11.15
+    },
+    {
+     "case": 250,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 249,
+     "grade": "unmarked-dup",
+     "seconds": 8.15
+    },
+    {
+     "case": 323,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 322,
+     "grade": "false-fold",
+     "seconds": 48.91
+    },
+    {
+     "case": 251,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 31.62
+    },
+    {
+     "case": 191,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 187,
+     "grade": "unmarked-dup",
+     "seconds": 28.03
+    },
+    {
+     "case": 245,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 242,
+     "grade": "unmarked-dup",
+     "seconds": 38.86
+    },
+    {
+     "case": 190,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 189,
+     "grade": "unmarked-dup",
+     "seconds": 15.61
+    },
+    {
+     "case": 298,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 27.76
+    },
+    {
+     "case": 65,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 23.66
+    }
+   ]
+  },
+  {
+   "seat": "openrouter:qwen/qwen3.8-27b",
+   "summary": {
+    "caught": 24,
+    "missed": 3,
+    "wrong-row": 0,
+    "correct": 34,
+    "false-fold": 0,
+    "unmarked-dup": 25,
+    "borderline": 2,
+    "malformed": 0,
+    "error": 0,
+    "duplicates": 28,
+    "distinct": 60,
+    "wrong_folds": 0,
+    "recall": 0.857,
+    "p50_s": 10.0,
+    "p95_s": 24.75
+   },
+   "results": [
+    {
+     "case": 19,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      17
+     ],
+     "row_id": 17,
+     "grade": "caught",
+     "seconds": 7.73
+    },
+    {
+     "case": 69,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67
+     ],
+     "row_id": 67,
+     "grade": "caught",
+     "seconds": 9.29
+    },
+    {
+     "case": 71,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67,
+      69
+     ],
+     "row_id": 67,
+     "grade": "caught",
+     "seconds": 10.63
+    },
+    {
+     "case": 94,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      93
+     ],
+     "row_id": 93,
+     "grade": "caught",
+     "seconds": 15.05
+    },
+    {
+     "case": 222,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 6.68
+    },
+    {
+     "case": 224,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222
+     ],
+     "row_id": 220,
+     "grade": "caught",
+     "seconds": 25.67
+    },
+    {
+     "case": 227,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224
+     ],
+     "row_id": 224,
+     "grade": "caught",
+     "seconds": 17.31
+    },
+    {
+     "case": 228,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224,
+      227
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 20.19
+    },
+    {
+     "case": 315,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      314
+     ],
+     "row_id": 314,
+     "grade": "caught",
+     "seconds": 6.03
+    },
+    {
+     "case": 335,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 8.09
+    },
+    {
+     "case": 336,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 8.85
+    },
+    {
+     "case": 337,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 11.16
+    },
+    {
+     "case": 338,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337
+     ],
+     "row_id": 337,
+     "grade": "caught",
+     "seconds": 9.16
+    },
+    {
+     "case": 339,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 13.15
+    },
+    {
+     "case": 340,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339
+     ],
+     "row_id": 339,
+     "grade": "caught",
+     "seconds": 12.12
+    },
+    {
+     "case": 342,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340
+     ],
+     "row_id": 340,
+     "grade": "caught",
+     "seconds": 17.85
+    },
+    {
+     "case": 343,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 13.65
+    },
+    {
+     "case": 344,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343
+     ],
+     "row_id": 343,
+     "grade": "caught",
+     "seconds": 10.18
+    },
+    {
+     "case": 345,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344
+     ],
+     "row_id": 341,
+     "grade": "unmarked-dup",
+     "seconds": 10.52
+    },
+    {
+     "case": 346,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345
+     ],
+     "row_id": 344,
+     "grade": "caught",
+     "seconds": 17.15
+    },
+    {
+     "case": 347,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345,
+      346
+     ],
+     "row_id": 346,
+     "grade": "caught",
+     "seconds": 13.69
+    },
+    {
+     "case": 355,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      354
+     ],
+     "row_id": 354,
+     "grade": "caught",
+     "seconds": 3.64
+    },
+    {
+     "case": 365,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      362
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 8.18
+    },
+    {
+     "case": 371,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 4.21
+    },
+    {
+     "case": 373,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361,
+      371
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 8.4
+    },
+    {
+     "case": 378,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      373
+     ],
+     "row_id": 373,
+     "grade": "caught",
+     "seconds": 11.24
+    },
+    {
+     "case": 401,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 4.19
+    },
+    {
+     "case": 402,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400,
+      401
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 8.67
+    },
+    {
+     "case": 272,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 24.75
+    },
+    {
+     "case": 258,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 256,
+     "grade": "unmarked-dup",
+     "seconds": 17.29
+    },
+    {
+     "case": 79,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.52
+    },
+    {
+     "case": 215,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 23.03
+    },
+    {
+     "case": 204,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 19.26
+    },
+    {
+     "case": 158,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.58
+    },
+    {
+     "case": 198,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 12.97
+    },
+    {
+     "case": 247,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.81
+    },
+    {
+     "case": 54,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 14.04
+    },
+    {
+     "case": 55,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 54,
+     "grade": "unmarked-dup",
+     "seconds": 9.86
+    },
+    {
+     "case": 53,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 52,
+     "grade": "unmarked-dup",
+     "seconds": 8.73
+    },
+    {
+     "case": 57,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 55,
+     "grade": "unmarked-dup",
+     "seconds": 6.59
+    },
+    {
+     "case": 62,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 57,
+     "grade": "unmarked-dup",
+     "seconds": 9.48
+    },
+    {
+     "case": 59,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 9.29
+    },
+    {
+     "case": 64,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 59,
+     "grade": "unmarked-dup",
+     "seconds": 15.76
+    },
+    {
+     "case": 60,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 59,
+     "grade": "unmarked-dup",
+     "seconds": 16.48
+    },
+    {
+     "case": 9,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 3,
+     "grade": "unmarked-dup",
+     "seconds": 7.02
+    },
+    {
+     "case": 52,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 4.31
+    },
+    {
+     "case": 48,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 46,
+     "grade": "unmarked-dup",
+     "seconds": 6.4
+    },
+    {
+     "case": 209,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 28.2
+    },
+    {
+     "case": 341,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 338,
+     "grade": "unmarked-dup",
+     "seconds": 11.71
+    },
+    {
+     "case": 58,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 16.18
+    },
+    {
+     "case": 61,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 13.37
+    },
+    {
+     "case": 182,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.51
+    },
+    {
+     "case": 186,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 185,
+     "grade": "borderline",
+     "seconds": 9.53
+    },
+    {
+     "case": 305,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.17
+    },
+    {
+     "case": 319,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 318,
+     "grade": "unmarked-dup",
+     "seconds": 6.16
+    },
+    {
+     "case": 256,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 26.41
+    },
+    {
+     "case": 21,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 12.7
+    },
+    {
+     "case": 202,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 16.76
+    },
+    {
+     "case": 265,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 13.07
+    },
+    {
+     "case": 31,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.16
+    },
+    {
+     "case": 153,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.53
+    },
+    {
+     "case": 304,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 303,
+     "grade": "unmarked-dup",
+     "seconds": 6.28
+    },
+    {
+     "case": 206,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 197,
+     "grade": "borderline",
+     "seconds": 9.68
+    },
+    {
+     "case": 144,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.59
+    },
+    {
+     "case": 205,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 18.95
+    },
+    {
+     "case": 27,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.07
+    },
+    {
+     "case": 18,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.49
+    },
+    {
+     "case": 244,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 17.81
+    },
+    {
+     "case": 23,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 11.42
+    },
+    {
+     "case": 332,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.28
+    },
+    {
+     "case": 152,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.86
+    },
+    {
+     "case": 109,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 39.16
+    },
+    {
+     "case": 212,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 12.55
+    },
+    {
+     "case": 13,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 18.84
+    },
+    {
+     "case": 30,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 16.36
+    },
+    {
+     "case": 16,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.7
+    },
+    {
+     "case": 353,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 16.71
+    },
+    {
+     "case": 73,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 70,
+     "grade": "unmarked-dup",
+     "seconds": 15.66
+    },
+    {
+     "case": 352,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 351,
+     "grade": "unmarked-dup",
+     "seconds": 10.14
+    },
+    {
+     "case": 63,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 7.03
+    },
+    {
+     "case": 250,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 249,
+     "grade": "unmarked-dup",
+     "seconds": 9.07
+    },
+    {
+     "case": 323,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 321,
+     "grade": "unmarked-dup",
+     "seconds": 6.6
+    },
+    {
+     "case": 251,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 8.23
+    },
+    {
+     "case": 191,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 187,
+     "grade": "unmarked-dup",
+     "seconds": 6.99
+    },
+    {
+     "case": 245,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 242,
+     "grade": "unmarked-dup",
+     "seconds": 8.01
+    },
+    {
+     "case": 190,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 189,
+     "grade": "unmarked-dup",
+     "seconds": 14.17
+    },
+    {
+     "case": 298,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 7.8
+    },
+    {
+     "case": 65,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 8.45
+    }
+   ]
+  },
+  {
+   "seat": "openrouter:qwen/qwen3.7-flash",
+   "summary": {
+    "caught": 26,
+    "missed": 1,
+    "wrong-row": 0,
+    "correct": 26,
+    "false-fold": 3,
+    "unmarked-dup": 27,
+    "borderline": 5,
+    "malformed": 0,
+    "error": 0,
+    "duplicates": 28,
+    "distinct": 60,
+    "wrong_folds": 3,
+    "recall": 0.929,
+    "p50_s": 11.5,
+    "p95_s": 22.94
+   },
+   "results": [
+    {
+     "case": 19,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      17
+     ],
+     "row_id": 17,
+     "grade": "caught",
+     "seconds": 13.14
+    },
+    {
+     "case": 69,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67
+     ],
+     "row_id": 67,
+     "grade": "caught",
+     "seconds": 12.04
+    },
+    {
+     "case": 71,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67,
+      69
+     ],
+     "row_id": 69,
+     "grade": "caught",
+     "seconds": 19.53
+    },
+    {
+     "case": 94,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      93
+     ],
+     "row_id": 93,
+     "grade": "caught",
+     "seconds": 9.63
+    },
+    {
+     "case": 222,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 5.92
+    },
+    {
+     "case": 224,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222
+     ],
+     "row_id": 220,
+     "grade": "caught",
+     "seconds": 11.42
+    },
+    {
+     "case": 227,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224
+     ],
+     "row_id": 224,
+     "grade": "caught",
+     "seconds": 16.2
+    },
+    {
+     "case": 228,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224,
+      227
+     ],
+     "row_id": 224,
+     "grade": "caught",
+     "seconds": 15.26
+    },
+    {
+     "case": 315,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      314
+     ],
+     "row_id": 314,
+     "grade": "caught",
+     "seconds": 6.36
+    },
+    {
+     "case": 335,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 16.62
+    },
+    {
+     "case": 336,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 13.7
+    },
+    {
+     "case": 337,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 9.96
+    },
+    {
+     "case": 338,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337
+     ],
+     "row_id": 337,
+     "grade": "caught",
+     "seconds": 15.99
+    },
+    {
+     "case": 339,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 20.3
+    },
+    {
+     "case": 340,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 22.94
+    },
+    {
+     "case": 342,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340
+     ],
+     "row_id": 340,
+     "grade": "caught",
+     "seconds": 14.54
+    },
+    {
+     "case": 343,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 7.34
+    },
+    {
+     "case": 344,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343
+     ],
+     "row_id": 343,
+     "grade": "caught",
+     "seconds": 23.51
+    },
+    {
+     "case": 345,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344
+     ],
+     "row_id": 341,
+     "grade": "unmarked-dup",
+     "seconds": 19.15
+    },
+    {
+     "case": 346,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345
+     ],
+     "row_id": 344,
+     "grade": "caught",
+     "seconds": 24.48
+    },
+    {
+     "case": 347,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345,
+      346
+     ],
+     "row_id": 346,
+     "grade": "caught",
+     "seconds": 16.42
+    },
+    {
+     "case": 355,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      354
+     ],
+     "row_id": 354,
+     "grade": "caught",
+     "seconds": 7.13
+    },
+    {
+     "case": 365,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      362
+     ],
+     "row_id": 362,
+     "grade": "caught",
+     "seconds": 7.43
+    },
+    {
+     "case": 371,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 11.08
+    },
+    {
+     "case": 373,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361,
+      371
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 7.6
+    },
+    {
+     "case": 378,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      373
+     ],
+     "row_id": 373,
+     "grade": "caught",
+     "seconds": 14.78
+    },
+    {
+     "case": 401,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 4.73
+    },
+    {
+     "case": 402,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400,
+      401
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 17.74
+    },
+    {
+     "case": 272,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 268,
+     "grade": "borderline",
+     "seconds": 17.08
+    },
+    {
+     "case": 258,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 256,
+     "grade": "unmarked-dup",
+     "seconds": 6.57
+    },
+    {
+     "case": 79,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.36
+    },
+    {
+     "case": 215,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.96
+    },
+    {
+     "case": 204,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 12.65
+    },
+    {
+     "case": 158,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.3
+    },
+    {
+     "case": 198,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 185,
+     "grade": "false-fold",
+     "seconds": 23.6
+    },
+    {
+     "case": 247,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.97
+    },
+    {
+     "case": 54,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 9.94
+    },
+    {
+     "case": 55,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 54,
+     "grade": "unmarked-dup",
+     "seconds": 18.02
+    },
+    {
+     "case": 53,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 52,
+     "grade": "unmarked-dup",
+     "seconds": 11.54
+    },
+    {
+     "case": 57,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 55,
+     "grade": "unmarked-dup",
+     "seconds": 6.84
+    },
+    {
+     "case": 62,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 20.38
+    },
+    {
+     "case": 59,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 57,
+     "grade": "unmarked-dup",
+     "seconds": 22.03
+    },
+    {
+     "case": 64,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 62,
+     "grade": "unmarked-dup",
+     "seconds": 9.93
+    },
+    {
+     "case": 60,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 15.85
+    },
+    {
+     "case": 9,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 3,
+     "grade": "unmarked-dup",
+     "seconds": 12.68
+    },
+    {
+     "case": 52,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 4.97
+    },
+    {
+     "case": 48,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 46,
+     "grade": "unmarked-dup",
+     "seconds": 11.47
+    },
+    {
+     "case": 209,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 207,
+     "grade": "borderline",
+     "seconds": 7.73
+    },
+    {
+     "case": 341,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 338,
+     "grade": "unmarked-dup",
+     "seconds": 17.99
+    },
+    {
+     "case": 58,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "borderline",
+     "seconds": 20.69
+    },
+    {
+     "case": 61,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.53
+    },
+    {
+     "case": 182,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.63
+    },
+    {
+     "case": 186,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 185,
+     "grade": "borderline",
+     "seconds": 5.2
+    },
+    {
+     "case": 305,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.92
+    },
+    {
+     "case": 319,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 318,
+     "grade": "unmarked-dup",
+     "seconds": 9.73
+    },
+    {
+     "case": 256,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 241,
+     "grade": "borderline",
+     "seconds": 8.39
+    },
+    {
+     "case": 21,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 18.56
+    },
+    {
+     "case": 202,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 10.21
+    },
+    {
+     "case": 265,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 262,
+     "grade": "false-fold",
+     "seconds": 5.9
+    },
+    {
+     "case": 31,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.31
+    },
+    {
+     "case": 153,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 11.7
+    },
+    {
+     "case": 304,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 303,
+     "grade": "unmarked-dup",
+     "seconds": 9.64
+    },
+    {
+     "case": 206,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 32.95
+    },
+    {
+     "case": 144,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.63
+    },
+    {
+     "case": 205,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 13.9
+    },
+    {
+     "case": 27,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.96
+    },
+    {
+     "case": 18,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 4.65
+    },
+    {
+     "case": 244,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 6.33
+    },
+    {
+     "case": 23,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.98
+    },
+    {
+     "case": 332,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 11.61
+    },
+    {
+     "case": 152,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 9.12
+    },
+    {
+     "case": 109,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 108,
+     "grade": "unmarked-dup",
+     "seconds": 12.37
+    },
+    {
+     "case": 212,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 11.82
+    },
+    {
+     "case": 13,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.69
+    },
+    {
+     "case": 30,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.51
+    },
+    {
+     "case": 16,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 16.41
+    },
+    {
+     "case": 353,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 352,
+     "grade": "unmarked-dup",
+     "seconds": 14.14
+    },
+    {
+     "case": 73,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 70,
+     "grade": "unmarked-dup",
+     "seconds": 10.61
+    },
+    {
+     "case": 352,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 351,
+     "grade": "unmarked-dup",
+     "seconds": 12.1
+    },
+    {
+     "case": 63,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 12.84
+    },
+    {
+     "case": 250,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 249,
+     "grade": "unmarked-dup",
+     "seconds": 14.98
+    },
+    {
+     "case": 323,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 321,
+     "grade": "unmarked-dup",
+     "seconds": 7.29
+    },
+    {
+     "case": 251,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 5.93
+    },
+    {
+     "case": 191,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 187,
+     "grade": "unmarked-dup",
+     "seconds": 6.65
+    },
+    {
+     "case": 245,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 242,
+     "grade": "unmarked-dup",
+     "seconds": 12.69
+    },
+    {
+     "case": 190,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 189,
+     "grade": "unmarked-dup",
+     "seconds": 12.63
+    },
+    {
+     "case": 298,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 297,
+     "grade": "false-fold",
+     "seconds": 17.39
+    },
+    {
+     "case": 65,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 11.76
+    }
+   ]
+  },
+  {
+   "seat": "groq:qwen/qwen3.6-27b",
+   "summary": {
+    "caught": 25,
+    "missed": 2,
+    "wrong-row": 0,
+    "correct": 32,
+    "false-fold": 0,
+    "unmarked-dup": 25,
+    "borderline": 4,
+    "malformed": 0,
+    "error": 0,
+    "duplicates": 28,
+    "distinct": 60,
+    "wrong_folds": 0,
+    "recall": 0.893,
+    "p50_s": 1.81,
+    "p95_s": 3.63
+   },
+   "results": [
+    {
+     "case": 19,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      17
+     ],
+     "row_id": 17,
+     "grade": "caught",
+     "seconds": 1.66
+    },
+    {
+     "case": 69,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67
+     ],
+     "row_id": 67,
+     "grade": "caught",
+     "seconds": 1.18
+    },
+    {
+     "case": 71,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      67,
+      69
+     ],
+     "row_id": 69,
+     "grade": "caught",
+     "seconds": 1.32
+    },
+    {
+     "case": 94,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      93
+     ],
+     "row_id": 93,
+     "grade": "caught",
+     "seconds": 0.79
+    },
+    {
+     "case": 222,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 3.24
+    },
+    {
+     "case": 224,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222
+     ],
+     "row_id": 220,
+     "grade": "caught",
+     "seconds": 2.13
+    },
+    {
+     "case": 227,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224
+     ],
+     "row_id": null,
+     "grade": "missed",
+     "seconds": 2.76
+    },
+    {
+     "case": 228,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      220,
+      222,
+      224,
+      227
+     ],
+     "row_id": 224,
+     "grade": "caught",
+     "seconds": 3.63
+    },
+    {
+     "case": 315,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      314
+     ],
+     "row_id": 314,
+     "grade": "caught",
+     "seconds": 1.24
+    },
+    {
+     "case": 335,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 1.09
+    },
+    {
+     "case": 336,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335
+     ],
+     "row_id": 334,
+     "grade": "caught",
+     "seconds": 1.65
+    },
+    {
+     "case": 337,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 1.66
+    },
+    {
+     "case": 338,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337
+     ],
+     "row_id": 337,
+     "grade": "caught",
+     "seconds": 1.58
+    },
+    {
+     "case": 339,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 2.73
+    },
+    {
+     "case": 340,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339
+     ],
+     "row_id": 336,
+     "grade": "caught",
+     "seconds": 2.31
+    },
+    {
+     "case": 342,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340
+     ],
+     "row_id": 335,
+     "grade": "caught",
+     "seconds": 4.99
+    },
+    {
+     "case": 343,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342
+     ],
+     "row_id": 342,
+     "grade": "caught",
+     "seconds": 3.46
+    },
+    {
+     "case": 344,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343
+     ],
+     "row_id": 343,
+     "grade": "caught",
+     "seconds": 1.91
+    },
+    {
+     "case": 345,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344
+     ],
+     "row_id": 341,
+     "grade": "unmarked-dup",
+     "seconds": 2.06
+    },
+    {
+     "case": 346,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345
+     ],
+     "row_id": 344,
+     "grade": "caught",
+     "seconds": 2.71
+    },
+    {
+     "case": 347,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      334,
+      335,
+      336,
+      337,
+      338,
+      339,
+      340,
+      342,
+      343,
+      344,
+      345,
+      346
+     ],
+     "row_id": 346,
+     "grade": "caught",
+     "seconds": 2.75
+    },
+    {
+     "case": 355,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      354
+     ],
+     "row_id": 354,
+     "grade": "caught",
+     "seconds": 0.86
+    },
+    {
+     "case": 365,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      362
+     ],
+     "row_id": 362,
+     "grade": "caught",
+     "seconds": 1.44
+    },
+    {
+     "case": 371,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 0.68
+    },
+    {
+     "case": 373,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      361,
+      371
+     ],
+     "row_id": 361,
+     "grade": "caught",
+     "seconds": 1.21
+    },
+    {
+     "case": 378,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      373
+     ],
+     "row_id": 373,
+     "grade": "caught",
+     "seconds": 2.37
+    },
+    {
+     "case": 401,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 1.1
+    },
+    {
+     "case": 402,
+     "run": 0,
+     "kind": "duplicate",
+     "expected": [
+      400,
+      401
+     ],
+     "row_id": 400,
+     "grade": "caught",
+     "seconds": 1.76
+    },
+    {
+     "case": 272,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 268,
+     "grade": "borderline",
+     "seconds": 4.24
+    },
+    {
+     "case": 258,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 256,
+     "grade": "unmarked-dup",
+     "seconds": 1.47
+    },
+    {
+     "case": 79,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 0.86
+    },
+    {
+     "case": 215,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.07
+    },
+    {
+     "case": 204,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.69
+    },
+    {
+     "case": 158,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.86
+    },
+    {
+     "case": 198,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.59
+    },
+    {
+     "case": 247,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.64
+    },
+    {
+     "case": 54,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 0.98
+    },
+    {
+     "case": 55,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 54,
+     "grade": "unmarked-dup",
+     "seconds": 0.97
+    },
+    {
+     "case": 53,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 52,
+     "grade": "unmarked-dup",
+     "seconds": 1.18
+    },
+    {
+     "case": 57,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 55,
+     "grade": "unmarked-dup",
+     "seconds": 1.53
+    },
+    {
+     "case": 62,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 57,
+     "grade": "unmarked-dup",
+     "seconds": 1.66
+    },
+    {
+     "case": 59,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 53,
+     "grade": "unmarked-dup",
+     "seconds": 2.09
+    },
+    {
+     "case": 64,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 59,
+     "grade": "unmarked-dup",
+     "seconds": 2.85
+    },
+    {
+     "case": 60,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 2.51
+    },
+    {
+     "case": 9,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 3,
+     "grade": "unmarked-dup",
+     "seconds": 2.84
+    },
+    {
+     "case": 52,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 51,
+     "grade": "unmarked-dup",
+     "seconds": 2.21
+    },
+    {
+     "case": 48,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 46,
+     "grade": "unmarked-dup",
+     "seconds": 1.68
+    },
+    {
+     "case": 209,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 207,
+     "grade": "borderline",
+     "seconds": 3.41
+    },
+    {
+     "case": 341,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 338,
+     "grade": "unmarked-dup",
+     "seconds": 1.94
+    },
+    {
+     "case": 58,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.89
+    },
+    {
+     "case": 61,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.31
+    },
+    {
+     "case": 182,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.18
+    },
+    {
+     "case": 186,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.45
+    },
+    {
+     "case": 305,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 0.87
+    },
+    {
+     "case": 319,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 318,
+     "grade": "unmarked-dup",
+     "seconds": 1.29
+    },
+    {
+     "case": 256,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 241,
+     "grade": "borderline",
+     "seconds": 3.93
+    },
+    {
+     "case": 21,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.97
+    },
+    {
+     "case": 202,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.25
+    },
+    {
+     "case": 265,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.15
+    },
+    {
+     "case": 31,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.47
+    },
+    {
+     "case": 153,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.79
+    },
+    {
+     "case": 304,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 303,
+     "grade": "unmarked-dup",
+     "seconds": 2.04
+    },
+    {
+     "case": 206,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 197,
+     "grade": "borderline",
+     "seconds": 3.14
+    },
+    {
+     "case": 144,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.59
+    },
+    {
+     "case": 205,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 3.33
+    },
+    {
+     "case": 27,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.91
+    },
+    {
+     "case": 18,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.36
+    },
+    {
+     "case": 244,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.67
+    },
+    {
+     "case": 23,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.48
+    },
+    {
+     "case": 332,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.43
+    },
+    {
+     "case": 152,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.39
+    },
+    {
+     "case": 109,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.6
+    },
+    {
+     "case": 212,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.07
+    },
+    {
+     "case": 13,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 0.87
+    },
+    {
+     "case": 30,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.89
+    },
+    {
+     "case": 16,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.54
+    },
+    {
+     "case": 353,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 2.83
+    },
+    {
+     "case": 73,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 68,
+     "grade": "unmarked-dup",
+     "seconds": 2.95
+    },
+    {
+     "case": 352,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 351,
+     "grade": "unmarked-dup",
+     "seconds": 2.18
+    },
+    {
+     "case": 63,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 1.37
+    },
+    {
+     "case": 250,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 249,
+     "grade": "unmarked-dup",
+     "seconds": 1.36
+    },
+    {
+     "case": 323,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 321,
+     "grade": "unmarked-dup",
+     "seconds": 1.55
+    },
+    {
+     "case": 251,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.51
+    },
+    {
+     "case": 191,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 187,
+     "grade": "unmarked-dup",
+     "seconds": 1.14
+    },
+    {
+     "case": 245,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 242,
+     "grade": "unmarked-dup",
+     "seconds": 2.06
+    },
+    {
+     "case": 190,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 189,
+     "grade": "unmarked-dup",
+     "seconds": 1.4
+    },
+    {
+     "case": 298,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": null,
+     "grade": "correct",
+     "seconds": 1.23
+    },
+    {
+     "case": 65,
+     "run": 0,
+     "kind": "distinct",
+     "expected": [],
+     "row_id": 56,
+     "grade": "unmarked-dup",
+     "seconds": 1.29
+    }
+   ]
   }
  ],
- "note": "Three runs on 2026-10-28 with one prompt and one case set, merged: ollama alone with --workers 1 (so its latency is one request at a time on the shared card), the hosted seats with --workers 3, and the OpenRouter seats with --workers 3. The direct Anthropic seats are absent: that key had no credit; Claude ran through OpenRouter instead. Reasons were stripped before commit (--no-reasons): they describe real incidents, and the repository is public."
+ "note": "Three runs on 2026-10-28 with one prompt and one case set, merged: ollama alone with --workers 1 (so its latency is one request at a time on the shared card), the hosted seats with --workers 3, the OpenRouter seats with --workers 3, and seven Qwen seats (OpenRouter and Groq) with --workers 3. The direct Anthropic seats are absent: that key had no credit; Claude ran through OpenRouter instead. Reasons were stripped before commit (--no-reasons): they describe real incidents, and the repository is public."
 }

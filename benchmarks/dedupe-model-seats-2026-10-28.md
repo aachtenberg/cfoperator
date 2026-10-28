@@ -37,24 +37,33 @@ a whole call. Ollama ran alone, one request at a time, on the shared card.
 | groq:openai/gpt-oss-20b | 24 | 23 | 3 | **0** | 1.1 | 3.0 |
 | groq:openai/gpt-oss-120b | 24 | 23 | 5 | **0** | 1.6 | 3.2 |
 | openrouter:anthropic/claude-haiku-5.5 | 21 | 25 | 1 | **0** | 3.1 | 4.6 |
+| groq:qwen/qwen3.6-27b | 25 | 25 | 4 | **0** | 1.8 | 3.6 |
+| openrouter:qwen/qwen3.5-9b | 24 | 25 | 2 | **0** | 86.6 | 242.0 |
+| openrouter:qwen/qwen3-14b | 24 | 21 | 1 | **0** | 10.6 | 55.6 |
+| openrouter:qwen/qwen3.8-27b | 24 | 25 | 2 | **0** | 10.0 | 24.8 |
+| openrouter:qwen/qwen3-30b-a3b | 19 | 21 | 1 | **0** | 7.1 | 25.1 |
 | ollama:gemma4:26b | 24 | 26 | 3 | 1 | 12.7 | 31.2 |
 | deepseek:deepseek-v4-pro | 23 | 24 | 3 | 1 | 10.0 | 42.1 |
 | openrouter:openai/gpt-5.4-nano | 22 | 23 | 2 | 1 | 4.0 | 6.0 |
 | gemini:gemini-3-flash-preview | 25 | 28 | 6 | 2 | 1.1 | 1.4 |
 | gemini:gemini-3.1-flash-lite | 25 | 24 | 5 | 2 | 1.2 | 1.5 |
 | openrouter:anthropic/claude-sonnet-5.5 | 24 | 26 | 2 | 2 | 1.7 | 3.0 |
+| openrouter:qwen/qwen3.6-35b-a3b | 26 | 25 | 6 | 2 | 20.0 | 46.2 |
+| openrouter:qwen/qwen3.7-flash | 26 | 27 | 6 | 2 | 11.5 | 22.9 |
 | openrouter:mistralai/ministral-14b-2512 | 22 | 22 | 7 | 5 | 1.9 | 6.0 |
 | xai:grok-4.20-0309-non-reasoning | 25 | 27 | 7 | 7 | 1.3 | 1.9 |
 | openrouter:mistralai/ministral-8b-2512 | 26 | 24 | 7 | **15** | 2.0 | 4.4 |
 
 ## Reading it
 
-- **Most seats can do this.** Seven made no wrong fold on the 60 hardest
-  negatives and caught 21 to 25 of 28 labelled duplicates. Zero in 60 bounds
+- **Most seats can do this.** Twelve of 23 made no wrong fold on the 60
+  hardest negatives and caught 19 to 25 of 28 labelled duplicates. Zero in 60 bounds
   the wrong-fold rate at about 5% (the rule of three), on the hardest cases
   in the queue.
 - **Size is not what matters, reasoning is.** gpt-oss-20b (about 3.6B active
-  parameters) made no wrong fold. Ministral 8B and grok-4.20 non-reasoning
+  parameters) and qwen3.5-9b (9B dense) made no wrong fold. A model that small
+  fits beside the triage model on a 16 GB card; its 87 s median here is
+  OpenRouter's provider and its thinking, not a local measurement. Ministral 8B and grok-4.20 non-reasoning
   catch as many duplicates but fold different fixes on the same host
   (Ministral 8B merged a fan-control fix with an ollama memory limit, and an
   IPv6 firewall change with a pod-log check). They are not safe seats.
