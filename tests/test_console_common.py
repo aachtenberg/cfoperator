@@ -38,7 +38,9 @@ SHARED_HELPERS = ["esc", "color", "badge", "age", "refreshAges", "toast", "trapF
                   "copyText", "copyIcon", "bindCopyIcons", "sanitizeHtml", "renderMarkdown",
                   # CFOP-412: the list kit — one timestamp parser and format (fmtTs
                   # used to exist twice, parseTs three times), sorting and search.
-                  "parseTs", "fmtTs", "tsKey", "sortRows", "listKit", "textMatch"]
+                  "parseTs", "fmtTs", "tsKey", "sortRows", "listKit", "textMatch",
+                  # CFOP-561: a Save lit only while there is something to save.
+                  "armSave"]
 
 #: Pages whose main content is a polled row list. Same set as
 #: test_console_a11y.LIST_PAGES; repeated rather than imported so this file

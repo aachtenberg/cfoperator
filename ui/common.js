@@ -91,6 +91,25 @@ function toast(msg, type){ const c=document.getElementById('toasts'); if(!c) ret
   const t=document.createElement('div'); t.className='toast '+(type||''); t.textContent=msg; c.appendChild(t);
   setTimeout(()=>{ t.style.opacity='0'; setTimeout(()=>t.remove(),220); }, TOAST_MS); }
 
+// A Save button lit only while there is something to save (CFOP-561). Every
+// Admin Save was a primary chip that never changed, so it looked as urgent
+// straight after a save as before one. armSave() snapshots the inputs as they
+// are when called — pages call it right after rendering from the server, so
+// that is what is stored — and keeps the button disabled while every input
+// still matches. Values compare trimmed, the way the saves send them, so a
+// stray space cannot light a Save that would change nothing. A successful save
+// re-renders and re-arms, which greys it; a failed one leaves it lit, because
+// the change is still unsaved.
+function armSave(btn, inputs){
+  if(!btn) return;
+  const els=(inputs||[]).filter(Boolean);
+  const val=el=>el.type==='checkbox'?el.checked:String(el.value==null?'':el.value).trim();
+  const base=els.map(val);
+  const sync=()=>{ btn.disabled=els.every((el,i)=>val(el)===base[i]); };
+  els.forEach(el=>{ el.addEventListener('input',sync); el.addEventListener('change',sync); });
+  sync();
+}
+
 // Keep Tab inside an open dialog (CFOP-94 follow-up, CFOP-95). The drawer is
 // aria-modal, but aria-modal is a promise to assistive tech, not a mechanism:
 // without this, Tab from the last control walks out into the page behind the
