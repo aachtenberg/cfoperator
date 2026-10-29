@@ -33,7 +33,7 @@ from pathlib import Path
 from prometheus_client import Counter, Gauge, Histogram, Info
 
 # Import core components
-from knowledge_base import ResilientKnowledgeBase, correlation_insight_keys, correlation_insight_rejection, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible, resolve_auto_policy, _SUMMARY_CONFIDENCE_CAP
+from knowledge_base import ResilientKnowledgeBase, correlation_insight_keys, correlation_insight_rejection, correlation_insight_subject, learning_has_trigger_condition, is_ephemeral_job_pod, normalize_finding_signature, normalize_remediation_fields, normalize_service_name, remediation_is_auto_eligible, resolve_auto_policy, _SUMMARY_CONFIDENCE_CAP
 from llm_fallback import LLMFallbackManager as LLMFallback, ChainCircuitBreaker, LLMCircuitOpen
 from singleton_lock import AgentSingletonLock, ACQUIRED as LOCK_ACQUIRED, HELD as LOCK_HELD
 from embedding_service import EmbeddingService, vector_literal
@@ -4362,8 +4362,7 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
 
     def _ephemeral_service_names(self) -> set:
         """Normalized service names of ephemeral Job/CronJob pods in the cluster.
-        Used to keep their scheduled churn out of failure correlations (and to
-        purge any that were persisted before the baseline filter landed)."""
+        Used to keep their scheduled churn out of failure correlations."""
         k8s = getattr(self.tools, 'k8s_tools', None)
         if not k8s:
             return set()
@@ -8096,29 +8095,17 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
         logger.info("Starting correlation analysis...")
         with tracing.span('sweep.correlations'):
             try:
-                # Keep ephemeral Job/CronJob services out of correlations: clean any
-                # previously-persisted false rows (recorded before the baseline
-                # filter), and guard against recording new ones.
+                # Keep ephemeral Job/CronJob services out of correlations. The
+                # table is synced to this window (CFOP-568), so a pair left out
+                # here -- or no longer in the window -- is deleted, not kept.
                 ephemeral = self._ephemeral_service_names()
-                if ephemeral:
-                    purged = self.kb._kb.purge_correlations_for_services(ephemeral)
-                    if purged:
-                        logger.info(f"Purged {purged} false correlation(s) for ephemeral job services")
-                patterns = self.kb._kb.find_service_failure_patterns(days=30)
-                if patterns:
-                    for p in patterns:
-                        svc_a = p.get('service_a', '')
-                        svc_b = p.get('service_b', '')
-                        if svc_a and svc_b and svc_a not in ephemeral and svc_b not in ephemeral:
-                            ctype = p.get('correlation_type', 'co_failure')
-                            self.kb._kb.record_service_correlation(
-                                service_a=svc_a,
-                                service_b=svc_b,
-                                correlation_type=ctype,
-                                time_delta_seconds=p.get('avg_time_delta_seconds'),
-                                details={'co_failure_count': p.get('co_failure_count', 0)}
-                            )
-                    logger.info(f"Correlation analysis: {len(patterns)} service failure patterns found")
+                patterns = [
+                    p for p in self.kb._kb.find_service_failure_patterns(days=30) or []
+                    if p.get('service_a') not in ephemeral and p.get('service_b') not in ephemeral
+                ]
+                synced = self.kb._kb.sync_service_correlations(patterns)
+                logger.info(f"Correlation analysis: {len(patterns)} service failure pattern(s); "
+                            f"service correlations {synced}")
 
                 # Persist investigation<->drift correlations. Two investigations
                 # that started together are not a pair (CFOP-149).
@@ -8182,6 +8169,15 @@ FIX: {_FIX_JSON_SCHEMA}{_delivery_guidance(self.config, self.git_repos())}"""
                 keys |= correlation_insight_keys(row)
         return keys
 
+    def _correlation_subjects(self) -> set:
+        """Service sets that already have a correlation learning (CFOP-568)."""
+        try:
+            subjects = self.kb._kb.correlation_learning_subjects()
+        except Exception as e:
+            logger.debug(f"Could not list correlation subjects for dedupe: {e}")
+            return set()
+        return set(subjects) if isinstance(subjects, (set, frozenset, list)) else set()
+
     def _analyze_correlations(self, sweep_findings: list, failure_patterns: list):
         """Have the LLM analyze operational data and correlations to produce insights."""
 
@@ -8237,7 +8233,7 @@ OPERATIONAL SUMMARY:
 - Investigations: {ops.get('investigations', {}).get('total', 0)} total, outcomes: {json.dumps(ops.get('investigations', {}).get('by_outcome', {}))}
 - Learnings extracted: {ops.get('learnings', {}).get('total', 0)}
 
-SERVICE FAILURE PATTERNS (7-day window):
+SERVICE FAILURE PATTERNS (30-day window):
 {json.dumps(failure_patterns[:5], default=str)[:800]}
 
 CORRELATED EVENTS (same time window):
@@ -8338,9 +8334,11 @@ Return empty array if nothing notable: {{"insights": []}}"""
             stored = 0
             skipped = 0
             # Prior automated learnings, so the 18th near-copy of one sentence
-            # is not stored. A KB that cannot list them fails open on dedupe
-            # only; the root_cause and namespace gates still apply.
+            # is not stored, nor the same services in new words (CFOP-568).
+            # A KB that cannot list them fails open on dedupe only; the
+            # root_cause and namespace gates still apply.
             seen = self._existing_correlation_keys()
+            subjects = self._correlation_subjects()
             known_namespaces = self._known_namespaces()
             for insight in insights[:3]:
                 if not isinstance(insight, dict):
@@ -8354,7 +8352,8 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     logger.info(f"Skipping correlation insight without applies_when: {insight.get('title','')[:60]}")
                     continue
                 reason = correlation_insight_rejection(
-                    insight, known_namespaces=known_namespaces, seen_keys=seen)
+                    insight, known_namespaces=known_namespaces, seen_keys=seen,
+                    seen_subjects=subjects)
                 if reason:
                     skipped += 1
                     logger.info(f"Skipping correlation insight ({reason}): {insight.get('title','')[:60]}")
@@ -8376,6 +8375,9 @@ Return empty array if nothing notable: {{"insights": []}}"""
                     lid = self.kb.store_learning(insight)
                     stored += 1
                     seen |= correlation_insight_keys(insight)
+                    subject = correlation_insight_subject(insight)
+                    if subject:
+                        subjects.add(subject)
                     if lid and lid > 0:
                         search_text = ' '.join(filter(None, [
                             insight.get('title', ''),
