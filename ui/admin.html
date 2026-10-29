@@ -60,6 +60,7 @@
   .chip.danger:hover { border-color:var(--red); }
   .chip:disabled { opacity:.5; cursor:default; }
   .chip.primary { border-color:var(--accent); color:var(--accent); }
+  .chip.primary:disabled { border-color:var(--border); color:var(--text-secondary); }
 
   table { width:100%; border-collapse:collapse; }
   th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--border-subtle); vertical-align:top; }
@@ -365,7 +366,7 @@
   </div>
 
   <div class="section" style="margin-top:14px">
-    <button class="chip primary" id="allow-save" onclick="saveAllowlist()">Save</button>
+    <button class="chip primary" id="allow-save" disabled onclick="saveAllowlist()">Save</button>
     <button class="chip" id="allow-reset" onclick="resetAllowlist()">Reset to ceiling</button>
     <span class="muted" id="allow-status" style="margin-left:10px"></span>
   </div>
@@ -914,7 +915,7 @@ async function loadLlmScopes(){
       controls = `<input type="text" id="scope-model-${esc(s.scope)}" placeholder="${esc(s.floor || 'model')}" value="${esc((s.db || {}).model || '')}" style="width:14em">`;
     }
     const buttons = s.editable
-      ? `<button class="chip primary" onclick="saveLlmScope('${esc(s.scope)}','${esc(s.kind)}')">Save</button>` +
+      ? `<button class="chip primary" id="scope-save-${esc(s.scope)}" disabled onclick="saveLlmScope('${esc(s.scope)}','${esc(s.kind)}')">Save</button>` +
         `<button class="chip" onclick="resetLlmScope('${esc(s.scope)}')"${s.source === 'console' ? '' : ' disabled'}>Reset</button>`
       : '';
     return `<div class="eff-row" style="gap:8px;flex-wrap:wrap" title="${esc(s.hint || '')}">` +
@@ -922,6 +923,11 @@ async function loadLlmScopes(){
       `<span style="display:inline-flex;gap:6px;align-items:center">${controls}${buttons}</span></div>`;
   }).join('');
   card.innerHTML = rows;
+  for(const s of (r.data.scopes || [])){
+    if(!s.editable) continue;
+    armSave(document.getElementById('scope-save-' + s.scope),
+      [document.getElementById('scope-backend-' + s.scope), document.getElementById('scope-model-' + s.scope)]);
+  }
 }
 async function saveLlmScope(scope, kind){
   const body = {};
@@ -929,10 +935,13 @@ async function saveLlmScope(scope, kind){
   if(modelEl) body.model = (modelEl.value || '').trim();
   const backendEl = document.getElementById('scope-backend-' + scope);
   if(backendEl) body.backend = backendEl.value;
-  const r = await api(`/api/settings/llm_scopes/${scope}`, {method:'PUT', body: JSON.stringify(body)});
+  const r = await runSave(document.getElementById('scope-save-' + scope), async () => {
+    const res = await api(`/api/settings/llm_scopes/${scope}`, {method:'PUT', body: JSON.stringify(body)});
+    if(res.ok) await loadLlmScopes();
+    return res;
+  });
   if(!r.ok){ toast('failed to save ' + scope + ': ' + (r.error || ''), 'err'); return; }
   toast(scope + ' → ' + (body.backend && body.backend !== 'auto' ? body.backend + '/' : '') + (body.model || 'auto'), 'ok');
-  await loadLlmScopes();
 }
 async function resetLlmScope(scope){
   const r = await api(`/api/settings/llm_scopes/${scope}`, {method:'DELETE'});
@@ -961,23 +970,32 @@ async function loadProviderKeys(){
       `<span style="display:inline-flex;gap:6px;align-items:center">` +
       `<input type="password" id="key-${esc(p.id)}" placeholder="paste key" autocomplete="off" ` +
       `style="width:16em"${storage ? '' : ' disabled'}>` +
-      `<button class="chip primary" onclick="saveProviderKey('${esc(p.id)}')"${storage ? '' : ' disabled'}>Save</button>` +
+      `<button class="chip primary" id="key-save-${esc(p.id)}" disabled onclick="saveProviderKey('${esc(p.id)}')">Save</button>` +
       `<button class="chip" onclick="clearProviderKey('${esc(p.id)}')"${clearable ? '' : ' disabled'}>Clear</button>` +
       `</span></div>`;
   }).join('');
   card.innerHTML = (storage ? '' :
     `<div class="muted" style="margin-bottom:8px">CFOP_SESSION_SECRET is unset on the agent, so a key ` +
     `cannot be stored encrypted; set it in the deployment first.</div>`) + rows;
+  // Without storage the input is disabled too, so the Save stays grey.
+  if(storage) for(const p of (r.data.providers || [])){
+    armSave(document.getElementById('key-save-' + p.id), [document.getElementById('key-' + p.id)]);
+  }
 }
 async function saveProviderKey(id){
   const input = document.getElementById('key-' + id);
   const key = (input.value || '').trim();
   if(!key){ toast('paste a key first — blank leaves it unchanged', 'err'); return; }
-  const r = await api(`/api/settings/llm_keys/${id}`, {method:'PUT', body: JSON.stringify({key})});
+  const r = await runSave(document.getElementById('key-save-' + id), async () => {
+    const res = await api(`/api/settings/llm_keys/${id}`, {method:'PUT', body: JSON.stringify({key})});
+    if(res.ok){
+      input.value = '';
+      await Promise.all([loadProviderKeys(), loadEffective(), loadProvidersAndSettings()]);
+    }
+    return res;
+  });
   if(!r.ok){ toast('failed to save key: ' + (r.error || ''), 'err'); return; }
-  input.value = '';
   toast(id + ' key saved', 'ok');
-  await Promise.all([loadProviderKeys(), loadEffective(), loadProvidersAndSettings()]);
 }
 async function clearProviderKey(id){
   const r = await api(`/api/settings/llm_keys/${id}`, {method:'DELETE'});
@@ -1593,6 +1611,8 @@ function applyAllowPayload(data){
   const floor = ALLOW.floor || {};
   allowBoxes('allow-binaries', ceil.binaries, eff.binaries);
   allowBoxes('allow-verbs', ceil.verbs, eff.verbs);
+  armSave(document.getElementById('allow-save'),
+    [...document.querySelectorAll('#allow-binaries input, #allow-verbs input')]);
   document.getElementById('allow-deny').textContent = (floor.deny_binaries || []).join(', ') || '—';
   document.getElementById('allow-meta').textContent = floor.metacharacters || '—';
   document.getElementById('allow-max').textContent = String(ceil.max_commands != null ? ceil.max_commands : '—');
@@ -1616,15 +1636,15 @@ async function loadAllowlist(){
   applyAllowPayload(r.data);
 }
 async function saveAllowlist(){
-  const btn = document.getElementById('allow-save');
-  btn.disabled = true;
-  const r = await api('/api/remediation/node-action-allowlist', {
-    method:'POST',
-    body: JSON.stringify({binaries: picked('allow-binaries'), verbs: picked('allow-verbs')})
+  const r = await runSave(document.getElementById('allow-save'), async () => {
+    const res = await api('/api/remediation/node-action-allowlist', {
+      method:'POST',
+      body: JSON.stringify({binaries: picked('allow-binaries'), verbs: picked('allow-verbs')})
+    });
+    if(res.ok) applyAllowPayload(res.data);
+    return res;
   });
-  btn.disabled = false;
   if(!r.ok){ toast(r.error,'err'); document.getElementById('allow-status').textContent = r.error; return; }
-  applyAllowPayload(r.data);
   document.getElementById('allow-status').textContent = 'saved — next Job uses this set';
   toast('allowlist saved','ok');
 }
