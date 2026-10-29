@@ -92,9 +92,11 @@ here — power-outage aftermath, SD flakiness).
   *previously-persisted* false correlations kept generating insights.
   - Sweep findings: ground-truth suppressor drops "last restart aged out +
     pod healthy now" findings (`_restart_finding_is_noise`).
-  - Correlations: purge previously-persisted false rows for ephemeral CronJob
-    services + guard against recording new ones
-    (`purge_correlations_for_services`, runs each sweep).
+  - Correlations: `service_correlations` is synced to the 30-day failure
+    window each sweep (`sync_service_correlations`, CFOP-568), so a pair the
+    window no longer supports — ephemeral CronJob services included — is
+    deleted, and a pair's count is the co-failures in the window, not the
+    number of sweeps that saw it.
 - **Correctness fix (feeds every tier): Job/CronJob churn no longer read as
   failure.** Ephemeral CronJob-run pods (`<name>-<timestamp>-<hash>`) come and go
   by schedule; the container-baseline diff was recording their disappearance as
@@ -103,6 +105,13 @@ here — power-outage aftermath, SD flakiness).
   baseline (`_update_baselines`) and at correlation read-time
   (`find_service_failure_patterns`) via `is_ephemeral_job_pod()`. A completed
   job is success, not drift.
+- **A replaced pod is not a failed one (CFOP-568).** The same baseline diff
+  records a rollout as the old pod `removed` and the new one `added`; read as
+  failure, every deploy of the four cfoperator Deployments became a "cascade"
+  and the correlation pass wrote ~900 learnings about it. `drift_failed_services`
+  counts a service only when it went away with nothing in its place, and the
+  pass now refuses an insight about a set of services that already has a
+  correlation learning, deprecated ones included, however it is worded.
 - **Tier 2c (severity→channel): shipped.** Real-time Slack now only for act-now
   classes (critical at any outcome, escalated, needs_action, failed, and plain
   warning findings). Routed to the digest (suppressed real-time, still in

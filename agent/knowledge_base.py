@@ -190,11 +190,30 @@ def correlation_insight_keys(insight: Dict[str, Any]) -> set:
     return keys
 
 
+def correlation_insight_subject(insight: Dict[str, Any]) -> Optional[frozenset]:
+    """The services a correlation insight is about, or None when it names none.
+
+    CFOP-568. The pass rewords the same pair every sweep ("Cascade failure
+    pattern: cfoperator to cfoperator-mcp", "Cascading failure from cfoperator
+    to cfoperator-mcp", ...), so wording is no identity; the subject is.
+    Lowercased with the pod hash stripped, order ignored.
+    """
+    services = (insight or {}).get("services")
+    if not isinstance(services, list):
+        return None
+    names = frozenset(
+        normalize_service_name(s.strip().lower())
+        for s in services if isinstance(s, str) and s.strip()
+    )
+    return names or None
+
+
 def correlation_insight_rejection(
     insight: Dict[str, Any],
     *,
     known_namespaces: Optional[Iterable[str]] = None,
     seen_keys: Optional[Iterable[str]] = None,
+    seen_subjects: Optional[Iterable[frozenset]] = None,
 ) -> Optional[str]:
     """Why an automated correlation insight must not be stored, or None.
 
@@ -204,6 +223,9 @@ def correlation_insight_rejection(
     actually read — an empty or missing list skips the check instead of
     blocking every insight. A title or applies_when already stored (or
     already accepted in this response) is the same observation again.
+
+    CFOP-568. So is an insight about a set of services that already has a
+    correlation learning, however it is worded.
     """
     if not isinstance(insight, dict):
         return "not an insight"
@@ -223,6 +245,9 @@ def correlation_insight_rejection(
     seen = set(seen_keys or ())
     if correlation_insight_keys(insight) & seen:
         return "duplicate correlation learning"
+    subject = correlation_insight_subject(insight)
+    if subject and subject in set(seen_subjects or ()):
+        return f"a correlation learning about {', '.join(sorted(subject))} already exists"
     return None
 
 
@@ -291,6 +316,81 @@ def normalize_service_name(name: str) -> str:
     """
     # Match k8s ReplicaSet hash + pod hash suffix: -<rs-hash>-<pod-hash>
     return re.sub(r'-[a-f0-9]{6,10}-[a-z0-9]{5}$', '', name)
+
+
+def drift_failed_services(drift_type: str, details: Optional[Dict[str, Any]]) -> set:
+    """Services a drift event shows as having failed, by base name (CFOP-568).
+
+    A ``container_change`` diffs pod names. A service with a pod removed and
+    another of its pods added in the same diff was replaced -- a rollout or a
+    reschedule -- and one that was only added appeared. Neither is a failure:
+    counting them turned every deploy of the cfoperator stack into a four-way
+    "cascade". Only a service that went away with nothing in its place
+    counts. A crash-restart keeps its pod name and never reaches this diff.
+
+    The other drift types have no producer left; their keys are read as
+    before, for the rows they wrote. CronJob-run pods never count.
+    """
+    details = details or {}
+
+    def base_names(names):
+        return {
+            normalize_service_name(n) for n in names
+            if isinstance(n, str) and n and not is_ephemeral_job_pod(n)
+        }
+
+    if drift_type == 'container_change':
+        return (base_names(details.get('removed') or [])
+                - base_names(details.get('added') or []))
+    raw = [details.get(key) for key in ('service', 'container', 'service_name')]
+    raw.extend(details.get('affected_services') or [])
+    current = details.get('current_state')
+    if isinstance(current, dict):
+        raw.extend(current.keys())
+    return base_names(raw)
+
+
+def service_failure_patterns(drift_events, window_seconds: int = 300) -> List[Dict[str, Any]]:
+    """Pairs of services that failed within ``window_seconds`` of each other, twice or more.
+
+    ``drift_events`` in time order, each with ``detected_at``, ``drift_type``
+    and ``drift_details``. Services failed in one event are one observation,
+    not a pair.
+    """
+    from collections import defaultdict
+
+    service_events = []
+    for drift in drift_events or []:
+        for svc in sorted(drift_failed_services(drift.drift_type, drift.drift_details)):
+            service_events.append({'service': svc, 'time': drift.detected_at})
+
+    co_failures = defaultdict(lambda: {"count": 0, "time_deltas": []})
+    for i, event1 in enumerate(service_events):
+        for event2 in service_events[i + 1:]:
+            delta = (event2['time'] - event1['time']).total_seconds()
+            if delta > window_seconds:
+                break
+            # Same timestamp: one drift event that named several services.
+            if delta < 1:
+                continue
+            if event1['service'] != event2['service']:
+                key = tuple(sorted([event1['service'], event2['service']]))
+                co_failures[key]["count"] += 1
+                co_failures[key]["time_deltas"].append(delta)
+
+    patterns = []
+    for (service_a, service_b), data in co_failures.items():
+        if data["count"] >= 2:
+            avg_delta = sum(data["time_deltas"]) / len(data["time_deltas"])
+            patterns.append({
+                "service_a": service_a,
+                "service_b": service_b,
+                "co_failure_count": data["count"],
+                "avg_time_delta_seconds": round(avg_delta, 1),
+                "correlation_type": "cascade_failure" if avg_delta > 30 else "co_failure"
+            })
+    patterns.sort(key=lambda x: x["co_failure_count"], reverse=True)
+    return patterns
 
 
 def normalize_finding_signature(text: str) -> str:
@@ -5707,144 +5807,81 @@ class KnowledgeBase:
                             keys.add('sig::' + normalize_finding_signature(f['finding']))
         return keys
 
-    def purge_correlations_for_services(self, service_names) -> int:
-        """Delete persisted service correlations involving any of these services.
-
-        Used to clean out false correlations whose services turned out to be
-        ephemeral Job/CronJob runs (their scheduled churn was misread as
-        co-failure before the baseline filter landed). Returns rows deleted.
-        """
-        names = [n for n in (service_names or []) if n]
-        if not names:
-            return 0
-        with self.session_scope() as session:
-            return session.query(ServiceCorrelation).filter(
-                or_(ServiceCorrelation.service_a.in_(names),
-                    ServiceCorrelation.service_b.in_(names))
-            ).delete(synchronize_session=False)
-
     def find_service_failure_patterns(self, days: int = 30) -> List[Dict[str, Any]]:
         """Find patterns of which services fail together or in sequence."""
         from datetime import timedelta
-        from collections import defaultdict
 
         with self.session_scope() as session:
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-
-            # Get service-related drift events
             drift_events = session.query(DriftEvent).filter(
                 DriftEvent.detected_at >= cutoff,
                 DriftEvent.drift_type.in_(['container_stopped', 'state_change', 'service_unhealthy', 'container_change'])
             ).order_by(DriftEvent.detected_at).all()
+            return service_failure_patterns(drift_events)
 
-            # Extract service names from drift events
-            service_events = []
-            for drift in drift_events:
-                details = drift.drift_details or {}
-                raw_names: List[str] = []
+    def sync_service_correlations(self, patterns: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Make ``service_correlations`` hold what the failure window holds (CFOP-568).
 
-                # Direct service/container keys
-                for key in ('service', 'container', 'service_name'):
-                    if details.get(key):
-                        raw_names.append(details[key])
-                # container_change events: added/removed lists
-                for key in ('added', 'removed'):
-                    raw_names.extend(details.get(key) or [])
-                # state_change events: affected_services list
-                raw_names.extend(details.get('affected_services') or [])
-                # state_change events: current_state dict with service->status
-                cs = details.get('current_state')
-                if isinstance(cs, dict):
-                    raw_names.extend(cs.keys())
-
-                # Drop ephemeral Job/CronJob pods — their scheduled churn isn't a
-                # failure and would manufacture false co-failure correlations.
-                services = {
-                    self._normalize_service_name(n) for n in raw_names
-                    if isinstance(n, str) and n and not is_ephemeral_job_pod(n)
-                }
-
-                for svc in services:
-                    service_events.append({
-                        'service': svc,
-                        'time': drift.detected_at,
-                        'type': drift.drift_type
-                    })
-
-            # Find co-occurring failures (within 5 minutes)
-            co_failures = defaultdict(lambda: {"count": 0, "time_deltas": []})
-            window = 300  # 5 minutes
-
-            for i, event1 in enumerate(service_events):
-                for event2 in service_events[i+1:]:
-                    delta = (event2['time'] - event1['time']).total_seconds()
-                    if delta > window:
-                        break
-                    # Skip delta=0: same drift event reported multiple services
-                    # at the exact same timestamp — that's one event, not a correlation
-                    if delta < 1:
-                        continue
-                    if event1['service'] != event2['service']:
-                        key = tuple(sorted([event1['service'], event2['service']]))
-                        co_failures[key]["count"] += 1
-                        co_failures[key]["time_deltas"].append(delta)
-
-            # Convert to result format
-            patterns = []
-            for (service_a, service_b), data in co_failures.items():
-                if data["count"] >= 2:  # Only report patterns with 2+ occurrences
-                    avg_delta = sum(data["time_deltas"]) / len(data["time_deltas"])
-                    patterns.append({
-                        "service_a": service_a,
-                        "service_b": service_b,
-                        "co_failure_count": data["count"],
-                        "avg_time_delta_seconds": round(avg_delta, 1),
-                        "correlation_type": "cascade_failure" if avg_delta > 30 else "co_failure"
-                    })
-
-            # Sort by occurrence count
-            patterns.sort(key=lambda x: x["co_failure_count"], reverse=True)
-            return patterns
-
-    def record_service_correlation(
-        self,
-        service_a: str,
-        service_b: str,
-        correlation_type: str,
-        time_delta_seconds: Optional[float] = None,
-        details: Optional[Dict[str, Any]] = None
-    ) -> int:
-        """Record or update a service correlation."""
+        ``patterns`` is ``find_service_failure_patterns`` output, already
+        filtered by the caller. A pair's count and average delta are set from
+        the window, not added to: the sweep reads the same 30 days every
+        cycle, so incrementing counted sweeps -- "246 occurrences" of a pair
+        seen a handful of times. A pair the window no longer supports is
+        deleted, which also clears CronJob pairs and the rollout pairs
+        recorded before ``drift_failed_services``.
+        """
+        wanted: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for p in patterns or []:
+            a, b = p.get('service_a'), p.get('service_b')
+            if a and b:
+                wanted[tuple(sorted((a, b)))] = p
+        now = datetime.now(timezone.utc)
+        counts = {'updated': 0, 'added': 0, 'deleted': 0}
         with self.session_scope() as session:
-            # Check if correlation already exists
-            existing = session.query(ServiceCorrelation).filter(
-                ServiceCorrelation.service_a == service_a,
-                ServiceCorrelation.service_b == service_b,
-                ServiceCorrelation.correlation_type == correlation_type
-            ).first()
+            for row in session.query(ServiceCorrelation).all():
+                # pop: a second row for the same pair (other type or order) goes.
+                p = wanted.pop(tuple(sorted((row.service_a, row.service_b))), None)
+                if p is None:
+                    session.delete(row)
+                    counts['deleted'] += 1
+                    continue
+                row.correlation_type = p.get('correlation_type') or 'co_failure'
+                row.occurrence_count = int(p.get('co_failure_count') or 0)
+                row.avg_time_delta_seconds = p.get('avg_time_delta_seconds')
+                row.correlation_details = {**(row.correlation_details or {}),
+                                           'co_failure_count': row.occurrence_count}
+                row.last_seen = now
+                counts['updated'] += 1
+            for (a, b), p in wanted.items():
+                count = int(p.get('co_failure_count') or 0)
+                session.add(ServiceCorrelation(
+                    service_a=a,
+                    service_b=b,
+                    correlation_type=p.get('correlation_type') or 'co_failure',
+                    occurrence_count=count,
+                    avg_time_delta_seconds=p.get('avg_time_delta_seconds'),
+                    correlation_details={'co_failure_count': count},
+                ))
+                counts['added'] += 1
+        return counts
 
-            if existing:
-                existing.occurrence_count += 1
-                existing.last_seen = datetime.now(timezone.utc)
-                if time_delta_seconds is not None:
-                    # Update rolling average
-                    old_avg = existing.avg_time_delta_seconds or time_delta_seconds
-                    new_avg = (old_avg * (existing.occurrence_count - 1) + time_delta_seconds) / existing.occurrence_count
-                    existing.avg_time_delta_seconds = new_avg
-                if details:
-                    existing.correlation_details = {**(existing.correlation_details or {}), **details}
-                return existing.id
-            else:
-                correlation = ServiceCorrelation(
-                    service_a=service_a,
-                    service_b=service_b,
-                    correlation_type=correlation_type,
-                    avg_time_delta_seconds=time_delta_seconds,
-                    correlation_details=details or {}
-                )
-                session.add(correlation)
-                session.flush()
-                return correlation.id
+    def correlation_learning_subjects(self) -> set:
+        """Subjects of every correlation learning stored, deprecated ones too (CFOP-568).
+
+        The correlation pass skips an insight whose subject is here. Deprecated
+        rows count on purpose: an operator who retired a subject has judged
+        it, and the pass would otherwise write it straight back next sweep.
+        """
+        with self.session_scope() as session:
+            rows = session.query(InvestigationLearning.services).filter(
+                _jsonb_has_any(InvestigationLearning.tags, ['correlation'])
+            ).all()
+        subjects = set()
+        for (services,) in rows:
+            subject = correlation_insight_subject({'services': services})
+            if subject:
+                subjects.add(subject)
+        return subjects
 
     def record_event_correlation(
         self,
