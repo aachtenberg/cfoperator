@@ -935,10 +935,13 @@ async function saveLlmScope(scope, kind){
   if(modelEl) body.model = (modelEl.value || '').trim();
   const backendEl = document.getElementById('scope-backend-' + scope);
   if(backendEl) body.backend = backendEl.value;
-  const r = await api(`/api/settings/llm_scopes/${scope}`, {method:'PUT', body: JSON.stringify(body)});
+  const r = await runSave(document.getElementById('scope-save-' + scope), async () => {
+    const res = await api(`/api/settings/llm_scopes/${scope}`, {method:'PUT', body: JSON.stringify(body)});
+    if(res.ok) await loadLlmScopes();
+    return res;
+  });
   if(!r.ok){ toast('failed to save ' + scope + ': ' + (r.error || ''), 'err'); return; }
   toast(scope + ' → ' + (body.backend && body.backend !== 'auto' ? body.backend + '/' : '') + (body.model || 'auto'), 'ok');
-  await loadLlmScopes();
 }
 async function resetLlmScope(scope){
   const r = await api(`/api/settings/llm_scopes/${scope}`, {method:'DELETE'});
@@ -983,11 +986,16 @@ async function saveProviderKey(id){
   const input = document.getElementById('key-' + id);
   const key = (input.value || '').trim();
   if(!key){ toast('paste a key first — blank leaves it unchanged', 'err'); return; }
-  const r = await api(`/api/settings/llm_keys/${id}`, {method:'PUT', body: JSON.stringify({key})});
+  const r = await runSave(document.getElementById('key-save-' + id), async () => {
+    const res = await api(`/api/settings/llm_keys/${id}`, {method:'PUT', body: JSON.stringify({key})});
+    if(res.ok){
+      input.value = '';
+      await Promise.all([loadProviderKeys(), loadEffective(), loadProvidersAndSettings()]);
+    }
+    return res;
+  });
   if(!r.ok){ toast('failed to save key: ' + (r.error || ''), 'err'); return; }
-  input.value = '';
   toast(id + ' key saved', 'ok');
-  await Promise.all([loadProviderKeys(), loadEffective(), loadProvidersAndSettings()]);
 }
 async function clearProviderKey(id){
   const r = await api(`/api/settings/llm_keys/${id}`, {method:'DELETE'});
@@ -1628,15 +1636,15 @@ async function loadAllowlist(){
   applyAllowPayload(r.data);
 }
 async function saveAllowlist(){
-  const btn = document.getElementById('allow-save');
-  btn.disabled = true;
-  const r = await api('/api/remediation/node-action-allowlist', {
-    method:'POST',
-    body: JSON.stringify({binaries: picked('allow-binaries'), verbs: picked('allow-verbs')})
+  const r = await runSave(document.getElementById('allow-save'), async () => {
+    const res = await api('/api/remediation/node-action-allowlist', {
+      method:'POST',
+      body: JSON.stringify({binaries: picked('allow-binaries'), verbs: picked('allow-verbs')})
+    });
+    if(res.ok) applyAllowPayload(res.data);
+    return res;
   });
-  btn.disabled = false;
   if(!r.ok){ toast(r.error,'err'); document.getElementById('allow-status').textContent = r.error; return; }
-  applyAllowPayload(r.data);
   document.getElementById('allow-status').textContent = 'saved — next Job uses this set';
   toast('allowlist saved','ok');
 }

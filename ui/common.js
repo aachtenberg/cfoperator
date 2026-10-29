@@ -105,9 +105,19 @@ function armSave(btn, inputs){
   const els=(inputs||[]).filter(Boolean);
   const val=el=>el.type==='checkbox'?el.checked:String(el.value==null?'':el.value).trim();
   const base=els.map(val);
-  const sync=()=>{ btn.disabled=els.every((el,i)=>val(el)===base[i]); };
-  els.forEach(el=>{ el.addEventListener('input',sync); el.addEventListener('change',sync); });
-  sync();
+  btn._armed=()=>{ btn.disabled=!!btn._saving||els.every((el,i)=>val(el)===base[i]); };
+  els.forEach(el=>{ el.addEventListener('input',btn._armed); el.addEventListener('change',btn._armed); });
+  btn._armed();
+}
+
+// Run a save with its button held disabled until fn settles, re-render
+// included. Without it, an edit made mid-request re-lit the Save through
+// armSave, ready for a second submit of the same change.
+async function runSave(btn, fn){
+  if(!btn) return fn();
+  btn._saving=true; btn.disabled=true;
+  try { return await fn(); }
+  finally { btn._saving=false; if(btn._armed) btn._armed(); else btn.disabled=false; }
 }
 
 // Keep Tab inside an open dialog (CFOP-94 follow-up, CFOP-95). The drawer is

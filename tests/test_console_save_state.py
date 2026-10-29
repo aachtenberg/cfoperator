@@ -79,6 +79,17 @@ def test_a_primary_save_is_armed(page, attrs):
         "grey forever, or lit forever if someone drops the disabled.")
 
 
+@pytest.mark.parametrize("page,attrs", SAVES)
+def test_a_primary_save_is_held_while_saving(page, attrs):
+    """armSave re-lights on any edit, so a save that does not go through
+    runSave can be clicked again mid-request (Bugbot on #367: the allowlist
+    used to hold its own button disabled, and armSave undid that)."""
+    prefix = _ID.search(attrs).group("id").split("${")[0]
+    assert f"runSave(document.getElementById('{prefix}" in read(page), (
+        f"{page}: #{prefix}… does not save through runSave(); an edit made while "
+        "the request is in flight lights it for a second submit.")
+
+
 @pytest.mark.parametrize("page", sorted({page for page, _ in SAVES}))
 def test_a_disabled_primary_save_looks_grey(page):
     """.chip:disabled only dims, so a disabled primary would still read as
@@ -119,7 +130,24 @@ out.rearmed=btn.disabled;
 
 const empty={disabled:false}; box.armSave(empty,[]); out.noInputs=empty.disabled;
 box.armSave(null,[model]); out.nullButtonSurvives=true;
-console.log(JSON.stringify(out));
+
+(async () => {
+  // In flight, an edit must not light the button for a second submit.
+  const b={disabled:false}, inp=el('text','x');
+  box.armSave(b,[inp]);
+  inp.value='y'; inp.fire('input');
+  let release; const pending=box.runSave(b, ()=>new Promise(r=>{ release=r; }));
+  out.heldAtStart=b.disabled;
+  inp.value='z'; inp.fire('input'); out.heldThroughEdit=b.disabled;
+  release({ok:false}); await pending;
+  out.litAfterFailedSave=!b.disabled;
+  await box.runSave(b, async ()=>{ throw new Error('boom'); }).catch(()=>{});
+  out.litAfterThrow=!b.disabled;
+  // A successful save re-renders and re-arms inside fn; the hold lifts grey.
+  await box.runSave(b, async ()=>{ box.armSave(b,[inp]); return {ok:true}; });
+  out.greyAfterSuccess=b.disabled;
+  console.log(JSON.stringify(out));
+})().catch(e => { console.error(e); process.exit(1); });
 """
 
 
@@ -158,3 +186,13 @@ def test_rearming_after_a_save_greys_it(behaviour):
 
 def test_nothing_to_edit_means_nothing_to_save(behaviour):
     assert behaviour["noInputs"] is True and behaviour["nullButtonSurvives"] is True
+
+
+def test_a_save_in_flight_stays_disabled_through_edits(behaviour):
+    assert behaviour["heldAtStart"] is True and behaviour["heldThroughEdit"] is True
+
+
+def test_the_hold_lifts_to_whatever_the_inputs_say(behaviour):
+    """Failed or thrown: still unsaved, so lit. Succeeded and re-armed: grey."""
+    assert behaviour["litAfterFailedSave"] is True and behaviour["litAfterThrow"] is True
+    assert behaviour["greyAfterSuccess"] is True
