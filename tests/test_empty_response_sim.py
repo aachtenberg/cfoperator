@@ -100,6 +100,17 @@ def test_a_right_answer_scores_ok_and_cites_the_evidence():
     assert s['status_ok'] and s['cites_evidence'] and not s['tool_markup_in_answer']
 
 
+def test_a_word_that_merely_contains_the_evidence_is_not_a_citation():
+    # 'room' is not OOM; journalctl is named by the SSH contract itself, so
+    # mentioning it is not finding the 6.1G journal.
+    oom = "Plenty of room on the node.\nSTATUS: needs_action\nRECOMMENDATION: raise to 512Mi"
+    disk = "Checked with journalctl, nothing stood out.\nSTATUS: monitoring\nRECOMMENDATION: watch"
+    assert not sim.score_answer(oom, sim.SCENARIOS['oom-killed'])['cites_evidence']
+    assert not sim.score_answer(disk, sim.SCENARIOS['disk-full'])['cites_evidence']
+    found = "/var/log/journal holds 6.1G.\nSTATUS: needs_action\nRECOMMENDATION: vacuum it"
+    assert sim.score_answer(found, sim.SCENARIOS['disk-full'])['cites_evidence']
+
+
 def test_tool_calls_written_as_text_are_flagged():
     for leaked in ('<tool_call>\n<function=loki_query>', '<tool_call>loki_query<arg_key>q</arg_key>'):
         assert sim.score_answer(leaked, sim.SCENARIOS['loki-healthy'])['tool_markup_in_answer']

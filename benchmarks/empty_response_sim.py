@@ -413,7 +413,8 @@ SCENARIOS = {
                        'instance': 'raspberrypi3:9100', 'mountpoint': '/',
                        'device': '/dev/mmcblk0p2'},
         'similar_text': '', 'canned': DISK_CANNED, 'default': FAULT_DEFAULT,
-        'expected': {'needs_action', 'escalated'}, 'evidence': [['journal']],
+        'expected': {'needs_action', 'escalated'},
+        'evidence': [['/var/log/journal', '6.1g', '6.1 g']],
     },
     'bad-rollout': {
         'trigger': ('KubeDeploymentReplicasMismatch: deployment squadmaps-api in namespace apps '
@@ -478,6 +479,11 @@ def _import_agent():
 TOOL_MARKUP = re.compile(r'<tool_call|<function=|<arg_key>|"tool_calls"|<\|channel\|>', re.I)
 
 
+def _cites(low, alt):
+    """alt at the start of a word: 'oom' is in 'OOMKilled', not in 'room'."""
+    return re.search(r'(?<![a-z0-9])' + re.escape(alt), low) is not None
+
+
 def score_answer(text, scenario):
     """Status, evidence and leaked tool-call markup for one final answer."""
     low = (text or '').lower()
@@ -485,7 +491,7 @@ def score_answer(text, scenario):
     return {
         'final_status': status,
         'status_ok': status in scenario['expected'],
-        'cites_evidence': all(any(alt in low for alt in group)
+        'cites_evidence': all(any(_cites(low, alt) for alt in group)
                               for group in scenario['evidence']),
         'tool_markup_in_answer': bool(TOOL_MARKUP.search(text or '')),
     }
@@ -667,7 +673,7 @@ def run_trial(url, model, tools, trial_idx, nudge_retries=0, nudge_with_tools=Fa
         _import_agent()
         from agent.agent import _parse_structured_fix
         result['fix_first_pass'] = _parse_structured_fix(answer) is not None
-    result['answer_tail'] = (answer or '')[-600:]
+    result['answer'] = answer or ''
 
     result['duration_s'] = round(time.time() - start, 1)
     return result
