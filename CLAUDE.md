@@ -130,9 +130,9 @@ shared header, not to assert today's markup. Mutation-check a new guard once
     past the diff: on #370 it searched the repo and found two defects that
     depended on another file's contract, after the LLM review and Bugbot had
     both passed the commit. The plan includes one review an hour, so ask
-    once per PR. It is done when a review object exists, with findings
-    inline and in its body; a finished summary comment alone is not a
-    review.
+    once per PR. Inside the hour it answers "Review limit reached" with the
+    minutes to wait; ask again after that. It is done when a review object exists, with findings inline
+    and in its body; a finished summary comment alone is not a review.
 
   Gone, so do not wait for them: the local gemma4 review (CFOP-402: it
   proposed nothing on 46 of 48 PRs and, measured on a real diff, caught a
