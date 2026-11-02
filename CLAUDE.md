@@ -110,21 +110,36 @@ shared header, not to assert today's markup. Mutation-check a new guard once
 - Include a section for any deviation from what the issues asked for, with the
   reasoning. Reviewers should never have to discover a narrowed scope by reading
   the diff.
-- One review arrives on its own, as a PR comment edited in place on every
-  push: the LLM review (`llm-review`, CFOP-400/404): Reflection AI's Beam on
-  a hosted runner, and Claude Haiku 5.5 through OpenRouter in the same run
-  when Beam cannot answer (its beta allowance is small and daily); the
-  footer says which model served. Both go through
-  `scripts/local_llm_review.py`'s propose/ground/verify pipeline, so a
-  finding has survived a second look before it is posted. It skips drafts.
-  There is no other automatic reviewer: the local
-  gemma4 review was dropped (CFOP-402: it proposed nothing on 46 of 48 PRs
-  and, measured on a real diff, caught a planted shell injection but not the
-  off-by-one beside it, which Beam caught); CodeRabbit was removed on
-  2026-10-15 (its trial ended and the free tier wants 10 stars); and the
-  automatic Claude review went earlier because it reviewed every push and a
-  PR with five review rounds paid for five (#322); `tests/test_workflows.py`
-  keeps it off push events.
+- Two reviewers run on their own, and one more you ask for on every PR:
+  - **The LLM review** (`llm-review`, CFOP-400/404), a PR comment edited in
+    place on every push. Reflection AI's Beam serves it on a hosted runner,
+    and Claude Haiku 5.5 through OpenRouter takes over in the same run when
+    Beam cannot answer (its beta allowance is small and daily); the footer
+    says which model served. Both go through
+    `scripts/local_llm_review.py`'s propose/ground/verify pipeline, so a
+    finding has survived a second look before it is posted. It skips drafts.
+    It sees only the diff and the PR description, nothing else in the
+    repository (CFOP-629).
+  - **Cursor Bugbot**, a check on the first push only; later pushes do not
+    re-run it. Findings arrive as inline comments from `cursor[bot]`. A
+    clean run gets an APPROVED review from the Cursor Approval Agent saying
+    human review is not required; that approval is not the merge gate.
+  - **CodeRabbit, by hand.** The app is installed, but automatic reviews are
+    off for this repo (its check shows SKIPPED), so comment
+    `@coderabbit review` once the PR is up. It is the one reviewer that reads
+    past the diff: on #370 it searched the repo and found two defects that
+    depended on another file's contract, after the LLM review and Bugbot had
+    both passed the commit. The plan includes one review an hour, so ask
+    once per PR. It is done when a review object exists, with findings
+    inline and in its body; a finished summary comment alone is not a
+    review.
+
+  Gone, so do not wait for them: the local gemma4 review (CFOP-402: it
+  proposed nothing on 46 of 48 PRs and, measured on a real diff, caught a
+  planted shell injection but not the off-by-one beside it, which Beam
+  caught), and the automatic Claude review, because it reviewed every push
+  and a PR with five review rounds paid for five (#322);
+  `tests/test_workflows.py` keeps it off push events.
   For a second opinion on a PR that deserves one, comment `@claude review`
   (`claude.yml`). **Do not request a Copilot review**: its credit is spent,
   and a request comes back as a "quota limit" comment, not a review.
@@ -139,11 +154,13 @@ shared header, not to assert today's markup. Mutation-check a new guard once
   until someone asked). A comment saying "No review for <sha>" means that
   run failed; look at its log before merging past it. A push replaces the
   comment, so after a fix wait for it to come back for the new head.
+  Bugbot's and CodeRabbit's findings are triaged the same way.
   Then:
   - real finding → smallest fix, reply on the PR, wait for CI
   - nit you agree with → fix it; "non-blocking" is not skip
   - invalid / out of scope → reply dismissing with the concrete reason
-- Squash-merge only when CI is green **and** the review is fixed or dismissed.
+- Squash-merge only when CI is green **and** every review's findings are fixed
+  or dismissed.
 - When reviewing a PR (`/review`), post findings as GitHub review comments on
   the PR. Do not only report them in chat.
 
