@@ -13,6 +13,13 @@ import re
 import sys
 from datetime import datetime, timezone
 
+# The limit= in SKILL.md's fetch. The API returns the newest rows first and
+# stops there, so a full page means the oldest filed rows were left out.
+FETCH_LIMIT = 200
+REC_CHARS = 300
+STEP_CHARS = 160
+MAX_STEPS = 4
+
 
 def plane_ids(tracker):
     """(project_id, workitem_id) for the Plane MCP; (None, None) on another backend."""
@@ -43,12 +50,35 @@ def reverify_line(state):
             f"last {state.get('checked_at')} by {state.get('verified_by')}")
 
 
+def clip(text, limit):
+    return text if len(text) <= limit else text[:limit] + ' [...]'
+
+
+def load_rows(path):
+    """The rows, or exit with what came back instead.
+
+    A 401 or 500 is not an empty backlog. The 500 body even carries
+    `remediations: []`, so reading that key alone would report nothing filed.
+    """
+    with open(path, encoding='utf-8') as handle:
+        text = handle.read()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        sys.exit(f'not JSON, so the fetch failed: {text[:300]!r}')
+    if not isinstance(data, dict) or data.get('error') or 'remediations' not in data:
+        sys.exit(f'not a remediation list: {json.dumps(data)[:300]}')
+    return data['remediations'] or []
+
+
 def main():
     if len(sys.argv) != 2:
         sys.exit(__doc__)
-    with open(sys.argv[1], encoding='utf-8') as handle:
-        rows = json.load(handle).get('remediations') or []
+    rows = load_rows(sys.argv[1])
     print(f'{len(rows)} filed row(s)')
+    if len(rows) >= FETCH_LIMIT:
+        print(f'warning: that is a full page of {FETCH_LIMIT}, so older filed rows '
+              f'may be missing; re-fetch with a higher limit=')
     for row in rows:
         payload = row.get('payload') or {}
         result = row.get('result') or {}
@@ -65,9 +95,12 @@ def main():
         print(f"  reverify: {reverify_line(result.get('reverify'))}")
         if tracker.get('error'):
             print(f"  tracker error: {tracker['error']}")
-        print(f"  rec: {(payload.get('recommendation') or '').strip()[:300]}")
-        for step in (payload.get('steps') or [])[:4]:
-            print(f'  step: {str(step)[:160]}')
+        print(f"  rec: {clip((payload.get('recommendation') or '').strip(), REC_CHARS)}")
+        steps = payload.get('steps') or []
+        for step in steps[:MAX_STEPS]:
+            print(f'  step: {clip(str(step), STEP_CHARS)}')
+        if len(steps) > MAX_STEPS:
+            print(f'  ({len(steps) - MAX_STEPS} more step(s) not shown)')
 
 
 if __name__ == '__main__':
